@@ -633,7 +633,6 @@ pub struct ScheduledCallback {
     pub condition: Option<ast::ResolverCondition>,
     pub strategy: ResolveStrategy,
     pub extracts: Vec<ResolverExtractSpec>,
-    pub registered_at_slot: u64,
     pub retry_count: u32,
 }
 
@@ -2631,7 +2630,6 @@ impl VmContext {
                                                 condition: condition.clone(),
                                                 strategy: strategy.clone(),
                                                 extracts: extracts.clone(),
-                                                registered_at_slot: current_slot,
                                                 retry_count: 0,
                                             },
                                         ));

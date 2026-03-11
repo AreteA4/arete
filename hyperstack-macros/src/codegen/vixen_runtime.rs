@@ -170,6 +170,8 @@ fn generate_slot_scheduler_task() -> TokenStream {
 
                             let cache_key = format!("scheduled:{}:{}:{}", callback.entity_name, callback.primary_key, url);
 
+                            // IMPORTANT: enqueue + take must stay inside the same lock guard.
+                            // Splitting them risks lost or duplicated requests during reconnects.
                             let requests = {
                                 let mut vm_guard = vm.lock().unwrap_or_else(|e| e.into_inner());
                                 let target = hyperstack::runtime::hyperstack_interpreter::vm::ResolverTarget {

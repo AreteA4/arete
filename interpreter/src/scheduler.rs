@@ -88,6 +88,10 @@ pub fn evaluate_condition(condition: &ResolverCondition, state: &Value) -> bool 
 }
 
 /// NON_ALPHANUMERIC minus RFC 3986 unreserved chars (`-`, `.`, `_`, `~`) that are safe in URLs.
+/// NOTE: This uses path-segment encoding for all field references, including those in query
+/// parameter positions. Query strings permit additional chars (`!`, `$`, `'`, `(`, `)`, `+`, etc.)
+/// that will be over-encoded. This is safe for the current numeric/base58 use-cases but may need
+/// a path-vs-query split if general-purpose URL templates are needed.
 const URL_SEGMENT_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_').remove(b'~');
 
 pub fn build_url_from_template(template: &[UrlTemplatePart], state: &Value) -> Option<String> {
