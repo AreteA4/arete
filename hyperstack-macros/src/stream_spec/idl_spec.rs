@@ -166,6 +166,10 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
     let mut resolver_hooks: Vec<parse::ResolveKeyAttribute> = Vec::new();
     let mut pda_registrations: Vec<parse::RegisterPdaAttribute> = Vec::new();
 
+    // Collect per-entity PDA registrations to avoid cross-entity contamination
+    let per_entity_pda_regs =
+        collect_pda_registrations_per_entity(&entity_structs, &section_structs);
+
     if let Some((_, items)) = &module.content {
         for item in items {
             if let Item::Struct(item_struct) = item {
@@ -182,6 +186,7 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
         }
     }
 
+    // Keep collect_register_from_specs for backwards compatibility with resolver_hooks
     collect_register_from_specs(
         &entity_structs,
         &section_structs,
@@ -263,13 +268,16 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
 
             let result = process_entity_struct_with_idl(
                 entity_struct.clone(),
-                entity_name,
+                entity_name.clone(),
                 section_structs.clone(),
                 has_game_event,
                 &stack_name,
                 &idl_lookup,
                 resolver_hooks.clone(),
-                pda_registrations.clone(),
+                per_entity_pda_regs
+                    .get(&entity_name)
+                    .cloned()
+                    .unwrap_or_default(),
             );
 
             for hook in &result.auto_resolver_hooks {
@@ -578,4 +586,53 @@ fn collect_register_from_specs(
             }
         }
     }
+}
+
+/// Collect PDA registrations per-entity to prevent cross-entity contamination.
+///
+/// This function returns a HashMap where the key is the entity name and the value
+/// is the list of PDA registrations for that specific entity only.
+fn collect_pda_registrations_per_entity(
+    entity_structs: &[syn::ItemStruct],
+    _section_structs: &HashMap<String, syn::ItemStruct>,
+) -> HashMap<String, Vec<parse::RegisterPdaAttribute>> {
+    let mut per_entity_regs: HashMap<String, Vec<parse::RegisterPdaAttribute>> = HashMap::new();
+
+    for entity_struct in entity_structs {
+        let entity_name = parse::parse_entity_name(&entity_struct.attrs)
+            .unwrap_or_else(|| entity_struct.ident.to_string());
+        let mut entity_regs: Vec<parse::RegisterPdaAttribute> = Vec::new();
+
+        if let syn::Fields::Named(fields) = &entity_struct.fields {
+            for field in &fields.named {
+                let field_name = field
+                    .ident
+                    .as_ref()
+                    .map(|i| i.to_string())
+                    .unwrap_or_default();
+                for attr in &field.attrs {
+                    if let Ok(Some(map_attrs)) = parse::parse_map_attribute(attr, &field_name) {
+                        for map_attr in &map_attrs {
+                            if !map_attr.register_from.is_empty() {
+                                for rf in &map_attr.register_from {
+                                    entity_regs.push(parse::RegisterPdaAttribute {
+                                        instruction_path: rf.instruction_path.clone(),
+                                        pda_field: rf.pda_field.clone(),
+                                        primary_key_field: rf.primary_key_field.clone(),
+                                        lookup_name: "default_pda_lookup".to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !entity_regs.is_empty() {
+            per_entity_regs.insert(entity_name, entity_regs);
+        }
+    }
+
+    per_entity_regs
 }
