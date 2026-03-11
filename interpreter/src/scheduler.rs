@@ -43,7 +43,7 @@ impl SlotScheduler {
     }
 
     pub fn take_due(&mut self, current_slot: u64) -> Vec<ScheduledCallback> {
-        let future = self.callbacks.split_off(&(current_slot + 1));
+        let future = self.callbacks.split_off(&current_slot.saturating_add(1));
         let due = std::mem::replace(&mut self.callbacks, future);
 
         let mut result = Vec::new();
