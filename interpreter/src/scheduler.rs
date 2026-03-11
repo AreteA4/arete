@@ -2,13 +2,17 @@ use crate::ast::{ComparisonOp, ResolverCondition, UrlTemplatePart};
 use crate::vm::ScheduledCallback;
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const MAX_RETRIES: u32 = 100;
 
+type DedupKey = (String, String, String);
+
 pub struct SlotScheduler {
     callbacks: BTreeMap<u64, Vec<ScheduledCallback>>,
-    registered: HashSet<(String, String, String)>,
+    registered: HashSet<DedupKey>,
+    /// Reverse index: dedup_key → slot, for O(1) targeted removal in register().
+    slot_index: HashMap<DedupKey, u64>,
 }
 
 impl Default for SlotScheduler {
@@ -22,18 +26,22 @@ impl SlotScheduler {
         Self {
             callbacks: BTreeMap::new(),
             registered: HashSet::new(),
+            slot_index: HashMap::new(),
         }
     }
 
     pub fn register(&mut self, target_slot: u64, callback: ScheduledCallback) {
         let dedup_key = Self::dedup_key(&callback);
-        if self.registered.contains(&dedup_key) {
-            for cbs in self.callbacks.values_mut() {
+        if let Some(old_slot) = self.slot_index.remove(&dedup_key) {
+            if let Some(cbs) = self.callbacks.get_mut(&old_slot) {
                 cbs.retain(|cb| Self::dedup_key(cb) != dedup_key);
+                if cbs.is_empty() {
+                    self.callbacks.remove(&old_slot);
+                }
             }
-            self.callbacks.retain(|_, cbs| !cbs.is_empty());
         }
-        self.registered.insert(dedup_key);
+        self.registered.insert(dedup_key.clone());
+        self.slot_index.insert(dedup_key, target_slot);
         self.callbacks
             .entry(target_slot)
             .or_default()
@@ -49,6 +57,7 @@ impl SlotScheduler {
             for cb in callbacks {
                 let dedup_key = Self::dedup_key(&cb);
                 self.registered.remove(&dedup_key);
+                self.slot_index.remove(&dedup_key);
                 result.push(cb);
             }
         }
@@ -63,7 +72,7 @@ impl SlotScheduler {
         self.callbacks.values().map(|v| v.len()).sum()
     }
 
-    fn dedup_key(cb: &ScheduledCallback) -> (String, String, String) {
+    fn dedup_key(cb: &ScheduledCallback) -> DedupKey {
         let resolver_key = serde_json::to_string(&cb.resolver).unwrap_or_default();
         let condition_key = cb.condition.as_ref()
             .map(|c| serde_json::to_string(c).unwrap_or_default())
