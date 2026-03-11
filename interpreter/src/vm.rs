@@ -2603,11 +2603,13 @@ impl VmContext {
 
                     // Check schedule_at: defer if target slot is in the future
                     if let Some(schedule_path) = schedule_at {
-                        if let Some(target_val) = Self::get_value_at_path(
+                        let target_val = Self::get_value_at_path(
                             &self.registers[*state],
                             schedule_path,
-                        ) {
-                            if let Some(target_slot) = target_val.as_u64() {
+                        );
+
+                        match target_val.and_then(|v| v.as_u64()) {
+                            Some(target_slot) => {
                                 let current_slot = self
                                     .current_context
                                     .as_ref()
@@ -2637,6 +2639,20 @@ impl VmContext {
                                     pc += 1;
                                     continue;
                                 }
+                                // current_slot >= target_slot: fall through to immediate resolution
+                            }
+                            None => {
+                                // schedule_at path is missing or value is not a u64 —
+                                // skip resolver entirely rather than executing immediately,
+                                // since the state likely hasn't been fully populated yet.
+                                tracing::warn!(
+                                    schedule_at_path = %schedule_path,
+                                    entity = %entity_name,
+                                    "schedule_at field path is missing or not a valid u64 in state; \
+                                     skipping resolver (state may not be fully populated yet)"
+                                );
+                                pc += 1;
+                                continue;
                             }
                         }
                     }
