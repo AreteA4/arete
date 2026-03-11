@@ -3,12 +3,14 @@ use crate::vm::ScheduledCallback;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 pub const MAX_RETRIES: u32 = 100;
 
 pub struct SlotScheduler {
     callbacks: BTreeMap<u64, Vec<ScheduledCallback>>,
-    registered: HashSet<(String, String, String)>,
+    registered: HashSet<(String, String, u64)>,
 }
 
 impl Default for SlotScheduler {
@@ -68,10 +70,12 @@ impl SlotScheduler {
         self.callbacks.values().map(|v| v.len()).sum()
     }
 
-    fn dedup_key(cb: &ScheduledCallback) -> (String, String, String) {
-        let resolver_key = format!("{:?}", cb.resolver);
+    fn dedup_key(cb: &ScheduledCallback) -> (String, String, u64) {
+        let mut hasher = DefaultHasher::new();
+        cb.resolver.hash(&mut hasher);
+        let resolver_hash = hasher.finish();
         let pk_key = cb.primary_key.to_string();
-        (cb.entity_name.clone(), pk_key, resolver_key)
+        (cb.entity_name.clone(), pk_key, resolver_hash)
     }
 }
 
