@@ -243,6 +243,8 @@ pub fn parse_resolver_condition_from_str(s: &str) -> ResolverCondition {
 }
 
 fn parse_resolver_condition(s: &str) -> ResolverCondition {
+    // Order matters: two-char operators (>=, <=) must precede single-char (>, <)
+    // to avoid partial matches.
     let operators = ["==", "!=", ">=", "<=", ">", "<"];
     for op_str in &operators {
         if let Some(pos) = s.find(op_str) {
