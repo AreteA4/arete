@@ -57,6 +57,9 @@ fn generate_slot_scheduler_task() -> TokenStream {
             let mutations_tx = mutations_tx.clone();
 
             hyperstack::runtime::tokio::spawn(async move {
+                hyperstack::runtime::tracing::info!(
+                    "SlotScheduler: started (in-memory only, pending callbacks will not survive restarts)"
+                );
                 loop {
                     let current_slot = slot_tracker.get();
                     if current_slot == 0 {
