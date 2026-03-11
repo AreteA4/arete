@@ -65,8 +65,11 @@ impl SlotScheduler {
 
     fn dedup_key(cb: &ScheduledCallback) -> (String, String, String) {
         let resolver_key = serde_json::to_string(&cb.resolver).unwrap_or_default();
+        let condition_key = cb.condition.as_ref()
+            .map(|c| serde_json::to_string(c).unwrap_or_default())
+            .unwrap_or_default();
         let pk_key = cb.primary_key.to_string();
-        (cb.entity_name.clone(), pk_key, resolver_key)
+        (cb.entity_name.clone(), pk_key, format!("{}:{}", resolver_key, condition_key))
     }
 }
 
