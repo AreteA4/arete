@@ -56,12 +56,7 @@ impl SlotScheduler {
     }
 
     pub fn re_register(&mut self, callback: ScheduledCallback, next_slot: u64) {
-        let dedup_key = Self::dedup_key(&callback);
-        self.registered.insert(dedup_key);
-        self.callbacks
-            .entry(next_slot)
-            .or_default()
-            .push(callback);
+        self.register(next_slot, callback);
     }
 
     pub fn pending_count(&self) -> usize {
