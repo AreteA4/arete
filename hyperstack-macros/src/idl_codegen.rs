@@ -107,6 +107,7 @@ pub fn generate_sdk_types(idl: &IdlSpec, module_name: &str) -> TokenStream {
     let account_types = generate_account_types(&idl.accounts, &idl.types, &account_names);
     let instruction_types =
         generate_instruction_types(&idl.instructions, &idl.types, &account_names);
+    let event_types = generate_event_types(&idl.events, &idl.types, &account_names);
     let custom_types = generate_custom_types(&idl.types, &account_names);
     let module_ident = format_ident!("{}", module_name);
 
@@ -130,8 +131,30 @@ pub fn generate_sdk_types(idl: &IdlSpec, module_name: &str) -> TokenStream {
                 use super::types::*;
                 #instruction_types
             }
+
+            pub mod events {
+                use super::*;
+                use super::types::*;
+                #event_types
+            }
         }
     }
+}
+
+/// Maximum array size that serde's derive macro supports natively.
+/// Arrays larger than this need a custom serde helper.
+const SERDE_MAX_ARRAY_SIZE: u32 = 32;
+
+/// Check if a type is a large array (> 32 elements) that needs special serde handling.
+fn is_large_array(idl_type: &IdlType) -> bool {
+    if let IdlType::Array(arr) = idl_type {
+        if arr.array.len() == 2 {
+            if let IdlTypeArrayElement::Size(size) = &arr.array[1] {
+                return *size > SERDE_MAX_ARRAY_SIZE;
+            }
+        }
+    }
+    false
 }
 
 fn generate_struct_fields(
@@ -149,7 +172,16 @@ fn generate_struct_fields(
                 let field_name = format_ident!("{}", to_snake_case(&field.name));
                 let field_type =
                     type_to_token_stream_in_module(&field.type_, account_names, in_accounts_module);
-                quote! { pub #field_name: #field_type }
+
+                // Add serde helper attribute for large arrays
+                if is_large_array(&field.type_) {
+                    quote! {
+                        #[serde(with = "hyperstack::runtime::serde_helpers::big_array")]
+                        pub #field_name: #field_type
+                    }
+                } else {
+                    quote! { pub #field_name: #field_type }
+                }
             }
         })
         .collect()
@@ -249,14 +281,41 @@ fn generate_json_value_for_type(
 }
 
 fn generate_struct_to_json_method(fields: &[IdlField], use_bytemuck: bool) -> TokenStream {
+    generate_struct_to_json_method_inner(fields, use_bytemuck, false)
+}
+
+fn generate_struct_to_json_method_packed(fields: &[IdlField], use_bytemuck: bool) -> TokenStream {
+    generate_struct_to_json_method_inner(fields, use_bytemuck, true)
+}
+
+fn generate_struct_to_json_method_inner(
+    fields: &[IdlField],
+    use_bytemuck: bool,
+    is_packed: bool,
+) -> TokenStream {
     let field_inserts = fields.iter().map(|field| {
         let field_ident = format_ident!("{}", to_snake_case(&field.name));
         let field_name = field_ident.to_string();
-        let field_value =
-            generate_json_value_for_type(&field.type_, quote! { self.#field_ident }, use_bytemuck);
 
-        quote! {
-            object.insert(#field_name.to_string(), #field_value);
+        if is_packed {
+            // For packed structs, copy field to a local variable to avoid
+            // creating unaligned references (which is UB in Rust).
+            let local_var = format_ident!("_packed_{}", to_snake_case(&field.name));
+            let field_value =
+                generate_json_value_for_type(&field.type_, quote! { #local_var }, use_bytemuck);
+            quote! {
+                let #local_var = { self.#field_ident };
+                object.insert(#field_name.to_string(), #field_value);
+            }
+        } else {
+            let field_value = generate_json_value_for_type(
+                &field.type_,
+                quote! { self.#field_ident },
+                use_bytemuck,
+            );
+            quote! {
+                object.insert(#field_name.to_string(), #field_value);
+            }
         }
     });
 
@@ -308,6 +367,14 @@ fn generate_account_type(
     let use_bytemuck = is_bytemuck_serialization(serialization);
     let use_unsafe = is_bytemuck_unsafe(serialization);
 
+    // Check if the type definition specifies packed repr
+    let is_packed = types
+        .iter()
+        .find(|t| t.name == account.name)
+        .and_then(|t| t.repr.as_ref())
+        .and_then(|r| r.packed)
+        .unwrap_or(false);
+
     let idl_fields = if let Some(type_def) = &account.type_def {
         match type_def {
             IdlTypeDefKind::Struct { fields, .. } => fields.clone(),
@@ -323,7 +390,11 @@ fn generate_account_type(
     };
 
     let fields = generate_struct_fields(&idl_fields, use_bytemuck, account_names, true);
-    let to_json_method = generate_struct_to_json_method(&idl_fields, use_bytemuck);
+    let to_json_method = if is_packed {
+        generate_struct_to_json_method_packed(&idl_fields, use_bytemuck)
+    } else {
+        generate_struct_to_json_method(&idl_fields, use_bytemuck)
+    };
 
     let discriminator = account.get_discriminator();
     let disc_array = quote! { [#(#discriminator),*] };
@@ -355,20 +426,36 @@ fn generate_account_type(
         if use_unsafe {
             // BytemuckUnsafe: use unsafe impl to bypass padding checks,
             // matching how the on-chain program was compiled.
-            quote! {
-                #[derive(Debug, Copy, Clone)]
-                #[repr(C)]
-                pub struct #name {
-                    #(#fields),*
+            if is_packed {
+                quote! {
+                    #[derive(Debug, Copy, Clone)]
+                    #[repr(C, packed)]
+                    pub struct #name {
+                        #(#fields),*
+                    }
+
+                    unsafe impl hyperstack::runtime::bytemuck::Zeroable for #name {}
+                    unsafe impl hyperstack::runtime::bytemuck::Pod for #name {}
+
+                    #bytemuck_try_from
                 }
+            } else {
+                quote! {
+                    #[derive(Debug, Copy, Clone)]
+                    #[repr(C)]
+                    pub struct #name {
+                        #(#fields),*
+                    }
 
-                unsafe impl hyperstack::runtime::bytemuck::Zeroable for #name {}
-                unsafe impl hyperstack::runtime::bytemuck::Pod for #name {}
+                    unsafe impl hyperstack::runtime::bytemuck::Zeroable for #name {}
+                    unsafe impl hyperstack::runtime::bytemuck::Pod for #name {}
 
-                #bytemuck_try_from
+                    #bytemuck_try_from
+                }
             }
         } else {
             // Bytemuck (safe): use derive macros which validate no padding at compile time.
+            // Note: packed structs cannot use derive Pod, so they must use unsafe impl above.
             quote! {
                 #[derive(Debug, Copy, Clone, hyperstack::runtime::bytemuck::Pod, hyperstack::runtime::bytemuck::Zeroable)]
                 #[bytemuck(crate = "hyperstack::runtime::bytemuck")]
@@ -467,6 +554,67 @@ fn generate_instruction_type(
     }
 }
 
+fn generate_event_types(
+    events: &[IdlEvent],
+    types: &[IdlTypeDef],
+    account_names: &HashSet<String>,
+) -> TokenStream {
+    let event_structs = events
+        .iter()
+        .map(|event| generate_event_type(event, types, account_names));
+
+    quote! {
+        #(#event_structs)*
+    }
+}
+
+fn generate_event_type(
+    event: &IdlEvent,
+    types: &[IdlTypeDef],
+    account_names: &HashSet<String>,
+) -> TokenStream {
+    let name = format_ident!("{}", event.name);
+
+    let discriminator = event.get_discriminator();
+    let disc_array = quote! { [#(#discriminator),*] };
+
+    // Event fields come from the matching type definition in `types`
+    let idl_fields: Vec<IdlField> = types
+        .iter()
+        .find(|t| t.name == event.name)
+        .and_then(|t| match &t.type_def {
+            IdlTypeDefKind::Struct { fields, .. } => Some(fields.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    let fields = generate_struct_fields(&idl_fields, false, account_names, false);
+    let to_json_method = generate_struct_to_json_method(&idl_fields, false);
+
+    quote! {
+        #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+        pub struct #name {
+            #(#fields),*
+        }
+
+        impl #name {
+            pub const DISCRIMINATOR: [u8; 8] = #disc_array;
+
+            /// Decode a CPI event from raw instruction data.
+            /// Anchor CPI events: 8-byte discriminator followed by Borsh-encoded payload.
+            pub fn try_from_bytes(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+                if data.len() < 8 {
+                    return Err("Data too short for event discriminator".into());
+                }
+                let mut reader = &data[8..];
+                borsh::BorshDeserialize::deserialize_reader(&mut reader).map_err(|e| e.into())
+            }
+
+            #to_json_method
+        }
+    }
+}
+
 fn generate_custom_types(types: &[IdlTypeDef], account_names: &HashSet<String>) -> TokenStream {
     let type_defs = types.iter().map(|t| generate_custom_type(t, account_names));
 
@@ -479,17 +627,31 @@ fn generate_custom_type(type_def: &IdlTypeDef, account_names: &HashSet<String>) 
     let name = format_ident!("{}", type_def.name);
     let use_bytemuck = is_bytemuck_serialization(&type_def.serialization);
     let use_unsafe = is_bytemuck_unsafe(&type_def.serialization);
+    let is_packed = type_def
+        .repr
+        .as_ref()
+        .and_then(|r| r.packed)
+        .unwrap_or(false);
 
     match &type_def.type_def {
         IdlTypeDefKind::Struct { kind: _, fields } => {
             let struct_fields = generate_struct_fields(fields, use_bytemuck, account_names, false);
-            let to_json_method = generate_struct_to_json_method(fields, use_bytemuck);
+            let to_json_method = if is_packed {
+                generate_struct_to_json_method_packed(fields, use_bytemuck)
+            } else {
+                generate_struct_to_json_method(fields, use_bytemuck)
+            };
 
             if use_bytemuck {
                 if use_unsafe {
+                    let repr_attr = if is_packed {
+                        quote! { #[repr(C, packed)] }
+                    } else {
+                        quote! { #[repr(C)] }
+                    };
                     quote! {
                         #[derive(Debug, Copy, Clone)]
-                        #[repr(C)]
+                        #repr_attr
                         pub struct #name {
                             #(#struct_fields),*
                         }
@@ -919,6 +1081,160 @@ mod tests {
         assert!(
             code.contains("pod_read_unaligned"),
             "bytemuckunsafe should still use pod_read_unaligned for deserialization"
+        );
+    }
+
+    fn large_array_borsh_idl() -> IdlSpec {
+        let json = r#"{
+            "address": "TestLargeArrayProgram111111111111111111111",
+            "metadata": {
+                "name": "test_large_array",
+                "version": "0.1.0",
+                "spec": "0.1.0"
+            },
+            "instructions": [],
+            "accounts": [
+                {
+                    "name": "LargeArrayAccount",
+                    "discriminator": [1, 2, 3, 4, 5, 6, 7, 8]
+                },
+                {
+                    "name": "SmallArrayAccount",
+                    "discriminator": [10, 20, 30, 40, 50, 60, 70, 80]
+                }
+            ],
+            "types": [
+                {
+                    "name": "LargeArrayAccount",
+                    "type": {
+                        "kind": "struct",
+                        "fields": [
+                            { "name": "owner", "type": "pubkey" },
+                            { "name": "large_data", "type": { "array": ["u64", 70] } },
+                            { "name": "small_data", "type": { "array": ["u8", 32] } }
+                        ]
+                    }
+                },
+                {
+                    "name": "SmallArrayAccount",
+                    "type": {
+                        "kind": "struct",
+                        "fields": [
+                            { "name": "owner", "type": "pubkey" },
+                            { "name": "data", "type": { "array": ["u8", 32] } }
+                        ]
+                    }
+                }
+            ],
+            "events": [],
+            "errors": []
+        }"#;
+        parse_idl_content(json).expect("test IDL should parse")
+    }
+
+    #[test]
+    fn test_large_array_gets_serde_with_attribute() {
+        let idl = large_array_borsh_idl();
+        let output = generate_sdk_types(&idl, "generated_sdk");
+        let code = output.to_string();
+
+        // Large array (70 elements) should have serde(with = ...) attribute
+        // The generated code: serde_helpers::big_array (no spaces around ::)
+        assert!(
+            code.contains("serde_helpers::big_array"),
+            "large array should have serde(with) attribute for big_array helper, got: {}",
+            code
+        );
+
+        // Verify the attribute is before large_data field
+        let parts: Vec<&str> = code.split("pub large_data").collect();
+        assert!(parts.len() > 1, "large_data field should exist");
+        let before = &parts[0][parts[0].len().saturating_sub(150)..];
+        assert!(
+            before.contains("big_array"),
+            "serde(with = big_array) should appear before large_data field, got context: {}",
+            before
+        );
+    }
+
+    #[test]
+    fn test_small_array_no_serde_with_attribute() {
+        let idl = large_array_borsh_idl();
+        let output = generate_sdk_types(&idl, "generated_sdk");
+        let code = output.to_string();
+
+        // Small array (32 elements) should NOT have serde(with = ...) immediately before it
+        // We need to check the immediate predecessor of small_data, not the whole preceding code
+        // The pattern should be: pub large_data : [u64 ; 70] , pub small_data
+        // NOT: # [serde (...)] pub small_data
+
+        // Check that small_data field exists
+        assert!(
+            code.contains("pub small_data"),
+            "small_data field should exist"
+        );
+        assert!(
+            code.contains("pub data : [u8 ; 32]"),
+            "SmallArrayAccount.data field should exist"
+        );
+
+        // Verify the SmallArrayAccount doesn't have big_array in its struct definition
+        // Find just the SmallArrayAccount struct (second occurrence in types and accounts)
+        let small_account_section = code
+            .split("pub struct SmallArrayAccount")
+            .nth(1)
+            .expect("SmallArrayAccount should exist")
+            .split("impl SmallArrayAccount")
+            .next()
+            .expect("impl block should exist");
+
+        assert!(
+            !small_account_section.contains("big_array"),
+            "SmallArrayAccount should NOT have big_array attribute, got: {}",
+            small_account_section
+        );
+    }
+
+    #[test]
+    fn test_is_large_array_detection() {
+        // Test array > 32
+        let large = IdlType::Array(IdlTypeArray {
+            array: vec![
+                IdlTypeArrayElement::Type("u64".to_string()),
+                IdlTypeArrayElement::Size(70),
+            ],
+        });
+        assert!(is_large_array(&large), "70-element array should be large");
+
+        // Test array == 32 (boundary)
+        let boundary = IdlType::Array(IdlTypeArray {
+            array: vec![
+                IdlTypeArrayElement::Type("u8".to_string()),
+                IdlTypeArrayElement::Size(32),
+            ],
+        });
+        assert!(
+            !is_large_array(&boundary),
+            "32-element array should NOT be large"
+        );
+
+        // Test array < 32
+        let small = IdlType::Array(IdlTypeArray {
+            array: vec![
+                IdlTypeArrayElement::Type("u8".to_string()),
+                IdlTypeArrayElement::Size(16),
+            ],
+        });
+        assert!(
+            !is_large_array(&small),
+            "16-element array should NOT be large"
+        );
+
+        // Test non-array type
+        let not_array = IdlType::Simple("u64".to_string());
+        assert!(
+            !is_large_array(&not_array),
+            "non-array type should NOT be large"
         );
     }
 }

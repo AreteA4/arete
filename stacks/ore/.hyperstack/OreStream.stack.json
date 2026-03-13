@@ -3809,14 +3809,14 @@
                 "pda_field": {
                   "segments": [
                     "accounts",
-                    "entropyVar"
+                    "treasury"
                   ],
                   "offsets": null
                 },
                 "seed_field": {
                   "segments": [
                     "accounts",
-                    "round"
+                    "roundNext"
                   ],
                   "offsets": null
                 },
@@ -3828,14 +3828,14 @@
                 "pda_field": {
                   "segments": [
                     "accounts",
-                    "treasury"
+                    "entropyVar"
                   ],
                   "offsets": null
                 },
                 "seed_field": {
                   "segments": [
                     "accounts",
-                    "roundNext"
+                    "round"
                   ],
                   "offsets": null
                 },
@@ -5236,10 +5236,10 @@
                 "lookup_name": "default_pda_lookup"
               }
             }
-          ],
-          "lookup_by": null
+          }
         }
       ],
+      "instruction_hooks": [],
       "resolver_specs": [],
       "computed_fields": [
         "state.motherlode",
@@ -6796,10 +6796,10 @@
                 "lookup_name": "default_pda_lookup"
               }
             }
-          ],
-          "lookup_by": null
+          }
         }
       ],
+      "instruction_hooks": [],
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],

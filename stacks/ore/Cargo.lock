@@ -1160,6 +1160,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperstack-idl"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "strsim",
+]
+
+[[package]]
 name = "hyperstack-interpreter"
 version = "0.5.3"
 dependencies = [
@@ -1167,6 +1177,7 @@ dependencies = [
  "dashmap",
  "futures",
  "hex",
+ "hyperstack-idl",
  "hyperstack-macros",
  "lru",
  "prost 0.13.5",
@@ -1187,6 +1198,7 @@ version = "0.5.3"
 dependencies = [
  "bs58",
  "hex",
+ "hyperstack-idl",
  "proc-macro2",
  "quote",
  "serde",
