@@ -357,6 +357,9 @@ pub fn build_handlers_from_sources(
     for ((source_type, join_key), mappings) in &sources_by_type_and_join {
         let account_type = source_type.split("::").last().unwrap_or(source_type);
         let is_instruction = mappings.iter().any(|m| m.is_instruction);
+        // CPI events are sourced from `::events::` submodule paths.
+        // All event fields live under "data.*" (no "accounts.*" section).
+        let is_cpi_event = source_type.contains("::events::");
 
         // Skip if this is an event-derived mapping
         if is_instruction
@@ -404,7 +407,14 @@ pub fn build_handlers_from_sources(
 
                 MappingSource::AsCapture { field_transforms }
             } else {
-                let field_path = if is_instruction {
+                let field_path = if is_cpi_event {
+                    // CPI events: all fields are under "data"
+                    if mapping.source_field_name.is_empty() {
+                        FieldPath::new(&["data"])
+                    } else {
+                        FieldPath::new(&["data", &mapping.source_field_name])
+                    }
+                } else if is_instruction {
                     if mapping.source_field_name.is_empty() {
                         FieldPath::new(&["data"])
                     } else {
@@ -474,7 +484,10 @@ pub fn build_handlers_from_sources(
 
             if mapping.is_primary_key {
                 has_primary_key = true;
-                if is_instruction {
+                if is_cpi_event {
+                    // CPI event fields are always in "data"
+                    primary_field = Some(format!("data.{}", mapping.source_field_name));
+                } else if is_instruction {
                     let prefix = idl
                         .and_then(|idl| {
                             idl.get_instruction_field_prefix(
@@ -503,10 +516,17 @@ pub fn build_handlers_from_sources(
             .find_map(|m| m.lookup_by.as_ref())
             .map(|fs| {
                 // FieldSpec has explicit_location which tells us if it's accounts:: or data::
+                // For CPI events, all fields (including identifiers) are under "data".
                 let prefix = match &fs.explicit_location {
                     Some(parse::FieldLocation::Account) => "accounts",
                     Some(parse::FieldLocation::InstructionArg) => "data",
-                    None => "accounts", // Default to accounts for compatibility
+                    None => {
+                        if is_cpi_event {
+                            "data" // CPI event fields are always in "data"
+                        } else {
+                            "accounts" // Default to accounts for instruction compatibility
+                        }
+                    }
                 };
                 format!("{}.{}", prefix, fs.ident)
             });
@@ -544,7 +564,15 @@ pub fn build_handlers_from_sources(
             }
         };
 
-        let type_suffix = if is_instruction { "IxState" } else { "State" };
+        // CPI events (from `::events::`) use "CpiEvent" suffix; instructions use "IxState"
+        let is_cpi_event_for_type = source_type.contains("::events::");
+        let type_suffix = if is_cpi_event_for_type {
+            "CpiEvent"
+        } else if is_instruction {
+            "IxState"
+        } else {
+            "State"
+        };
         let serialization = if is_instruction {
             None
         } else {

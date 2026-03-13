@@ -10,48 +10,71 @@ pub fn generate_hook_actions(
     actions: &[HookAction],
     _lookup_by: &Option<FieldPath>,
 ) -> TokenStream {
-    let action_code: Vec<TokenStream> = actions.iter().map(|action| {
-        match action {
-            HookAction::RegisterPdaMapping { pda_field, seed_field, lookup_name: _ } => {
-                let pda_field_str = pda_field.segments.last().cloned().unwrap_or_default();
-                let seed_field_str = seed_field.segments.last().cloned().unwrap_or_default();
-                
-                quote! {
-                    if let (Some(pda), Some(seed)) = (ctx.account(#pda_field_str), ctx.account(#seed_field_str)) {
-                        ctx.register_pda_reverse_lookup(&pda, &seed);
-                    }
-                }
-            }
-            HookAction::SetField { target_field, source, condition } => {
-                let set_code = generate_set_field_code(target_field, source);
-                if let Some(cond) = condition {
-                    let cond_code = generate_condition_code(cond);
+    let action_code: Vec<TokenStream> = actions
+        .iter()
+        .map(|action| {
+            match action {
+                HookAction::RegisterPdaMapping {
+                    pda_field,
+                    seed_field,
+                    lookup_name: _,
+                } => {
+                    let pda_raw = pda_field.segments.last().cloned().unwrap_or_default();
+                    let seed_raw = seed_field.segments.last().cloned().unwrap_or_default();
+                    let pda_camel = crate::event_type_helpers::snake_to_lower_camel(&pda_raw);
+                    let seed_camel = crate::event_type_helpers::snake_to_lower_camel(&seed_raw);
+
+                    // IDL account names can be camelCase (e.g. Pumpfun: "bondingCurve") or
+                    // snake_case (e.g. Raydium: "pool_state"). The register_from attribute
+                    // uses Rust field names (always snake_case), so try both the camelCase
+                    // conversion and the raw snake_case name to match the IDL.
                     quote! {
-                        if #cond_code {
-                            #set_code
+                        let pda_val = ctx.account(#pda_camel).or_else(|| ctx.account(#pda_raw));
+                        let seed_val = ctx.account(#seed_camel).or_else(|| ctx.account(#seed_raw));
+                        if let (Some(pda), Some(seed)) = (pda_val, seed_val) {
+                            ctx.register_pda_reverse_lookup(&pda, &seed);
                         }
                     }
-                } else {
-                    set_code
                 }
-            }
-            HookAction::IncrementField { target_field, increment_by, condition } => {
-                let increment_code = quote! {
-                    ctx.increment(#target_field, #increment_by);
-                };
-                if let Some(cond) = condition {
-                    let cond_code = generate_condition_code(cond);
-                    quote! {
-                        if #cond_code {
-                            #increment_code
+                HookAction::SetField {
+                    target_field,
+                    source,
+                    condition,
+                } => {
+                    let set_code = generate_set_field_code(target_field, source);
+                    if let Some(cond) = condition {
+                        let cond_code = generate_condition_code(cond);
+                        quote! {
+                            if #cond_code {
+                                #set_code
+                            }
                         }
+                    } else {
+                        set_code
                     }
-                } else {
-                    increment_code
+                }
+                HookAction::IncrementField {
+                    target_field,
+                    increment_by,
+                    condition,
+                } => {
+                    let increment_code = quote! {
+                        ctx.increment(#target_field, #increment_by);
+                    };
+                    if let Some(cond) = condition {
+                        let cond_code = generate_condition_code(cond);
+                        quote! {
+                            if #cond_code {
+                                #increment_code
+                            }
+                        }
+                    } else {
+                        increment_code
+                    }
                 }
             }
-        }
-    }).collect();
+        })
+        .collect();
 
     quote! {
         #(#action_code)*

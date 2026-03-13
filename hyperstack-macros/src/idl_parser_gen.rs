@@ -190,9 +190,17 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
     let program_name = idl.get_name();
     let ix_enum_name = format_ident!("{}Instruction", to_pascal_case(program_name));
 
+    // Instruction variants
     let ix_enum_variants = idl.instructions.iter().map(|ix| {
         let variant_name = format_ident!("{}", to_pascal_case(&ix.name));
         quote! { #variant_name(instructions::#variant_name) }
+    });
+
+    // Event variants: prefixed with "Event_" to avoid name collisions with instruction variants
+    let event_enum_variants = idl.events.iter().map(|ev| {
+        let variant_name = format_ident!("Event_{}", ev.name);
+        let event_type = format_ident!("{}", ev.name);
+        quote! { #variant_name(events::#event_type) }
     });
 
     let uses_steel_discriminant = idl
@@ -253,7 +261,51 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         }
     });
 
-    let convert_to_json_arms = idl.instructions.iter().map(|ix| {
+    // Anchor CPI event wire format:
+    //   bytes  0- 7: SHA256("anchor:event")[..8] = [29, 154, 203, 81, 46, 165, 69, 228]
+    //   bytes  8-15: SHA256("event:<Name>")[..8]  = the event-specific discriminator
+    //   bytes 16+  : Borsh-encoded event payload
+    //
+    // So we match a 16-byte prefix (anchor tag + event disc) and pass &data[8..] to
+    // try_from_bytes(), which skips its own 8-byte discriminator and reads from byte 16.
+    // SHA256("anchor:event")[..8] — the fixed tag prepended to all Anchor CPI event instructions
+    let anchor_event_tag: [u8; 8] = [228u8, 69, 165, 46, 81, 203, 154, 29];
+    let at0 = anchor_event_tag[0];
+    let at1 = anchor_event_tag[1];
+    let at2 = anchor_event_tag[2];
+    let at3 = anchor_event_tag[3];
+    let at4 = anchor_event_tag[4];
+    let at5 = anchor_event_tag[5];
+    let at6 = anchor_event_tag[6];
+    let at7 = anchor_event_tag[7];
+
+    let event_unpack_arms = idl.events.iter().map(|ev| {
+        let variant_name = format_ident!("Event_{}", ev.name);
+        let event_type = format_ident!("{}", ev.name);
+        let discriminator = ev.get_discriminator();
+        let disc_bytes: Vec<u8> = discriminator.iter().take(8).copied().collect();
+        let d0 = disc_bytes.first().copied().unwrap_or(0);
+        let d1 = disc_bytes.get(1).copied().unwrap_or(0);
+        let d2 = disc_bytes.get(2).copied().unwrap_or(0);
+        let d3 = disc_bytes.get(3).copied().unwrap_or(0);
+        let d4 = disc_bytes.get(4).copied().unwrap_or(0);
+        let d5 = disc_bytes.get(5).copied().unwrap_or(0);
+        let d6 = disc_bytes.get(6).copied().unwrap_or(0);
+        let d7 = disc_bytes.get(7).copied().unwrap_or(0);
+
+        // Match the full 16-byte prefix: anchor:event tag + event-specific discriminator.
+        // Pass &data[8..] to try_from_bytes so it can skip the 8-byte event discriminator
+        // and deserialize the payload starting at byte 16.
+        quote! {
+            [#at0, #at1, #at2, #at3, #at4, #at5, #at6, #at7,
+             #d0, #d1, #d2, #d3, #d4, #d5, #d6, #d7, ..] => {
+                let event_data = events::#event_type::try_from_bytes(&data[8..])?;
+                Ok(#ix_enum_name::#variant_name(event_data))
+            }
+        }
+    });
+
+    let convert_to_json_arms_ix = idl.instructions.iter().map(|ix| {
         let variant_name = format_ident!("{}", to_pascal_case(&ix.name));
         let type_name = format!("{}::{}", program_name, to_pascal_case(&ix.name));
 
@@ -267,7 +319,22 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         }
     });
 
-    let type_name_arms = idl.instructions.iter().map(|ix| {
+    let convert_to_json_arms_ev = idl.events.iter().map(|ev| {
+        let variant_name = format_ident!("Event_{}", ev.name);
+        // Use CpiEvent suffix to distinguish from instructions
+        let type_name = format!("{}::{}CpiEvent", program_name, ev.name);
+
+        quote! {
+            #ix_enum_name::#variant_name(data) => {
+                hyperstack::runtime::serde_json::json!({
+                    "type": #type_name,
+                    "data": data.to_json_value()
+                })
+            }
+        }
+    });
+
+    let type_name_arms_ix = idl.instructions.iter().map(|ix| {
         let variant_name = format_ident!("{}", to_pascal_case(&ix.name));
         let type_name = format!("{}::{}IxState", program_name, to_pascal_case(&ix.name));
 
@@ -276,8 +343,32 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         }
     });
 
-    let to_value_arms = idl.instructions.iter().map(|ix| {
+    let type_name_arms_ev = idl.events.iter().map(|ev| {
+        let variant_name = format_ident!("Event_{}", ev.name);
+        // Use CpiEvent suffix to distinguish from instructions (IxState suffix).
+        // The AST writer must generate the same suffix when it sees a type from
+        // the `events` submodule (e.g., generated_sdk::events::Swap).
+        let type_name = format!("{}::{}CpiEvent", program_name, ev.name);
+
+        quote! {
+            #ix_enum_name::#variant_name(_) => #type_name
+        }
+    });
+
+    let to_value_arms_ix = idl.instructions.iter().map(|ix| {
         let variant_name = format_ident!("{}", to_pascal_case(&ix.name));
+
+        quote! {
+            #ix_enum_name::#variant_name(data) => {
+                hyperstack::runtime::serde_json::json!({
+                    "data": data.to_json_value()
+                })
+            }
+        }
+    });
+
+    let to_value_arms_ev = idl.events.iter().map(|ev| {
+        let variant_name = format_ident!("Event_{}", ev.name);
 
         quote! {
             #ix_enum_name::#variant_name(data) => {
@@ -332,10 +423,24 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         }
     });
 
+    // CPI events have no accounts — expose event fields directly under "data"
+    let to_value_with_accounts_arms_ev = idl.events.iter().map(|ev| {
+        let variant_name = format_ident!("Event_{}", ev.name);
+
+        quote! {
+            #ix_enum_name::#variant_name(data) => {
+                hyperstack::runtime::serde_json::json!({
+                    "data": data.to_json_value()
+                })
+            }
+        }
+    });
+
     quote! {
         #[derive(Debug)]
         pub enum #ix_enum_name {
-            #(#ix_enum_variants),*
+            #(#ix_enum_variants,)*
+            #(#event_enum_variants),*
         }
 
         impl #ix_enum_name {
@@ -345,7 +450,8 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
                 }
 
                 match data {
-                    #(#unpack_arms),*
+                    #(#unpack_arms,)*
+                    #(#event_unpack_arms,)*
                     _ => {
                         let disc_preview: Vec<u8> = data.iter().take(8).copied().collect();
                         Err(format!("Unknown instruction discriminator: {:?}", disc_preview).into())
@@ -355,25 +461,29 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
 
             pub fn to_json(&self) -> hyperstack::runtime::serde_json::Value {
                 match self {
-                    #(#convert_to_json_arms),*
+                    #(#convert_to_json_arms_ix,)*
+                    #(#convert_to_json_arms_ev),*
                 }
             }
 
             pub fn event_type(&self) -> &'static str {
                 match self {
-                    #(#type_name_arms),*
+                    #(#type_name_arms_ix,)*
+                    #(#type_name_arms_ev),*
                 }
             }
 
             pub fn to_value(&self) -> hyperstack::runtime::serde_json::Value {
                 match self {
-                    #(#to_value_arms),*
+                    #(#to_value_arms_ix,)*
+                    #(#to_value_arms_ev),*
                 }
             }
 
             pub fn to_value_with_accounts(&self, accounts: &[hyperstack::runtime::yellowstone_vixen_core::KeyBytes<32>]) -> hyperstack::runtime::serde_json::Value {
                 match self {
-                    #(#to_value_with_accounts_arms),*
+                    #(#to_value_with_accounts_arms,)*
+                    #(#to_value_with_accounts_arms_ev),*
                 }
             }
         }
