@@ -1580,6 +1580,11 @@ impl VmContext {
                                                 signature,
                                             },
                                         );
+                                    } else {
+                                        tracing::warn!(
+                                            event_type = %event_type,
+                                            "Dropping queued account update: write_version missing from context"
+                                        );
                                     }
                                 }
                             }
@@ -1602,6 +1607,11 @@ impl VmContext {
                                                 write_version,
                                                 signature,
                                             },
+                                        );
+                                    } else {
+                                        tracing::warn!(
+                                            event_type = %event_type,
+                                            "Dropping queued account update: write_version missing from context"
                                         );
                                     }
                                 }
@@ -2634,11 +2644,9 @@ impl VmContext {
 
                     // Evaluate condition if present
                     if let Some(cond) = condition {
-                        let field_val = Self::get_value_at_path(
-                            &self.registers[*state],
-                            &cond.field_path,
-                        )
-                        .unwrap_or(Value::Null);
+                        let field_val =
+                            Self::get_value_at_path(&self.registers[*state], &cond.field_path)
+                                .unwrap_or(Value::Null);
                         if !self.evaluate_comparison(&field_val, &cond.op, &cond.value)? {
                             pc += 1;
                             continue;
@@ -2647,10 +2655,8 @@ impl VmContext {
 
                     // Check schedule_at: defer if target slot is in the future
                     if let Some(schedule_path) = schedule_at {
-                        let target_val = Self::get_value_at_path(
-                            &self.registers[*state],
-                            schedule_path,
-                        );
+                        let target_val =
+                            Self::get_value_at_path(&self.registers[*state], schedule_path);
 
                         match target_val.and_then(|v| v.as_u64()) {
                             Some(target_slot) => {

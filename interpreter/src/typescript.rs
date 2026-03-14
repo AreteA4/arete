@@ -1690,16 +1690,11 @@ fn extract_idl_enum_type_names(idl: &serde_json::Value) -> HashSet<String> {
 
 /// Extract enum type names that were actually emitted in the generated interfaces.
 /// Looks for patterns like `export const DirectionKindSchema = z.enum([...])`
-fn extract_emitted_enum_type_names(
-    interfaces: &str,
-    spec: &SerializableStreamSpec,
-) -> HashSet<String> {
+fn extract_emitted_enum_type_names(interfaces: &str, idl: Option<&IdlSnapshot>) -> HashSet<String> {
     let mut names = HashSet::new();
 
     // Get all enum type names from the IDL
-    let idl_enum_names: HashSet<String> = spec
-        .idl
-        .as_ref()
+    let idl_enum_names: HashSet<String> = idl
         .and_then(|idl| serde_json::to_value(idl).ok())
         .map(|v| extract_idl_enum_type_names(&v))
         .unwrap_or_default();
@@ -1907,6 +1902,8 @@ pub fn compile_stack_spec(
 
         // Collect builtin type names before spec is consumed
         let builtin_type_names = extract_builtin_resolver_type_names(&spec);
+        // Clone IDL before spec is moved so we can check which enums were emitted
+        let idl_for_check = spec.idl.clone();
 
         let output = compile_serializable_spec_with_emitted(
             spec,
@@ -1917,7 +1914,8 @@ pub fn compile_stack_spec(
 
         // Track shared types for cross-entity dedup
         // Only track enum types that were actually emitted (found in output.interfaces)
-        let emitted_enum_names = extract_emitted_enum_type_names(&output.interfaces, &spec);
+        let emitted_enum_names =
+            extract_emitted_enum_type_names(&output.interfaces, idl_for_check.as_ref());
         emitted_types.extend(emitted_enum_names);
         emitted_types.extend(builtin_type_names);
 
