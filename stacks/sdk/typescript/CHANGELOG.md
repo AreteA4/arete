@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-stacks-v0.5.3...hyperstack-stacks-v0.5.4) (2026-03-14)
+
+
+### Bug Fixes
+
+* Package.json trailing comma ([81c1c0d](https://github.com/HyperTekOrg/hyperstack/commit/81c1c0d879b23ddd94dddd3ecd65e579ab9c4540))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * hyperstack-typescript bumped from file:../../../typescript/core to 0.5.4
+  * peerDependencies
+    * hyperstack-react bumped from >=0.5.3 to >=0.5.4
+    * hyperstack-typescript bumped from >=0.5.3 to >=0.5.4
+
 ## [0.5.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-stacks-v0.5.2...hyperstack-stacks-v0.5.3) (2026-02-20)
 
 

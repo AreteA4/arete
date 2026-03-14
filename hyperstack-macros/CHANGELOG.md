@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.5.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-macros-v0.5.3...hyperstack-macros-v0.5.4) (2026-03-14)
+
+
+### Features
+
+* add HashMap type support, auto-derive discriminators, and to_json_value codegen ([7e81e3d](https://github.com/HyperTekOrg/hyperstack/commit/7e81e3d9802ad25987439841b7e4dd0f45232386))
+* **macros:** add CPI event support with camelCase field handling ([cd856fa](https://github.com/HyperTekOrg/hyperstack/commit/cd856fa19606481e3f6775d8a8e591d4782f7913))
+* **macros:** enhance Vixen runtime with improved tracing and queue handling ([d8b46ea](https://github.com/HyperTekOrg/hyperstack/commit/d8b46ea369ce5669f4cd357e78c83132c758a66d))
+* **macros:** support packed structs, large arrays, and stream spec improvements ([b337d09](https://github.com/HyperTekOrg/hyperstack/commit/b337d09c1b45bd32604d65e05c96d0dc5dc8ea7a))
+* misc compiler, VM, and IDL improvements ([2d6aea3](https://github.com/HyperTekOrg/hyperstack/commit/2d6aea373e43c84e3a07ecef7d9dab004a0b8c1c))
+
+
+### Bug Fixes
+
+* - Instantiate UrlResolverClient once at startup on VmHandler instead of per-request ([f346bfa](https://github.com/HyperTekOrg/hyperstack/commit/f346bfa2131d2cb1ae3ea98e03b25e9351f25eca))
+* add serde derives to IDL-generated account and custom types ([cada9f5](https://github.com/HyperTekOrg/hyperstack/commit/cada9f53f00112b7048f62743dd9aea0ffb07baa))
+* address code review issues in macro codegen ([908c9ff](https://github.com/HyperTekOrg/hyperstack/commit/908c9ff757976336483b89c24fd8f75640f58029))
+* eliminate duplicate url_path qualification logic in sections.rs ([6ed8e94](https://github.com/HyperTekOrg/hyperstack/commit/6ed8e948f4490e2aa659c7c25812fdcc968ac64e))
+* **macros:** prevent cross-entity instruction hook contamination ([ff65ed0](https://github.com/HyperTekOrg/hyperstack/commit/ff65ed0259a18425c15d250dcc30ad19ab093dc7))
+* panic on missing event type definition instead of silent empty struct ([cdb0d39](https://github.com/HyperTekOrg/hyperstack/commit/cdb0d391903c1382eca2b81bd9867172cf028ca3))
+* re-queue URL resolver requests on empty URL or failure ([dc204a2](https://github.com/HyperTekOrg/hyperstack/commit/dc204a2cfae505b7cf603b4eb56b39e0d8277f97))
+* remove redundant is_cpi_event variable shadowing ([d338399](https://github.com/HyperTekOrg/hyperstack/commit/d338399339c231ff150bc9b829e2ea9296dd48ee))
+* resolve compilation errors in hyperstack-macros ([acd5a31](https://github.com/HyperTekOrg/hyperstack/commit/acd5a31d63997426f23b9cd42f26fcef7ff59f97))
+* resolve instruction field prefix for camelCase IDL instruction names ([df75acf](https://github.com/HyperTekOrg/hyperstack/commit/df75acfca07371ffbda8f410bcc777a42f62627a))
+* silence unused variable warning in stream_spec ([3fee1b1](https://github.com/HyperTekOrg/hyperstack/commit/3fee1b124e54a55c886844e9fd0c3bc82bfa1995))
+* use transaction_accounts_include in prefilter builder ([2df88f8](https://github.com/HyperTekOrg/hyperstack/commit/2df88f890e7549a2d5dadee9703e2cb31cd866ef))
+* validate HTTP method input in ResolveAttributeArgs parser to support only 'GET' and 'POST' ([fb80a48](https://github.com/HyperTekOrg/hyperstack/commit/fb80a48ebf603a13d72d67cd6aedb602d5818cc3))
+
 ## [0.5.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-macros-v0.5.2...hyperstack-macros-v0.5.3) (2026-02-20)
 
 

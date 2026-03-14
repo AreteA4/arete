@@ -1,6 +1,6 @@
 [package]
 name = "hyperstack-stacks"
-version = "0.5.3"
+version = "0.5.4"
 edition.workspace = true
 license = "MIT"
 repository.workspace = true
@@ -17,6 +17,6 @@ ore = []
 full = ["ore"]
 
 [dependencies]
-hyperstack-sdk = { version = "0.5.3", path = "../../../rust/hyperstack-sdk" }
+hyperstack-sdk = { version = "0.5.4", path = "../../../rust/hyperstack-sdk" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

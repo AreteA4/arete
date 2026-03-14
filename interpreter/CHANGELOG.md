@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.5.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-interpreter-v0.5.3...hyperstack-interpreter-v0.5.4) (2026-03-14)
+
+
+### Features
+
+* **interpreter:** various compiler and VM improvements ([23503ac](https://github.com/HyperTekOrg/hyperstack/commit/23503acaa69736d7487d5a9cdd01239d8f86776d))
+* misc compiler, VM, and IDL improvements ([2d6aea3](https://github.com/HyperTekOrg/hyperstack/commit/2d6aea373e43c84e3a07ecef7d9dab004a0b8c1c))
+
+
+### Bug Fixes
+
+* add hashMap IDL type variant to support Metaplex token metadata SDK generation ([21a81ad](https://github.com/HyperTekOrg/hyperstack/commit/21a81ada3b8325295428de6c0cb5eaaedcc4f215))
+* address code review issues in interpreter VM ([f8a5223](https://github.com/HyperTekOrg/hyperstack/commit/f8a5223807df4b5dec0fbf0456c06ab67bfeb852))
+* improve error handling in UrlResolverClient for out-of-bounds access ([540aeef](https://github.com/HyperTekOrg/hyperstack/commit/540aeefed35be873067f41fc14daa205c4e959d9))
+* **interpreter:** zero-variant enum dedup guard escape ([c9fb961](https://github.com/HyperTekOrg/hyperstack/commit/c9fb961f380002516ae845eaf743e15ea8e47c3c))
+* track only actually emitted enum types to prevent over-eager deduplication ([0bdd7d4](https://github.com/HyperTekOrg/hyperstack/commit/0bdd7d4d0ab2c1c3b31a50ada22205fe0e95f9f7))
+* track only actually emitted enum types to prevent over-eager deduplication ([a8a62cf](https://github.com/HyperTekOrg/hyperstack/commit/a8a62cfc4726b2be7c64b346a1d42f7307d977cb))
+
+
+### Performance Improvements
+
+* parallelize URL batch resolution using join_all ([e252a8e](https://github.com/HyperTekOrg/hyperstack/commit/e252a8ea2f91b7b7e0dc266586d670e98bae0cfb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-macros bumped from 0.5.3 to 0.5.4
+
 ## [0.5.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-interpreter-v0.5.2...hyperstack-interpreter-v0.5.3) (2026-02-20)
 
 

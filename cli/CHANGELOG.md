@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.5.3...hyperstack-cli-v0.5.4) (2026-03-14)
+
+
+### Features
+
+* **cli:** implement hs idl connect command with hyperstack suggestions ([6579a84](https://github.com/HyperTekOrg/hyperstack/commit/6579a84b1bd6018255e707fc3fb7cf2d16a050ee))
+* **cli:** implement hs idl data commands (errors through discriminator) ([87267dd](https://github.com/HyperTekOrg/hyperstack/commit/87267ddb1df671c162ffdc0a3b2c539dadcb1660))
+* **cli:** implement hs idl data commands (summary through type) ([60e3efe](https://github.com/HyperTekOrg/hyperstack/commit/60e3efe8dfddba45ffb17b0cbbd550322ad19b76))
+* **cli:** implement hs idl relationship commands ([8fccdcb](https://github.com/HyperTekOrg/hyperstack/commit/8fccdcbdf6a198cbe1127182fc5efff3c47ccc3c))
+* **cli:** scaffold hs idl subcommand structure + ci publish order ([64f3f4c](https://github.com/HyperTekOrg/hyperstack/commit/64f3f4cffd286092886496e2da920d353204de6f))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.5.3 to 0.5.4
+
 ## [0.5.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.5.2...hyperstack-cli-v0.5.3) (2026-02-20)
 
 

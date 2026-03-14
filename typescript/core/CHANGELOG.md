@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-typescript-v0.5.3...hyperstack-typescript-v0.5.4) (2026-03-14)
+
+
+### Miscellaneous Chores
+
+* **hyperstack-typescript:** Synchronize hyperstack versions
+
 ## [0.5.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-typescript-v0.5.2...hyperstack-typescript-v0.5.3) (2026-02-20)
 
 

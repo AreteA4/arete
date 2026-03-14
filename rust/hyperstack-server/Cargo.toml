@@ -1,6 +1,6 @@
 [package]
 name = "hyperstack-server"
-version = "0.5.3"
+version = "0.5.4"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
@@ -30,7 +30,7 @@ yellowstone-vixen-proto = { workspace = true, features = ["stream"] }
 yellowstone-vixen-yellowstone-grpc-source = { workspace = true }
 
 # Interpreter library
-hyperstack-interpreter = { version = "0.5.3", path = "../../interpreter" }
+hyperstack-interpreter = { version = "0.5.4", path = "../../interpreter" }
 
 # Async utilities
 tokio-util = "0.7"

@@ -1,6 +1,6 @@
 [package]
 name = "hyperstack-sdk"
-version = "0.5.3"
+version = "0.5.4"
 edition.workspace = true
 license = "MIT"
 repository.workspace = true

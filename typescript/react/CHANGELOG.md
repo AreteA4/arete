@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-react-v0.5.3...hyperstack-react-v0.5.4) (2026-03-14)
+
+
+### Miscellaneous Chores
+
+* **hyperstack-react:** Synchronize hyperstack versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-typescript bumped from ^0.5.3 to ^0.5.4
+
 ## [0.5.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-react-v0.5.2...hyperstack-react-v0.5.3) (2026-02-20)
 
 

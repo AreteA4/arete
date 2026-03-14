@@ -1,6 +1,6 @@
 [package]
 name = "hyperstack-interpreter"
-version = "0.5.3"
+version = "0.5.4"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
@@ -28,7 +28,7 @@ tracing = "0.1"
 percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 futures = "0.3"
-hyperstack-macros = { version = "0.5.3", path = "../hyperstack-macros" }
+hyperstack-macros = { version = "0.5.4", path = "../hyperstack-macros" }
 hyperstack-idl = { path = "../hyperstack-idl" }
 
 # OpenTelemetry for distributed tracing and metrics (optional, behind 'otel' feature)
