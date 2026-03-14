@@ -11,8 +11,6 @@
 ### Dependencies
 
 * The following workspace dependencies were updated
-  * devDependencies
-    * hyperstack-typescript bumped from file:../../../typescript/core to 0.5.4
   * peerDependencies
     * hyperstack-react bumped from >=0.5.3 to >=0.5.4
     * hyperstack-typescript bumped from >=0.5.3 to >=0.5.4
