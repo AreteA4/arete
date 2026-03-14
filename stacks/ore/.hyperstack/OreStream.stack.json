@@ -1498,6 +1498,178 @@
           }
         },
         {
+          "name": "ResetEvent",
+          "docs": [],
+          "type": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "disc",
+                "type": "u64"
+              },
+              {
+                "name": "round_id",
+                "type": "u64"
+              },
+              {
+                "name": "start_slot",
+                "type": "u64"
+              },
+              {
+                "name": "end_slot",
+                "type": "u64"
+              },
+              {
+                "name": "winning_square",
+                "type": "u64"
+              },
+              {
+                "name": "top_miner",
+                "type": "publicKey"
+              },
+              {
+                "name": "num_winners",
+                "type": "u64"
+              },
+              {
+                "name": "motherlode",
+                "type": "u64"
+              },
+              {
+                "name": "total_deployed",
+                "type": "u64"
+              },
+              {
+                "name": "total_vaulted",
+                "type": "u64"
+              },
+              {
+                "name": "total_winnings",
+                "type": "u64"
+              },
+              {
+                "name": "total_minted",
+                "type": "u64"
+              },
+              {
+                "name": "ts",
+                "type": "i64"
+              },
+              {
+                "name": "rng",
+                "type": "u64"
+              },
+              {
+                "name": "deployed_winning_square",
+                "type": "u64"
+              }
+            ]
+          }
+        },
+        {
+          "name": "BuryEvent",
+          "docs": [],
+          "type": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "disc",
+                "type": "u64"
+              },
+              {
+                "name": "ore_buried",
+                "type": "u64"
+              },
+              {
+                "name": "ore_shared",
+                "type": "u64"
+              },
+              {
+                "name": "sol_amount",
+                "type": "u64"
+              },
+              {
+                "name": "new_circulating_supply",
+                "type": "u64"
+              },
+              {
+                "name": "ts",
+                "type": "i64"
+              }
+            ]
+          }
+        },
+        {
+          "name": "DeployEvent",
+          "docs": [],
+          "type": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "disc",
+                "type": "u64"
+              },
+              {
+                "name": "authority",
+                "type": "publicKey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              },
+              {
+                "name": "mask",
+                "type": "u64"
+              },
+              {
+                "name": "round_id",
+                "type": "u64"
+              },
+              {
+                "name": "signer",
+                "type": "publicKey"
+              },
+              {
+                "name": "strategy",
+                "type": "u64"
+              },
+              {
+                "name": "total_squares",
+                "type": "u64"
+              },
+              {
+                "name": "ts",
+                "type": "i64"
+              }
+            ]
+          }
+        },
+        {
+          "name": "LiqEvent",
+          "docs": [],
+          "type": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "disc",
+                "type": "u64"
+              },
+              {
+                "name": "sol_amount",
+                "type": "u64"
+              },
+              {
+                "name": "recipient",
+                "type": "publicKey"
+              },
+              {
+                "name": "ts",
+                "type": "i64"
+              }
+            ]
+          }
+        },
+        {
           "name": "Automation",
           "docs": [
             "Automation parameters for automated mining deployments."
@@ -3708,6 +3880,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -3724,15 +3905,6 @@
                   0
                 ]
               ]
-            }
-          }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
             }
           }
         }
@@ -3790,14 +3962,14 @@
                 "pda_field": {
                   "segments": [
                     "accounts",
-                    "treasury"
+                    "entropyVar"
                   ],
                   "offsets": null
                 },
                 "seed_field": {
                   "segments": [
                     "accounts",
-                    "roundNext"
+                    "round"
                   ],
                   "offsets": null
                 },
@@ -4613,7 +4785,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "6656d3208291c8ac7d8fc757727ffd176be3a42fc66624e002623cc0ca840a16",
+      "content_hash": "93f4b9ed6412e15ba1d92475355f5b1d2f5b8b81358ec01e620dbf50ff0b79dd",
       "views": [
         {
           "id": "OreRound/latest",
@@ -5102,6 +5274,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -5118,123 +5299,6 @@
                   0
                 ]
               ]
-            }
-          }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        }
-      ],
-      "instruction_hooks": [
-        {
-          "instruction_type": "ore::DeployIxState",
-          "actions": [
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            },
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            }
-          ],
-          "lookup_by": null
-        },
-        {
-          "instruction_type": "ore::ResetIxState",
-          "actions": [
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "treasury"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "roundNext"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            },
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            },
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "treasury"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "roundNext"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
             }
           }
         }
@@ -5337,7 +5401,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "6940e0c98d4f1b4ecc6592fb4b2fe825950f1205860b47de7723e81e7c921204",
+      "content_hash": "6c304a5351de588793a9394e722ea4870805730d38b3a1782a970400b4fc3f36",
       "views": []
     },
     {
@@ -6662,6 +6726,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -6680,130 +6753,13 @@
               ]
             }
           }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        }
-      ],
-      "instruction_hooks": [
-        {
-          "instruction_type": "ore::DeployIxState",
-          "actions": [
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            },
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            }
-          ],
-          "lookup_by": null
-        },
-        {
-          "instruction_type": "ore::ResetIxState",
-          "actions": [
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "treasury"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "roundNext"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            },
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            },
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "treasury"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "roundNext"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            }
-          }
         }
       ],
       "instruction_hooks": [],
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "cc153e8334a5d6bff0710db82de32f84037aaee14db0eeb7f443209e23f02e71",
+      "content_hash": "f6a0a3a397a148fa34256295b78d8ce504484bb768958fa8593d4cd1b6a3bac7",
       "views": []
     }
   ],
@@ -8911,5 +8867,5 @@
       ]
     }
   ],
-  "content_hash": "e3f5ab05df7fb576313c02f6f942748f9ef597a1df30de66fa7a24a6cfe39f25"
+  "content_hash": "f6e4c04a606dddbd67be4924d7fa529569af4bef53760a7259f5da1914ea2da6"
 }
