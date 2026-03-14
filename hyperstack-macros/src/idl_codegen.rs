@@ -611,6 +611,12 @@ fn generate_event_type(
                 if data.len() < 8 {
                     return Err("Data too short for event discriminator".into());
                 }
+                if data[..8] != Self::DISCRIMINATOR {
+                    return Err(format!(
+                        "Discriminator mismatch: expected {:?}, got {:?}",
+                        Self::DISCRIMINATOR, &data[..8]
+                    ).into());
+                }
                 let mut reader = &data[8..];
                 borsh::BorshDeserialize::deserialize_reader(&mut reader).map_err(|e| e.into())
             }

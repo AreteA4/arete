@@ -565,8 +565,7 @@ pub fn build_handlers_from_sources(
         };
 
         // CPI events (from `::events::`) use "CpiEvent" suffix; instructions use "IxState"
-        let is_cpi_event_for_type = source_type.contains("::events::");
-        let type_suffix = if is_cpi_event_for_type {
+        let type_suffix = if is_cpi_event {
             "CpiEvent"
         } else if is_instruction {
             "IxState"

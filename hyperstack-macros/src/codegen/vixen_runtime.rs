@@ -1896,7 +1896,6 @@ pub fn generate_instruction_handler_impl(
                             }
 
                             let pending_updates = ctx.take_pending_updates();
-                            let hooks_count = hooks.len();
 
                             drop(ctx);
 
