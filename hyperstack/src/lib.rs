@@ -63,6 +63,7 @@ pub mod runtime {
     pub use bs58;
     pub use bytemuck;
     pub use dotenvy;
+    pub use futures;
     pub use hyperstack_interpreter;
     pub use hyperstack_server;
     pub use reqwest;
@@ -70,7 +71,6 @@ pub mod runtime {
     pub use serde_json;
     pub use smallvec;
     pub use tokio;
-    pub use futures;
     pub use tracing;
     pub use yellowstone_vixen;
     pub use yellowstone_vixen_core;
@@ -156,6 +156,10 @@ pub mod runtime {
                             *elem = seq
                                 .next_element()?
                                 .ok_or_else(|| Error::invalid_length(i, &self))?;
+                        }
+                        // Reject oversized sequences to avoid silent data loss
+                        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                            return Err(Error::invalid_length(N + 1, &self));
                         }
                         Ok(arr)
                     }
