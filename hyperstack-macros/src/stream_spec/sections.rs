@@ -652,7 +652,7 @@ pub fn process_nested_struct(
                         }
                     });
 
-                    let resolver = if let Some(ref url_path) = qualified_url {
+                    let resolver = if let Some(ref _url_path) = qualified_url {
                         let method = resolve_attr
                             .method
                             .as_deref()
