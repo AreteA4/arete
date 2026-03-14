@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.5](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-stacks-v0.5.4...hyperstack-stacks-v0.5.5) (2026-03-14)
+
+
+### Bug Fixes
+
+* correct release metadata inconsistencies ([b496e03](https://github.com/HyperTekOrg/hyperstack/commit/b496e039d7c152f62fba457db25d0346aa723799))
+* sync peerDependencies to &gt;=0.5.5 in typescript SDK ([361565a](https://github.com/HyperTekOrg/hyperstack/commit/361565a1026bf2854ba0e6e20c16ed798a089684))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * hyperstack-typescript bumped from file:../../../typescript/core to 0.5.5
+
 ## [0.5.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-stacks-v0.5.3...hyperstack-stacks-v0.5.4) (2026-03-14)
 
 

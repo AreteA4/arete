@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.5](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-react-v0.5.4...hyperstack-react-v0.5.5) (2026-03-14)
+
+
+### Bug Fixes
+
+* Update package-lock for react sdk ([70c3b96](https://github.com/HyperTekOrg/hyperstack/commit/70c3b96ef7433c31dd175061a960a3b752641c01))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-typescript bumped from ^0.5.4 to ^0.5.5
+
 ## [0.5.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-react-v0.5.3...hyperstack-react-v0.5.4) (2026-03-14)
 
 

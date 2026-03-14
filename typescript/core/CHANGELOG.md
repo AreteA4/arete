@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.5](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-typescript-v0.5.4...hyperstack-typescript-v0.5.5) (2026-03-14)
+
+
+### Features
+
+* Add license to typescript core ([22628a1](https://github.com/HyperTekOrg/hyperstack/commit/22628a19355144eba8e0014f098cd8b1c533c98e))
+
 ## [0.5.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-typescript-v0.5.3...hyperstack-typescript-v0.5.4) (2026-03-14)
 
 

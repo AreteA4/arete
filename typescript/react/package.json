@@ -1,6 +1,6 @@
 {
   "name": "hyperstack-react",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "type": "module",
   "description": "React SDK for the Hyperstack Solana developer platform",
   "main": "dist/index.js",
@@ -42,7 +42,7 @@
     "zustand": "^4.0.0 || ^5.0.0"
   },
   "dependencies": {
-    "hyperstack-typescript": "^0.5.4",
+    "hyperstack-typescript": "^0.5.5",
     "zustand": "^4.0.0"
   },
   "devDependencies": {
