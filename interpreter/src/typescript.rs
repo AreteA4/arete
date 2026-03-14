@@ -1700,10 +1700,13 @@ fn extract_emitted_enum_type_names(interfaces: &str, idl: Option<&IdlSnapshot>) 
         .unwrap_or_default();
 
     // Look for emitted enum schemas in the interfaces
-    // Pattern: export const DirectionKindSchema = z.enum([...])
+    // Pattern: export const DirectionKindSchema = z.enum([...]) or z.string() for empty variants
     for line in interfaces.lines() {
         if let Some(start) = line.find("export const ") {
-            if let Some(end) = line.find("Schema = z.enum") {
+            let end = line
+                .find("Schema = z.enum")
+                .or_else(|| line.find("Schema = z.string()"));
+            if let Some(end) = end {
                 let schema_name = line[start + 13..end].trim();
                 // Check if this schema name corresponds to an IDL enum type
                 if idl_enum_names.contains(schema_name) {
