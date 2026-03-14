@@ -201,9 +201,10 @@ fn build_resolver_specs(resolve_specs: &[parse::ResolveSpec]) -> Vec<ResolverSpe
             schedule_key,
         );
 
-        let condition = spec.condition.as_deref().map(|s| {
-            parse_resolver_condition(s).unwrap_or_else(|e| panic!("{}", e))
-        });
+        let condition = spec
+            .condition
+            .as_deref()
+            .map(|s| parse_resolver_condition(s).unwrap_or_else(|e| panic!("{}", e)));
 
         let entry = grouped.entry(key).or_insert_with(|| ResolverSpec {
             resolver: spec.resolver.clone(),
@@ -295,10 +296,13 @@ fn resolver_type_key(resolver: &ResolverType) -> String {
         ResolverType::Url(config) => match &config.url_source {
             crate::ast::UrlSource::FieldPath(path) => format!("url:{}", path),
             crate::ast::UrlSource::Template(parts) => {
-                let key: String = parts.iter().map(|p| match p {
-                    crate::ast::UrlTemplatePart::Literal(s) => s.clone(),
-                    crate::ast::UrlTemplatePart::FieldRef(f) => format!("{{{}}}", f),
-                }).collect();
+                let key: String = parts
+                    .iter()
+                    .map(|p| match p {
+                        crate::ast::UrlTemplatePart::Literal(s) => s.clone(),
+                        crate::ast::UrlTemplatePart::FieldRef(f) => format!("{{{}}}", f),
+                    })
+                    .collect();
                 format!("url:{}", key)
             }
         },
@@ -674,7 +678,6 @@ fn build_source_handler(
     // - CPI events (from `::events::` submodule) use "CpiEvent"
     // - Instructions use "IxState"
     // - Account state uses "State"
-    let is_cpi_event = source_type.contains("::events::");
     let type_suffix = if is_cpi_event {
         "CpiEvent"
     } else if is_instruction {
