@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.5](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.5.4...hyperstack-cli-v0.5.5) (2026-03-14)
+
+
+### Bug Fixes
+
+* Add version constraint to hyperstack-idl dependency ([917bf5a](https://github.com/HyperTekOrg/hyperstack/commit/917bf5abe6242048ba9f7af0055d999ccfcb8692))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.5.4 to 0.5.5
+    * hyperstack-idl bumped from 0.1 to 0.1.2
+
 ## [0.5.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.5.3...hyperstack-cli-v0.5.4) (2026-03-14)
 
 

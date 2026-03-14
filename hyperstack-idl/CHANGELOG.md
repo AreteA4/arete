@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-idl-v0.1.1...hyperstack-idl-v0.1.2) (2026-03-14)
+
+
+### Features
+
+* Bump hyperstack idl version ([857f819](https://github.com/HyperTekOrg/hyperstack/commit/857f819ad97dbb8296e33765094d42a452aaf91f))
+
 ## [0.1.1](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-idl-v0.1.0...hyperstack-idl-v0.1.1) (2026-03-14)
 
 
