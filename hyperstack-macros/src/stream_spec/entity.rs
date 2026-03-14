@@ -18,6 +18,8 @@ use std::collections::{HashMap, HashSet};
 use quote::{format_ident, quote};
 use syn::{Fields, GenericArgument, ItemStruct, PathArguments, Type};
 
+use super::resolve_snapshot_source;
+
 use crate::ast::{
     EntitySection, FieldTypeInfo, HttpMethod, ResolverHook, ResolverType, UrlResolverConfig,
     UrlSource, UrlTemplatePart,
@@ -328,29 +330,8 @@ pub fn process_entity_struct_with_idl(
                         let source_type_str = path_to_string(&acct_path);
 
                         // Determine source field name and whether this is a whole-source capture
-                        // or a single-field extraction based on the `field` parameter
                         let (source_field_name, is_whole_source) =
-                            if let Some(ref field_ident) = snapshot_attr.field {
-                                // Single field extraction: field = token_mint_0
-                                (field_ident.to_string(), false)
-                            } else if !snapshot_attr.field_transforms.is_empty() {
-                                // Whole source with transforms
-                                (
-                                    format!(
-                                        "__snapshot_with_transforms:{}",
-                                        snapshot_attr
-                                            .field_transforms
-                                            .iter()
-                                            .map(|(k, v)| format!("{}={}", k, v))
-                                            .collect::<Vec<_>>()
-                                            .join(",")
-                                    ),
-                                    true,
-                                )
-                            } else {
-                                // Whole source capture (no field, no transforms)
-                                (String::new(), true)
-                            };
+                            resolve_snapshot_source(&snapshot_attr);
 
                         let map_attr = parse::MapAttribute {
                             source_type_path: acct_path,

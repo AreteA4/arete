@@ -50,3 +50,31 @@ pub use module::process_module;
 
 // Re-export proto struct processing (used by lib.rs)
 pub use proto_struct::process_struct_with_context;
+
+/// Resolves the source field name and whether this is a whole-source capture
+/// based on the `field` and `field_transforms` parameters.
+pub fn resolve_snapshot_source(
+    snapshot_attr: &crate::parse::attributes::CaptureAttribute,
+) -> (String, bool) {
+    if let Some(ref field_ident) = snapshot_attr.field {
+        // Single field extraction: field = token_mint_0
+        (field_ident.to_string(), false)
+    } else if !snapshot_attr.field_transforms.is_empty() {
+        // Whole source with transforms
+        (
+            format!(
+                "__snapshot_with_transforms:{}",
+                snapshot_attr
+                    .field_transforms
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            true,
+        )
+    } else {
+        // Whole source capture (no field, no transforms)
+        (String::new(), true)
+    }
+}
