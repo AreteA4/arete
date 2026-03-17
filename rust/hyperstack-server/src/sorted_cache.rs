@@ -229,6 +229,7 @@ impl SortedViewCache {
         self.cache_dirty = true;
 
         let position = self.find_position(&entity_key);
+
         UpsertResult::Inserted { position }
     }
 

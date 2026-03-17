@@ -838,6 +838,7 @@ async fn attach_derived_view_subscription_otel(
                                             data: data.clone(),
                                             append: vec![],
                                         };
+                                        
                                         if let Ok(json) = serde_json::to_vec(&frame) {
                                             let payload = Arc::new(Bytes::from(json));
                                             if client_mgr.send_to_client(client_id, payload).is_err() {

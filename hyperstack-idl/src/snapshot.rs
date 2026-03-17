@@ -2,10 +2,12 @@
 
 use serde::{de::Error, Deserialize, Deserializer, Serialize};
 
+use crate::types::SteelDiscriminant;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdlSnapshot {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "address")]
     pub program_id: Option<String>,
     pub version: String,
     pub accounts: Vec<IdlAccountSnapshot>,
@@ -32,16 +34,49 @@ pub struct IdlAccountSnapshot {
     pub docs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serialization: Option<IdlSerializationSnapshot>,
+    /// Account fields - populated from inline type definition
+    #[serde(default)]
+    pub fields: Vec<IdlFieldSnapshot>,
+    /// Inline type definition (for Steel format with type.fields structure)
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub type_def: Option<IdlInlineTypeDef>,
+}
+
+/// Inline type definition for account fields (Steel format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdlInlineTypeDef {
+    pub kind: String,
+    pub fields: Vec<IdlFieldSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdlInstructionSnapshot {
     pub name: String,
+    #[serde(default)]
     pub discriminator: Vec<u8>,
+    #[serde(default)]
+    pub discriminant: Option<SteelDiscriminant>,
     #[serde(default)]
     pub docs: Vec<String>,
     pub accounts: Vec<IdlInstructionAccountSnapshot>,
     pub args: Vec<IdlFieldSnapshot>,
+}
+
+impl IdlInstructionSnapshot {
+    /// Get the computed 8-byte discriminator.
+    /// Returns the explicit discriminator if present, otherwise computes from discriminant.
+    pub fn get_discriminator(&self) -> Vec<u8> {
+        if !self.discriminator.is_empty() {
+            return self.discriminator.clone();
+        }
+
+        if let Some(disc) = &self.discriminant {
+            let value = disc.value as u8;
+            return vec![value, 0, 0, 0, 0, 0, 0, 0];
+        }
+
+        crate::discriminator::anchor_discriminator(&format!("global:{}", self.name))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +247,7 @@ mod tests {
             instructions: vec![IdlInstructionSnapshot {
                 name: "example_instruction".to_string(),
                 discriminator: vec![8, 7, 6, 5, 4, 3, 2, 1],
+                discriminant: None,
                 docs: vec!["Example instruction".to_string()],
                 accounts: vec![IdlInstructionAccountSnapshot {
                     name: "payer".to_string(),

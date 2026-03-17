@@ -1027,23 +1027,12 @@ fn generate_computed_fields_hook(
 
             quote! {
                 // Evaluate: #field_name
-                hyperstack::runtime::tracing::info!(
-                    section = #section_str,
-                    field = #field_str,
-                    "[COMPUTED] Evaluating computed field"
-                );
                 let computed_value = {
                     // state is the full entity JSON state (for cross-section references)
                     let state = &section_parent_state;
                     #expr_code
                 };
                 let serialized_value = hyperstack::runtime::serde_json::to_value(&computed_value)?;
-                hyperstack::runtime::tracing::info!(
-                    section = #section_str,
-                    field = #field_str,
-                    value = %serialized_value,
-                    "[COMPUTED] Computed field result"
-                );
                 // Update cache so dependent fields can read this value
                 computed_cache.insert(#field_str.to_string(), serialized_value.clone());
                 section_obj.insert(#field_str.to_string(), serialized_value);

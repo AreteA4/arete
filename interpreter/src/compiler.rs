@@ -1243,6 +1243,16 @@ impl<S> TypedCompiler<S> {
                     lookup_value: lookup_reg,
                     dest: result_reg,
                 });
+                // CRITICAL: For Lookup resolution, we ONLY use the lookup result.
+                // If the lookup fails (result_reg is null), the mutation will be skipped.
+                // We do NOT fall back to __resolved_primary_key or the raw lookup value,
+                // because that would create a separate entity with the wrong key.
+                // The resolver-provided key (e.g., PDA address) is only used as the lookup input,
+                // NOT as the entity key. The entity key must come from the lookup index.
+                ops.push(OpCode::CopyRegister {
+                    source: result_reg,
+                    dest: key_reg,
+                });
                 // NOTE: We intentionally do NOT fall back to lookup_reg when LookupIndex returns null.
                 // If the lookup fails (because the RoundState account hasn't been processed yet),
                 // the result_reg will remain null, and the mutation will be skipped.

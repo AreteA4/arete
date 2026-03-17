@@ -230,6 +230,21 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
                     discriminator: acc.get_discriminator(),
                     docs: acc.docs.clone(),
                     serialization,
+                    // Extract fields from inline type definition if present
+                    fields: acc.type_def.as_ref().map_or_else(
+                        Vec::new,
+                        |type_def| match type_def {
+                            idl_parser::IdlTypeDefKind::Struct { fields, .. } => fields
+                                .iter()
+                                .map(|f| IdlFieldSnapshot {
+                                    name: f.name.clone(),
+                                    type_: convert_idl_type(&f.type_),
+                                })
+                                .collect(),
+                            _ => Vec::new(),
+                        },
+                    ),
+                    type_def: None, // Fields are extracted above, no need to keep type_def
                 }
             })
             .collect(),
@@ -239,6 +254,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
             .map(|instr| IdlInstructionSnapshot {
                 name: instr.name.clone(),
                 discriminator: instr.get_discriminator(),
+                discriminant: None,
                 docs: instr.docs.clone(),
                 accounts: instr
                     .accounts

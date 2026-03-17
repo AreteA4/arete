@@ -451,13 +451,16 @@ pub fn generate_computed_expr_code(expr: &ComputedExpr) -> TokenStream {
                     let param_ident = format_ident!("{}", param);
 
                     if contains_resolver_computed(body) {
+                        // For closures with resolver calls, pass the element as JSON value
+                        // and let the resolver extract what it needs
                         let body_code = generate_option_safe_expr_code(body);
                         return quote! {
                             #inner.as_ref().and_then(|v| {
                                 v.as_array().map(|arr| {
                                     arr.iter()
                                         .filter_map(|elem| {
-                                            let #param_ident = elem.as_f64()?;
+                                            // Pass element as serde_json::Value for resolvers
+                                            let #param_ident = elem;
                                             #body_code
                                         })
                                         .collect::<Vec<_>>()
@@ -762,17 +765,14 @@ pub fn generate_computed_expr_code_with_cache(
                     return quote! {
                         {
                             let inner_result = #inner_code;
-                            hyperstack::runtime::tracing::debug!(inner = ?inner_result, "[COMPUTED] Inner value before map");
                             // Handle both arrays (Vec<u64>) and single values (u64)
                             let map_result: Option<hyperstack::runtime::serde_json::Value> = inner_result.and_then(|v| {
                                 if let Some(arr) = v.as_array() {
                                     // Handle array: map over each element
-                                    hyperstack::runtime::tracing::debug!(array_len = arr.len(), "[COMPUTED] Mapping over array");
                                     let mapped: Vec<_> = arr
                                         .iter()
                                         .filter_map(|elem| {
                                             elem.as_u64().and_then(|#param_ident| {
-                                                hyperstack::runtime::tracing::debug!(elem = #param_ident, "[COMPUTED] Processing array element");
                                                 let result = #body_code;
                                                 hyperstack::runtime::serde_json::to_value(result).ok()
                                             })
@@ -782,13 +782,11 @@ pub fn generate_computed_expr_code_with_cache(
                                 } else {
                                     // Handle single value
                                     v.as_u64().and_then(|#param_ident| {
-                                        hyperstack::runtime::tracing::debug!(value = #param_ident, "[COMPUTED] Processing single value");
                                         let result = #body_code;
                                         hyperstack::runtime::serde_json::to_value(result).ok()
                                     })
                                 }
                             });
-                            hyperstack::runtime::tracing::debug!(result = ?map_result, "[COMPUTED] Map operation result");
                             map_result
                         }
                     };
