@@ -7,8 +7,8 @@ import { ConnectionBadge } from './ConnectionBadge';
 import { ThemeToggle } from './ThemeToggle';
 
 export function OreDashboard() {
-  const { views, isConnected } = useHyperstack(ORE_STREAM_STACK, { url: 'http://localhost:8878' });
-  const { data: latestRound } = views.OreRound.latest.useOne();
+  const { views, isConnected } = useHyperstack(ORE_STREAM_STACK);
+  const { data: latestRound } = views.OreRound.latest.useOne({ schema: ValidatedOreRoundSchema });
   const { data: treasuryData } = views.OreTreasury.list.useOne();
 
   return (
