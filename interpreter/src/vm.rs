@@ -905,7 +905,21 @@ impl StateTable {
         let dominated = self
             .version_tracker
             .get(primary_key, event_type)
-            .map(|(last_slot, last_version)| (slot, ordering_value) <= (last_slot, last_version))
+            .map(|(last_slot, last_version)| {
+                let is_stale = (slot, ordering_value) <= (last_slot, last_version);
+                if is_stale && event_type == "ore::RoundState" {
+                    tracing::debug!(
+                        entity_key = %primary_key,
+                        event_type = %event_type,
+                        current_slot = slot,
+                        current_write_version = ordering_value,
+                        last_slot = last_slot,
+                        last_write_version = last_version,
+                        "RoundState recency check: stale update detected"
+                    );
+                }
+                is_stale
+            })
             .unwrap_or(false);
 
         if dominated {
@@ -1144,15 +1158,6 @@ impl VmContext {
             let mut dirty_tracker = DirtyTracker::new();
             let should_emit = |path: &str| !entity_bytecode.non_emitted_fields.contains(path);
 
-            tracing::info!(
-                entity = %target.entity_name,
-                primary_key = %target.primary_key,
-                cache_key = %cache_key,
-                extract_targets = ?target.extracts.iter().map(|e| &e.target_path).collect::<Vec<_>>(),
-                resolved_value = %resolved_value,
-                "[RESOLVER] Applying resolved value to entity state"
-            );
-
             Self::apply_resolver_extractions_to_value(
                 &mut entity_state,
                 &resolved_value,
@@ -1167,13 +1172,6 @@ impl VmContext {
                     .iter()
                     .map(|path| Self::get_value_at_path(&entity_state, path))
                     .collect();
-
-                tracing::debug!(
-                    entity = %target.entity_name,
-                    primary_key = %target.primary_key,
-                    computed_paths = ?entity_bytecode.computed_paths,
-                    "[COMPUTED] Evaluating computed fields after resolver"
-                );
 
                 let context_slot = self.current_context.as_ref().and_then(|c| c.slot);
                 let context_timestamp = self
@@ -1197,29 +1195,10 @@ impl VmContext {
                         let changed = new_value != *old_value;
                         let will_emit = should_emit(path);
 
-                        tracing::debug!(
-                            entity = %target.entity_name,
-                            primary_key = %target.primary_key,
-                            field_path = %path,
-                            old_value = ?old_value,
-                            new_value = ?new_value,
-                            changed = %changed,
-                            will_emit = %will_emit,
-                            "[COMPUTED] Checking computed field change"
-                        );
-
                         if changed && will_emit {
                             dirty_tracker.mark_replaced(path);
                             changed_fields.push(path.clone());
                         }
-                    }
-                    if !changed_fields.is_empty() {
-                        tracing::info!(
-                            entity = %target.entity_name,
-                            primary_key = %target.primary_key,
-                            changed_fields = ?changed_fields,
-                            "[COMPUTED] Computed fields changed after resolver"
-                        );
                     }
                 }
             }
@@ -1227,20 +1206,8 @@ impl VmContext {
             state.insert_with_eviction(target.primary_key.clone(), entity_state.clone());
 
             if dirty_tracker.is_empty() {
-                tracing::debug!(
-                    entity = %target.entity_name,
-                    primary_key = %target.primary_key,
-                    "[RESOLVER] No dirty fields after resolver result, skipping mutation"
-                );
                 continue;
             }
-
-            tracing::info!(
-                entity = %target.entity_name,
-                primary_key = %target.primary_key,
-                dirty_fields = ?dirty_tracker.iter().collect::<Vec<_>>(),
-                "[RESOLVER] Resolver result applied, emitting mutation"
-            );
 
             let patch = Self::build_partial_state_from_value(&entity_state, &dirty_tracker)?;
 
@@ -1271,18 +1238,6 @@ impl VmContext {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-
-        // Log resolver request details
-        let current_slot = self.current_context.as_ref().and_then(|ctx| ctx.slot);
-        tracing::info!(
-            resolver_type = ?resolver,
-            cache_key = %cache_key,
-            input = %input,
-            entity = %target.entity_name,
-            primary_key = %target.primary_key,
-            current_slot = ?current_slot,
-            "[RESOLVER] Enqueueing resolver request"
-        );
 
         self.resolver_pending.insert(
             cache_key.clone(),
@@ -2117,19 +2072,28 @@ impl VmContext {
                     if !key_value.is_null() {
                         if let Some(ctx) = &self.current_context {
                             // Account updates: use recency check to discard stale updates
+                            // IMPORTANT: Use account address (PDA) as the key, not entity key,
+                            // because multiple accounts can update the same entity and each
+                            // has its own independent write_version
                             if ctx.is_account_update() {
                                 if let (Some(slot), Some(write_version)) =
                                     (ctx.slot, ctx.write_version)
                                 {
+                                    // Get account address from event_value for proper tracking
+                                    let account_address = event_value
+                                        .get("__account_address")
+                                        .cloned()
+                                        .unwrap_or_else(|| key_value.clone());
+
                                     if !state.is_fresh_update(
-                                        &key_value,
+                                        &account_address,
                                         event_type,
                                         slot,
                                         write_version,
                                     ) {
                                         self.add_warning(format!(
-                                            "Stale account update skipped: slot={}, write_version={}",
-                                            slot, write_version
+                                            "Stale account update skipped: slot={}, write_version={}, account={}",
+                                            slot, write_version, account_address
                                         ));
                                         return Ok(Vec::new());
                                     }
@@ -2834,14 +2798,6 @@ impl VmContext {
                         "unknown".to_string()
                     };
 
-                    tracing::info!(
-                        entity = %entity_name,
-                        trigger = %trigger_info,
-                        resolver = ?resolver,
-                        schedule_at = ?schedule_at,
-                        "[RESOLVER] QueueResolver opcode triggered by event"
-                    );
-
                     // Skip resolvers for reprocessed cached data from PDA mapping changes.
                     // Stale data can carry wrong field values (e.g. old entropy_value) and
                     // wrong schedule_at slots that would lock in incorrect results via SetOnce.
@@ -2851,10 +2807,6 @@ impl VmContext {
                         .map(|c| c.skip_resolvers)
                         .unwrap_or(false)
                     {
-                        tracing::info!(
-                            entity = %entity_name,
-                            "[RESOLVER] Skipping resolver: context is reprocessed cached data"
-                        );
                         pc += 1;
                         continue;
                     }
@@ -2866,23 +2818,6 @@ impl VmContext {
                                 .unwrap_or(Value::Null);
                         let condition_met =
                             self.evaluate_comparison(&field_val, &cond.op, &cond.value)?;
-
-                        // Get full state snapshot for debugging
-                        let state_json =
-                            serde_json::to_string(&self.registers[*state]).unwrap_or_default();
-                        let has_entropy = state_json.contains("entropy");
-                        let has_entropy_value = state_json.contains("entropy_value");
-
-                        tracing::info!(
-                            entity = %entity_name,
-                            condition_field = %cond.field_path,
-                            condition_met = condition_met,
-                            field_value = ?field_val,
-                            has_entropy_section = has_entropy,
-                            has_entropy_value_field = has_entropy_value,
-                            state_size = state_json.len(),
-                            "[RESOLVER] Evaluating resolver condition"
-                        );
 
                         if !condition_met {
                             pc += 1;
@@ -2905,15 +2840,6 @@ impl VmContext {
                                 if current_slot < target_slot {
                                     let key_value = &self.registers[*key];
                                     if !key_value.is_null() {
-                                        tracing::info!(
-                                            entity = %entity_name,
-                                            primary_key = %key_value,
-                                            current_slot = current_slot,
-                                            target_slot = target_slot,
-                                            slots_until_fire = target_slot - current_slot,
-                                            schedule_at_path = %schedule_path,
-                                            "[RESOLVER] Scheduling deferred resolver"
-                                        );
                                         self.scheduled_callbacks.push((
                                             target_slot,
                                             ScheduledCallback {
@@ -2930,36 +2856,16 @@ impl VmContext {
                                                 retry_count: 0,
                                             },
                                         ));
-                                    } else {
-                                        tracing::warn!(
-                                            entity = %entity_name,
-                                            current_slot = current_slot,
-                                            target_slot = target_slot,
-                                            "[RESOLVER] Cannot schedule deferred resolver: primary key is null"
-                                        );
                                     }
                                     pc += 1;
                                     continue;
                                 }
                                 // current_slot >= target_slot: fall through to immediate resolution
-                                tracing::info!(
-                                    entity = %entity_name,
-                                    primary_key = %self.registers[*key],
-                                    current_slot = current_slot,
-                                    target_slot = target_slot,
-                                    "[RESOLVER] schedule_at slot already passed, falling through to immediate execution"
-                                );
                             }
                             None => {
                                 // schedule_at path is missing or value is not a u64 —
                                 // skip resolver entirely rather than executing immediately,
                                 // since the state likely hasn't been fully populated yet.
-                                tracing::warn!(
-                                    schedule_at_path = %schedule_path,
-                                    entity = %entity_name,
-                                    "schedule_at field path is missing or not a valid u64 in state; \
-                                     skipping resolver (state may not be fully populated yet)"
-                                );
                                 pc += 1;
                                 continue;
                             }
@@ -2982,16 +2888,6 @@ impl VmContext {
                         let key_value = &self.registers[*key];
 
                         if input.is_null() || key_value.is_null() {
-                            tracing::warn!(
-                                entity = %entity_name,
-                                resolver = ?resolver,
-                                input_path = %input_path.as_deref().unwrap_or("<literal>"),
-                                input_is_null = input.is_null(),
-                                key_is_null = key_value.is_null(),
-                                input = ?input,
-                                key = ?key_value,
-                                "Resolver skipped: null input or key"
-                            );
                             pc += 1;
                             continue;
                         }
@@ -3010,12 +2906,6 @@ impl VmContext {
                                 }
                             })
                         {
-                            tracing::info!(
-                                entity = %entity_name,
-                                primary_key = %self.registers[*key],
-                                extract_targets = ?extracts.iter().map(|e| &e.target_path).collect::<Vec<_>>(),
-                                "[RESOLVER] SetOnce guard: all extract targets already populated, skipping resolver"
-                            );
                             pc += 1;
                             continue;
                         }
@@ -3041,14 +2931,6 @@ impl VmContext {
                                 extracts: extracts.clone(),
                             };
 
-                            tracing::info!(
-                                entity = %entity_name,
-                                trigger = %trigger_info,
-                                cache_key = %cache_key,
-                                input = ?input,
-                                "[RESOLVER] Queueing immediate resolver request"
-                            );
-
                             self.enqueue_resolver_request(
                                 cache_key,
                                 resolver.clone(),
@@ -3057,13 +2939,6 @@ impl VmContext {
                             );
                         }
                     } else {
-                        tracing::warn!(
-                            entity = %entity_name,
-                            resolver = ?resolver,
-                            input_path = %input_path.as_deref().unwrap_or("<literal>"),
-                            state = ?self.registers[*state],
-                            "Resolver skipped: input path not found in state"
-                        );
                     }
 
                     pc += 1;

@@ -58,26 +58,10 @@ impl SlotScheduler {
             total_count += callbacks.len();
             for cb in callbacks {
                 let dedup_key = Self::dedup_key(&cb);
-                tracing::info!(
-                    current_slot = current_slot,
-                    scheduled_slot = slot,
-                    entity = %cb.entity_name,
-                    primary_key = %cb.primary_key,
-                    resolver = ?cb.resolver,
-                    "[RESOLVER] Scheduled callback firing"
-                );
                 self.registered.remove(&dedup_key);
                 self.slot_index.remove(&dedup_key);
                 result.push(cb);
             }
-        }
-        if total_count > 0 {
-            tracing::info!(
-                current_slot = current_slot,
-                count = total_count,
-                pending = self.pending_count(),
-                "[RESOLVER] Total scheduled callbacks fired for current slot"
-            );
         }
         result
     }

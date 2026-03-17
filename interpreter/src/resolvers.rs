@@ -697,26 +697,7 @@ pub async fn resolve_url_batch(
         .map(|v| (v.url.clone(), v.method.clone()))
         .collect();
 
-    // Log all URLs being fetched
-    for (url, method) in &batch_input {
-        tracing::info!(
-            url = %url,
-            method = ?method,
-            "[RESOLVER] Fetching URL"
-        );
-    }
-
     let results = url_client.resolve_batch(&batch_input).await;
-
-    // Log results summary
-    let success_count = results.len();
-    let fail_count = batch_input.len() - success_count;
-    tracing::info!(
-        success = success_count,
-        failed = fail_count,
-        total = batch_input.len(),
-        "[RESOLVER] URL batch fetch completed"
-    );
 
     // Apply results to VM state, requeue anything that didn't resolve
     let mut vm = vm.lock().unwrap_or_else(|e| e.into_inner());
@@ -726,19 +707,8 @@ pub async fn resolve_url_batch(
     for entry in valid {
         match results.get(&entry.url) {
             Some(resolved_value) => {
-                tracing::info!(
-                    url = %entry.url,
-                    cache_key = %entry.request.cache_key,
-                    response = %resolved_value,
-                    "[RESOLVER] Applying resolver result to state"
-                );
                 match vm.apply_resolver_result(bytecode, &entry.request.cache_key, resolved_value.clone()) {
                     Ok(mut new_mutations) => {
-                        tracing::info!(
-                            url = %entry.url,
-                            mutation_count = new_mutations.len(),
-                            "[RESOLVER] Successfully applied resolver result"
-                        );
                         mutations.append(&mut new_mutations)
                     }
                     Err(err) => {

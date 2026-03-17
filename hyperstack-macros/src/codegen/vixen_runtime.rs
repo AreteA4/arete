@@ -194,15 +194,6 @@ fn generate_slot_scheduler_task() -> TokenStream {
 
                             let cache_key = format!("scheduled:{}:{}:{}", callback.entity_name, callback.primary_key, url);
 
-                            hyperstack::runtime::tracing::info!(
-                                current_slot = current_slot,
-                                entity = %callback.entity_name,
-                                primary_key = %callback.primary_key,
-                                url = %url,
-                                cache_key = %cache_key,
-                                "[RESOLVER] Executing scheduled URL resolver"
-                            );
-
                             // IMPORTANT: enqueue + take must stay inside the same lock guard.
                             // Splitting them risks lost or duplicated requests during reconnects.
                             let requests = {
@@ -228,14 +219,6 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                 &url_client,
                                 requests,
                             ).await;
-
-                            hyperstack::runtime::tracing::info!(
-                                current_slot = current_slot,
-                                entity = %callback.entity_name,
-                                primary_key = %callback.primary_key,
-                                mutation_count = url_mutations.len(),
-                                "[RESOLVER] Scheduled URL resolver completed"
-                            );
 
                             if url_mutations.is_empty() {
                                 if callback.retry_count < MAX_RETRIES {
@@ -1017,30 +1000,7 @@ pub fn generate_vm_handler(
                 if !scheduled_callbacks.is_empty() {
                     let mut scheduler = self.slot_scheduler.lock().unwrap_or_else(|e| e.into_inner());
                     for (target_slot, callback) in scheduled_callbacks {
-                        hyperstack::runtime::tracing::info!(
-                            event_type = %event_type,
-                            account = %account_address,
-                            slot = slot,
-                            target_slot = target_slot,
-                            entity = %callback.entity_name,
-                            primary_key = %callback.primary_key,
-                            "[RESOLVER] Scheduled callback registered for future slot"
-                        );
                         scheduler.register(target_slot, callback);
-                    }
-                }
-
-                // Log resolver requests being created
-                if !resolver_requests.is_empty() {
-                    for req in &resolver_requests {
-                        hyperstack::runtime::tracing::info!(
-                            event_type = %event_type,
-                            account = %account_address,
-                            slot = slot,
-                            resolver = ?req.resolver,
-                            input = %req.input,
-                            "[RESOLVER] Resolver request created from account update"
-                        );
                     }
                 }
 
