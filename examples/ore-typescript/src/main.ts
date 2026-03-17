@@ -15,7 +15,6 @@ import {
 // const OreTreasuryWithIdSchema = OreTreasurySchema.extend({
 //   id: OreTreasuryIdSchema.required(),
 // });
-//
 // type OreRoundWithId = z.infer<typeof OreRoundWithIdSchema>;
 // type OreTreasuryWithId = z.infer<typeof OreTreasuryWithIdSchema>;
 type OreRoundWithId = any;
@@ -56,18 +55,17 @@ async function main() {
       // printRound(round);
     }
   };
-  await streamRounds();
 
-  // const streamTreasury = async () => {
-  //   for await (const treasury of hs.views.OreTreasury.list.use({
-  //     take: 1,
-  //     schema: OreTreasuryWithIdSchema,
-  //   })) {
-  //     printTreasury(treasury);
-  //   }
-  // };
-  //
-  // await Promise.all([streamRounds(), streamTreasury()]);
+  const streamTreasury = async () => {
+    for await (const treasury of hs.views.OreTreasury.list.use({
+      take: 1,
+      // schema: OreTreasuryWithIdSchema,
+    })) {
+      printTreasury(treasury);
+    }
+  };
+
+  await Promise.all([streamRounds(), streamTreasury()]);
 }
 
 main().catch((err) => {
