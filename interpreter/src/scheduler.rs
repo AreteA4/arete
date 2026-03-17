@@ -53,13 +53,31 @@ impl SlotScheduler {
         let due = std::mem::replace(&mut self.callbacks, future);
 
         let mut result = Vec::new();
-        for (_slot, callbacks) in due {
+        let mut total_count = 0;
+        for (slot, callbacks) in due {
+            total_count += callbacks.len();
             for cb in callbacks {
                 let dedup_key = Self::dedup_key(&cb);
+                tracing::info!(
+                    current_slot = current_slot,
+                    scheduled_slot = slot,
+                    entity = %cb.entity_name,
+                    primary_key = %cb.primary_key,
+                    resolver = ?cb.resolver,
+                    "[RESOLVER] Scheduled callback firing"
+                );
                 self.registered.remove(&dedup_key);
                 self.slot_index.remove(&dedup_key);
                 result.push(cb);
             }
+        }
+        if total_count > 0 {
+            tracing::info!(
+                current_slot = current_slot,
+                count = total_count,
+                pending = self.pending_count(),
+                "[RESOLVER] Total scheduled callbacks fired for current slot"
+            );
         }
         result
     }
@@ -74,11 +92,17 @@ impl SlotScheduler {
 
     fn dedup_key(cb: &ScheduledCallback) -> DedupKey {
         let resolver_key = serde_json::to_string(&cb.resolver).unwrap_or_default();
-        let condition_key = cb.condition.as_ref()
+        let condition_key = cb
+            .condition
+            .as_ref()
             .map(|c| serde_json::to_string(c).unwrap_or_default())
             .unwrap_or_default();
         let pk_key = cb.primary_key.to_string();
-        (cb.entity_name.clone(), pk_key, format!("{}:{}", resolver_key, condition_key))
+        (
+            cb.entity_name.clone(),
+            pk_key,
+            format!("{}:{}", resolver_key, condition_key),
+        )
     }
 }
 
@@ -92,7 +116,11 @@ pub fn evaluate_condition(condition: &ResolverCondition, state: &Value) -> bool 
 /// parameter positions. Query strings permit additional chars (`!`, `$`, `'`, `(`, `)`, `+`, etc.)
 /// that will be over-encoded. This is safe for the current numeric/base58 use-cases but may need
 /// a path-vs-query split if general-purpose URL templates are needed.
-const URL_SEGMENT_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_').remove(b'~');
+const URL_SEGMENT_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 
 pub fn build_url_from_template(template: &[UrlTemplatePart], state: &Value) -> Option<String> {
     let mut url = String::new();
@@ -130,10 +158,34 @@ fn evaluate_comparison(field_value: &Value, op: &ComparisonOp, condition_value: 
     match op {
         ComparisonOp::Equal => field_value == condition_value,
         ComparisonOp::NotEqual => field_value != condition_value,
-        ComparisonOp::GreaterThan => compare_numeric(field_value, condition_value, |a, b| a > b, |a, b| a > b, |a, b| a > b),
-        ComparisonOp::GreaterThanOrEqual => compare_numeric(field_value, condition_value, |a, b| a >= b, |a, b| a >= b, |a, b| a >= b),
-        ComparisonOp::LessThan => compare_numeric(field_value, condition_value, |a, b| a < b, |a, b| a < b, |a, b| a < b),
-        ComparisonOp::LessThanOrEqual => compare_numeric(field_value, condition_value, |a, b| a <= b, |a, b| a <= b, |a, b| a <= b),
+        ComparisonOp::GreaterThan => compare_numeric(
+            field_value,
+            condition_value,
+            |a, b| a > b,
+            |a, b| a > b,
+            |a, b| a > b,
+        ),
+        ComparisonOp::GreaterThanOrEqual => compare_numeric(
+            field_value,
+            condition_value,
+            |a, b| a >= b,
+            |a, b| a >= b,
+            |a, b| a >= b,
+        ),
+        ComparisonOp::LessThan => compare_numeric(
+            field_value,
+            condition_value,
+            |a, b| a < b,
+            |a, b| a < b,
+            |a, b| a < b,
+        ),
+        ComparisonOp::LessThanOrEqual => compare_numeric(
+            field_value,
+            condition_value,
+            |a, b| a <= b,
+            |a, b| a <= b,
+            |a, b| a <= b,
+        ),
     }
 }
 

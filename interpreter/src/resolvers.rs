@@ -252,9 +252,10 @@ impl ResolverRegistry {
             | crate::ast::ComputedExpr::Some { value: expr }
             | crate::ast::ComputedExpr::Slice { expr, .. }
             | crate::ast::ComputedExpr::Index { expr, .. }
-            | crate::ast::ComputedExpr::U64FromLeBytes { bytes: expr }
+            |             crate::ast::ComputedExpr::U64FromLeBytes { bytes: expr }
             | crate::ast::ComputedExpr::U64FromBeBytes { bytes: expr }
             | crate::ast::ComputedExpr::JsonToBytes { expr }
+            | crate::ast::ComputedExpr::Keccak256 { expr }
             | crate::ast::ComputedExpr::Unary { expr, .. } => {
                 self.validate_computed_expr(expr, errors);
             }
@@ -291,6 +292,7 @@ impl ResolverRegistry {
 static BUILTIN_RESOLVER_REGISTRY: OnceLock<ResolverRegistry> = OnceLock::new();
 
 pub fn register_builtin_resolvers(registry: &mut ResolverRegistry) {
+    registry.register(Box::new(SlotHashResolver));
     registry.register(Box::new(TokenMetadataResolver));
 }
 
@@ -695,7 +697,26 @@ pub async fn resolve_url_batch(
         .map(|v| (v.url.clone(), v.method.clone()))
         .collect();
 
+    // Log all URLs being fetched
+    for (url, method) in &batch_input {
+        tracing::info!(
+            url = %url,
+            method = ?method,
+            "[RESOLVER] Fetching URL"
+        );
+    }
+
     let results = url_client.resolve_batch(&batch_input).await;
+
+    // Log results summary
+    let success_count = results.len();
+    let fail_count = batch_input.len() - success_count;
+    tracing::info!(
+        success = success_count,
+        failed = fail_count,
+        total = batch_input.len(),
+        "[RESOLVER] URL batch fetch completed"
+    );
 
     // Apply results to VM state, requeue anything that didn't resolve
     let mut vm = vm.lock().unwrap_or_else(|e| e.into_inner());
@@ -705,8 +726,21 @@ pub async fn resolve_url_batch(
     for entry in valid {
         match results.get(&entry.url) {
             Some(resolved_value) => {
+                tracing::info!(
+                    url = %entry.url,
+                    cache_key = %entry.request.cache_key,
+                    response = %resolved_value,
+                    "[RESOLVER] Applying resolver result to state"
+                );
                 match vm.apply_resolver_result(bytecode, &entry.request.cache_key, resolved_value.clone()) {
-                    Ok(mut new_mutations) => mutations.append(&mut new_mutations),
+                    Ok(mut new_mutations) => {
+                        tracing::info!(
+                            url = %entry.url,
+                            mutation_count = new_mutations.len(),
+                            "[RESOLVER] Successfully applied resolver result"
+                        );
+                        mutations.append(&mut new_mutations)
+                    }
                     Err(err) => {
                         tracing::warn!(url = %entry.url, "Failed to apply URL resolver result: {}", err);
                     }
@@ -724,6 +758,171 @@ pub async fn resolve_url_batch(
     }
 
     mutations
+}
+
+/// Resolver for looking up slot hashes by slot number
+/// Uses the global slot hash cache populated from gRPC stream
+struct SlotHashResolver;
+
+const SLOT_HASH_METHODS: &[ResolverComputedMethod] = &[
+    ResolverComputedMethod {
+        name: "slot_hash",
+        arg_count: 1,
+    },
+    ResolverComputedMethod {
+        name: "keccak_rng",
+        arg_count: 3,
+    },
+];
+
+impl SlotHashResolver {
+    /// Compute keccak256(slot_hash || seed || samples_le_bytes) and XOR-fold into a u64.
+    /// args[0] = slot_hash bytes (JSON array of 32 bytes)
+    /// args[1] = seed bytes (JSON array of 32 bytes)
+    /// args[2] = samples (u64 number)
+    fn evaluate_keccak_rng(args: &[Value]) -> Result<Value, Box<dyn std::error::Error>> {
+        if args.len() != 3 {
+            return Ok(Value::Null);
+        }
+
+        let slot_hash = Self::json_array_to_bytes(&args[0], 32);
+        let seed = Self::json_array_to_bytes(&args[1], 32);
+        let samples = match &args[2] {
+            Value::Number(n) => n.as_u64(),
+            _ => None,
+        };
+
+        let (slot_hash, seed, samples) = match (slot_hash, seed, samples) {
+            (Some(s), Some(sd), Some(sm)) => (s, sd, sm),
+            _ => return Ok(Value::Null),
+        };
+
+        // Build input: slot_hash[32] || seed[32] || samples_le_bytes[8]
+        let mut input = Vec::with_capacity(72);
+        input.extend_from_slice(&slot_hash);
+        input.extend_from_slice(&seed);
+        input.extend_from_slice(&samples.to_le_bytes());
+
+        // keccak256
+        use sha3::{Digest, Keccak256};
+        let hash = Keccak256::digest(&input);
+
+        if hash.len() < 32 {
+            return Ok(Value::Null);
+        }
+
+        // XOR-fold four u64 chunks
+        let r1 = u64::from_le_bytes(hash[0..8].try_into()?);
+        let r2 = u64::from_le_bytes(hash[8..16].try_into()?);
+        let r3 = u64::from_le_bytes(hash[16..24].try_into()?);
+        let r4 = u64::from_le_bytes(hash[24..32].try_into()?);
+        let rng = r1 ^ r2 ^ r3 ^ r4;
+
+        Ok(Value::Number(rng.into()))
+    }
+
+    /// Extract a byte array of expected length from a JSON array value.
+    fn json_array_to_bytes(value: &Value, expected_len: usize) -> Option<Vec<u8>> {
+        let arr = value.as_array()?;
+        let bytes: Vec<u8> = arr
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| n as u8))
+            .collect();
+        if bytes.len() == expected_len {
+            Some(bytes)
+        } else {
+            None
+        }
+    }
+
+    fn evaluate_slot_hash(args: &[Value]) -> Result<Value, Box<dyn std::error::Error>> {
+        if args.len() != 1 {
+            return Ok(Value::Null);
+        }
+
+        let slot = match &args[0] {
+            Value::Number(n) => n.as_u64().unwrap_or(0),
+            _ => return Ok(Value::Null),
+        };
+
+        if slot == 0 {
+            return Ok(Value::Null);
+        }
+
+        // Try to get the slot hash from the global cache
+        // Note: This runs in an async context but the resolver interface is sync
+        // We use block_in_place to avoid blocking the runtime
+        let slot_hash = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                crate::slot_hash_cache::get_slot_hash(slot).await
+            })
+        });
+
+        match slot_hash {
+            Some(hash) => {
+                // Convert the base58 encoded slot hash to bytes
+                // The slot hash is a 32-byte value base58 encoded
+                match bs58::decode(&hash).into_vec() {
+                    Ok(bytes) if bytes.len() == 32 => {
+                        // Return as JSON array of bytes
+                        let json_bytes: Vec<Value> = bytes.into_iter().map(|b| Value::Number(b.into())).collect();
+                        Ok(Value::Array(json_bytes))
+                    }
+                    _ => {
+                        tracing::warn!(slot = slot, hash = hash, "Failed to decode slot hash");
+                        Ok(Value::Null)
+                    }
+                }
+            }
+            None => {
+                tracing::debug!(slot = slot, "Slot hash not found in cache");
+                Ok(Value::Null)
+            }
+        }
+    }
+}
+
+impl ResolverDefinition for SlotHashResolver {
+    fn name(&self) -> &'static str {
+        "SlotHash"
+    }
+
+    fn output_type(&self) -> &'static str {
+        "SlotHash"
+    }
+
+    fn computed_methods(&self) -> &'static [ResolverComputedMethod] {
+        SLOT_HASH_METHODS
+    }
+
+    fn evaluate_computed(
+        &self,
+        method: &str,
+        args: &[Value],
+    ) -> std::result::Result<Value, Box<dyn std::error::Error>> {
+        match method {
+            "slot_hash" => Self::evaluate_slot_hash(args),
+            "keccak_rng" => Self::evaluate_keccak_rng(args),
+            _ => Err(format!("Unknown SlotHash method '{}'", method).into()),
+        }
+    }
+
+    fn typescript_interface(&self) -> Option<&'static str> {
+        Some(
+            r#"export interface SlotHash {
+  hash: string;
+}"#,
+        )
+    }
+
+    fn typescript_schema(&self) -> Option<ResolverTypeScriptSchema> {
+        Some(ResolverTypeScriptSchema {
+            name: "SlotHashSchema",
+            definition: r#"export const SlotHashSchema = z.object({
+  hash: z.string(),
+});"#,
+        })
+    }
 }
 
 struct TokenMetadataResolver;

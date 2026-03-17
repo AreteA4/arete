@@ -33,10 +33,14 @@ pub mod proto_router;
 pub mod resolvers;
 pub mod rust;
 pub mod scheduler;
+pub mod slot_hash_cache;
 pub mod spec_trait;
 pub mod typescript;
 pub mod vm;
 pub mod vm_metrics;
+
+// Re-export slot hash cache functions
+pub use slot_hash_cache::{get_slot_hash, record_slot_hash};
 
 pub use canonical_log::{CanonicalLog, LogLevel};
 pub use metrics_context::{FieldAccessor, FieldRef, MetricsContext};

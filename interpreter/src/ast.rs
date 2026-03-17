@@ -332,6 +332,12 @@ pub enum ComputedExpr {
     ContextSlot,
     /// Access the unix timestamp from the current update context
     ContextTimestamp,
+
+    /// Keccak256 hash function for computing Ethereum-compatible hashes
+    /// Takes a byte array expression and returns the 32-byte hash as a Vec<u8>
+    Keccak256 {
+        expr: Box<ComputedExpr>,
+    },
 }
 
 /// Binary operators for computed expressions

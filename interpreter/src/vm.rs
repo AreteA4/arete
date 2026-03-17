@@ -29,6 +29,10 @@ pub struct UpdateContext {
     /// Transaction index for instruction updates (orders transactions within a slot)
     /// Used for staleness detection to reject out-of-order updates
     pub txn_index: Option<u64>,
+    /// When true, QueueResolver opcodes are skipped during handler execution.
+    /// Set for reprocessed cached data from PDA mapping changes to prevent
+    /// stale data from triggering resolvers or locking in wrong values via SetOnce.
+    pub skip_resolvers: bool,
     /// Additional custom metadata that can be added without breaking changes
     pub metadata: HashMap<String, Value>,
 }
@@ -42,6 +46,7 @@ impl UpdateContext {
             timestamp: None,
             write_version: None,
             txn_index: None,
+            skip_resolvers: false,
             metadata: HashMap::new(),
         }
     }
@@ -54,6 +59,7 @@ impl UpdateContext {
             timestamp: Some(timestamp),
             write_version: None,
             txn_index: None,
+            skip_resolvers: false,
             metadata: HashMap::new(),
         }
     }
@@ -66,6 +72,7 @@ impl UpdateContext {
             timestamp: None,
             write_version: Some(write_version),
             txn_index: None,
+            skip_resolvers: false,
             metadata: HashMap::new(),
         }
     }
@@ -78,6 +85,22 @@ impl UpdateContext {
             timestamp: None,
             write_version: None,
             txn_index: Some(txn_index),
+            skip_resolvers: false,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Create context for reprocessed cached account data from PDA mapping changes.
+    /// Uses empty signature to prevent `when` guards from matching stale instructions,
+    /// and sets skip_resolvers to prevent stale scheduling/SetOnce lock-in.
+    pub fn new_reprocessed(slot: u64, write_version: u64) -> Self {
+        Self {
+            slot: Some(slot),
+            signature: None,
+            timestamp: None,
+            write_version: Some(write_version),
+            txn_index: None,
+            skip_resolvers: true,
             metadata: HashMap::new(),
         }
     }
@@ -569,6 +592,12 @@ pub struct PendingAccountUpdate {
     pub write_version: u64,
     pub signature: String,
     pub queued_at: i64,
+    /// When true, this update was pulled from the `last_account_data` cache
+    /// during a PDA mapping change. It carries stale data from a previous
+    /// entity mapping and should use `UpdateContext::new_reprocessed` to
+    /// prevent `when` guards from matching stale instruction signatures
+    /// and to skip resolver scheduling.
+    pub is_stale_reprocess: bool,
 }
 
 /// Input for queueing an instruction event when PDA lookup fails.
@@ -1115,6 +1144,15 @@ impl VmContext {
             let mut dirty_tracker = DirtyTracker::new();
             let should_emit = |path: &str| !entity_bytecode.non_emitted_fields.contains(path);
 
+            tracing::info!(
+                entity = %target.entity_name,
+                primary_key = %target.primary_key,
+                cache_key = %cache_key,
+                extract_targets = ?target.extracts.iter().map(|e| &e.target_path).collect::<Vec<_>>(),
+                resolved_value = %resolved_value,
+                "[RESOLVER] Applying resolved value to entity state"
+            );
+
             Self::apply_resolver_extractions_to_value(
                 &mut entity_state,
                 &resolved_value,
@@ -1130,6 +1168,13 @@ impl VmContext {
                     .map(|path| Self::get_value_at_path(&entity_state, path))
                     .collect();
 
+                tracing::debug!(
+                    entity = %target.entity_name,
+                    primary_key = %target.primary_key,
+                    computed_paths = ?entity_bytecode.computed_paths,
+                    "[COMPUTED] Evaluating computed fields after resolver"
+                );
+
                 let context_slot = self.current_context.as_ref().and_then(|c| c.slot);
                 let context_timestamp = self
                     .current_context
@@ -1142,14 +1187,39 @@ impl VmContext {
                             .as_secs() as i64
                     });
                 let eval_result = evaluator(&mut entity_state, context_slot, context_timestamp);
+
                 if eval_result.is_ok() {
+                    let mut changed_fields = Vec::new();
                     for (path, old_value) in
                         entity_bytecode.computed_paths.iter().zip(old_values.iter())
                     {
                         let new_value = Self::get_value_at_path(&entity_state, path);
-                        if new_value != *old_value && should_emit(path) {
+                        let changed = new_value != *old_value;
+                        let will_emit = should_emit(path);
+
+                        tracing::debug!(
+                            entity = %target.entity_name,
+                            primary_key = %target.primary_key,
+                            field_path = %path,
+                            old_value = ?old_value,
+                            new_value = ?new_value,
+                            changed = %changed,
+                            will_emit = %will_emit,
+                            "[COMPUTED] Checking computed field change"
+                        );
+
+                        if changed && will_emit {
                             dirty_tracker.mark_replaced(path);
+                            changed_fields.push(path.clone());
                         }
+                    }
+                    if !changed_fields.is_empty() {
+                        tracing::info!(
+                            entity = %target.entity_name,
+                            primary_key = %target.primary_key,
+                            changed_fields = ?changed_fields,
+                            "[COMPUTED] Computed fields changed after resolver"
+                        );
                     }
                 }
             }
@@ -1157,8 +1227,20 @@ impl VmContext {
             state.insert_with_eviction(target.primary_key.clone(), entity_state.clone());
 
             if dirty_tracker.is_empty() {
+                tracing::debug!(
+                    entity = %target.entity_name,
+                    primary_key = %target.primary_key,
+                    "[RESOLVER] No dirty fields after resolver result, skipping mutation"
+                );
                 continue;
             }
+
+            tracing::info!(
+                entity = %target.entity_name,
+                primary_key = %target.primary_key,
+                dirty_fields = ?dirty_tracker.iter().collect::<Vec<_>>(),
+                "[RESOLVER] Resolver result applied, emitting mutation"
+            );
 
             let patch = Self::build_partial_state_from_value(&entity_state, &dirty_tracker)?;
 
@@ -1189,6 +1271,18 @@ impl VmContext {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
+
+        // Log resolver request details
+        let current_slot = self.current_context.as_ref().and_then(|ctx| ctx.slot);
+        tracing::info!(
+            resolver_type = ?resolver,
+            cache_key = %cache_key,
+            input = %input,
+            entity = %target.entity_name,
+            primary_key = %target.primary_key,
+            current_slot = ?current_slot,
+            "[RESOLVER] Enqueueing resolver request"
+        );
 
         self.resolver_pending.insert(
             cache_key.clone(),
@@ -1529,7 +1623,24 @@ impl VmContext {
                                     "flushing deferred when-ops"
                                 );
                                 for op in deferred_ops {
-                                    match self.apply_deferred_when_op(state_id, &op) {
+                                    // Look up the entity bytecode to get the computed fields evaluator
+                                    let (evaluator, computed_paths) = bytecode
+                                        .entities
+                                        .get(&op.entity_name)
+                                        .map(|eb| {
+                                            (
+                                                eb.computed_fields_evaluator.as_ref(),
+                                                eb.computed_paths.as_slice(),
+                                            )
+                                        })
+                                        .unwrap_or((None, &[]));
+
+                                    match self.apply_deferred_when_op(
+                                        state_id,
+                                        &op,
+                                        evaluator,
+                                        Some(computed_paths),
+                                    ) {
                                         Ok(mutations) => all_mutations.extend(mutations),
                                         Err(e) => tracing::warn!(
                                             "Failed to apply deferred when-op: {}",
@@ -1692,6 +1803,10 @@ impl VmContext {
                                                 match self.apply_deferred_when_op(
                                                     entity_bytecode.state_id,
                                                     &op,
+                                                    entity_bytecode
+                                                        .computed_fields_evaluator
+                                                        .as_ref(),
+                                                    Some(&entity_bytecode.computed_paths),
                                                 ) {
                                                     Ok(mutations) => {
                                                         all_mutations.extend(mutations)
@@ -2704,12 +2819,72 @@ impl VmContext {
                 } => {
                     let actual_state_id = override_state_id;
 
+                    // Log what triggered this resolver
+                    let trigger_info = if let Some(ref ctx) = self.current_context {
+                        if let Some(ref sig) = ctx.signature {
+                            format!(
+                                "instruction (slot={}, sig={})",
+                                ctx.slot.unwrap_or(0),
+                                &sig[..std::cmp::min(16, sig.len())]
+                            )
+                        } else {
+                            format!("account update (slot={})", ctx.slot.unwrap_or(0))
+                        }
+                    } else {
+                        "unknown".to_string()
+                    };
+
+                    tracing::info!(
+                        entity = %entity_name,
+                        trigger = %trigger_info,
+                        resolver = ?resolver,
+                        schedule_at = ?schedule_at,
+                        "[RESOLVER] QueueResolver opcode triggered by event"
+                    );
+
+                    // Skip resolvers for reprocessed cached data from PDA mapping changes.
+                    // Stale data can carry wrong field values (e.g. old entropy_value) and
+                    // wrong schedule_at slots that would lock in incorrect results via SetOnce.
+                    if self
+                        .current_context
+                        .as_ref()
+                        .map(|c| c.skip_resolvers)
+                        .unwrap_or(false)
+                    {
+                        tracing::info!(
+                            entity = %entity_name,
+                            "[RESOLVER] Skipping resolver: context is reprocessed cached data"
+                        );
+                        pc += 1;
+                        continue;
+                    }
+
                     // Evaluate condition if present
                     if let Some(cond) = condition {
                         let field_val =
                             Self::get_value_at_path(&self.registers[*state], &cond.field_path)
                                 .unwrap_or(Value::Null);
-                        if !self.evaluate_comparison(&field_val, &cond.op, &cond.value)? {
+                        let condition_met =
+                            self.evaluate_comparison(&field_val, &cond.op, &cond.value)?;
+
+                        // Get full state snapshot for debugging
+                        let state_json =
+                            serde_json::to_string(&self.registers[*state]).unwrap_or_default();
+                        let has_entropy = state_json.contains("entropy");
+                        let has_entropy_value = state_json.contains("entropy_value");
+
+                        tracing::info!(
+                            entity = %entity_name,
+                            condition_field = %cond.field_path,
+                            condition_met = condition_met,
+                            field_value = ?field_val,
+                            has_entropy_section = has_entropy,
+                            has_entropy_value_field = has_entropy_value,
+                            state_size = state_json.len(),
+                            "[RESOLVER] Evaluating resolver condition"
+                        );
+
+                        if !condition_met {
                             pc += 1;
                             continue;
                         }
@@ -2730,6 +2905,15 @@ impl VmContext {
                                 if current_slot < target_slot {
                                     let key_value = &self.registers[*key];
                                     if !key_value.is_null() {
+                                        tracing::info!(
+                                            entity = %entity_name,
+                                            primary_key = %key_value,
+                                            current_slot = current_slot,
+                                            target_slot = target_slot,
+                                            slots_until_fire = target_slot - current_slot,
+                                            schedule_at_path = %schedule_path,
+                                            "[RESOLVER] Scheduling deferred resolver"
+                                        );
                                         self.scheduled_callbacks.push((
                                             target_slot,
                                             ScheduledCallback {
@@ -2746,11 +2930,25 @@ impl VmContext {
                                                 retry_count: 0,
                                             },
                                         ));
+                                    } else {
+                                        tracing::warn!(
+                                            entity = %entity_name,
+                                            current_slot = current_slot,
+                                            target_slot = target_slot,
+                                            "[RESOLVER] Cannot schedule deferred resolver: primary key is null"
+                                        );
                                     }
                                     pc += 1;
                                     continue;
                                 }
                                 // current_slot >= target_slot: fall through to immediate resolution
+                                tracing::info!(
+                                    entity = %entity_name,
+                                    primary_key = %self.registers[*key],
+                                    current_slot = current_slot,
+                                    target_slot = target_slot,
+                                    "[RESOLVER] schedule_at slot already passed, falling through to immediate execution"
+                                );
                             }
                             None => {
                                 // schedule_at path is missing or value is not a u64 —
@@ -2812,6 +3010,12 @@ impl VmContext {
                                 }
                             })
                         {
+                            tracing::info!(
+                                entity = %entity_name,
+                                primary_key = %self.registers[*key],
+                                extract_targets = ?extracts.iter().map(|e| &e.target_path).collect::<Vec<_>>(),
+                                "[RESOLVER] SetOnce guard: all extract targets already populated, skipping resolver"
+                            );
                             pc += 1;
                             continue;
                         }
@@ -2836,6 +3040,14 @@ impl VmContext {
                                 primary_key: self.registers[*key].clone(),
                                 extracts: extracts.clone(),
                             };
+
+                            tracing::info!(
+                                entity = %entity_name,
+                                trigger = %trigger_info,
+                                cache_key = %cache_key,
+                                input = ?input,
+                                "[RESOLVER] Queueing immediate resolver request"
+                            );
 
                             self.enqueue_resolver_request(
                                 cache_key,
@@ -3507,6 +3719,10 @@ impl VmContext {
         &mut self,
         state_id: u32,
         op: &DeferredWhenOperation,
+        entity_evaluator: Option<
+            &Box<dyn Fn(&mut Value, Option<u64>, i64) -> Result<()> + Send + Sync>,
+        >,
+        computed_paths: Option<&[String]>,
     ) -> Result<Vec<Mutation>> {
         let state = self.states.get(&state_id).ok_or("State not found")?;
 
@@ -3518,9 +3734,50 @@ impl VmContext {
             .get_and_touch(&op.primary_key)
             .unwrap_or_else(|| json!({}));
 
+        // Track old values of computed fields before setting the new value
+        let old_computed_values: Vec<_> = computed_paths
+            .map(|paths| {
+                paths
+                    .iter()
+                    .map(|path| Self::get_value_at_path(&entity_state, path))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Self::set_nested_field_value(&mut entity_state, &op.field_path, op.field_value.clone())?;
 
-        state.insert_with_eviction(op.primary_key.clone(), entity_state);
+        // Re-evaluate computed fields if an evaluator is provided
+        if let Some(evaluator) = entity_evaluator {
+            let context_slot = self.current_context.as_ref().and_then(|c| c.slot);
+            let context_timestamp = self
+                .current_context
+                .as_ref()
+                .map(|c| c.timestamp())
+                .unwrap_or_else(|| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64
+                });
+
+            tracing::debug!(
+                entity_name = %op.entity_name,
+                primary_key = %op.primary_key,
+                field_path = %op.field_path,
+                "Re-evaluating computed fields after deferred when-op"
+            );
+
+            if let Err(e) = evaluator(&mut entity_state, context_slot, context_timestamp) {
+                tracing::warn!(
+                    entity_name = %op.entity_name,
+                    primary_key = %op.primary_key,
+                    error = %e,
+                    "Failed to evaluate computed fields after deferred when-op"
+                );
+            }
+        }
+
+        state.insert_with_eviction(op.primary_key.clone(), entity_state.clone());
 
         if !op.emit {
             return Ok(vec![]);
@@ -3528,6 +3785,38 @@ impl VmContext {
 
         let mut patch = json!({});
         Self::set_nested_field_value(&mut patch, &op.field_path, op.field_value.clone())?;
+
+        // Add computed field changes to the patch
+        if let Some(paths) = computed_paths {
+            tracing::debug!(
+                entity_name = %op.entity_name,
+                primary_key = %op.primary_key,
+                computed_paths_count = paths.len(),
+                "Checking computed fields for changes after deferred when-op"
+            );
+            for (path, old_value) in paths.iter().zip(old_computed_values.iter()) {
+                let new_value = Self::get_value_at_path(&entity_state, path);
+                tracing::debug!(
+                    entity_name = %op.entity_name,
+                    primary_key = %op.primary_key,
+                    field_path = %path,
+                    old_value = ?old_value,
+                    new_value = ?new_value,
+                    "Comparing computed field values"
+                );
+                if let Some(ref new_val) = new_value {
+                    if Some(new_val) != old_value.as_ref() {
+                        Self::set_nested_field_value(&mut patch, path, new_val.clone())?;
+                        tracing::info!(
+                            entity_name = %op.entity_name,
+                            primary_key = %op.primary_key,
+                            field_path = %path,
+                            "Computed field changed after deferred when-op, including in mutation"
+                        );
+                    }
+                }
+            }
+        }
 
         Ok(vec![Mutation {
             export: op.entity_name.clone(),
@@ -3626,6 +3915,20 @@ impl VmContext {
             .map(|old| old != &seed_value)
             .unwrap_or(false);
 
+        if !mapping_changed && old_seed.is_none() {
+            tracing::info!(
+                pda = %pda_address,
+                seed = %seed_value,
+                "[PDA] First-time PDA reverse lookup established"
+            );
+        } else if !mapping_changed {
+            tracing::debug!(
+                pda = %pda_address,
+                seed = %seed_value,
+                "[PDA] PDA reverse lookup re-registered (same mapping)"
+            );
+        }
+
         let evicted_pda = lookup.insert(pda_address.clone(), seed_value.clone());
 
         if let Some(ref evicted) = evicted_pda {
@@ -3652,7 +3955,7 @@ impl VmContext {
                     index.remove(&Value::String(pda_address.clone()));
                 }
 
-                if let Some((_, cached)) = state.last_account_data.remove(&pda_address) {
+                if let Some((_, mut cached)) = state.last_account_data.remove(&pda_address) {
                     tracing::info!(
                         pda = %pda_address,
                         old_seed = ?old_seed,
@@ -3660,6 +3963,7 @@ impl VmContext {
                         account_type = %cached.account_type,
                         "PDA mapping changed — clearing stale indexes and reprocessing cached data"
                     );
+                    cached.is_stale_reprocess = true;
                     pending.push(cached);
                 }
             }
@@ -3782,6 +4086,7 @@ impl VmContext {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64,
+            is_stale_reprocess: false,
         };
 
         let pda_address = pending.pda_address.clone();
@@ -4365,6 +4670,16 @@ impl VmContext {
                 .as_ref()
                 .map(|ctx| json!(ctx.timestamp()))
                 .unwrap_or(Value::Null)),
+
+            ComputedExpr::Keccak256 { expr } => {
+                let val = self.evaluate_computed_expr_with_env(expr, state, env)?;
+                let bytes = self.value_to_bytes(&val)?;
+                use sha3::{Digest, Keccak256};
+                let hash = Keccak256::digest(&bytes);
+                Ok(Value::Array(
+                    hash.to_vec().iter().map(|b| json!(*b)).collect(),
+                ))
+            }
         }
     }
 
@@ -4782,9 +5097,18 @@ impl VmContext {
         crate::resolvers::validate_resolver_computed_specs(computed_field_specs)?;
 
         for spec in computed_field_specs {
-            if let Ok(result) = self.evaluate_computed_expr(&spec.expression, state) {
-                self.set_field_in_state(state, &spec.target_path, result)?;
-                updated_paths.push(spec.target_path.clone());
+            match self.evaluate_computed_expr(&spec.expression, state) {
+                Ok(result) => {
+                    self.set_field_in_state(state, &spec.target_path, result)?;
+                    updated_paths.push(spec.target_path.clone());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target_path = %spec.target_path,
+                        error = %e,
+                        "Failed to evaluate computed field"
+                    );
+                }
             }
         }
 
@@ -5199,7 +5523,7 @@ mod tests {
 
         let deferred = state.deferred_when_ops.remove(&key).unwrap().1;
         for op in deferred {
-            vm.apply_deferred_when_op(0, &op).unwrap();
+            vm.apply_deferred_when_op(0, &op, None, None).unwrap();
         }
 
         let state = vm.states.get(&0).unwrap();
@@ -5238,6 +5562,145 @@ mod tests {
         assert!(
             vm.states.get(&0).unwrap().deferred_when_ops.is_empty(),
             "Deferred ops should be empty after cleanup"
+        );
+    }
+
+    #[test]
+    fn test_deferred_when_op_recomputes_dependent_fields() {
+        use crate::ast::{BinaryOp, ComputedExpr, ComputedFieldSpec};
+
+        let mut vm = VmContext::new();
+
+        // Create computed field specs similar to the ore stack:
+        // pre_reveal_rng depends on base_value
+        // pre_reveal_winning_square depends on pre_reveal_rng
+        let computed_specs = vec![
+            ComputedFieldSpec {
+                target_path: "results.pre_reveal_rng".to_string(),
+                result_type: "Option<u64>".to_string(),
+                expression: ComputedExpr::FieldRef {
+                    path: "entropy.base_value".to_string(),
+                },
+            },
+            ComputedFieldSpec {
+                target_path: "results.pre_reveal_winning_square".to_string(),
+                result_type: "Option<u64>".to_string(),
+                expression: ComputedExpr::MethodCall {
+                    expr: Box::new(ComputedExpr::FieldRef {
+                        path: "results.pre_reveal_rng".to_string(),
+                    }),
+                    method: "map".to_string(),
+                    args: vec![ComputedExpr::Closure {
+                        param: "r".to_string(),
+                        body: Box::new(ComputedExpr::Binary {
+                            op: BinaryOp::Mod,
+                            left: Box::new(ComputedExpr::Var {
+                                name: "r".to_string(),
+                            }),
+                            right: Box::new(ComputedExpr::Literal {
+                                value: serde_json::json!(25),
+                            }),
+                        }),
+                    }],
+                },
+            },
+        ];
+
+        let evaluator: Box<dyn Fn(&mut Value, Option<u64>, i64) -> Result<()> + Send + Sync> =
+            Box::new(VmContext::create_evaluator_from_specs(computed_specs));
+
+        // Test that when we set entropy.base_value via deferred when-op,
+        // both computed fields are updated
+        let primary_key = json!("test_pk");
+        let op = DeferredWhenOperation {
+            entity_name: "TestEntity".to_string(),
+            primary_key: primary_key.clone(),
+            field_path: "entropy.base_value".to_string(),
+            field_value: json!(100),
+            when_instruction: "TestIxState".to_string(),
+            signature: "test_sig".to_string(),
+            slot: 100,
+            deferred_at: 0,
+            emit: true,
+        };
+
+        // Store the entity in state first
+        let initial_state = json!({
+            "results": {}
+        });
+        vm.states
+            .get(&0)
+            .unwrap()
+            .insert_with_eviction(primary_key.clone(), initial_state);
+
+        // Apply the deferred when-op with the evaluator
+        let mutations = vm
+            .apply_deferred_when_op(
+                0,
+                &op,
+                Some(&evaluator),
+                Some(&[
+                    "results.pre_reveal_rng".to_string(),
+                    "results.pre_reveal_winning_square".to_string(),
+                ]),
+            )
+            .unwrap();
+
+        // Check the entity state
+        let state = vm.states.get(&0).unwrap();
+        let entity = state.data.get(&primary_key).unwrap();
+
+        println!(
+            "Entity state: {}",
+            serde_json::to_string_pretty(&*entity).unwrap()
+        );
+
+        // Verify base value was set
+        assert_eq!(
+            entity.get("entropy").and_then(|e| e.get("base_value")),
+            Some(&json!(100)),
+            "Base value should be set"
+        );
+
+        // Verify computed fields were calculated
+        let pre_reveal_rng = entity
+            .get("results")
+            .and_then(|r| r.get("pre_reveal_rng"))
+            .cloned();
+        let pre_reveal_winning_square = entity
+            .get("results")
+            .and_then(|r| r.get("pre_reveal_winning_square"))
+            .cloned();
+
+        assert_eq!(
+            pre_reveal_rng,
+            Some(json!(100)),
+            "pre_reveal_rng should be computed"
+        );
+        assert_eq!(
+            pre_reveal_winning_square,
+            Some(json!(0)),
+            "pre_reveal_winning_square should be 100 % 25 = 0"
+        );
+
+        // Verify mutations include computed fields
+        assert!(!mutations.is_empty(), "Should have mutations");
+        let mutation = &mutations[0];
+        let patch = &mutation.patch;
+
+        assert!(
+            patch
+                .get("results")
+                .and_then(|r| r.get("pre_reveal_rng"))
+                .is_some(),
+            "Mutation should include pre_reveal_rng"
+        );
+        assert!(
+            patch
+                .get("results")
+                .and_then(|r| r.get("pre_reveal_winning_square"))
+                .is_some(),
+            "Mutation should include pre_reveal_winning_square"
         );
     }
 }
