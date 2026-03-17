@@ -20,6 +20,7 @@ pub(crate) mod vixen_runtime;
 pub(crate) use bytecode::generate_bytecode_from_spec;
 pub(crate) use computed::generate_computed_evaluator;
 pub(crate) use computed::generate_computed_expr_code;
+pub(crate) use computed::generate_computed_expr_code_with_cache;
 pub(crate) use field_accessors::generate_field_accessors;
 pub(crate) use handlers::generate_handlers_from_specs;
 pub(crate) use multi_entity::generate_multi_entity_builder;
