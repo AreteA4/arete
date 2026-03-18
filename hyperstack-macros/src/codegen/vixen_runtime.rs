@@ -365,9 +365,11 @@ fn generate_slot_subscription_task() -> TokenStream {
                             from_slot: None,
                         };
 
-                        let (_sub_tx, mut stream) = client
+                        let (sub_tx, mut stream) = client
                             .subscribe_with_request(Some(subscribe_request))
                             .await?;
+                        // Keep sender alive for the duration of the stream
+                        let _keep_alive = sub_tx;
 
                         hyperstack::runtime::tracing::info!("[SLOT_SUB] Connected and subscribed to slot and SlotHashes updates");
 
