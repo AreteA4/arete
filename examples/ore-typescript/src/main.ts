@@ -2,23 +2,21 @@ import { z } from 'zod';
 import { HyperStack } from 'hyperstack-typescript';
 import {
   ORE_STREAM_STACK,
-  // OreRoundSchema,
-  // OreRoundIdSchema,
-  // OreTreasurySchema,
-  // OreTreasuryIdSchema,
+  OreRoundSchema,
+  OreRoundIdSchema,
+  OreTreasurySchema,
+  OreTreasuryIdSchema,
 } from 'hyperstack-stacks/ore';
 
-// const OreRoundWithIdSchema = OreRoundSchema.extend({
-//   id: OreRoundIdSchema.required(),
-// });
-//
-// const OreTreasuryWithIdSchema = OreTreasurySchema.extend({
-//   id: OreTreasuryIdSchema.required(),
-// });
-// type OreRoundWithId = z.infer<typeof OreRoundWithIdSchema>;
-// type OreTreasuryWithId = z.infer<typeof OreTreasuryWithIdSchema>;
-type OreRoundWithId = any;
-type OreTreasuryWithId = any;
+const OreRoundWithIdSchema = OreRoundSchema.extend({
+  id: OreRoundIdSchema.partial(),
+});
+
+const OreTreasuryWithIdSchema = OreTreasurySchema.extend({
+  id: OreTreasuryIdSchema.partial(),
+});
+type OreRoundWithId = z.infer<typeof OreRoundWithIdSchema>;
+type OreTreasuryWithId = z.infer<typeof OreTreasuryWithIdSchema>;
 
 function printRound(round: OreRoundWithId) {
   console.log(`\n=== Round #${round.id.round_id ?? 'N/A'} ===`);
@@ -49,17 +47,16 @@ async function main() {
   const streamRounds = async () => {
     for await (const round of hs.views.OreRound.latest.use({
       take: 1,
-      // schema: OreRoundWithIdSchema,
+      schema: OreRoundWithIdSchema,
     })) {
-      console.log(round);
-      // printRound(round);
+      printRound(round);
     }
   };
 
   const streamTreasury = async () => {
     for await (const treasury of hs.views.OreTreasury.list.use({
       take: 1,
-      // schema: OreTreasuryWithIdSchema,
+      schema: OreTreasuryWithIdSchema,
     })) {
       printTreasury(treasury);
     }
