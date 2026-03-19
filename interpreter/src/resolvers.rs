@@ -777,10 +777,6 @@ impl SlotHashResolver {
         use sha3::{Digest, Keccak256};
         let hash = Keccak256::digest(&input);
 
-        if hash.len() < 32 {
-            return Ok(Value::Null);
-        }
-
         // XOR-fold four u64 chunks
         let r1 = u64::from_le_bytes(hash[0..8].try_into()?);
         let r2 = u64::from_le_bytes(hash[8..16].try_into()?);
