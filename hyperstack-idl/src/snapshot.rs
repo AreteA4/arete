@@ -34,6 +34,9 @@ impl<'de> Deserialize<'de> for IdlSnapshot {
             .get("instructions")
             .and_then(|instrs| instrs.as_array())
             .map(|instrs| {
+                if instrs.is_empty() {
+                    return false;
+                }
                 instrs.iter().all(|ix| {
                     // Steel-style: has discriminant field, no discriminator or empty discriminator
                     let has_discriminant = ix.get("discriminant").is_some();
