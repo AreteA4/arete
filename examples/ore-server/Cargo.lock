@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack"
-version = "0.5.5"
+version = "0.5.8"
 dependencies = [
  "anyhow",
  "bs58",
@@ -1475,17 +1475,18 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-idl"
-version = "0.1.2"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "strsim",
+ "tracing",
 ]
 
 [[package]]
 name = "hyperstack-interpreter"
-version = "0.5.5"
+version = "0.5.8"
 dependencies = [
  "bs58",
  "dashmap",
@@ -1512,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-macros"
-version = "0.5.5"
+version = "0.5.8"
 dependencies = [
  "bs58",
  "hex",
@@ -1527,7 +1528,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-sdk"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "anyhow",
  "flate2",
@@ -1544,7 +1545,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-server"
-version = "0.5.5"
+version = "0.5.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

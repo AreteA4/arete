@@ -4,7 +4,8 @@ use crate::compression::maybe_compress;
 use crate::view::{ViewIndex, ViewSpec};
 use crate::websocket::client_manager::ClientManager;
 use crate::websocket::frame::{
-    Frame, Mode, SnapshotEntity, SnapshotFrame, SortConfig, SortOrder, SubscribedFrame,
+    transform_large_u64_to_strings, Frame, Mode, SnapshotEntity, SnapshotFrame, SortConfig,
+    SortOrder, SubscribedFrame,
 };
 use crate::websocket::subscription::{ClientMessage, Subscription};
 use anyhow::Result;
@@ -580,7 +581,8 @@ async fn attach_client_to_bus(
 
             let mut rx = ctx.bus_manager.get_or_create_state_bus(view_id, key).await;
 
-            if let Some(cached_entity) = ctx.entity_cache.get(view_id, key).await {
+            if let Some(mut cached_entity) = ctx.entity_cache.get(view_id, key).await {
+                transform_large_u64_to_strings(&mut cached_entity);
                 let snapshot_entities = vec![SnapshotEntity {
                     key: key.to_string(),
                     data: cached_entity,
@@ -641,7 +643,10 @@ async fn attach_client_to_bus(
             let snapshot_entities: Vec<SnapshotEntity> = snapshots
                 .into_iter()
                 .filter(|(key, _)| subscription.matches_key(key))
-                .map(|(key, data)| SnapshotEntity { key, data })
+                .map(|(key, mut data)| {
+                    transform_large_u64_to_strings(&mut data);
+                    SnapshotEntity { key, data }
+                })
                 .collect();
 
             if !snapshot_entities.is_empty() {
@@ -750,7 +755,10 @@ async fn attach_derived_view_subscription_otel(
     if !initial_window.is_empty() {
         let snapshot_entities: Vec<SnapshotEntity> = initial_window
             .into_iter()
-            .map(|(key, data)| SnapshotEntity { key, data })
+            .map(|(key, mut data)| {
+                transform_large_u64_to_strings(&mut data);
+                SnapshotEntity { key, data }
+            })
             .collect();
 
         let batch_config = ctx.entity_cache.snapshot_config();
@@ -830,12 +838,14 @@ async fn attach_derived_view_subscription_otel(
                                             }
                                         }
 
+                                        let mut transformed_data = data.clone();
+                                        transform_large_u64_to_strings(&mut transformed_data);
                                         let frame = Frame {
                                             mode: frame_mode,
                                             export: view_id_clone.clone(),
                                             op: "upsert",
                                             key: new_key.clone(),
-                                            data: data.clone(),
+                                            data: transformed_data,
                                             append: vec![],
                                         };
                                         
@@ -871,12 +881,14 @@ async fn attach_derived_view_subscription_otel(
                                     }
 
                                     for (key, data) in &new_window {
+                                        let mut transformed_data = data.clone();
+                                        transform_large_u64_to_strings(&mut transformed_data);
                                         let frame = Frame {
                                             mode: frame_mode,
                                             export: view_id_clone.clone(),
                                             op: "upsert",
                                             key: key.clone(),
-                                            data: data.clone(),
+                                            data: transformed_data,
                                             append: vec![],
                                         };
                                         if let Ok(json) = serde_json::to_vec(&frame) {
@@ -947,7 +959,8 @@ async fn attach_client_to_bus(
 
             let mut rx = ctx.bus_manager.get_or_create_state_bus(view_id, key).await;
 
-            if let Some(cached_entity) = ctx.entity_cache.get(view_id, key).await {
+            if let Some(mut cached_entity) = ctx.entity_cache.get(view_id, key).await {
+                transform_large_u64_to_strings(&mut cached_entity);
                 let snapshot_entities = vec![SnapshotEntity {
                     key: key.to_string(),
                     data: cached_entity,
@@ -1002,7 +1015,10 @@ async fn attach_client_to_bus(
             let snapshot_entities: Vec<SnapshotEntity> = snapshots
                 .into_iter()
                 .filter(|(key, _)| subscription.matches_key(key))
-                .map(|(key, data)| SnapshotEntity { key, data })
+                .map(|(key, mut data)| {
+                    transform_large_u64_to_strings(&mut data);
+                    SnapshotEntity { key, data }
+                })
                 .collect();
 
             if !snapshot_entities.is_empty() {
@@ -1104,7 +1120,10 @@ async fn attach_derived_view_subscription(
     if !initial_window.is_empty() {
         let snapshot_entities: Vec<SnapshotEntity> = initial_window
             .into_iter()
-            .map(|(key, data)| SnapshotEntity { key, data })
+            .map(|(key, mut data)| {
+                transform_large_u64_to_strings(&mut data);
+                SnapshotEntity { key, data }
+            })
             .collect();
 
         let batch_config = ctx.entity_cache.snapshot_config();
@@ -1179,12 +1198,14 @@ async fn attach_derived_view_subscription(
                                             }
                                         }
 
+                                        let mut transformed_data = data.clone();
+                                        transform_large_u64_to_strings(&mut transformed_data);
                                         let frame = Frame {
                                             mode: frame_mode,
                                             export: view_id_clone.clone(),
                                             op: "upsert",
                                             key: new_key.clone(),
-                                            data: data.clone(),
+                                            data: transformed_data,
                                             append: vec![],
                                         };
                                         if let Ok(json) = serde_json::to_vec(&frame) {
@@ -1213,12 +1234,14 @@ async fn attach_derived_view_subscription(
                                     }
 
                                     for (key, data) in &new_window {
+                                        let mut transformed_data = data.clone();
+                                        transform_large_u64_to_strings(&mut transformed_data);
                                         let frame = Frame {
                                             mode: frame_mode,
                                             export: view_id_clone.clone(),
                                             op: "upsert",
                                             key: key.clone(),
-                                            data: data.clone(),
+                                            data: transformed_data,
                                             append: vec![],
                                         };
                                         if let Ok(json) = serde_json::to_vec(&frame) {

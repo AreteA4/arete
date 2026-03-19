@@ -4386,7 +4386,9 @@ impl VmContext {
                 let arr: [u8; 8] = byte_vec[..8]
                     .try_into()
                     .map_err(|_| "Failed to convert to [u8; 8]")?;
-                Ok(Value::String(u64::from_le_bytes(arr).to_string()))
+                Ok(Value::Number(serde_json::Number::from(u64::from_le_bytes(
+                    arr,
+                ))))
             }
 
             ComputedExpr::U64FromBeBytes { bytes } => {
@@ -4402,7 +4404,9 @@ impl VmContext {
                 let arr: [u8; 8] = byte_vec[..8]
                     .try_into()
                     .map_err(|_| "Failed to convert to [u8; 8]")?;
-                Ok(Value::String(u64::from_be_bytes(arr).to_string()))
+                Ok(Value::Number(serde_json::Number::from(u64::from_be_bytes(
+                    arr,
+                ))))
             }
 
             ComputedExpr::ByteArray { bytes } => {
