@@ -158,9 +158,21 @@ impl ResolverRegistry {
     }
 
     pub fn is_output_type(&self, type_name: &str) -> bool {
-        self.resolvers
-            .values()
-            .any(|resolver| resolver.output_type() == type_name)
+        self.resolvers.values().any(|resolver| {
+            // Check primary output type
+            if resolver.output_type() == type_name {
+                return true;
+            }
+            // Check for additional types defined in typescript_interface
+            if let Some(interface) = resolver.typescript_interface() {
+                // Look for type aliases like: export type TypeName = ...
+                let type_pattern = format!("export type {} =", type_name);
+                if interface.contains(&type_pattern) {
+                    return true;
+                }
+            }
+            false
+        })
     }
 
     pub fn evaluate_computed(

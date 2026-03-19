@@ -289,9 +289,27 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                         .any(|f| f.name == field_info.field_name);
 
                     if !already_exists {
+                        // For computed fields, check field_mappings for resolver type info
+                        let field_path = format!("{}.{}", section.name, field_info.field_name);
+                        let effective_field_info =
+                            if let Some(mapping) = self.spec.field_mappings.get(&field_path) {
+                                // Use mapping's inner_type if it's a resolver output type
+                                if mapping
+                                    .inner_type
+                                    .as_ref()
+                                    .map_or(false, |t| is_builtin_resolver_type(t))
+                                {
+                                    mapping
+                                } else {
+                                    field_info
+                                }
+                            } else {
+                                field_info
+                            };
+
                         section_fields.push(TypeScriptField {
                             name: field_info.field_name.clone(),
-                            ts_type: self.field_type_info_to_typescript(field_info),
+                            ts_type: self.field_type_info_to_typescript(effective_field_info),
                             optional: field_info.is_optional,
                             description: None,
                         });
@@ -553,11 +571,18 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
     }
 
     fn uses_builtin_type(&self, type_name: &str) -> bool {
+        // Check section fields
         for section in &self.spec.sections {
             for field in &section.fields {
                 if field.inner_type.as_deref() == Some(type_name) {
                     return true;
                 }
+            }
+        }
+        // Check field_mappings for computed fields (they may have resolver types not in sections)
+        for (field_path, field_info) in &self.spec.field_mappings {
+            if field_info.inner_type.as_deref() == Some(type_name) {
+                return true;
             }
         }
         false
