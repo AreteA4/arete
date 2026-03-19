@@ -68,7 +68,11 @@ impl<'de> Deserialize<'de> for IdlSnapshot {
         // Now deserialize the full struct
         let mut intermediate: IdlSnapshotIntermediate = serde_json::from_value(value)
             .map_err(|e| DeError::custom(format!("Failed to deserialize IDL: {}", e)))?;
-        intermediate.discriminant_size = discriminant_size;
+        // Only use the heuristic if discriminant_size wasn't already present in the JSON
+        // (discriminant_size = 0 means it was absent / defaulted).
+        if intermediate.discriminant_size == 0 {
+            intermediate.discriminant_size = discriminant_size;
+        }
 
         Ok(IdlSnapshot {
             name: intermediate.name,
