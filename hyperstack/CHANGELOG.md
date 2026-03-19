@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.8](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-v0.5.7...hyperstack-v0.5.8) (2026-03-19)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.5.7 to 0.5.8
+    * hyperstack-macros bumped from 0.5.7 to 0.5.8
+    * hyperstack-server bumped from 0.5.7 to 0.5.8
+
 ## [0.5.7](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-v0.5.6...hyperstack-v0.5.7) (2026-03-19)
 
 

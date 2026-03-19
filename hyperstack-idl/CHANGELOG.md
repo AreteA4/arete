@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.5](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-idl-v0.1.4...hyperstack-idl-v0.1.5) (2026-03-19)
+
+
+### Bug Fixes
+
+* handle null discriminant in snapshot deserialization ([b373cde](https://github.com/HyperTekOrg/hyperstack/commit/b373cdeca7d87e79c01c5bcdc639160c77ed953a))
+* preserve explicit discriminant_size values in IDL snapshot ([9e60c87](https://github.com/HyperTekOrg/hyperstack/commit/9e60c87ebafb1903db8e085e848ed4b29d3d7c85))
+* preserve explicit discriminant_size values in IDL snapshot ([0ccdd91](https://github.com/HyperTekOrg/hyperstack/commit/0ccdd9175a5e0accfcae5973f1ae74a1b5dfbc1f))
+
 ## [0.1.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-idl-v0.1.3...hyperstack-idl-v0.1.4) (2026-03-19)
 
 
