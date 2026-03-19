@@ -1,6 +1,6 @@
 [package]
 name = "hyperstack-idl"
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
