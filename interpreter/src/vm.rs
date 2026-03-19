@@ -905,21 +905,7 @@ impl StateTable {
         let dominated = self
             .version_tracker
             .get(primary_key, event_type)
-            .map(|(last_slot, last_version)| {
-                let is_stale = (slot, ordering_value) <= (last_slot, last_version);
-                if is_stale && event_type == "ore::RoundState" {
-                    tracing::debug!(
-                        entity_key = %primary_key,
-                        event_type = %event_type,
-                        current_slot = slot,
-                        current_write_version = ordering_value,
-                        last_slot = last_slot,
-                        last_write_version = last_version,
-                        "RoundState recency check: stale update detected"
-                    );
-                }
-                is_stale
-            })
+            .map(|(last_slot, last_version)| (slot, ordering_value) <= (last_slot, last_version))
             .unwrap_or(false);
 
         if dominated {
