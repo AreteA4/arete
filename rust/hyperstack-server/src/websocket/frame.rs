@@ -115,6 +115,11 @@ pub fn transform_large_u64_to_strings(value: &mut serde_json::Value) {
                 if n_u64 > MAX_SAFE_INTEGER {
                     *value = serde_json::Value::String(n_u64.to_string());
                 }
+            } else if let Some(n_i64) = n.as_i64() {
+                const MIN_SAFE_INTEGER: i64 = -(MAX_SAFE_INTEGER as i64);
+                if n_i64 < MIN_SAFE_INTEGER {
+                    *value = serde_json::Value::String(n_i64.to_string());
+                }
             }
         }
         _ => {}
