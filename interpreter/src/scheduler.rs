@@ -53,9 +53,7 @@ impl SlotScheduler {
         let due = std::mem::replace(&mut self.callbacks, future);
 
         let mut result = Vec::new();
-        let mut total_count = 0;
-        for (slot, callbacks) in due {
-            total_count += callbacks.len();
+        for (_slot, callbacks) in due {
             for cb in callbacks {
                 let dedup_key = Self::dedup_key(&cb);
                 self.registered.remove(&dedup_key);

@@ -1,6 +1,5 @@
 use crate::materialized_view::{CompareOp, FilterConfig, SortConfig, SortOrder, ViewPipeline};
 use crate::websocket::frame::Mode;
-use tracing;
 
 // # View System Architecture
 //

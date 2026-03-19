@@ -1019,7 +1019,7 @@ impl VmContext {
 
     /// Create a new VmContext specifically for multi-entity operation.
     pub fn new_multi_entity() -> Self {
-        let vm = VmContext {
+        VmContext {
             registers: vec![Value::Null; 32],
             states: HashMap::new(),
             instructions_executed: 0,
@@ -1043,9 +1043,7 @@ impl VmContext {
             last_pda_registered: None,
             last_lookup_index_keys: Vec::new(),
             scheduled_callbacks: Vec::new(),
-        };
-
-        vm
+        }
     }
 
     pub fn new_with_config(state_config: StateTableConfig) -> Self {
@@ -2015,8 +2013,8 @@ impl VmContext {
                             "AbortIfNullKey: key is null for account state event, \
                              returning empty mutations for queueing"
                         );
-                        return Ok(Vec::new());
                     }
+
                     pc += 1;
                 }
                 OpCode::ReadOrInitState {
@@ -2783,7 +2781,7 @@ impl VmContext {
                     let actual_state_id = override_state_id;
 
                     // Log what triggered this resolver
-                    let trigger_info = if let Some(ref ctx) = self.current_context {
+                    let _trigger_info = if let Some(ref ctx) = self.current_context {
                         if let Some(ref sig) = ctx.signature {
                             format!(
                                 "instruction (slot={}, sig={})",
@@ -2937,7 +2935,6 @@ impl VmContext {
                                 target,
                             );
                         }
-                    } else {
                     }
 
                     pc += 1;
@@ -3589,6 +3586,7 @@ impl VmContext {
         false
     }
 
+    #[allow(clippy::type_complexity)]
     fn apply_deferred_when_op(
         &mut self,
         state_id: u32,
