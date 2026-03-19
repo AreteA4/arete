@@ -796,7 +796,7 @@ impl SlotHashResolver {
         let arr = value.as_array()?;
         let bytes: Vec<u8> = arr
             .iter()
-            .filter_map(|v| v.as_u64().map(|n| n as u8))
+            .filter_map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
             .collect();
         if bytes.len() == expected_len {
             Some(bytes)
