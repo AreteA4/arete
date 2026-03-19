@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.10](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-react-v0.5.9...hyperstack-react-v0.5.10) (2026-03-19)
+
+
+### Bug Fixes
+
+* update stale lockfile dependency version ([1be27b5](https://github.com/HyperTekOrg/hyperstack/commit/1be27b5e07d7814a4a8930fef4899a7f45982624))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-typescript bumped from ^0.5.9 to ^0.5.10
+
 ## [0.5.9](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-react-v0.5.6...hyperstack-react-v0.5.9) (2026-03-19)
 
 
