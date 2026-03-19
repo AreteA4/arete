@@ -26,7 +26,8 @@ use crate::parse::idl as idl_parser;
 use crate::utils::path_to_string;
 
 use super::computed::{
-    extract_resolver_type_from_computed_expr, parse_computed_expression, qualify_field_refs,
+    expr_contains_u64_from_bytes, extract_resolver_type_from_computed_expr,
+    parse_computed_expression, qualify_field_refs,
 };
 use super::handlers::{find_field_in_instruction, get_join_on_field};
 
@@ -154,9 +155,24 @@ pub fn build_ast(
     // Add computed fields to field_mappings with resolver type information
     // This ensures computed fields that use resolvers get proper TypeScript schema generation
     for computed_spec in &computed_field_specs {
-        if let Some(resolver_type) =
-            extract_resolver_type_from_computed_expr(&computed_spec.expression)
-        {
+        // Determine the TypeScript type override for this computed field.
+        // Priority 1: explicit resolver method (e.g. .keccak_rng(...)) → its declared output type.
+        // Priority 2: expression assembles a u64 from raw bytes → "KeccakRngValue" (string),
+        //             because values span [0, 2^64-1] and exceed Number.MAX_SAFE_INTEGER.
+        let resolver_type: Option<&'static str> =
+            extract_resolver_type_from_computed_expr(&computed_spec.expression).or_else(|| {
+                let result_type = &computed_spec.result_type;
+                let is_u64 = result_type == "u64"
+                    || result_type == "Option < u64 >"
+                    || result_type == "Option<u64>";
+                if is_u64 && expr_contains_u64_from_bytes(&computed_spec.expression) {
+                    Some("KeccakRngValue")
+                } else {
+                    None
+                }
+            });
+
+        if let Some(resolver_type) = resolver_type {
             // Parse the result type to determine if it's optional and if it's an array
             let result_type = &computed_spec.result_type;
             let is_optional =

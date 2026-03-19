@@ -51,6 +51,47 @@ pub fn resolver_output_type(method: &str) -> Option<&'static str> {
     }
 }
 
+/// Returns true if the expression tree contains any U64FromLeBytes or U64FromBeBytes node.
+/// Used to detect full-range u64 computations that must be serialized as strings in TypeScript.
+pub fn expr_contains_u64_from_bytes(expr: &crate::ast::ComputedExpr) -> bool {
+    use crate::ast::ComputedExpr;
+    match expr {
+        ComputedExpr::U64FromLeBytes { .. } | ComputedExpr::U64FromBeBytes { .. } => true,
+        ComputedExpr::Some { value } => expr_contains_u64_from_bytes(value),
+        ComputedExpr::Paren { expr } => expr_contains_u64_from_bytes(expr),
+        ComputedExpr::Binary { left, right, .. } => {
+            expr_contains_u64_from_bytes(left) || expr_contains_u64_from_bytes(right)
+        }
+        ComputedExpr::Unary { expr, .. } => expr_contains_u64_from_bytes(expr),
+        ComputedExpr::MethodCall { expr, args, .. } => {
+            expr_contains_u64_from_bytes(expr) || args.iter().any(expr_contains_u64_from_bytes)
+        }
+        ComputedExpr::Cast { expr, .. } => expr_contains_u64_from_bytes(expr),
+        ComputedExpr::UnwrapOr { expr, .. } => expr_contains_u64_from_bytes(expr),
+        ComputedExpr::Slice { expr, .. } => expr_contains_u64_from_bytes(expr),
+        ComputedExpr::Index { expr, .. } => expr_contains_u64_from_bytes(expr),
+        ComputedExpr::Let { value, body, .. } => {
+            expr_contains_u64_from_bytes(value) || expr_contains_u64_from_bytes(body)
+        }
+        ComputedExpr::If {
+            condition: _,
+            then_branch,
+            else_branch,
+        } => expr_contains_u64_from_bytes(then_branch) || expr_contains_u64_from_bytes(else_branch),
+        ComputedExpr::Keccak256 { expr } => expr_contains_u64_from_bytes(expr),
+        ComputedExpr::JsonToBytes { expr } => expr_contains_u64_from_bytes(expr),
+        ComputedExpr::Closure { body, .. } => expr_contains_u64_from_bytes(body),
+        ComputedExpr::ResolverComputed { .. }
+        | ComputedExpr::FieldRef { .. }
+        | ComputedExpr::Var { .. }
+        | ComputedExpr::Literal { .. }
+        | ComputedExpr::ByteArray { .. }
+        | ComputedExpr::None
+        | ComputedExpr::ContextSlot
+        | ComputedExpr::ContextTimestamp => false,
+    }
+}
+
 /// Extract the resolver output type from a computed expression.
 /// Returns the type name if the expression is a ResolverComputed call.
 pub fn extract_resolver_type_from_computed_expr(
