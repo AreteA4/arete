@@ -23,7 +23,7 @@ export interface OreRoundMetrics {
 
 export interface OreRoundResults {
   did_hit_motherlode?: boolean | null;
-  expires_at_slot_hash?: SlotHash | null;
+  expires_at_slot_hash?: SlotHashBytes | null;
   pre_reveal_rng?: KeccakRngValue | null;
   pre_reveal_winning_square?: number | null;
   rent_payer?: string | null;
@@ -61,13 +61,6 @@ export interface OreRound {
   ore_metadata?: TokenMetadata | null;
 }
 
-export interface SlotHashBytes {
-  /** 32-byte slot hash as array of numbers (0-255) */
-  bytes: number[];
-}
-
-export type KeccakRngValue = string;
-
 export interface TokenMetadata {
   mint: string;
   name?: string | null;
@@ -76,11 +69,12 @@ export interface TokenMetadata {
   logo_uri?: string | null;
 }
 
-export const SlotHashBytesSchema = z.object({
-  bytes: z.array(z.number().int().min(0).max(255)).length(32),
-});
+export interface SlotHashBytes {
+  /** 32-byte slot hash as array of numbers (0-255) */
+  bytes: number[];
+}
 
-export const KeccakRngValueSchema = z.string();
+export type KeccakRngValue = string;
 
 export const TokenMetadataSchema = z.object({
   mint: z.string(),
@@ -89,6 +83,12 @@ export const TokenMetadataSchema = z.object({
   decimals: z.number().nullable().optional(),
   logo_uri: z.string().nullable().optional(),
 });
+
+export const SlotHashBytesSchema = z.object({
+  bytes: z.array(z.number().int().min(0).max(255)).length(32),
+});
+
+export const KeccakRngValueSchema = z.string();
 
 export const OreRoundEntropySchema = z.object({
   entropy_end_at: z.number().nullable().optional(),
@@ -113,7 +113,7 @@ export const OreRoundMetricsSchema = z.object({
 
 export const OreRoundResultsSchema = z.object({
   did_hit_motherlode: z.boolean().nullable().optional(),
-  expires_at_slot_hash: SlotHashSchema.nullable().optional(),
+  expires_at_slot_hash: SlotHashBytesSchema.nullable().optional(),
   pre_reveal_rng: KeccakRngValueSchema.nullable().optional(),
   pre_reveal_winning_square: z.number().nullable().optional(),
   rent_payer: z.string().nullable().optional(),
@@ -444,7 +444,6 @@ export const ORE_STREAM_STACK = {
     OreTreasuryId: OreTreasuryIdSchema,
     OreTreasury: OreTreasurySchema,
     OreTreasuryState: OreTreasuryStateSchema,
-    SlotHashTypes: SlotHashTypes,
     TokenMetadata: TokenMetadataSchema,
     Treasury: TreasurySchema,
   },

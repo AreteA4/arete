@@ -170,6 +170,11 @@ impl ResolverRegistry {
                 if interface.contains(&type_pattern) {
                     return true;
                 }
+                // Look for interfaces like: export interface TypeName ...
+                let interface_pattern = format!("export interface {}", type_name);
+                if interface.contains(&interface_pattern) {
+                    return true;
+                }
             }
             false
         })

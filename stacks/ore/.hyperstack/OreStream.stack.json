@@ -4025,7 +4025,7 @@
           "base_type": "Array",
           "is_optional": true,
           "is_array": true,
-          "inner_type": "SlotHash",
+          "inner_type": "SlotHashBytes",
           "source_path": null,
           "resolved_type": null
         },
@@ -5214,7 +5214,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "be2cac5010099fdf867871a3a4f3904f2cd290f5fcafd2933f7c9d5f02d47ec1",
+      "content_hash": "ecfad36cebb6a104a85ac59728fe4894ce668f8e9ef41085ce9add942622f503",
       "views": [
         {
           "id": "OreRound/latest",
@@ -9114,5 +9114,5 @@
       ]
     }
   ],
-  "content_hash": "268bee113d011a0a49d48573aff397cfb5ca7baa180899050aa61f5719bcf070"
+  "content_hash": "69c671a42d1a1f13d3cb41d873c164ef21d4de4c840e47564b75eee05d7eb5f0"
 }

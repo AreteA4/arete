@@ -43,7 +43,7 @@ fn resolver_for_method(method: &str) -> Option<&'static str> {
 /// This maps resolver method names to their TypeScript output type names.
 pub fn resolver_output_type(method: &str) -> Option<&'static str> {
     match method {
-        "slot_hash" => Some("SlotHash"),
+        "slot_hash" => Some("SlotHashBytes"),
         "keccak_rng" => Some("KeccakRngValue"),
         "ui_amount" => Some("TokenUiAmount"),
         "raw_amount" => Some("TokenRawAmount"),
