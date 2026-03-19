@@ -268,7 +268,7 @@ fn generate_slot_scheduler_task() -> TokenStream {
 fn generate_slot_subscription_task() -> TokenStream {
     quote! {
         // Helper function to parse SlotHashes sysvar data
-        async fn parse_and_cache_slot_hashes(current_slot: u64, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        fn parse_and_cache_slot_hashes(current_slot: u64, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             if data.len() < 8 {
                 return Err("Data too short".into());
             }
@@ -396,7 +396,7 @@ fn generate_slot_subscription_task() -> TokenStream {
                                                     if let Err(e) = parse_and_cache_slot_hashes(
                                                         account_update.slot,
                                                         &account.data,
-                                                    ).await {
+                                                    ) {
                                                         hyperstack::runtime::tracing::warn!(
                                                             error = %e,
                                                             "[SLOT_SUB] Failed to parse SlotHashes"
