@@ -27,7 +27,7 @@ export interface OreRoundResults {
   pre_reveal_rng?: KeccakRngValue | null;
   pre_reveal_winning_square?: number | null;
   rent_payer?: string | null;
-  rng?: number | null;
+  rng?: KeccakRngValue | null;
   slot_hash?: string | null;
   top_miner?: string | null;
   top_miner_reward?: number | null;
@@ -117,7 +117,7 @@ export const OreRoundResultsSchema = z.object({
   pre_reveal_rng: KeccakRngValueSchema.nullable().optional(),
   pre_reveal_winning_square: z.number().nullable().optional(),
   rent_payer: z.string().nullable().optional(),
-  rng: z.number().nullable().optional(),
+  rng: KeccakRngValueSchema.nullable().optional(),
   slot_hash: z.string().nullable().optional(),
   top_miner: z.string().nullable().optional(),
   top_miner_reward: z.number().nullable().optional(),
