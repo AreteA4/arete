@@ -2,7 +2,7 @@ use crate::bus::{BusManager, BusMessage};
 use crate::cache::EntityCache;
 use crate::mutation_batch::{MutationBatch, SlotContext};
 use crate::view::{ViewIndex, ViewSpec};
-use crate::websocket::frame::{Frame, Mode};
+use crate::websocket::frame::{transform_large_u64_to_strings, Frame, Mode};
 use bytes::Bytes;
 use hyperstack_interpreter::CanonicalLog;
 use serde_json::Value;
@@ -165,7 +165,8 @@ impl Projector {
                 patch.clone()
             };
 
-            let projected = spec.projection.apply(patch_data);
+            let mut projected = spec.projection.apply(patch_data);
+            transform_large_u64_to_strings(&mut projected);
 
             let frame = Frame {
                 mode: spec.mode,
