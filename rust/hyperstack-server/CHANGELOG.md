@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.10](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.5.9...hyperstack-server-v0.5.10) (2026-03-19)
+
+
+### Bug Fixes
+
+* Reduce cache size for slot hashes ([ec9cba3](https://github.com/HyperTekOrg/hyperstack/commit/ec9cba3507b1caae01cdfed961e2c3e3ec7d5481))
+* Reduce cache size for slot hashes ([5d140a4](https://github.com/HyperTekOrg/hyperstack/commit/5d140a4e7d35088c9ad87eb8dcae627485c0c035))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.5.9 to 0.5.10
+
 ## [0.5.9](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.5.8...hyperstack-server-v0.5.9) (2026-03-19)
 
 
