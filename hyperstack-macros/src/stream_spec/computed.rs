@@ -39,6 +39,32 @@ fn resolver_for_method(method: &str) -> Option<&'static str> {
     }
 }
 
+/// Get the output type name for a resolver method.
+/// This maps resolver method names to their TypeScript output type names.
+pub fn resolver_output_type(method: &str) -> Option<&'static str> {
+    match method {
+        "slot_hash" => Some("SlotHash"),
+        "keccak_rng" => Some("KeccakRngValue"),
+        "ui_amount" => Some("TokenUiAmount"),
+        "raw_amount" => Some("TokenRawAmount"),
+        _ => None,
+    }
+}
+
+/// Extract the resolver output type from a computed expression.
+/// Returns the type name if the expression is a ResolverComputed call.
+pub fn extract_resolver_type_from_computed_expr(
+    expr: &crate::ast::ComputedExpr,
+) -> Option<&'static str> {
+    use crate::ast::ComputedExpr;
+    match expr {
+        ComputedExpr::ResolverComputed { method, .. } => resolver_output_type(method),
+        ComputedExpr::Some { value } => extract_resolver_type_from_computed_expr(value),
+        ComputedExpr::Paren { expr } => extract_resolver_type_from_computed_expr(expr),
+        _ => None,
+    }
+}
+
 /// Qualify unqualified field references in a computed expression with a section prefix.
 ///
 /// This ensures that field references like `total_buy_volume` become `trading.total_buy_volume`

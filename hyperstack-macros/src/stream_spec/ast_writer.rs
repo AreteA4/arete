@@ -13,8 +13,8 @@ use crate::ast::writer::{
     convert_idl_to_snapshot, parse_population_strategy, parse_transformation,
 };
 use crate::ast::{
-    ComparisonOp, ComputedFieldSpec, ConditionExpr, EntitySection, FieldPath, HookAction,
-    IdentitySpec, IdlSerializationSnapshot, InstructionHook, KeyResolutionStrategy,
+    ComparisonOp, ComputedFieldSpec, ConditionExpr, EntitySection, FieldPath, FieldTypeInfo,
+    HookAction, IdentitySpec, IdlSerializationSnapshot, InstructionHook, KeyResolutionStrategy,
     LookupIndexSpec, MappingSource, ResolveStrategy, ResolverCondition, ResolverExtractSpec,
     ResolverHook, ResolverSpec, ResolverStrategy, ResolverType, SerializableFieldMapping,
     SerializableHandlerSpec, SerializableStreamSpec, SourceSpec,
@@ -25,7 +25,9 @@ use crate::parse::conditions as condition_parser;
 use crate::parse::idl as idl_parser;
 use crate::utils::path_to_string;
 
-use super::computed::{parse_computed_expression, qualify_field_refs};
+use super::computed::{
+    extract_resolver_type_from_computed_expr, parse_computed_expression, qualify_field_refs,
+};
 use super::handlers::{find_field_in_instruction, get_join_on_field};
 
 // ============================================================================
@@ -146,6 +148,39 @@ pub fn build_ast(
                 format!("{}.{}", section.name, field_info.field_name)
             };
             field_mappings.insert(field_path, field_info.clone());
+        }
+    }
+
+    // Add computed fields to field_mappings with resolver type information
+    // This ensures computed fields that use resolvers get proper TypeScript schema generation
+    for computed_spec in &computed_field_specs {
+        if let Some(resolver_type) =
+            extract_resolver_type_from_computed_expr(&computed_spec.expression)
+        {
+            // Parse the result type to determine if it's optional and if it's an array
+            let result_type = &computed_spec.result_type;
+            let is_optional =
+                result_type.starts_with("Option <") || result_type.starts_with("Option<");
+            let is_array = result_type.contains("Vec <")
+                || result_type.contains("Vec<")
+                || result_type.contains("[");
+
+            let field_info = FieldTypeInfo {
+                field_name: computed_spec.target_path.clone(),
+                rust_type_name: computed_spec.result_type.clone(),
+                base_type: if is_array {
+                    crate::ast::BaseType::Array
+                } else {
+                    crate::ast::BaseType::Any
+                },
+                is_optional,
+                is_array,
+                inner_type: Some(resolver_type.to_string()),
+                source_path: None,
+                resolved_type: None,
+                emit: true,
+            };
+            field_mappings.insert(computed_spec.target_path.clone(), field_info);
         }
     }
 
