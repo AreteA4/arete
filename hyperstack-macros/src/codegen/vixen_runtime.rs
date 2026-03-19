@@ -970,29 +970,30 @@ pub fn generate_vm_handler(
                     // mapping later changes (same PDA, different seed) the cached
                     // data is returned for reprocessing with the corrected mapping.
                     if result.is_ok() {
-                        // Derive state_id from bytecode routing (same logic as process_event)
-                        let state_id = self.bytecode.event_routing.get(event_type)
-                            .and_then(|entities| entities.first())
-                            .and_then(|entity_name| self.bytecode.entities.get(entity_name))
-                            .map(|eb| eb.state_id)
-                            .unwrap_or(0);
-                        vm.cache_last_account_data(
-                            state_id,
-                            &account_address,
-                            hyperstack::runtime::hyperstack_interpreter::PendingAccountUpdate {
-                                account_type: event_type.to_string(),
-                                pda_address: account_address.clone(),
-                                account_data: event_value_for_cache,
-                                slot,
-                                write_version,
-                                signature: signature.clone(),
-                                queued_at: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs() as i64,
-                                is_stale_reprocess: false,
-                            },
-                        );
+                        // Cache under every state_id that routes this event_type so that
+                        // register_pda_reverse_lookup finds data for all participating entities.
+                        let state_ids: std::collections::HashSet<u32> = self.bytecode.event_routing
+                            .get(event_type)
+                            .map(|entities| entities.iter()
+                                .filter_map(|name| self.bytecode.entities.get(name).map(|eb| eb.state_id))
+                                .collect())
+                            .unwrap_or_default();
+                        let pending = hyperstack::runtime::hyperstack_interpreter::PendingAccountUpdate {
+                            account_type: event_type.to_string(),
+                            pda_address: account_address.clone(),
+                            account_data: event_value_for_cache,
+                            slot,
+                            write_version,
+                            signature: signature.clone(),
+                            queued_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64,
+                            is_stale_reprocess: false,
+                        };
+                        for state_id in state_ids {
+                            vm.cache_last_account_data(state_id, &account_address, pending.clone());
+                        }
                     }
 
                     let requests = if result.is_ok() {
@@ -2031,29 +2032,30 @@ pub fn generate_account_handler_impl(
                         .map_err(|e| e.to_string());
 
                     if result.is_ok() {
-                        // Derive state_id from bytecode routing (same logic as process_event)
-                        let state_id = self.bytecode.event_routing.get(event_type)
-                            .and_then(|entities| entities.first())
-                            .and_then(|entity_name| self.bytecode.entities.get(entity_name))
-                            .map(|eb| eb.state_id)
-                            .unwrap_or(0);
-                        vm.cache_last_account_data(
-                            state_id,
-                            &account_address,
-                            hyperstack::runtime::hyperstack_interpreter::PendingAccountUpdate {
-                                account_type: event_type.to_string(),
-                                pda_address: account_address.clone(),
-                                account_data: event_value_for_cache,
-                                slot,
-                                write_version,
-                                signature: signature.clone(),
-                                queued_at: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs() as i64,
-                                is_stale_reprocess: false,
-                            },
-                        );
+                        // Cache under every state_id that routes this event_type so that
+                        // register_pda_reverse_lookup finds data for all participating entities.
+                        let state_ids: std::collections::HashSet<u32> = self.bytecode.event_routing
+                            .get(event_type)
+                            .map(|entities| entities.iter()
+                                .filter_map(|name| self.bytecode.entities.get(name).map(|eb| eb.state_id))
+                                .collect())
+                            .unwrap_or_default();
+                        let pending = hyperstack::runtime::hyperstack_interpreter::PendingAccountUpdate {
+                            account_type: event_type.to_string(),
+                            pda_address: account_address.clone(),
+                            account_data: event_value_for_cache,
+                            slot,
+                            write_version,
+                            signature: signature.clone(),
+                            queued_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64,
+                            is_stale_reprocess: false,
+                        };
+                        for state_id in state_ids {
+                            vm.cache_last_account_data(state_id, &account_address, pending.clone());
+                        }
                     }
 
                     let requests = if result.is_ok() {
