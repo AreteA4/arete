@@ -450,13 +450,6 @@
         {
           "name": "automate",
           "discriminator": [
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
             0
           ],
           "discriminant": null,
@@ -537,14 +530,7 @@
         {
           "name": "checkpoint",
           "discriminator": [
-            2,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            2
           ],
           "discriminant": null,
           "docs": [
@@ -606,14 +592,7 @@
         {
           "name": "claimSol",
           "discriminator": [
-            3,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            3
           ],
           "discriminant": null,
           "docs": [
@@ -650,14 +629,7 @@
         {
           "name": "claimOre",
           "discriminator": [
-            4,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            4
           ],
           "discriminant": null,
           "docs": [
@@ -742,14 +714,7 @@
         {
           "name": "close",
           "discriminator": [
-            5,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            5
           ],
           "discriminant": null,
           "docs": [
@@ -812,14 +777,7 @@
         {
           "name": "deploy",
           "discriminator": [
-            6,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            6
           ],
           "discriminant": null,
           "docs": [
@@ -933,14 +891,7 @@
         {
           "name": "log",
           "discriminator": [
-            8,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            8
           ],
           "discriminant": null,
           "docs": [
@@ -962,14 +913,7 @@
         {
           "name": "reset",
           "discriminator": [
-            9,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            9
           ],
           "discriminant": null,
           "docs": [
@@ -1129,14 +1073,7 @@
         {
           "name": "deposit",
           "discriminator": [
-            10,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            10
           ],
           "discriminant": null,
           "docs": [
@@ -1239,14 +1176,7 @@
         {
           "name": "withdraw",
           "discriminator": [
-            11,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            11
           ],
           "discriminant": null,
           "docs": [
@@ -1337,14 +1267,7 @@
         {
           "name": "claimYield",
           "discriminator": [
-            12,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            12
           ],
           "discriminant": null,
           "docs": [
@@ -1436,14 +1359,7 @@
         {
           "name": "buyback",
           "discriminator": [
-            13,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            13
           ],
           "discriminant": null,
           "docs": [
@@ -1455,14 +1371,7 @@
         {
           "name": "bury",
           "discriminator": [
-            24,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            24
           ],
           "discriminant": null,
           "docs": [
@@ -1554,14 +1463,7 @@
         {
           "name": "wrap",
           "discriminator": [
-            14,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            14
           ],
           "discriminant": null,
           "docs": [
@@ -1620,14 +1522,7 @@
         {
           "name": "setAdmin",
           "discriminator": [
-            15,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            15
           ],
           "discriminant": null,
           "docs": [
@@ -1669,14 +1564,7 @@
         {
           "name": "newVar",
           "discriminator": [
-            19,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            19
           ],
           "discriminant": null,
           "docs": [
@@ -1763,14 +1651,7 @@
         {
           "name": "reloadSol",
           "discriminator": [
-            21,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            21
           ],
           "discriminant": null,
           "docs": [
@@ -1782,14 +1663,7 @@
         {
           "name": "compoundYield",
           "discriminator": [
-            22,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            22
           ],
           "discriminant": null,
           "docs": [
@@ -1801,14 +1675,7 @@
         {
           "name": "liq",
           "discriminator": [
-            25,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            25
           ],
           "discriminant": null,
           "docs": [
@@ -2562,13 +2429,6 @@
         {
           "name": "open",
           "discriminator": [
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
             0
           ],
           "discriminant": null,
@@ -2649,14 +2509,7 @@
         {
           "name": "close",
           "discriminator": [
-            1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            1
           ],
           "discriminant": null,
           "docs": [
@@ -2693,14 +2546,7 @@
         {
           "name": "next",
           "discriminator": [
-            2,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            2
           ],
           "discriminant": null,
           "docs": [
@@ -2735,14 +2581,7 @@
         {
           "name": "reveal",
           "discriminator": [
-            4,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            4
           ],
           "discriminant": null,
           "docs": [
@@ -2782,14 +2621,7 @@
         {
           "name": "sample",
           "discriminator": [
-            5,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+            5
           ],
           "discriminant": null,
           "docs": [
@@ -4408,14 +4240,7 @@
               "lookup_name": "default_pda_lookup",
               "queue_discriminators": [
                 [
-                  9,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0
+                  9
                 ]
               ]
             }
@@ -5381,7 +5206,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "228a3402ec182567cdbfaa707138362ff7c3a5e3f5854a76cdff6d7b7c79d706",
+      "content_hash": "2499bee255d1ab8600d1e2abe118043e3c7c04ea6164dc0c81eba2fa33bb03e4",
       "views": [
         {
           "id": "OreRound/latest",
@@ -5885,14 +5710,7 @@
               "lookup_name": "default_pda_lookup",
               "queue_discriminators": [
                 [
-                  9,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0
+                  9
                 ]
               ]
             }
@@ -5997,7 +5815,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "807c6c941a86f6d21c0801d6c92481665cf7778931c56f4b9f716dce6413f6b3",
+      "content_hash": "ffec247e90689c746263a287f04388f5eefe1ee5058713739673c197f030731b",
       "views": []
     },
     {
@@ -7337,14 +7155,7 @@
               "lookup_name": "default_pda_lookup",
               "queue_discriminators": [
                 [
-                  9,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0
+                  9
                 ]
               ]
             }
@@ -7355,7 +7166,7 @@
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "65b194af422058c586a9425a4e34887d163f7adae4c6ad952968e9c10905d2d7",
+      "content_hash": "9155b664af8383fd8a2d2272d69df1480f8181c1316cc12cb83ff444a95610bb",
       "views": []
     }
   ],
@@ -7367,13 +7178,6 @@
     {
       "name": "automate",
       "discriminator": [
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
         0
       ],
       "discriminator_size": 1,
@@ -7473,14 +7277,7 @@
     {
       "name": "checkpoint",
       "discriminator": [
-        2,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        2
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -7562,14 +7359,7 @@
     {
       "name": "claimSol",
       "discriminator": [
-        3,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        3
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -7623,14 +7413,7 @@
     {
       "name": "claimOre",
       "discriminator": [
-        4,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        4
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -7741,14 +7524,7 @@
     {
       "name": "close",
       "discriminator": [
-        5,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        5
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -7831,14 +7607,7 @@
     {
       "name": "deploy",
       "discriminator": [
-        6,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        6
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -7979,14 +7748,7 @@
     {
       "name": "log",
       "discriminator": [
-        8,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        8
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -8022,14 +7784,7 @@
     {
       "name": "reset",
       "discriminator": [
-        9,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        9
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -8227,14 +7982,7 @@
     {
       "name": "deposit",
       "discriminator": [
-        10,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        10
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -8364,14 +8112,7 @@
     {
       "name": "withdraw",
       "discriminator": [
-        11,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        11
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -8488,14 +8229,7 @@
     {
       "name": "claimYield",
       "discriminator": [
-        12,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        12
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -8613,14 +8347,7 @@
     {
       "name": "buyback",
       "discriminator": [
-        13,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        13
       ],
       "discriminator_size": 1,
       "accounts": [],
@@ -8645,14 +8372,7 @@
     {
       "name": "bury",
       "discriminator": [
-        24,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        24
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -8769,14 +8489,7 @@
     {
       "name": "wrap",
       "discriminator": [
-        14,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        14
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -8854,14 +8567,7 @@
     {
       "name": "setAdmin",
       "discriminator": [
-        15,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        15
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -8920,14 +8626,7 @@
     {
       "name": "newVar",
       "discriminator": [
-        19,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        19
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -9031,14 +8730,7 @@
     {
       "name": "reloadSol",
       "discriminator": [
-        21,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        21
       ],
       "discriminator_size": 1,
       "accounts": [],
@@ -9063,14 +8755,7 @@
     {
       "name": "compoundYield",
       "discriminator": [
-        22,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        22
       ],
       "discriminator_size": 1,
       "accounts": [],
@@ -9095,14 +8780,7 @@
     {
       "name": "liq",
       "discriminator": [
-        25,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        25
       ],
       "discriminator_size": 1,
       "accounts": [],
@@ -9127,13 +8805,6 @@
     {
       "name": "open",
       "discriminator": [
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
         0
       ],
       "discriminator_size": 1,
@@ -9228,14 +8899,7 @@
     {
       "name": "close",
       "discriminator": [
-        1,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        1
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -9289,14 +8953,7 @@
     {
       "name": "next",
       "discriminator": [
-        2,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        2
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -9346,14 +9003,7 @@
     {
       "name": "reveal",
       "discriminator": [
-        4,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        4
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -9403,14 +9053,7 @@
     {
       "name": "sample",
       "discriminator": [
-        5,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        5
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -9463,5 +9106,5 @@
       ]
     }
   ],
-  "content_hash": "ffe594cf02bed5cffc6fe87c68b45bdea44c183c18cbefb71e5763c3e93780f1"
+  "content_hash": "80c3ed1638194dc541594dd82dd1e80f8660aee2254d71b3e78cfae7edadfb2f"
 }
