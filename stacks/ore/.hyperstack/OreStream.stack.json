@@ -25,6 +25,7 @@
           "docs": [
             "Automation parameters for automated mining deployments."
           ],
+          "serialization": null,
           "fields": [
             {
               "name": "amount",
@@ -75,6 +76,7 @@
           "docs": [
             "Global round tracking for the mining game."
           ],
+          "serialization": null,
           "fields": [
             {
               "name": "round_id",
@@ -109,6 +111,7 @@
           "docs": [
             "Program configuration state."
           ],
+          "serialization": null,
           "fields": [
             {
               "name": "admin",
@@ -151,6 +154,7 @@
           "docs": [
             "Tracks a miner's deployed SOL and reward balances."
           ],
+          "serialization": null,
           "fields": [
             {
               "name": "authority",
@@ -241,6 +245,7 @@
           "docs": [
             "State for a single mining round."
           ],
+          "serialization": null,
           "fields": [
             {
               "name": "id",
@@ -326,6 +331,7 @@
           "docs": [
             "State for a staking participant."
           ],
+          "serialization": null,
           "fields": [
             {
               "name": "authority",
@@ -402,6 +408,7 @@
           "docs": [
             "Singleton treasury account tracking protocol balances."
           ],
+          "serialization": null,
           "fields": [
             {
               "name": "balance",
@@ -2357,6 +2364,7 @@
           "docs": [
             "An entropy variable account that stores randomness generation state."
           ],
+          "serialization": null,
           "fields": [
             {
               "name": "authority",
@@ -4012,22 +4020,22 @@
           "resolved_type": null
         },
         "results.expires_at_slot_hash": {
-          "field_name": "expires_at_slot_hash",
+          "field_name": "results.expires_at_slot_hash",
           "rust_type_name": "Option < Vec < u8 > >",
           "base_type": "Array",
           "is_optional": true,
           "is_array": true,
-          "inner_type": "Vec < u8 >",
+          "inner_type": "SlotHash",
           "source_path": null,
           "resolved_type": null
         },
         "results.pre_reveal_rng": {
-          "field_name": "pre_reveal_rng",
+          "field_name": "results.pre_reveal_rng",
           "rust_type_name": "Option < u64 >",
-          "base_type": "Integer",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "u64",
+          "inner_type": "KeccakRngValue",
           "source_path": null,
           "resolved_type": null
         },
@@ -4093,12 +4101,12 @@
           "resolved_type": null
         },
         "results.top_miner_reward": {
-          "field_name": "top_miner_reward",
+          "field_name": "results.top_miner_reward",
           "rust_type_name": "Option < f64 >",
-          "base_type": "Float",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "f64",
+          "inner_type": "TokenUiAmount",
           "source_path": null,
           "resolved_type": null
         },
@@ -4163,22 +4171,22 @@
           "resolved_type": null
         },
         "state.motherlode": {
-          "field_name": "motherlode",
+          "field_name": "state.motherlode",
           "rust_type_name": "Option < f64 >",
-          "base_type": "Float",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "f64",
+          "inner_type": "TokenUiAmount",
           "source_path": null,
           "resolved_type": null
         },
         "state.total_deployed": {
-          "field_name": "total_deployed",
+          "field_name": "state.total_deployed",
           "rust_type_name": "Option < f64 >",
-          "base_type": "Float",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "f64",
+          "inner_type": "TokenUiAmount",
           "source_path": null,
           "resolved_type": null
         },
@@ -4193,37 +4201,46 @@
           "resolved_type": null
         },
         "state.total_vaulted": {
-          "field_name": "total_vaulted",
+          "field_name": "state.total_vaulted",
           "rust_type_name": "Option < f64 >",
-          "base_type": "Float",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "f64",
+          "inner_type": "TokenUiAmount",
           "source_path": null,
           "resolved_type": null
         },
         "state.total_winnings": {
-          "field_name": "total_winnings",
+          "field_name": "state.total_winnings",
           "rust_type_name": "Option < f64 >",
-          "base_type": "Float",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "f64",
+          "inner_type": "TokenUiAmount",
           "source_path": null,
           "resolved_type": null
         },
         "treasury.motherlode": {
-          "field_name": "motherlode",
+          "field_name": "treasury.motherlode",
           "rust_type_name": "Option < f64 >",
-          "base_type": "Float",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "f64",
+          "inner_type": "TokenUiAmount",
           "source_path": null,
           "resolved_type": null
         }
       },
       "resolver_hooks": [
+        {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
         {
           "account_type": "ore::TreasuryState",
           "strategy": {
@@ -4234,15 +4251,6 @@
                   9
                 ]
               ]
-            }
-          }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
             }
           }
         }
@@ -5206,7 +5214,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "71c8796142e933db057e499e2e4a69de15e119e69cd075418ff50de18d51adec",
+      "content_hash": "be2cac5010099fdf867871a3a4f3904f2cd290f5fcafd2933f7c9d5f02d47ec1",
       "views": [
         {
           "id": "OreRound/latest",
@@ -5571,42 +5579,42 @@
           "resolved_type": null
         },
         "state.motherlode": {
-          "field_name": "motherlode",
+          "field_name": "state.motherlode",
           "rust_type_name": "Option < f64 >",
-          "base_type": "Float",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "f64",
+          "inner_type": "TokenUiAmount",
           "source_path": null,
           "resolved_type": null
         },
         "state.total_refined": {
-          "field_name": "total_refined",
+          "field_name": "state.total_refined",
           "rust_type_name": "Option < f64 >",
-          "base_type": "Float",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "f64",
+          "inner_type": "TokenUiAmount",
           "source_path": null,
           "resolved_type": null
         },
         "state.total_staked": {
-          "field_name": "total_staked",
+          "field_name": "state.total_staked",
           "rust_type_name": "Option < f64 >",
-          "base_type": "Float",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "f64",
+          "inner_type": "TokenUiAmount",
           "source_path": null,
           "resolved_type": null
         },
         "state.total_unclaimed": {
-          "field_name": "total_unclaimed",
+          "field_name": "state.total_unclaimed",
           "rust_type_name": "Option < f64 >",
-          "base_type": "Float",
+          "base_type": "Any",
           "is_optional": true,
           "is_array": false,
-          "inner_type": "f64",
+          "inner_type": "TokenUiAmount",
           "source_path": null,
           "resolved_type": null
         },
@@ -5695,6 +5703,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -5704,15 +5721,6 @@
                   9
                 ]
               ]
-            }
-          }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
             }
           }
         }
@@ -5815,7 +5823,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "5e4e0c9ad6793cd2f8c0f5016320b373ea1537edd10f9634159c3739f1db4f80",
+      "content_hash": "4b680401e840febd69cd77fe8db0716267b83525028af37a5e05ef65cfdc52a4",
       "views": []
     },
     {
@@ -7140,6 +7148,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -7151,22 +7168,13 @@
               ]
             }
           }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
         }
       ],
       "instruction_hooks": [],
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "aab096b52a9436ab7c2927e6c7f79408ada29daa124b2364cb9f36364f5050b4",
+      "content_hash": "40a0247d41dc28a177b8e4e74f518d34a1b6810695600fb2dd6d1f92795eaa3c",
       "views": []
     }
   ],
@@ -9106,5 +9114,5 @@
       ]
     }
   ],
-  "content_hash": "88eb65a18eb2103607ae49f4f407c9b76fea89fe3cc93a08f935f7c3c4025d27"
+  "content_hash": "268bee113d011a0a49d48573aff397cfb5ca7baa180899050aa61f5719bcf070"
 }

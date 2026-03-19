@@ -24,7 +24,7 @@ export interface OreRoundMetrics {
 export interface OreRoundResults {
   did_hit_motherlode?: boolean | null;
   expires_at_slot_hash?: any[] | null;
-  pre_reveal_rng?: string | null;
+  pre_reveal_rng?: number | null;
   pre_reveal_winning_square?: number | null;
   rent_payer?: string | null;
   rng?: number | null;
@@ -101,7 +101,7 @@ export const OreRoundMetricsSchema = z.object({
 export const OreRoundResultsSchema = z.object({
   did_hit_motherlode: z.boolean().nullable().optional(),
   expires_at_slot_hash: z.array(z.any()).nullable().optional(),
-  pre_reveal_rng: z.string().nullable().optional(),
+  pre_reveal_rng: z.number().nullable().optional(),
   pre_reveal_winning_square: z.number().nullable().optional(),
   rent_payer: z.string().nullable().optional(),
   rng: z.number().nullable().optional(),
