@@ -555,8 +555,12 @@ impl {entity_name}EntityViews {{
         // Only integer and timestamp types need the string-or-number treatment
         let int_kind = match base_type {
             BaseType::Integer => {
-                if rust_type_name.contains("i64") || rust_type_name.contains("i32") {
+                if rust_type_name.contains("i64") {
                     "i64"
+                } else if rust_type_name.contains("i32") {
+                    "i32"
+                } else if rust_type_name.contains("u32") {
+                    "u32"
                 } else {
                     "u64"
                 }

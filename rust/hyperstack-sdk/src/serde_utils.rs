@@ -390,6 +390,113 @@ pub fn deserialize_option_option_vec_i64<'de, D: Deserializer<'de>>(
     d.deserialize_any(V)
 }
 
+// ─── 32-bit narrowing helpers ───────────────────────────────────────────────
+// Delegate to the 64-bit deserializers above, then narrow via TryFrom.
+// This avoids duplicating all the visitor boilerplate for i32/u32.
+
+fn narrow_opt<W, N, E: de::Error>(opt: Option<W>) -> Result<Option<N>, E>
+where
+    N: TryFrom<W>,
+    N::Error: fmt::Display,
+{
+    opt.map(|v| N::try_from(v).map_err(E::custom)).transpose()
+}
+
+fn narrow_opt_opt<W, N, E: de::Error>(opt: Option<Option<W>>) -> Result<Option<Option<N>>, E>
+where
+    N: TryFrom<W>,
+    N::Error: fmt::Display,
+{
+    match opt {
+        None => Ok(None),
+        Some(None) => Ok(Some(None)),
+        Some(Some(v)) => N::try_from(v).map(|n| Some(Some(n))).map_err(E::custom),
+    }
+}
+
+fn narrow_opt_vec<W, N, E: de::Error>(opt: Option<Vec<W>>) -> Result<Option<Vec<N>>, E>
+where
+    N: TryFrom<W>,
+    N::Error: fmt::Display,
+{
+    opt.map(|vec| {
+        vec.into_iter()
+            .map(|v| N::try_from(v).map_err(E::custom))
+            .collect()
+    })
+    .transpose()
+}
+
+fn narrow_opt_opt_vec<W, N, E: de::Error>(
+    opt: Option<Option<Vec<W>>>,
+) -> Result<Option<Option<Vec<N>>>, E>
+where
+    N: TryFrom<W>,
+    N::Error: fmt::Display,
+{
+    match opt {
+        None => Ok(None),
+        Some(None) => Ok(Some(None)),
+        Some(Some(vec)) => vec
+            .into_iter()
+            .map(|v| N::try_from(v).map_err(E::custom))
+            .collect::<Result<Vec<N>, E>>()
+            .map(|v| Some(Some(v))),
+    }
+}
+
+// ─── Option<u32/i32> ────────────────────────────────────────────────────────
+
+pub fn deserialize_option_u32<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    narrow_opt(deserialize_option_u64(d)?)
+}
+
+pub fn deserialize_option_i32<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i32>, D::Error> {
+    narrow_opt(deserialize_option_i64(d)?)
+}
+
+// ─── Option<Option<u32/i32>> ────────────────────────────────────────────────
+
+pub fn deserialize_option_option_u32<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<u32>>, D::Error> {
+    narrow_opt_opt(deserialize_option_option_u64(d)?)
+}
+
+pub fn deserialize_option_option_i32<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<i32>>, D::Error> {
+    narrow_opt_opt(deserialize_option_option_i64(d)?)
+}
+
+// ─── Option<Vec<u32/i32>> ───────────────────────────────────────────────────
+
+pub fn deserialize_option_vec_u32<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Vec<u32>>, D::Error> {
+    narrow_opt_vec(deserialize_option_vec_u64(d)?)
+}
+
+pub fn deserialize_option_vec_i32<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Vec<i32>>, D::Error> {
+    narrow_opt_vec(deserialize_option_vec_i64(d)?)
+}
+
+// ─── Option<Option<Vec<u32/i32>>> ───────────────────────────────────────────
+
+pub fn deserialize_option_option_vec_u32<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<Vec<u32>>>, D::Error> {
+    narrow_opt_opt_vec(deserialize_option_option_vec_u64(d)?)
+}
+
+pub fn deserialize_option_option_vec_i32<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<Vec<i32>>>, D::Error> {
+    narrow_opt_opt_vec(deserialize_option_option_vec_i64(d)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +724,88 @@ mod tests {
     fn u64_from_float() {
         let v: TestOption = serde_json::from_str(r#"{"balance": 42.0}"#).unwrap();
         assert_eq!(v.balance, Some(42));
+    }
+
+    // ── 32-bit narrowing ──
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct TestOption32 {
+        #[serde(default, deserialize_with = "deserialize_option_u32")]
+        balance: Option<u32>,
+        #[serde(default, deserialize_with = "deserialize_option_i32")]
+        timestamp: Option<i32>,
+    }
+
+    #[test]
+    fn option_u32_from_number() {
+        let v: TestOption32 =
+            serde_json::from_str(r#"{"balance": 42, "timestamp": -100}"#).unwrap();
+        assert_eq!(v.balance, Some(42));
+        assert_eq!(v.timestamp, Some(-100));
+    }
+
+    #[test]
+    fn option_u32_from_string() {
+        let v: TestOption32 =
+            serde_json::from_str(r#"{"balance": "1000", "timestamp": "-50"}"#).unwrap();
+        assert_eq!(v.balance, Some(1000));
+        assert_eq!(v.timestamp, Some(-50));
+    }
+
+    #[test]
+    fn option_u32_overflow_rejected() {
+        let r = serde_json::from_str::<TestOption32>(r#"{"balance": 4294967296}"#);
+        assert!(r.is_err(), "u32 overflow should be rejected");
+    }
+
+    #[test]
+    fn option_i32_overflow_rejected() {
+        let r = serde_json::from_str::<TestOption32>(r#"{"timestamp": 2147483648}"#);
+        assert!(r.is_err(), "i32 overflow should be rejected");
+    }
+
+    #[test]
+    fn option_u32_null_and_missing() {
+        let v: TestOption32 =
+            serde_json::from_str(r#"{"balance": null, "timestamp": null}"#).unwrap();
+        assert_eq!(v.balance, None);
+        assert_eq!(v.timestamp, None);
+        let v: TestOption32 = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(v.balance, None);
+        assert_eq!(v.timestamp, None);
+    }
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct TestOptionOption32 {
+        #[serde(default, deserialize_with = "deserialize_option_option_u32")]
+        balance: Option<Option<u32>>,
+    }
+
+    #[test]
+    fn option_option_u32_patch_semantics() {
+        let v: TestOptionOption32 = serde_json::from_str(r#"{"balance": 42}"#).unwrap();
+        assert_eq!(v.balance, Some(Some(42)));
+        let v: TestOptionOption32 = serde_json::from_str(r#"{"balance": null}"#).unwrap();
+        assert_eq!(v.balance, Some(None));
+        let v: TestOptionOption32 = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(v.balance, None);
+    }
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct TestVec32 {
+        #[serde(default, deserialize_with = "deserialize_option_vec_u32")]
+        values: Option<Vec<u32>>,
+    }
+
+    #[test]
+    fn vec_u32_mixed() {
+        let v: TestVec32 = serde_json::from_str(r#"{"values": [1, "2", 3]}"#).unwrap();
+        assert_eq!(v.values, Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn vec_u32_overflow_rejected() {
+        let r = serde_json::from_str::<TestVec32>(r#"{"values": [1, 4294967296]}"#);
+        assert!(r.is_err());
     }
 }
