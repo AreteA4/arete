@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.7](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.5.6...hyperstack-cli-v0.5.7) (2026-03-19)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.5.6 to 0.5.7
+    * hyperstack-idl bumped from 0.1.3 to 0.1.4
+
 ## [0.5.6](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.5.5...hyperstack-cli-v0.5.6) (2026-03-19)
 
 

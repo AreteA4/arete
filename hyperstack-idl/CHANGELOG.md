@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-idl-v0.1.3...hyperstack-idl-v0.1.4) (2026-03-19)
+
+
+### Bug Fixes
+
+* Improve Steel IDL detection for 1-byte discriminator arrays ([3fcd1ee](https://github.com/HyperTekOrg/hyperstack/commit/3fcd1ee31bf5b01353c69c5630c122667557ddf6))
+* Improve Steel IDL detection for 1-byte discriminator arrays ([f3a7f9c](https://github.com/HyperTekOrg/hyperstack/commit/f3a7f9c628b4a66d195cc510707bb721a2908fad))
+
 ## [0.1.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-idl-v0.1.2...hyperstack-idl-v0.1.3) (2026-03-19)
 
 

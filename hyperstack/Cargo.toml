@@ -1,6 +1,6 @@
 [package]
 name = "hyperstack"
-version = "0.5.6"
+version = "0.5.7"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
@@ -13,13 +13,13 @@ readme = "README.md"
 
 [dependencies]
 # Core interpreter - AST transformation runtime and VM
-hyperstack-interpreter = { version = "0.5.6", path = "../interpreter", optional = true }
+hyperstack-interpreter = { version = "0.5.7", path = "../interpreter", optional = true }
 
 # Macros - proc-macros for defining streams
-hyperstack-macros = { version = "0.5.6", path = "../hyperstack-macros", optional = true }
+hyperstack-macros = { version = "0.5.7", path = "../hyperstack-macros", optional = true }
 
 # Server - WebSocket server and projection handlers
-hyperstack-server = { version = "0.5.6", path = "../rust/hyperstack-server", optional = true }
+hyperstack-server = { version = "0.5.7", path = "../rust/hyperstack-server", optional = true }
 
 # SDK - Rust client for connecting to HyperStack servers
 hyperstack-sdk = { version = "0.5.6", path = "../rust/hyperstack-sdk", optional = true }
