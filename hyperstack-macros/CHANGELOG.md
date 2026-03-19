@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.9](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-macros-v0.5.8...hyperstack-macros-v0.5.9) (2026-03-19)
+
+
+### Bug Fixes
+
+* handle u64 integer precision loss across Rust-JS boundary ([e96e7fa](https://github.com/HyperTekOrg/hyperstack/commit/e96e7fa7172f520bd7ee88ed7582eda899c9f65b))
+
 ## [0.5.8](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-macros-v0.5.7...hyperstack-macros-v0.5.8) (2026-03-19)
 
 

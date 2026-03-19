@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.9](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-interpreter-v0.5.8...hyperstack-interpreter-v0.5.9) (2026-03-19)
+
+
+### Bug Fixes
+
+* generate correct deserializers for i32/u32 fields ([86438e2](https://github.com/HyperTekOrg/hyperstack/commit/86438e22d3b8bb228a5a9485079211f92b000087))
+* handle u64 integer precision loss across Rust-JS boundary ([e96e7fa](https://github.com/HyperTekOrg/hyperstack/commit/e96e7fa7172f520bd7ee88ed7582eda899c9f65b))
+* handle u64 integer precision loss across Rust-JS boundary ([c3a3c69](https://github.com/HyperTekOrg/hyperstack/commit/c3a3c69587d9e6215aa5dfe4102739eef0ba8662))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-macros bumped from 0.5.8 to 0.5.9
+
 ## [0.5.8](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-interpreter-v0.5.7...hyperstack-interpreter-v0.5.8) (2026-03-19)
 
 

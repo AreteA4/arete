@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.9](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-sdk-v0.5.6...hyperstack-sdk-v0.5.9) (2026-03-19)
+
+
+### Bug Fixes
+
+* generate correct deserializers for i32/u32 fields ([86438e2](https://github.com/HyperTekOrg/hyperstack/commit/86438e22d3b8bb228a5a9485079211f92b000087))
+* handle u64 integer precision loss across Rust-JS boundary ([e96e7fa](https://github.com/HyperTekOrg/hyperstack/commit/e96e7fa7172f520bd7ee88ed7582eda899c9f65b))
+* handle u64 integer precision loss across Rust-JS boundary ([c3a3c69](https://github.com/HyperTekOrg/hyperstack/commit/c3a3c69587d9e6215aa5dfe4102739eef0ba8662))
+* harden serde_utils integer deserialization and add missing i64 vec deserializers ([4afc52e](https://github.com/HyperTekOrg/hyperstack/commit/4afc52ee97020988cf8492c1c4922adc1db5a16c))
+
 ## [0.5.6](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-sdk-v0.5.5...hyperstack-sdk-v0.5.6) (2026-03-19)
 
 

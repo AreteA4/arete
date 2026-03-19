@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.9](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.5.8...hyperstack-server-v0.5.9) (2026-03-19)
+
+
+### Bug Fixes
+
+* apply u64 string transform to live bus updates in projector ([c179f06](https://github.com/HyperTekOrg/hyperstack/commit/c179f06d0faa7ea9cf96d058c5d3a2d354165c99))
+* convert negative i64 values outside MIN_SAFE_INTEGER to strings in WebSocket frames ([de89478](https://github.com/HyperTekOrg/hyperstack/commit/de89478d97906bbf03c106287f54c609486a259a))
+* handle u64 integer precision loss across Rust-JS boundary ([e96e7fa](https://github.com/HyperTekOrg/hyperstack/commit/e96e7fa7172f520bd7ee88ed7582eda899c9f65b))
+* handle u64 integer precision loss across Rust-JS boundary ([c3a3c69](https://github.com/HyperTekOrg/hyperstack/commit/c3a3c69587d9e6215aa5dfe4102739eef0ba8662))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.5.8 to 0.5.9
+
 ## [0.5.8](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.5.7...hyperstack-server-v0.5.8) (2026-03-19)
 
 
