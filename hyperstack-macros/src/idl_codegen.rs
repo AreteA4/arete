@@ -404,13 +404,13 @@ fn generate_account_type(
     if use_bytemuck {
         let bytemuck_try_from = quote! {
             impl #name {
-                pub const DISCRIMINATOR: [u8; 8] = #disc_array;
+                pub const DISCRIMINATOR: &'static [u8] = &#disc_array;
 
                 pub fn try_from_bytes(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-                    if data.len() < 8 {
+                    if data.len() < Self::DISCRIMINATOR.len() {
                         return Err("Data too short for discriminator".into());
                     }
-                    let body = &data[8..];
+                    let body = &data[Self::DISCRIMINATOR.len()..];
                     let struct_size = std::mem::size_of::<Self>();
                     if body.len() < struct_size {
                         return Err(format!(
@@ -478,13 +478,13 @@ fn generate_account_type(
             }
 
             impl #name {
-                pub const DISCRIMINATOR: [u8; 8] = #disc_array;
+                pub const DISCRIMINATOR: &'static [u8] = &#disc_array;
 
                 pub fn try_from_bytes(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-                    if data.len() < 8 {
+                    if data.len() < Self::DISCRIMINATOR.len() {
                         return Err("Data too short for discriminator".into());
                     }
-                    let mut reader = &data[8..];
+                    let mut reader = &data[Self::DISCRIMINATOR.len()..];
                     borsh::BorshDeserialize::deserialize_reader(&mut reader)
                         .map_err(|e| e.into())
                 }
@@ -534,7 +534,7 @@ fn generate_instruction_type(
         }
 
         impl #name {
-            pub const DISCRIMINATOR: [u8; 8] = #disc_array;
+            pub const DISCRIMINATOR: &'static [u8] = &#disc_array;
 
             pub fn try_from_bytes(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
                 let mut reader = data;
@@ -605,21 +605,21 @@ fn generate_event_type(
         }
 
         impl #name {
-            pub const DISCRIMINATOR: [u8; 8] = #disc_array;
+            pub const DISCRIMINATOR: &'static [u8] = &#disc_array;
 
             /// Decode a CPI event from raw instruction data.
-            /// Anchor CPI events: 8-byte discriminator followed by Borsh-encoded payload.
+            /// Anchor CPI events: discriminator followed by Borsh-encoded payload.
             pub fn try_from_bytes(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-                if data.len() < 8 {
+                if data.len() < Self::DISCRIMINATOR.len() {
                     return Err("Data too short for event discriminator".into());
                 }
-                if data[..8] != Self::DISCRIMINATOR {
+                if &data[..Self::DISCRIMINATOR.len()] != Self::DISCRIMINATOR {
                     return Err(format!(
                         "Discriminator mismatch: expected {:?}, got {:?}",
-                        Self::DISCRIMINATOR, &data[..8]
+                        Self::DISCRIMINATOR, &data[..Self::DISCRIMINATOR.len()]
                     ).into());
                 }
-                let mut reader = &data[8..];
+                let mut reader = &data[Self::DISCRIMINATOR.len()..];
                 borsh::BorshDeserialize::deserialize_reader(&mut reader).map_err(|e| e.into())
             }
 
