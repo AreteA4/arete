@@ -1020,7 +1020,7 @@ impl VmContext {
     /// Create a new VmContext specifically for multi-entity operation.
     pub fn new_multi_entity() -> Self {
         VmContext {
-            registers: vec![Value::Null; 32],
+            registers: vec![Value::Null; 256],
             states: HashMap::new(),
             instructions_executed: 0,
             cache_hits: 0,
@@ -2013,6 +2013,7 @@ impl VmContext {
                             "AbortIfNullKey: key is null for account state event, \
                              returning empty mutations for queueing"
                         );
+                        return Ok(Vec::new());
                     }
 
                     pc += 1;
