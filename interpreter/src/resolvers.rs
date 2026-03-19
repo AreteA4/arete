@@ -759,7 +759,12 @@ impl SlotHashResolver {
             return Ok(Value::Null);
         }
 
-        let slot_hash = Self::json_array_to_bytes(&args[0], 32);
+        // slot_hash() returns { bytes: [...] }, so extract the bytes array
+        let slot_hash_bytes = match &args[0] {
+            Value::Object(obj) => obj.get("bytes").cloned().unwrap_or(Value::Null),
+            _ => args[0].clone(),
+        };
+        let slot_hash = Self::json_array_to_bytes(&slot_hash_bytes, 32);
         let seed = Self::json_array_to_bytes(&args[1], 32);
         let samples = match &args[2] {
             Value::Number(n) => n.as_u64(),
@@ -788,7 +793,7 @@ impl SlotHashResolver {
         let r4 = u64::from_le_bytes(hash[24..32].try_into()?);
         let rng = r1 ^ r2 ^ r3 ^ r4;
 
-        Ok(Value::String(rng.to_string()))
+        Ok(Value::Number(serde_json::Number::from(rng)))
     }
 
     /// Extract a byte array of expected length from a JSON array value.

@@ -1053,6 +1053,7 @@ fn generate_computed_fields_hook(
         }).collect();
 
         quote! {
+            #[allow(clippy::too_many_arguments)]
             fn #eval_fn_name(
                 section_obj: &mut hyperstack::runtime::serde_json::Map<String, hyperstack::runtime::serde_json::Value>,
                 section_parent_state: &hyperstack::runtime::serde_json::Value,
@@ -1060,31 +1061,6 @@ fn generate_computed_fields_hook(
                 __context_timestamp: i64,
                 #(#cross_section_params),*
             ) -> Result<(), Box<dyn std::error::Error>> {
-                // Create local bindings for all fields in the current section
-                // Helper macro to get field values with proper type inference
-                macro_rules! extract_field {
-                    ($name:ident, $ty:ty) => {
-                        let $name: Option<$ty> = section_obj
-                            .get(stringify!($name))
-                            .and_then(|v| hyperstack::runtime::serde_json::from_value(v.clone()).ok());
-                    };
-                }
-
-                // Extract all numeric/common fields that might be referenced
-                extract_field!(total_buy_volume, u64);
-                extract_field!(total_sell_volume, u64);
-                extract_field!(total_trades, u64);
-                extract_field!(total_volume, u64);
-                extract_field!(buy_count, u64);
-                extract_field!(sell_count, u64);
-                extract_field!(unique_traders, u64);
-                extract_field!(largest_trade, u64);
-                extract_field!(smallest_trade, u64);
-                extract_field!(last_trade_timestamp, i64);
-                extract_field!(last_trade_price, f64);
-                extract_field!(whale_trade_count, u64);
-                extract_field!(average_trade_size, f64);
-
                 // Initialize cache with current section values for intra-section computed field dependencies
                 let mut computed_cache: std::collections::HashMap<String, hyperstack::runtime::serde_json::Value> = std::collections::HashMap::new();
                 for (key, value) in section_obj.iter() {

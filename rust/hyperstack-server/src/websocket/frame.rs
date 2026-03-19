@@ -93,6 +93,39 @@ fn default_complete() -> bool {
     true
 }
 
+/// Transform large u64 values to strings for JavaScript compatibility.
+/// JavaScript's Number.MAX_SAFE_INTEGER is 2^53 - 1 (9007199254740991).
+/// Values larger than this will lose precision in JavaScript.
+pub fn transform_large_u64_to_strings(value: &mut serde_json::Value) {
+    const MAX_SAFE_INTEGER: u64 = 9007199254740991; // 2^53 - 1
+
+    match value {
+        serde_json::Value::Object(map) => {
+            for (_, v) in map.iter_mut() {
+                transform_large_u64_to_strings(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                transform_large_u64_to_strings(v);
+            }
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(n_u64) = n.as_u64() {
+                if n_u64 > MAX_SAFE_INTEGER {
+                    *value = serde_json::Value::String(n_u64.to_string());
+                }
+            } else if let Some(n_i64) = n.as_i64() {
+                const MIN_SAFE_INTEGER: i64 = -(MAX_SAFE_INTEGER as i64);
+                if n_i64 < MIN_SAFE_INTEGER {
+                    *value = serde_json::Value::String(n_i64.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 impl Frame {
     pub fn entity(&self) -> &str {
         &self.export

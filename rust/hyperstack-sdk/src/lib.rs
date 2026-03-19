@@ -23,6 +23,7 @@ mod entity;
 mod error;
 mod frame;
 pub mod prelude;
+pub mod serde_utils;
 mod store;
 mod stream;
 mod subscription;

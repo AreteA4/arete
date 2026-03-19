@@ -139,7 +139,8 @@ pub use hyperstack_sdk::{{ConnectionState, HyperStack, Stack, Update, Views}};
 
     fn generate_types_rs(&self) -> String {
         let mut output = String::new();
-        output.push_str("use serde::{Deserialize, Serialize};\n\n");
+        output.push_str("use serde::{Deserialize, Serialize};\n");
+        output.push_str("use hyperstack_sdk::serde_utils;\n\n");
 
         let mut generated = HashSet::new();
 
@@ -170,10 +171,11 @@ pub use hyperstack_sdk::{{ConnectionState, HyperStack, Stack, Update, Views}};
             }
             let field_name = to_snake_case(&field.field_name);
             let rust_type = self.field_type_to_rust(field);
+            let serde_attr = self.serde_attr_for_field(field);
 
             fields.push(format!(
-                "    #[serde(default)]\n    pub {}: {},",
-                field_name, rust_type
+                "    {}\n    pub {}: {},",
+                serde_attr, field_name, rust_type
             ));
         }
 
@@ -212,9 +214,10 @@ pub use hyperstack_sdk::{{ConnectionState, HyperStack, Stack, Update, Views}};
                     }
                     let field_name = to_snake_case(&field.field_name);
                     let rust_type = self.field_type_to_rust(field);
+                    let serde_attr = self.serde_attr_for_field(field);
                     fields.push(format!(
-                        "    #[serde(default)]\n    pub {}: {},",
-                        field_name, rust_type
+                        "    {}\n    pub {}: {},",
+                        serde_attr, field_name, rust_type
                     ));
                 }
             }
@@ -266,8 +269,10 @@ pub use hyperstack_sdk::{{ConnectionState, HyperStack, Stack, Update, Views}};
                 .iter()
                 .map(|f| {
                     let rust_type = self.resolved_field_to_rust(f);
+                    let serde_attr = self.serde_attr_for_resolved_field(f);
                     format!(
-                        "    #[serde(default)]\n    pub {}: {},",
+                        "    {}\n    pub {}: {},",
+                        serde_attr,
                         to_snake_case(&f.field_name),
                         rust_type
                     )
@@ -287,7 +292,7 @@ pub use hyperstack_sdk::{{ConnectionState, HyperStack, Stack, Update, Views}};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventWrapper<T> {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "serde_utils::deserialize_i64")]
     pub timestamp: i64,
     pub data: T,
     #[serde(default)]
@@ -508,6 +513,72 @@ impl {entity_name}EntityViews {{
         }
     }
 
+    /// Return the `#[serde(...)]` attribute for a field.
+    /// Integer fields get a `deserialize_with` pointing to the appropriate
+    /// `serde_utils` function so that string-encoded big integers are handled.
+    fn serde_attr_for_field(&self, field: &FieldTypeInfo) -> String {
+        if let Some(deser_fn) = self.deserialize_with_for_type(
+            &field.base_type,
+            field.is_optional,
+            field.is_array && !matches!(field.base_type, BaseType::Array),
+            &field.rust_type_name,
+        ) {
+            format!("#[serde(default, deserialize_with = \"{}\")]", deser_fn)
+        } else {
+            "#[serde(default)]".to_string()
+        }
+    }
+
+    /// Same as `serde_attr_for_field` but for resolved struct fields.
+    fn serde_attr_for_resolved_field(&self, field: &ResolvedField) -> String {
+        if let Some(deser_fn) = self.deserialize_with_for_type(
+            &field.base_type,
+            field.is_optional,
+            field.is_array,
+            &field.field_type,
+        ) {
+            format!("#[serde(default, deserialize_with = \"{}\")]", deser_fn)
+        } else {
+            "#[serde(default)]".to_string()
+        }
+    }
+
+    /// Determine the appropriate `serde_utils::deserialize_*` function for a
+    /// given type combination, or `None` if no custom deserializer is needed.
+    fn deserialize_with_for_type(
+        &self,
+        base_type: &BaseType,
+        is_optional: bool,
+        is_array: bool,
+        rust_type_name: &str,
+    ) -> Option<String> {
+        // Only integer and timestamp types need the string-or-number treatment
+        let int_kind = match base_type {
+            BaseType::Integer => {
+                if rust_type_name.contains("i64") {
+                    "i64"
+                } else if rust_type_name.contains("i32") {
+                    "i32"
+                } else if rust_type_name.contains("u32") {
+                    "u32"
+                } else {
+                    "u64"
+                }
+            }
+            BaseType::Timestamp => "i64",
+            _ => return None,
+        };
+
+        let fn_name = match (is_optional, is_array) {
+            (false, false) => format!("serde_utils::deserialize_option_{}", int_kind),
+            (true, false) => format!("serde_utils::deserialize_option_option_{}", int_kind),
+            (false, true) => format!("serde_utils::deserialize_option_vec_{}", int_kind),
+            (true, true) => format!("serde_utils::deserialize_option_option_vec_{}", int_kind),
+        };
+
+        Some(fn_name)
+    }
+
     fn resolved_field_to_rust(&self, field: &ResolvedField) -> String {
         let base = self.base_type_to_rust(&field.base_type, &field.field_type);
 
@@ -638,7 +709,8 @@ fn generate_stack_types_rs(
     entity_names: &[String],
 ) -> String {
     let mut output = String::new();
-    output.push_str("use serde::{Deserialize, Serialize};\n\n");
+    output.push_str("use serde::{Deserialize, Serialize};\n");
+    output.push_str("use hyperstack_sdk::serde_utils;\n\n");
 
     let mut generated = HashSet::new();
 
@@ -673,7 +745,7 @@ fn generate_stack_types_rs(
         r#"
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventWrapper<T> {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "serde_utils::deserialize_i64")]
     pub timestamp: i64,
     pub data: T,
     #[serde(default)]
