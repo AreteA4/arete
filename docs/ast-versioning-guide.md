@@ -315,19 +315,21 @@ pub struct SerializableStreamSpec {
 ```rust
 fn migrate_stream_v1_to_v2(v1: SerializableStreamSpecV1) -> SerializableStreamSpec {
     SerializableStreamSpec {
-        ast_version: "2.0.0".to_string(),
+        ast_version: CURRENT_AST_VERSION.to_string(),
         state_name: v1.state_name,
         new_name: v1.old_name,  // Direct mapping
     }
 }
 
 pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedLoadError> {
-    let raw: Value = serde_json::from_str(json)?;
+    let raw: Value = serde_json::from_str(json)
+        .map_err(|e| VersionedLoadError::InvalidJson(e.to_string()))?;
     let version = raw.get("ast_version").and_then(|v| v.as_str()).unwrap_or("0.0.1");
     
     match version {
         "0.0.1" => {
-            let v1: SerializableStreamSpecV1 = serde_json::from_value(raw)?;
+            let v1: SerializableStreamSpecV1 = serde_json::from_value(raw)
+                .map_err(|e| VersionedLoadError::InvalidStructure(e.to_string()))?;
             Ok(migrate_stream_v1_to_v2(v1))
         }
         "2.0.0" => {
@@ -347,7 +349,7 @@ fn test_v1_migration() {
     let json = r#"{"ast_version":"0.0.1","state_name":"Test","old_name":"Value"}"#;
     let spec = load_stream_spec(json).unwrap();
     assert_eq!(spec.new_name, "Value");
-    assert_eq!(spec.ast_version, "2.0.0");
+    assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
 }
 
 #[test]

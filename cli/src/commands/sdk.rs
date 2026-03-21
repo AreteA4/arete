@@ -247,13 +247,8 @@ fn load_stack_spec(
         .with_context(|| format!("Failed to read stack file: {}", ast.path.display()))?;
 
     // Use versioned loader for automatic version detection and migration
-    let stack_spec =
-        hyperstack_interpreter::versioned::load_stack_spec(&ast_json).with_context(|| {
-            format!(
-                "Failed to load stack AST from {} (version detection failed)",
-                ast.path.display()
-            )
-        })?;
+    let stack_spec = hyperstack_interpreter::versioned::load_stack_spec(&ast_json)
+        .with_context(|| format!("Failed to load stack AST from {}", ast.path.display()))?;
 
     if stack_spec.entities.is_empty() {
         return Err(anyhow::anyhow!(
