@@ -96,7 +96,7 @@ impl MaterializedView {
 
     /// Evaluate initial state from cache
     pub async fn evaluate_initial(&self, cache: &EntityCache) -> Vec<(String, Value)> {
-        let entities = cache.get_all(&self.source_id, None).await;
+        let entities = cache.get_all(&self.source_id).await;
         self.evaluate_pipeline(entities).await
     }
 

@@ -100,29 +100,13 @@ impl EntityCache {
     ///
     /// Returns a vector of (key, entity) pairs for sending as snapshots
     /// to new subscribers.
-    pub async fn get_all(&self, view_id: &str, limit: Option<usize>) -> Vec<(String, Value)> {
+    pub async fn get_all(&self, view_id: &str) -> Vec<(String, Value)> {
         let caches = self.caches.read().await;
 
-        let mut results: Vec<(String, Value)> = caches
+        caches
             .get(view_id)
             .map(|cache| cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
-
-        // Sort by _seq descending to return the most recent entities when limit is applied
-        if limit.is_some() {
-            results.sort_by(|a, b| {
-                let seq_a = a.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
-                let seq_b = b.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
-                seq_b.cmp(seq_a)
-            });
-        }
-
-        // Apply limit if provided
-        if let Some(limit) = limit {
-            results.truncate(limit);
-        }
-
-        results
+            .unwrap_or_default()
     }
 
     /// Get entities with _seq greater than the provided cursor.
@@ -515,7 +499,7 @@ mod tests {
         cache.upsert("tokens/list", "key1", json!({"id": 1})).await;
         cache.upsert("tokens/list", "key2", json!({"id": 2})).await;
 
-        let all = cache.get_all("tokens/list", None).await;
+        let all = cache.get_all("tokens/list").await;
         assert_eq!(all.len(), 2);
     }
 
