@@ -326,7 +326,7 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for EntityStre
                     let view = subscription_view.clone();
                     let key = subscription_key.clone();
                     let fut = Box::pin(async move {
-                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip)
+                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip, None, None, None)
                             .await;
                     });
 
@@ -540,7 +540,7 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for RichEntity
                     let view = subscription_view.clone();
                     let key = subscription_key.clone();
                     let fut = Box::pin(async move {
-                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip)
+                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip, None, None, None)
                             .await;
                     });
 
@@ -1024,7 +1024,7 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for UseStream<
                     let view = subscription_view.clone();
                     let key = subscription_key.clone();
                     let fut = Box::pin(async move {
-                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip)
+                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip, None, None, None)
                             .await;
                     });
 

@@ -22,6 +22,15 @@ pub struct Subscription {
     pub take: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip: Option<u32>,
+    /// Whether to include initial snapshot (defaults to true for backward compatibility)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub with_snapshot: Option<bool>,
+    /// Cursor for resuming from a specific point (_seq value)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// Maximum number of entities to include in snapshot (pagination hint)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,6 +76,9 @@ impl Subscription {
             filters: None,
             take: None,
             skip: None,
+            with_snapshot: None,
+            after: None,
+            snapshot_limit: None,
         }
     }
 
@@ -87,6 +99,24 @@ impl Subscription {
 
     pub fn with_skip(mut self, skip: u32) -> Self {
         self.skip = Some(skip);
+        self
+    }
+
+    /// Set whether to include the initial snapshot (defaults to true)
+    pub fn with_snapshot(mut self, with_snapshot: bool) -> Self {
+        self.with_snapshot = Some(with_snapshot);
+        self
+    }
+
+    /// Set the cursor to resume from (for reconnecting and getting only newer data)
+    pub fn after(mut self, cursor: impl Into<String>) -> Self {
+        self.after = Some(cursor.into());
+        self
+    }
+
+    /// Set the maximum number of entities to include in the snapshot
+    pub fn with_snapshot_limit(mut self, limit: usize) -> Self {
+        self.snapshot_limit = Some(limit);
         self
     }
 

@@ -63,7 +63,7 @@ impl ConnectionManager {
     }
 
     pub async fn ensure_subscription(&self, view: &str, key: Option<&str>) {
-        self.ensure_subscription_with_opts(view, key, None, None)
+        self.ensure_subscription_with_opts(view, key, None, None, None, None, None)
             .await
     }
 
@@ -73,6 +73,9 @@ impl ConnectionManager {
         key: Option<&str>,
         take: Option<u32>,
         skip: Option<u32>,
+        with_snapshot: Option<bool>,
+        after: Option<&str>,
+        snapshot_limit: Option<usize>,
     ) {
         let sub = Subscription {
             view: view.to_string(),
@@ -81,6 +84,9 @@ impl ConnectionManager {
             filters: None,
             take,
             skip,
+            with_snapshot,
+            after: after.map(|s| s.to_string()),
+            snapshot_limit,
         };
 
         if !self.inner.subscriptions.read().await.contains(&sub) {
@@ -196,6 +202,9 @@ fn spawn_connection_loop(
                                             filters: None,
                                             take: None,
                                             skip: None,
+                                            with_snapshot: None,
+                                            after: None,
+                                            snapshot_limit: None,
                                         };
                                         subscriptions.write().await.remove(&sub);
                                         let client_msg = ClientMessage::Unsubscribe(unsub);

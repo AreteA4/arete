@@ -81,6 +81,9 @@ pub struct Frame {
     pub data: serde_json::Value,
     #[serde(default)]
     pub append: Vec<String>,
+    /// Sequence cursor for ordering and resume capability
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<String>,
 }
 
 impl Frame {
