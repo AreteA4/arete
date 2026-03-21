@@ -47,7 +47,8 @@ impl fmt::Display for VersionedLoadError {
             VersionedLoadError::UnsupportedVersion(version) => {
                 write!(
                     f,
-                    "Unsupported AST version: {}. Current supported versions: {}",
+                    "Unsupported AST version: {}. Latest supported version: {}. \
+                     Older versions are supported via automatic migration.",
                     version, CURRENT_AST_VERSION
                 )
             }
