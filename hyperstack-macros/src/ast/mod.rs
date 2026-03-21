@@ -54,6 +54,3 @@ pub(crate) mod writer;
 
 // Re-export all types for easy access
 pub use types::*;
-
-// Re-export versioned loader for convenience
-pub use versioned::{detect_ast_version, load_stack_spec, load_stream_spec};

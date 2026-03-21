@@ -14,6 +14,12 @@
 //! let stream = load_stream_spec(&json_string)?;
 //! ```
 
+// This module provides a public API for loading versioned ASTs.
+// While not all items are currently used within this crate, they are
+// part of the public API available for external use and future features
+// like the `#[ast_spec]` macro or CLI tooling.
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
