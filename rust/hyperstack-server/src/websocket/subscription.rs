@@ -32,6 +32,8 @@ pub struct Subscription {
     pub with_snapshot: Option<bool>,
     /// Cursor for resuming from a specific point (_seq value).
     /// Note: Ignored for State mode subscriptions (single entity, no pagination).
+    /// Note: Not supported for derived views (windowed aggregations with sort). Derived views
+    /// always emit `seq: None` in live update frames, so cursor-based reconnection is unavailable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after: Option<String>,
     /// Maximum number of entities to include in snapshot (pagination hint).
