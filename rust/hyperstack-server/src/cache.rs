@@ -16,6 +16,19 @@ const DEFAULT_MAX_ARRAY_LENGTH: usize = 100;
 const DEFAULT_INITIAL_SNAPSHOT_BATCH_SIZE: usize = 50;
 const DEFAULT_SUBSEQUENT_SNAPSHOT_BATCH_SIZE: usize = 100;
 
+/// Compare two `_seq` values numerically.
+/// `_seq` format is "{slot}:{offset}" where slot is not zero-padded.
+/// This handles digit-count boundaries correctly (e.g., 99999999 < 100000000).
+pub fn cmp_seq(a: &str, b: &str) -> std::cmp::Ordering {
+    fn parse(s: &str) -> (u64, u64) {
+        let mut parts = s.splitn(2, ':');
+        let slot = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let offset = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        (slot, offset)
+    }
+    parse(a).cmp(&parse(b))
+}
+
 /// Configuration for the entity cache
 #[derive(Debug, Clone)]
 pub struct EntityCacheConfig {
@@ -129,7 +142,7 @@ impl EntityCache {
                     entity
                         .get("_seq")
                         .and_then(|s| s.as_str())
-                        .map(|seq| seq > cursor)
+                        .map(|seq| cmp_seq(seq, cursor) == std::cmp::Ordering::Greater)
                         .unwrap_or(false)
                 })
                 .map(|(k, v)| (k.clone(), v.clone()))
@@ -139,7 +152,7 @@ impl EntityCache {
             results.sort_by(|a, b| {
                 let seq_a = a.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
                 let seq_b = b.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
-                seq_a.cmp(seq_b)
+                cmp_seq(seq_a, seq_b)
             });
 
             // Apply limit if provided

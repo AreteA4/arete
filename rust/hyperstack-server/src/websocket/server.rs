@@ -1,5 +1,5 @@
 use crate::bus::BusManager;
-use crate::cache::{EntityCache, SnapshotBatchConfig};
+use crate::cache::{cmp_seq, EntityCache, SnapshotBatchConfig};
 use crate::compression::maybe_compress;
 use crate::view::{ViewIndex, ViewSpec};
 use crate::websocket::client_manager::ClientManager;
@@ -610,6 +610,7 @@ async fn attach_client_to_bus(
                 }
             } else {
                 info!("Client {} subscribed to {} without snapshot", ctx.client_id, view_id);
+                rx.borrow_and_update();
             }
 
             let client_id = ctx.client_id;
@@ -663,7 +664,7 @@ async fn attach_client_to_bus(
                         snapshots.sort_by(|a, b| {
                             let sa = a.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
                             let sb = b.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
-                            sb.cmp(sa) // descending: most-recent N
+                            cmp_seq(sb, sa) // descending: most-recent N
                         });
                         snapshots.truncate(limit);
                     }
@@ -1022,6 +1023,7 @@ async fn attach_client_to_bus(
                 }
             } else {
                 info!("Client {} subscribed to {} without snapshot", ctx.client_id, view_id);
+                rx.borrow_and_update();
             }
 
             let client_id = ctx.client_id;
@@ -1071,7 +1073,7 @@ async fn attach_client_to_bus(
                         snapshots.sort_by(|a, b| {
                             let sa = a.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
                             let sb = b.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
-                            sb.cmp(sa) // descending: most-recent N
+                            cmp_seq(sb, sa) // descending: most-recent N
                         });
                         snapshots.truncate(limit);
                     }
