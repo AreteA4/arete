@@ -658,12 +658,15 @@ async fn attach_client_to_bus(
                 };
 
                 // Sort by _seq descending only when there is no cursor (to get most-recent N from full cache)
-                if subscription.snapshot_limit.is_some() && subscription.after.is_none() {
-                    snapshots.sort_by(|a, b| {
-                        let sa = a.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
-                        let sb = b.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
-                        sb.cmp(sa) // descending: most-recent N
-                    });
+                if let Some(limit) = subscription.snapshot_limit {
+                    if subscription.after.is_none() {
+                        snapshots.sort_by(|a, b| {
+                            let sa = a.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
+                            let sb = b.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
+                            sb.cmp(sa) // descending: most-recent N
+                        });
+                        snapshots.truncate(limit);
+                    }
                 }
 
                 let snapshot_entities: Vec<SnapshotEntity> = snapshots
@@ -1063,12 +1066,15 @@ async fn attach_client_to_bus(
                 };
 
                 // Sort by _seq descending only when there is no cursor (to get most-recent N from full cache)
-                if subscription.snapshot_limit.is_some() && subscription.after.is_none() {
-                    snapshots.sort_by(|a, b| {
-                        let sa = a.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
-                        let sb = b.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
-                        sb.cmp(sa) // descending: most-recent N
-                    });
+                if let Some(limit) = subscription.snapshot_limit {
+                    if subscription.after.is_none() {
+                        snapshots.sort_by(|a, b| {
+                            let sa = a.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
+                            let sb = b.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
+                            sb.cmp(sa) // descending: most-recent N
+                        });
+                        snapshots.truncate(limit);
+                    }
                 }
 
                 let snapshot_entities: Vec<SnapshotEntity> = snapshots
