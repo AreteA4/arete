@@ -14,11 +14,11 @@ HyperStack uses **semantic versioning** for AST schemas (major.minor.patch):
 
 | Change Type | Version Bump | Migration Required? |
 |------------|--------------|-------------------|
-| Add new optional field | Minor (1.0.0 → 1.1.0) | No |
-| Rename field | Major (1.0.0 → 2.0.0) | Yes |
-| Remove field | Major (1.0.0 → 2.0.0) | Yes |
-| Change field type | Major (1.0.0 → 2.0.0) | Yes |
-| Restructure enum | Major (1.0.0 → 2.0.0) | Yes |
+| Add new optional field | Minor (0.0.1 → 1.1.0) | No |
+| Rename field | Major (0.0.1 → 2.0.0) | Yes |
+| Remove field | Major (0.0.1 → 2.0.0) | Yes |
+| Change field type | Major (0.0.1 → 2.0.0) | Yes |
+| Restructure enum | Major (0.0.1 → 2.0.0) | Yes |
 
 ## Step-by-Step: Adding a Breaking Change
 
@@ -31,7 +31,7 @@ The AST types are duplicated between `hyperstack-macros` (for compile-time code 
 **`hyperstack-macros/src/ast/types.rs`**
 ```rust
 // Change this
-pub const CURRENT_AST_VERSION: &str = "1.0.0";
+pub const CURRENT_AST_VERSION: &str = "0.0.1";
 
 // To this (for a minor bump)
 pub const CURRENT_AST_VERSION: &str = "1.1.0";
@@ -52,7 +52,7 @@ pub const CURRENT_AST_VERSION: &str = "2.0.0";
 
 **Don't worry about forgetting:** There's a test (`test_ast_version_sync_*`) in both crates that will fail if the constants get out of sync. You'll see an error like:
 ```
-AST version mismatch! hyperstack-macros has '1.0.0', interpreter has '2.0.0'.
+AST version mismatch! hyperstack-macros has '0.0.1', interpreter has '2.0.0'.
 Both crates must have the same CURRENT_AST_VERSION.
 Update both files when bumping the version.
 ```
@@ -121,10 +121,10 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
     let version = raw
         .get("ast_version")
         .and_then(|v| v.as_str())
-        .unwrap_or("1.0.0");
+        .unwrap_or("0.0.1");
     
     match version {
-        "1.0.0" => {
+        "0.0.1" => {
             serde_json::from_value::<SerializableStreamSpec>(raw)
                 .map_err(|e| VersionedLoadError::InvalidStructure(e.to_string()))
         }
@@ -133,7 +133,7 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
             serde_json::from_value::<SerializableStreamSpec>(raw)
                 .map_err(|e| VersionedLoadError::InvalidStructure(e.to_string()))
         }
-        "1.0.0" => {
+        "0.0.1" => {
             // OLD: Load v1 and migrate to v2
             let v1: SerializableStreamSpecV1 = serde_json::from_value(raw)
                 .map_err(|e| VersionedLoadError::InvalidStructure(e.to_string()))?;
@@ -164,7 +164,7 @@ If you're using the `VersionedStreamSpec` enum for explicit version handling:
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "ast_version")]
 pub enum VersionedStreamSpec {
-    #[serde(rename = "1.0.0")]
+    #[serde(rename = "0.0.1")]
     V1(SerializableStreamSpecV1),
     #[serde(rename = "2.0.0")]
     V2(SerializableStreamSpec),  // Current version
@@ -221,7 +221,7 @@ mod tests {
     fn test_migrate_v1_to_v2() {
         let v1_json = r#"
         {
-            "ast_version": "1.0.0",
+            "ast_version": "0.0.1",
             "state_name": "TestEntity",
             "old_field": "old_value"
         }
@@ -259,9 +259,9 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
     // ... version detection ...
     
     match version {
-        "1.0.0" => {
+        "0.0.1" => {
             // Log deprecation warning
-            eprintln!("WARNING: Loading deprecated AST v1.0.0. Please upgrade your AST files.");
+            eprintln!("WARNING: Loading deprecated AST v0.0.1. Please upgrade your AST files.");
             
             let v1: SerializableStreamSpecV1 = serde_json::from_value(raw)
                 .map_err(|e| VersionedLoadError::InvalidStructure(e.to_string()))?;
@@ -275,9 +275,9 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
 After your deprecation period, you can remove support:
 
 ```rust
-"1.0.0" => {
+"0.0.1" => {
     Err(VersionedLoadError::UnsupportedVersion(
-        "1.0.0 (deprecated, please upgrade your AST files)".to_string()
+        "0.0.1 (deprecated, please upgrade your AST files)".to_string()
     ))
 }
 ```
@@ -321,10 +321,10 @@ fn migrate_stream_v1_to_v2(v1: SerializableStreamSpecV1) -> SerializableStreamSp
 
 pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedLoadError> {
     let raw: Value = serde_json::from_str(json)?;
-    let version = raw.get("ast_version").and_then(|v| v.as_str()).unwrap_or("1.0.0");
+    let version = raw.get("ast_version").and_then(|v| v.as_str()).unwrap_or("0.0.1");
     
     match version {
-        "1.0.0" => {
+        "0.0.1" => {
             let v1: SerializableStreamSpecV1 = serde_json::from_value(raw)?;
             Ok(migrate_stream_v1_to_v2(v1))
         }
@@ -342,7 +342,7 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
 ```rust
 #[test]
 fn test_v1_migration() {
-    let json = r#"{"ast_version":"1.0.0","state_name":"Test","old_name":"Value"}"#;
+    let json = r#"{"ast_version":"0.0.1","state_name":"Test","old_name":"Value"}"#;
     let spec = load_stream_spec(json).unwrap();
     assert_eq!(spec.new_name, "Value");
     assert_eq!(spec.ast_version, "2.0.0");
@@ -388,10 +388,10 @@ Before releasing a new AST version:
 
 ## FAQ
 
-**Q: Can I skip versions? (e.g., 1.0.0 → 3.0.0)**
+**Q: Can I skip versions? (e.g., 0.0.1 → 3.0.0)**
 
-A: Yes, but you must support all intermediate versions. If someone has v1.0.0 and you skip to v3.0.0, you need:
-- 1.0.0 → 2.0.0 migration
+A: Yes, but you must support all intermediate versions. If someone has v0.0.1 and you skip to v3.0.0, you need:
+- 0.0.1 → 2.0.0 migration
 - 2.0.0 → 3.0.0 migration
 
 **Q: What if I need to rollback?**
@@ -403,8 +403,8 @@ A: AST versions are additive. Keep old migration code and tests. Users with new 
 A: After your deprecation window, change the migration to return an error:
 
 ```rust
-"1.0.0" => Err(VersionedLoadError::UnsupportedVersion(
-    "1.0.0 deprecated, run: hyperstack migrate-ast".to_string()
+"0.0.1" => Err(VersionedLoadError::UnsupportedVersion(
+    "0.0.1 deprecated, run: hyperstack migrate-ast".to_string()
 ))
 ```
 

@@ -310,12 +310,12 @@ pub enum UnaryOp {
 /// circular dependency between proc-macro crates and their output crates.
 /// When bumping this version, you MUST also update the constant in the
 /// interpreter crate. A test in versioned.rs verifies they stay in sync.
-pub const CURRENT_AST_VERSION: &str = "1.0.0";
+pub const CURRENT_AST_VERSION: &str = "0.0.1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableStreamSpec {
     /// AST schema version for backward compatibility
-    /// Uses semver format (e.g., "1.0.0")
+    /// Uses semver format (e.g., "0.0.1")
     #[serde(default = "default_ast_version")]
     pub ast_version: String,
     pub state_name: String,
@@ -889,7 +889,7 @@ pub struct InstructionDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableStackSpec {
     /// AST schema version for backward compatibility
-    /// Uses semver format (e.g., "1.0.0")
+    /// Uses semver format (e.g., "0.0.1")
     #[serde(default = "default_ast_version")]
     pub ast_version: String,
     pub stack_name: String,

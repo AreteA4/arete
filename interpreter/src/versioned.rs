@@ -79,15 +79,15 @@ pub fn load_stack_spec(json: &str) -> Result<SerializableStackSpec, VersionedLoa
     let raw: Value =
         serde_json::from_str(json).map_err(|e| VersionedLoadError::InvalidJson(e.to_string()))?;
 
-    // Extract version - default to "1.0.0" if not present (backwards compatibility)
+    // Extract version - default to "0.0.1" if not present (backwards compatibility)
     let version = raw
         .get("ast_version")
         .and_then(|v| v.as_str())
-        .unwrap_or("1.0.0");
+        .unwrap_or("0.0.1");
 
     // Route to appropriate deserializer based on version
     match version {
-        "1.0.0" => {
+        "0.0.1" => {
             // Current version - deserialize directly
             serde_json::from_value::<SerializableStackSpec>(raw)
                 .map_err(|e| VersionedLoadError::InvalidStructure(e.to_string()))
@@ -115,15 +115,15 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
     let raw: Value =
         serde_json::from_str(json).map_err(|e| VersionedLoadError::InvalidJson(e.to_string()))?;
 
-    // Extract version - default to "1.0.0" if not present (backwards compatibility)
+    // Extract version - default to "0.0.1" if not present (backwards compatibility)
     let version = raw
         .get("ast_version")
         .and_then(|v| v.as_str())
-        .unwrap_or("1.0.0");
+        .unwrap_or("0.0.1");
 
     // Route to appropriate deserializer based on version
     match version {
-        "1.0.0" => {
+        "0.0.1" => {
             // Current version - deserialize directly
             serde_json::from_value::<SerializableStreamSpec>(raw)
                 .map_err(|e| VersionedLoadError::InvalidStructure(e.to_string()))
@@ -142,7 +142,7 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "ast_version")]
 pub enum VersionedStackSpec {
-    #[serde(rename = "1.0.0")]
+    #[serde(rename = "0.0.1")]
     V1(SerializableStackSpec),
 }
 
@@ -162,7 +162,7 @@ impl VersionedStackSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "ast_version")]
 pub enum VersionedStreamSpec {
-    #[serde(rename = "1.0.0")]
+    #[serde(rename = "0.0.1")]
     V1(SerializableStreamSpec),
 }
 
@@ -201,7 +201,7 @@ pub fn detect_ast_version(json: &str) -> Result<String, VersionedLoadError> {
         .get("ast_version")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| "1.0.0".to_string()))
+        .unwrap_or_else(|| "0.0.1".to_string()))
 }
 
 #[cfg(test)]
@@ -212,7 +212,7 @@ mod tests {
     fn test_load_stack_spec_v1() {
         let json = r#"
         {
-            "ast_version": "1.0.0",
+            "ast_version": "0.0.1",
             "stack_name": "TestStack",
             "program_ids": [],
             "idls": [],
@@ -226,12 +226,12 @@ mod tests {
         assert!(result.is_ok());
         let spec = result.unwrap();
         assert_eq!(spec.stack_name, "TestStack");
-        assert_eq!(spec.ast_version, "1.0.0");
+        assert_eq!(spec.ast_version, "0.0.1");
     }
 
     #[test]
     fn test_load_stack_spec_no_version_defaults_to_v1() {
-        // Test backwards compatibility - no ast_version field should default to 1.0.0
+        // Test backwards compatibility - no ast_version field should default to 0.0.1
         let json = r#"
         {
             "stack_name": "TestStack",
@@ -247,7 +247,7 @@ mod tests {
         assert!(result.is_ok());
         let spec = result.unwrap();
         assert_eq!(spec.stack_name, "TestStack");
-        assert_eq!(spec.ast_version, "1.0.0");
+        assert_eq!(spec.ast_version, "0.0.1");
     }
 
     #[test]
@@ -274,11 +274,11 @@ mod tests {
 
     #[test]
     fn test_detect_ast_version() {
-        let json = r#"{"ast_version": "1.0.0", "stack_name": "Test"}"#;
-        assert_eq!(detect_ast_version(json).unwrap(), "1.0.0");
+        let json = r#"{"ast_version": "0.0.1", "stack_name": "Test"}"#;
+        assert_eq!(detect_ast_version(json).unwrap(), "0.0.1");
 
         let json_no_version = r#"{"stack_name": "Test"}"#;
-        assert_eq!(detect_ast_version(json_no_version).unwrap(), "1.0.0");
+        assert_eq!(detect_ast_version(json_no_version).unwrap(), "0.0.1");
     }
 
     /// Verifies that the AST version constant matches the hyperstack-macros crate.
