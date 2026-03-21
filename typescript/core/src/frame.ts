@@ -23,6 +23,8 @@ export interface EntityFrame<T = unknown> {
   key: string;
   data: T;
   append?: string[];
+  /** Sequence cursor for ordering and resume capability */
+  seq?: string;
 }
 
 export interface SnapshotEntity<T = unknown> {

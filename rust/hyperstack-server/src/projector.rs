@@ -168,6 +168,9 @@ impl Projector {
             let mut projected = spec.projection.apply(patch_data);
             transform_large_u64_to_strings(&mut projected);
 
+            // Extract _seq from the patch data to include in the frame
+            let seq = slot_context.map(|ctx| ctx.to_seq_string());
+
             let frame = Frame {
                 mode: spec.mode,
                 export: spec.id.clone(),
@@ -175,6 +178,7 @@ impl Projector {
                 key: key.clone(),
                 data: projected,
                 append: append.clone(),
+                seq,
             };
 
             json_buffer.clear();

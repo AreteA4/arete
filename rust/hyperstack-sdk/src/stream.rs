@@ -1,4 +1,4 @@
-use crate::connection::ConnectionManager;
+use crate::connection::{ConnectionManager, SubscriptionOptions};
 use crate::frame::Operation;
 use crate::store::{SharedStore, StoreUpdate};
 use futures_util::Stream;
@@ -179,6 +179,9 @@ enum EntityStreamState<T> {
         subscription_key: Option<String>,
         take: Option<u32>,
         skip: Option<u32>,
+        with_snapshot: Option<bool>,
+        after: Option<String>,
+        snapshot_limit: Option<usize>,
     },
     Active {
         inner: BroadcastStream<StoreUpdate>,
@@ -246,6 +249,9 @@ impl<T: DeserializeOwned + Clone + Send + 'static> EntityStream<T> {
             subscription_key,
             None,
             None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -259,6 +265,9 @@ impl<T: DeserializeOwned + Clone + Send + 'static> EntityStream<T> {
         subscription_key: Option<String>,
         take: Option<u32>,
         skip: Option<u32>,
+        with_snapshot: Option<bool>,
+        after: Option<String>,
+        snapshot_limit: Option<usize>,
     ) -> Self {
         Self {
             state: EntityStreamState::Lazy {
@@ -268,6 +277,9 @@ impl<T: DeserializeOwned + Clone + Send + 'static> EntityStream<T> {
                 subscription_key,
                 take,
                 skip,
+                with_snapshot,
+                after,
+                snapshot_limit,
             },
             view: entity_name,
             key_filter,
@@ -313,6 +325,9 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for EntityStre
                         subscription_key,
                         take,
                         skip,
+                        with_snapshot,
+                        after,
+                        snapshot_limit,
                     } = std::mem::replace(&mut this.state, EntityStreamState::Invalid)
                     else {
                         unreachable!()
@@ -326,7 +341,14 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for EntityStre
                     let view = subscription_view.clone();
                     let key = subscription_key.clone();
                     let fut = Box::pin(async move {
-                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip)
+                        let opts = SubscriptionOptions {
+                            take,
+                            skip,
+                            with_snapshot,
+                            after,
+                            snapshot_limit,
+                        };
+                        conn.ensure_subscription_with_opts(&view, key.as_deref(), opts)
                             .await;
                     });
 
@@ -429,6 +451,9 @@ enum RichEntityStreamState<T> {
         subscription_key: Option<String>,
         take: Option<u32>,
         skip: Option<u32>,
+        with_snapshot: Option<bool>,
+        after: Option<String>,
+        snapshot_limit: Option<usize>,
     },
     Active {
         inner: BroadcastStream<StoreUpdate>,
@@ -481,6 +506,9 @@ impl<T: DeserializeOwned + Clone + Send + 'static> RichEntityStream<T> {
             subscription_key,
             None,
             None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -494,6 +522,9 @@ impl<T: DeserializeOwned + Clone + Send + 'static> RichEntityStream<T> {
         subscription_key: Option<String>,
         take: Option<u32>,
         skip: Option<u32>,
+        with_snapshot: Option<bool>,
+        after: Option<String>,
+        snapshot_limit: Option<usize>,
     ) -> Self {
         Self {
             state: RichEntityStreamState::Lazy {
@@ -503,6 +534,9 @@ impl<T: DeserializeOwned + Clone + Send + 'static> RichEntityStream<T> {
                 subscription_key,
                 take,
                 skip,
+                with_snapshot,
+                after,
+                snapshot_limit,
             },
             view: entity_name,
             key_filter,
@@ -527,6 +561,9 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for RichEntity
                         subscription_key,
                         take,
                         skip,
+                        with_snapshot,
+                        after,
+                        snapshot_limit,
                     } = std::mem::replace(&mut this.state, RichEntityStreamState::Invalid)
                     else {
                         unreachable!()
@@ -540,7 +577,14 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for RichEntity
                     let view = subscription_view.clone();
                     let key = subscription_key.clone();
                     let fut = Box::pin(async move {
-                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip)
+                        let opts = SubscriptionOptions {
+                            take,
+                            skip,
+                            with_snapshot,
+                            after,
+                            snapshot_limit,
+                        };
+                        conn.ensure_subscription_with_opts(&view, key.as_deref(), opts)
                             .await;
                     });
 
@@ -890,6 +934,9 @@ enum UseStreamState<T> {
         subscription_key: Option<String>,
         take: Option<u32>,
         skip: Option<u32>,
+        with_snapshot: Option<bool>,
+        after: Option<String>,
+        snapshot_limit: Option<usize>,
     },
     Active {
         inner: BroadcastStream<StoreUpdate>,
@@ -942,6 +989,9 @@ impl<T: DeserializeOwned + Clone + Send + 'static> UseStream<T> {
             subscription_key,
             None,
             None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -955,6 +1005,9 @@ impl<T: DeserializeOwned + Clone + Send + 'static> UseStream<T> {
         subscription_key: Option<String>,
         take: Option<u32>,
         skip: Option<u32>,
+        with_snapshot: Option<bool>,
+        after: Option<String>,
+        snapshot_limit: Option<usize>,
     ) -> Self {
         Self {
             state: UseStreamState::Lazy {
@@ -964,6 +1017,9 @@ impl<T: DeserializeOwned + Clone + Send + 'static> UseStream<T> {
                 subscription_key,
                 take,
                 skip,
+                with_snapshot,
+                after,
+                snapshot_limit,
             },
             view: entity_name,
             key_filter,
@@ -1012,6 +1068,9 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for UseStream<
                         subscription_key,
                         take,
                         skip,
+                        with_snapshot,
+                        after,
+                        snapshot_limit,
                     } = std::mem::replace(&mut this.state, UseStreamState::Invalid)
                     else {
                         unreachable!()
@@ -1024,7 +1083,14 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for UseStream<
                     let view = subscription_view.clone();
                     let key = subscription_key.clone();
                     let fut = Box::pin(async move {
-                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip)
+                        let opts = SubscriptionOptions {
+                            take,
+                            skip,
+                            with_snapshot,
+                            after,
+                            snapshot_limit,
+                        };
+                        conn.ensure_subscription_with_opts(&view, key.as_deref(), opts)
                             .await;
                     });
 

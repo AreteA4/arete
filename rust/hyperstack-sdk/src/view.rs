@@ -149,6 +149,9 @@ where
     take: Option<u32>,
     skip: Option<u32>,
     filters: Option<HashMap<String, String>>,
+    with_snapshot: Option<bool>,
+    after: Option<String>,
+    snapshot_limit: Option<usize>,
     stream: Option<UseStream<T>>,
 }
 
@@ -170,6 +173,9 @@ where
             take: None,
             skip: None,
             filters: None,
+            with_snapshot: None,
+            after: None,
+            snapshot_limit: None,
             stream: None,
         }
     }
@@ -191,6 +197,24 @@ where
         self.filters
             .get_or_insert_with(HashMap::new)
             .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set whether to include the initial snapshot (defaults to true).
+    pub fn with_snapshot(mut self, with_snapshot: bool) -> Self {
+        self.with_snapshot = Some(with_snapshot);
+        self
+    }
+
+    /// Set the cursor to resume from (for reconnecting and getting only newer data).
+    pub fn after(mut self, cursor: impl Into<String>) -> Self {
+        self.after = Some(cursor.into());
+        self
+    }
+
+    /// Set the maximum number of entities to include in the snapshot.
+    pub fn with_snapshot_limit(mut self, limit: usize) -> Self {
+        self.snapshot_limit = Some(limit);
         self
     }
 }
@@ -214,6 +238,9 @@ where
                 None,
                 this.take,
                 this.skip,
+                this.with_snapshot,
+                this.after.clone(),
+                this.snapshot_limit,
             ));
         }
 
@@ -233,6 +260,9 @@ where
     take: Option<u32>,
     skip: Option<u32>,
     filters: Option<HashMap<String, String>>,
+    with_snapshot: Option<bool>,
+    after: Option<String>,
+    snapshot_limit: Option<usize>,
     stream: Option<EntityStream<T>>,
 }
 
@@ -254,6 +284,9 @@ where
             take: None,
             skip: None,
             filters: None,
+            with_snapshot: None,
+            after: None,
+            snapshot_limit: None,
             stream: None,
         }
     }
@@ -278,6 +311,24 @@ where
         self
     }
 
+    /// Set whether to include the initial snapshot (defaults to true).
+    pub fn with_snapshot(mut self, with_snapshot: bool) -> Self {
+        self.with_snapshot = Some(with_snapshot);
+        self
+    }
+
+    /// Set the cursor to resume from (for reconnecting and getting only newer data).
+    pub fn after(mut self, cursor: impl Into<String>) -> Self {
+        self.after = Some(cursor.into());
+        self
+    }
+
+    /// Set the maximum number of entities to include in the snapshot.
+    pub fn with_snapshot_limit(mut self, limit: usize) -> Self {
+        self.snapshot_limit = Some(limit);
+        self
+    }
+
     /// Get a rich stream with before/after diffs instead.
     pub fn rich(self) -> RichEntityStream<T> {
         RichEntityStream::new_lazy_with_opts(
@@ -289,6 +340,9 @@ where
             None,
             self.take,
             self.skip,
+            self.with_snapshot,
+            self.after,
+            self.snapshot_limit,
         )
     }
 }
@@ -312,6 +366,9 @@ where
                 None,
                 this.take,
                 this.skip,
+                this.with_snapshot,
+                this.after.clone(),
+                this.snapshot_limit,
             ));
         }
 
@@ -331,6 +388,9 @@ where
     take: Option<u32>,
     skip: Option<u32>,
     filters: Option<HashMap<String, String>>,
+    with_snapshot: Option<bool>,
+    after: Option<String>,
+    snapshot_limit: Option<usize>,
     stream: Option<RichEntityStream<T>>,
 }
 
@@ -352,6 +412,9 @@ where
             take: None,
             skip: None,
             filters: None,
+            with_snapshot: None,
+            after: None,
+            snapshot_limit: None,
             stream: None,
         }
     }
@@ -370,6 +433,24 @@ where
         self.filters
             .get_or_insert_with(HashMap::new)
             .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set whether to include the initial snapshot (defaults to true).
+    pub fn with_snapshot(mut self, with_snapshot: bool) -> Self {
+        self.with_snapshot = Some(with_snapshot);
+        self
+    }
+
+    /// Set the cursor to resume from (for reconnecting and getting only newer data).
+    pub fn after(mut self, cursor: impl Into<String>) -> Self {
+        self.after = Some(cursor.into());
+        self
+    }
+
+    /// Set the maximum number of entities to include in the snapshot.
+    pub fn with_snapshot_limit(mut self, limit: usize) -> Self {
+        self.snapshot_limit = Some(limit);
         self
     }
 }
@@ -393,6 +474,9 @@ where
                 None,
                 this.take,
                 this.skip,
+                this.with_snapshot,
+                this.after.clone(),
+                this.snapshot_limit,
             ));
         }
 

@@ -41,6 +41,12 @@ export interface Subscription {
   filters?: Record<string, string>;
   take?: number;
   skip?: number;
+  /** Whether to include initial snapshot (defaults to true for backward compatibility) */
+  withSnapshot?: boolean;
+  /** Cursor for resuming from a specific point (_seq value) */
+  after?: string;
+  /** Maximum number of entities to include in snapshot (pagination hint) */
+  snapshotLimit?: number;
 }
 
 export type SchemaResult<T> =
@@ -56,6 +62,12 @@ export interface WatchOptions<TSchema = unknown> {
   skip?: number;
   filters?: Record<string, string>;
   schema?: Schema<TSchema>;
+  /** Whether to include initial snapshot (defaults to true) */
+  withSnapshot?: boolean;
+  /** Cursor for resuming from a specific point (_seq value) */
+  after?: string;
+  /** Maximum number of entities to include in snapshot */
+  snapshotLimit?: number;
 }
 
 export interface HyperStackOptions<TStack extends StackDefinition> {

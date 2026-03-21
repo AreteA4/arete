@@ -16,6 +16,19 @@ const DEFAULT_MAX_ARRAY_LENGTH: usize = 100;
 const DEFAULT_INITIAL_SNAPSHOT_BATCH_SIZE: usize = 50;
 const DEFAULT_SUBSEQUENT_SNAPSHOT_BATCH_SIZE: usize = 100;
 
+/// Compare two `_seq` values numerically.
+/// `_seq` format is "{slot}:{offset}" where slot is not zero-padded.
+/// This handles digit-count boundaries correctly (e.g., 99999999 < 100000000).
+pub fn cmp_seq(a: &str, b: &str) -> std::cmp::Ordering {
+    fn parse(s: &str) -> (u64, u64) {
+        let mut parts = s.splitn(2, ':');
+        let slot = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let offset = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        (slot, offset)
+    }
+    parse(a).cmp(&parse(b))
+}
+
 /// Configuration for the entity cache
 #[derive(Debug, Clone)]
 pub struct EntityCacheConfig {
@@ -107,6 +120,50 @@ impl EntityCache {
             .get(view_id)
             .map(|cache| cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default()
+    }
+
+    /// Get entities with _seq greater than the provided cursor.
+    ///
+    /// Returns entities that have been updated after the given cursor,
+    /// sorted by _seq in ascending order. Useful for resuming from
+    /// a specific point in the stream.
+    pub async fn get_after(
+        &self,
+        view_id: &str,
+        cursor: &str,
+        limit: Option<usize>,
+    ) -> Vec<(String, Value)> {
+        let caches = self.caches.read().await;
+
+        if let Some(cache) = caches.get(view_id) {
+            let mut results: Vec<(String, Value)> = cache
+                .iter()
+                .filter(|(_, entity)| {
+                    entity
+                        .get("_seq")
+                        .and_then(|s| s.as_str())
+                        .map(|seq| cmp_seq(seq, cursor) == std::cmp::Ordering::Greater)
+                        .unwrap_or(false)
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+
+            // Sort by _seq (ascending)
+            results.sort_by(|a, b| {
+                let seq_a = a.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
+                let seq_b = b.1.get("_seq").and_then(|s| s.as_str()).unwrap_or("");
+                cmp_seq(seq_a, seq_b)
+            });
+
+            // Apply limit if provided
+            if let Some(limit) = limit {
+                results.truncate(limit);
+            }
+
+            results
+        } else {
+            vec![]
+        }
     }
 
     /// Get a specific entity from the cache
@@ -553,5 +610,121 @@ mod tests {
 
         assert_eq!(snapshot_config.initial_batch_size, 25);
         assert_eq!(snapshot_config.subsequent_batch_size, 75);
+    }
+
+    #[tokio::test]
+    async fn test_get_after() {
+        let cache = EntityCache::new();
+
+        // Insert entities with _seq values
+        cache
+            .upsert(
+                "tokens/list",
+                "key1",
+                json!({"id": 1, "_seq": "100:000000000001"}),
+            )
+            .await;
+        cache
+            .upsert(
+                "tokens/list",
+                "key2",
+                json!({"id": 2, "_seq": "100:000000000002"}),
+            )
+            .await;
+        cache
+            .upsert(
+                "tokens/list",
+                "key3",
+                json!({"id": 3, "_seq": "100:000000000003"}),
+            )
+            .await;
+        cache
+            .upsert(
+                "tokens/list",
+                "key4",
+                json!({"id": 4, "_seq": "101:000000000001"}),
+            )
+            .await;
+
+        // Get all entities after "100:000000000002"
+        let after = cache.get_after("tokens/list", "100:000000000002", None).await;
+        
+        // Should return key3 and key4 (sorted by _seq)
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[0].0, "key3");
+        assert_eq!(after[1].0, "key4");
+    }
+
+    #[tokio::test]
+    async fn test_get_after_with_limit() {
+        let cache = EntityCache::new();
+
+        // Insert entities with _seq values
+        cache
+            .upsert(
+                "tokens/list",
+                "key1",
+                json!({"id": 1, "_seq": "100:000000000001"}),
+            )
+            .await;
+        cache
+            .upsert(
+                "tokens/list",
+                "key2",
+                json!({"id": 2, "_seq": "100:000000000002"}),
+            )
+            .await;
+        cache
+            .upsert(
+                "tokens/list",
+                "key3",
+                json!({"id": 3, "_seq": "100:000000000003"}),
+            )
+            .await;
+
+        // Get entities after "100:000000000000" with limit 2
+        let after = cache.get_after("tokens/list", "100:000000000000", Some(2)).await;
+        
+        // Should return only first 2 (key1 and key2)
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[0].0, "key1");
+        assert_eq!(after[1].0, "key2");
+    }
+
+    #[tokio::test]
+    async fn test_get_after_empty_result() {
+        let cache = EntityCache::new();
+
+        cache
+            .upsert(
+                "tokens/list",
+                "key1",
+                json!({"id": 1, "_seq": "100:000000000001"}),
+            )
+            .await;
+
+        // Get entities after a future cursor
+        let after = cache.get_after("tokens/list", "999:000000000000", None).await;
+        
+        assert!(after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_after_missing_seq() {
+        let cache = EntityCache::new();
+
+        // Insert entity without _seq
+        cache
+            .upsert(
+                "tokens/list",
+                "key1",
+                json!({"id": 1}),
+            )
+            .await;
+
+        // Get entities after any cursor - entity without _seq should not be included
+        let after = cache.get_after("tokens/list", "0:000000000000", None).await;
+        
+        assert!(after.is_empty());
     }
 }

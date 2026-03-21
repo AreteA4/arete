@@ -60,6 +60,12 @@ export interface ViewHookOptions<TSchema = unknown> {
   refreshOnReconnect?: boolean;
   /** Schema to validate entities. Returns undefined if validation fails. */
   schema?: Schema<TSchema>;
+  /** Whether to include initial snapshot (defaults to true) */
+  withSnapshot?: boolean;
+  /** Cursor for resuming from a specific point (_seq value) */
+  after?: string;
+  /** Maximum number of entities to include in snapshot */
+  snapshotLimit?: number;
 }
 
 export interface ViewHookResult<T> {
@@ -77,6 +83,12 @@ export interface ListParamsBase<TSchema = unknown> {
   skip?: number;
   /** Schema to validate/filter entities. Only entities passing safeParse will be returned. */
   schema?: Schema<TSchema>;
+  /** Whether to include initial snapshot (defaults to true) */
+  withSnapshot?: boolean;
+  /** Cursor for resuming from a specific point (_seq value) */
+  after?: string;
+  /** Maximum number of entities to include in snapshot */
+  snapshotLimit?: number;
 }
 
 export interface ListParamsSingle<TSchema = unknown> extends ListParamsBase<TSchema> {

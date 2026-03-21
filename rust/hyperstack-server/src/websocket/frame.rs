@@ -65,6 +65,9 @@ pub struct Frame {
     pub data: serde_json::Value,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub append: Vec<String>,
+    /// Sequence cursor for ordering and resume capability
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<String>,
 }
 
 /// A single entity within a snapshot
@@ -149,6 +152,7 @@ mod tests {
             key: "123".to_string(),
             data: serde_json::json!({}),
             append: vec![],
+            seq: None,
         };
 
         assert_eq!(frame.entity(), "SettlementGame/list");
@@ -164,6 +168,7 @@ mod tests {
             key: "123".to_string(),
             data: serde_json::json!({"gameId": "123"}),
             append: vec![],
+            seq: None,
         };
 
         let json = serde_json::to_value(&frame).unwrap();
@@ -171,6 +176,39 @@ mod tests {
         assert_eq!(json["mode"], "list");
         assert_eq!(json["entity"], "SettlementGame/list");
         assert_eq!(json["key"], "123");
+    }
+
+    #[test]
+    fn test_frame_with_seq() {
+        let frame = Frame {
+            mode: Mode::List,
+            export: "SettlementGame/list".to_string(),
+            op: "upsert",
+            key: "123".to_string(),
+            data: serde_json::json!({"gameId": "123"}),
+            append: vec![],
+            seq: Some("123456789:000000000042".to_string()),
+        };
+
+        let json = serde_json::to_value(&frame).unwrap();
+        assert_eq!(json["op"], "upsert");
+        assert_eq!(json["seq"], "123456789:000000000042");
+    }
+
+    #[test]
+    fn test_frame_seq_skipped_when_none() {
+        let frame = Frame {
+            mode: Mode::List,
+            export: "SettlementGame/list".to_string(),
+            op: "upsert",
+            key: "123".to_string(),
+            data: serde_json::json!({"gameId": "123"}),
+            append: vec![],
+            seq: None,
+        };
+
+        let json = serde_json::to_value(&frame).unwrap();
+        assert!(json.get("seq").is_none());
     }
 
     #[test]

@@ -18,7 +18,7 @@ export function useStateView<T>(
   key?: Record<string, string>,
   options?: ViewHookOptions
 ): ViewHookResult<T> {
-  const [isLoading, setIsLoading] = useState(!options?.initialData);
+  const [isLoading, setIsLoading] = useState(!options?.initialData && options?.withSnapshot !== false);
   const [error, setError] = useState<Error | undefined>();
   const clientRef = useRef(client);
   clientRef.current = client;
@@ -27,14 +27,25 @@ export function useStateView<T>(
   const keyString = key ? Object.values(key)[0] : undefined;
   const enabled = options?.enabled !== false;
   const schema = options?.schema as Schema<T> | undefined;
+  const withSnapshot = options?.withSnapshot;
+  const after = options?.after;
+  const snapshotLimit = options?.snapshotLimit;
 
   useEffect(() => {
     if (!enabled || !clientRef.current) return undefined;
 
     try {
       const registry = clientRef.current.getSubscriptionRegistry();
-      const unsubscribe = registry.subscribe({ view: viewDef.view, key: keyString });
-      setIsLoading(true);
+      const unsubscribe = registry.subscribe({ 
+        view: viewDef.view, 
+        key: keyString,
+        withSnapshot,
+        after,
+        snapshotLimit
+      });
+      if (withSnapshot !== false) {
+        setIsLoading(true);
+      }
 
       return () => {
         try {
@@ -48,15 +59,24 @@ export function useStateView<T>(
       setIsLoading(false);
       return undefined;
     }
-  }, [viewDef.view, keyString, enabled, client]);
+  }, [viewDef.view, keyString, enabled, withSnapshot, after, snapshotLimit, client]);
 
   const refresh = useCallback(() => {
     if (!enabled || !clientRef.current) return;
 
     try {
       const registry = clientRef.current.getSubscriptionRegistry();
-      const unsubscribe = registry.subscribe({ view: viewDef.view, key: keyString });
-      setIsLoading(true);
+      const unsubscribe = registry.subscribe({ 
+        view: viewDef.view, 
+        key: keyString,
+        withSnapshot,
+        after,
+        snapshotLimit
+      });
+      const shouldLoad = withSnapshot ?? true;
+      if (shouldLoad) {
+        setIsLoading(true);
+      }
 
       setTimeout(() => {
         try {
@@ -69,7 +89,7 @@ export function useStateView<T>(
       setError(err instanceof Error ? err : new Error('Refresh failed'));
       setIsLoading(false);
     }
-  }, [viewDef.view, keyString, enabled]);
+  }, [viewDef.view, keyString, enabled, withSnapshot, after, snapshotLimit]);
 
   const subscribe = useCallback((callback: () => void) => {
     if (!clientRef.current) return () => {};
@@ -114,7 +134,7 @@ export function useListView<T>(
   params?: ListParams,
   options?: ViewHookOptions
 ): ViewHookResult<T[]> {
-  const [isLoading, setIsLoading] = useState(!options?.initialData);
+  const [isLoading, setIsLoading] = useState(!options?.initialData && params?.withSnapshot !== false);
   const [error, setError] = useState<Error | undefined>();
   const clientRef = useRef(client);
   clientRef.current = client;
@@ -128,6 +148,9 @@ export function useListView<T>(
   const filtersJson = params?.filters ? JSON.stringify(params.filters) : undefined;
   const limit = params?.limit;
   const schema = params?.schema as Schema<T> | undefined;
+  const withSnapshot = params?.withSnapshot;
+  const after = params?.after;
+  const snapshotLimit = params?.snapshotLimit;
 
   useEffect(() => {
     if (!enabled || !clientRef.current) return undefined;
@@ -139,9 +162,14 @@ export function useListView<T>(
         key, 
         filters: params?.filters,
         take,
-        skip 
+        skip,
+        withSnapshot,
+        after,
+        snapshotLimit
       });
-      setIsLoading(true);
+      if (withSnapshot !== false) {
+        setIsLoading(true);
+      }
 
       return () => {
         try {
@@ -155,7 +183,7 @@ export function useListView<T>(
       setIsLoading(false);
       return undefined;
     }
-  }, [viewDef.view, enabled, key, filtersJson, take, skip, client]);
+  }, [viewDef.view, enabled, key, filtersJson, take, skip, withSnapshot, after, snapshotLimit, client]);
 
   const refresh = useCallback(() => {
     if (!enabled || !clientRef.current) return;
@@ -167,9 +195,15 @@ export function useListView<T>(
         key, 
         filters: params?.filters,
         take,
-        skip 
+        skip,
+        withSnapshot,
+        after,
+        snapshotLimit
       });
-      setIsLoading(true);
+      const shouldLoad = withSnapshot ?? true;
+      if (shouldLoad) {
+        setIsLoading(true);
+      }
 
       setTimeout(() => {
         try {
@@ -182,7 +216,7 @@ export function useListView<T>(
       setError(err instanceof Error ? err : new Error('Refresh failed'));
       setIsLoading(false);
     }
-  }, [viewDef.view, enabled, key, filtersJson, take, skip]);
+  }, [viewDef.view, enabled, key, filtersJson, take, skip, withSnapshot, after, snapshotLimit]);
 
   const subscribe = useCallback((callback: () => void) => {
     if (!clientRef.current) return () => {};
