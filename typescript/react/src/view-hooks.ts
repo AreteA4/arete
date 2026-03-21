@@ -43,7 +43,9 @@ export function useStateView<T>(
         after,
         snapshotLimit
       });
-      setIsLoading(true);
+      if (withSnapshot !== false) {
+        setIsLoading(true);
+      }
 
       return () => {
         try {
@@ -162,7 +164,9 @@ export function useListView<T>(
         after,
         snapshotLimit
       });
-      setIsLoading(true);
+      if (withSnapshot !== false) {
+        setIsLoading(true);
+      }
 
       return () => {
         try {
