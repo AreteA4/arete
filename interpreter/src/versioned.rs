@@ -14,7 +14,7 @@
 //! let stream = load_stream_spec(&json_string)?;
 //! ```
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::fmt;
 
@@ -143,7 +143,9 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
 ///
 /// This enum allows deserializing multiple AST versions and then
 /// converting them to the latest format via `into_latest()`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Note: Only Deserialize is derived to avoid duplicate `ast_version` keys
+/// (the inner struct already has this field, and we only use this for loading).
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "ast_version")]
 pub enum VersionedStackSpec {
     #[serde(rename = "0.0.1")]
@@ -163,7 +165,9 @@ impl VersionedStackSpec {
 ///
 /// This enum allows deserializing multiple AST versions and then
 /// converting them to the latest format via `into_latest()`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Note: Only Deserialize is derived to avoid duplicate `ast_version` keys
+/// (the inner struct already has this field, and we only use this for loading).
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "ast_version")]
 pub enum VersionedStreamSpec {
     #[serde(rename = "0.0.1")]

@@ -19,7 +19,7 @@
 // part of the public API available for external use and future features
 // like the `#[ast_spec]` macro or CLI tooling.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::fmt;
 
@@ -154,9 +154,11 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
 ///
 /// This enum allows deserializing multiple AST versions and then
 /// converting them to the latest format via `into_latest()`.
-// Not yet used within this crate, but part of public API for future use
+// Not yet used within this crate, but part of public API for future use.
+// Only Deserialize is derived to avoid duplicate `ast_version` keys
+// (the inner struct already has this field, and we only use this for loading).
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "ast_version")]
 pub enum VersionedStackSpec {
     #[serde(rename = "0.0.1")]
@@ -178,9 +180,11 @@ impl VersionedStackSpec {
 ///
 /// This enum allows deserializing multiple AST versions and then
 /// converting them to the latest format via `into_latest()`.
-// Not yet used within this crate, but part of public API for future use
+// Not yet used within this crate, but part of public API for future use.
+// Only Deserialize is derived to avoid duplicate `ast_version` keys
+// (the inner struct already has this field, and we only use this for loading).
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "ast_version")]
 pub enum VersionedStreamSpec {
     #[serde(rename = "0.0.1")]
