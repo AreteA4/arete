@@ -144,6 +144,11 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
 ///
 /// This enum allows deserializing multiple AST versions and then
 /// converting them to the latest format via `into_latest()`.
+///
+/// ⚠️ IMPORTANT: This enum requires the `ast_version` field to be present in JSON.
+/// It does NOT handle version-less (legacy) JSON files. For loading real-world ASTs
+/// that may lack the `ast_version` field, use `load_stack_spec()` instead.
+///
 /// Note: Only Deserialize is derived to avoid duplicate `ast_version` keys
 /// (the inner struct already has this field, and we only use this for loading).
 #[derive(Debug, Clone, Deserialize)]
@@ -170,6 +175,11 @@ impl VersionedStackSpec {
 ///
 /// This enum allows deserializing multiple AST versions and then
 /// converting them to the latest format via `into_latest()`.
+///
+/// ⚠️ IMPORTANT: This enum requires the `ast_version` field to be present in JSON.
+/// It does NOT handle version-less (legacy) JSON files. For loading real-world ASTs
+/// that may lack the `ast_version` field, use `load_stream_spec()` instead.
+///
 /// Note: Only Deserialize is derived to avoid duplicate `ast_version` keys
 /// (the inner struct already has this field, and we only use this for loading).
 #[derive(Debug, Clone, Deserialize)]
@@ -202,7 +212,7 @@ impl VersionedStreamSpec {
 ///
 /// # Returns
 ///
-/// The detected version string, or "unknown" if it cannot be determined.
+/// The detected version string, or `"0.0.1"` if the field is absent (backwards compatibility default).
 ///
 /// # Example
 ///
