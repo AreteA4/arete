@@ -230,7 +230,7 @@ mod tests {
         "#;
 
         let spec = load_stream_spec(v1_json).unwrap();
-        assert_eq!(spec.ast_version, "2.0.0");
+        assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
         assert_eq!(spec.state_name, "TestEntity");
         assert_eq!(spec.new_field, "transformed_value");
     }
@@ -246,7 +246,7 @@ mod tests {
         "#;
 
         let spec = load_stream_spec(v2_json).unwrap();
-        assert_eq!(spec.ast_version, "2.0.0");
+        assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
         assert_eq!(spec.new_field, "new_value");
     }
 }

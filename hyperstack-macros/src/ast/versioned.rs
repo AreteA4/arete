@@ -168,6 +168,10 @@ pub enum VersionedStackSpec {
 
 impl VersionedStackSpec {
     /// Convert the versioned spec to the latest format.
+    ///
+    /// ⚠️ WARNING: This returns the spec with its original `ast_version` field unchanged.
+    /// If you need round-trip safety (e.g., serialize then deserialize), use `load_stack_spec`
+    /// instead, which properly sets `ast_version` to `CURRENT_AST_VERSION`.
     // Not yet used within this crate, but part of public API for future use
     #[allow(dead_code)]
     pub fn into_latest(self) -> SerializableStackSpec {
@@ -194,6 +198,10 @@ pub enum VersionedStreamSpec {
 
 impl VersionedStreamSpec {
     /// Convert the versioned spec to the latest format.
+    ///
+    /// ⚠️ WARNING: This returns the spec with its original `ast_version` field unchanged.
+    /// If you need round-trip safety (e.g., serialize then deserialize), use `load_stream_spec`
+    /// instead, which properly sets `ast_version` to `CURRENT_AST_VERSION`.
     // Not yet used within this crate, but part of public API for future use
     #[allow(dead_code)]
     pub fn into_latest(self) -> SerializableStreamSpec {
@@ -420,8 +428,9 @@ mod tests {
             .expect("CURRENT_AST_VERSION not found in interpreter");
 
         let version_str = version_line
-            .split('"')
+            .split('=')
             .nth(1)
+            .and_then(|rhs| rhs.split('"').nth(1))
             .expect("Failed to parse version string");
 
         assert_eq!(
