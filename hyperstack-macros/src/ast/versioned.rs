@@ -256,7 +256,7 @@ mod tests {
         assert!(result.is_ok());
         let spec = result.unwrap();
         assert_eq!(spec.stack_name, "TestStack");
-        assert_eq!(spec.ast_version, "0.0.1");
+        assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
     }
 
     #[test]
@@ -277,7 +277,7 @@ mod tests {
         assert!(result.is_ok());
         let spec = result.unwrap();
         assert_eq!(spec.stack_name, "TestStack");
-        assert_eq!(spec.ast_version, "0.0.1");
+        assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
     }
 
     #[test]
@@ -325,7 +325,7 @@ mod tests {
         assert!(result.is_ok());
         let spec = result.unwrap();
         assert_eq!(spec.state_name, "TestEntity");
-        assert_eq!(spec.ast_version, "0.0.1");
+        assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
     }
 
     #[test]
@@ -351,7 +351,7 @@ mod tests {
         assert!(result.is_ok());
         let spec = result.unwrap();
         assert_eq!(spec.state_name, "TestEntity");
-        assert_eq!(spec.ast_version, "0.0.1");
+        assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
     }
 
     #[test]
