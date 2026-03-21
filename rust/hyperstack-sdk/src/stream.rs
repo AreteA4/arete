@@ -1,4 +1,4 @@
-use crate::connection::ConnectionManager;
+use crate::connection::{ConnectionManager, SubscriptionOptions};
 use crate::frame::Operation;
 use crate::store::{SharedStore, StoreUpdate};
 use futures_util::Stream;
@@ -341,7 +341,14 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for EntityStre
                     let view = subscription_view.clone();
                     let key = subscription_key.clone();
                     let fut = Box::pin(async move {
-                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip, with_snapshot, after.as_deref(), snapshot_limit)
+                        let opts = SubscriptionOptions {
+                            take,
+                            skip,
+                            with_snapshot,
+                            after,
+                            snapshot_limit,
+                        };
+                        conn.ensure_subscription_with_opts(&view, key.as_deref(), opts)
                             .await;
                     });
 
@@ -570,7 +577,14 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for RichEntity
                     let view = subscription_view.clone();
                     let key = subscription_key.clone();
                     let fut = Box::pin(async move {
-                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip, with_snapshot, after.as_deref(), snapshot_limit)
+                        let opts = SubscriptionOptions {
+                            take,
+                            skip,
+                            with_snapshot,
+                            after,
+                            snapshot_limit,
+                        };
+                        conn.ensure_subscription_with_opts(&view, key.as_deref(), opts)
                             .await;
                     });
 
@@ -1069,7 +1083,14 @@ impl<T: DeserializeOwned + Clone + Send + Unpin + 'static> Stream for UseStream<
                     let view = subscription_view.clone();
                     let key = subscription_key.clone();
                     let fut = Box::pin(async move {
-                        conn.ensure_subscription_with_opts(&view, key.as_deref(), take, skip, with_snapshot, after.as_deref(), snapshot_limit)
+                        let opts = SubscriptionOptions {
+                            take,
+                            skip,
+                            with_snapshot,
+                            after,
+                            snapshot_limit,
+                        };
+                        conn.ensure_subscription_with_opts(&view, key.as_deref(), opts)
                             .await;
                     });
 

@@ -22,6 +22,16 @@ pub enum ConnectionCommand {
     Disconnect,
 }
 
+/// Options for subscribing to a view with specific parameters
+#[derive(Debug, Clone, Default)]
+pub struct SubscriptionOptions {
+    pub take: Option<u32>,
+    pub skip: Option<u32>,
+    pub with_snapshot: Option<bool>,
+    pub after: Option<String>,
+    pub snapshot_limit: Option<usize>,
+}
+
 struct ConnectionManagerInner {
     #[allow(dead_code)]
     url: String,
@@ -63,7 +73,7 @@ impl ConnectionManager {
     }
 
     pub async fn ensure_subscription(&self, view: &str, key: Option<&str>) {
-        self.ensure_subscription_with_opts(view, key, None, None, None, None, None)
+        self.ensure_subscription_with_opts(view, key, SubscriptionOptions::default())
             .await
     }
 
@@ -71,22 +81,18 @@ impl ConnectionManager {
         &self,
         view: &str,
         key: Option<&str>,
-        take: Option<u32>,
-        skip: Option<u32>,
-        with_snapshot: Option<bool>,
-        after: Option<&str>,
-        snapshot_limit: Option<usize>,
+        opts: SubscriptionOptions,
     ) {
         let sub = Subscription {
             view: view.to_string(),
             key: key.map(|s| s.to_string()),
             partition: None,
             filters: None,
-            take,
-            skip,
-            with_snapshot,
-            after: after.map(|s| s.to_string()),
-            snapshot_limit,
+            take: opts.take,
+            skip: opts.skip,
+            with_snapshot: opts.with_snapshot,
+            after: opts.after,
+            snapshot_limit: opts.snapshot_limit,
         };
 
         if !self.inner.subscriptions.read().await.contains(&sub) {
