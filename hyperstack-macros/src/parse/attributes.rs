@@ -26,6 +26,7 @@ pub struct MapAttribute {
     pub attr_span: Span,
     pub source_type_span: Span,
     pub source_field_span: Span,
+    // Set when #[event(...)] handlers are normalized into MapAttribute values.
     pub is_event_source: bool,
     pub source_type_path: Path,
     pub source_field_name: String,

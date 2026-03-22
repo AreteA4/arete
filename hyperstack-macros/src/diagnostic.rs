@@ -84,13 +84,19 @@ pub fn invalid_choice_message(
         .iter()
         .map(|value| value.to_string())
         .collect::<Vec<_>>();
+    let candidate_refs: Vec<&str> = available.iter().map(String::as_str).collect();
+    let suggestion = suggest_similar(actual, &candidate_refs, 3)
+        .first()
+        .map(|suggestion| format!(". Did you mean: {}?", suggestion.candidate))
+        .unwrap_or_default();
+
     format!(
         "invalid {} '{}' for {}. Expected one of: {}{}",
         choice_kind,
         actual,
         context,
         expected.join(", "),
-        suggestion_or_available_suffix(actual, &available, "Available values")
+        suggestion
     )
 }
 
@@ -150,6 +156,17 @@ mod tests {
         assert_eq!(
             message,
             "unknown resolver-backed type 'u64'. Available types: TokenMetadata"
+        );
+    }
+
+    #[test]
+    fn invalid_choice_message_does_not_repeat_available_values() {
+        let message =
+            invalid_choice_message("strategy", "foo", "#[map]", &["SetOnce", "LastWrite"]);
+
+        assert_eq!(
+            message,
+            "invalid strategy 'foo' for #[map]. Expected one of: SetOnce, LastWrite"
         );
     }
 }

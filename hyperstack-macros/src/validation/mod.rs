@@ -317,6 +317,8 @@ fn validate_source_handler_keys(
         let is_cpi_event =
             source_type.contains("::events::") || source_type.contains("::cpi_events::");
 
+        // Event-only mappings are validated in validate_event_handler_keys before
+        // #[event(...)] handlers are merged into sources_by_type for codegen.
         if mappings.iter().all(|mapping| mapping.is_event_source) {
             continue;
         }

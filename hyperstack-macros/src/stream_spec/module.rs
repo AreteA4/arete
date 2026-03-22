@@ -170,12 +170,9 @@ pub fn process_module(
                 )
             })?;
 
-            crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name).map_err(|e| {
-                syn::Error::new(
-                    module.ident.span(),
-                    format!("Failed to write stack AST: {e}"),
-                )
-            })?;
+            if let Err(error) = crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name) {
+                eprintln!("Warning: Failed to write stack AST: {error}");
+            }
 
             let multi_entity_builder = generate_multi_entity_builder(
                 &entity_names,

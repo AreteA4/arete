@@ -191,7 +191,7 @@ fn parse_value(value: &str) -> Result<serde_json::Value, String> {
 pub fn parse_resolver_condition_expression(expr: &str) -> Result<ResolverCondition, String> {
     let operators = ["==", "!=", ">=", "<=", ">", "<"];
     for op_str in &operators {
-        if let Some(pos) = expr.find(op_str) {
+        if let Some(pos) = find_top_level_operator(expr, op_str) {
             let field_path = expr[..pos].trim().to_string();
             let raw_value = expr[pos + op_str.len()..].trim();
 
@@ -331,5 +331,15 @@ mod tests {
             }
             _ => panic!("Expected comparison"),
         }
+    }
+
+    #[test]
+    fn test_resolver_condition_ignores_operators_inside_quotes() {
+        let parsed =
+            parse_resolver_condition_expression("status == \"pending >= review\"").unwrap();
+
+        assert_eq!(parsed.field_path, "status");
+        assert!(matches!(parsed.op, ComparisonOp::Equal));
+        assert_eq!(parsed.value, serde_json::json!("pending >= review"));
     }
 }
