@@ -189,7 +189,7 @@ fn parse_value(value: &str) -> Result<serde_json::Value, String> {
 }
 
 pub fn parse_resolver_condition_expression(expr: &str) -> Result<ResolverCondition, String> {
-    let operators = ["==", "!=", ">=", "<=", ">", "<"];
+    let operators = [">=", "<=", "==", "!=", ">", "<"];
     for op_str in &operators {
         if let Some(pos) = find_top_level_operator(expr, op_str) {
             let field_path = expr[..pos].trim().to_string();
@@ -247,7 +247,15 @@ pub fn parse_resolver_condition_expression(expr: &str) -> Result<ResolverConditi
                             }
                         }
                     } else {
-                        serde_json::Value::String(s.trim_matches('"').to_string())
+                        serde_json::Value::String(
+                            if (s.starts_with('"') && s.ends_with('"'))
+                                || (s.starts_with('\'') && s.ends_with('\''))
+                            {
+                                s[1..s.len() - 1].to_string()
+                            } else {
+                                s.to_string()
+                            },
+                        )
                     }
                 }
             };
@@ -372,5 +380,13 @@ mod tests {
 
         assert_eq!(parsed.field_path, "lamport_balance");
         assert_eq!(parsed.value, serde_json::json!(9999999999999999i64));
+    }
+
+    #[test]
+    fn test_resolver_condition_strips_single_quoted_strings() {
+        let parsed = parse_resolver_condition_expression("status == 'pending'").unwrap();
+
+        assert_eq!(parsed.field_path, "status");
+        assert_eq!(parsed.value, serde_json::json!("pending"));
     }
 }

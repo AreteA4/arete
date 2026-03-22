@@ -153,6 +153,8 @@ pub fn validate_account_field(
     field_name: &str,
 ) -> Result<(), IdlSearchError> {
     let fields = account_fields(idl, account_name)?;
+    // Some IDLs omit struct field metadata for accounts; keep that case non-fatal
+    // so validation does not reject otherwise valid mappings on incomplete schemas.
     if fields.is_empty() || fields.iter().any(|field| field == field_name) {
         return Ok(());
     }
