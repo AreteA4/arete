@@ -514,8 +514,10 @@ fn validate_source_handler_keys(
 
         let is_instruction = mappings.iter().any(|mapping| mapping.is_instruction);
 
-        // Event-only mappings are validated in validate_event_handler_keys before
-        // #[event(...)] handlers are merged into sources_by_type for codegen.
+        // Event-derived MapAttribute values are produced later via
+        // convert_event_to_map_attributes(...), which sets is_event_source = true.
+        // Those groups are validated in validate_event_handler_keys before they
+        // are merged into sources_by_type for codegen.
         if mappings.iter().all(|mapping| mapping.is_event_source) {
             continue;
         }
@@ -958,8 +960,8 @@ fn validate_derive_from_references(
         let (idl, instruction_name) = match instruction_lookup {
             Ok(value) => value,
             Err(error) => {
-                for derive_attr in derive_attrs {
-                    errors.push(idl_error_to_syn(derive_attr.attr_span, error.clone()));
+                if let Some(first_attr) = derive_attrs.first() {
+                    errors.push(idl_error_to_syn(first_attr.attr_span, error));
                 }
                 continue;
             }

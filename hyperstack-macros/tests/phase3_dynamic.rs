@@ -194,3 +194,39 @@ fn main() {{}}
         "stderr was:\n{stderr}"
     );
 }
+
+#[test]
+fn invalid_derive_from_instruction_is_reported_once_per_group() {
+    let source = format!(
+        r#"use hyperstack_macros::hyperstack;
+
+#[hyperstack(idl = "{}")]
+mod broken {{
+    #[entity(name = "Thing")]
+    struct Thing {{
+        #[map(pump_sdk::accounts::BondingCurve::complete, primary_key, strategy = SetOnce)]
+        id: bool,
+
+        #[derive_from(from = pump_sdk::instructions::Buuy, field = user, strategy = LastWrite)]
+        first_user: String,
+
+        #[derive_from(from = pump_sdk::instructions::Buuy, field = complete, strategy = LastWrite)]
+        second_user: bool,
+    }}
+}}
+
+fn main() {{}}
+"#,
+        pump_idl_path()
+    );
+
+    let stderr = compile_failure_stderr(
+        "invalid_derive_from_instruction_is_reported_once_per_group",
+        &source,
+    );
+    assert_eq!(
+        stderr.matches("Not found: 'Buuy' in instructions").count(),
+        1,
+        "stderr was:\n{stderr}"
+    );
+}
