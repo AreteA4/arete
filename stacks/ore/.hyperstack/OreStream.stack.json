@@ -1,4 +1,5 @@
 {
+  "ast_version": "0.0.1",
   "stack_name": "OreStream",
   "program_ids": [
     "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
@@ -2760,6 +2761,7 @@
   ],
   "entities": [
     {
+      "ast_version": "0.0.1",
       "state_name": "OreRound",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "idl": null,
@@ -5219,7 +5221,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "f4f0834dae1b5a90d32250f96663d719c0697d22d3ef7c95b6189ff7a167079e",
+      "content_hash": "dca9e9640a9b26f306aca74ac490d9af1e4ef417a896dc35abe40c1d0f7a7a45",
       "views": [
         {
           "id": "OreRound/latest",
@@ -5247,6 +5249,7 @@
       ]
     },
     {
+      "ast_version": "0.0.1",
       "state_name": "OreTreasury",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "idl": null,
@@ -5829,10 +5832,11 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "2209440d59e788f8381792812368fc7e1b9bc9f188c8ab8352cc1bf6e05001d5",
+      "content_hash": "6c2f198fd874e0ee222ba766ff3f222f0a539a5bd2e4e612e5caf87987a67cd7",
       "views": []
     },
     {
+      "ast_version": "0.0.1",
       "state_name": "OreMiner",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "idl": null,
@@ -7182,7 +7186,7 @@
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "22aea1c2e9647ccbed3ff8311ce336354a0b79e8d9ef11933d262faed8b1adb9",
+      "content_hash": "92656d0e56356698ad917cf006cbc2ca7e4b25529b4fd36a9052a400d350a6c5",
       "views": []
     }
   ],
@@ -9122,5 +9126,5 @@
       ]
     }
   ],
-  "content_hash": "3cb0cdf6716a7a3c096d4b92cdb60adcb8d982b4d6f22d2f96a7381b2583c84f"
+  "content_hash": "d1e5d83f1f0d5d451a96289704f6858a4071e42d58a6341d75cc477b4cbe8f3d"
 }
