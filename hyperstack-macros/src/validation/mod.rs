@@ -629,6 +629,21 @@ fn validate_event_handler_keys(
             continue;
         };
 
+        let captured_field_resolves = mappings.iter().any(|(_, attr, _)| {
+            attr.capture_fields.iter().any(|field_spec| {
+                source_field_can_resolve_key(
+                    &field_spec.ident.to_string(),
+                    primary_key_leafs,
+                    lookup_index_leafs,
+                )
+            }) || attr.capture_fields_legacy.iter().any(|field_name| {
+                source_field_can_resolve_key(field_name, primary_key_leafs, lookup_index_leafs)
+            })
+        });
+        if captured_field_resolves {
+            continue;
+        }
+
         let lookup_by = mappings
             .iter()
             .filter_map(|(_, attr, _)| attr.lookup_by.as_ref())

@@ -246,6 +246,39 @@ fn main() {}
 }
 
 #[test]
+fn event_group_passes_when_any_captured_field_resolves_key() {
+    let source = r#"use hyperstack_macros::hyperstack;
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct TradeCapture {
+    id: String,
+}
+
+#[hyperstack(idl = "fixture/minimal.json")]
+mod valid {
+    use super::TradeCapture;
+
+    #[entity(name = "Thing")]
+    struct Thing {
+        #[map(fake_sdk::accounts::Thing::id, primary_key, strategy = SetOnce)]
+        id: String,
+
+        #[event(from = fake_sdk::instructions::Trade, fields = [id])]
+        trades: TradeCapture,
+    }
+}
+
+fn main() {}
+"#;
+
+    compile_success_with_files(
+        "event_group_passes_when_any_captured_field_resolves_key",
+        source,
+        &[("fixture/minimal.json", minimal_idl())],
+    );
+}
+
+#[test]
 fn event_group_accepts_any_valid_lookup_by_regardless_of_field_order() {
     let source = r#"use hyperstack_macros::hyperstack;
 
