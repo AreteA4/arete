@@ -114,6 +114,7 @@ pub struct ValidatedFieldPath {
 pub struct ValidatedResolverCondition {
     pub expression: String,
     pub parsed: ResolverCondition,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -162,7 +163,11 @@ fn parse_resolver_condition_literal(
     let parsed = condition_parser::parse_resolver_condition_expression(&expression)
         .map_err(|error| syn::Error::new_spanned(literal, error))?;
 
-    Ok(ValidatedResolverCondition { expression, parsed })
+    Ok(ValidatedResolverCondition {
+        expression,
+        parsed,
+        span: literal.span(),
+    })
 }
 
 fn field_path_to_string(path: &FieldPath) -> String {

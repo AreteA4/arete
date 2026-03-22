@@ -438,7 +438,10 @@ fn validate_source_handler_keys(
         }
     }
 
-    for ((source_type, join_key), mut mappings) in grouped {
+    let mut grouped_entries: Vec<_> = grouped.into_iter().collect();
+    grouped_entries.sort_by(|(a_key, _), (b_key, _)| a_key.cmp(b_key));
+
+    for ((source_type, join_key), mut mappings) in grouped_entries {
         mappings.sort_by(stable_map_attribute_cmp);
         let Some(first_mapping) = mappings.first() else {
             continue;
@@ -552,7 +555,10 @@ fn validate_event_handler_keys(
         }
     }
 
-    for ((instruction, join_key), mut mappings) in grouped {
+    let mut grouped_entries: Vec<_> = grouped.into_iter().collect();
+    grouped_entries.sort_by(|(a_key, _), (b_key, _)| a_key.cmp(b_key));
+
+    for ((instruction, join_key), mut mappings) in grouped_entries {
         mappings.sort_by(stable_event_mapping_cmp);
         let Some((_, first_attr, _)) = mappings.first() else {
             continue;
@@ -637,7 +643,11 @@ fn validate_instruction_hook_keys(
     derive_from_mappings: &HashMap<String, Vec<parse::DeriveFromAttribute>>,
     errors: &mut ErrorCollector,
 ) {
-    for (instruction_type, derive_attrs) in derive_from_mappings {
+    let mut instruction_types: Vec<&String> = derive_from_mappings.keys().collect();
+    instruction_types.sort();
+
+    for instruction_type in instruction_types {
+        let derive_attrs = &derive_from_mappings[instruction_type];
         for derive_attr in derive_attrs {
             if let Some(lookup_by) = &derive_attr.lookup_by {
                 let field_name = lookup_by.ident.to_string();
@@ -834,7 +844,11 @@ fn validate_derive_from_references(
     idls: IdlLookup,
     errors: &mut ErrorCollector,
 ) {
-    for (instruction_type, derive_attrs) in derive_from_mappings {
+    let mut instruction_types: Vec<&String> = derive_from_mappings.keys().collect();
+    instruction_types.sort();
+
+    for instruction_type in instruction_types {
+        let derive_attrs = &derive_from_mappings[instruction_type];
         let path = match syn::parse_str::<syn::Path>(instruction_type) {
             Ok(path) => path,
             Err(_) => continue,
@@ -910,7 +924,7 @@ fn validate_resolve_specs(
                     entity_name,
                     field_path,
                     "resolver condition field",
-                    spec.attr_span,
+                    condition.span,
                     available_fields,
                 ));
             }
