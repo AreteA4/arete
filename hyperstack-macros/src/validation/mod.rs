@@ -3,19 +3,21 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{ComputedExpr, EntitySection, FieldPath, ViewTransform};
 use crate::diagnostic::{suggestion_or_available_suffix, ErrorCollector};
-use crate::event_type_helpers::IdlLookup;
+use crate::event_type_helpers::{find_idl_for_type, IdlLookup};
 use crate::parse;
 use crate::parse::idl as idl_parser;
 use crate::parse::pda_validation::PdaValidationContext;
 use crate::parse::pdas::PdasBlock;
 use crate::utils::path_to_string;
 use crate::validation::idl_refs::{
-    resolve_instruction_lookup, resolve_instruction_lookup_from_path,
-    validate_instruction_field_spec, validate_mapping_source,
+    resolve_instruction_lookup, resolve_instruction_lookup_from_path, validate_account_field,
+    validate_instruction_field_spec,
 };
 
 use crate::diagnostic::idl_error_to_syn;
 use crate::stream_spec::computed::{parse_computed_expression, qualify_field_refs};
+use hyperstack_idl::error::IdlSearchError;
+use hyperstack_idl::types::IdlSpec;
 
 pub mod idl_refs;
 
@@ -52,6 +54,18 @@ pub struct KeyResolutionValidationInput<'a> {
 
 type GroupedEventMappings =
     HashMap<(String, Option<String>), Vec<(String, parse::EventAttribute, syn::Type)>>;
+
+enum ResolvedMappingSource<'a> {
+    Instruction {
+        idl: &'a IdlSpec,
+        instruction_name: String,
+    },
+    Account {
+        idl: &'a IdlSpec,
+        account_name: String,
+    },
+    Other,
+}
 
 pub fn validate_semantics(input: ValidationInput<'_>) -> syn::Result<()> {
     let known_fields = collect_known_field_paths(input.section_specs, input.computed_fields);
@@ -419,6 +433,45 @@ fn key_resolution_error(
     )
 }
 
+fn resolve_mapping_source_once<'a>(
+    source_type: &str,
+    mappings: &[parse::MapAttribute],
+    idls: IdlLookup<'a>,
+) -> Result<ResolvedMappingSource<'a>, IdlSearchError> {
+    let is_instruction = mappings.iter().any(|mapping| mapping.is_instruction);
+
+    if source_type.contains("::instructions::") || is_instruction {
+        let path =
+            syn::parse_str::<syn::Path>(source_type).map_err(|_| IdlSearchError::InvalidPath {
+                path: source_type.to_string(),
+            })?;
+        let (idl, instruction_name) = resolve_instruction_lookup_from_path(&path, idls)?;
+        Ok(ResolvedMappingSource::Instruction {
+            idl,
+            instruction_name,
+        })
+    } else if source_type.contains("::accounts::") {
+        let path =
+            syn::parse_str::<syn::Path>(source_type).map_err(|_| IdlSearchError::InvalidPath {
+                path: source_type.to_string(),
+            })?;
+        let idl =
+            find_idl_for_type(source_type, idls).ok_or_else(|| IdlSearchError::InvalidPath {
+                path: source_type.to_string(),
+            })?;
+        let account_name = path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+            .ok_or_else(|| IdlSearchError::InvalidPath {
+                path: source_type.to_string(),
+            })?;
+        Ok(ResolvedMappingSource::Account { idl, account_name })
+    } else {
+        Ok(ResolvedMappingSource::Other)
+    }
+}
+
 fn validate_source_handler_keys(
     entity_name: &str,
     primary_key_leafs: &HashSet<String>,
@@ -477,6 +530,14 @@ fn validate_source_handler_keys(
             continue;
         }
 
+        if let Some(join_field) = join_key.as_ref() {
+            if source_exposes_field(&mappings, join_field)
+                && source_field_can_resolve_key(join_field, primary_key_leafs, lookup_index_leafs)
+            {
+                continue;
+            }
+        }
+
         if let Some(lookup_by) = mappings
             .iter()
             .find_map(|mapping| mapping.lookup_by.as_ref())
@@ -500,12 +561,6 @@ fn validate_source_handler_keys(
         }
 
         if let Some(join_field) = join_key {
-            if source_exposes_field(&mappings, &join_field)
-                && source_field_can_resolve_key(&join_field, primary_key_leafs, lookup_index_leafs)
-            {
-                continue;
-            }
-
             errors.push(key_resolution_error(
                 first_mapping.attr_span,
                 if is_instruction { "instruction source" } else { "account source" },
@@ -576,6 +631,12 @@ fn validate_event_handler_keys(
             });
         if lookup_by.is_some() {
             continue;
+        }
+
+        if let Some(join_field) = join_key.as_ref() {
+            if source_field_can_resolve_key(join_field, primary_key_leafs, lookup_index_leafs) {
+                continue;
+            }
         }
 
         if let Some(lookup_by) = mappings
@@ -700,25 +761,54 @@ fn validate_mapping_references(
         let mut mappings = sources_by_type[source_type].clone();
         mappings.sort_by(stable_map_attribute_cmp);
 
+        let Some(first_mapping) = mappings.first() else {
+            continue;
+        };
+
+        let resolved_source = match resolve_mapping_source_once(source_type, &mappings, idls) {
+            Ok(resolved_source) => resolved_source,
+            Err(error) => {
+                errors.push(idl_error_to_syn(first_mapping.source_type_span, error));
+                continue;
+            }
+        };
+
         for mapping in &mappings {
-            if let Err(error) = validate_mapping_source(source_type, mapping, idls) {
-                let span = match &error {
-                    hyperstack_idl::error::IdlSearchError::NotFound { section, .. }
-                        if section == "instructions"
-                            || section == "accounts"
-                            || section == "types" =>
+            match &resolved_source {
+                ResolvedMappingSource::Instruction {
+                    idl,
+                    instruction_name,
+                } => {
+                    if !mapping.source_field_name.is_empty()
+                        && !mapping.source_field_name.starts_with("__")
                     {
-                        mapping.source_type_span
+                        let temp_field = parse::FieldSpec {
+                            ident: syn::Ident::new(
+                                &mapping.source_field_name,
+                                mapping.source_field_span,
+                            ),
+                            explicit_location: None,
+                        };
+
+                        if let Err(error) =
+                            validate_instruction_field_spec(idl, instruction_name, &temp_field)
+                        {
+                            errors.push(idl_error_to_syn(mapping.source_field_span, error));
+                        }
                     }
-                    hyperstack_idl::error::IdlSearchError::NotFound { section, .. }
-                        if section.starts_with("instruction fields")
-                            || section.starts_with("account fields") =>
+                }
+                ResolvedMappingSource::Account { idl, account_name } => {
+                    if !mapping.source_field_name.is_empty()
+                        && !mapping.source_field_name.starts_with("__")
                     {
-                        mapping.source_field_span
+                        if let Err(error) =
+                            validate_account_field(idl, account_name, &mapping.source_field_name)
+                        {
+                            errors.push(idl_error_to_syn(mapping.source_field_span, error));
+                        }
                     }
-                    _ => mapping.attr_span,
-                };
-                errors.push(idl_error_to_syn(span, error));
+                }
+                ResolvedMappingSource::Other => {}
             }
 
             if let Some(join_on) = &mapping.join_on {
@@ -734,43 +824,29 @@ fn validate_mapping_references(
             }
 
             if let Some(lookup_by) = &mapping.lookup_by {
-                if source_type.contains("::instructions::") || mapping.is_instruction {
-                    match syn::parse_str::<syn::Path>(source_type)
-                        .map_err(|_| hyperstack_idl::error::IdlSearchError::InvalidPath {
-                            path: source_type.clone(),
-                        })
-                        .and_then(|path| resolve_instruction_lookup_from_path(&path, idls))
+                if let ResolvedMappingSource::Instruction {
+                    idl,
+                    instruction_name,
+                } = &resolved_source
+                {
+                    if let Err(error) =
+                        validate_instruction_field_spec(idl, instruction_name, lookup_by)
                     {
-                        Ok((idl, instruction_name)) => {
-                            if let Err(error) =
-                                validate_instruction_field_spec(idl, &instruction_name, lookup_by)
-                            {
-                                errors.push(idl_error_to_syn(lookup_by.ident.span(), error));
-                            }
-                        }
-                        Err(error) => errors.push(idl_error_to_syn(mapping.attr_span, error)),
+                        errors.push(idl_error_to_syn(lookup_by.ident.span(), error));
                     }
                 }
             }
 
             if let Some(stop_lookup_by) = &mapping.stop_lookup_by {
-                if source_type.contains("::instructions::") || mapping.is_instruction {
-                    match syn::parse_str::<syn::Path>(source_type)
-                        .map_err(|_| hyperstack_idl::error::IdlSearchError::InvalidPath {
-                            path: source_type.clone(),
-                        })
-                        .and_then(|path| resolve_instruction_lookup_from_path(&path, idls))
+                if let ResolvedMappingSource::Instruction {
+                    idl,
+                    instruction_name,
+                } = &resolved_source
+                {
+                    if let Err(error) =
+                        validate_instruction_field_spec(idl, instruction_name, stop_lookup_by)
                     {
-                        Ok((idl, instruction_name)) => {
-                            if let Err(error) = validate_instruction_field_spec(
-                                idl,
-                                &instruction_name,
-                                stop_lookup_by,
-                            ) {
-                                errors.push(idl_error_to_syn(stop_lookup_by.ident.span(), error));
-                            }
-                        }
-                        Err(error) => errors.push(idl_error_to_syn(mapping.attr_span, error)),
+                        errors.push(idl_error_to_syn(stop_lookup_by.ident.span(), error));
                     }
                 }
             }
@@ -793,6 +869,22 @@ fn validate_event_references(
         let mut event_mappings = events_by_instruction[instruction_key].clone();
         event_mappings.sort_by(stable_event_mapping_cmp);
 
+        let Some((_, first_attr, _)) = event_mappings.first() else {
+            continue;
+        };
+
+        let (idl, instruction_name) =
+            match resolve_instruction_lookup(first_attr, instruction_key, idls) {
+                Ok(value) => value,
+                Err(error) => {
+                    errors.push(idl_error_to_syn(
+                        first_attr.instruction_span.unwrap_or(first_attr.attr_span),
+                        error,
+                    ));
+                    continue;
+                }
+            };
+
         for (_target_field, event_attr, _field_type) in &event_mappings {
             if let Some(join_on) = &event_attr.join_on {
                 let reference = join_on.ident.to_string();
@@ -806,19 +898,6 @@ fn validate_event_references(
                     ));
                 }
             }
-
-            let instruction_lookup = resolve_instruction_lookup(event_attr, instruction_key, idls);
-
-            let (idl, instruction_name) = match instruction_lookup {
-                Ok(value) => value,
-                Err(error) => {
-                    errors.push(idl_error_to_syn(
-                        event_attr.instruction_span.unwrap_or(event_attr.attr_span),
-                        error,
-                    ));
-                    continue;
-                }
-            };
 
             for field_spec in &event_attr.capture_fields {
                 if let Err(error) =

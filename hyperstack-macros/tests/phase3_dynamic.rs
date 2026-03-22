@@ -122,3 +122,75 @@ fn main() {{}}
     assert!(stderr.contains("Not found: 'BondingCurv' in accounts"));
     assert!(stderr.contains("src/main.rs:8:"), "stderr was:\n{stderr}");
 }
+
+#[test]
+fn invalid_mapping_source_type_is_reported_once_per_source() {
+    let source = format!(
+        r#"use hyperstack_macros::hyperstack;
+
+#[hyperstack(idl = "{}")]
+mod broken {{
+    #[entity(name = "Thing")]
+    struct Thing {{
+        #[map(pump_sdk::accounts::BondingCurve::complete, primary_key, strategy = SetOnce)]
+        id: bool,
+
+        #[map(pump_sdk::instructions::Buuy::user, strategy = LastWrite)]
+        first_user: String,
+
+        #[map(pump_sdk::instructions::Buuy::user, strategy = LastWrite)]
+        second_user: String,
+    }}
+}}
+
+fn main() {{}}
+"#,
+        pump_idl_path()
+    );
+
+    let stderr = compile_failure_stderr(
+        "invalid_mapping_source_type_is_reported_once_per_source",
+        &source,
+    );
+    assert_eq!(
+        stderr.matches("Not found: 'Buuy' in instructions").count(),
+        1,
+        "stderr was:\n{stderr}"
+    );
+}
+
+#[test]
+fn invalid_event_instruction_is_reported_once_per_group() {
+    let source = format!(
+        r#"use hyperstack_macros::hyperstack;
+
+#[hyperstack(idl = "{}")]
+mod broken {{
+    #[entity(name = "Thing")]
+    struct Thing {{
+        #[map(pump_sdk::accounts::BondingCurve::complete, primary_key, strategy = SetOnce)]
+        id: bool,
+
+        #[event(from = pump_sdk::instructions::Buuy, fields = [user])]
+        first_trade: Vec<pump_sdk::instructions::Buy>,
+
+        #[event(from = pump_sdk::instructions::Buuy, fields = [user])]
+        second_trade: Vec<pump_sdk::instructions::Buy>,
+    }}
+}}
+
+fn main() {{}}
+"#,
+        pump_idl_path()
+    );
+
+    let stderr = compile_failure_stderr(
+        "invalid_event_instruction_is_reported_once_per_group",
+        &source,
+    );
+    assert_eq!(
+        stderr.matches("Not found: 'Buuy' in instructions").count(),
+        1,
+        "stderr was:\n{stderr}"
+    );
+}

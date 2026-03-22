@@ -175,7 +175,7 @@ fn main() {{}}
         &source,
         &[
             "Not found: 'Initialise' in instructions",
-            "unknown join_on field 'ghost' on entity 'Thing'",
+            "The `join_on` field 'ghost' is neither a primary-key field nor a lookup-index-backed field.",
         ],
     );
 }
