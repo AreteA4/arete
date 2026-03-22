@@ -709,40 +709,50 @@ fn validate_instruction_hook_keys(
 
     for instruction_type in instruction_types {
         let derive_attrs = &derive_from_mappings[instruction_type];
-        for derive_attr in derive_attrs {
-            if let Some(lookup_by) = &derive_attr.lookup_by {
-                let field_name = lookup_by.ident.to_string();
-                if source_field_can_resolve_key(&field_name, primary_key_leafs, lookup_index_leafs)
-                {
-                    continue;
-                }
 
-                errors.push(key_resolution_error(
-                    lookup_by.ident.span(),
-                    "instruction hook",
-                    instruction_type,
-                    entity_name,
-                    &format!(
-                        "The `lookup_by` field '{}' is neither a primary-key field nor a lookup-index-backed field.",
-                        field_name
-                    ),
-                ));
-            } else {
-                let field_name = derive_attr.field.ident.to_string();
-                if source_field_can_resolve_key(&field_name, primary_key_leafs, lookup_index_leafs)
-                {
-                    continue;
-                }
+        let group_resolved = derive_attrs.iter().any(|derive_attr| {
+            let field_name = derive_attr
+                .lookup_by
+                .as_ref()
+                .map(|lookup_by| lookup_by.ident.to_string())
+                .unwrap_or_else(|| derive_attr.field.ident.to_string());
 
-                errors.push(key_resolution_error(
-                    derive_attr.attr_span,
-                    "instruction hook",
-                    instruction_type,
-                    entity_name,
-                    "Add `lookup_by = ...` that points to the primary key or to a lookup index field.",
-                ));
-            }
+            source_field_can_resolve_key(&field_name, primary_key_leafs, lookup_index_leafs)
+        });
+
+        if group_resolved {
+            continue;
         }
+
+        if let Some(lookup_by) = derive_attrs
+            .iter()
+            .find_map(|derive_attr| derive_attr.lookup_by.as_ref())
+        {
+            let field_name = lookup_by.ident.to_string();
+            errors.push(key_resolution_error(
+                lookup_by.ident.span(),
+                "instruction hook",
+                instruction_type,
+                entity_name,
+                &format!(
+                    "The `lookup_by` field '{}' is neither a primary-key field nor a lookup-index-backed field.",
+                    field_name
+                ),
+            ));
+            continue;
+        }
+
+        let Some(first_attr) = derive_attrs.first() else {
+            continue;
+        };
+
+        errors.push(key_resolution_error(
+            first_attr.attr_span,
+            "instruction hook",
+            instruction_type,
+            entity_name,
+            "Add `lookup_by = ...` that points to the primary key or to a lookup index field.",
+        ));
     }
 }
 
