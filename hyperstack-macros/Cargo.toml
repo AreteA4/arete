@@ -26,4 +26,5 @@ bs58 = "0.5"
 hyperstack-idl = { path = "../hyperstack-idl", version = "0.1.5" }
 
 [dev-dependencies]
+tempfile = "3"
 trybuild = "1.0"

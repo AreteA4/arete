@@ -683,8 +683,14 @@ fn validate_mapping_references(
     idls: IdlLookup,
     errors: &mut ErrorCollector,
 ) {
-    for (source_type, mappings) in sources_by_type {
-        for mapping in mappings {
+    let mut source_types: Vec<&String> = sources_by_type.keys().collect();
+    source_types.sort();
+
+    for source_type in source_types {
+        let mut mappings = sources_by_type[source_type].clone();
+        mappings.sort_by(stable_map_attribute_cmp);
+
+        for mapping in &mappings {
             if let Err(error) = validate_mapping_source(source_type, mapping, idls) {
                 let span = match &error {
                     hyperstack_idl::error::IdlSearchError::NotFound { section, .. }
@@ -770,8 +776,14 @@ fn validate_event_references(
     idls: IdlLookup,
     errors: &mut ErrorCollector,
 ) {
-    for (instruction_key, event_mappings) in events_by_instruction {
-        for (_target_field, event_attr, _field_type) in event_mappings {
+    let mut instruction_keys: Vec<&String> = events_by_instruction.keys().collect();
+    instruction_keys.sort();
+
+    for instruction_key in instruction_keys {
+        let mut event_mappings = events_by_instruction[instruction_key].clone();
+        event_mappings.sort_by(stable_event_mapping_cmp);
+
+        for (_target_field, event_attr, _field_type) in &event_mappings {
             if let Some(join_on) = &event_attr.join_on {
                 let reference = join_on.ident.to_string();
                 if !known_fields.contains(&reference) {

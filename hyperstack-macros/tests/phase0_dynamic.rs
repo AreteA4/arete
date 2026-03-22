@@ -1,55 +1,24 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+mod support;
+
+use support::{cargo_toml, escape_path, macro_manifest_dir, TempCrate};
 
 fn run_compile_failure(name: &str, source: &str, extra_files: &[(&str, &str)], expected: &[&str]) {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
-        .parent()
-        .expect("hyperstack-macros should live in workspace root");
-    let temp_root = workspace_root.join("target/tests/phase0-dynamic");
-    fs::create_dir_all(&temp_root).expect("create dynamic test root");
-
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time should be after unix epoch")
-        .as_nanos();
-    let crate_dir = temp_root.join(format!("{name}-{unique}"));
-    let src_dir = crate_dir.join("src");
-    fs::create_dir_all(&src_dir).expect("create temp crate src dir");
-
-    let cargo_toml = format!(
-        r#"[package]
-name = "{name}"
-version = "0.0.0"
-edition = "2021"
-
-[workspace]
-
-[dependencies]
-hyperstack-macros = {{ path = "{}" }}
-"#,
-        escape_path(&manifest_dir)
+    let manifest_dir = macro_manifest_dir();
+    let temp_crate = TempCrate::new(
+        "phase0-dynamic",
+        name,
+        cargo_toml(
+            name,
+            &[format!(
+                "hyperstack-macros = {{ path = \"{}\" }}",
+                escape_path(&manifest_dir)
+            )],
+        ),
+        source,
+        extra_files,
     );
 
-    fs::write(crate_dir.join("Cargo.toml"), cargo_toml).expect("write temp Cargo.toml");
-    fs::write(src_dir.join("main.rs"), source).expect("write temp main.rs");
-    for (relative_path, contents) in extra_files {
-        let file_path = crate_dir.join(relative_path);
-        if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent).expect("create extra file parent dir");
-        }
-        fs::write(file_path, contents).expect("write extra test file");
-    }
-
-    let output = Command::new("cargo")
-        .arg("check")
-        .arg("--quiet")
-        .current_dir(&crate_dir)
-        .env("CARGO_TARGET_DIR", workspace_root.join("target"))
-        .output()
-        .expect("run cargo check");
+    let output = temp_crate.cargo_check();
 
     assert!(
         !output.status.success(),
@@ -94,10 +63,6 @@ fn main() {}
         &[("fixture/minimal.json", minimal_idl)],
         expected,
     );
-}
-
-fn escape_path(path: &Path) -> String {
-    path.display().to_string().replace('\\', "\\\\")
 }
 
 #[test]
