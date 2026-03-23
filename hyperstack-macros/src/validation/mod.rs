@@ -533,14 +533,6 @@ fn validate_source_handler_keys(
 
         let is_instruction = mappings.iter().any(|mapping| mapping.is_instruction);
 
-        // Event-derived MapAttribute values are produced in handlers.rs via
-        // convert_event_to_map_attributes(...), which sets is_event_source = true.
-        // Those groups are validated in validate_event_handler_keys before they
-        // are merged into sources_by_type for codegen.
-        if mappings.iter().all(|mapping| mapping.is_event_source) {
-            continue;
-        }
-
         if !is_instruction && has_explicit_key_resolver(&source_type, resolver_hooks) {
             continue;
         }
@@ -1005,11 +997,7 @@ fn validate_aggregate_conditions(
             .flatten()
             .filter(|m| m.target_field_name == **target_field && m.is_instruction)
             .collect();
-        instruction_mappings.sort_by(|a, b| {
-            path_to_string(&a.source_type_path)
-                .cmp(&path_to_string(&b.source_type_path))
-                .then_with(|| a.source_field_name.cmp(&b.source_field_name))
-        });
+        instruction_mappings.sort_by(stable_map_attribute_cmp);
 
         let mut reported: HashSet<(String, String)> = HashSet::new();
         for mapping in instruction_mappings {
@@ -1039,11 +1027,7 @@ fn validate_aggregate_conditions(
             .flatten()
             .filter(|m| m.target_field_name == **target_field && m.is_account_source)
             .collect();
-        account_mappings.sort_by(|a, b| {
-            path_to_string(&a.source_type_path)
-                .cmp(&path_to_string(&b.source_type_path))
-                .then_with(|| a.source_field_name.cmp(&b.source_field_name))
-        });
+        account_mappings.sort_by(stable_map_attribute_cmp);
 
         let mut reported_account: HashSet<(String, String)> = HashSet::new();
         for mapping in account_mappings {
