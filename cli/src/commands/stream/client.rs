@@ -136,8 +136,19 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                                     eprintln!("Subscribed to {}", view);
                                     continue;
                                 }
+                                let was_snapshot = frame.is_snapshot();
                                 if process_frame(frame, view, &mut state)? {
                                     break;
+                                }
+                                if !was_snapshot && !snapshot_complete && state.update_count > 0 {
+                                    snapshot_complete = true;
+                                    if let OutputMode::NoDna = state.output_mode {
+                                        output::emit_no_dna_event(
+                                            "snapshot_complete", view,
+                                            &serde_json::json!({"entity_count": state.entity_count}),
+                                            state.update_count, state.entity_count,
+                                        )?;
+                                    }
                                 }
                             }
                             Err(e) => {
