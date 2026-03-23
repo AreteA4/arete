@@ -87,10 +87,19 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     }));
 
     enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let terminal_setup = || -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        Ok(Terminal::new(backend)?)
+    };
+    let mut terminal = match terminal_setup() {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = disable_raw_mode();
+            return Err(e);
+        }
+    };
 
     let mut app = App::new(view.to_string(), url.clone());
 
