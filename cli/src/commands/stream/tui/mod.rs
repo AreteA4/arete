@@ -186,6 +186,7 @@ async fn run_loop(
                                 TuiAction::GotoTop
                             } else {
                                 app.pending_g = true;
+                                app.pending_count = None;
                                 continue;
                             }
                         }
@@ -238,6 +239,8 @@ async fn run_loop(
                 }
                 app.handle_action(action);
             }
+            // Resize and other events are handled implicitly:
+            // layout is recalculated from terminal.size() at the top of each loop iteration
         }
     }
 

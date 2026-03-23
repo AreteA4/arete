@@ -371,10 +371,8 @@ fn process_frame(
                     store.upsert(&entity.key, entity.data.clone(), "snapshot", None);
                 }
                 state.entity_count = state.entities.len() as u64;
-                if ops_allowed {
-                    if emit_entity(state, view, &entity.key, "snapshot", &entity.data)? {
-                        return Ok(true);
-                    }
+                if ops_allowed && emit_entity(state, view, &entity.key, "snapshot", &entity.data)? {
+                    return Ok(true);
                 }
             }
         }
@@ -384,10 +382,8 @@ fn process_frame(
                 store.upsert(&frame.key, frame.data.clone(), op_str, frame.seq.clone());
             }
             state.entity_count = state.entities.len() as u64;
-            if ops_allowed {
-                if emit_entity(state, view, &frame.key, op_str, &frame.data)? {
-                    return Ok(true);
-                }
+            if ops_allowed && emit_entity(state, view, &frame.key, op_str, &frame.data)? {
+                return Ok(true);
             }
         }
         Operation::Patch => {
@@ -400,10 +396,8 @@ fn process_frame(
             deep_merge_with_append(entry, &frame.data, &frame.append, "");
             let merged = entry.clone();
             state.entity_count = state.entities.len() as u64;
-            if ops_allowed {
-                if emit_entity(state, view, &frame.key, "patch", &merged)? {
-                    return Ok(true);
-                }
+            if ops_allowed && emit_entity(state, view, &frame.key, "patch", &merged)? {
+                return Ok(true);
             }
         }
         Operation::Delete => {
