@@ -4380,7 +4380,7 @@
           "lookup_by": {
             "segments": [
               "accounts",
-              "round"
+              "roundNext"
             ],
             "offsets": null
           }
@@ -5221,7 +5221,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "dca9e9640a9b26f306aca74ac490d9af1e4ef417a896dc35abe40c1d0f7a7a45",
+      "content_hash": "52412e4582f9e406083be7b4c60d42d729d1eb6fec65058e1d26d9f14632527a",
       "views": [
         {
           "id": "OreRound/latest",
@@ -9126,5 +9126,5 @@
       ]
     }
   ],
-  "content_hash": "d1e5d83f1f0d5d451a96289704f6858a4071e42d58a6341d75cc477b4cbe8f3d"
+  "content_hash": "cf16b922b3262c7706145462c65f184bbcce00b7e5b433d72c2b0ebecabefe15"
 }
