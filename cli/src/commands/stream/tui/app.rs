@@ -98,7 +98,8 @@ impl App {
             recorder.record(&frame);
         }
 
-        let raw_frame = if self.show_raw { Some(frame.clone()) } else { None };
+        // Always collect raw frames so toggling on shows recent data
+        let raw_frame = frame.clone();
         let op = frame.operation();
 
         match op {
@@ -145,11 +146,9 @@ impl App {
             }
         }
 
-        if let Some(raw) = raw_frame {
-            self.raw_frames.push(raw);
-            if self.raw_frames.len() > 1000 {
-                self.raw_frames.drain(0..500);
-            }
+        self.raw_frames.push(raw_frame);
+        if self.raw_frames.len() > 1000 {
+            self.raw_frames.drain(0..500);
         }
     }
 
@@ -326,6 +325,12 @@ impl App {
 
     pub fn selected_entity_data(&self) -> Option<String> {
         let key = self.selected_key()?;
+
+        // Raw mode: show the most recent raw frame for this entity key
+        if self.show_raw {
+            let raw = self.raw_frames.iter().rev().find(|f| f.key == key)?;
+            return Some(serde_json::to_string_pretty(raw).unwrap_or_default());
+        }
 
         if self.show_diff {
             let diff = self.store.diff_at(&key, self.history_position)?;
