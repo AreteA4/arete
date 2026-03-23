@@ -1,6 +1,7 @@
 mod client;
 mod filter;
 mod output;
+mod snapshot;
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
@@ -67,9 +68,30 @@ pub struct StreamArgs {
     /// Resume from cursor (seq value)
     #[arg(long)]
     pub after: Option<String>,
+
+    /// Record frames to a JSON snapshot file
+    #[arg(long)]
+    pub save: Option<String>,
+
+    /// Auto-stop recording after N seconds (used with --save)
+    #[arg(long)]
+    pub duration: Option<u64>,
+
+    /// Replay a previously saved snapshot file instead of connecting live
+    #[arg(long, conflicts_with = "url")]
+    pub load: Option<String>,
 }
 
 pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
+    // --load mode: replay from file, no WebSocket needed
+    if let Some(load_path) = &args.load {
+        let player = snapshot::SnapshotPlayer::load(load_path)?;
+        let default_view = player.header.view.clone();
+        let view = args.view.as_deref().unwrap_or(&default_view);
+        let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+        return rt.block_on(client::replay(player, view, &args));
+    }
+
     let view = args.view.as_deref().unwrap_or_else(|| {
         eprintln!("Error: <VIEW> argument is required (e.g. OreRound/latest)");
         std::process::exit(1);

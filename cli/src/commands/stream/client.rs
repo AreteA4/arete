@@ -9,6 +9,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::filter::{self, Filter};
 use super::output::{self, OutputMode};
+use super::snapshot::{SnapshotPlayer, SnapshotRecorder};
 use super::StreamArgs;
 
 struct StreamState {
@@ -21,6 +22,41 @@ struct StreamState {
     count_only: bool,
     update_count: u64,
     entity_count: u64,
+    recorder: Option<SnapshotRecorder>,
+}
+
+fn build_state(args: &StreamArgs, view: &str, url: &str) -> Result<StreamState> {
+    let filter = Filter::parse(&args.filters)?;
+    let select_fields = args.select.as_deref().map(filter::parse_select);
+    let allowed_ops = args.ops.as_deref().map(|ops| {
+        ops.split(',')
+            .map(|s| s.trim().to_lowercase())
+            .collect::<HashSet<_>>()
+    });
+
+    let output_mode = if args.raw {
+        OutputMode::Raw
+    } else if args.no_dna {
+        output::emit_no_dna_event("connected", view, &serde_json::json!({"url": url}), 0, 0)?;
+        OutputMode::NoDna
+    } else {
+        OutputMode::Merged
+    };
+
+    let recorder = args.save.as_ref().map(|_| SnapshotRecorder::new(view, url));
+
+    Ok(StreamState {
+        entities: HashMap::new(),
+        filter,
+        select_fields,
+        allowed_ops,
+        output_mode,
+        first: args.first,
+        count_only: args.count,
+        update_count: 0,
+        entity_count: 0,
+        recorder,
+    })
 }
 
 pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
@@ -58,38 +94,15 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         .await
         .context("Failed to send subscribe message")?;
 
-    // Parse filters
-    let filter = Filter::parse(&args.filters)?;
-    let select_fields = args.select.as_deref().map(filter::parse_select);
-    let allowed_ops = args.ops.as_deref().map(|ops| {
-        ops.split(',')
-            .map(|s| s.trim().to_lowercase())
-            .collect::<HashSet<_>>()
-    });
-
-    let output_mode = if args.raw {
-        OutputMode::Raw
-    } else if args.no_dna {
-        output::emit_no_dna_event("connected", view, &serde_json::json!({"url": url}), 0, 0)?;
-        OutputMode::NoDna
-    } else {
-        OutputMode::Merged
-    };
-
-    let mut state = StreamState {
-        entities: HashMap::new(),
-        filter,
-        select_fields,
-        allowed_ops,
-        output_mode,
-        first: args.first,
-        count_only: args.count,
-        update_count: 0,
-        entity_count: 0,
-    };
+    let mut state = build_state(args, view, &url)?;
 
     // Ping interval
     let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+
+    // Duration timer for --save --duration
+    let duration_deadline = args.duration.map(|secs| {
+        tokio::time::Instant::now() + std::time::Duration::from_secs(secs)
+    });
 
     // Handle Ctrl+C
     let shutdown = tokio::signal::ctrl_c();
@@ -98,6 +111,14 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let mut snapshot_complete = false;
 
     loop {
+        // Check duration deadline
+        if let Some(deadline) = duration_deadline {
+            if tokio::time::Instant::now() >= deadline {
+                eprintln!("Duration reached, stopping...");
+                break;
+            }
+        }
+
         tokio::select! {
             msg = ws_rx.next() => {
                 match msg {
@@ -105,7 +126,7 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                         match parse_frame(&bytes) {
                             Ok(frame) => {
                                 if process_frame(frame, view, &mut state)? {
-                                    return Ok(());
+                                    break;
                                 }
                             }
                             Err(e) => eprintln!("Warning: failed to parse frame: {}", e),
@@ -122,9 +143,8 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                             Ok(frame) => {
                                 let was_snapshot = frame.is_snapshot();
                                 if process_frame(frame, view, &mut state)? {
-                                    return Ok(());
+                                    break;
                                 }
-                                // Detect snapshot completion (first non-snapshot after snapshots)
                                 if !was_snapshot && !snapshot_complete && state.update_count > 0 {
                                     snapshot_complete = true;
                                     if let OutputMode::NoDna = state.output_mode {
@@ -170,6 +190,11 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         }
     }
 
+    // Save snapshot if --save was specified
+    if let (Some(save_path), Some(recorder)) = (&args.save, &state.recorder) {
+        recorder.save(save_path)?;
+    }
+
     if let OutputMode::NoDna = state.output_mode {
         output::emit_no_dna_event(
             "disconnected", view,
@@ -181,12 +206,39 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     Ok(())
 }
 
+/// Replay frames from a saved snapshot file through the same processing pipeline.
+pub async fn replay(player: SnapshotPlayer, view: &str, args: &StreamArgs) -> Result<()> {
+    let mut state = build_state(args, view, &player.header.url)?;
+
+    for snapshot_frame in &player.frames {
+        if process_frame(snapshot_frame.frame.clone(), view, &mut state)? {
+            break;
+        }
+    }
+
+    if let OutputMode::NoDna = state.output_mode {
+        output::emit_no_dna_event(
+            "disconnected", view,
+            &serde_json::json!(null),
+            state.update_count, state.entity_count,
+        )?;
+    }
+
+    eprintln!("Replay complete: {} updates processed.", state.update_count);
+    Ok(())
+}
+
 /// Process a frame. Returns true if the stream should end (--first matched).
 fn process_frame(
     frame: Frame,
     view: &str,
     state: &mut StreamState,
 ) -> Result<bool> {
+    // Record frame if --save is active
+    if let Some(recorder) = &mut state.recorder {
+        recorder.record(&frame);
+    }
+
     let op = frame.operation();
     let op_str = &frame.op;
 
@@ -198,7 +250,6 @@ fn process_frame(
     }
 
     if let OutputMode::Raw = state.output_mode {
-        // In raw mode, apply filter to the frame data directly
         if !state.filter.is_empty() && !state.filter.matches(&frame.data) {
             return Ok(false);
         }
@@ -271,14 +322,12 @@ fn emit_entity(
     op: &str,
     data: &serde_json::Value,
 ) -> Result<bool> {
-    // Apply filter
     if !state.filter.is_empty() && !state.filter.matches(data) {
         return Ok(false);
     }
 
     state.update_count += 1;
 
-    // Apply field selection
     let output_data = match &state.select_fields {
         Some(fields) => filter::select_fields(data, fields),
         None => data.clone(),
@@ -297,7 +346,6 @@ fn emit_entity(
         }
     }
 
-    // --first: exit after first filter match
     if state.first && !state.filter.is_empty() {
         return Ok(true);
     }
