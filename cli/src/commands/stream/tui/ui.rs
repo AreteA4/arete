@@ -47,11 +47,6 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             format!("Updates: {}", app.update_count),
             Style::default().fg(Color::DarkGray),
         ),
-        Span::raw("  "),
-        Span::styled(
-            format!("Entities: {}", app.entity_keys.len()),
-            Style::default().fg(Color::DarkGray),
-        ),
     ]);
 
     f.render_widget(Paragraph::new(header), area);
