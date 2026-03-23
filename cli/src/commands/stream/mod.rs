@@ -37,7 +37,8 @@ pub struct StreamArgs {
     #[arg(long)]
     pub no_dna: bool,
 
-    /// Filter expression: field=value, field>N, field~regex (repeatable, ANDed)
+    /// Filter expression: field=value, field>N, field~regex (repeatable, ANDed).
+    /// Note: field? treats null as absent (returns false for null values)
     #[arg(long = "where", value_name = "EXPR")]
     pub filters: Vec<String>,
 
