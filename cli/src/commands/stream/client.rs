@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use hyperstack_sdk::{
     deep_merge_with_append, parse_frame, parse_snapshot_entities, try_parse_subscribed_frame,
-    ClientMessage, Frame, Operation, Subscription,
+    ClientMessage, Frame, Operation,
 };
 use std::collections::{HashMap, HashSet};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -78,25 +78,8 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
 
     let (mut ws_tx, mut ws_rx) = ws.split();
 
-    // Build subscription
-    let mut sub = Subscription::new(view);
-    if let Some(key) = &args.key {
-        sub = sub.with_key(key.clone());
-    }
-    if let Some(take) = args.take {
-        sub = sub.with_take(take);
-    }
-    if let Some(skip) = args.skip {
-        sub = sub.with_skip(skip);
-    }
-    if args.no_snapshot {
-        sub = sub.with_snapshot(false);
-    }
-    if let Some(after) = &args.after {
-        sub = sub.after(after.clone());
-    }
-
-    // Send subscribe message
+    // Build and send subscription
+    let sub = super::build_subscription(view, args);
     let msg = serde_json::to_string(&ClientMessage::Subscribe(sub))
         .context("Failed to serialize subscribe message")?;
     ws_tx
@@ -234,6 +217,14 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     }
 
     if let OutputMode::NoDna = state.output_mode {
+        // Ensure snapshot_complete is emitted before disconnected if it wasn't already
+        if !snapshot_complete && state.update_count > 0 {
+            output::emit_no_dna_event(
+                "snapshot_complete", view,
+                &serde_json::json!({"entity_count": state.entity_count}),
+                state.update_count, state.entity_count,
+            )?;
+        }
         output::emit_no_dna_event(
             "disconnected", view,
             &serde_json::json!(null),

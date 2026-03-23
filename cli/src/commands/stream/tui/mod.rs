@@ -8,7 +8,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures_util::{SinkExt, StreamExt};
-use hyperstack_sdk::{parse_frame, ClientMessage, Frame, Subscription};
+use hyperstack_sdk::{parse_frame, ClientMessage, Frame};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use tokio::sync::mpsc;
@@ -26,28 +26,15 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let (mut ws_tx, mut ws_rx) = ws.split();
 
     // Subscribe
-    let mut sub = Subscription::new(view);
-    if let Some(key) = &args.key {
-        sub = sub.with_key(key.clone());
-    }
-    if let Some(take) = args.take {
-        sub = sub.with_take(take);
-    }
-    if let Some(skip) = args.skip {
-        sub = sub.with_skip(skip);
-    }
-    if args.no_snapshot {
-        sub = sub.with_snapshot(false);
-    }
-    if let Some(after) = &args.after {
-        sub = sub.after(after.clone());
-    }
-
+    let sub = crate::commands::stream::build_subscription(view, args);
     let msg = serde_json::to_string(&ClientMessage::Subscribe(sub))?;
     ws_tx.send(Message::Text(msg)).await?;
 
     // Channel for frames from WS task
     let (frame_tx, mut frame_rx) = mpsc::channel::<Frame>(1000);
+
+    // Shutdown signal for graceful WebSocket close
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     // Spawn WS reader task
     let ws_handle = tokio::spawn(async move {
@@ -55,6 +42,10 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         let mut ping_interval = tokio::time::interval_at(tokio::time::Instant::now() + ping_period, ping_period);
         loop {
             tokio::select! {
+                _ = &mut shutdown_rx => {
+                    let _ = ws_tx.close().await;
+                    break;
+                }
                 msg = ws_rx.next() => {
                     match msg {
                         Some(Ok(Message::Binary(bytes))) => {
@@ -116,7 +107,9 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     )?;
     terminal.show_cursor()?;
 
-    ws_handle.abort();
+    // Signal graceful shutdown, then wait briefly for the task to close
+    let _ = shutdown_tx.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws_handle).await;
 
     result
 }

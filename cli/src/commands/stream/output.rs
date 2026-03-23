@@ -55,6 +55,8 @@ pub fn print_delete(view: &str, key: &str) -> Result<()> {
 /// Print a running update count to stderr (overwrites line).
 pub fn print_count(count: u64) -> Result<()> {
     eprint!("\rUpdates: {}", count);
+    use std::io::Write;
+    std::io::stderr().flush()?;
     Ok(())
 }
 

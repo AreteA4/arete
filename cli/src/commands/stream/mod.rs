@@ -8,6 +8,7 @@ mod tui;
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
+use hyperstack_sdk::Subscription;
 
 use crate::config::HyperstackConfig;
 
@@ -141,6 +142,26 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
     eprintln!("Subscribing to {} ...", view);
 
     rt.block_on(client::stream(url, view, &args))
+}
+
+pub fn build_subscription(view: &str, args: &StreamArgs) -> Subscription {
+    let mut sub = Subscription::new(view);
+    if let Some(key) = &args.key {
+        sub = sub.with_key(key.clone());
+    }
+    if let Some(take) = args.take {
+        sub = sub.with_take(take);
+    }
+    if let Some(skip) = args.skip {
+        sub = sub.with_skip(skip);
+    }
+    if args.no_snapshot {
+        sub = sub.with_snapshot(false);
+    }
+    if let Some(after) = &args.after {
+        sub = sub.after(after.clone());
+    }
+    sub
 }
 
 fn resolve_url(args: &StreamArgs, config_path: &str, view: &str) -> Result<String> {

@@ -67,9 +67,10 @@ impl Predicate {
             FilterOp::Regex(re) => resolved
                 .and_then(|v| v.as_str())
                 .is_some_and(|s| re.is_match(s)),
-            FilterOp::NotRegex(re) => resolved
-                .and_then(|v| v.as_str())
-                .is_none_or(|s| !re.is_match(s)),
+            FilterOp::NotRegex(re) => match resolved.and_then(|v| v.as_str()) {
+                Some(s) => !re.is_match(s),
+                None => false, // field absent or non-string → does not match
+            },
         }
     }
 }
