@@ -403,10 +403,10 @@ fn source_field_can_resolve_key(
     primary_key_leafs.contains(field_name) || lookup_index_leafs.contains(field_name)
 }
 
-fn source_exposes_field(mappings: &[parse::MapAttribute], field_name: &str) -> bool {
+fn source_exposes_target_field(mappings: &[parse::MapAttribute], field_name: &str) -> bool {
     mappings
         .iter()
-        .any(|mapping| mapping.source_field_name == field_name)
+        .any(|mapping| mapping.target_field_name == field_name)
 }
 
 fn has_account_address_lookup_path(
@@ -544,7 +544,7 @@ fn validate_source_handler_keys(
         }
 
         if let Some(join_field) = join_key.as_ref() {
-            if source_exposes_field(&mappings, join_field)
+            if source_exposes_target_field(&mappings, join_field)
                 && source_field_can_resolve_key(join_field, primary_key_leafs, lookup_index_leafs)
             {
                 continue;
@@ -722,6 +722,20 @@ fn validate_event_handler_keys(
     }
 }
 
+fn stable_derive_from_cmp(
+    a: &parse::DeriveFromAttribute,
+    b: &parse::DeriveFromAttribute,
+) -> Ordering {
+    a.target_field_name
+        .cmp(&b.target_field_name)
+        .then_with(|| a.field.ident.to_string().cmp(&b.field.ident.to_string()))
+        .then_with(|| a.strategy.cmp(&b.strategy))
+        .then_with(|| {
+            field_spec_sort_key(a.lookup_by.as_ref())
+                .cmp(&field_spec_sort_key(b.lookup_by.as_ref()))
+        })
+}
+
 fn validate_instruction_hook_keys(
     entity_name: &str,
     primary_key_leafs: &HashSet<String>,
@@ -733,7 +747,8 @@ fn validate_instruction_hook_keys(
     instruction_types.sort();
 
     for instruction_type in instruction_types {
-        let derive_attrs = &derive_from_mappings[instruction_type];
+        let mut derive_attrs = derive_from_mappings[instruction_type].clone();
+        derive_attrs.sort_by(stable_derive_from_cmp);
 
         let group_resolved = derive_attrs.iter().any(|derive_attr| {
             let field_name = derive_attr

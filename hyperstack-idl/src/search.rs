@@ -112,10 +112,11 @@ pub fn lookup_instruction_field<'a>(
     field_name: &str,
 ) -> Result<InstructionFieldLookup<'a>, IdlSearchError> {
     let instruction = lookup_instruction(idl, instruction_name)?;
+    // Use case-insensitive matching to stay consistent with lookup_instruction.
     if instruction
         .accounts
         .iter()
-        .any(|account| account.name == field_name)
+        .any(|account| account.name.eq_ignore_ascii_case(field_name))
     {
         return Ok(InstructionFieldLookup {
             instruction,
@@ -123,7 +124,11 @@ pub fn lookup_instruction_field<'a>(
         });
     }
 
-    if instruction.args.iter().any(|arg| arg.name == field_name) {
+    if instruction
+        .args
+        .iter()
+        .any(|arg| arg.name.eq_ignore_ascii_case(field_name))
+    {
         return Ok(InstructionFieldLookup {
             instruction,
             kind: InstructionFieldKind::Arg,
