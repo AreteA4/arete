@@ -753,6 +753,9 @@ fn validate_instruction_hook_keys(
             continue;
         };
 
+        // Emit a single group-level error: if any attribute has a bad lookup_by,
+        // report on that field; otherwise report on the first attribute's span.
+        // This mirrors the one-error-per-group pattern in validate_source_handler_keys.
         if let Some(lookup_by) = derive_attrs
             .iter()
             .find_map(|derive_attr| derive_attr.lookup_by.as_ref())
@@ -1117,7 +1120,11 @@ fn validate_views(
             }
 
             if let ViewTransform::Filter { predicate } = transform {
-                for field in collect_predicate_field_refs(predicate) {
+                let mut filter_refs: Vec<String> = collect_predicate_field_refs(predicate)
+                    .into_iter()
+                    .collect();
+                filter_refs.sort();
+                for field in filter_refs {
                     if !known_fields.contains(&field) {
                         errors.push(entity_field_error(
                             entity_name,
@@ -1159,7 +1166,9 @@ fn validate_computed_fields(
         };
 
         let refs = collect_field_refs(&parsed);
-        for reference in &refs {
+        let mut sorted_refs: Vec<&String> = refs.iter().collect();
+        sorted_refs.sort();
+        for reference in sorted_refs {
             if !known_fields.contains(reference) {
                 errors.push(entity_field_error(
                     entity_name,
