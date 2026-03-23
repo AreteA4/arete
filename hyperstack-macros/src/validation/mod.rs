@@ -809,6 +809,8 @@ fn validate_mapping_references(
             }
         };
 
+        let mut reported_join_ons: HashSet<String> = HashSet::new();
+
         for mapping in &mappings {
             match &resolved_source {
                 ResolvedMappingSource::Instruction {
@@ -849,7 +851,8 @@ fn validate_mapping_references(
 
             if let Some(join_on) = &mapping.join_on {
                 let reference = join_on.ident.to_string();
-                if !known_fields.contains(&reference) {
+                if !known_fields.contains(&reference) && reported_join_ons.insert(reference.clone())
+                {
                     errors.push(entity_field_error(
                         entity_name,
                         &reference,
