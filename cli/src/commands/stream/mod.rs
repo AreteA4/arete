@@ -3,6 +3,8 @@ mod filter;
 mod output;
 mod snapshot;
 mod store;
+#[cfg(feature = "tui")]
+mod tui;
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
@@ -93,6 +95,10 @@ pub struct StreamArgs {
     /// Show diff between consecutive updates
     #[arg(long)]
     pub diff: bool,
+
+    /// Interactive TUI mode
+    #[arg(long, short = 'i')]
+    pub tui: bool,
 }
 
 pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
@@ -112,10 +118,25 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
 
     let url = resolve_url(&args, config_path, view)?;
 
+    let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+
+    if args.tui {
+        #[cfg(feature = "tui")]
+        {
+            return rt.block_on(tui::run_tui(url, view, &args));
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            bail!(
+                "TUI mode requires the 'tui' feature.\n\
+                 Install with: cargo install hyperstack-cli --features tui"
+            );
+        }
+    }
+
     eprintln!("Connecting to {} ...", url);
     eprintln!("Subscribing to {} ...", view);
 
-    let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
     rt.block_on(client::stream(url, view, &args))
 }
 
