@@ -155,6 +155,8 @@ pub fn validate_account_field(
     let fields = account_fields(idl, account_name)?;
     // Some IDLs omit struct field metadata for accounts; keep that case non-fatal
     // so validation does not reject otherwise valid mappings on incomplete schemas.
+    // Field comparison is case-sensitive (unlike top-level instruction/account
+    // lookups) since IDL field names and Rust struct fields use matching casing.
     if fields.is_empty() || fields.iter().any(|field| field == field_name) {
         return Ok(());
     }

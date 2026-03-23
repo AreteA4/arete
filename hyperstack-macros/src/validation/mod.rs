@@ -36,6 +36,7 @@ pub struct ValidationInput<'a> {
     pub sources_by_type: &'a HashMap<String, Vec<parse::MapAttribute>>,
     pub events_by_instruction: &'a HashMap<String, Vec<(String, parse::EventAttribute, syn::Type)>>,
     pub derive_from_mappings: &'a HashMap<String, Vec<parse::DeriveFromAttribute>>,
+    pub aggregate_conditions: &'a HashMap<String, crate::ast::ConditionExpr>,
     pub resolver_hooks: &'a [parse::ResolveKeyAttribute],
     pub computed_fields: &'a [ComputedFieldValidation],
     pub resolve_specs: &'a [parse::ResolveSpec],
@@ -105,6 +106,13 @@ pub fn validate_semantics(input: ValidationInput<'_>) -> syn::Result<()> {
         &mut errors,
     );
     validate_derive_from_references(input.derive_from_mappings, input.idls, &mut errors);
+    validate_aggregate_conditions(
+        input.entity_name,
+        input.aggregate_conditions,
+        input.sources_by_type,
+        input.idls,
+        &mut errors,
+    );
     validate_resolve_specs(
         input.entity_name,
         input.resolve_specs,
@@ -903,6 +911,78 @@ fn validate_mapping_references(
                     {
                         errors.push(idl_error_to_syn(stop_lookup_by.ident.span(), error));
                     }
+                }
+            }
+
+            if let Some(condition) = &mapping.condition {
+                if let Some(crate::ast::ParsedCondition::Comparison { field, .. }) =
+                    &condition.parsed
+                {
+                    let field_str = field.segments.join(".");
+                    if !field_str.is_empty() {
+                        if let ResolvedMappingSource::Instruction {
+                            idl,
+                            instruction_name,
+                        } = &resolved_source
+                        {
+                            let temp_field = parse::FieldSpec {
+                                ident: syn::Ident::new(&field_str, mapping.attr_span),
+                                explicit_location: None,
+                            };
+                            if let Err(error) =
+                                validate_instruction_field_spec(idl, instruction_name, &temp_field)
+                            {
+                                errors.push(idl_error_to_syn(mapping.attr_span, error));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn validate_aggregate_conditions(
+    _entity_name: &str,
+    aggregate_conditions: &HashMap<String, crate::ast::ConditionExpr>,
+    sources_by_type: &HashMap<String, Vec<parse::MapAttribute>>,
+    idls: IdlLookup,
+    errors: &mut ErrorCollector,
+) {
+    let mut field_paths: Vec<(&String, &str)> = Vec::new();
+
+    for (target_field, condition) in aggregate_conditions {
+        if let Some(crate::ast::ParsedCondition::Comparison { field, .. }) = &condition.parsed {
+            let field_str = field.segments.join(".");
+            if !field_str.is_empty() {
+                field_paths.push((target_field, Box::leak(field_str.into_boxed_str())));
+            }
+        }
+    }
+    field_paths.sort();
+
+    for (target_field, field_str) in field_paths {
+        // Find the source mapping for this aggregate's target field to get the IDL context
+        let source_mapping = sources_by_type
+            .values()
+            .flatten()
+            .find(|mapping| mapping.target_field_name == *target_field && mapping.is_instruction);
+
+        if let Some(mapping) = source_mapping {
+            let source_type = mapping.source_type_string();
+            if let Ok(ResolvedMappingSource::Instruction {
+                idl,
+                instruction_name,
+            }) = resolve_mapping_source_once(&source_type, std::slice::from_ref(mapping), idls)
+            {
+                let temp_field = parse::FieldSpec {
+                    ident: syn::Ident::new(field_str, mapping.attr_span),
+                    explicit_location: None,
+                };
+                if let Err(error) =
+                    validate_instruction_field_spec(idl, &instruction_name, &temp_field)
+                {
+                    errors.push(idl_error_to_syn(mapping.attr_span, error));
                 }
             }
         }

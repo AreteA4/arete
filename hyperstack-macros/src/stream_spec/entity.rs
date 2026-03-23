@@ -587,6 +587,7 @@ pub fn process_entity_struct_with_idl(
         sources_by_type: &sources_by_type,
         events_by_instruction: &events_by_instruction,
         derive_from_mappings: &derive_from_mappings,
+        aggregate_conditions: &aggregate_conditions,
         resolver_hooks: &resolver_hooks,
         computed_fields: &computed_field_validations,
         resolve_specs: &resolve_specs,
