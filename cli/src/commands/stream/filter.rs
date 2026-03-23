@@ -60,16 +60,16 @@ impl Predicate {
                 Some(v) => !value_eq(v, expected),
                 None => true,
             },
-            FilterOp::Gt(n) => resolved.and_then(as_f64).map_or(false, |v| v > *n),
-            FilterOp::Gte(n) => resolved.and_then(as_f64).map_or(false, |v| v >= *n),
-            FilterOp::Lt(n) => resolved.and_then(as_f64).map_or(false, |v| v < *n),
-            FilterOp::Lte(n) => resolved.and_then(as_f64).map_or(false, |v| v <= *n),
+            FilterOp::Gt(n) => resolved.and_then(as_f64).is_some_and(|v| v > *n),
+            FilterOp::Gte(n) => resolved.and_then(as_f64).is_some_and(|v| v >= *n),
+            FilterOp::Lt(n) => resolved.and_then(as_f64).is_some_and(|v| v < *n),
+            FilterOp::Lte(n) => resolved.and_then(as_f64).is_some_and(|v| v <= *n),
             FilterOp::Regex(re) => resolved
                 .and_then(|v| v.as_str())
-                .map_or(false, |s| re.is_match(s)),
+                .is_some_and(|s| re.is_match(s)),
             FilterOp::NotRegex(re) => resolved
                 .and_then(|v| v.as_str())
-                .map_or(true, |s| !re.is_match(s)),
+                .is_none_or(|s| !re.is_match(s)),
         }
     }
 }
@@ -87,7 +87,7 @@ fn value_eq(value: &Value, expected: &str) -> bool {
         Value::String(s) => s == expected,
         Value::Number(n) => {
             if let Ok(expected_n) = expected.parse::<f64>() {
-                n.as_f64().map_or(false, |v| v == expected_n)
+                n.as_f64() == Some(expected_n)
             } else {
                 n.to_string() == expected
             }
@@ -115,15 +115,13 @@ fn parse_predicate(expr: &str) -> Result<Predicate> {
     let expr = expr.trim();
 
     // Existence: field? or field!?
-    if expr.ends_with("!?") {
-        let field = &expr[..expr.len() - 2];
+    if let Some(field) = expr.strip_suffix("!?") {
         return Ok(Predicate {
             path: parse_path(field),
             op: FilterOp::NotExists,
         });
     }
-    if expr.ends_with('?') {
-        let field = &expr[..expr.len() - 1];
+    if let Some(field) = expr.strip_suffix('?') {
         return Ok(Predicate {
             path: parse_path(field),
             op: FilterOp::Exists,
