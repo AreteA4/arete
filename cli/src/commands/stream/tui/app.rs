@@ -142,8 +142,9 @@ impl App {
         match action {
             TuiAction::Quit => {}
             TuiAction::NextEntity => {
-                if !self.entity_keys.is_empty() {
-                    self.selected_index = (self.selected_index + 1).min(self.entity_keys.len() - 1);
+                let count = self.filtered_keys().len();
+                if count > 0 {
+                    self.selected_index = (self.selected_index + 1).min(count - 1);
                     self.history_position = 0;
                     self.scroll_offset = 0;
                 }
@@ -220,15 +221,29 @@ impl App {
             }
             TuiAction::FilterChar(c) => {
                 self.filter_text.push(c);
+                self.clamp_selection();
             }
             TuiAction::FilterBackspace => {
                 self.filter_text.pop();
+                self.clamp_selection();
             }
         }
     }
 
+    fn clamp_selection(&mut self) {
+        let count = self.filtered_keys().len();
+        if count == 0 {
+            self.selected_index = 0;
+        } else if self.selected_index >= count {
+            self.selected_index = count - 1;
+        }
+        self.history_position = 0;
+        self.scroll_offset = 0;
+    }
+
     pub fn selected_key(&self) -> Option<String> {
-        self.entity_keys.get(self.selected_index).cloned()
+        let keys = self.filtered_keys();
+        keys.get(self.selected_index).map(|s| s.to_string())
     }
 
     pub fn selected_entity_data(&self) -> Option<String> {
