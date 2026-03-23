@@ -51,7 +51,8 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
 
     // Spawn WS reader task
     let ws_handle = tokio::spawn(async move {
-        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        let ping_period = std::time::Duration::from_secs(30);
+        let mut ping_interval = tokio::time::interval_at(tokio::time::Instant::now() + ping_period, ping_period);
         loop {
             tokio::select! {
                 msg = ws_rx.next() => {

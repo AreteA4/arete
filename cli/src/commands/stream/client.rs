@@ -107,7 +107,8 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let mut state = build_state(args, view, &url)?;
 
     // Ping interval
-    let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    let ping_period = std::time::Duration::from_secs(30);
+    let mut ping_interval = tokio::time::interval_at(tokio::time::Instant::now() + ping_period, ping_period);
 
     // Duration timer for --save --duration (as a select! arm for precise timing)
     let duration_future = async {
