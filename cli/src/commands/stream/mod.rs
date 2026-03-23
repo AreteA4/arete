@@ -104,6 +104,9 @@ pub struct StreamArgs {
 pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
     // --load mode: replay from file, no WebSocket needed
     if let Some(load_path) = &args.load {
+        if args.tui {
+            bail!("--tui is not yet supported with --load. Use non-interactive replay for now.");
+        }
         let player = snapshot::SnapshotPlayer::load(load_path)?;
         let default_view = player.header.view.clone();
         let view = args.view.as_deref().unwrap_or(&default_view);
@@ -111,10 +114,10 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
         return rt.block_on(client::replay(player, view, &args));
     }
 
-    let view = args.view.as_deref().unwrap_or_else(|| {
-        eprintln!("Error: <VIEW> argument is required (e.g. OreRound/latest)");
-        std::process::exit(1);
-    });
+    let view = match args.view.as_deref() {
+        Some(v) => v,
+        None => bail!("<VIEW> argument is required (e.g. OreRound/latest)"),
+    };
 
     let url = resolve_url(&args, config_path, view)?;
 
