@@ -1,4 +1,5 @@
 use hyperstack_sdk::{parse_snapshot_entities, Frame, Operation};
+use serde_json::Value;
 
 use crate::commands::stream::snapshot::SnapshotRecorder;
 use crate::commands::stream::store::EntityStore;
@@ -276,9 +277,38 @@ impl App {
             let lower = self.filter_text.to_lowercase();
             self.entity_keys
                 .iter()
-                .filter(|k| k.to_lowercase().contains(&lower))
+                .filter(|k| {
+                    // Match on key itself
+                    if k.to_lowercase().contains(&lower) {
+                        return true;
+                    }
+                    // Match on any value inside the entity data
+                    if let Some(record) = self.store.get(k) {
+                        return value_contains_str(&record.current, &lower);
+                    }
+                    false
+                })
                 .map(|s| s.as_str())
                 .collect()
         }
+    }
+}
+
+/// Recursively search all values in a JSON tree for a substring match.
+fn value_contains_str(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::String(s) => s.to_lowercase().contains(needle),
+        Value::Number(n) => n.to_string().contains(needle),
+        Value::Bool(b) => {
+            let s = if *b { "true" } else { "false" };
+            s.contains(needle)
+        }
+        Value::Object(map) => {
+            map.values().any(|v| value_contains_str(v, needle))
+        }
+        Value::Array(arr) => {
+            arr.iter().any(|v| value_contains_str(v, needle))
+        }
+        Value::Null => false,
     }
 }
