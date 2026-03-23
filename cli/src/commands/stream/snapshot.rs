@@ -105,6 +105,14 @@ impl SnapshotPlayer {
         let header: SnapshotHeader = serde_json::from_value(value.clone())
             .with_context(|| format!("Failed to deserialize snapshot header: {}", path))?;
 
+        if header.version != 1 {
+            anyhow::bail!(
+                "Unsupported snapshot version {} in {}. This CLI supports version 1.",
+                header.version,
+                path
+            );
+        }
+
         let frames: Vec<SnapshotFrame> = match value.get("frames") {
             Some(v) => serde_json::from_value(v.clone())
                 .with_context(|| format!("Failed to deserialize frames in {}", path))?,
