@@ -338,7 +338,7 @@ fn process_frame(
 
     // Filter by operation type
     if let Some(allowed) = &state.allowed_ops {
-        if op != Operation::Snapshot && !allowed.contains(op_str.as_str()) {
+        if op != Operation::Snapshot && !allowed.contains(op_str.to_lowercase().as_str()) {
             return Ok(false);
         }
     }
