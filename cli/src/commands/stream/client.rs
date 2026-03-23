@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use hyperstack_sdk::{
-    deep_merge_with_append, parse_frame, parse_snapshot_entities, ClientMessage, Frame, Operation,
-    Subscription,
+    deep_merge_with_append, parse_frame, parse_snapshot_entities, try_parse_subscribed_frame,
+    ClientMessage, Frame, Operation, Subscription,
 };
 use std::collections::{HashMap, HashSet};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -135,11 +135,22 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                     Some(Ok(Message::Binary(bytes))) => {
                         match parse_frame(&bytes) {
                             Ok(frame) => {
+                                if frame.operation() == Operation::Subscribed {
+                                    eprintln!("Subscribed to {}", view);
+                                    continue;
+                                }
                                 if process_frame(frame, view, &mut state)? {
                                     break;
                                 }
                             }
-                            Err(e) => eprintln!("Warning: failed to parse frame: {}", e),
+                            Err(e) => {
+                                // Check if it's a subscribed frame (different shape, no `entity` field)
+                                if try_parse_subscribed_frame(&bytes).is_some() {
+                                    eprintln!("Subscribed to {}", view);
+                                } else {
+                                    eprintln!("Warning: failed to parse binary frame: {}", e);
+                                }
+                            }
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
