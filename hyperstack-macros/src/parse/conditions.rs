@@ -199,7 +199,9 @@ pub fn parse_resolver_condition_expression(expr: &str) -> Result<ResolverConditi
     let expr = expr.trim();
 
     // Reject logical expressions - resolver conditions only support single comparisons
-    if expr.contains("&&") || expr.contains("||") {
+    if find_top_level_operator(expr, "&&").is_some()
+        || find_top_level_operator(expr, "||").is_some()
+    {
         return Err(format!(
             "Invalid condition expression: '{}'. Logical operators (&& / ||) are not supported in resolver conditions. Use a single comparison expression.",
             expr
