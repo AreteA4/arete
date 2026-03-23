@@ -103,13 +103,14 @@ impl App {
         match op {
             Operation::Snapshot => {
                 let entities = parse_snapshot_entities(&frame.data);
+                let count = entities.len() as u64;
                 for entity in entities {
                     self.store.upsert(&entity.key, entity.data, "snapshot", None);
                     if self.entity_key_set.insert(entity.key.clone()) {
                         self.entity_keys.push(entity.key);
                     }
                 }
-                self.update_count += 1;
+                self.update_count += count;
             }
             Operation::Upsert | Operation::Create => {
                 let key = frame.key.clone();
