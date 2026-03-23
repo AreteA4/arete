@@ -917,22 +917,34 @@ fn validate_mapping_references(
             if let Some(condition) = &mapping.condition {
                 if let Some(parsed) = &condition.parsed {
                     let field_leaves = collect_condition_field_leaves(parsed);
-                    if let ResolvedMappingSource::Instruction {
-                        idl,
-                        instruction_name,
-                    } = &resolved_source
-                    {
-                        for leaf in &field_leaves {
-                            let temp_field = parse::FieldSpec {
-                                ident: syn::Ident::new(leaf, mapping.attr_span),
-                                explicit_location: None,
-                            };
-                            if let Err(error) =
-                                validate_instruction_field_spec(idl, instruction_name, &temp_field)
-                            {
-                                errors.push(idl_error_to_syn(mapping.attr_span, error));
+                    match &resolved_source {
+                        ResolvedMappingSource::Instruction {
+                            idl,
+                            instruction_name,
+                        } => {
+                            for leaf in &field_leaves {
+                                let temp_field = parse::FieldSpec {
+                                    ident: syn::Ident::new(leaf, mapping.attr_span),
+                                    explicit_location: None,
+                                };
+                                if let Err(error) = validate_instruction_field_spec(
+                                    idl,
+                                    instruction_name,
+                                    &temp_field,
+                                ) {
+                                    errors.push(idl_error_to_syn(mapping.attr_span, error));
+                                }
                             }
                         }
+                        ResolvedMappingSource::Account { idl, account_name } => {
+                            for leaf in &field_leaves {
+                                if let Err(error) = validate_account_field(idl, account_name, leaf)
+                                {
+                                    errors.push(idl_error_to_syn(mapping.attr_span, error));
+                                }
+                            }
+                        }
+                        ResolvedMappingSource::Other => {}
                     }
                 }
             }
@@ -960,13 +972,18 @@ fn validate_aggregate_conditions(
     field_paths.sort_by_key(|(target, _)| *target);
 
     for (target_field, leaves) in &field_paths {
-        // Find the source mapping for this aggregate's target field to get the IDL context
-        let source_mapping = sources_by_type
+        // Collect all instruction-source mappings for this aggregate target,
+        // sorted by source type for deterministic validation order.
+        let mut instruction_mappings: Vec<&parse::MapAttribute> = sources_by_type
             .values()
             .flatten()
-            .find(|mapping| mapping.target_field_name == **target_field && mapping.is_instruction);
+            .filter(|m| m.target_field_name == **target_field && m.is_instruction)
+            .collect();
+        instruction_mappings.sort_by(|a, b| {
+            path_to_string(&a.source_type_path).cmp(&path_to_string(&b.source_type_path))
+        });
 
-        if let Some(mapping) = source_mapping {
+        for mapping in instruction_mappings {
             let source_type = mapping.source_type_string();
             if let Ok(ResolvedMappingSource::Instruction {
                 idl,
