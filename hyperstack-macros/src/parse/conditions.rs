@@ -216,6 +216,8 @@ pub fn parse_resolver_condition_expression(expr: &str) -> Result<ResolverConditi
                 ));
             }
 
+            // NOTE: Only check the raw (un-stripped) value so that quoted strings
+            // like `">=gold"` are never misidentified as operator sequences.
             if operators
                 .iter()
                 .any(|other_op| raw_value.starts_with(other_op))

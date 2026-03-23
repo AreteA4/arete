@@ -1046,6 +1046,7 @@ fn validate_aggregate_conditions(
             path_to_string(&a.source_type_path).cmp(&path_to_string(&b.source_type_path))
         });
 
+        let mut reported_account: HashSet<(String, String)> = HashSet::new();
         for mapping in account_mappings {
             let source_type = mapping.source_type_string();
             if let Ok(ResolvedMappingSource::Account { idl, account_name }) =
@@ -1053,7 +1054,9 @@ fn validate_aggregate_conditions(
             {
                 for leaf in leaves {
                     if let Err(error) = validate_account_field(idl, &account_name, leaf) {
-                        errors.push(idl_error_to_syn(mapping.attr_span, error));
+                        if reported_account.insert((leaf.clone(), account_name.clone())) {
+                            errors.push(idl_error_to_syn(mapping.attr_span, error));
+                        }
                     }
                 }
             }
@@ -1201,7 +1204,8 @@ fn validate_derive_from_references(
     instruction_types.sort();
 
     for instruction_type in instruction_types {
-        let derive_attrs = &derive_from_mappings[instruction_type];
+        let mut derive_attrs = derive_from_mappings[instruction_type].clone();
+        derive_attrs.sort_by(stable_derive_from_cmp);
         let path = match syn::parse_str::<syn::Path>(instruction_type) {
             Ok(path) => path,
             Err(_) => {
