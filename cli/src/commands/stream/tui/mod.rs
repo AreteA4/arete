@@ -86,7 +86,14 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         }
     });
 
-    // Setup terminal
+    // Setup terminal with panic hook to restore on crash
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        original_hook(panic_info);
+    }));
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
