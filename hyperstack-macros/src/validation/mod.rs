@@ -943,16 +943,16 @@ fn validate_mapping_references(
                             instruction_name,
                         } => {
                             for leaf in &field_leaves {
-                                let temp_field = parse::FieldSpec {
-                                    ident: syn::Ident::new(leaf, mapping.attr_span),
-                                    explicit_location: None,
-                                };
-                                if let Err(error) = validate_instruction_field_spec(
-                                    idl,
-                                    instruction_name,
-                                    &temp_field,
-                                ) {
-                                    errors.push(idl_error_to_syn(mapping.attr_span, error));
+                                if let Some(temp_field) =
+                                    try_field_spec_from_leaf(leaf, mapping.attr_span)
+                                {
+                                    if let Err(error) = validate_instruction_field_spec(
+                                        idl,
+                                        instruction_name,
+                                        &temp_field,
+                                    ) {
+                                        errors.push(idl_error_to_syn(mapping.attr_span, error));
+                                    }
                                 }
                             }
                         }
@@ -1011,14 +1011,12 @@ fn validate_aggregate_conditions(
             }) = resolve_mapping_source_once(&source_type, std::slice::from_ref(mapping), idls)
             {
                 for leaf in leaves {
-                    let temp_field = parse::FieldSpec {
-                        ident: syn::Ident::new(leaf, mapping.attr_span),
-                        explicit_location: None,
-                    };
-                    if let Err(error) =
-                        validate_instruction_field_spec(idl, &instruction_name, &temp_field)
-                    {
-                        errors.push(idl_error_to_syn(mapping.attr_span, error));
+                    if let Some(temp_field) = try_field_spec_from_leaf(leaf, mapping.attr_span) {
+                        if let Err(error) =
+                            validate_instruction_field_spec(idl, &instruction_name, &temp_field)
+                        {
+                            errors.push(idl_error_to_syn(mapping.attr_span, error));
+                        }
                     }
                 }
             }
@@ -1047,6 +1045,19 @@ fn validate_aggregate_conditions(
             }
         }
     }
+}
+
+/// Try to construct a `FieldSpec` from a condition leaf string. Returns `None`
+/// if the leaf is not a valid Rust identifier (e.g. starts with a digit),
+/// preventing a `syn::Ident::new` panic inside the proc-macro process.
+fn try_field_spec_from_leaf(leaf: &str, span: proc_macro2::Span) -> Option<parse::FieldSpec> {
+    syn::parse_str::<syn::Ident>(leaf).ok().map(|mut ident| {
+        ident.set_span(span);
+        parse::FieldSpec {
+            ident,
+            explicit_location: None,
+        }
+    })
 }
 
 /// Recursively collect the leaf (last) segment of every field path referenced

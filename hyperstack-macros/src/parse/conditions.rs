@@ -157,6 +157,9 @@ fn parse_value(value: &str) -> Result<serde_json::Value, String> {
     use serde_json::Value;
 
     let value_trimmed = value.trim();
+    if value_trimmed == "null" {
+        return Ok(Value::Null);
+    }
     if value_trimmed == "ZERO_32" {
         return Ok(Value::Array(vec![Value::Number(0.into()); 32]));
     }
@@ -388,5 +391,17 @@ mod tests {
 
         assert_eq!(parsed.field_path, "status");
         assert_eq!(parsed.value, serde_json::json!("pending"));
+    }
+
+    #[test]
+    fn test_map_condition_null_literal_parses_as_json_null() {
+        let parsed = parse_condition_expression("status == null").unwrap();
+
+        match parsed {
+            ParsedCondition::Comparison { value, .. } => {
+                assert_eq!(value, serde_json::Value::Null);
+            }
+            _ => panic!("Expected comparison"),
+        }
     }
 }
