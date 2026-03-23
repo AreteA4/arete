@@ -187,7 +187,7 @@ fn main() {}
     );
     assert!(stderr.contains("event source '"));
     assert!(stderr.contains("cannot resolve the primary key"));
-    assert!(stderr.contains("Add `lookup_by = ...` or `join_on = ...`"));
+    assert!(stderr.contains("Add `lookup_by = ...`, `join_on = ...`, or include the primary-key field in `fields = [...]`"));
 }
 
 #[test]
