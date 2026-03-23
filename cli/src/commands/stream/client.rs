@@ -392,11 +392,17 @@ fn process_frame(
             }
         }
         Operation::Delete => {
-            state.entities.remove(&frame.key);
+            // Filter against last-known state before removing
+            let last_state = state.entities.remove(&frame.key).unwrap_or(serde_json::json!(null));
             if let Some(store) = &mut state.store {
                 store.delete(&frame.key);
             }
             state.entity_count = state.entities.len() as u64;
+
+            if !state.filter.is_empty() && !state.filter.matches(&last_state) {
+                return Ok(false);
+            }
+
             state.update_count += 1;
             if state.count_only {
                 output::print_count(state.update_count)?;
@@ -409,6 +415,9 @@ fn process_frame(
                     )?,
                     _ => output::print_delete(view, &frame.key)?,
                 }
+            }
+            if state.first {
+                return Ok(true);
             }
         }
         Operation::Subscribed => {}
