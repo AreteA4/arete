@@ -218,7 +218,7 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
 
     if let OutputMode::NoDna = state.output_mode {
         // Ensure snapshot_complete is emitted before disconnected if it wasn't already
-        if !snapshot_complete && state.update_count > 0 {
+        if !snapshot_complete && received_snapshot {
             output::emit_no_dna_event(
                 "snapshot_complete", view,
                 &serde_json::json!({"entity_count": state.entity_count}),
