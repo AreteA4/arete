@@ -453,6 +453,10 @@ fn resolve_mapping_source_once<'a>(
     let is_instruction = mappings.iter().any(|mapping| mapping.is_instruction);
     let is_account_source = mappings.iter().any(|mapping| mapping.is_account_source);
 
+    if is_instruction && is_account_source {
+        return Ok(ResolvedMappingSource::Other);
+    }
+
     if is_instruction {
         let path =
             syn::parse_str::<syn::Path>(source_type).map_err(|_| IdlSearchError::InvalidPath {
@@ -725,7 +729,7 @@ fn validate_event_handler_keys(
             "event source",
             &instruction,
             entity_name,
-            "Add `lookup_by = ...` or `join_on = ...` that points to the primary key or to a lookup index field.",
+            "Add `lookup_by = ...`, `join_on = ...`, or include the primary-key field in `fields = [...]` that points to the primary key or to a lookup index field.",
         ));
     }
 }
