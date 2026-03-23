@@ -28,6 +28,7 @@ pub struct MapAttribute {
     pub source_field_span: Span,
     // Set when #[event(...)] handlers are normalized into MapAttribute values.
     pub is_event_source: bool,
+    pub is_account_source: bool,
     pub source_type_path: Path,
     pub source_field_name: String,
     pub target_field_name: String,
@@ -207,6 +208,19 @@ impl MapAttribute {
             .collect::<Vec<_>>()
             .join("::")
     }
+}
+
+fn classify_source_type_path(path: &Path) -> (bool, bool) {
+    let has_instructions_segment = path
+        .segments
+        .iter()
+        .any(|segment| segment.ident == "instructions");
+    let has_accounts_segment = path
+        .segments
+        .iter()
+        .any(|segment| segment.ident == "accounts");
+
+    (has_instructions_segment, has_accounts_segment)
 }
 
 struct MapAttributeArgs {
@@ -395,12 +409,15 @@ pub fn parse_map_attribute(
     let mut results = Vec::new();
     for source_path in args.source_paths {
         let split = split_source_path(&source_path)?;
+        let (is_instruction, is_account_source) =
+            classify_source_type_path(&split.source_type_path);
 
         results.push(MapAttribute {
             attr_span: attr.span(),
             source_type_span: split.source_type_span,
             source_field_span: split.source_field_span,
             is_event_source: false,
+            is_account_source,
             source_type_path: split.source_type_path,
             source_field_name: split.source_field_name,
             target_field_name: target_name.clone(),
@@ -412,7 +429,7 @@ pub fn parse_map_attribute(
             join_on: args.join_on.clone(),
             transform: args.transform.clone(),
             resolver_transform: args.resolver_transform.clone(),
-            is_instruction: false,
+            is_instruction,
             is_whole_source: false,
             lookup_by: None,
             condition: args
@@ -465,6 +482,7 @@ pub fn parse_from_instruction_attribute(
             source_type_span: split.source_type_span,
             source_field_span: split.source_field_span,
             is_event_source: false,
+            is_account_source: false,
             source_type_path: split.source_type_path,
             source_field_name: split.source_field_name,
             target_field_name: target_name.clone(),

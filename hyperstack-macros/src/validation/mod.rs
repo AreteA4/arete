@@ -1,7 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{ComputedExpr, EntitySection, FieldPath, ViewTransform};
+use crate::ast::{
+    ComputedExpr, EntitySection, FieldPath, Predicate, PredicateValue, ViewTransform,
+};
 use crate::diagnostic::{suggestion_or_available_suffix, ErrorCollector};
 use crate::event_type_helpers::{find_idl_for_type, IdlLookup};
 use crate::parse;
@@ -441,8 +443,9 @@ fn resolve_mapping_source_once<'a>(
     idls: IdlLookup<'a>,
 ) -> Result<ResolvedMappingSource<'a>, IdlSearchError> {
     let is_instruction = mappings.iter().any(|mapping| mapping.is_instruction);
+    let is_account_source = mappings.iter().any(|mapping| mapping.is_account_source);
 
-    if source_type.contains("::instructions::") || is_instruction {
+    if is_instruction {
         let path =
             syn::parse_str::<syn::Path>(source_type).map_err(|_| IdlSearchError::InvalidPath {
                 path: source_type.to_string(),
@@ -452,7 +455,7 @@ fn resolve_mapping_source_once<'a>(
             idl,
             instruction_name,
         })
-    } else if source_type.contains("::accounts::") {
+    } else if is_account_source {
         let path =
             syn::parse_str::<syn::Path>(source_type).map_err(|_| IdlSearchError::InvalidPath {
                 path: source_type.to_string(),
@@ -965,7 +968,18 @@ fn validate_derive_from_references(
         let derive_attrs = &derive_from_mappings[instruction_type];
         let path = match syn::parse_str::<syn::Path>(instruction_type) {
             Ok(path) => path,
-            Err(_) => continue,
+            Err(_) => {
+                if let Some(first_attr) = derive_attrs.first() {
+                    errors.push(syn::Error::new(
+                        first_attr.attr_span,
+                        format!(
+                            "internal error: could not re-parse instruction path '{}'",
+                            instruction_type
+                        ),
+                    ));
+                }
+                continue;
+            }
         };
 
         let instruction_lookup = idl_refs::resolve_instruction_lookup_from_path(&path, idls);
@@ -1086,6 +1100,20 @@ fn validate_views(
                     ));
                 }
             }
+
+            if let ViewTransform::Filter { predicate } = transform {
+                for field in collect_predicate_field_refs(predicate) {
+                    if !known_fields.contains(&field) {
+                        errors.push(entity_field_error(
+                            entity_name,
+                            &field,
+                            "view filter field",
+                            view_spec.attr_span,
+                            available_fields,
+                        ));
+                    }
+                }
+            }
         }
     }
 }
@@ -1154,6 +1182,32 @@ fn validate_computed_fields(
 
 fn field_path_to_string(path: &FieldPath) -> String {
     path.segments.join(".")
+}
+
+fn collect_predicate_field_refs(predicate: &Predicate) -> HashSet<String> {
+    let mut refs = HashSet::new();
+    collect_predicate_field_refs_recursive(predicate, &mut refs);
+    refs
+}
+
+fn collect_predicate_field_refs_recursive(predicate: &Predicate, refs: &mut HashSet<String>) {
+    match predicate {
+        Predicate::Compare { field, value, .. } => {
+            refs.insert(field_path_to_string(field));
+            if let PredicateValue::Field(field) = value {
+                refs.insert(field_path_to_string(field));
+            }
+        }
+        Predicate::And(predicates) | Predicate::Or(predicates) => {
+            for predicate in predicates {
+                collect_predicate_field_refs_recursive(predicate, refs);
+            }
+        }
+        Predicate::Not(predicate) => collect_predicate_field_refs_recursive(predicate, refs),
+        Predicate::Exists { field } => {
+            refs.insert(field_path_to_string(field));
+        }
+    }
 }
 
 fn collect_field_refs(expr: &ComputedExpr) -> HashSet<String> {
@@ -1283,4 +1337,53 @@ fn detect_cycles_from(
 
     stack.pop();
     active.remove(node);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{
+        CompareOp, Predicate, PredicateValue, ViewDef, ViewOutput, ViewSource, ViewTransform,
+    };
+    use crate::parse;
+
+    #[test]
+    fn filter_view_fields_are_validated() {
+        let mut known_fields = HashSet::new();
+        known_fields.insert("existing".to_string());
+        let available_fields = vec!["existing".to_string()];
+        let mut errors = ErrorCollector::default();
+
+        validate_views(
+            "Thing",
+            &[parse::ViewAttributeSpec {
+                view: ViewDef {
+                    id: "latest".to_string(),
+                    source: ViewSource::Entity {
+                        name: "Thing".to_string(),
+                    },
+                    pipeline: vec![ViewTransform::Filter {
+                        predicate: Predicate::Compare {
+                            field: FieldPath::new(&["ghost"]),
+                            op: CompareOp::Eq,
+                            value: PredicateValue::Literal(serde_json::json!(true)),
+                        },
+                    }],
+                    output: ViewOutput::Collection,
+                },
+                attr_span: proc_macro2::Span::call_site(),
+                sort_key_span: None,
+            }],
+            &known_fields,
+            &available_fields,
+            &mut errors,
+        );
+
+        let error = errors
+            .finish()
+            .expect_err("filter field should be validated");
+        assert!(error
+            .to_string()
+            .contains("unknown view filter field 'ghost' on entity 'Thing'"));
+    }
 }
