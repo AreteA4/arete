@@ -887,30 +887,50 @@ fn validate_mapping_references(
             }
 
             if let Some(lookup_by) = &mapping.lookup_by {
-                if let ResolvedMappingSource::Instruction {
-                    idl,
-                    instruction_name,
-                } = &resolved_source
-                {
-                    if let Err(error) =
-                        validate_instruction_field_spec(idl, instruction_name, lookup_by)
-                    {
-                        errors.push(idl_error_to_syn(lookup_by.ident.span(), error));
+                match &resolved_source {
+                    ResolvedMappingSource::Instruction {
+                        idl,
+                        instruction_name,
+                    } => {
+                        if let Err(error) =
+                            validate_instruction_field_spec(idl, instruction_name, lookup_by)
+                        {
+                            errors.push(idl_error_to_syn(lookup_by.ident.span(), error));
+                        }
                     }
+                    ResolvedMappingSource::Account { idl, account_name } => {
+                        if let Err(error) =
+                            validate_account_field(idl, account_name, &lookup_by.ident.to_string())
+                        {
+                            errors.push(idl_error_to_syn(lookup_by.ident.span(), error));
+                        }
+                    }
+                    ResolvedMappingSource::Other => {}
                 }
             }
 
             if let Some(stop_lookup_by) = &mapping.stop_lookup_by {
-                if let ResolvedMappingSource::Instruction {
-                    idl,
-                    instruction_name,
-                } = &resolved_source
-                {
-                    if let Err(error) =
-                        validate_instruction_field_spec(idl, instruction_name, stop_lookup_by)
-                    {
-                        errors.push(idl_error_to_syn(stop_lookup_by.ident.span(), error));
+                match &resolved_source {
+                    ResolvedMappingSource::Instruction {
+                        idl,
+                        instruction_name,
+                    } => {
+                        if let Err(error) =
+                            validate_instruction_field_spec(idl, instruction_name, stop_lookup_by)
+                        {
+                            errors.push(idl_error_to_syn(stop_lookup_by.ident.span(), error));
+                        }
                     }
+                    ResolvedMappingSource::Account { idl, account_name } => {
+                        if let Err(error) = validate_account_field(
+                            idl,
+                            account_name,
+                            &stop_lookup_by.ident.to_string(),
+                        ) {
+                            errors.push(idl_error_to_syn(stop_lookup_by.ident.span(), error));
+                        }
+                    }
+                    ResolvedMappingSource::Other => {}
                 }
             }
 
@@ -1266,6 +1286,7 @@ fn validate_views(
                     view_spec.view.id, entity_name
                 ),
             ));
+            continue;
         }
 
         for transform in &view_spec.view.pipeline {
@@ -1466,24 +1487,19 @@ fn collect_field_refs_recursive(expr: &ComputedExpr, refs: &mut HashSet<String>)
     }
 }
 
+/// Three-color DFS cycle detection. White (0) = unvisited, gray (1) = on the
+/// current path, black (2) = fully processed. Gray back-edges record cycles;
+/// black nodes are safe to skip entirely.
 fn detect_cycles(graph: &HashMap<String, HashSet<String>>) -> Vec<Vec<String>> {
-    let mut visited = HashSet::new();
+    let mut color: HashMap<String, u8> = HashMap::new();
     let mut stack = Vec::new();
-    let mut active = HashSet::new();
     let mut cycles = Vec::new();
 
     let mut nodes: Vec<&String> = graph.keys().collect();
     nodes.sort();
 
     for node in nodes {
-        detect_cycles_from(
-            node,
-            graph,
-            &mut visited,
-            &mut active,
-            &mut stack,
-            &mut cycles,
-        );
+        detect_cycles_from(node, graph, &mut color, &mut stack, &mut cycles);
     }
 
     cycles
@@ -1492,32 +1508,27 @@ fn detect_cycles(graph: &HashMap<String, HashSet<String>>) -> Vec<Vec<String>> {
 fn detect_cycles_from(
     node: &str,
     graph: &HashMap<String, HashSet<String>>,
-    visited: &mut HashSet<String>,
-    active: &mut HashSet<String>,
+    color: &mut HashMap<String, u8>,
     stack: &mut Vec<String>,
     cycles: &mut Vec<Vec<String>>,
 ) {
-    if active.contains(node) {
-        let index = stack.iter().position(|entry| entry == node);
-        debug_assert!(
-            index.is_some(),
-            "node in active set but missing from stack: {node}"
-        );
-        if let Some(index) = index {
-            let mut cycle = stack[index..].to_vec();
-            cycle.push(node.to_string());
-            if !cycles.iter().any(|existing| existing == &cycle) {
-                cycles.push(cycle);
+    match color.get(node).copied().unwrap_or(0) {
+        2 => return, // black: fully processed
+        1 => {
+            // gray: back-edge — cycle found
+            if let Some(index) = stack.iter().position(|entry| entry == node) {
+                let mut cycle = stack[index..].to_vec();
+                cycle.push(node.to_string());
+                if !cycles.iter().any(|existing| existing == &cycle) {
+                    cycles.push(cycle);
+                }
             }
+            return;
         }
-        return;
+        _ => {} // white: first visit
     }
 
-    if !visited.insert(node.to_string()) {
-        return;
-    }
-
-    active.insert(node.to_string());
+    color.insert(node.to_string(), 1); // gray
     stack.push(node.to_string());
 
     if let Some(edges) = graph.get(node) {
@@ -1525,12 +1536,12 @@ fn detect_cycles_from(
         sorted_edges.sort();
 
         for edge in sorted_edges {
-            detect_cycles_from(edge, graph, visited, active, stack, cycles);
+            detect_cycles_from(edge, graph, color, stack, cycles);
         }
     }
 
     stack.pop();
-    active.remove(node);
+    color.insert(node.to_string(), 2); // black
 }
 
 #[cfg(test)]
