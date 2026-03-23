@@ -109,10 +109,15 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     // Ping interval
     let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(30));
 
-    // Duration timer for --save --duration
-    let duration_deadline = args.duration.map(|secs| {
-        tokio::time::Instant::now() + std::time::Duration::from_secs(secs)
-    });
+    // Duration timer for --save --duration (as a select! arm for precise timing)
+    let duration_future = async {
+        if let Some(secs) = args.duration {
+            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(duration_future);
 
     // Handle Ctrl+C
     let shutdown = tokio::signal::ctrl_c();
@@ -121,14 +126,6 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let mut snapshot_complete = false;
 
     loop {
-        // Check duration deadline
-        if let Some(deadline) = duration_deadline {
-            if tokio::time::Instant::now() >= deadline {
-                eprintln!("Duration reached, stopping...");
-                break;
-            }
-        }
-
         tokio::select! {
             msg = ws_rx.next() => {
                 match msg {
@@ -202,6 +199,10 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                 if let Ok(msg) = serde_json::to_string(&ClientMessage::Ping) {
                     let _ = ws_tx.send(Message::Text(msg)).await;
                 }
+            }
+            _ = &mut duration_future => {
+                eprintln!("Duration reached, stopping...");
+                break;
             }
             _ = &mut shutdown => {
                 eprintln!("\nDisconnecting...");
