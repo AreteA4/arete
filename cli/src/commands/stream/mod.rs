@@ -1,4 +1,5 @@
 mod client;
+mod filter;
 mod output;
 
 use anyhow::{bail, Context, Result};
@@ -26,6 +27,30 @@ pub struct StreamArgs {
     /// Output raw WebSocket frames instead of merged entities
     #[arg(long)]
     pub raw: bool,
+
+    /// NO_DNA agent-friendly envelope format
+    #[arg(long)]
+    pub no_dna: bool,
+
+    /// Filter expression: field=value, field>N, field~regex (repeatable, ANDed)
+    #[arg(long = "where", value_name = "EXPR")]
+    pub filters: Vec<String>,
+
+    /// Select specific fields to output (comma-separated dot paths)
+    #[arg(long)]
+    pub select: Option<String>,
+
+    /// Exit after first entity matches filter criteria
+    #[arg(long)]
+    pub first: bool,
+
+    /// Filter by operation type (comma-separated: upsert,patch,delete)
+    #[arg(long)]
+    pub ops: Option<String>,
+
+    /// Show running count of entities/updates only
+    #[arg(long)]
+    pub count: bool,
 
     /// Max entities in snapshot
     #[arg(long)]

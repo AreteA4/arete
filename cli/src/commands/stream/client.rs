@@ -4,11 +4,24 @@ use hyperstack_sdk::{
     deep_merge_with_append, parse_frame, parse_snapshot_entities, ClientMessage, Frame, Operation,
     Subscription,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use super::output;
+use super::filter::{self, Filter};
+use super::output::{self, OutputMode};
 use super::StreamArgs;
+
+struct StreamState {
+    entities: HashMap<String, serde_json::Value>,
+    filter: Filter,
+    select_fields: Option<Vec<Vec<String>>>,
+    allowed_ops: Option<HashSet<String>>,
+    output_mode: OutputMode,
+    first: bool,
+    count_only: bool,
+    update_count: u64,
+    entity_count: u64,
+}
 
 pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let (ws, _) = connect_async(&url)
@@ -45,8 +58,35 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         .await
         .context("Failed to send subscribe message")?;
 
-    // Entity state for merged mode
-    let mut entities: HashMap<String, serde_json::Value> = HashMap::new();
+    // Parse filters
+    let filter = Filter::parse(&args.filters)?;
+    let select_fields = args.select.as_deref().map(filter::parse_select);
+    let allowed_ops = args.ops.as_deref().map(|ops| {
+        ops.split(',')
+            .map(|s| s.trim().to_lowercase())
+            .collect::<HashSet<_>>()
+    });
+
+    let output_mode = if args.raw {
+        OutputMode::Raw
+    } else if args.no_dna {
+        output::emit_no_dna_event("connected", view, &serde_json::json!({"url": url}), 0, 0)?;
+        OutputMode::NoDna
+    } else {
+        OutputMode::Merged
+    };
+
+    let mut state = StreamState {
+        entities: HashMap::new(),
+        filter,
+        select_fields,
+        allowed_ops,
+        output_mode,
+        first: args.first,
+        count_only: args.count,
+        update_count: 0,
+        entity_count: 0,
+    };
 
     // Ping interval
     let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -55,18 +95,23 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
 
+    let mut snapshot_complete = false;
+
     loop {
         tokio::select! {
             msg = ws_rx.next() => {
                 match msg {
                     Some(Ok(Message::Binary(bytes))) => {
                         match parse_frame(&bytes) {
-                            Ok(frame) => process_frame(frame, args, &mut entities)?,
+                            Ok(frame) => {
+                                if process_frame(frame, view, &mut state)? {
+                                    return Ok(());
+                                }
+                            }
                             Err(e) => eprintln!("Warning: failed to parse frame: {}", e),
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        // Check for subscribed frame
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                             if value.get("op").and_then(|v| v.as_str()) == Some("subscribed") {
                                 eprintln!("Subscribed to {}", view);
@@ -74,7 +119,23 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                             }
                         }
                         match serde_json::from_str::<Frame>(&text) {
-                            Ok(frame) => process_frame(frame, args, &mut entities)?,
+                            Ok(frame) => {
+                                let was_snapshot = frame.is_snapshot();
+                                if process_frame(frame, view, &mut state)? {
+                                    return Ok(());
+                                }
+                                // Detect snapshot completion (first non-snapshot after snapshots)
+                                if !was_snapshot && !snapshot_complete && state.update_count > 0 {
+                                    snapshot_complete = true;
+                                    if let OutputMode::NoDna = state.output_mode {
+                                        output::emit_no_dna_event(
+                                            "snapshot_complete", view,
+                                            &serde_json::json!({"entity_count": state.entity_count}),
+                                            state.update_count, state.entity_count,
+                                        )?;
+                                    }
+                                }
+                            }
                             Err(e) => eprintln!("Warning: failed to parse text frame: {}", e),
                         }
                     }
@@ -109,48 +170,137 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         }
     }
 
+    if let OutputMode::NoDna = state.output_mode {
+        output::emit_no_dna_event(
+            "disconnected", view,
+            &serde_json::json!(null),
+            state.update_count, state.entity_count,
+        )?;
+    }
+
     Ok(())
 }
 
+/// Process a frame. Returns true if the stream should end (--first matched).
 fn process_frame(
     frame: Frame,
-    args: &StreamArgs,
-    entities: &mut HashMap<String, serde_json::Value>,
-) -> Result<()> {
-    if args.raw {
-        return output::print_raw_frame(&frame);
+    view: &str,
+    state: &mut StreamState,
+) -> Result<bool> {
+    let op = frame.operation();
+    let op_str = &frame.op;
+
+    // Filter by operation type
+    if let Some(allowed) = &state.allowed_ops {
+        if op != Operation::Snapshot && !allowed.contains(op_str.as_str()) {
+            return Ok(false);
+        }
     }
 
-    let op = frame.operation();
+    if let OutputMode::Raw = state.output_mode {
+        // In raw mode, apply filter to the frame data directly
+        if !state.filter.is_empty() && !state.filter.matches(&frame.data) {
+            return Ok(false);
+        }
+        state.update_count += 1;
+        if state.count_only {
+            output::print_count(state.update_count)?;
+        } else {
+            output::print_raw_frame(&frame)?;
+        }
+        return Ok(state.first && !state.filter.is_empty());
+    }
 
     match op {
         Operation::Snapshot => {
             let snapshot_entities = parse_snapshot_entities(&frame.data);
             for entity in snapshot_entities {
-                entities.insert(entity.key.clone(), entity.data.clone());
-                output::print_entity_update(&frame.entity, &entity.key, "snapshot", &entity.data)?;
+                state.entities.insert(entity.key.clone(), entity.data.clone());
+                state.entity_count = state.entities.len() as u64;
+                if emit_entity(state, view, &entity.key, "snapshot", &entity.data)? {
+                    return Ok(true);
+                }
             }
         }
         Operation::Upsert | Operation::Create => {
-            entities.insert(frame.key.clone(), frame.data.clone());
-            output::print_entity_update(&frame.entity, &frame.key, &frame.op, &frame.data)?;
+            state.entities.insert(frame.key.clone(), frame.data.clone());
+            state.entity_count = state.entities.len() as u64;
+            if emit_entity(state, view, &frame.key, op_str, &frame.data)? {
+                return Ok(true);
+            }
         }
         Operation::Patch => {
-            let entry = entities
+            let entry = state.entities
                 .entry(frame.key.clone())
                 .or_insert_with(|| serde_json::json!({}));
             deep_merge_with_append(entry, &frame.data, &frame.append, "");
             let merged = entry.clone();
-            output::print_entity_update(&frame.entity, &frame.key, "patch", &merged)?;
+            state.entity_count = state.entities.len() as u64;
+            if emit_entity(state, view, &frame.key, "patch", &merged)? {
+                return Ok(true);
+            }
         }
         Operation::Delete => {
-            entities.remove(&frame.key);
-            output::print_delete(&frame.entity, &frame.key)?;
+            state.entities.remove(&frame.key);
+            state.entity_count = state.entities.len() as u64;
+            state.update_count += 1;
+            if state.count_only {
+                output::print_count(state.update_count)?;
+            } else {
+                match state.output_mode {
+                    OutputMode::NoDna => output::emit_no_dna_event(
+                        "entity_update", view,
+                        &serde_json::json!({"key": frame.key, "op": "delete", "data": null}),
+                        state.update_count, state.entity_count,
+                    )?,
+                    _ => output::print_delete(view, &frame.key)?,
+                }
+            }
         }
-        Operation::Subscribed => {
-            // Handled in the text message branch
+        Operation::Subscribed => {}
+    }
+
+    Ok(false)
+}
+
+/// Emit an entity through filter + select + output. Returns true if --first should trigger.
+fn emit_entity(
+    state: &mut StreamState,
+    view: &str,
+    key: &str,
+    op: &str,
+    data: &serde_json::Value,
+) -> Result<bool> {
+    // Apply filter
+    if !state.filter.is_empty() && !state.filter.matches(data) {
+        return Ok(false);
+    }
+
+    state.update_count += 1;
+
+    // Apply field selection
+    let output_data = match &state.select_fields {
+        Some(fields) => filter::select_fields(data, fields),
+        None => data.clone(),
+    };
+
+    if state.count_only {
+        output::print_count(state.update_count)?;
+    } else {
+        match state.output_mode {
+            OutputMode::NoDna => output::emit_no_dna_event(
+                "entity_update", view,
+                &serde_json::json!({"key": key, "op": op, "data": output_data}),
+                state.update_count, state.entity_count,
+            )?,
+            _ => output::print_entity_update(view, key, op, &output_data)?,
         }
     }
 
-    Ok(())
+    // --first: exit after first filter match
+    if state.first && !state.filter.is_empty() {
+        return Ok(true);
+    }
+
+    Ok(false)
 }
