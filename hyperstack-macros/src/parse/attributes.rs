@@ -211,6 +211,9 @@ impl MapAttribute {
 }
 
 fn classify_source_type_path(path: &Path) -> (bool, bool) {
+    // We assume Anchor-style SDK paths expose explicit `instructions` / `accounts`
+    // segments. Re-exports or custom module layouts fall back to `Other`, which
+    // keeps macro expansion working but skips IDL-backed source field validation.
     let has_instructions_segment = path
         .segments
         .iter()

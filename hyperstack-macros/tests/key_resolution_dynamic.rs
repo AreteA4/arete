@@ -246,6 +246,40 @@ fn main() {}
 }
 
 #[test]
+fn derive_from_group_reports_each_non_resolving_path() {
+    let source = r#"use hyperstack_macros::hyperstack;
+
+#[hyperstack(idl = "fixture/minimal.json")]
+mod broken {
+    #[entity(name = "Thing")]
+    struct Thing {
+        #[map(fake_sdk::accounts::Thing::id, primary_key, strategy = SetOnce)]
+        id: String,
+
+        #[derive_from(from = fake_sdk::instructions::Trade, field = user, strategy = LastWrite)]
+        latest_user: String,
+
+        #[derive_from(from = fake_sdk::instructions::Trade, field = user, lookup_by = user, strategy = LastWrite)]
+        latest_lookup: String,
+    }
+}
+
+fn main() {}
+"#;
+
+    let stderr = compile_failure_stderr_with_files(
+        "derive_from_group_reports_each_non_resolving_path",
+        source,
+        &[("fixture/minimal.json", minimal_idl())],
+    );
+
+    assert!(stderr.contains(
+        "The mapped field 'user' does not provide a provable path back to the entity primary key"
+    ));
+    assert!(stderr.contains("The `lookup_by` field 'user' is neither a primary-key field nor a lookup-index-backed field."));
+}
+
+#[test]
 fn event_group_passes_when_any_captured_field_resolves_key() {
     let source = r#"use hyperstack_macros::hyperstack;
 

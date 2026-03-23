@@ -70,7 +70,7 @@ pub fn lookup_instruction<'a>(
     let available: Vec<String> = idl.instructions.iter().map(|ix| ix.name.clone()).collect();
     idl.instructions
         .iter()
-        .find(|ix| ix.name.eq_ignore_ascii_case(instruction_name))
+        .find(|ix| ix.name == instruction_name)
         .ok_or_else(|| {
             build_not_found_error(instruction_name, "instructions".to_string(), available)
         })
@@ -87,7 +87,7 @@ pub fn lookup_account<'a>(
         .collect();
     idl.accounts
         .iter()
-        .find(|account| account.name.eq_ignore_ascii_case(account_name))
+        .find(|account| account.name == account_name)
         .ok_or_else(|| build_not_found_error(account_name, "accounts".to_string(), available))
 }
 
@@ -98,7 +98,7 @@ pub fn lookup_type<'a>(
     let available: Vec<String> = idl.types.iter().map(|ty| ty.name.clone()).collect();
     idl.types
         .iter()
-        .find(|ty| ty.name.eq_ignore_ascii_case(type_name))
+        .find(|ty| ty.name == type_name)
         .ok_or_else(|| build_not_found_error(type_name, "types".to_string(), available))
 }
 
@@ -111,7 +111,7 @@ pub fn lookup_instruction_field<'a>(
     if instruction
         .accounts
         .iter()
-        .any(|account| account.name.eq_ignore_ascii_case(field_name))
+        .any(|account| account.name == field_name)
     {
         return Ok(InstructionFieldLookup {
             instruction,
@@ -119,11 +119,7 @@ pub fn lookup_instruction_field<'a>(
         });
     }
 
-    if instruction
-        .args
-        .iter()
-        .any(|arg| arg.name.eq_ignore_ascii_case(field_name))
-    {
+    if instruction.args.iter().any(|arg| arg.name == field_name) {
         return Ok(InstructionFieldLookup {
             instruction,
             kind: InstructionFieldKind::Arg,
@@ -345,5 +341,39 @@ mod tests {
 
         let account = lookup_account(&idl, "BondingCurve").expect("account should exist");
         assert_eq!(account.name, "BondingCurve");
+    }
+
+    #[test]
+    fn test_lookup_instruction_case_mismatch_gets_suggestion() {
+        use crate::parse::parse_idl_file;
+        use std::path::PathBuf;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pump.json");
+        let idl = parse_idl_file(&path).expect("should parse");
+
+        let error = lookup_instruction(&idl, "Buy").expect_err("lookup should fail");
+        match error {
+            IdlSearchError::NotFound { suggestions, .. } => {
+                assert_eq!(suggestions[0].candidate, "buy");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_lookup_account_case_mismatch_gets_suggestion() {
+        use crate::parse::parse_idl_file;
+        use std::path::PathBuf;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pump.json");
+        let idl = parse_idl_file(&path).expect("should parse");
+
+        let error = lookup_account(&idl, "bondingCurve").expect_err("lookup should fail");
+        match error {
+            IdlSearchError::NotFound { suggestions, .. } => {
+                assert_eq!(suggestions[0].candidate, "BondingCurve");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
     }
 }
