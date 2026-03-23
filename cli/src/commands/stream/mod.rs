@@ -76,7 +76,7 @@ pub struct StreamArgs {
     #[arg(long)]
     pub save: Option<String>,
 
-    /// Auto-stop recording after N seconds (used with --save)
+    /// Auto-stop the stream after N seconds
     #[arg(long)]
     pub duration: Option<u64>,
 
