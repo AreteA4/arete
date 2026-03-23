@@ -346,6 +346,9 @@ fn process_frame(
         if !ops_allowed {
             return Ok(false);
         }
+        // Note: in raw mode, --where filters against the raw frame.data which is
+        // an array for snapshot frames. Field-level filters (e.g. --where "info.name=X")
+        // will not match snapshot batch arrays — use merged mode for field filtering.
         if !state.filter.is_empty() && !state.filter.matches(&frame.data) {
             return Ok(false);
         }
