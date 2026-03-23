@@ -348,7 +348,7 @@ fn process_frame(
         } else {
             output::print_raw_frame(&frame)?;
         }
-        return Ok(state.first && !state.filter.is_empty());
+        return Ok(state.first);
     }
 
     match op {
@@ -447,7 +447,7 @@ fn emit_entity(
         }
     }
 
-    if state.first && !state.filter.is_empty() {
+    if state.first {
         return Ok(true);
     }
 
