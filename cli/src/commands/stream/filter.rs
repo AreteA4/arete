@@ -323,4 +323,50 @@ mod tests {
         let result = select_fields(&v, &fields);
         assert_eq!(result, json!({"a.id": 1, "b.id": 2}));
     }
+
+    #[test]
+    fn test_not_eq() {
+        let f = Filter::parse(&["name!=alice".to_string()]).unwrap();
+        assert!(!f.matches(&json!({"name": "alice"})));
+        assert!(f.matches(&json!({"name": "bob"})));
+        // Absent field: != should return true
+        assert!(f.matches(&json!({"age": 30})));
+    }
+
+    #[test]
+    fn test_gte() {
+        let f = Filter::parse(&["score>=100".to_string()]).unwrap();
+        assert!(f.matches(&json!({"score": 100})));
+        assert!(f.matches(&json!({"score": 150})));
+        assert!(!f.matches(&json!({"score": 99})));
+    }
+
+    #[test]
+    fn test_lte() {
+        let f = Filter::parse(&["score<=100".to_string()]).unwrap();
+        assert!(f.matches(&json!({"score": 100})));
+        assert!(f.matches(&json!({"score": 50})));
+        assert!(!f.matches(&json!({"score": 101})));
+    }
+
+    #[test]
+    fn test_not_regex() {
+        let f = Filter::parse(&["name!~^ali".to_string()]).unwrap();
+        assert!(!f.matches(&json!({"name": "alice"})));
+        assert!(f.matches(&json!({"name": "bob"})));
+        // Absent field: !~ should return true (consistent with !=)
+        assert!(f.matches(&json!({"age": 30})));
+    }
+
+    #[test]
+    fn test_two_char_operator_precedence() {
+        // Ensure >= is not parsed as > with value "=100"
+        let f = Filter::parse(&["score>=100".to_string()]).unwrap();
+        assert!(f.matches(&json!({"score": 100})));
+
+        // Ensure != is not parsed as ! with something else
+        let f = Filter::parse(&["name!=x".to_string()]).unwrap();
+        assert!(f.matches(&json!({"name": "y"})));
+        assert!(!f.matches(&json!({"name": "x"})));
+    }
 }
