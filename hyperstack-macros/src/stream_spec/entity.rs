@@ -630,6 +630,15 @@ pub fn process_entity_struct_with_idl(
         )
     })?;
 
+    // Round-trip check: ensure the JSON we embed can be deserialized at runtime
+    let _: crate::ast::SerializableStreamSpec =
+        serde_json::from_str(&spec_json).map_err(|error| {
+            internal_codegen_error(
+                input.ident.span(),
+                format!("embedded stream spec round-trip check failed: {error}"),
+            )
+        })?;
+
     let explicit_account_types: HashSet<String> = resolver_hooks
         .iter()
         .map(|h| {

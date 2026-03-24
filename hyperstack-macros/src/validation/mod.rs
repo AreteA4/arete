@@ -540,6 +540,15 @@ fn validate_source_handler_keys(
         // convert_event_to_map_attributes(...), which sets is_event_source = true.
         // Those groups are validated in validate_event_handler_keys before they
         // are merged into sources_by_type for codegen.
+        // Defensive: event-derived MapAttributes (is_event_source=true) are merged
+        // into sources_by_type only during codegen, after this validation pass, so
+        // this branch is currently unreachable. It guards against a future refactor
+        // that merges them earlier.
+        debug_assert!(
+            !mappings.iter().all(|m| m.is_event_source),
+            "event-derived group found in sources_by_type during validation — \
+             validate_event_handler_keys should have handled this"
+        );
         if mappings.iter().all(|mapping| mapping.is_event_source) {
             continue;
         }
@@ -564,6 +573,30 @@ fn validate_source_handler_keys(
 
         if let Some(join_field) = join_key.as_ref() {
             if source_field_can_resolve_key(join_field, primary_key_leafs, lookup_index_leafs) {
+                // Warn about a present but non-resolving lookup_by even when join_on rescues the group.
+                if let Some(bad_lb) =
+                    mappings
+                        .iter()
+                        .filter_map(|m| m.lookup_by.as_ref())
+                        .find(|lb| {
+                            !source_field_can_resolve_key(
+                                &lb.ident.to_string(),
+                                primary_key_leafs,
+                                lookup_index_leafs,
+                            )
+                        })
+                {
+                    errors.push(key_resolution_error(
+                        bad_lb.ident.span(),
+                        if is_instruction { "instruction source" } else { "account source" },
+                        &source_type,
+                        entity_name,
+                        &format!(
+                            "`lookup_by` field '{}' is not a primary-key or lookup-index field (key is resolved via `join_on` instead — consider removing `lookup_by`).",
+                            bad_lb.ident,
+                        ),
+                    ));
+                }
                 continue;
             }
         }
@@ -690,6 +723,29 @@ fn validate_event_handler_keys(
 
         if let Some(join_field) = join_key.as_ref() {
             if source_field_can_resolve_key(join_field, primary_key_leafs, lookup_index_leafs) {
+                // Warn about a present but non-resolving lookup_by even when join_on rescues the group.
+                if let Some(bad_lb) = mappings
+                    .iter()
+                    .filter_map(|(_, attr, _)| attr.lookup_by.as_ref())
+                    .find(|lb| {
+                        !source_field_can_resolve_key(
+                            &lb.ident.to_string(),
+                            primary_key_leafs,
+                            lookup_index_leafs,
+                        )
+                    })
+                {
+                    errors.push(key_resolution_error(
+                        bad_lb.ident.span(),
+                        "event source",
+                        &instruction,
+                        entity_name,
+                        &format!(
+                            "`lookup_by` field '{}' is not a primary-key or lookup-index field (key is resolved via `join_on` instead — consider removing `lookup_by`).",
+                            bad_lb.ident,
+                        ),
+                    ));
+                }
                 continue;
             }
         }
