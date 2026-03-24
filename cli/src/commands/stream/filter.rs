@@ -69,7 +69,7 @@ impl Predicate {
                 .is_some_and(|s| re.is_match(s)),
             FilterOp::NotRegex(re) => match resolved.and_then(|v| v.as_str()) {
                 Some(s) => !re.is_match(s),
-                None => false, // field absent or non-string → does not match
+                None => true, // absent/non-string: "does not match regex" — consistent with NotEq
             },
         }
     }
