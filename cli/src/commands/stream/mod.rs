@@ -136,6 +136,12 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
         if args.history || args.at.is_some() || args.diff {
             bail!("--history/--at/--diff are not supported in TUI mode; use h/l keys to browse history.");
         }
+        if args.raw {
+            bail!("--raw is incompatible with TUI mode; omit --tui to use raw output.");
+        }
+        if args.no_dna {
+            bail!("--no-dna is incompatible with TUI mode; omit --tui to use NO_DNA output.");
+        }
         #[cfg(feature = "tui")]
         {
             return rt.block_on(tui::run_tui(url, view, &args));
@@ -150,7 +156,6 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
     }
 
     eprintln!("Connecting to {} ...", url);
-    eprintln!("Subscribing to {} ...", view);
 
     rt.block_on(client::stream(url, view, &args))
 }

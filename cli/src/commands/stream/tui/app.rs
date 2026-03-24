@@ -148,12 +148,19 @@ impl App {
                 self.update_count += 1;
             }
             Operation::Delete => {
+                let deleted_pos = self.entity_keys.iter().position(|k| k == &frame.key);
                 self.store.delete(&frame.key);
                 self.entity_key_set.remove(&frame.key);
                 self.entity_keys.retain(|k| k != &frame.key);
                 self.update_count += 1;
-                if self.selected_index >= self.entity_keys.len() && self.selected_index > 0 {
-                    self.selected_index -= 1;
+                // If deleted entity was before cursor, shift cursor back to preserve selection
+                if let Some(pos) = deleted_pos {
+                    if pos < self.selected_index && self.selected_index > 0 {
+                        self.selected_index -= 1;
+                    }
+                }
+                if self.selected_index >= self.entity_keys.len() && !self.entity_keys.is_empty() {
+                    self.selected_index = self.entity_keys.len() - 1;
                 }
                 self.history_position = 0;
                 self.scroll_offset = 0;
@@ -264,6 +271,9 @@ impl App {
                 self.filter_text.clear();
             }
             TuiAction::SaveSnapshot => {
+                // Note: this does synchronous file I/O on the runtime thread. Acceptable
+                // because raw_frames is capped at 1000 entries. For larger caps, consider
+                // spawning onto a blocking thread.
                 let mut recorder = SnapshotRecorder::new(&self.view, &self.url);
                 for (arrival_time, frame) in &self.raw_frames {
                     let ts_ms = arrival_time.duration_since(self.stream_start).as_millis() as u64;
