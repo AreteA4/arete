@@ -2211,6 +2211,7 @@ pub fn parse_view_attribute_specs(attrs: &[Attribute]) -> syn::Result<Vec<ViewAt
                     offsets: None,
                 },
                 order,
+                key_span: sort_key_span,
             }];
 
             // Only add Take transform if explicitly specified in the view definition.

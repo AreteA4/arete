@@ -1167,6 +1167,22 @@ fn validate_event_references(
                 }
             }
 
+            for field_name in &event_attr.capture_fields_legacy {
+                if field_name.starts_with("__") {
+                    continue;
+                }
+                if let Some(temp_field) = try_field_spec_from_leaf(field_name, event_attr.attr_span)
+                {
+                    if let Err(error) = validate_instruction_field_spec(
+                        event_idl,
+                        &event_instruction_name,
+                        &temp_field,
+                    ) {
+                        errors.push(idl_error_to_syn(event_attr.attr_span, error));
+                    }
+                }
+            }
+
             if let Some(field_spec) = &event_attr.lookup_by {
                 if let Err(error) =
                     validate_instruction_field_spec(event_idl, &event_instruction_name, field_spec)
@@ -1307,19 +1323,31 @@ fn validate_views(
         for transform in &view_spec.view.pipeline {
             let maybe_field = match transform {
                 ViewTransform::Sort { key, .. }
-                | ViewTransform::MaxBy { key }
-                | ViewTransform::MinBy { key } => Some(key),
+                | ViewTransform::MaxBy { key, .. }
+                | ViewTransform::MinBy { key, .. } => Some(key),
                 _ => None,
             };
 
             if let Some(field) = maybe_field {
                 let raw = field_path_to_string(field);
                 if !known_fields.contains(&raw) {
+                    let span = match transform {
+                        ViewTransform::Sort { key_span, .. } => {
+                            key_span.unwrap_or(view_spec.attr_span)
+                        }
+                        ViewTransform::MaxBy { key_span, .. } => {
+                            key_span.unwrap_or(view_spec.attr_span)
+                        }
+                        ViewTransform::MinBy { key_span, .. } => {
+                            key_span.unwrap_or(view_spec.attr_span)
+                        }
+                        _ => view_spec.attr_span,
+                    };
                     errors.push(entity_field_error(
                         entity_name,
                         &raw,
                         "view field",
-                        view_spec.sort_key_span.unwrap_or(view_spec.attr_span),
+                        span,
                         available_fields,
                     ));
                 }

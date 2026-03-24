@@ -673,7 +673,7 @@ pub enum Predicate {
 }
 
 /// Transform operation in a view pipeline
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ViewTransform {
     /// Filter entities matching a predicate
     Filter { predicate: Predicate },
@@ -683,6 +683,8 @@ pub enum ViewTransform {
         key: FieldPath,
         #[serde(default)]
         order: SortOrder,
+        #[serde(skip, default)]
+        key_span: Option<proc_macro2::Span>,
     },
 
     /// Take first N entities (after sort)
@@ -698,11 +700,44 @@ pub enum ViewTransform {
     Last,
 
     /// Get entity with maximum value for field - produces Single output
-    MaxBy { key: FieldPath },
+    MaxBy {
+        key: FieldPath,
+        #[serde(skip, default)]
+        key_span: Option<proc_macro2::Span>,
+    },
 
     /// Get entity with minimum value for field - produces Single output
-    MinBy { key: FieldPath },
+    MinBy {
+        key: FieldPath,
+        #[serde(skip, default)]
+        key_span: Option<proc_macro2::Span>,
+    },
 }
+
+impl PartialEq for ViewTransform {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Filter { predicate: l }, Self::Filter { predicate: r }) => l == r,
+            (
+                Self::Sort {
+                    key: k1, order: o1, ..
+                },
+                Self::Sort {
+                    key: k2, order: o2, ..
+                },
+            ) => k1 == k2 && o1 == o2,
+            (Self::Take { count: l }, Self::Take { count: r }) => l == r,
+            (Self::Skip { count: l }, Self::Skip { count: r }) => l == r,
+            (Self::First, Self::First) => true,
+            (Self::Last, Self::Last) => true,
+            (Self::MaxBy { key: k1, .. }, Self::MaxBy { key: k2, .. }) => k1 == k2,
+            (Self::MinBy { key: k1, .. }, Self::MinBy { key: k2, .. }) => k1 == k2,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ViewTransform {}
 
 /// Source for a view definition
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
