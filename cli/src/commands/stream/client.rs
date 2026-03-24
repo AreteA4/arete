@@ -125,17 +125,7 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                                 }
                                 let was_snapshot = frame.is_snapshot();
                                 if was_snapshot { received_snapshot = true; }
-                                // Emit snapshot_complete BEFORE the first live frame
-                                if !was_snapshot && received_snapshot && !snapshot_complete {
-                                    snapshot_complete = true;
-                                    if let OutputMode::NoDna = state.output_mode {
-                                        output::emit_no_dna_event(
-                                            "snapshot_complete", view,
-                                            &serde_json::json!({"entity_count": state.entity_count}),
-                                            state.update_count, state.entity_count,
-                                        )?;
-                                    }
-                                }
+                                maybe_emit_snapshot_complete(&state, view, &mut snapshot_complete, received_snapshot, was_snapshot)?;
                                 if process_frame(frame, view, &mut state)? {
                                     break;
                                 }
@@ -160,17 +150,7 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                             Ok(frame) => {
                                 let was_snapshot = frame.is_snapshot();
                                 if was_snapshot { received_snapshot = true; }
-                                // Emit snapshot_complete BEFORE the first live frame
-                                if !was_snapshot && received_snapshot && !snapshot_complete {
-                                    snapshot_complete = true;
-                                    if let OutputMode::NoDna = state.output_mode {
-                                        output::emit_no_dna_event(
-                                            "snapshot_complete", view,
-                                            &serde_json::json!({"entity_count": state.entity_count}),
-                                            state.update_count, state.entity_count,
-                                        )?;
-                                    }
-                                }
+                                maybe_emit_snapshot_complete(&state, view, &mut snapshot_complete, received_snapshot, was_snapshot)?;
                                 if process_frame(frame, view, &mut state)? {
                                     break;
                                 }
@@ -321,6 +301,27 @@ fn output_history_if_requested(state: &StreamState, args: &StreamArgs) -> Result
         }
     }
 
+    Ok(())
+}
+
+/// Emit snapshot_complete NoDna event if transitioning from snapshot to live frames.
+fn maybe_emit_snapshot_complete(
+    state: &StreamState,
+    view: &str,
+    snapshot_complete: &mut bool,
+    received_snapshot: bool,
+    was_snapshot: bool,
+) -> Result<()> {
+    if !was_snapshot && received_snapshot && !*snapshot_complete {
+        *snapshot_complete = true;
+        if let OutputMode::NoDna = state.output_mode {
+            output::emit_no_dna_event(
+                "snapshot_complete", view,
+                &serde_json::json!({"entity_count": state.entity_count}),
+                state.update_count, state.entity_count,
+            )?;
+        }
+    }
     Ok(())
 }
 
