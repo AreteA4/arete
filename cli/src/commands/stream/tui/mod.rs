@@ -50,16 +50,13 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                     match msg {
                         Some(Ok(Message::Binary(bytes))) => {
                             if let Ok(frame) = parse_frame(&bytes) {
-                                if frame_tx.send(frame).await.is_err() {
-                                    break;
-                                }
+                                // Non-blocking: drop frames when receiver is paused/full
+                                let _ = frame_tx.try_send(frame);
                             }
                         }
                         Some(Ok(Message::Text(text))) => {
                             if let Ok(frame) = serde_json::from_str::<Frame>(&text) {
-                                if frame_tx.send(frame).await.is_err() {
-                                    break;
-                                }
+                                let _ = frame_tx.try_send(frame);
                             }
                         }
                         Some(Ok(Message::Ping(payload))) => {
