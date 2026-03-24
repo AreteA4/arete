@@ -115,6 +115,10 @@ fn as_f64(value: &Value) -> Option<f64> {
 fn parse_predicate(expr: &str) -> Result<Predicate> {
     let expr = expr.trim();
 
+    if expr.is_empty() {
+        bail!("Empty filter expression; expected field=value, field>N, field~regex, etc.");
+    }
+
     // Existence: field? or field!?
     if let Some(field) = expr.strip_suffix("!?") {
         return Ok(Predicate {
@@ -141,6 +145,9 @@ fn parse_predicate(expr: &str) -> Result<Predicate> {
     ] {
         if let Some(idx) = expr.find(op_str) {
             let field = &expr[..idx];
+            if field.is_empty() {
+                bail!("Missing field name before '{}' in: '{}'", op_str, expr);
+            }
             let value = &expr[idx + op_str.len()..];
             return Ok(Predicate {
                 path: parse_path(field),
@@ -158,6 +165,9 @@ fn parse_predicate(expr: &str) -> Result<Predicate> {
     ] {
         if let Some(idx) = expr.find(*op_char) {
             let field = &expr[..idx];
+            if field.is_empty() {
+                bail!("Missing field name before '{}' in: '{}'", op_char, expr);
+            }
             let value = &expr[idx + 1..];
             return Ok(Predicate {
                 path: parse_path(field),

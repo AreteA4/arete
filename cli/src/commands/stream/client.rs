@@ -77,6 +77,9 @@ fn build_state(args: &StreamArgs, view: &str, url: &str) -> Result<StreamState> 
 }
 
 pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
+    // Validate args and build state before connecting (fails fast on bad --where regex etc.)
+    let mut state = build_state(args, view, &url)?;
+
     let (ws, _) = connect_async(&url)
         .await
         .with_context(|| format!("Failed to connect to {}", url))?;
@@ -93,8 +96,6 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         .send(Message::Text(msg))
         .await
         .context("Failed to send subscribe message")?;
-
-    let mut state = build_state(args, view, &url)?;
 
     // Ping interval
     let ping_period = std::time::Duration::from_secs(30);

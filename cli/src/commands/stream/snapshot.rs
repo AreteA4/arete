@@ -96,8 +96,11 @@ impl SnapshotRecorder {
         });
 
         let json = serde_json::to_string_pretty(&output)?;
-        // Atomic write: write to tmp file then rename, so readers never see partial data
-        let tmp_path = format!("{}.tmp", path);
+        // Atomic write: write to tmp file in same directory then rename
+        let dest = std::path::Path::new(path);
+        let parent = dest.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let file_name = dest.file_name().unwrap_or_default();
+        let tmp_path = parent.join(format!("{}.tmp", file_name.to_string_lossy())).to_string_lossy().into_owned();
         fs::write(&tmp_path, json)
             .with_context(|| format!("Failed to write snapshot to {}", tmp_path))?;
         fs::rename(&tmp_path, path)
