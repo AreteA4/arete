@@ -33,7 +33,9 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     ws_tx.send(Message::Text(msg)).await?;
 
     // Channel for frames from WS task
-    let (frame_tx, mut frame_rx) = mpsc::channel::<Frame>(1000);
+    // 10k buffer accommodates large snapshot batches during pause. Overflow
+    // frames are dropped and counted in the "Dropped: N" header indicator.
+    let (frame_tx, mut frame_rx) = mpsc::channel::<Frame>(10_000);
 
     // Shutdown signal for graceful WebSocket close
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();

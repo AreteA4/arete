@@ -131,16 +131,16 @@ impl EntityStore {
         }
 
         let actual_idx = record.history.len().checked_sub(index.checked_add(1)?)?;
-        let current = &record.history.get(actual_idx)?.state;
+        let entry = record.history.get(actual_idx)?;
 
         // If this entry has a raw patch, use it directly
-        if let Some(patch) = &record.history.get(actual_idx)?.patch {
+        if let Some(patch) = &entry.patch {
             return Some(serde_json::json!({
-                "op": record.history.get(actual_idx)?.op,
+                "op": entry.op,
                 "index": index,
                 "total": record.history.len(),
                 "patch": patch,
-                "state": current,
+                "state": entry.state,
             }));
         }
 
@@ -151,13 +151,13 @@ impl EntityStore {
             &Value::Null
         };
 
-        let changes = compute_diff(previous, current);
+        let changes = compute_diff(previous, &entry.state);
         Some(serde_json::json!({
-            "op": record.history.get(actual_idx)?.op,
+            "op": entry.op,
             "index": index,
             "total": record.history.len(),
             "changes": changes,
-            "state": current,
+            "state": entry.state,
         }))
     }
 

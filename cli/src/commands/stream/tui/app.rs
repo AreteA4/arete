@@ -111,6 +111,9 @@ impl App {
     }
 
     pub fn apply_frame(&mut self, frame: Frame) {
+        // Invalidation is cheap (sets to None). The cache is only rebuilt once per
+        // render tick in ensure_filtered_cache(), not per-frame, since we drain all
+        // frames before drawing.
         self.invalidate_filter_cache();
 
         // Always collect raw frames so toggling on shows recent data
