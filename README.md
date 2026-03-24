@@ -15,6 +15,7 @@ Real-time streaming data pipelines for Solana - transform on-chain events into t
 | hyperstack-server | Rust | crates.io | WebSocket server and projection handlers |
 | hyperstack-sdk | Rust | crates.io | Rust client SDK |
 | hyperstack-cli | Rust | crates.io | CLI tool for SDK generation |
+| hyperstack-idl | Rust | crates.io | IDL parsing and type system |
 | hyperstack-typescript | TypeScript | npm | Pure TypeScript SDK (framework-agnostic) |
 | hyperstack-react | TypeScript | npm | React SDK with hooks |
 | hyperstack-sdk | Python | PyPI | Python client SDK *(work in progress - not yet published)* |
@@ -25,7 +26,7 @@ Real-time streaming data pipelines for Solana - transform on-chain events into t
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-hyperstack = "0.2"
+hyperstack = "0.5"
 ```
 
 ### TypeScript (Core)
@@ -51,12 +52,16 @@ pip install hyperstack-sdk
 - `hyperstack/`: Main umbrella crate
 - `interpreter/`: AST transformation runtime and VM
 - `hyperstack-macros/`: Proc-macros for stream definitions
+- `hyperstack-idl/`: IDL parsing and type system
 - `rust/hyperstack-server/`: WebSocket server and projection handlers
 - `rust/hyperstack-sdk/`: Rust client SDK
 - `cli/`: CLI tool for SDK generation
 - `typescript/core/`: Pure TypeScript SDK
 - `typescript/react/`: React SDK with hooks
 - `python/hyperstack-sdk/`: Python client SDK
+- `stacks/`: Stack implementations and SDKs
+- `packages/`: Additional packages
+- `examples/`: Example projects
 
 ## Releasing
 
@@ -89,9 +94,11 @@ This repo uses [release-please](https://github.com/googleapis/release-please) fo
 
 All packages (Rust and TypeScript) are kept at the same version number using the `linked-versions` plugin. When any package receives a version bump, all packages are updated to the highest version in the group. This ensures compatibility when using packages individually.
 
+> **Note:** `hyperstack-idl` is currently versioned independently.
+
 ### Tag format
 
-Tags follow the pattern `v{version}` (e.g., `v0.2.0`). Since all packages are version-synchronized, a single tag represents all packages in the release.
+Tags follow the pattern `v{version}` (e.g., `v0.5.10`). Since all packages are version-synchronized, a single tag represents all packages in the release.
 
 ## Development
 
@@ -143,6 +150,7 @@ hyperstack/
 ├── hyperstack/          # Rust umbrella crate
 ├── interpreter/         # AST transformation runtime and VM
 ├── hyperstack-macros/   # Proc-macros for stream definitions
+├── hyperstack-idl/      # IDL parsing and type system
 ├── cli/                 # CLI tool (hyperstack-cli)
 ├── rust/
 │   ├── hyperstack-sdk/      # Rust client SDK
@@ -151,6 +159,9 @@ hyperstack/
 │   ├── core/            # Pure TypeScript SDK (hyperstack-typescript)
 │   └── react/           # React SDK (hyperstack-react)
 ├── python/hyperstack-sdk/   # Python client SDK
+├── stacks/              # Stack implementations and SDKs
+├── packages/            # Additional packages
+├── examples/            # Example projects
 └── docs/                # Documentation (MDX)
 ```
 
@@ -159,7 +170,7 @@ hyperstack/
 - [Concepts Overview](docs/concepts/overview.mdx) - Architecture and core concepts
 - [Stack API](docs/concepts/stack-api.mdx) - Client-side API reference
 - [CLI Commands](docs/cli/commands.mdx) - CLI usage guide
-- [React Quickstart](docs/quickstart/react.mdx) - Getting started with React
+- [React SDK](docs/src/content/docs/sdks/react.mdx) - Getting started with React
 
 ## Contributing
 
