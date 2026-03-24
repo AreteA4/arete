@@ -1,17 +1,12 @@
 use crate::ast::{ComparisonOp, FieldPath, LogicalOp, ParsedCondition, ResolverCondition};
 
-/// Parse a condition expression string into a ParsedCondition AST
+/// Parse a condition expression string into a ParsedCondition AST.
+/// Returns an error if the expression is malformed or empty.
 ///
 /// Supported syntax:
 /// - Comparisons: "field > 100", "amount >= 1000000"
 /// - Logical ops: "amount > 100 && user != \"excluded\"", "a < 10 || a > 1000"
 /// - Field refs: "amount", "data.field", "accounts.user"
-///
-#[allow(dead_code)]
-pub fn parse_condition_expression(expr: &str) -> Option<ParsedCondition> {
-    parse_condition_expression_strict(expr).ok()
-}
-
 pub fn parse_condition_expression_strict(expr: &str) -> Result<ParsedCondition, String> {
     let expr = expr.trim();
 
@@ -305,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_simple_comparison() {
-        let parsed = parse_condition_expression("amount > 1000").unwrap();
+        let parsed = parse_condition_expression_strict("amount > 1000").unwrap();
         match parsed {
             ParsedCondition::Comparison { field, op, value } => {
                 assert_eq!(field.segments, vec!["amount"]);
@@ -318,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_numeric_with_underscores() {
-        let parsed = parse_condition_expression("amount > 1_000_000_000_000").unwrap();
+        let parsed = parse_condition_expression_strict("amount > 1_000_000_000_000").unwrap();
         match parsed {
             ParsedCondition::Comparison { field, op, value } => {
                 assert_eq!(field.segments, vec!["amount"]);
@@ -331,7 +326,8 @@ mod tests {
 
     #[test]
     fn test_logical_and() {
-        let parsed = parse_condition_expression("amount > 100 && user != \"excluded\"").unwrap();
+        let parsed =
+            parse_condition_expression_strict("amount > 100 && user != \"excluded\"").unwrap();
         match parsed {
             ParsedCondition::Logical { op, conditions } => {
                 assert!(matches!(op, LogicalOp::And));
@@ -343,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_nested_field_path() {
-        let parsed = parse_condition_expression("data.amount >= 500").unwrap();
+        let parsed = parse_condition_expression_strict("data.amount >= 500").unwrap();
         match parsed {
             ParsedCondition::Comparison { field, op, value } => {
                 assert_eq!(field.segments, vec!["data", "amount"]);
@@ -356,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_zero_32_constant() {
-        let parsed = parse_condition_expression("value != ZERO_32").unwrap();
+        let parsed = parse_condition_expression_strict("value != ZERO_32").unwrap();
         match parsed {
             ParsedCondition::Comparison { field, op, value } => {
                 assert_eq!(field.segments, vec!["value"]);
@@ -371,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_zero_64_constant() {
-        let parsed = parse_condition_expression("data != ZERO_64").unwrap();
+        let parsed = parse_condition_expression_strict("data != ZERO_64").unwrap();
         match parsed {
             ParsedCondition::Comparison { value, .. } => {
                 let arr = value.as_array().unwrap();
@@ -417,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_map_condition_null_literal_parses_as_json_null() {
-        let parsed = parse_condition_expression("status == null").unwrap();
+        let parsed = parse_condition_expression_strict("status == null").unwrap();
 
         match parsed {
             ParsedCondition::Comparison { value, .. } => {
