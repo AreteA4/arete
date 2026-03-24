@@ -55,7 +55,12 @@ impl SnapshotRecorder {
     }
 
     pub fn save(&self, path: &str) -> Result<()> {
-        let duration_ms = self.start_time.elapsed().as_millis() as u64;
+        // Compute duration from frame timestamps (first to last), falling back to elapsed
+        let duration_ms = if self.frames.len() >= 2 {
+            self.frames.last().unwrap().ts - self.frames.first().unwrap().ts
+        } else {
+            self.start_time.elapsed().as_millis() as u64
+        };
         let header = SnapshotHeader {
             version: 1,
             view: self.view.clone(),

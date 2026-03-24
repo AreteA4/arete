@@ -132,7 +132,9 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws_handle).await;
 
-    // Restore original panic hook (ours is only needed while TUI is active)
+    // Restore original panic hook (ours is only needed while TUI is active).
+    // Note: if run_loop panics, this block is unreachable and the TUI hook stays
+    // installed. This is acceptable since the process terminates on panic anyway.
     let _ = std::panic::take_hook(); // drop our TUI hook
     if let Ok(mut guard) = original_hook.lock() {
         if let Some(hook) = guard.take() {

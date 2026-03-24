@@ -150,6 +150,7 @@ impl EntityStore {
     }
 
     /// Get the full history for an entity as a JSON array.
+    /// Entries are ordered newest-first. The `index` field matches `at(key, index)`.
     pub fn history(&self, key: &str) -> Option<Value> {
         let record = self.entities.get(key)?;
         let entries: Vec<Value> = record

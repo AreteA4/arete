@@ -354,8 +354,13 @@ fn process_frame(
     // for entity state — just suppress their output)
     let ops_allowed = match &state.allowed_ops {
         Some(allowed) => {
-            let effective_op = if op == Operation::Snapshot { "snapshot" } else { &op_str.to_lowercase() };
-            allowed.contains(effective_op)
+            // Normalize create → upsert since they're semantically identical
+            let effective_op = match op {
+                Operation::Snapshot => "snapshot".to_string(),
+                Operation::Create => "upsert".to_string(),
+                _ => op_str.to_lowercase(),
+            };
+            allowed.contains(effective_op.as_str())
         }
         None => true,
     };
