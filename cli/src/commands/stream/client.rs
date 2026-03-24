@@ -224,18 +224,26 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
 pub async fn replay(player: SnapshotPlayer, view: &str, args: &StreamArgs) -> Result<()> {
     let mut state = build_state(args, view, &player.header.url)?;
 
+    let mut snapshot_complete = false;
+    let mut received_snapshot = args.no_snapshot;
+
     for snapshot_frame in &player.frames {
+        let was_snapshot = snapshot_frame.frame.is_snapshot();
+        if was_snapshot { received_snapshot = true; }
+        maybe_emit_snapshot_complete(&state, view, &mut snapshot_complete, received_snapshot, was_snapshot)?;
         if process_frame(snapshot_frame.frame.clone(), view, &mut state)? {
             break;
         }
     }
 
     if let OutputMode::NoDna = state.output_mode {
-        output::emit_no_dna_event(
-            "snapshot_complete", view,
-            &serde_json::json!({"entity_count": state.entity_count}),
-            state.update_count, state.entity_count,
-        )?;
+        if !snapshot_complete {
+            output::emit_no_dna_event(
+                "snapshot_complete", view,
+                &serde_json::json!({"entity_count": state.entity_count}),
+                state.update_count, state.entity_count,
+            )?;
+        }
         output::emit_no_dna_event(
             "disconnected", view,
             &serde_json::json!(null),
