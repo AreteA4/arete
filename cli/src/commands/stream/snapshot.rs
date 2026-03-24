@@ -119,12 +119,10 @@ impl SnapshotPlayer {
             );
         }
 
-        let frames = if file.frames.is_empty() {
+        if file.frames.is_empty() {
             eprintln!("Warning: snapshot file {} has no 'frames' key — replaying 0 frames.", path);
-            file.frames
-        } else {
-            file.frames
-        };
+        }
+        let frames = file.frames;
 
         eprintln!(
             "Loaded snapshot: {} frames, {:.1}s, view={}, captured={}",
