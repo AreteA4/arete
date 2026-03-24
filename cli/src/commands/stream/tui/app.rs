@@ -409,8 +409,10 @@ impl App {
         self.status_time = std::time::Instant::now();
     }
 
-    /// Returns cached filtered keys. Call `ensure_filtered_cache()` before this.
+    /// Returns cached filtered keys.
+    /// Panics in debug builds if `ensure_filtered_cache()` was not called first.
     pub fn filtered_keys(&self) -> &[String] {
+        debug_assert!(self.filtered_cache.is_some(), "filtered_keys() called without ensure_filtered_cache()");
         self.filtered_cache.as_deref().unwrap_or(&[])
     }
 
