@@ -95,9 +95,21 @@ impl EntityStore {
         &record.current
     }
 
-    /// Remove an entity.
+    /// Mark an entity as deleted, retaining its history for post-stream analysis.
     pub fn delete(&mut self, key: &str) {
-        self.entities.remove(key);
+        if let Some(record) = self.entities.get_mut(key) {
+            let deleted_state = serde_json::json!({"_deleted": true});
+            record.history.push_back(HistoryEntry {
+                seq: None,
+                op: "delete".to_string(),
+                state: deleted_state.clone(),
+                patch: None,
+            });
+            record.current = deleted_state;
+            if record.history.len() > self.max_history {
+                record.history.pop_front();
+            }
+        }
     }
 
     /// Get entity state at a specific history index (0 = latest).
@@ -271,7 +283,11 @@ mod tests {
         let mut store = EntityStore::new();
         store.upsert("k1", json!({"a": 1}), "upsert", None);
         store.delete("k1");
-        assert!(store.get("k1").is_none());
+        // Entity is retained with tombstone for history access
+        let record = store.get("k1").expect("deleted entity should be retained");
+        assert_eq!(record.current, json!({"_deleted": true}));
+        assert_eq!(record.history.len(), 2); // upsert + delete
+        assert_eq!(record.history.back().unwrap().op, "delete");
     }
 
     #[test]

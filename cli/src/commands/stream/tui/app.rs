@@ -177,11 +177,8 @@ impl App {
 
     pub fn handle_action(&mut self, action: TuiAction) {
         self.ensure_filtered_cache();
-        // Reset pending_g for any action that isn't GotoTop (gg handled in mod.rs)
-        match &action {
-            TuiAction::GotoTop => {}
-            _ => { self.pending_g = false; }
-        }
+        // Reset pending_g after every action (including GotoTop)
+        self.pending_g = false;
 
         match action {
             TuiAction::Quit => {}

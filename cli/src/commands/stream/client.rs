@@ -393,11 +393,12 @@ fn process_frame(
                 if let Some(store) = &mut state.store {
                     store.upsert(&entity.key, entity.data.clone(), "snapshot", None);
                 }
-                state.entity_count = state.entities.len() as u64;
                 if ops_allowed && emit_entity(state, view, &entity.key, "snapshot", &entity.data)? {
+                    state.entity_count = state.entities.len() as u64;
                     return Ok(true);
                 }
             }
+            state.entity_count = state.entities.len() as u64;
         }
         Operation::Upsert | Operation::Create => {
             state.entities.insert(frame.key.clone(), frame.data.clone());

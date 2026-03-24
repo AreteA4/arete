@@ -38,7 +38,19 @@ impl SnapshotRecorder {
         }
     }
 
+    const MAX_FRAMES: usize = 100_000;
+
     pub fn record(&mut self, frame: &Frame) {
+        if self.frames.len() == Self::MAX_FRAMES {
+            eprintln!(
+                "Warning: snapshot recorder reached {} frames limit. Further frames will be dropped. \
+                 Use --duration to limit recording time.",
+                Self::MAX_FRAMES
+            );
+        }
+        if self.frames.len() >= Self::MAX_FRAMES {
+            return;
+        }
         let ts = self.start_time.elapsed().as_millis() as u64;
         self.frames.push(SnapshotFrame {
             ts,
