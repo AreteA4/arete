@@ -1014,7 +1014,7 @@ fn validate_aggregate_conditions(
             .flatten()
             .filter(|m| m.target_field_name == **target_field && m.is_instruction)
             .collect();
-        instruction_mappings.sort_by(|a, b| stable_map_attribute_cmp(*a, *b));
+        instruction_mappings.sort_by(|a, b| stable_map_attribute_cmp(a, b));
 
         let mut reported: HashSet<(String, String)> = HashSet::new();
         for mapping in &instruction_mappings {
@@ -1044,7 +1044,7 @@ fn validate_aggregate_conditions(
             .flatten()
             .filter(|m| m.target_field_name == **target_field && m.is_account_source)
             .collect();
-        account_mappings.sort_by(|a, b| stable_map_attribute_cmp(*a, *b));
+        account_mappings.sort_by(|a, b| stable_map_attribute_cmp(a, b));
 
         let mut reported_account: HashSet<(String, String)> = HashSet::new();
         for mapping in &account_mappings {
