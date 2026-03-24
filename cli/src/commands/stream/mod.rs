@@ -177,15 +177,20 @@ pub fn build_subscription(view: &str, args: &StreamArgs) -> Subscription {
     sub
 }
 
+fn validate_ws_url(url: &str) -> Result<()> {
+    if !url.starts_with("ws://") && !url.starts_with("wss://") {
+        bail!(
+            "Invalid URL scheme. Expected ws:// or wss://, got: {}",
+            url
+        );
+    }
+    Ok(())
+}
+
 fn resolve_url(args: &StreamArgs, config_path: &str, view: &str) -> Result<String> {
     // 1. Explicit --url
     if let Some(url) = &args.url {
-        if !url.starts_with("ws://") && !url.starts_with("wss://") {
-            bail!(
-                "Invalid URL scheme. Expected ws:// or wss://, got: {}",
-                url
-            );
-        }
+        validate_ws_url(url)?;
         return Ok(url.clone());
     }
 
@@ -196,6 +201,7 @@ fn resolve_url(args: &StreamArgs, config_path: &str, view: &str) -> Result<Strin
         if let Some(config) = &config {
             if let Some(stack) = config.find_stack(stack_name) {
                 if let Some(url) = &stack.url {
+                    validate_ws_url(url)?;
                     return Ok(url.clone());
                 }
                 bail!(
@@ -219,6 +225,7 @@ fn resolve_url(args: &StreamArgs, config_path: &str, view: &str) -> Result<Strin
     if let Some(config) = &config {
         if let Some(stack) = config.find_stack(entity_name) {
             if let Some(url) = &stack.url {
+                validate_ws_url(url)?;
                 return Ok(url.clone());
             }
         }
@@ -227,8 +234,10 @@ fn resolve_url(args: &StreamArgs, config_path: &str, view: &str) -> Result<Strin
         if stacks_with_urls.len() == 1 {
             let stack = stacks_with_urls[0];
             let name = stack.name.as_deref().unwrap_or(&stack.stack);
+            let url = stack.url.clone().unwrap();
+            validate_ws_url(&url)?;
             eprintln!("Using stack '{}' (only stack with a URL)", name);
-            return Ok(stack.url.clone().unwrap());
+            return Ok(url);
         }
     }
 
