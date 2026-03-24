@@ -455,6 +455,8 @@ fn resolve_mapping_source_once<'a>(
     let is_account_source = mappings.iter().any(|mapping| mapping.is_account_source);
 
     if is_instruction && is_account_source {
+        // FIXME: This should be a proper syn::Error with source span for IDE visibility,
+        // but changing it to an error breaks the validation flow. For now, we log to stderr.
         eprintln!(
             "[hyperstack] warning: source type '{}' matches both instruction and account \
              classification — skipping IDL field validation. Ensure the source type path \
@@ -573,7 +575,7 @@ fn validate_source_handler_keys(
 
         if let Some(join_field) = join_key.as_ref() {
             if source_field_can_resolve_key(join_field, primary_key_leafs, lookup_index_leafs) {
-                // Warn about a present but non-resolving lookup_by even when join_on rescues the group.
+                // Error: lookup_by is present but doesn't resolve; join_on rescues but lookup_by should be removed.
                 if let Some(bad_lb) =
                     mappings
                         .iter()
@@ -723,7 +725,7 @@ fn validate_event_handler_keys(
 
         if let Some(join_field) = join_key.as_ref() {
             if source_field_can_resolve_key(join_field, primary_key_leafs, lookup_index_leafs) {
-                // Warn about a present but non-resolving lookup_by even when join_on rescues the group.
+                // Error: lookup_by is present but doesn't resolve; join_on rescues but lookup_by should be removed.
                 if let Some(bad_lb) = mappings
                     .iter()
                     .filter_map(|(_, attr, _)| attr.lookup_by.as_ref())
@@ -1142,11 +1144,11 @@ fn validate_aggregate_conditions(
         // Fallback: no IDL source found (e.g. event-backed aggregate).
         // Condition field validation for event sources is handled via
         // validate_event_references; skip here to avoid false positives.
-        // TODO(event-aggregate-conditions): validate condition leaves against the
-        // event's capture_fields set. The `events_by_instruction` map is not
-        // available here; validate_event_references would need to be extended to
-        // receive aggregate_conditions and cross-check leaves against the resolved
-        // IDL instruction args.
+        // TODO(event-aggregate-conditions): validate condition field paths for event-backed
+        // aggregate targets. These conditions reference source instruction/account fields,
+        // not entity fields. Validation would require threading `events_by_instruction` into
+        // this function and cross-checking leaves against resolved IDL instruction args.
+        // See: https://github.com/hypertekorg/hyperstack/issues/XXX
         if instruction_mappings.is_empty() && account_mappings.is_empty() {
             continue;
         }
