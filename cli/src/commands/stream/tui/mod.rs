@@ -3,7 +3,7 @@ mod ui;
 
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -82,14 +82,14 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
         original_hook(panic_info);
     }));
 
     enable_raw_mode()?;
     let terminal_setup = || -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(stdout, EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(stdout);
         Ok(Terminal::new(backend)?)
     };
@@ -112,7 +112,6 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let _ = execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture,
     );
     let _ = terminal.show_cursor();
 
