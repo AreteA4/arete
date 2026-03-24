@@ -1092,11 +1092,6 @@ fn validate_aggregate_conditions(
         // receive aggregate_conditions and cross-check leaves against the resolved
         // IDL instruction args.
         if instruction_mappings.is_empty() && account_mappings.is_empty() {
-            eprintln!(
-                "[hyperstack] warning: aggregate condition on '{}' has no resolvable IDL source; \
-                 condition field validation is skipped",
-                target_field
-            );
             continue;
         }
     }
