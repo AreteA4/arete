@@ -83,7 +83,7 @@ pub struct StreamArgs {
     pub duration: Option<u64>,
 
     /// Replay a previously saved snapshot file instead of connecting live
-    #[arg(long, conflicts_with = "url", conflicts_with = "tui")]
+    #[arg(long, conflicts_with = "url", conflicts_with = "tui", conflicts_with = "duration")]
     pub load: Option<String>,
 
     /// Show update history for the specified --key entity

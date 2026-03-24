@@ -43,7 +43,6 @@ fn build_state(args: &StreamArgs, view: &str, url: &str) -> Result<StreamState> 
     let output_mode = if args.raw {
         OutputMode::Raw
     } else if args.no_dna {
-        output::emit_no_dna_event("connected", view, &serde_json::json!({"url": url}), 0, 0)?;
         OutputMode::NoDna
     } else {
         OutputMode::Merged
@@ -85,6 +84,11 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         .with_context(|| format!("Failed to connect to {}", url))?;
 
     eprintln!("Connected.");
+
+    // Emit NoDna connected event only after successful WebSocket handshake
+    if let OutputMode::NoDna = state.output_mode {
+        output::emit_no_dna_event("connected", view, &serde_json::json!({"url": url}), 0, 0)?;
+    }
 
     let (mut ws_tx, mut ws_rx) = ws.split();
 
@@ -231,6 +235,15 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
 /// Replay frames from a saved snapshot file through the same processing pipeline.
 pub async fn replay(player: SnapshotPlayer, view: &str, args: &StreamArgs) -> Result<()> {
     let mut state = build_state(args, view, &player.header.url)?;
+
+    // Emit NoDna connected event with replay source indicator
+    if let OutputMode::NoDna = state.output_mode {
+        output::emit_no_dna_event(
+            "connected", view,
+            &serde_json::json!({"url": player.header.url, "source": "replay"}),
+            0, 0,
+        )?;
+    }
 
     let mut snapshot_complete = false;
     let mut received_snapshot = args.no_snapshot;
