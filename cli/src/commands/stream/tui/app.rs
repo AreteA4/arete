@@ -1,7 +1,7 @@
 use hyperstack_sdk::{parse_snapshot_entities, Frame, Operation};
 use ratatui::widgets::ListState;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use crate::commands::stream::snapshot::SnapshotRecorder;
 use crate::commands::stream::store::EntityStore;
@@ -65,7 +65,7 @@ pub struct App {
     pub pending_g: bool,
     pub list_state: ListState,
     store: EntityStore,
-    raw_frames: Vec<(std::time::Instant, Frame)>,
+    raw_frames: VecDeque<(std::time::Instant, Frame)>,
     stream_start: std::time::Instant,
 }
 
@@ -93,7 +93,7 @@ impl App {
             pending_g: false,
             list_state: ListState::default().with_selected(Some(0)),
             store: EntityStore::new(),
-            raw_frames: Vec::new(),
+            raw_frames: VecDeque::new(),
             stream_start: std::time::Instant::now(),
         }
     }
@@ -149,9 +149,9 @@ impl App {
             }
         }
 
-        self.raw_frames.push((std::time::Instant::now(), raw_frame));
-        if self.raw_frames.len() > 1000 {
-            self.raw_frames.drain(0..500);
+        self.raw_frames.push_back((std::time::Instant::now(), raw_frame));
+        while self.raw_frames.len() > 1000 {
+            self.raw_frames.pop_front();
         }
     }
 
