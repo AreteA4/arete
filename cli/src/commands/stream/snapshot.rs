@@ -94,42 +94,46 @@ pub struct SnapshotPlayer {
     pub frames: Vec<SnapshotFrame>,
 }
 
+/// Combined struct for single-pass deserialization (avoids cloning the entire JSON)
+#[derive(Deserialize)]
+struct SnapshotFile {
+    #[serde(flatten)]
+    header: SnapshotHeader,
+    #[serde(default)]
+    frames: Vec<SnapshotFrame>,
+}
+
 impl SnapshotPlayer {
     pub fn load(path: &str) -> Result<Self> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("Failed to read snapshot file: {}", path))?;
 
-        let value: serde_json::Value = serde_json::from_str(&contents)
-            .with_context(|| format!("Failed to parse snapshot JSON: {}", path))?;
+        let file: SnapshotFile = serde_json::from_str(&contents)
+            .with_context(|| format!("Failed to parse snapshot file: {}", path))?;
 
-        let header: SnapshotHeader = serde_json::from_value(value.clone())
-            .with_context(|| format!("Failed to deserialize snapshot header: {}", path))?;
-
-        if header.version != 1 {
+        if file.header.version != 1 {
             anyhow::bail!(
                 "Unsupported snapshot version {} in {}. This CLI supports version 1.",
-                header.version,
+                file.header.version,
                 path
             );
         }
 
-        let frames: Vec<SnapshotFrame> = match value.get("frames") {
-            Some(v) => serde_json::from_value(v.clone())
-                .with_context(|| format!("Failed to deserialize frames in {}", path))?,
-            None => {
-                eprintln!("Warning: snapshot file {} has no 'frames' key — replaying 0 frames.", path);
-                Vec::new()
-            }
+        let frames = if file.frames.is_empty() {
+            eprintln!("Warning: snapshot file {} has no 'frames' key — replaying 0 frames.", path);
+            file.frames
+        } else {
+            file.frames
         };
 
         eprintln!(
             "Loaded snapshot: {} frames, {:.1}s, view={}, captured={}",
             frames.len(),
-            header.duration_ms as f64 / 1000.0,
-            header.view,
-            header.captured_at,
+            file.header.duration_ms as f64 / 1000.0,
+            file.header.view,
+            file.header.captured_at,
         );
 
-        Ok(Self { header, frames })
+        Ok(Self { header: file.header, frames })
     }
 }
