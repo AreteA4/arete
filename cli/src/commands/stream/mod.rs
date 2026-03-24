@@ -126,6 +126,18 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
     if args.tui {
+        if args.duration.is_some() {
+            bail!("--duration has no effect in TUI mode; stop with 'q' or Ctrl+C.");
+        }
+        if args.count {
+            bail!("--count is incompatible with TUI mode.");
+        }
+        if args.save.is_some() {
+            bail!("--save is not yet supported in TUI mode; use 's' inside the TUI to save.");
+        }
+        if args.history || args.at.is_some() || args.diff {
+            bail!("--history/--at/--diff are not supported in TUI mode; use h/l keys to browse history.");
+        }
         #[cfg(feature = "tui")]
         {
             return rt.block_on(tui::run_tui(url, view, &args));
