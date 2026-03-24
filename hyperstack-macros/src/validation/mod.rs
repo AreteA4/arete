@@ -1016,6 +1016,9 @@ fn validate_mapping_references(
                             instruction_name,
                         } => {
                             for leaf in &field_leaves {
+                                if leaf.starts_with("__") {
+                                    continue;
+                                }
                                 if let Some(temp_field) =
                                     try_field_spec_from_leaf(leaf, mapping.attr_span)
                                 {
@@ -1034,6 +1037,9 @@ fn validate_mapping_references(
                         }
                         ResolvedMappingSource::Account { idl, account_name } => {
                             for leaf in &field_leaves {
+                                if leaf.starts_with("__") {
+                                    continue;
+                                }
                                 if let Err(error) = validate_account_field(idl, account_name, leaf)
                                 {
                                     let key = format!("{leaf}@{account_name}");
@@ -1099,6 +1105,9 @@ fn validate_aggregate_conditions(
             }) = resolve_mapping_source_once(&source_type, std::slice::from_ref(mapping), idls)
             {
                 for leaf in leaves {
+                    if leaf.starts_with("__") {
+                        continue;
+                    }
                     if let Some(temp_field) = try_field_spec_from_leaf(leaf, mapping.attr_span) {
                         if let Err(error) =
                             validate_instruction_field_spec(idl, &instruction_name, &temp_field)
@@ -1127,6 +1136,9 @@ fn validate_aggregate_conditions(
                 resolve_mapping_source_once(&source_type, std::slice::from_ref(mapping), idls)
             {
                 for leaf in leaves {
+                    if leaf.starts_with("__") {
+                        continue;
+                    }
                     if let Err(error) = validate_account_field(idl, &account_name, leaf) {
                         if reported_account.insert((leaf.clone(), account_name.clone())) {
                             errors.push(idl_error_to_syn(mapping.attr_span, error));
@@ -1145,15 +1157,16 @@ fn validate_aggregate_conditions(
         // this function and cross-checking leaves against resolved IDL instruction args.
         // See: https://github.com/hypertekorg/hyperstack/issues/XXX
         if instruction_mappings.is_empty() && account_mappings.is_empty() {
-            // Defensive: if sources_by_type contains mappings for this entity but none match
-            // bare_target, that may indicate a key-format mismatch that deserves investigation.
+            // Defensive: if any non-event mapping targets this bare field name but
+            // wasn't captured above, that indicates a key-format mismatch.
             debug_assert!(
-                sources_by_type
+                !sources_by_type
                     .values()
                     .flatten()
-                    .all(|m| m.is_event_source),
-                "aggregate condition has no matching IDL source mapping; \
-                 this may indicate a target_field_name mismatch in non-event sources"
+                    .any(|m| m.target_field_name == bare_target && !m.is_event_source),
+                "aggregate condition '{}' has a matching non-event source mapping \
+                 that was not captured — possible target_field_name mismatch",
+                target_field,
             );
             continue;
         }
