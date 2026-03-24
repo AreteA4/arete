@@ -84,12 +84,18 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         }
     });
 
-    // Setup terminal with panic hook to restore on crash
-    let original_hook = std::panic::take_hook();
+    // Setup terminal with panic hook to restore on crash.
+    // We store the original hook in a Mutex so we can reclaim it on normal exit.
+    let original_hook = Arc::new(std::sync::Mutex::new(Some(std::panic::take_hook())));
+    let hook_clone = Arc::clone(&original_hook);
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
-        original_hook(panic_info);
+        if let Ok(guard) = hook_clone.lock() {
+            if let Some(ref orig) = *guard {
+                orig(panic_info);
+            }
+        }
     }));
 
     enable_raw_mode()?;
@@ -103,6 +109,7 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         Ok(t) => t,
         Err(e) => {
             let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
             return Err(e);
         }
     };
@@ -126,7 +133,12 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws_handle).await;
 
     // Restore original panic hook (ours is only needed while TUI is active)
-    let _ = std::panic::take_hook();
+    let _ = std::panic::take_hook(); // drop our TUI hook
+    if let Ok(mut guard) = original_hook.lock() {
+        if let Some(hook) = guard.take() {
+            std::panic::set_hook(hook);
+        }
+    }
 
     result
 }
