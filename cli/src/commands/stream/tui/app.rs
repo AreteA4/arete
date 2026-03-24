@@ -68,6 +68,7 @@ pub struct App {
     raw_frames: VecDeque<(std::time::Instant, Frame)>,
     stream_start: std::time::Instant,
     pub dropped_frames: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    filtered_cache: Option<Vec<String>>,
 }
 
 impl App {
@@ -97,10 +98,17 @@ impl App {
             raw_frames: VecDeque::new(),
             stream_start: std::time::Instant::now(),
             dropped_frames,
+            filtered_cache: None,
         }
     }
 
+    fn invalidate_filter_cache(&mut self) {
+        self.filtered_cache = None;
+    }
+
     pub fn apply_frame(&mut self, frame: Frame) {
+        self.invalidate_filter_cache();
+
         // Always collect raw frames so toggling on shows recent data
         let raw_frame = frame.clone();
         let op = frame.operation();
@@ -168,6 +176,7 @@ impl App {
     }
 
     pub fn handle_action(&mut self, action: TuiAction) {
+        self.ensure_filtered_cache();
         // Reset pending_g for any action that isn't GotoTop (gg handled in mod.rs)
         match &action {
             TuiAction::GotoTop => {}
@@ -269,10 +278,12 @@ impl App {
             }
             TuiAction::FilterChar(c) => {
                 self.filter_text.push(c);
+                self.invalidate_filter_cache();
                 self.clamp_selection();
             }
             TuiAction::FilterBackspace => {
                 self.filter_text.pop();
+                self.invalidate_filter_cache();
                 self.clamp_selection();
             }
             TuiAction::GotoTop => {
@@ -325,6 +336,7 @@ impl App {
     }
 
     fn clamp_selection(&mut self) {
+        self.ensure_filtered_cache();
         let count = self.filtered_keys().len();
         if count == 0 {
             self.selected_index = 0;
@@ -397,27 +409,35 @@ impl App {
         self.status_time = std::time::Instant::now();
     }
 
-    pub fn filtered_keys(&self) -> Vec<&str> {
-        if self.filter_text.is_empty() {
-            self.entity_keys.iter().map(|s| s.as_str()).collect()
+    /// Returns cached filtered keys. Call `ensure_filtered_cache()` before this.
+    pub fn filtered_keys(&self) -> &[String] {
+        self.filtered_cache.as_deref().unwrap_or(&[])
+    }
+
+    /// Rebuild the filter cache if invalidated.
+    pub fn ensure_filtered_cache(&mut self) {
+        if self.filtered_cache.is_some() {
+            return;
+        }
+        let result = if self.filter_text.is_empty() {
+            self.entity_keys.clone()
         } else {
             let lower = self.filter_text.to_lowercase();
             self.entity_keys
                 .iter()
                 .filter(|k| {
-                    // Match on key itself
                     if k.to_lowercase().contains(&lower) {
                         return true;
                     }
-                    // Match on any value inside the entity data
                     if let Some(record) = self.store.get(k) {
                         return value_contains_str(&record.current, &lower);
                     }
                     false
                 })
-                .map(|s| s.as_str())
+                .cloned()
                 .collect()
-        }
+        };
+        self.filtered_cache = Some(result);
     }
 }
 

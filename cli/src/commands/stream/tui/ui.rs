@@ -9,6 +9,7 @@ use ratatui::{
 use super::app::{App, ViewMode};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    app.ensure_filtered_cache();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
