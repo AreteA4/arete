@@ -106,12 +106,19 @@ impl SnapshotRecorder {
         let tmp_path = parent.join(format!("{}.tmp", file_name.to_string_lossy())).to_string_lossy().into_owned();
         fs::write(&tmp_path, json)
             .with_context(|| format!("Failed to write snapshot to {}", tmp_path))?;
-        // On Windows, fs::rename fails if destination exists; remove it first.
+        // Attempt remove; if it fails, let rename itself fail with a clear error
+        // (don't silently swallow remove errors that may mask the true state).
+        #[cfg(windows)]
         if dest.exists() {
-            let _ = fs::remove_file(path);
+            fs::remove_file(path)
+                .with_context(|| format!("Failed to remove existing snapshot at {}", path))?;
         }
         fs::rename(&tmp_path, path)
-            .with_context(|| format!("Failed to rename snapshot to {}", path))?;
+            .map_err(|e| {
+                // Best-effort cleanup of the tmp file before propagating
+                let _ = fs::remove_file(&tmp_path);
+                anyhow::anyhow!("Failed to rename snapshot to {}: {}", path, e)
+            })?;
 
         eprintln!(
             "Saved {} frames ({:.1}s) to {}",
