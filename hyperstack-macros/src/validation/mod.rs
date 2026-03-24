@@ -161,6 +161,7 @@ pub fn validate_key_resolution_paths(
         input.entity_name,
         &primary_key_leafs,
         &lookup_index_leafs,
+        input.lookup_indexes,
         input.events_by_instruction,
         errors,
     );
@@ -336,6 +337,7 @@ fn stable_map_attribute_cmp(a: &parse::MapAttribute, b: &parse::MapAttribute) ->
         .then_with(|| a.is_event_source.cmp(&b.is_event_source))
         .then_with(|| a.is_whole_source.cmp(&b.is_whole_source))
         .then_with(|| a.emit.cmp(&b.emit))
+        .then_with(|| format!("{:?}", a.attr_span).cmp(&format!("{:?}", b.attr_span)))
 }
 
 fn stable_event_mapping_cmp(
@@ -622,6 +624,7 @@ fn validate_event_handler_keys(
     entity_name: &str,
     primary_key_leafs: &HashSet<String>,
     lookup_index_leafs: &HashSet<String>,
+    lookup_indexes: &[(String, Option<String>)],
     events_by_instruction: &HashMap<String, Vec<(String, parse::EventAttribute, syn::Type)>>,
     errors: &mut ErrorCollector,
 ) {
@@ -651,11 +654,14 @@ fn validate_event_handler_keys(
 
         let captured_field_resolves = mappings.iter().any(|(_, attr, _)| {
             attr.capture_fields.iter().any(|field_spec| {
-                source_field_can_resolve_key(
-                    &field_spec.ident.to_string(),
-                    primary_key_leafs,
-                    lookup_index_leafs,
-                )
+                let name = field_spec.ident.to_string();
+                source_field_can_resolve_key(&name, primary_key_leafs, lookup_index_leafs)
+                    || (name == "__account_address"
+                        && lookup_indexes.iter().any(|(idx_field, _)| {
+                            attr.capture_fields
+                                .iter()
+                                .any(|cf| cf.ident.to_string() == *idx_field)
+                        }))
             }) || attr.capture_fields_legacy.iter().any(|field_name| {
                 source_field_can_resolve_key(field_name, primary_key_leafs, lookup_index_leafs)
             })
@@ -1076,8 +1082,11 @@ fn validate_aggregate_conditions(
         // Fallback: no IDL source found (e.g. event-backed aggregate).
         // Condition field validation for event sources is handled via
         // validate_event_references; skip here to avoid false positives.
-        // TODO: validate condition leaves against event capture_fields for
-        // event-backed aggregates. For now, skip to avoid false positives.
+        // TODO(event-aggregate-conditions): validate condition leaves against the
+        // event's capture_fields set. The `events_by_instruction` map is not
+        // available here; validate_event_references would need to be extended to
+        // receive aggregate_conditions and cross-check leaves against the resolved
+        // IDL instruction args.
         if instruction_mappings.is_empty() && account_mappings.is_empty() {
             continue;
         }
@@ -1180,7 +1189,6 @@ fn validate_event_references(
         for (_target_field, event_attr, _field_type) in &event_mappings {
             let (event_idl, event_instruction_name) = if event_attr.from_instruction.is_some()
                 || event_attr.inferred_instruction.is_some()
-                || !event_attr.instruction.is_empty()
             {
                 match resolve_instruction_lookup(event_attr, instruction_key, idls) {
                     Ok(value) => value,
