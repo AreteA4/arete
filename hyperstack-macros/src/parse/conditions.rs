@@ -228,12 +228,10 @@ pub fn parse_resolver_condition_expression(expr: &str) -> Result<ResolverConditi
                 ));
             }
 
-            // NOTE: Only check the raw (un-stripped) value so that quoted strings
-            // like `">=gold"` are never misidentified as operator sequences.
-            if operators
-                .iter()
-                .any(|other_op| raw_value.starts_with(other_op))
-            {
+            // Only reject two-character operator prefixes as double-operator sequences.
+            // Single-character < or > are valid as unquoted string prefixes (e.g., <pending>).
+            let two_char_ops = [">=", "<=", "==", "!="];
+            if two_char_ops.iter().any(|op| raw_value.starts_with(op)) {
                 return Err(format!(
                     "Invalid condition expression: '{}'. Unexpected operator sequence near '{}'.",
                     expr, raw_value
