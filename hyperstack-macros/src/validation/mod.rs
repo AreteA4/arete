@@ -652,17 +652,20 @@ fn validate_event_handler_keys(
             continue;
         };
 
-        let captured_field_resolves = mappings.iter().any(|(_, attr, _)| {
+        let captured_field_resolves = mappings.iter().any(|(target_field, attr, _)| {
             attr.capture_fields.iter().any(|field_spec| {
                 let name = field_spec.ident.to_string();
                 source_field_can_resolve_key(&name, primary_key_leafs, lookup_index_leafs)
                     || (name == "__account_address"
-                        && attr.field_transforms.iter().any(|(source, target)| {
-                            source == "__account_address"
-                                && lookup_indexes
-                                    .iter()
-                                    .any(|(idx_field, _)| idx_field == &target.to_string())
-                        }))
+                        && (lookup_indexes
+                            .iter()
+                            .any(|(idx_field, _)| idx_field == target_field)
+                            || attr.field_transforms.iter().any(|(source, target)| {
+                                source == "__account_address"
+                                    && lookup_indexes
+                                        .iter()
+                                        .any(|(idx_field, _)| idx_field == &target.to_string())
+                            })))
             }) || attr.capture_fields_legacy.iter().any(|field_name| {
                 source_field_can_resolve_key(field_name, primary_key_leafs, lookup_index_leafs)
             })
@@ -1089,6 +1092,11 @@ fn validate_aggregate_conditions(
         // receive aggregate_conditions and cross-check leaves against the resolved
         // IDL instruction args.
         if instruction_mappings.is_empty() && account_mappings.is_empty() {
+            eprintln!(
+                "[hyperstack] warning: aggregate condition on '{}' has no resolvable IDL source; \
+                 condition field validation is skipped",
+                target_field
+            );
             continue;
         }
     }

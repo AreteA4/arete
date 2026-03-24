@@ -96,11 +96,18 @@ fn expand_hyperstack(
     attr: TokenStream,
     item: TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    if let Ok(module) = syn::parse::<ItemMod>(item.clone()) {
-        return process_module(module, attr);
-    }
+    let mod_err = match syn::parse::<ItemMod>(item.clone()) {
+        Ok(module) => return process_module(module, attr),
+        Err(e) => e,
+    };
 
-    let input = syn::parse::<ItemStruct>(item)?;
+    let input = syn::parse::<ItemStruct>(item).map_err(|struct_err| {
+        // If neither parse succeeds, prefer the module error since most usages
+        // of #[hyperstack] are on modules.
+        let mut combined = mod_err;
+        combined.combine(struct_err);
+        combined
+    })?;
 
     let config = parse::parse_stream_spec_attribute(attr)?;
     if !config.proto_files.is_empty() || !config.idl_files.is_empty() || config.skip_decoders {
