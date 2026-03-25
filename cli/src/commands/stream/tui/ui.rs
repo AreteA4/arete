@@ -270,8 +270,10 @@ fn colorize_json_line(line: &str) -> Line<'_> {
         return Line::from(Span::styled(line, Style::default().fg(Color::Green)));
     }
 
-    // Braces
-    if trimmed == "{" || trimmed == "}" || trimmed == "{}" || trimmed == "}," {
+    // Braces and brackets
+    if trimmed == "{" || trimmed == "}" || trimmed == "{}" || trimmed == "},"
+        || trimmed == "[" || trimmed == "]" || trimmed == "[]" || trimmed == "],"
+    {
         return Line::from(Span::styled(line, Style::default().fg(Color::DarkGray)));
     }
 
@@ -288,6 +290,9 @@ fn colorize_value(rest: &str) -> Span<'_> {
         Span::styled(rest, Style::default().fg(Color::DarkGray))
     } else if trimmed.parse::<f64>().is_ok() {
         Span::styled(rest, Style::default().fg(Color::Magenta))
+    } else if trimmed.starts_with('[') || trimmed.starts_with("[]") {
+        // Inline compact array — render in default color (contains mixed types)
+        Span::styled(rest, Style::default().fg(Color::White))
     } else {
         Span::raw(rest)
     }

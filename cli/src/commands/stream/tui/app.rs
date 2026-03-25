@@ -2,11 +2,78 @@ use hyperstack_sdk::{parse_snapshot_entities, Frame, Operation};
 use ratatui::widgets::ListState;
 use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
+use std::fmt::Write as FmtWrite;
 
 use crate::commands::stream::snapshot::SnapshotRecorder;
 use crate::commands::stream::store::EntityStore;
 
 const MAX_STATUS_AGE_MS: u128 = 3000;
+
+/// Pretty-print JSON with compact inline arrays when they fit within max_width.
+pub fn compact_pretty(value: &Value, max_width: usize) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value, 0, max_width);
+    out
+}
+
+fn write_value(out: &mut String, value: &Value, indent: usize, max_width: usize) {
+    match value {
+        Value::Object(map) => {
+            if map.is_empty() {
+                out.push_str("{}");
+                return;
+            }
+            out.push_str("{\n");
+            let inner = indent + 2;
+            for (i, (k, v)) in map.iter().enumerate() {
+                write_indent(out, inner);
+                let _ = write!(out, "\"{}\": ", k);
+                write_value(out, v, inner, max_width);
+                if i + 1 < map.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            write_indent(out, indent);
+            out.push('}');
+        }
+        Value::Array(arr) => {
+            if arr.is_empty() {
+                out.push_str("[]");
+                return;
+            }
+            // Try compact form: [elem1, elem2, ...]
+            let compact = serde_json::to_string(value).unwrap_or_default();
+            if indent + compact.len() <= max_width {
+                out.push_str(&compact);
+                return;
+            }
+            // Fall back to expanded form
+            out.push_str("[\n");
+            let inner = indent + 2;
+            for (i, v) in arr.iter().enumerate() {
+                write_indent(out, inner);
+                write_value(out, v, inner, max_width);
+                if i + 1 < arr.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            write_indent(out, indent);
+            out.push(']');
+        }
+        _ => {
+            let s = serde_json::to_string(value).unwrap_or_default();
+            out.push_str(&s);
+        }
+    }
+}
+
+fn write_indent(out: &mut String, n: usize) {
+    for _ in 0..n {
+        out.push(' ');
+    }
+}
 
 pub enum TuiAction {
     Quit,
@@ -71,6 +138,7 @@ pub struct App {
     pub update_count: u64,
     pub scroll_offset: u16,
     pub visible_rows: usize,
+    pub terminal_width: u16,
     pub pending_count: Option<usize>,
     pub pending_g: bool,
     pub list_state: ListState,
@@ -103,6 +171,7 @@ impl App {
             update_count: 0,
             scroll_offset: 0,
             visible_rows: 30,
+            terminal_width: 120,
             pending_count: None,
             pending_g: false,
             list_state: ListState::default().with_selected(Some(0)),
@@ -513,19 +582,21 @@ impl App {
             return Some(serde_json::to_string_pretty(&diff).unwrap_or_default());
         }
 
+        let w = self.terminal_width as usize;
+
         // Use anchor for stable history browsing during streaming
         if let Some(anchor) = self.history_anchor {
             let entry = self.store.at_absolute(&key, anchor)?;
-            return Some(serde_json::to_string_pretty(&entry.state).unwrap_or_default());
+            return Some(compact_pretty(&entry.state, w));
         }
 
         if self.history_position > 0 {
             let entry = self.store.at(&key, self.history_position)?;
-            return Some(serde_json::to_string_pretty(&entry.state).unwrap_or_default());
+            return Some(compact_pretty(&entry.state, w));
         }
 
         let record = self.store.get(&key)?;
-        Some(serde_json::to_string_pretty(&record.current).unwrap_or_default())
+        Some(compact_pretty(&record.current, w))
     }
 
     pub fn selected_history_len(&self) -> usize {

@@ -175,6 +175,7 @@ async fn run_loop(
         let term_size = terminal.size()?;
         // 3 fixed rows (header + timeline + status) + 2 border rows = 5
         app.visible_rows = term_size.height.saturating_sub(5) as usize;
+        app.terminal_width = term_size.width;
 
         terminal.draw(|f| ui::draw(f, app))?;
 
