@@ -57,6 +57,9 @@ pub struct App {
     entity_key_set: HashSet<String>,
     pub selected_index: usize,
     pub history_position: usize,
+    /// Absolute VecDeque index when browsing history (position > 0).
+    /// Stays stable as new frames arrive. None when viewing latest.
+    history_anchor: Option<usize>,
     pub show_diff: bool,
     pub show_raw: bool,
     pub paused: bool,
@@ -88,6 +91,7 @@ impl App {
             entity_key_set: HashSet::new(),
             selected_index: 0,
             history_position: 0,
+            history_anchor: None,
             show_diff: false,
             show_raw: false,
             paused: false,
@@ -112,6 +116,29 @@ impl App {
 
     fn invalidate_filter_cache(&mut self) {
         self.filtered_cache = None;
+    }
+
+    /// Compensate history_anchor when the selected entity's history grows.
+    /// If a pop_front happened (len didn't grow despite a push), decrement anchor.
+    fn compensate_history_anchor(&mut self, updated_key: &str, len_before: usize) {
+        if let Some(anchor) = self.history_anchor {
+            if let Some(selected) = self.selected_key() {
+                if selected == updated_key {
+                    let len_after = self.store.history_len(updated_key);
+                    // pop_front happened if length didn't increase
+                    if len_after == len_before {
+                        if anchor == 0 {
+                            // The entry we were viewing was evicted
+                            self.set_status("History entry evicted");
+                            // Stay at oldest available
+                        } else {
+                            self.history_anchor = Some(anchor - 1);
+                        }
+                    }
+                    // No pop: anchor stays valid (new entry appended to back)
+                }
+            }
+        }
     }
 
     pub fn apply_frame(&mut self, frame: Frame) {
@@ -139,8 +166,10 @@ impl App {
             Operation::Upsert | Operation::Create => {
                 let key = frame.key.clone();
                 let seq = frame.seq.clone();
+                let len_before = self.store.history_len(&key);
                 self.store
                     .upsert(&key, frame.data, &frame.op, seq);
+                self.compensate_history_anchor(&key, len_before);
                 if self.entity_key_set.insert(key.clone()) {
                     self.entity_keys.push(key);
                 }
@@ -149,8 +178,10 @@ impl App {
             Operation::Patch => {
                 let key = frame.key.clone();
                 let seq = frame.seq.clone();
+                let len_before = self.store.history_len(&key);
                 self.store
                     .patch(&key, &frame.data, &frame.append, seq);
+                self.compensate_history_anchor(&key, len_before);
                 if self.entity_key_set.insert(key.clone()) {
                     self.entity_keys.push(key);
                 }
@@ -172,6 +203,7 @@ impl App {
                     self.selected_index = self.entity_keys.len() - 1;
                 }
                 self.history_position = 0;
+                self.history_anchor = None;
                 self.scroll_offset = 0;
             }
             Operation::Subscribed => {
@@ -231,6 +263,7 @@ impl App {
                 if count > 0 {
                     self.selected_index = (self.selected_index + n).min(count - 1);
                     self.history_position = 0;
+                self.history_anchor = None;
                     self.scroll_offset = 0;
                 }
             }
@@ -238,6 +271,7 @@ impl App {
                 let n = self.take_count();
                 self.selected_index = self.selected_index.saturating_sub(n);
                 self.history_position = 0;
+                self.history_anchor = None;
                 self.scroll_offset = 0;
             }
             TuiAction::FocusDetail => {
@@ -253,31 +287,54 @@ impl App {
                 }
             }
             TuiAction::HistoryBack => {
-                self.history_position += 1;
-                self.scroll_offset = 0;
-                // Clamp to max history for selected entity
                 if let Some(key) = self.selected_key() {
-                    if let Some(record) = self.store.get(&key) {
-                        if self.history_position >= record.history.len() {
-                            self.history_position = record.history.len().saturating_sub(1);
+                    let hist_len = self.store.history_len(&key);
+                    if hist_len == 0 { /* no-op */ }
+                    else if let Some(anchor) = self.history_anchor {
+                        // Already browsing — move anchor backward (toward older)
+                        if anchor > 0 {
+                            self.history_anchor = Some(anchor - 1);
+                            self.history_position += 1;
+                        }
+                    } else if hist_len >= 2 {
+                        // Start browsing — anchor to second-to-last entry
+                        self.history_anchor = Some(hist_len - 2);
+                        self.history_position = 1;
+                    }
+                }
+                self.scroll_offset = 0;
+            }
+            TuiAction::HistoryForward => {
+                if let Some(key) = self.selected_key() {
+                    let hist_len = self.store.history_len(&key);
+                    if let Some(anchor) = self.history_anchor {
+                        if anchor + 1 >= hist_len {
+                            // Reached latest — clear anchor
+                            self.history_anchor = None;
+                            self.history_position = 0;
+                self.history_anchor = None;
+                        } else {
+                            self.history_anchor = Some(anchor + 1);
+                            self.history_position = self.history_position.saturating_sub(1);
                         }
                     }
                 }
-            }
-            TuiAction::HistoryForward => {
-                self.history_position = self.history_position.saturating_sub(1);
                 self.scroll_offset = 0;
             }
             TuiAction::HistoryOldest => {
                 if let Some(key) = self.selected_key() {
-                    if let Some(record) = self.store.get(&key) {
-                        self.history_position = record.history.len().saturating_sub(1);
+                    let hist_len = self.store.history_len(&key);
+                    if hist_len > 0 {
+                        self.history_anchor = Some(0);
+                        self.history_position = hist_len.saturating_sub(1);
                     }
                 }
                 self.scroll_offset = 0;
             }
             TuiAction::HistoryNewest => {
                 self.history_position = 0;
+                self.history_anchor = None;
+                self.history_anchor = None;
                 self.scroll_offset = 0;
             }
             TuiAction::ToggleDiff => {
@@ -341,6 +398,7 @@ impl App {
                 self.pending_count = None;
                 self.selected_index = 0;
                 self.history_position = 0;
+                self.history_anchor = None;
                 self.scroll_offset = 0;
             }
             TuiAction::GotoBottom => {
@@ -350,6 +408,7 @@ impl App {
                     self.selected_index = count - 1;
                 }
                 self.history_position = 0;
+                self.history_anchor = None;
                 self.scroll_offset = 0;
             }
             TuiAction::HalfPageDown => {
@@ -360,6 +419,7 @@ impl App {
                     self.selected_index = (self.selected_index + half * n).min(count - 1);
                 }
                 self.history_position = 0;
+                self.history_anchor = None;
                 self.scroll_offset = 0;
             }
             TuiAction::HalfPageUp => {
@@ -367,6 +427,7 @@ impl App {
                 let half = self.visible_rows / 2;
                 self.selected_index = self.selected_index.saturating_sub(half * n);
                 self.history_position = 0;
+                self.history_anchor = None;
                 self.scroll_offset = 0;
             }
             TuiAction::NextMatch => {
@@ -380,6 +441,7 @@ impl App {
                     self.selected_index = (self.selected_index + n) % count;
                 }
                 self.history_position = 0;
+                self.history_anchor = None;
                 self.scroll_offset = 0;
             }
         }
@@ -395,6 +457,7 @@ impl App {
             self.selected_index = count - 1;
         }
         self.history_position = 0;
+                self.history_anchor = None;
         self.scroll_offset = 0;
         self.list_state.select(Some(self.selected_index));
     }
@@ -425,8 +488,35 @@ impl App {
         }
 
         if self.show_diff {
+            // Use anchor-based index if available for stable diff view
+            if let Some(anchor) = self.history_anchor {
+                let entry = self.store.at_absolute(&key, anchor)?;
+                // Compute diff manually against previous entry
+                if anchor > 0 {
+                    if let Some(prev) = self.store.at_absolute(&key, anchor - 1) {
+                        let diff = serde_json::json!({
+                            "op": entry.op,
+                            "state": entry.state,
+                            "patch": entry.patch,
+                            "previous_state": prev.state,
+                        });
+                        return Some(serde_json::to_string_pretty(&diff).unwrap_or_default());
+                    }
+                }
+                return Some(serde_json::to_string_pretty(&serde_json::json!({
+                    "op": entry.op,
+                    "state": entry.state,
+                    "patch": entry.patch,
+                })).unwrap_or_default());
+            }
             let diff = self.store.diff_at(&key, self.history_position)?;
             return Some(serde_json::to_string_pretty(&diff).unwrap_or_default());
+        }
+
+        // Use anchor for stable history browsing during streaming
+        if let Some(anchor) = self.history_anchor {
+            let entry = self.store.at_absolute(&key, anchor)?;
+            return Some(serde_json::to_string_pretty(&entry.state).unwrap_or_default());
         }
 
         if self.history_position > 0 {

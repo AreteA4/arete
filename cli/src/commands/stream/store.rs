@@ -122,6 +122,17 @@ impl EntityStore {
         record.history.get(actual_idx)
     }
 
+    /// Get entity state at an absolute VecDeque index.
+    pub fn at_absolute(&self, key: &str, abs_idx: usize) -> Option<&HistoryEntry> {
+        let record = self.entities.get(key)?;
+        record.history.get(abs_idx)
+    }
+
+    /// Get the history length for a key.
+    pub fn history_len(&self, key: &str) -> usize {
+        self.entities.get(key).map(|r| r.history.len()).unwrap_or(0)
+    }
+
     /// Get the diff between two consecutive history entries.
     /// Returns (added/changed fields, removed fields).
     pub fn diff_at(&self, key: &str, index: usize) -> Option<Value> {
