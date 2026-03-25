@@ -158,7 +158,6 @@ pub mod ore_stream {
                   (ore_sdk::instructions::Reset, accounts::treasury, accounts::roundNext)
               ]),
               stop = ore_sdk::instructions::Reset,
-              stop_lookup_by = accounts::round,
               strategy = SetOnce,
               transform = ui_amount(ore_metadata.decimals))]
         pub motherlode: Option<f64>,

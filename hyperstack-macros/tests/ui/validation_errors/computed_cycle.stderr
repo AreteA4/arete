@@ -1,0 +1,5 @@
+error: computed fields contain a dependency cycle: a -> b -> a
+ --> tests/ui/validation_errors/computed_cycle.rs:7:9
+  |
+7 |         #[computed(b)]
+  |         ^

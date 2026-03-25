@@ -37,7 +37,7 @@
 //! ```
 
 mod ast_writer;
-mod computed;
+pub(crate) mod computed;
 mod entity;
 mod handlers;
 mod idl_spec;

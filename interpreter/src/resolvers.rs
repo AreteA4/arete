@@ -256,7 +256,7 @@ impl ResolverRegistry {
             | crate::ast::ComputedExpr::Some { value: expr }
             | crate::ast::ComputedExpr::Slice { expr, .. }
             | crate::ast::ComputedExpr::Index { expr, .. }
-            |             crate::ast::ComputedExpr::U64FromLeBytes { bytes: expr }
+            | crate::ast::ComputedExpr::U64FromLeBytes { bytes: expr }
             | crate::ast::ComputedExpr::U64FromBeBytes { bytes: expr }
             | crate::ast::ComputedExpr::JsonToBytes { expr }
             | crate::ast::ComputedExpr::Keccak256 { expr }
@@ -364,8 +364,7 @@ impl TokenMetadataResolverClient {
         })
     }
 
-    pub fn from_env(
-    ) -> Result<Option<Self>, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn from_env() -> Result<Option<Self>, Box<dyn std::error::Error + Send + Sync>> {
         let Some(endpoint) = std::env::var(DAS_API_ENDPOINT_ENV).ok() else {
             return Ok(None);
         };
@@ -427,7 +426,12 @@ impl TokenMetadataResolverClient {
             },
         });
 
-        let response = self.client.post(&self.endpoint).json(&payload).send().await?;
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .json(&payload)
+            .send()
+            .await?;
         let response = response.error_for_status()?;
         let value = response.json::<Value>().await?;
 
@@ -439,10 +443,7 @@ impl TokenMetadataResolverClient {
             .get("result")
             .and_then(|result| match result {
                 Value::Array(items) => Some(items.clone()),
-                Value::Object(obj) => obj
-                    .get("items")
-                    .and_then(|items| items.as_array())
-                    .cloned(),
+                Value::Object(obj) => obj.get("items").and_then(|items| items.as_array()).cloned(),
                 _ => None,
             })
             .ok_or_else(|| "Resolver response missing result".to_string())?;
@@ -452,7 +453,10 @@ impl TokenMetadataResolverClient {
     }
 
     fn build_token_metadata(asset: &Value) -> Option<(String, Value)> {
-        let mint = asset.get("id").and_then(|value| value.as_str())?.to_string();
+        let mint = asset
+            .get("id")
+            .and_then(|value| value.as_str())?
+            .to_string();
 
         let name = asset
             .pointer("/content/metadata/name")
@@ -462,7 +466,9 @@ impl TokenMetadataResolverClient {
             .pointer("/content/metadata/symbol")
             .and_then(|value| value.as_str());
 
-        let token_info = asset.get("token_info").or_else(|| asset.pointer("/content/token_info"));
+        let token_info = asset
+            .get("token_info")
+            .or_else(|| asset.pointer("/content/token_info"));
 
         let decimals = token_info
             .and_then(|info| info.get("decimals"))
@@ -471,7 +477,11 @@ impl TokenMetadataResolverClient {
         let logo_uri = asset
             .pointer("/content/links/image")
             .and_then(|value| value.as_str())
-            .or_else(|| asset.pointer("/content/links/image_uri").and_then(|value| value.as_str()));
+            .or_else(|| {
+                asset
+                    .pointer("/content/links/image_uri")
+                    .and_then(|value| value.as_str())
+            });
 
         let mut obj = serde_json::Map::new();
         obj.insert("mint".to_string(), serde_json::json!(mint));
@@ -482,7 +492,8 @@ impl TokenMetadataResolverClient {
         );
         obj.insert(
             "symbol".to_string(),
-            symbol.map(|value| serde_json::json!(value))
+            symbol
+                .map(|value| serde_json::json!(value))
                 .unwrap_or(Value::Null),
         );
         obj.insert(
@@ -594,7 +605,9 @@ impl UrlResolverClient {
                 if let Some(next) = current.get(index) {
                     current = next;
                 } else {
-                    return Err(format!("Index '{}' out of bounds in path '{}'", index, path).into());
+                    return Err(
+                        format!("Index '{}' out of bounds in path '{}'", index, path).into(),
+                    );
                 }
             } else {
                 return Err(format!("Key '{}' not found in path '{}'", segment, path).into());
@@ -617,12 +630,10 @@ impl UrlResolverClient {
             }
         }
 
-        let futures = unique
-            .into_iter()
-            .map(|(url, method)| async move {
-                let result = self.resolve(&url, &method).await;
-                (url, result)
-            });
+        let futures = unique.into_iter().map(|(url, method)| async move {
+            let result = self.resolve(&url, &method).await;
+            (url, result)
+        });
 
         join_all(futures)
             .await
@@ -711,10 +722,12 @@ pub async fn resolve_url_batch(
     for entry in valid {
         match results.get(&entry.url) {
             Some(resolved_value) => {
-                match vm.apply_resolver_result(bytecode, &entry.request.cache_key, resolved_value.clone()) {
-                    Ok(mut new_mutations) => {
-                        mutations.append(&mut new_mutations)
-                    }
+                match vm.apply_resolver_result(
+                    bytecode,
+                    &entry.request.cache_key,
+                    resolved_value.clone(),
+                ) {
+                    Ok(mut new_mutations) => mutations.append(&mut new_mutations),
                     Err(err) => {
                         tracing::warn!(url = %entry.url, "Failed to apply URL resolver result: {}", err);
                     }
@@ -839,7 +852,8 @@ impl SlotHashResolver {
                 match bs58::decode(&hash).into_vec() {
                     Ok(bytes) if bytes.len() == 32 => {
                         // Return as { bytes: [...] } to match the SlotHashBytes TypeScript interface
-                        let json_bytes: Vec<Value> = bytes.into_iter().map(|b| Value::Number(b.into())).collect();
+                        let json_bytes: Vec<Value> =
+                            bytes.into_iter().map(|b| Value::Number(b.into())).collect();
                         let mut obj = serde_json::Map::new();
                         obj.insert("bytes".to_string(), Value::Array(json_bytes));
                         Ok(Value::Object(obj))

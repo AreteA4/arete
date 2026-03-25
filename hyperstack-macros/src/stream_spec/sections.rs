@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use quote::quote;
+use syn::spanned::Spanned;
 use syn::{Fields, ItemStruct, Type};
 
 use crate::ast::{BaseType, EntitySection, FieldTypeInfo, ResolvedField, ResolvedStructType};
@@ -29,7 +30,7 @@ pub fn extract_section_from_struct(
     section_name: &str,
     item_struct: &ItemStruct,
     parent_field: Option<String>,
-) -> EntitySection {
+) -> syn::Result<EntitySection> {
     extract_section_from_struct_with_idl(section_name, item_struct, parent_field, &[])
 }
 
@@ -38,7 +39,7 @@ pub fn extract_section_from_struct_with_idl(
     item_struct: &ItemStruct,
     parent_field: Option<String>,
     idls: IdlLookup,
-) -> EntitySection {
+) -> syn::Result<EntitySection> {
     let mut fields = Vec::new();
 
     if let Fields::Named(struct_fields) = &item_struct.fields {
@@ -49,45 +50,38 @@ pub fn extract_section_from_struct_with_idl(
                 let rust_type_name = quote::quote!(#field_ty).to_string();
                 let mut field_type_info =
                     analyze_field_type_with_idl(&field_name, &rust_type_name, idls);
-                field_type_info.emit = field_emit_from_attrs(field, &field_name);
+                field_type_info.emit = field_emit_from_attrs(field, &field_name)?;
                 fields.push(field_type_info);
             }
         }
     }
 
-    EntitySection {
+    Ok(EntitySection {
         name: section_name.to_string(),
         fields,
         is_nested_struct: parent_field.is_some(),
         parent_field,
-    }
+    })
 }
 
-fn field_emit_from_attrs(field: &syn::Field, field_name: &str) -> bool {
+fn field_emit_from_attrs(field: &syn::Field, field_name: &str) -> syn::Result<bool> {
     let mut found_mapping = false;
     let mut any_emit = false;
 
     for attr in &field.attrs {
-        if let Ok(Some(map_attrs)) = parse::parse_map_attribute(attr, field_name) {
-            found_mapping = true;
-            if map_attrs.iter().any(|m| m.emit) {
-                any_emit = true;
+        match parse::parse_recognized_field_attribute(attr, field_name)? {
+            Some(parse::RecognizedFieldAttribute::Map(map_attrs))
+            | Some(parse::RecognizedFieldAttribute::FromInstruction(map_attrs)) => {
+                found_mapping = true;
+                if map_attrs.iter().any(|m| m.emit) {
+                    any_emit = true;
+                }
             }
-        }
-
-        if let Ok(Some(map_attrs)) = parse::parse_from_instruction_attribute(attr, field_name) {
-            found_mapping = true;
-            if map_attrs.iter().any(|m| m.emit) {
-                any_emit = true;
-            }
+            _ => {}
         }
     }
 
-    if found_mapping {
-        any_emit
-    } else {
-        true
-    }
+    Ok(if found_mapping { any_emit } else { true })
 }
 
 // ============================================================================
@@ -306,11 +300,12 @@ pub fn process_nested_struct(
     events_by_instruction: &mut HashMap<String, Vec<(String, parse::EventAttribute, Type)>>,
     has_events: &mut bool,
     computed_fields: &mut Vec<(String, proc_macro2::TokenStream, Type)>,
+    computed_field_validations: &mut Vec<crate::validation::ComputedFieldValidation>,
     resolve_specs: &mut Vec<parse::ResolveSpec>,
     derive_from_mappings: &mut HashMap<String, Vec<parse::DeriveFromAttribute>>,
-    aggregate_conditions: &mut HashMap<String, String>,
+    aggregate_conditions: &mut HashMap<String, crate::ast::ConditionExpr>,
     program_name: Option<&str>,
-) {
+) -> syn::Result<()> {
     let section_name = section_field_name.to_string();
 
     let mut nested_fields = Vec::new();
@@ -319,371 +314,318 @@ pub fn process_nested_struct(
         for field in &fields.named {
             let field_name = field.ident.as_ref().unwrap();
             let field_type = &field.ty;
+            let field_name_str = field_name.to_string();
 
             nested_fields.push(quote! {
                 pub #field_name: #field_type
             });
 
             for attr in &field.attrs {
-                if let Ok(Some(map_attrs)) =
-                    parse::parse_map_attribute(attr, &field_name.to_string())
-                {
-                    for mut map_attr in map_attrs {
-                        if !map_attr.target_field_name.contains('.') {
-                            map_attr.target_field_name =
-                                format!("{}.{}", section_name, map_attr.target_field_name);
-                        }
+                match parse::parse_recognized_field_attribute(attr, &field_name_str)? {
+                    Some(parse::RecognizedFieldAttribute::Map(map_attrs))
+                    | Some(parse::RecognizedFieldAttribute::FromInstruction(map_attrs)) => {
+                        for mut map_attr in map_attrs {
+                            if !map_attr.target_field_name.contains('.') {
+                                map_attr.target_field_name =
+                                    format!("{}.{}", section_name, map_attr.target_field_name);
+                            }
 
-                        if let Some(rt) = map_attr.resolver_transform.take() {
-                            let visible_target = map_attr.target_field_name.clone();
-                            let raw_field_name = format!("__{}_raw", field_name);
-                            let raw_target = format!("{}.{}", section_name, raw_field_name);
+                            if let Some(rt) = map_attr.resolver_transform.take() {
+                                let visible_target = map_attr.target_field_name.clone();
+                                let raw_field_name = format!("__{}_raw", field_name);
+                                let raw_target = format!("{}.{}", section_name, raw_field_name);
 
-                            map_attr.target_field_name = raw_target.clone();
-                            map_attr.emit = false;
+                                map_attr.target_field_name = raw_target.clone();
+                                map_attr.emit = false;
 
-                            super::entity::process_map_attribute(
-                                &map_attr,
-                                field_name,
-                                field_type,
-                                &mut Vec::new(),
-                                accessor_defs,
-                                accessor_names,
-                                primary_keys,
-                                lookup_indexes,
-                                sources_by_type,
-                                field_mappings,
-                            );
+                                super::entity::process_map_attribute(
+                                    &map_attr,
+                                    field_name,
+                                    field_type,
+                                    &mut Vec::new(),
+                                    accessor_defs,
+                                    accessor_names,
+                                    primary_keys,
+                                    lookup_indexes,
+                                    sources_by_type,
+                                    field_mappings,
+                                );
 
-                            let raw_ref = raw_target.clone();
-                            let computed_expr: proc_macro2::TokenStream = {
-                                let raw_ident: proc_macro2::TokenStream =
-                                    raw_ref.replace('.', " . ").parse().unwrap_or_default();
-                                let method_ident: proc_macro2::TokenStream =
-                                    rt.method.parse().unwrap_or_default();
-                                let args = &rt.args;
-                                quote::quote! { #raw_ident . #method_ident ( #args ) }
-                            };
+                                let raw_ref = raw_target.clone();
+                                let computed_expr: proc_macro2::TokenStream = {
+                                    let raw_ident: proc_macro2::TokenStream =
+                                        raw_ref.replace('.', " . ").parse().unwrap_or_default();
+                                    let method_ident: proc_macro2::TokenStream =
+                                        rt.method.parse().unwrap_or_default();
+                                    let args = &rt.args;
+                                    quote::quote! { #raw_ident . #method_ident ( #args ) }
+                                };
 
-                            computed_fields.push((
-                                visible_target,
-                                computed_expr,
-                                field_type.clone(),
-                            ));
-                        } else {
-                            super::entity::process_map_attribute(
-                                &map_attr,
-                                field_name,
-                                field_type,
-                                &mut Vec::new(),
-                                accessor_defs,
-                                accessor_names,
-                                primary_keys,
-                                lookup_indexes,
-                                sources_by_type,
-                                field_mappings,
-                            );
+                                computed_fields.push((
+                                    visible_target,
+                                    computed_expr,
+                                    field_type.clone(),
+                                ));
+                            } else {
+                                super::entity::process_map_attribute(
+                                    &map_attr,
+                                    field_name,
+                                    field_type,
+                                    &mut Vec::new(),
+                                    accessor_defs,
+                                    accessor_names,
+                                    primary_keys,
+                                    lookup_indexes,
+                                    sources_by_type,
+                                    field_mappings,
+                                );
+                            }
                         }
                     }
-                } else if let Ok(Some(map_attrs)) =
-                    parse::parse_from_instruction_attribute(attr, &field_name.to_string())
-                {
-                    for mut map_attr in map_attrs {
-                        if !map_attr.target_field_name.contains('.') {
-                            map_attr.target_field_name =
-                                format!("{}.{}", section_name, map_attr.target_field_name);
+                    Some(parse::RecognizedFieldAttribute::Event(mut event_attr)) => {
+                        *has_events = true;
+
+                        if !event_attr.target_field_name.contains('.') {
+                            event_attr.target_field_name =
+                                format!("{}.{}", section_name, event_attr.target_field_name);
                         }
 
-                        if let Some(rt) = map_attr.resolver_transform.take() {
-                            let visible_target = map_attr.target_field_name.clone();
-                            let raw_field_name = format!("__{}_raw", field_name);
-                            let raw_target = format!("{}.{}", section_name, raw_field_name);
+                        if let Some((_instruction_path, instruction_str)) =
+                            determine_event_instruction(&mut event_attr, field_type, program_name)
+                        {
+                            events_by_instruction
+                                .entry(instruction_str)
+                                .or_default()
+                                .push((
+                                    event_attr.target_field_name.clone(),
+                                    event_attr,
+                                    field_type.clone(),
+                                ));
+                        } else {
+                            events_by_instruction
+                                .entry(event_attr.instruction.clone())
+                                .or_default()
+                                .push((
+                                    event_attr.target_field_name.clone(),
+                                    event_attr,
+                                    field_type.clone(),
+                                ));
+                        }
+                    }
+                    Some(parse::RecognizedFieldAttribute::Snapshot(mut snapshot_attr)) => {
+                        if !snapshot_attr.target_field_name.contains('.') {
+                            snapshot_attr.target_field_name =
+                                format!("{}.{}", section_name, snapshot_attr.target_field_name);
+                        }
 
-                            map_attr.target_field_name = raw_target.clone();
-                            map_attr.emit = false;
+                        let account_path = if let Some(ref path) = snapshot_attr.from_account {
+                            Some(path.clone())
+                        } else if let Some(inferred_path) =
+                            extract_account_type_from_field(field_type)
+                        {
+                            snapshot_attr.inferred_account = Some(inferred_path.clone());
+                            Some(inferred_path)
+                        } else {
+                            None
+                        };
 
-                            super::entity::process_map_attribute(
-                                &map_attr,
-                                field_name,
-                                field_type,
-                                &mut Vec::new(),
-                                accessor_defs,
-                                accessor_names,
-                                primary_keys,
-                                lookup_indexes,
-                                sources_by_type,
-                                field_mappings,
-                            );
+                        if let Some(acct_path) = account_path {
+                            let source_type_str = path_to_string(&acct_path);
+                            let (source_field_name, is_whole_source) =
+                                resolve_snapshot_source(&snapshot_attr);
+                            let source_field_span = snapshot_attr
+                                .field
+                                .as_ref()
+                                .map(|field| field.span())
+                                .unwrap_or(snapshot_attr.attr_span);
 
-                            let raw_ref = raw_target.clone();
-                            let computed_expr: proc_macro2::TokenStream = {
-                                let raw_ident: proc_macro2::TokenStream =
-                                    raw_ref.replace('.', " . ").parse().unwrap_or_default();
-                                let method_ident: proc_macro2::TokenStream =
-                                    rt.method.parse().unwrap_or_default();
-                                let args = &rt.args;
-                                quote::quote! { #raw_ident . #method_ident ( #args ) }
+                            let map_attr = parse::MapAttribute {
+                                attr_span: snapshot_attr.attr_span,
+                                source_type_span: acct_path.span(),
+                                source_field_span,
+                                is_event_source: false,
+                                is_account_source: true,
+                                source_type_path: acct_path,
+                                source_field_name,
+                                target_field_name: snapshot_attr.target_field_name.clone(),
+                                is_primary_key: false,
+                                is_lookup_index: false,
+                                register_from: Vec::new(),
+                                temporal_field: None,
+                                strategy: snapshot_attr.strategy.clone(),
+                                join_on: snapshot_attr.join_on.clone(),
+                                transform: None,
+                                resolver_transform: None,
+                                is_instruction: false,
+                                is_whole_source,
+                                lookup_by: snapshot_attr.lookup_by.clone(),
+                                condition: None,
+                                when: snapshot_attr.when.clone(),
+                                stop: None,
+                                stop_lookup_by: None,
+                                emit: true,
                             };
 
-                            computed_fields.push((
-                                visible_target,
-                                computed_expr,
-                                field_type.clone(),
-                            ));
-                            continue;
+                            sources_by_type
+                                .entry(source_type_str)
+                                .or_default()
+                                .push(map_attr);
+                        }
+                    }
+                    Some(parse::RecognizedFieldAttribute::Aggregate(mut aggr_attr)) => {
+                        if !aggr_attr.target_field_name.contains('.') {
+                            aggr_attr.target_field_name =
+                                format!("{}.{}", section_name, aggr_attr.target_field_name);
                         }
 
-                        super::entity::process_map_attribute(
-                            &map_attr,
-                            field_name,
-                            field_type,
-                            &mut Vec::new(),
-                            accessor_defs,
-                            accessor_names,
-                            primary_keys,
-                            lookup_indexes,
-                            sources_by_type,
-                            field_mappings,
+                        if let Some(condition) = &aggr_attr.condition {
+                            aggregate_conditions
+                                .insert(aggr_attr.target_field_name.clone(), condition.clone());
+                        }
+
+                        for instr_path in &aggr_attr.from_instructions {
+                            let source_field_name = aggr_attr
+                                .field
+                                .as_ref()
+                                .map(|fs| fs.ident.to_string())
+                                .unwrap_or_default();
+                            let source_field_span = aggr_attr
+                                .field
+                                .as_ref()
+                                .map(|field| field.ident.span())
+                                .unwrap_or(aggr_attr.attr_span);
+
+                            let map_attr = parse::MapAttribute {
+                                attr_span: aggr_attr.attr_span,
+                                source_type_span: instr_path.span(),
+                                source_field_span,
+                                is_event_source: false,
+                                is_account_source: false,
+                                source_type_path: instr_path.clone(),
+                                source_field_name,
+                                target_field_name: aggr_attr.target_field_name.clone(),
+                                is_primary_key: false,
+                                is_lookup_index: false,
+                                register_from: Vec::new(),
+                                temporal_field: None,
+                                strategy: aggr_attr.strategy.clone(),
+                                join_on: aggr_attr.join_on.clone(),
+                                transform: aggr_attr.transform.as_ref().map(|t| t.to_string()),
+                                resolver_transform: None,
+                                is_instruction: true,
+                                is_whole_source: false,
+                                lookup_by: aggr_attr.lookup_by.clone(),
+                                condition: None,
+                                when: None,
+                                stop: None,
+                                stop_lookup_by: None,
+                                emit: true,
+                            };
+
+                            let source_type_str = path_to_string(instr_path);
+                            sources_by_type
+                                .entry(source_type_str)
+                                .or_default()
+                                .push(map_attr);
+                        }
+                    }
+                    Some(parse::RecognizedFieldAttribute::DeriveFrom(mut derive_attr)) => {
+                        if !derive_attr.target_field_name.contains('.') {
+                            derive_attr.target_field_name =
+                                format!("{}.{}", section_name, derive_attr.target_field_name);
+                        }
+
+                        for instr_path in &derive_attr.from_instructions {
+                            let source_type_str = path_to_string(instr_path);
+                            derive_from_mappings
+                                .entry(source_type_str)
+                                .or_default()
+                                .push(derive_attr.clone());
+                        }
+                    }
+                    Some(parse::RecognizedFieldAttribute::Computed(mut computed_attr)) => {
+                        if !computed_attr.target_field_name.contains('.') {
+                            computed_attr.target_field_name =
+                                format!("{}.{}", section_name, computed_attr.target_field_name);
+                        }
+
+                        computed_fields.push((
+                            computed_attr.target_field_name.clone(),
+                            computed_attr.expression.clone(),
+                            field_type.clone(),
+                        ));
+                        computed_field_validations.push(
+                            crate::validation::ComputedFieldValidation {
+                                target_path: computed_attr.target_field_name.clone(),
+                                expression: computed_attr.expression.clone(),
+                                span: computed_attr.attr_span,
+                            },
                         );
                     }
-                } else if let Ok(Some(mut event_attr)) =
-                    parse::parse_event_attribute(attr, &field_name.to_string())
-                {
-                    *has_events = true;
+                    Some(parse::RecognizedFieldAttribute::Resolve(resolve_attr)) => {
+                        let qualified_url = resolve_attr.url.as_deref().map(|url_path_raw| {
+                            if url_path_raw.contains('.') {
+                                url_path_raw.to_string()
+                            } else {
+                                format!("{}.{}", section_name, url_path_raw)
+                            }
+                        });
 
-                    if !event_attr.target_field_name.contains('.') {
-                        event_attr.target_field_name =
-                            format!("{}.{}", section_name, event_attr.target_field_name);
-                    }
+                        let resolver = if let Some(ref url_path) = qualified_url {
+                            let method = resolve_attr
+                                .method
+                                .as_deref()
+                                .map(|m| match m.to_lowercase().as_str() {
+                                    "post" => crate::ast::HttpMethod::Post,
+                                    _ => crate::ast::HttpMethod::Get,
+                                })
+                                .unwrap_or(crate::ast::HttpMethod::Get);
 
-                    // Determine instruction path (type-safe or legacy)
-                    if let Some((_instruction_path, instruction_str)) =
-                        determine_event_instruction(&mut event_attr, field_type, program_name)
-                    {
-                        events_by_instruction
-                            .entry(instruction_str)
-                            .or_default()
-                            .push((
-                                event_attr.target_field_name.clone(),
-                                event_attr,
-                                field_type.clone(),
-                            ));
-                    } else {
-                        // Fallback to legacy instruction string
-                        events_by_instruction
-                            .entry(event_attr.instruction.clone())
-                            .or_default()
-                            .push((
-                                event_attr.target_field_name.clone(),
-                                event_attr,
-                                field_type.clone(),
-                            ));
-                    }
-                } else if let Ok(Some(mut snapshot_attr)) =
-                    parse::parse_snapshot_attribute(attr, &field_name.to_string())
-                {
-                    // Add section prefix if needed
-                    if !snapshot_attr.target_field_name.contains('.') {
-                        snapshot_attr.target_field_name =
-                            format!("{}.{}", section_name, snapshot_attr.target_field_name);
-                    }
+                            let url_source = if resolve_attr.url_is_template {
+                                crate::ast::UrlSource::Template(super::entity::parse_url_template(
+                                    url_path,
+                                    attr.span(),
+                                )?)
+                            } else {
+                                crate::ast::UrlSource::FieldPath(url_path.clone())
+                            };
 
-                    // Infer account type from field type if not explicitly specified
-                    let account_path = if let Some(ref path) = snapshot_attr.from_account {
-                        Some(path.clone())
-                    } else if let Some(inferred_path) = extract_account_type_from_field(field_type)
-                    {
-                        snapshot_attr.inferred_account = Some(inferred_path.clone());
-                        Some(inferred_path)
-                    } else {
-                        None
-                    };
-
-                    if let Some(acct_path) = account_path {
-                        let source_type_str = path_to_string(&acct_path);
-
-                        // Determine source field name and whether this is a whole-source capture
-                        let (source_field_name, is_whole_source) =
-                            resolve_snapshot_source(&snapshot_attr);
-
-                        let map_attr = parse::MapAttribute {
-                            source_type_path: acct_path,
-                            source_field_name,
-                            target_field_name: snapshot_attr.target_field_name.clone(),
-                            is_primary_key: false,
-                            is_lookup_index: false,
-                            register_from: Vec::new(),
-                            temporal_field: None,
-                            strategy: snapshot_attr.strategy.clone(),
-                            join_on: snapshot_attr
-                                .join_on
-                                .as_ref()
-                                .map(|fs| fs.ident.to_string()),
-                            transform: None,
-                            resolver_transform: None,
-                            is_instruction: false,
-                            is_whole_source,
-                            lookup_by: snapshot_attr.lookup_by.clone(),
-                            condition: None,
-                            when: snapshot_attr.when.clone(),
-                            stop: None,
-                            stop_lookup_by: None,
-                            emit: true,
-                        };
-
-                        sources_by_type
-                            .entry(source_type_str)
-                            .or_default()
-                            .push(map_attr);
-                    }
-                } else if let Ok(Some(mut aggr_attr)) =
-                    parse::parse_aggregate_attribute(attr, &field_name.to_string())
-                {
-                    // Add section prefix if needed
-                    if !aggr_attr.target_field_name.contains('.') {
-                        aggr_attr.target_field_name =
-                            format!("{}.{}", section_name, aggr_attr.target_field_name);
-                    }
-
-                    // Store condition for later AST generation (with section prefix)
-                    if let Some(condition) = &aggr_attr.condition {
-                        aggregate_conditions
-                            .insert(aggr_attr.target_field_name.clone(), condition.clone());
-                    }
-
-                    // Convert aggregate to map attributes for each instruction
-                    for instr_path in &aggr_attr.from_instructions {
-                        let source_field_name = aggr_attr
-                            .field
-                            .as_ref()
-                            .map(|fs| fs.ident.to_string())
-                            .unwrap_or_default();
-
-                        let map_attr = parse::MapAttribute {
-                            source_type_path: instr_path.clone(),
-                            source_field_name,
-                            target_field_name: aggr_attr.target_field_name.clone(),
-                            is_primary_key: false,
-                            is_lookup_index: false,
-                            register_from: Vec::new(),
-                            temporal_field: None,
-                            strategy: aggr_attr.strategy.clone(),
-                            join_on: aggr_attr.join_on.as_ref().map(|fs| fs.ident.to_string()),
-                            transform: aggr_attr.transform.as_ref().map(|t| t.to_string()),
-                            resolver_transform: None,
-                            is_instruction: true,
-                            is_whole_source: false,
-                            lookup_by: aggr_attr.lookup_by.clone(),
-                            condition: None,
-                            when: None,
-                            stop: None,
-                            stop_lookup_by: None,
-                            emit: true,
-                        };
-
-                        // Add to sources_by_type for handler generation
-                        let source_type_str = path_to_string(instr_path);
-                        sources_by_type
-                            .entry(source_type_str)
-                            .or_default()
-                            .push(map_attr);
-                    }
-                } else if let Ok(Some(mut derive_attr)) =
-                    parse::parse_derive_from_attribute(attr, &field_name.to_string())
-                {
-                    // Add section prefix if needed
-                    if !derive_attr.target_field_name.contains('.') {
-                        derive_attr.target_field_name =
-                            format!("{}.{}", section_name, derive_attr.target_field_name);
-                    }
-
-                    // Group by instruction for handler merging
-                    for instr_path in &derive_attr.from_instructions {
-                        let source_type_str = path_to_string(instr_path);
-                        derive_from_mappings
-                            .entry(source_type_str)
-                            .or_default()
-                            .push(derive_attr.clone());
-                    }
-                } else if let Ok(Some(mut computed_attr)) =
-                    parse::parse_computed_attribute(attr, &field_name.to_string())
-                {
-                    // Add section prefix if needed
-                    if !computed_attr.target_field_name.contains('.') {
-                        computed_attr.target_field_name =
-                            format!("{}.{}", section_name, computed_attr.target_field_name);
-                    }
-
-                    // Store computed field for later processing (after aggregations)
-                    computed_fields.push((
-                        computed_attr.target_field_name.clone(),
-                        computed_attr.expression.clone(),
-                        field_type.clone(),
-                    ));
-                } else if let Ok(Some(resolve_attr)) =
-                    parse::parse_resolve_attribute(attr, &field_name.to_string())
-                {
-                    // Determine resolver type: URL resolver if url is present, otherwise Token resolver
-                    let qualified_url = resolve_attr.url.as_deref().map(|url_path_raw| {
-                        if url_path_raw.contains('.') {
-                            url_path_raw.to_string()
-                        } else {
-                            format!("{}.{}", section_name, url_path_raw)
-                        }
-                    });
-
-                    let resolver = if let Some(ref url_path) = qualified_url {
-                        let method = resolve_attr
-                            .method
-                            .as_deref()
-                            .map(|m| match m.to_lowercase().as_str() {
-                                "post" => crate::ast::HttpMethod::Post,
-                                _ => crate::ast::HttpMethod::Get,
+                            crate::ast::ResolverType::Url(crate::ast::UrlResolverConfig {
+                                url_source,
+                                method,
+                                extract_path: resolve_attr.extract.clone(),
                             })
-                            .unwrap_or(crate::ast::HttpMethod::Get);
-
-                        let url_source = if resolve_attr.url_is_template {
-                            crate::ast::UrlSource::Template(super::entity::parse_url_template(
-                                url_path,
-                            ))
+                        } else if let Some(name) = resolve_attr.resolver.as_deref() {
+                            super::entity::parse_resolver_type_name(name, field_type)?
                         } else {
-                            crate::ast::UrlSource::FieldPath(url_path.clone())
+                            super::entity::infer_resolver_type(field_type)?
                         };
 
-                        crate::ast::ResolverType::Url(crate::ast::UrlResolverConfig {
-                            url_source,
-                            method,
-                            extract_path: resolve_attr.extract.clone(),
-                        })
-                    } else if let Some(name) = resolve_attr.resolver.as_deref() {
-                        super::entity::parse_resolver_type_name(name, field_type)
-                            .unwrap_or_else(|err| panic!("{}", err))
-                    } else {
-                        super::entity::infer_resolver_type(field_type)
-                            .unwrap_or_else(|err| panic!("{}", err))
-                    };
+                        let mut target_field_name = resolve_attr.target_field_name;
+                        if !target_field_name.contains('.') {
+                            target_field_name = format!("{}.{}", section_name, target_field_name);
+                        }
 
-                    let mut target_field_name = resolve_attr.target_field_name;
-                    if !target_field_name.contains('.') {
-                        target_field_name = format!("{}.{}", section_name, target_field_name);
+                        let from = if resolve_attr.url_is_template {
+                            None
+                        } else {
+                            qualified_url.or(resolve_attr.from.clone())
+                        };
+
+                        resolve_specs.push(parse::ResolveSpec {
+                            attr_span: resolve_attr.attr_span,
+                            from_span: resolve_attr.from_span,
+                            resolver,
+                            from,
+                            address: resolve_attr.address,
+                            extract: resolve_attr.extract,
+                            target_field_name,
+                            strategy: resolve_attr.strategy,
+                            condition: resolve_attr.condition,
+                            schedule_at: resolve_attr.schedule_at,
+                        });
                     }
-
-                    let from = if resolve_attr.url_is_template {
-                        None
-                    } else {
-                        qualified_url.or(resolve_attr.from.clone())
-                    };
-
-                    resolve_specs.push(parse::ResolveSpec {
-                        resolver,
-                        from,
-                        address: resolve_attr.address,
-                        extract: resolve_attr.extract,
-                        target_field_name,
-                        strategy: resolve_attr.strategy,
-                        condition: resolve_attr.condition,
-                        schedule_at: resolve_attr.schedule_at,
-                    });
+                    None => {}
                 }
             }
         }
@@ -692,6 +634,8 @@ pub fn process_nested_struct(
     state_fields.push(quote! {
         pub #section_field_name: #section_field_type
     });
+
+    Ok(())
 }
 
 // ============================================================================

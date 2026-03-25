@@ -673,7 +673,7 @@ pub enum Predicate {
 }
 
 /// Transform operation in a view pipeline
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ViewTransform {
     /// Filter entities matching a predicate
     Filter { predicate: Predicate },
@@ -683,6 +683,8 @@ pub enum ViewTransform {
         key: FieldPath,
         #[serde(default)]
         order: SortOrder,
+        #[serde(skip, default)]
+        key_span: Option<proc_macro2::Span>,
     },
 
     /// Take first N entities (after sort)
@@ -698,11 +700,44 @@ pub enum ViewTransform {
     Last,
 
     /// Get entity with maximum value for field - produces Single output
-    MaxBy { key: FieldPath },
+    MaxBy {
+        key: FieldPath,
+        #[serde(skip, default)]
+        key_span: Option<proc_macro2::Span>,
+    },
 
     /// Get entity with minimum value for field - produces Single output
-    MinBy { key: FieldPath },
+    MinBy {
+        key: FieldPath,
+        #[serde(skip, default)]
+        key_span: Option<proc_macro2::Span>,
+    },
 }
+
+impl PartialEq for ViewTransform {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Filter { predicate: l }, Self::Filter { predicate: r }) => l == r,
+            (
+                Self::Sort {
+                    key: k1, order: o1, ..
+                },
+                Self::Sort {
+                    key: k2, order: o2, ..
+                },
+            ) => k1 == k2 && o1 == o2,
+            (Self::Take { count: l }, Self::Take { count: r }) => l == r,
+            (Self::Skip { count: l }, Self::Skip { count: r }) => l == r,
+            (Self::First, Self::First) => true,
+            (Self::Last, Self::Last) => true,
+            (Self::MaxBy { key: k1, .. }, Self::MaxBy { key: k2, .. }) => k1 == k2,
+            (Self::MinBy { key: k1, .. }, Self::MinBy { key: k2, .. }) => k1 == k2,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ViewTransform {}
 
 /// Source for a view definition
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -753,24 +788,26 @@ impl SerializableStreamSpec {
     /// The hash is computed over the entire spec except the content_hash field itself,
     /// ensuring the same AST always produces the same hash regardless of when it was
     /// generated or by whom.
-    pub fn compute_content_hash(&self) -> String {
+    #[allow(dead_code)]
+    pub fn try_compute_content_hash(&self) -> Result<String, serde_json::Error> {
         use sha2::{Digest, Sha256};
 
-        // Clone and clear the hash field for computation
         let mut spec_for_hash = self.clone();
         spec_for_hash.content_hash = None;
 
-        // Serialize to JSON (serde_json produces consistent output for the same struct)
-        let json =
-            serde_json::to_string(&spec_for_hash).expect("Failed to serialize spec for hashing");
+        let json = serde_json::to_string(&spec_for_hash)?;
 
-        // Compute SHA256 hash
         let mut hasher = Sha256::new();
         hasher.update(json.as_bytes());
         let result = hasher.finalize();
 
-        // Return hex-encoded hash
-        hex::encode(result)
+        Ok(hex::encode(result))
+    }
+
+    #[allow(dead_code)]
+    pub fn compute_content_hash(&self) -> String {
+        self.try_compute_content_hash()
+            .expect("Failed to serialize spec for hashing")
     }
 
     /// Verify that the content_hash matches the computed hash.
@@ -778,15 +815,21 @@ impl SerializableStreamSpec {
     #[allow(dead_code)]
     pub fn verify_content_hash(&self) -> bool {
         match &self.content_hash {
-            Some(hash) => {
-                let computed = self.compute_content_hash();
-                hash == &computed
-            }
+            Some(hash) => self
+                .try_compute_content_hash()
+                .map(|computed| hash == &computed)
+                .unwrap_or(false),
             None => true, // No hash to verify
         }
     }
 
     /// Set the content_hash field to the computed hash.
+    #[allow(dead_code)]
+    pub fn try_with_content_hash(mut self) -> Result<Self, serde_json::Error> {
+        self.content_hash = Some(self.try_compute_content_hash()?);
+        Ok(self)
+    }
+
     #[allow(dead_code)]
     pub fn with_content_hash(mut self) -> Self {
         self.content_hash = Some(self.compute_content_hash());
@@ -909,17 +952,31 @@ pub struct SerializableStackSpec {
 
 impl SerializableStackSpec {
     /// Compute deterministic content hash (SHA256 of canonical JSON).
-    pub fn compute_content_hash(&self) -> String {
+    #[allow(dead_code)]
+    pub fn try_compute_content_hash(&self) -> Result<String, serde_json::Error> {
         use sha2::{Digest, Sha256};
+
         let mut spec_for_hash = self.clone();
         spec_for_hash.content_hash = None;
-        let json = serde_json::to_string(&spec_for_hash)
-            .expect("Failed to serialize stack spec for hashing");
+        let json = serde_json::to_string(&spec_for_hash)?;
         let mut hasher = Sha256::new();
         hasher.update(json.as_bytes());
-        hex::encode(hasher.finalize())
+        Ok(hex::encode(hasher.finalize()))
     }
 
+    #[allow(dead_code)]
+    pub fn compute_content_hash(&self) -> String {
+        self.try_compute_content_hash()
+            .expect("Failed to serialize stack spec for hashing")
+    }
+
+    #[allow(dead_code)]
+    pub fn try_with_content_hash(mut self) -> Result<Self, serde_json::Error> {
+        self.content_hash = Some(self.try_compute_content_hash()?);
+        Ok(self)
+    }
+
+    #[allow(dead_code)]
     pub fn with_content_hash(mut self) -> Self {
         self.content_hash = Some(self.compute_content_hash());
         self

@@ -1,0 +1,5 @@
+error: unknown resolver-backed type 'u64'. Available types: TokenMetadata
+ --> tests/ui/resolve_errors/unsupported_resolver_type.rs:8:19
+  |
+8 |         metadata: u64,
+  |                   ^^^

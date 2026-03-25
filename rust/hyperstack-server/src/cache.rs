@@ -647,8 +647,10 @@ mod tests {
             .await;
 
         // Get all entities after "100:000000000002"
-        let after = cache.get_after("tokens/list", "100:000000000002", None).await;
-        
+        let after = cache
+            .get_after("tokens/list", "100:000000000002", None)
+            .await;
+
         // Should return key3 and key4 (sorted by _seq)
         assert_eq!(after.len(), 2);
         assert_eq!(after[0].0, "key3");
@@ -683,8 +685,10 @@ mod tests {
             .await;
 
         // Get entities after "100:000000000000" with limit 2
-        let after = cache.get_after("tokens/list", "100:000000000000", Some(2)).await;
-        
+        let after = cache
+            .get_after("tokens/list", "100:000000000000", Some(2))
+            .await;
+
         // Should return only first 2 (key1 and key2)
         assert_eq!(after.len(), 2);
         assert_eq!(after[0].0, "key1");
@@ -704,8 +708,10 @@ mod tests {
             .await;
 
         // Get entities after a future cursor
-        let after = cache.get_after("tokens/list", "999:000000000000", None).await;
-        
+        let after = cache
+            .get_after("tokens/list", "999:000000000000", None)
+            .await;
+
         assert!(after.is_empty());
     }
 
@@ -714,17 +720,11 @@ mod tests {
         let cache = EntityCache::new();
 
         // Insert entity without _seq
-        cache
-            .upsert(
-                "tokens/list",
-                "key1",
-                json!({"id": 1}),
-            )
-            .await;
+        cache.upsert("tokens/list", "key1", json!({"id": 1})).await;
 
         // Get entities after any cursor - entity without _seq should not be included
         let after = cache.get_after("tokens/list", "0:000000000000", None).await;
-        
+
         assert!(after.is_empty());
     }
 }

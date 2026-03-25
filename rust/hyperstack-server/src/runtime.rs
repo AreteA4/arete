@@ -165,10 +165,7 @@ impl Runtime {
                     .first()
                     .cloned()
                     .unwrap_or_else(|| "unknown".to_string());
-                info!(
-                    "Starting Vixen parser runtime for program: {}",
-                    program_id
-                );
+                info!("Starting Vixen parser runtime for program: {}", program_id);
                 let tx = mutations_tx.clone();
                 let health = health_monitor.clone();
                 let reconnection_config = self.config.reconnection.clone().unwrap_or_default();
@@ -215,7 +212,10 @@ impl Runtime {
                     });
                 })
                 .expect("Failed to spawn health server thread");
-            info!("HTTP health server running on dedicated thread at {}", bind_addr);
+            info!(
+                "HTTP health server running on dedicated thread at {}",
+                bind_addr
+            );
             Some(join_handle)
         } else {
             None

@@ -40,11 +40,7 @@ pub fn extract_pda_graph(idl: &IdlSpec) -> Vec<PdaNode> {
     for ix in &idl.instructions {
         for acc in &ix.accounts {
             if let Some(pda) = &acc.pda {
-                let seeds = pda
-                    .seeds
-                    .iter()
-                    .map(extract_seed_info)
-                    .collect();
+                let seeds = pda.seeds.iter().map(extract_seed_info).collect();
 
                 nodes.push(PdaNode {
                     account_name: acc.name.clone(),

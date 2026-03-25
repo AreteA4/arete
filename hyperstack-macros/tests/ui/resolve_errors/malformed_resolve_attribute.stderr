@@ -1,0 +1,5 @@
+error: #[resolve] requires either 'url' or 'from'/'address' parameter
+ --> tests/ui/resolve_errors/malformed_resolve_attribute.rs:5:5
+  |
+5 |     #[resolve()]
+  |     ^^^^^^^^^^^^

@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::types::*;
 use crate::parse;
-use crate::parse::conditions as condition_parser;
 use crate::parse::idl as idl_parser;
 
 /// Write a SerializableStreamSpec to a JSON file.
@@ -349,7 +348,7 @@ pub fn convert_idl_type(idl_type: &idl_parser::IdlType) -> IdlTypeSnapshot {
 pub fn build_handlers_from_sources(
     sources_by_type: &HashMap<String, Vec<parse::MapAttribute>>,
     _events_by_instruction: &HashMap<String, Vec<(String, parse::EventAttribute, syn::Type)>>,
-    aggregate_conditions: &HashMap<String, String>,
+    aggregate_conditions: &HashMap<String, ConditionExpr>,
     idl: Option<&idl_parser::IdlSpec>,
 ) -> Vec<SerializableHandlerSpec> {
     let program_name = idl.map(|idl| idl.get_name());
@@ -361,7 +360,13 @@ pub fn build_handlers_from_sources(
         BTreeMap::new();
     for (source_type, mappings) in sources_by_type {
         for mapping in mappings {
-            let key = (source_type.clone(), mapping.join_on.clone());
+            let key = (
+                source_type.clone(),
+                mapping
+                    .join_on
+                    .as_ref()
+                    .map(|field_spec| field_spec.ident.to_string()),
+            );
             sources_by_type_and_join
                 .entry(key)
                 .or_default()
@@ -462,10 +467,7 @@ pub fn build_handlers_from_sources(
 
             let population = parse_population_strategy(&mapping.strategy);
 
-            let condition = mapping.condition.as_ref().map(|cond| ConditionExpr {
-                expression: cond.clone(),
-                parsed: condition_parser::parse_condition_expression(cond),
-            });
+            let condition = mapping.condition.clone();
 
             let when = mapping.when.as_ref().map(|when_path| {
                 let instr_type = path_to_string(when_path);
@@ -689,7 +691,7 @@ pub fn build_resolver_hooks(
 pub fn build_instruction_hooks(
     pda_registrations: &[parse::RegisterPdaAttribute],
     derive_from_mappings: &HashMap<String, Vec<parse::DeriveFromAttribute>>,
-    aggregate_conditions: &HashMap<String, String>,
+    aggregate_conditions: &HashMap<String, ConditionExpr>,
     sources_by_type: &HashMap<String, Vec<parse::MapAttribute>>,
     program_name: Option<&str>,
 ) -> Vec<InstructionHook> {
@@ -767,10 +769,7 @@ pub fn build_instruction_hooks(
                 }
             };
 
-            let condition = derive_attr.condition.as_ref().map(|cond| ConditionExpr {
-                expression: cond.clone(),
-                parsed: condition_parser::parse_condition_expression(cond),
-            });
+            let condition = derive_attr.condition.clone();
 
             let action = HookAction::SetField {
                 target_field: derive_attr.target_field_name.clone(),
@@ -804,7 +803,7 @@ pub fn build_instruction_hooks(
     sorted_aggregate_conditions.sort_by_key(|(k, _)| *k);
     let mut sorted_sources: Vec<_> = sources_by_type.iter().collect();
     sorted_sources.sort_by_key(|(k, _)| *k);
-    for (field_path, condition_str) in sorted_aggregate_conditions {
+    for (field_path, condition_expr) in sorted_aggregate_conditions {
         for (source_type, mappings) in &sorted_sources {
             for mapping in *mappings {
                 if &mapping.target_field_name == field_path
@@ -821,10 +820,7 @@ pub fn build_instruction_hooks(
                         format!("{}IxState", instr_base)
                     };
 
-                    let condition = ConditionExpr {
-                        expression: condition_str.clone(),
-                        parsed: condition_parser::parse_condition_expression(condition_str),
-                    };
+                    let condition = condition_expr.clone();
 
                     if mapping.strategy == "Count" {
                         let action = HookAction::IncrementField {

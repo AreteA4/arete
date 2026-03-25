@@ -42,5 +42,7 @@ pub use stream::{
     EntityStream, FilterMapStream, FilteredStream, KeyFilter, MapStream, RichEntityStream,
     RichUpdate, Update, UseStream,
 };
+
 pub use subscription::{ClientMessage, Subscription};
 pub use view::{RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewHandle, Views, WatchBuilder};
+

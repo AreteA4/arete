@@ -5,12 +5,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use proc_macro::TokenStream;
 use quote::{format_ident, quote};
+use syn::spanned::Spanned;
 use syn::{Fields, ItemStruct, Type};
 
 use crate::parse;
 use crate::utils::{path_to_string, to_snake_case};
+use crate::validation::{validate_key_resolution_paths, KeyResolutionValidationInput};
 
 use super::entity::{infer_resolver_type, parse_resolver_type_name, process_map_attribute};
 use super::handlers::{convert_event_to_map_attributes, determine_event_instruction};
@@ -28,7 +29,7 @@ pub fn process_struct_with_context(
     input: ItemStruct,
     section_structs: HashMap<String, ItemStruct>,
     skip_game_event: bool,
-) -> TokenStream {
+) -> syn::Result<proc_macro2::TokenStream> {
     let name = &input.ident;
     let state_name = syn::Ident::new(&format!("{}State", name), name.span());
 
@@ -45,112 +46,123 @@ pub fn process_struct_with_context(
     > = HashMap::new();
     let mut has_events = false;
     let mut computed_fields: Vec<(String, proc_macro2::TokenStream, Type)> = Vec::new();
+    let mut computed_field_validations = Vec::new();
     let mut resolve_specs: Vec<parse::ResolveSpec> = Vec::new();
     let mut derive_from_mappings: HashMap<String, Vec<parse::DeriveFromAttribute>> = HashMap::new();
-    let mut aggregate_conditions: HashMap<String, String> = HashMap::new();
+    let mut aggregate_conditions: HashMap<String, crate::ast::ConditionExpr> = HashMap::new();
 
     if let Fields::Named(fields) = &input.fields {
         for field in &fields.named {
             let field_name = field.ident.as_ref().unwrap();
             let field_type = &field.ty;
+            let field_name_str = field_name.to_string();
 
             let mut has_attrs = false;
             for attr in &field.attrs {
-                if let Ok(Some(map_attrs)) =
-                    parse::parse_map_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
-                    for map_attr in map_attrs {
-                        process_map_attribute(
-                            &map_attr,
-                            field_name,
-                            field_type,
-                            &mut state_fields,
-                            &mut accessor_defs,
-                            &mut accessor_names,
-                            &mut primary_keys,
-                            &mut lookup_indexes,
-                            &mut sources_by_type,
-                            &mut field_mappings,
-                        );
+                match parse::parse_recognized_field_attribute(attr, &field_name_str)? {
+                    Some(parse::RecognizedFieldAttribute::Map(map_attrs))
+                    | Some(parse::RecognizedFieldAttribute::FromInstruction(map_attrs)) => {
+                        has_attrs = true;
+                        for map_attr in map_attrs {
+                            process_map_attribute(
+                                &map_attr,
+                                field_name,
+                                field_type,
+                                &mut state_fields,
+                                &mut accessor_defs,
+                                &mut accessor_names,
+                                &mut primary_keys,
+                                &mut lookup_indexes,
+                                &mut sources_by_type,
+                                &mut field_mappings,
+                            );
+                        }
                     }
-                } else if let Ok(Some(map_attrs)) =
-                    parse::parse_from_instruction_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
-                    for map_attr in map_attrs {
-                        process_map_attribute(
-                            &map_attr,
-                            field_name,
-                            field_type,
-                            &mut state_fields,
-                            &mut accessor_defs,
-                            &mut accessor_names,
-                            &mut primary_keys,
-                            &mut lookup_indexes,
-                            &mut sources_by_type,
-                            &mut field_mappings,
-                        );
+                    Some(parse::RecognizedFieldAttribute::Event(mut event_attr)) => {
+                        has_attrs = true;
+                        has_events = true;
+
+                        state_fields.push(quote! {
+                            pub #field_name: #field_type
+                        });
+
+                        if let Some((_instruction_path, instruction_str)) =
+                            determine_event_instruction(&mut event_attr, field_type, None)
+                        {
+                            events_by_instruction
+                                .entry(instruction_str)
+                                .or_default()
+                                .push((
+                                    event_attr.target_field_name.clone(),
+                                    event_attr,
+                                    field_type.clone(),
+                                ));
+                        } else {
+                            events_by_instruction
+                                .entry(event_attr.instruction.clone())
+                                .or_default()
+                                .push((
+                                    event_attr.target_field_name.clone(),
+                                    event_attr,
+                                    field_type.clone(),
+                                ));
+                        }
                     }
-                } else if let Ok(Some(mut event_attr)) =
-                    parse::parse_event_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
-                    has_events = true;
+                    Some(parse::RecognizedFieldAttribute::Resolve(resolve_attr)) => {
+                        has_attrs = true;
 
-                    state_fields.push(quote! {
-                        pub #field_name: #field_type
-                    });
+                        state_fields.push(quote! {
+                            pub #field_name: #field_type
+                        });
 
-                    // Determine instruction path (type-safe or legacy)
-                    if let Some((_instruction_path, instruction_str)) =
-                        determine_event_instruction(&mut event_attr, field_type, None)
-                    {
-                        events_by_instruction
-                            .entry(instruction_str)
-                            .or_default()
-                            .push((
-                                event_attr.target_field_name.clone(),
-                                event_attr,
-                                field_type.clone(),
-                            ));
-                    } else {
-                        // Fallback to legacy instruction string
-                        events_by_instruction
-                            .entry(event_attr.instruction.clone())
-                            .or_default()
-                            .push((
-                                event_attr.target_field_name.clone(),
-                                event_attr,
-                                field_type.clone(),
-                            ));
+                        let resolver = if let Some(url_path) = resolve_attr.url.clone() {
+                            let method = resolve_attr
+                                .method
+                                .as_deref()
+                                .map(|m| match m.to_lowercase().as_str() {
+                                    "post" => crate::ast::HttpMethod::Post,
+                                    _ => crate::ast::HttpMethod::Get,
+                                })
+                                .unwrap_or(crate::ast::HttpMethod::Get);
+
+                            let url_source = if resolve_attr.url_is_template {
+                                crate::ast::UrlSource::Template(super::entity::parse_url_template(
+                                    &url_path,
+                                    attr.span(),
+                                )?)
+                            } else {
+                                crate::ast::UrlSource::FieldPath(url_path)
+                            };
+
+                            crate::ast::ResolverType::Url(crate::ast::UrlResolverConfig {
+                                url_source,
+                                method,
+                                extract_path: resolve_attr.extract.clone(),
+                            })
+                        } else if let Some(name) = resolve_attr.resolver.as_deref() {
+                            parse_resolver_type_name(name, field_type)?
+                        } else {
+                            infer_resolver_type(field_type)?
+                        };
+
+                        resolve_specs.push(parse::ResolveSpec {
+                            attr_span: resolve_attr.attr_span,
+                            from_span: resolve_attr.from_span,
+                            resolver,
+                            from: if resolve_attr.url_is_template {
+                                None
+                            } else {
+                                resolve_attr.url.clone().or(resolve_attr.from)
+                            },
+                            address: resolve_attr.address,
+                            extract: resolve_attr.extract,
+                            target_field_name: resolve_attr.target_field_name,
+                            strategy: resolve_attr.strategy,
+                            condition: resolve_attr.condition,
+                            schedule_at: resolve_attr.schedule_at,
+                        });
                     }
-                } else if let Ok(Some(resolve_attr)) =
-                    parse::parse_resolve_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
-
-                    state_fields.push(quote! {
-                        pub #field_name: #field_type
-                    });
-
-                    let resolver = if let Some(name) = resolve_attr.resolver.as_deref() {
-                        parse_resolver_type_name(name, field_type)
-                    } else {
-                        infer_resolver_type(field_type)
-                    }
-                    .unwrap_or_else(|err| panic!("{}", err));
-
-                    resolve_specs.push(parse::ResolveSpec {
-                        resolver,
-                        from: resolve_attr.from,
-                        address: resolve_attr.address,
-                        extract: resolve_attr.extract,
-                        target_field_name: resolve_attr.target_field_name,
-                        strategy: resolve_attr.strategy,
-                        condition: resolve_attr.condition,
-                        schedule_at: resolve_attr.schedule_at,
-                    });
+                    Some(_) | None => {}
                 }
             }
 
@@ -173,11 +185,12 @@ pub fn process_struct_with_context(
                                 &mut events_by_instruction,
                                 &mut has_events,
                                 &mut computed_fields,
+                                &mut computed_field_validations,
                                 &mut resolve_specs,
                                 &mut derive_from_mappings,
                                 &mut aggregate_conditions,
                                 None,
-                            );
+                            )?;
                         }
                     }
                 }
@@ -219,11 +232,32 @@ pub fn process_struct_with_context(
         }
     }
 
+    let mut key_resolution_errors = crate::diagnostic::ErrorCollector::default();
+    validate_key_resolution_paths(
+        KeyResolutionValidationInput {
+            entity_name: &name.to_string(),
+            primary_keys: &primary_keys,
+            lookup_indexes: &lookup_indexes,
+            sources_by_type: &sources_by_type,
+            events_by_instruction: &events_by_instruction,
+            derive_from_mappings: &derive_from_mappings,
+            resolver_hooks: &[],
+        },
+        &mut key_resolution_errors,
+    );
+    key_resolution_errors.finish()?;
+
     let mut sources_by_type_and_join: HashMap<(String, Option<String>), Vec<parse::MapAttribute>> =
         HashMap::new();
     for (source_type, mappings) in &sources_by_type {
         for mapping in mappings {
-            let key = (source_type.clone(), mapping.join_on.clone());
+            let key = (
+                source_type.clone(),
+                mapping
+                    .join_on
+                    .as_ref()
+                    .map(|field_spec| field_spec.ident.to_string()),
+            );
             sources_by_type_and_join
                 .entry(key)
                 .or_default()
@@ -447,7 +481,7 @@ pub fn process_struct_with_context(
 
     let resolver_specs_code: Vec<_> = resolver_specs_by_key
         .into_iter()
-        .map(|((resolver, _input_key, strategy), specs)| {
+        .map(|((resolver, _input_key, strategy), specs)| -> syn::Result<proc_macro2::TokenStream> {
             let resolver_code = match resolver {
                 crate::ast::ResolverType::Token => quote! {
                     hyperstack::runtime::hyperstack_interpreter::ast::ResolverType::Token
@@ -539,9 +573,9 @@ pub fn process_struct_with_context(
                 })
                 .collect();
 
-            let condition_code = match specs.first().and_then(|s| s.condition.as_deref()) {
+            let condition_code = match specs.first().and_then(|s| s.condition.as_ref()) {
                 Some(cond_str) => {
-                    let parsed = super::ast_writer::parse_resolver_condition_from_str(cond_str);
+                    let parsed = &cond_str.parsed;
                     let field_path = &parsed.field_path;
                     let op_code = match parsed.op {
                         crate::ast::ComparisonOp::Equal => quote! { hyperstack::runtime::hyperstack_interpreter::ast::ComparisonOp::Equal },
@@ -573,11 +607,14 @@ pub fn process_struct_with_context(
             };
 
             let schedule_at_code = match specs.first().and_then(|s| s.schedule_at.as_ref()) {
-                Some(path) => quote! { Some(#path.to_string()) },
+                Some(path) => {
+                    let raw = &path.raw;
+                    quote! { Some(#raw.to_string()) }
+                }
                 None => quote! { None },
             };
 
-            quote! {
+            Ok(quote! {
                 hyperstack::runtime::hyperstack_interpreter::ast::ResolverSpec {
                     resolver: #resolver_code,
                     input_path: #input_path_code,
@@ -589,9 +626,9 @@ pub fn process_struct_with_context(
                     condition: #condition_code,
                     schedule_at: #schedule_at_code,
                 }
-            }
+            })
         })
-        .collect();
+        .collect::<syn::Result<Vec<_>>>()?;
 
     let output = quote! {
         #[derive(Debug, Clone, hyperstack::runtime::serde::Serialize, hyperstack::runtime::serde::Deserialize)]
@@ -628,5 +665,5 @@ pub fn process_struct_with_context(
         #(#handler_fns)*
     };
 
-    output.into()
+    Ok(output)
 }

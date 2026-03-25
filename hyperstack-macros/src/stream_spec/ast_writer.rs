@@ -13,17 +13,20 @@ use crate::ast::writer::{
     convert_idl_to_snapshot, parse_population_strategy, parse_transformation,
 };
 use crate::ast::{
-    ComparisonOp, ComputedFieldSpec, ConditionExpr, EntitySection, FieldPath, FieldTypeInfo,
-    HookAction, IdentitySpec, IdlSerializationSnapshot, InstructionHook, KeyResolutionStrategy,
+    ComputedFieldSpec, ConditionExpr, EntitySection, FieldPath, FieldTypeInfo, HookAction,
+    IdentitySpec, IdlSerializationSnapshot, InstructionHook, KeyResolutionStrategy,
     LookupIndexSpec, MappingSource, ResolveStrategy, ResolverCondition, ResolverExtractSpec,
     ResolverHook, ResolverSpec, ResolverStrategy, ResolverType, SerializableFieldMapping,
     SerializableHandlerSpec, SerializableStreamSpec, SourceSpec,
 };
+use crate::diagnostic::{idl_error_to_syn, internal_codegen_error};
 use crate::event_type_helpers::{find_idl_for_type, program_name_for_type, IdlLookup};
 use crate::parse;
 use crate::parse::conditions as condition_parser;
 use crate::parse::idl as idl_parser;
 use crate::utils::path_to_string;
+use hyperstack_idl::error::IdlSearchError;
+use hyperstack_idl::search::{lookup_account, lookup_instruction_field, InstructionFieldKind};
 
 use super::computed::{
     expr_contains_u64_from_bytes, extract_resolver_type_from_computed_expr,
@@ -67,13 +70,13 @@ pub fn build_ast(
     resolver_hooks: &[parse::ResolveKeyAttribute],
     pda_registrations: &[parse::RegisterPdaAttribute],
     derive_from_mappings: &HashMap<String, Vec<parse::DeriveFromAttribute>>,
-    aggregate_conditions: &HashMap<String, String>,
+    aggregate_conditions: &HashMap<String, ConditionExpr>,
     computed_fields: &[(String, proc_macro2::TokenStream, syn::Type)],
     resolve_specs: &[parse::ResolveSpec],
     section_specs: &[EntitySection],
     idls: IdlLookup,
     views: Vec<crate::ast::ViewDef>,
-) -> SerializableStreamSpec {
+) -> syn::Result<SerializableStreamSpec> {
     let idl = idls.first().map(|(_, idl)| *idl);
     let handlers = build_handlers(
         sources_by_type,
@@ -82,7 +85,7 @@ pub fn build_ast(
         lookup_indexes,
         aggregate_conditions,
         idls,
-    );
+    )?;
 
     let mut resolver_hooks_ast = build_resolver_hooks_ast(resolver_hooks, idls);
     resolver_hooks_ast.extend(auto_generate_lookup_resolvers(
@@ -136,7 +139,7 @@ pub fn build_ast(
         })
         .collect();
 
-    let resolver_specs = build_resolver_specs(resolve_specs);
+    let resolver_specs = build_resolver_specs(resolve_specs)?;
 
     // Build field_mappings from sections - this provides type information for ALL fields
     let mut field_mappings = BTreeMap::new();
@@ -227,11 +230,16 @@ pub fn build_ast(
         views,
     };
     // Compute and set the content hash
-    spec.content_hash = Some(spec.compute_content_hash());
-    spec
+    spec.content_hash = Some(spec.try_compute_content_hash().map_err(|error| {
+        internal_codegen_error(
+            proc_macro2::Span::call_site(),
+            format!("failed to serialize stream spec for hashing: {error}"),
+        )
+    })?);
+    Ok(spec)
 }
 
-fn build_resolver_specs(resolve_specs: &[parse::ResolveSpec]) -> Vec<ResolverSpec> {
+fn build_resolver_specs(resolve_specs: &[parse::ResolveSpec]) -> syn::Result<Vec<ResolverSpec>> {
     let mut grouped: BTreeMap<String, ResolverSpec> = BTreeMap::new();
 
     for spec in resolve_specs {
@@ -242,8 +250,16 @@ fn build_resolver_specs(resolve_specs: &[parse::ResolveSpec]) -> Vec<ResolverSpe
         } else {
             "value:".to_string()
         };
-        let condition_key = spec.condition.as_deref().unwrap_or("");
-        let schedule_key = spec.schedule_at.as_deref().unwrap_or("");
+        let condition_key = spec
+            .condition
+            .as_ref()
+            .map(|condition| condition.expression.as_str())
+            .unwrap_or("");
+        let schedule_key = spec
+            .schedule_at
+            .as_ref()
+            .map(|path| path.raw.as_str())
+            .unwrap_or("");
         let key = format!(
             "{}::{}::{}::{}::{}",
             resolver_type_key(&spec.resolver),
@@ -255,8 +271,8 @@ fn build_resolver_specs(resolve_specs: &[parse::ResolveSpec]) -> Vec<ResolverSpe
 
         let condition = spec
             .condition
-            .as_deref()
-            .map(|s| parse_resolver_condition(s).unwrap_or_else(|e| panic!("{}", e)));
+            .as_ref()
+            .map(|condition| condition.parsed.clone());
 
         let entry = grouped.entry(key).or_insert_with(|| ResolverSpec {
             resolver: spec.resolver.clone(),
@@ -268,7 +284,7 @@ fn build_resolver_specs(resolve_specs: &[parse::ResolveSpec]) -> Vec<ResolverSpe
             strategy: parse_resolve_strategy(&spec.strategy),
             extracts: Vec::new(),
             condition,
-            schedule_at: spec.schedule_at.clone(),
+            schedule_at: spec.schedule_at.as_ref().map(|path| path.raw.clone()),
         });
 
         let source_path = spec.extract.clone();
@@ -287,7 +303,7 @@ fn build_resolver_specs(resolve_specs: &[parse::ResolveSpec]) -> Vec<ResolverSpe
         }
     }
 
-    grouped.into_values().collect()
+    Ok(grouped.into_values().collect())
 }
 
 fn parse_resolve_strategy(strategy: &str) -> ResolveStrategy {
@@ -297,49 +313,10 @@ fn parse_resolve_strategy(strategy: &str) -> ResolveStrategy {
     }
 }
 
-pub fn parse_resolver_condition_from_str(s: &str) -> ResolverCondition {
-    parse_resolver_condition(s).unwrap_or_else(|e| panic!("{}", e))
-}
-
-fn parse_resolver_condition(s: &str) -> Result<ResolverCondition, String> {
-    // Order matters: two-char operators (>=, <=) must precede single-char (>, <)
-    // to avoid partial matches.
-    let operators = ["==", "!=", ">=", "<=", ">", "<"];
-    for op_str in &operators {
-        if let Some(pos) = s.find(op_str) {
-            let field_path = s[..pos].trim().to_string();
-            let raw_value = s[pos + op_str.len()..].trim();
-            let op = match *op_str {
-                "==" => ComparisonOp::Equal,
-                "!=" => ComparisonOp::NotEqual,
-                ">=" => ComparisonOp::GreaterThanOrEqual,
-                "<=" => ComparisonOp::LessThanOrEqual,
-                ">" => ComparisonOp::GreaterThan,
-                "<" => ComparisonOp::LessThan,
-                _ => unreachable!(),
-            };
-            let value = match raw_value {
-                "null" => serde_json::Value::Null,
-                "true" => serde_json::Value::Bool(true),
-                "false" => serde_json::Value::Bool(false),
-                s if s.parse::<f64>().is_ok() => {
-                    serde_json::json!(s.parse::<f64>().unwrap())
-                }
-                s => serde_json::Value::String(s.trim_matches('"').to_string()),
-            };
-            return Ok(ResolverCondition {
-                field_path,
-                op,
-                value,
-            });
-        }
-    }
-    Err(format!(
-        "Invalid condition expression: '{}'. \
-         Expected format: 'field.path <op> value' \
-         (supported operators: ==, !=, >, >=, <, <=)",
-        s
-    ))
+#[allow(dead_code)]
+pub fn parse_resolver_condition_from_str(s: &str) -> syn::Result<ResolverCondition> {
+    condition_parser::parse_resolver_condition_expression(s)
+        .map_err(|error| syn::Error::new(proc_macro2::Span::call_site(), error))
 }
 
 fn resolver_type_key(resolver: &ResolverType) -> String {
@@ -376,13 +353,13 @@ pub fn build_and_write_ast(
     resolver_hooks: &[parse::ResolveKeyAttribute],
     pda_registrations: &[parse::RegisterPdaAttribute],
     derive_from_mappings: &HashMap<String, Vec<parse::DeriveFromAttribute>>,
-    aggregate_conditions: &HashMap<String, String>,
+    aggregate_conditions: &HashMap<String, ConditionExpr>,
     computed_fields: &[(String, proc_macro2::TokenStream, syn::Type)],
     resolve_specs: &[parse::ResolveSpec],
     section_specs: &[EntitySection],
     idls: IdlLookup,
     views: Vec<crate::ast::ViewDef>,
-) -> SerializableStreamSpec {
+) -> syn::Result<SerializableStreamSpec> {
     build_ast(
         entity_name,
         primary_keys,
@@ -410,9 +387,9 @@ fn build_handlers(
     events_by_instruction: &HashMap<String, Vec<(String, parse::EventAttribute, syn::Type)>>,
     primary_keys: &[String],
     lookup_indexes: &[(String, Option<String>)],
-    aggregate_conditions: &HashMap<String, String>,
+    aggregate_conditions: &HashMap<String, ConditionExpr>,
     idls: IdlLookup,
-) -> Vec<SerializableHandlerSpec> {
+) -> syn::Result<Vec<SerializableHandlerSpec>> {
     let mut handlers = Vec::new();
 
     // Group sources by type and join key
@@ -420,7 +397,13 @@ fn build_handlers(
         BTreeMap::new();
     for (source_type, mappings) in sources_by_type {
         for mapping in mappings {
-            let key = (source_type.clone(), mapping.join_on.clone());
+            let key = (
+                source_type.clone(),
+                mapping
+                    .join_on
+                    .as_ref()
+                    .map(|field_spec| field_spec.ident.to_string()),
+            );
             sources_by_type_and_join
                 .entry(key)
                 .or_default()
@@ -437,7 +420,7 @@ fn build_handlers(
             primary_keys,
             lookup_indexes,
             idls,
-        ) {
+        )? {
             handlers.push(handler);
         }
     }
@@ -467,23 +450,23 @@ fn build_handlers(
             primary_keys,
             lookup_indexes,
             idls,
-        ) {
+        )? {
             handlers.push(handler);
         }
     }
 
-    handlers
+    Ok(handlers)
 }
 
 fn build_source_handler(
     source_type: &str,
     join_key: &Option<String>,
     mappings: &[parse::MapAttribute],
-    aggregate_conditions: &HashMap<String, String>,
+    aggregate_conditions: &HashMap<String, ConditionExpr>,
     primary_keys: &[String],
     lookup_indexes: &[(String, Option<String>)],
     idls: IdlLookup,
-) -> Option<SerializableHandlerSpec> {
+) -> syn::Result<Option<SerializableHandlerSpec>> {
     let account_type = source_type.split("::").last().unwrap_or(source_type);
     let idl = find_idl_for_type(source_type, idls);
     let program_name = program_name_for_type(source_type, idls);
@@ -498,7 +481,14 @@ fn build_source_handler(
             .iter()
             .any(|m| m.target_field_name.starts_with("events."))
     {
-        return None;
+        return Ok(None);
+    }
+
+    if !is_instruction && !is_cpi_event {
+        if let Some(idl) = idl {
+            lookup_account(idl, account_type)
+                .map_err(|error| idl_error_to_syn(mappings[0].source_type_span, error))?;
+        }
     }
 
     let mut serializable_mappings = Vec::new();
@@ -548,14 +538,23 @@ fn build_source_handler(
                 if mapping.source_field_name.is_empty() {
                     FieldPath::new(&["data"])
                 } else {
-                    let prefix = idl
-                        .and_then(|idl| {
-                            idl.get_instruction_field_prefix(
-                                account_type,
-                                &mapping.source_field_name,
-                            )
-                        })
-                        .unwrap_or("data");
+                    let prefix = if let Some(idl) = idl {
+                        match lookup_instruction_field(
+                            idl,
+                            account_type,
+                            &mapping.source_field_name,
+                        )
+                        .map_err(|error| {
+                            idl_error_to_syn(span_for_map_lookup_error(mapping, &error), error)
+                        })?
+                        .kind
+                        {
+                            InstructionFieldKind::Account => "accounts",
+                            InstructionFieldKind::Arg => "data",
+                        }
+                    } else {
+                        "data"
+                    };
                     FieldPath::new(&[prefix, &mapping.source_field_name])
                 }
             } else if mapping.source_field_name.is_empty() {
@@ -576,10 +575,7 @@ fn build_source_handler(
 
         let population = parse_population_strategy(&mapping.strategy);
 
-        let condition = mapping.condition.as_ref().map(|cond| ConditionExpr {
-            expression: cond.clone(),
-            parsed: condition_parser::parse_condition_expression(cond),
-        });
+        let condition = mapping.condition.clone();
 
         let when = mapping.when.as_ref().map(|when_path| {
             let instr_type = path_to_string(when_path);
@@ -620,11 +616,19 @@ fn build_source_handler(
                 // CPI event fields are always in "data"
                 primary_field = Some(format!("data.{}", mapping.source_field_name));
             } else if is_instruction {
-                let prefix = idl
-                    .and_then(|idl| {
-                        idl.get_instruction_field_prefix(account_type, &mapping.source_field_name)
-                    })
-                    .unwrap_or("data");
+                let prefix = if let Some(idl) = idl {
+                    match lookup_instruction_field(idl, account_type, &mapping.source_field_name)
+                        .map_err(|error| {
+                            idl_error_to_syn(span_for_map_lookup_error(mapping, &error), error)
+                        })?
+                        .kind
+                    {
+                        InstructionFieldKind::Account => "accounts",
+                        InstructionFieldKind::Arg => "data",
+                    }
+                } else {
+                    "data"
+                };
                 primary_field = Some(format!("{}.{}", prefix, mapping.source_field_name));
             } else {
                 primary_field = Some(mapping.source_field_name.clone());
@@ -760,7 +764,7 @@ fn build_source_handler(
         format!("{}{}", account_type, type_suffix)
     };
 
-    Some(SerializableHandlerSpec {
+    Ok(Some(SerializableHandlerSpec {
         source: SourceSpec::Source {
             program_id: None,
             discriminator: None,
@@ -772,7 +776,44 @@ fn build_source_handler(
         mappings: serializable_mappings,
         conditions: Vec::new(),
         emit: true,
-    })
+    }))
+}
+
+fn span_for_map_lookup_error(
+    mapping: &parse::MapAttribute,
+    error: &IdlSearchError,
+) -> proc_macro2::Span {
+    match error {
+        IdlSearchError::NotFound { section, .. }
+            if section == "instructions" || section == "accounts" || section == "types" =>
+        {
+            mapping.source_type_span
+        }
+        IdlSearchError::NotFound { section, .. } if section.starts_with("instruction fields") => {
+            mapping.source_field_span
+        }
+        IdlSearchError::InvalidPath { .. } => mapping.attr_span,
+        _ => mapping.attr_span,
+    }
+}
+
+fn span_for_event_lookup_error(
+    event_attr: &parse::EventAttribute,
+    field_spec: &parse::FieldSpec,
+    error: &IdlSearchError,
+) -> proc_macro2::Span {
+    match error {
+        IdlSearchError::NotFound { section, .. } if section == "instructions" => {
+            event_attr.instruction_span.unwrap_or(event_attr.attr_span)
+        }
+        IdlSearchError::NotFound { section, .. } if section.starts_with("instruction fields") => {
+            field_spec.ident.span()
+        }
+        IdlSearchError::InvalidPath { .. } => {
+            event_attr.instruction_span.unwrap_or(event_attr.attr_span)
+        }
+        _ => field_spec.ident.span(),
+    }
 }
 
 fn build_event_handler(
@@ -782,7 +823,7 @@ fn build_event_handler(
     primary_keys: &[String],
     lookup_indexes: &[(String, Option<String>)],
     idls: IdlLookup,
-) -> Option<SerializableHandlerSpec> {
+) -> syn::Result<Option<SerializableHandlerSpec>> {
     let instruction_path_str = event_mappings
         .first()
         .and_then(|(_, attr, _)| {
@@ -803,12 +844,22 @@ fn build_event_handler(
     };
     let parts: Vec<&str> = instruction.split("::").collect();
     if parts.len() != 2 {
-        return None;
+        return Ok(None);
     }
 
     let program_id = parts[0];
     let instruction_type = parts[1];
     let instruction_type_pascal = idl_parser::to_pascal_case(instruction_type);
+
+    let field_resolves_key = |field_name: &str| {
+        primary_keys
+            .iter()
+            .any(|pk| pk.split('.').next_back().unwrap_or(pk) == field_name)
+            || lookup_indexes.iter().any(|(field, _)| {
+                let leaf = field.split('.').next_back().unwrap_or(field);
+                leaf == field_name || leaf.strip_suffix("_address") == Some(field_name)
+            })
+    };
 
     let mut serializable_mappings = Vec::new();
 
@@ -822,7 +873,7 @@ fn build_event_handler(
             let captured_fields: Vec<MappingSource> = event_attr
                 .capture_fields
                 .iter()
-                .map(|field_spec| {
+                .map(|field_spec| -> syn::Result<MappingSource> {
                     let field_name = field_spec.ident.to_string();
                     let transform = event_attr
                         .field_transforms
@@ -838,8 +889,14 @@ fn build_event_handler(
                             .or(event_attr.inferred_instruction.as_ref());
 
                         if let Some(instr_path) = instruction_path {
-                            find_field_in_instruction(instr_path, &field_name, idl)
-                                .unwrap_or(parse::FieldLocation::InstructionArg)
+                            find_field_in_instruction(instr_path, &field_name, idl).map_err(
+                                |error| {
+                                    idl_error_to_syn(
+                                        span_for_event_lookup_error(event_attr, field_spec, &error),
+                                        error,
+                                    )
+                                },
+                            )?
                         } else {
                             parse::FieldLocation::InstructionArg
                         }
@@ -852,13 +909,13 @@ fn build_event_handler(
                         }
                     };
 
-                    MappingSource::FromSource {
+                    Ok(MappingSource::FromSource {
                         path: field_path,
                         default: None,
                         transform,
-                    }
+                    })
                 })
-                .collect();
+                .collect::<syn::Result<Vec<_>>>()?;
 
             MappingSource::AsEvent {
                 fields: captured_fields,
@@ -905,7 +962,14 @@ fn build_event_handler(
             join_field_name.clone(),
             parse::FieldLocation::InstructionArg,
         )
-    } else if let Some((_, first_event_attr, _)) = event_mappings.first() {
+    } else if let Some((_, first_event_attr, _)) =
+        event_mappings.iter().find(|(_, event_attr, _)| {
+            event_attr
+                .lookup_by
+                .as_ref()
+                .is_some_and(|field_spec| field_resolves_key(&field_spec.ident.to_string()))
+        })
+    {
         if let Some(ref lookup_by_field_spec) = first_event_attr.lookup_by {
             let field_name = lookup_by_field_spec.ident.to_string();
 
@@ -919,8 +983,52 @@ fn build_event_handler(
                     .or(first_event_attr.inferred_instruction.as_ref());
 
                 if let Some(instr_path) = instruction_path {
-                    find_field_in_instruction(instr_path, &field_name, idl)
-                        .unwrap_or(parse::FieldLocation::InstructionArg)
+                    find_field_in_instruction(instr_path, &field_name, idl).map_err(|error| {
+                        idl_error_to_syn(
+                            span_for_event_lookup_error(
+                                first_event_attr,
+                                lookup_by_field_spec,
+                                &error,
+                            ),
+                            error,
+                        )
+                    })?
+                } else {
+                    parse::FieldLocation::InstructionArg
+                }
+            };
+
+            (field_name, field_location)
+        } else {
+            (String::new(), parse::FieldLocation::InstructionArg)
+        }
+    } else if let Some((_, first_event_attr, _)) = event_mappings
+        .iter()
+        .find(|(_, event_attr, _)| event_attr.lookup_by.is_some())
+    {
+        if let Some(ref lookup_by_field_spec) = first_event_attr.lookup_by {
+            let field_name = lookup_by_field_spec.ident.to_string();
+
+            let field_location = if let Some(explicit_loc) = &lookup_by_field_spec.explicit_location
+            {
+                explicit_loc.clone()
+            } else {
+                let instruction_path = first_event_attr
+                    .from_instruction
+                    .as_ref()
+                    .or(first_event_attr.inferred_instruction.as_ref());
+
+                if let Some(instr_path) = instruction_path {
+                    find_field_in_instruction(instr_path, &field_name, idl).map_err(|error| {
+                        idl_error_to_syn(
+                            span_for_event_lookup_error(
+                                first_event_attr,
+                                lookup_by_field_spec,
+                                &error,
+                            ),
+                            error,
+                        )
+                    })?
                 } else {
                     parse::FieldLocation::InstructionArg
                 }
@@ -985,7 +1093,7 @@ fn build_event_handler(
         format!("{}IxState", instruction_type_pascal)
     };
 
-    Some(SerializableHandlerSpec {
+    Ok(Some(SerializableHandlerSpec {
         source: SourceSpec::Source {
             program_id: Some(program_id.to_string()),
             discriminator: None,
@@ -997,7 +1105,7 @@ fn build_event_handler(
         mappings: serializable_mappings,
         conditions: Vec::new(),
         emit: true,
-    })
+    }))
 }
 
 // ============================================================================
@@ -1140,7 +1248,7 @@ fn auto_generate_lookup_resolvers(
 fn build_instruction_hooks_ast(
     pda_registrations: &[parse::RegisterPdaAttribute],
     derive_from_mappings: &HashMap<String, Vec<parse::DeriveFromAttribute>>,
-    aggregate_conditions: &HashMap<String, String>,
+    aggregate_conditions: &HashMap<String, ConditionExpr>,
     sources_by_type: &HashMap<String, Vec<parse::MapAttribute>>,
     idls: IdlLookup,
 ) -> Vec<InstructionHook> {
@@ -1225,10 +1333,7 @@ fn build_instruction_hooks_ast(
                 }
             };
 
-            let condition = derive_attr.condition.as_ref().map(|cond| ConditionExpr {
-                expression: cond.clone(),
-                parsed: condition_parser::parse_condition_expression(cond),
-            });
+            let condition = derive_attr.condition.clone();
 
             let action = HookAction::SetField {
                 target_field: derive_attr.target_field_name.clone(),
@@ -1330,7 +1435,7 @@ fn build_instruction_hooks_ast(
 
     let mut sorted_aggregate_conditions: Vec<_> = aggregate_conditions.iter().collect();
     sorted_aggregate_conditions.sort_by_key(|(k, _)| *k);
-    for (field_path, condition_str) in sorted_aggregate_conditions {
+    for (field_path, condition_expr) in sorted_aggregate_conditions {
         for (source_type, mappings) in &sorted_sources {
             for mapping in *mappings {
                 if &mapping.target_field_name == field_path
@@ -1348,10 +1453,7 @@ fn build_instruction_hooks_ast(
                         format!("{}IxState", instr_base)
                     };
 
-                    let condition = ConditionExpr {
-                        expression: condition_str.clone(),
-                        parsed: condition_parser::parse_condition_expression(condition_str),
-                    };
+                    let condition = condition_expr.clone();
 
                     if mapping.strategy == "Count" {
                         let action = HookAction::IncrementField {

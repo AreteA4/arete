@@ -4,11 +4,15 @@
 
 #![allow(dead_code)]
 
+use proc_macro2::Span;
 use std::collections::HashMap;
 use syn::parse::{Parse, ParseStream};
+use syn::spanned::Spanned;
 use syn::{Attribute, Path, Token};
 
-use crate::ast::ResolverType;
+use crate::ast::{ConditionExpr, FieldPath, ResolverCondition, ResolverType};
+use crate::diagnostic::{invalid_choice_message, ErrorCollector};
+use crate::parse::conditions as condition_parser;
 
 #[derive(Debug, Clone)]
 pub struct RegisterFromSpec {
@@ -19,6 +23,12 @@ pub struct RegisterFromSpec {
 
 #[derive(Debug, Clone)]
 pub struct MapAttribute {
+    pub attr_span: Span,
+    pub source_type_span: Span,
+    pub source_field_span: Span,
+    // Set when #[event(...)] handlers are normalized into MapAttribute values.
+    pub is_event_source: bool,
+    pub is_account_source: bool,
     pub source_type_path: Path,
     pub source_field_name: String,
     pub target_field_name: String,
@@ -27,7 +37,7 @@ pub struct MapAttribute {
     pub register_from: Vec<RegisterFromSpec>,
     pub temporal_field: Option<String>,
     pub strategy: String,
-    pub join_on: Option<String>,
+    pub join_on: Option<FieldSpec>,
     pub transform: Option<String>,
     /// Resolver transform: a parameterized transform like `ui_amount(ore_metadata.decimals)`
     /// that expands into a hidden raw field + synthesized computed field.
@@ -35,7 +45,7 @@ pub struct MapAttribute {
     pub is_instruction: bool,
     pub is_whole_source: bool,
     pub lookup_by: Option<FieldSpec>,
-    pub condition: Option<String>,
+    pub condition: Option<ConditionExpr>,
     pub when: Option<Path>,
     pub stop: Option<Path>,
     pub stop_lookup_by: Option<FieldSpec>,
@@ -53,6 +63,8 @@ pub struct ResolverTransformSpec {
 
 #[derive(Debug, Clone)]
 pub struct EventAttribute {
+    pub attr_span: Span,
+    pub instruction_span: Option<Span>,
     // New type-safe fields
     pub from_instruction: Option<Path>, // Explicit source via `from = ...`
     pub inferred_instruction: Option<Path>, // Inferred from field type
@@ -73,6 +85,7 @@ pub struct EventAttribute {
 
 #[derive(Debug, Clone)]
 pub struct CaptureAttribute {
+    pub attr_span: Span,
     // Type-safe fields for account capture
     pub from_account: Option<Path>, // Explicit source via `from = ...`
     pub inferred_account: Option<Path>, // Inferred from field type
@@ -92,6 +105,20 @@ pub struct CaptureAttribute {
 }
 
 #[derive(Debug, Clone)]
+pub struct ValidatedFieldPath {
+    pub raw: String,
+    pub parsed: FieldPath,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatedResolverCondition {
+    pub expression: String,
+    pub parsed: ResolverCondition,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub struct FieldSpec {
     pub ident: syn::Ident,
     pub explicit_location: Option<FieldLocation>, // For accounts::mint syntax
@@ -101,6 +128,75 @@ pub struct FieldSpec {
 pub enum FieldLocation {
     InstructionArg,
     Account,
+}
+
+fn validate_strategy<T: quote::ToTokens>(
+    attr_name: &str,
+    strategy: String,
+    tokens: &T,
+    allowed: &[&str],
+) -> syn::Result<String> {
+    if allowed.contains(&strategy.as_str()) {
+        Ok(strategy)
+    } else {
+        Err(syn::Error::new_spanned(
+            tokens,
+            invalid_choice_message("strategy", &strategy, attr_name, allowed),
+        ))
+    }
+}
+
+fn parse_condition_literal(literal: &syn::LitStr) -> syn::Result<ConditionExpr> {
+    let expression = literal.value();
+    let parsed = condition_parser::parse_condition_expression_strict(&expression)
+        .map_err(|error| syn::Error::new_spanned(literal, error))?;
+
+    Ok(ConditionExpr {
+        expression,
+        parsed: Some(parsed),
+    })
+}
+
+fn parse_resolver_condition_literal(
+    literal: &syn::LitStr,
+) -> syn::Result<ValidatedResolverCondition> {
+    let expression = literal.value();
+    let parsed = condition_parser::parse_resolver_condition_expression(&expression)
+        .map_err(|error| syn::Error::new_spanned(literal, error))?;
+
+    Ok(ValidatedResolverCondition {
+        expression,
+        parsed,
+        span: literal.span(),
+    })
+}
+
+fn field_path_to_string(path: &FieldPath) -> String {
+    path.segments.join(".")
+}
+
+fn parse_validated_field_path(input: ParseStream) -> syn::Result<ValidatedFieldPath> {
+    let mut segments = Vec::new();
+    let first: syn::Ident = input.parse()?;
+    let mut last_span = first.span();
+    segments.push(first.to_string());
+
+    while input.peek(Token![.]) {
+        input.parse::<Token![.]>()?;
+        let next: syn::Ident = input.parse()?;
+        last_span = next.span();
+        segments.push(next.to_string());
+    }
+
+    let span = first.span().join(last_span).unwrap_or(first.span());
+
+    let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
+    let parsed = FieldPath::new(&refs);
+    Ok(ValidatedFieldPath {
+        raw: field_path_to_string(&parsed),
+        parsed,
+        span,
+    })
 }
 
 impl MapAttribute {
@@ -114,6 +210,39 @@ impl MapAttribute {
     }
 }
 
+fn parse_join_on_literal(literal: &syn::LitStr) -> syn::Result<FieldSpec> {
+    let value = literal.value();
+    let ident = syn::parse_str::<syn::Ident>(&value).map_err(|_| {
+        syn::Error::new(
+            literal.span(),
+            format!(
+                "`join_on` value '{}' is not a valid identifier. Use a bare identifier (e.g. `join_on = mint`).",
+                value
+            ),
+        )
+    })?;
+    Ok(FieldSpec {
+        ident,
+        explicit_location: None,
+    })
+}
+
+fn classify_source_type_path(path: &Path) -> (bool, bool) {
+    // We assume Anchor-style SDK paths expose explicit `instructions` / `accounts`
+    // segments. Re-exports or custom module layouts fall back to `Other`, which
+    // keeps macro expansion working but skips IDL-backed source field validation.
+    let has_instructions_segment = path
+        .segments
+        .iter()
+        .any(|segment| segment.ident == "instructions");
+    let has_accounts_segment = path
+        .segments
+        .iter()
+        .any(|segment| segment.ident == "accounts");
+
+    (has_instructions_segment, has_accounts_segment)
+}
+
 struct MapAttributeArgs {
     source_paths: Vec<Path>,
     is_primary_key: bool,
@@ -122,10 +251,10 @@ struct MapAttributeArgs {
     temporal_field: Option<String>,
     strategy: Option<String>,
     rename: Option<String>,
-    join_on: Option<String>,
+    join_on: Option<FieldSpec>,
     transform: Option<String>,
     resolver_transform: Option<ResolverTransformSpec>,
-    condition: Option<String>,
+    condition: Option<syn::LitStr>,
     when: Option<Path>,
     stop: Option<Path>,
     stop_lookup_by: Option<FieldSpec>,
@@ -198,8 +327,12 @@ impl Parse for MapAttributeArgs {
                     rename = Some(rename_lit.value());
                 } else if ident_str == "join_on" {
                     input.parse::<Token![=]>()?;
-                    let join_on_lit: syn::LitStr = input.parse()?;
-                    join_on = Some(join_on_lit.value());
+                    if input.peek(syn::LitStr) {
+                        let join_on_lit: syn::LitStr = input.parse()?;
+                        join_on = Some(parse_join_on_literal(&join_on_lit)?);
+                    } else {
+                        join_on = Some(parse_field_spec(input)?);
+                    }
                 } else if ident_str == "transform" {
                     input.parse::<Token![=]>()?;
                     let transform_ident: syn::Ident = input.parse()?;
@@ -217,7 +350,7 @@ impl Parse for MapAttributeArgs {
                 } else if ident_str == "condition" {
                     input.parse::<Token![=]>()?;
                     let condition_lit: syn::LitStr = input.parse()?;
-                    condition = Some(condition_lit.value());
+                    condition = Some(condition_lit);
                 } else if ident_str == "when" {
                     input.parse::<Token![=]>()?;
                     let when_path: Path = input.parse()?;
@@ -281,26 +414,29 @@ pub fn parse_map_attribute(
         ));
     }
 
-    let strategy = args.strategy.unwrap_or_else(|| "SetOnce".to_string());
-    if strategy != "SetOnce" && strategy != "LastWrite" {
-        return Err(syn::Error::new_spanned(
-            attr,
-            format!(
-                "Invalid strategy '{}' for #[resolve]. Only 'SetOnce' or 'LastWrite' are allowed.",
-                strategy
-            ),
-        ));
-    }
+    let strategy = validate_strategy(
+        "#[map]",
+        args.strategy.unwrap_or_else(|| "SetOnce".to_string()),
+        attr,
+        &["SetOnce", "LastWrite"],
+    )?;
     let target_name = args.rename.unwrap_or_else(|| target_field_name.to_string());
     let emit = args.emit.unwrap_or(true);
 
     let mut results = Vec::new();
     for source_path in args.source_paths {
-        let (source_type_path, source_field_name) = split_source_path(&source_path)?;
+        let split = split_source_path(&source_path)?;
+        let (is_instruction, is_account_source) =
+            classify_source_type_path(&split.source_type_path);
 
         results.push(MapAttribute {
-            source_type_path,
-            source_field_name,
+            attr_span: attr.span(),
+            source_type_span: split.source_type_span,
+            source_field_span: split.source_field_span,
+            is_event_source: false,
+            is_account_source,
+            source_type_path: split.source_type_path,
+            source_field_name: split.source_field_name,
             target_field_name: target_name.clone(),
             is_primary_key: args.is_primary_key,
             is_lookup_index: args.is_lookup_index,
@@ -310,10 +446,14 @@ pub fn parse_map_attribute(
             join_on: args.join_on.clone(),
             transform: args.transform.clone(),
             resolver_transform: args.resolver_transform.clone(),
-            is_instruction: false,
+            is_instruction,
             is_whole_source: false,
             lookup_by: None,
-            condition: args.condition.clone(),
+            condition: args
+                .condition
+                .as_ref()
+                .map(parse_condition_literal)
+                .transpose()?,
             when: args.when.clone(),
             stop: args.stop.clone(),
             stop_lookup_by: args.stop_lookup_by.clone(),
@@ -341,17 +481,27 @@ pub fn parse_from_instruction_attribute(
         ));
     }
 
-    let strategy = args.strategy.unwrap_or_else(|| "SetOnce".to_string());
+    let strategy = validate_strategy(
+        "#[from_instruction]",
+        args.strategy.unwrap_or_else(|| "SetOnce".to_string()),
+        attr,
+        &["SetOnce", "LastWrite"],
+    )?;
     let target_name = args.rename.unwrap_or_else(|| target_field_name.to_string());
     let emit = args.emit.unwrap_or(true);
 
     let mut results = Vec::new();
     for source_path in args.source_paths {
-        let (source_type_path, source_field_name) = split_source_path(&source_path)?;
+        let split = split_source_path(&source_path)?;
 
         results.push(MapAttribute {
-            source_type_path,
-            source_field_name,
+            attr_span: attr.span(),
+            source_type_span: split.source_type_span,
+            source_field_span: split.source_field_span,
+            is_event_source: false,
+            is_account_source: false,
+            source_type_path: split.source_type_path,
+            source_field_name: split.source_field_name,
             target_field_name: target_name.clone(),
             is_primary_key: args.is_primary_key,
             is_lookup_index: args.is_lookup_index,
@@ -364,7 +514,11 @@ pub fn parse_from_instruction_attribute(
             is_instruction: true,
             is_whole_source: false,
             lookup_by: None,
-            condition: args.condition.clone(),
+            condition: args
+                .condition
+                .as_ref()
+                .map(parse_condition_literal)
+                .transpose()?,
             when: args.when.clone(),
             stop: args.stop.clone(),
             stop_lookup_by: args.stop_lookup_by.clone(),
@@ -375,7 +529,14 @@ pub fn parse_from_instruction_attribute(
     Ok(Some(results))
 }
 
-fn split_source_path(path: &Path) -> syn::Result<(Path, String)> {
+struct SplitSourcePath {
+    source_type_path: Path,
+    source_type_span: Span,
+    source_field_name: String,
+    source_field_span: Span,
+}
+
+fn split_source_path(path: &Path) -> syn::Result<SplitSourcePath> {
     if path.segments.len() < 2 {
         return Err(syn::Error::new_spanned(
             path,
@@ -383,22 +544,37 @@ fn split_source_path(path: &Path) -> syn::Result<(Path, String)> {
         ));
     }
 
-    let field_name = path.segments.last().unwrap().ident.to_string();
+    let field_segment = path.segments.last().unwrap();
+    let field_name = field_segment.ident.to_string();
+    let field_span = field_segment.ident.span();
 
     let mut type_path = path.clone();
     type_path.segments.pop();
 
-    Ok((type_path, field_name))
+    let type_span = type_path
+        .segments
+        .last()
+        .map(|segment| segment.ident.span())
+        .unwrap_or_else(Span::call_site);
+
+    Ok(SplitSourcePath {
+        source_type_path: type_path,
+        source_type_span: type_span,
+        source_field_name: field_name,
+        source_field_span: field_span,
+    })
 }
 
 struct EventAttributeArgs {
     // New type-safe syntax
     from: Option<Path>,
+    from_span: Option<Span>,
     fields: Option<Vec<FieldSpec>>,
     transforms: Option<Vec<FieldTransform>>,
 
     // Backward compatibility
     instruction: Option<String>,
+    instruction_span: Option<Span>,
     capture: Option<Vec<String>>,
     transforms_legacy: Option<HashMap<String, String>>,
 
@@ -417,10 +593,12 @@ struct FieldTransform {
 impl Parse for EventAttributeArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut from = None;
+        let mut from_span = None;
         let mut fields = None;
         let mut transforms = None;
         let mut transforms_legacy = None;
         let mut instruction = None;
+        let mut instruction_span = None;
         let mut capture = None;
         let mut strategy = None;
         let mut rename = None;
@@ -435,7 +613,9 @@ impl Parse for EventAttributeArgs {
 
             if ident_str == "from" {
                 // New: from = InstructionType
-                from = Some(input.parse()?);
+                let parsed: Path = input.parse()?;
+                from_span = Some(parsed.span());
+                from = Some(parsed);
             } else if ident_str == "fields" {
                 // New: fields = [ident1, ident2] or fields = [accounts::ident1, args::ident2]
                 let content;
@@ -453,6 +633,7 @@ impl Parse for EventAttributeArgs {
             } else if ident_str == "instruction" {
                 // Legacy: instruction = "string"
                 let lit: syn::LitStr = input.parse()?;
+                instruction_span = Some(lit.span());
                 instruction = Some(lit.value());
             } else if ident_str == "capture" {
                 // Legacy/Alias for fields: capture = ["string1", "string2"]
@@ -532,14 +713,9 @@ impl Parse for EventAttributeArgs {
                 let rename_lit: syn::LitStr = input.parse()?;
                 rename = Some(rename_lit.value());
             } else if ident_str == "join_on" {
-                // Try identifier first, fall back to string
                 if input.peek(syn::LitStr) {
                     let join_on_lit: syn::LitStr = input.parse()?;
-                    let ident = syn::Ident::new(&join_on_lit.value(), join_on_lit.span());
-                    join_on = Some(FieldSpec {
-                        ident,
-                        explicit_location: None,
-                    });
+                    join_on = Some(parse_join_on_literal(&join_on_lit)?);
                 } else {
                     join_on = Some(parse_field_spec(input)?);
                 }
@@ -569,9 +745,11 @@ impl Parse for EventAttributeArgs {
 
         Ok(EventAttributeArgs {
             from,
+            from_span,
             fields,
             transforms,
             instruction,
+            instruction_span,
             capture,
             transforms_legacy,
             strategy,
@@ -651,15 +829,21 @@ pub fn parse_event_attribute(
     let field_transforms_legacy = args.transforms_legacy.unwrap_or_default();
 
     // Determine strategy
-    let strategy = args
-        .strategy
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "SetOnce".to_string());
+    let strategy = validate_strategy(
+        "#[event]",
+        args.strategy
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "SetOnce".to_string()),
+        attr,
+        &["SetOnce", "LastWrite"],
+    )?;
 
     // Handle legacy instruction string
     let instruction_str = args.instruction.unwrap_or_default();
 
     Ok(Some(EventAttribute {
+        attr_span: attr.span(),
+        instruction_span: args.from_span.or(args.instruction_span),
         from_instruction: args.from,
         inferred_instruction: None, // Will be filled in later from field type
         capture_fields: args.fields.unwrap_or_default(),
@@ -715,11 +899,7 @@ impl Parse for SnapshotAttributeArgs {
             } else if ident_str == "join_on" {
                 if input.peek(syn::LitStr) {
                     let join_on_lit: syn::LitStr = input.parse()?;
-                    let ident = syn::Ident::new(&join_on_lit.value(), join_on_lit.span());
-                    join_on = Some(FieldSpec {
-                        ident,
-                        explicit_location: None,
-                    });
+                    join_on = Some(parse_join_on_literal(&join_on_lit)?);
                 } else {
                     join_on = Some(parse_field_spec(input)?);
                 }
@@ -793,23 +973,18 @@ pub fn parse_snapshot_attribute(
     let target_name = args.rename.unwrap_or_else(|| target_field_name.to_string());
 
     // Determine strategy - only SetOnce or LastWrite allowed
-    let strategy = args
-        .strategy
-        .as_ref()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "SetOnce".to_string());
-
-    // Validate strategy
-    if strategy != "SetOnce" && strategy != "LastWrite" {
-        if let Some(ref strategy_ident) = args.strategy {
-            return Err(syn::Error::new_spanned(
-                strategy_ident,
-                format!("Invalid strategy '{}' for #[snapshot]. Only 'SetOnce' or 'LastWrite' are allowed. Account snapshots cannot use 'Append'.", strategy)
-            ));
-        }
-    }
+    let strategy = validate_strategy(
+        "#[snapshot]",
+        args.strategy
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "SetOnce".to_string()),
+        attr,
+        &["SetOnce", "LastWrite"],
+    )?;
 
     Ok(Some(CaptureAttribute {
+        attr_span: attr.span(),
         from_account: args.from,
         inferred_account: None, // Will be filled in later from field type
         field: args.field,
@@ -828,6 +1003,7 @@ pub fn parse_snapshot_attribute(
 
 #[derive(Debug, Clone)]
 pub struct AggregateAttribute {
+    pub attr_span: Span,
     /// Instruction type(s) to aggregate from
     pub from_instructions: Vec<Path>,
     /// Field to aggregate (optional - if omitted, just count occurrences)
@@ -843,7 +1019,7 @@ pub struct AggregateAttribute {
     /// Lookup field for key resolution
     pub lookup_by: Option<FieldSpec>,
     /// Condition expression for conditional aggregation (Level 1)
-    pub condition: Option<String>,
+    pub condition: Option<ConditionExpr>,
 }
 
 struct AggregateAttributeArgs {
@@ -854,7 +1030,7 @@ struct AggregateAttributeArgs {
     rename: Option<String>,
     join_on: Option<FieldSpec>,
     lookup_by: Option<FieldSpec>,
-    condition: Option<String>,
+    condition: Option<syn::LitStr>,
 }
 
 impl Parse for AggregateAttributeArgs {
@@ -900,11 +1076,7 @@ impl Parse for AggregateAttributeArgs {
             } else if ident_str == "join_on" {
                 if input.peek(syn::LitStr) {
                     let join_on_lit: syn::LitStr = input.parse()?;
-                    let ident = syn::Ident::new(&join_on_lit.value(), join_on_lit.span());
-                    join_on = Some(FieldSpec {
-                        ident,
-                        explicit_location: None,
-                    });
+                    join_on = Some(parse_join_on_literal(&join_on_lit)?);
                 } else {
                     join_on = Some(parse_field_spec(input)?);
                 }
@@ -921,7 +1093,7 @@ impl Parse for AggregateAttributeArgs {
                 }
             } else if ident_str == "condition" {
                 let condition_lit: syn::LitStr = input.parse()?;
-                condition = Some(condition_lit.value());
+                condition = Some(condition_lit);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -968,22 +1140,12 @@ pub fn parse_aggregate_attribute(
 
     // Determine strategy - default to Count if no field specified, Sum otherwise
     let strategy = if let Some(ref strategy_ident) = args.strategy {
-        let strategy_str = strategy_ident.to_string();
-
-        // Validate strategy
-        let valid_strategies = ["Sum", "Count", "Min", "Max", "UniqueCount"];
-        if !valid_strategies.contains(&strategy_str.as_str()) {
-            return Err(syn::Error::new_spanned(
-                strategy_ident,
-                format!(
-                    "Invalid aggregation strategy '{}'. Valid strategies: {}",
-                    strategy_str,
-                    valid_strategies.join(", ")
-                ),
-            ));
-        }
-
-        strategy_str
+        validate_strategy(
+            "#[aggregate]",
+            strategy_ident.to_string(),
+            strategy_ident,
+            &["Sum", "Count", "Min", "Max", "UniqueCount"],
+        )?
     } else {
         // Default strategy based on whether field is specified
         if args.field.is_none() {
@@ -994,6 +1156,7 @@ pub fn parse_aggregate_attribute(
     };
 
     Ok(Some(AggregateAttribute {
+        attr_span: attr.span(),
         from_instructions: args.from,
         field: args.field,
         strategy,
@@ -1001,7 +1164,11 @@ pub fn parse_aggregate_attribute(
         target_field_name: target_name,
         join_on: args.join_on,
         lookup_by: args.lookup_by,
-        condition: args.condition,
+        condition: args
+            .condition
+            .as_ref()
+            .map(parse_condition_literal)
+            .transpose()?,
     }))
 }
 
@@ -1011,6 +1178,8 @@ pub fn parse_aggregate_attribute(
 
 #[derive(Debug, Clone)]
 pub struct ResolveAttribute {
+    pub attr_span: Span,
+    pub from_span: Option<Span>,
     pub from: Option<String>,
     pub address: Option<String>,
     pub url: Option<String>,
@@ -1020,24 +1189,27 @@ pub struct ResolveAttribute {
     pub target_field_name: String,
     pub resolver: Option<String>,
     pub strategy: String,
-    pub condition: Option<String>,
-    pub schedule_at: Option<String>,
+    pub condition: Option<ValidatedResolverCondition>,
+    pub schedule_at: Option<ValidatedFieldPath>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolveSpec {
+    pub attr_span: Span,
+    pub from_span: Option<Span>,
     pub resolver: ResolverType,
     pub from: Option<String>,
     pub address: Option<String>,
     pub extract: Option<String>,
     pub target_field_name: String,
     pub strategy: String,
-    pub condition: Option<String>,
-    pub schedule_at: Option<String>,
+    pub condition: Option<ValidatedResolverCondition>,
+    pub schedule_at: Option<ValidatedFieldPath>,
 }
 
 struct ResolveAttributeArgs {
     from: Option<String>,
+    from_span: Option<Span>,
     address: Option<String>,
     url: Option<String>,
     url_is_template: bool,
@@ -1045,13 +1217,14 @@ struct ResolveAttributeArgs {
     extract: Option<String>,
     resolver: Option<String>,
     strategy: Option<String>,
-    condition: Option<String>,
-    schedule_at: Option<String>,
+    condition: Option<syn::LitStr>,
+    schedule_at: Option<ValidatedFieldPath>,
 }
 
 impl Parse for ResolveAttributeArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut from = None;
+        let mut from_span = None;
         let mut address = None;
         let mut url = None;
         let mut url_is_template = false;
@@ -1070,6 +1243,7 @@ impl Parse for ResolveAttributeArgs {
 
             if ident_str == "from" {
                 let lit: syn::LitStr = input.parse()?;
+                from_span = Some(lit.span());
                 from = Some(lit.value());
             } else if ident_str == "address" {
                 let lit: syn::LitStr = input.parse()?;
@@ -1119,19 +1293,9 @@ impl Parse for ResolveAttributeArgs {
                 strategy = Some(ident.to_string());
             } else if ident_str == "condition" {
                 let lit: syn::LitStr = input.parse()?;
-                condition = Some(lit.value());
+                condition = Some(lit);
             } else if ident_str == "schedule_at" {
-                let mut parts = Vec::new();
-                let first: syn::Ident = input.parse()?;
-                parts.push(first.to_string());
-
-                while input.peek(Token![.]) {
-                    input.parse::<Token![.]>()?;
-                    let next: syn::Ident = input.parse()?;
-                    parts.push(next.to_string());
-                }
-
-                schedule_at = Some(parts.join("."));
+                schedule_at = Some(parse_validated_field_path(input)?);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -1146,6 +1310,7 @@ impl Parse for ResolveAttributeArgs {
 
         Ok(ResolveAttributeArgs {
             from,
+            from_span,
             address,
             url,
             url_is_template,
@@ -1203,9 +1368,16 @@ pub fn parse_resolve_attribute(
         ));
     }
 
-    let strategy = args.strategy.unwrap_or_else(|| "SetOnce".to_string());
+    let strategy = validate_strategy(
+        "#[resolve]",
+        args.strategy.unwrap_or_else(|| "SetOnce".to_string()),
+        attr,
+        &["SetOnce", "LastWrite"],
+    )?;
 
     Ok(Some(ResolveAttribute {
+        attr_span: attr.span(),
+        from_span: args.from_span,
         from: args.from,
         address: args.address,
         url: args.url,
@@ -1215,13 +1387,18 @@ pub fn parse_resolve_attribute(
         target_field_name: target_field_name.to_string(),
         resolver: args.resolver,
         strategy,
-        condition: args.condition,
+        condition: args
+            .condition
+            .as_ref()
+            .map(parse_resolver_condition_literal)
+            .transpose()?,
         schedule_at: args.schedule_at,
     }))
 }
 
 #[derive(Debug, Clone)]
 pub struct ComputedAttribute {
+    pub attr_span: Span,
     /// The expression to evaluate (stored as TokenStream for code generation)
     pub expression: proc_macro2::TokenStream,
     /// Target field name (defaults to struct field name)
@@ -1242,10 +1419,63 @@ pub fn parse_computed_attribute(
     let expression: proc_macro2::TokenStream = attr.parse_args()?;
 
     Ok(Some(ComputedAttribute {
+        attr_span: attr.span(),
         expression,
         target_field_name: target_field_name.to_string(),
     }))
 }
+
+#[derive(Debug, Clone)]
+pub enum RecognizedFieldAttribute {
+    Map(Vec<MapAttribute>),
+    FromInstruction(Vec<MapAttribute>),
+    Event(EventAttribute),
+    Snapshot(CaptureAttribute),
+    Aggregate(AggregateAttribute),
+    DeriveFrom(DeriveFromAttribute),
+    Resolve(ResolveAttribute),
+    Computed(ComputedAttribute),
+}
+
+pub fn parse_recognized_field_attribute(
+    attr: &Attribute,
+    target_field_name: &str,
+) -> syn::Result<Option<RecognizedFieldAttribute>> {
+    if let Some(map_attrs) = parse_map_attribute(attr, target_field_name)? {
+        return Ok(Some(RecognizedFieldAttribute::Map(map_attrs)));
+    }
+
+    if let Some(map_attrs) = parse_from_instruction_attribute(attr, target_field_name)? {
+        return Ok(Some(RecognizedFieldAttribute::FromInstruction(map_attrs)));
+    }
+
+    if let Some(event_attr) = parse_event_attribute(attr, target_field_name)? {
+        return Ok(Some(RecognizedFieldAttribute::Event(event_attr)));
+    }
+
+    if let Some(snapshot_attr) = parse_snapshot_attribute(attr, target_field_name)? {
+        return Ok(Some(RecognizedFieldAttribute::Snapshot(snapshot_attr)));
+    }
+
+    if let Some(aggregate_attr) = parse_aggregate_attribute(attr, target_field_name)? {
+        return Ok(Some(RecognizedFieldAttribute::Aggregate(aggregate_attr)));
+    }
+
+    if let Some(derive_attr) = parse_derive_from_attribute(attr, target_field_name)? {
+        return Ok(Some(RecognizedFieldAttribute::DeriveFrom(derive_attr)));
+    }
+
+    if let Some(resolve_attr) = parse_resolve_attribute(attr, target_field_name)? {
+        return Ok(Some(RecognizedFieldAttribute::Resolve(resolve_attr)));
+    }
+
+    if let Some(computed_attr) = parse_computed_attribute(attr, target_field_name)? {
+        return Ok(Some(RecognizedFieldAttribute::Computed(computed_attr)));
+    }
+
+    Ok(None)
+}
+
 pub fn has_entity_attribute(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("entity"))
 }
@@ -1373,6 +1603,24 @@ pub fn parse_stream_spec_attribute(
 
     let args: StreamSpecAttributeArgs = syn::parse(attr)?;
 
+    for file in &args.proto_files {
+        if file.trim().is_empty() {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "proto file references cannot be empty",
+            ));
+        }
+    }
+
+    for file in &args.idl_files {
+        if file.trim().is_empty() {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "idl file references cannot be empty",
+            ));
+        }
+    }
+
     Ok(StreamSpecAttribute {
         proto_files: args.proto_files,
         idl_files: args.idl_files,
@@ -1440,61 +1688,81 @@ pub struct AfterInstructionAttr {
 }
 
 /// Extract resolver hooks from an impl block
-pub fn extract_resolver_hooks(item_impl: &syn::ItemImpl) -> Vec<ResolverHookSpec> {
+pub fn extract_resolver_hooks(item_impl: &syn::ItemImpl) -> syn::Result<Vec<ResolverHookSpec>> {
     let mut hooks = Vec::new();
+    let mut errors = ErrorCollector::default();
 
     for item in &item_impl.items {
         if let syn::ImplItem::Fn(method) = item {
             for attr in &method.attrs {
-                if let Ok(Some(resolver_attr)) = parse_resolve_key_for_attribute(attr) {
-                    hooks.push(ResolverHookSpec {
-                        kind: ResolverHookKind::KeyResolver,
-                        account_type_path: resolver_attr.account_type_path,
-                        fn_name: method.sig.ident.clone(),
-                        fn_sig: method.sig.clone(),
-                    });
+                match parse_resolve_key_for_attribute(attr) {
+                    Ok(Some(resolver_attr)) => {
+                        hooks.push(ResolverHookSpec {
+                            kind: ResolverHookKind::KeyResolver,
+                            account_type_path: resolver_attr.account_type_path,
+                            fn_name: method.sig.ident.clone(),
+                            fn_sig: method.sig.clone(),
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(error) => errors.push(error),
                 }
 
-                if let Ok(Some(instruction_attr)) = parse_after_instruction_attribute(attr) {
-                    hooks.push(ResolverHookSpec {
-                        kind: ResolverHookKind::AfterInstruction,
-                        account_type_path: instruction_attr.instruction_type_path,
-                        fn_name: method.sig.ident.clone(),
-                        fn_sig: method.sig.clone(),
-                    });
+                match parse_after_instruction_attribute(attr) {
+                    Ok(Some(instruction_attr)) => {
+                        hooks.push(ResolverHookSpec {
+                            kind: ResolverHookKind::AfterInstruction,
+                            account_type_path: instruction_attr.instruction_type_path,
+                            fn_name: method.sig.ident.clone(),
+                            fn_sig: method.sig.clone(),
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(error) => errors.push(error),
                 }
             }
         }
     }
 
-    hooks
+    errors.finish()?;
+    Ok(hooks)
 }
 
 /// Extract resolver hooks from a standalone function
-pub fn extract_resolver_hooks_from_fn(item_fn: &syn::ItemFn) -> Vec<ResolverHookSpec> {
+pub fn extract_resolver_hooks_from_fn(item_fn: &syn::ItemFn) -> syn::Result<Vec<ResolverHookSpec>> {
     let mut hooks = Vec::new();
+    let mut errors = ErrorCollector::default();
 
     for attr in &item_fn.attrs {
-        if let Ok(Some(resolver_attr)) = parse_resolve_key_for_attribute(attr) {
-            hooks.push(ResolverHookSpec {
-                kind: ResolverHookKind::KeyResolver,
-                account_type_path: resolver_attr.account_type_path,
-                fn_name: item_fn.sig.ident.clone(),
-                fn_sig: item_fn.sig.clone(),
-            });
+        match parse_resolve_key_for_attribute(attr) {
+            Ok(Some(resolver_attr)) => {
+                hooks.push(ResolverHookSpec {
+                    kind: ResolverHookKind::KeyResolver,
+                    account_type_path: resolver_attr.account_type_path,
+                    fn_name: item_fn.sig.ident.clone(),
+                    fn_sig: item_fn.sig.clone(),
+                });
+            }
+            Ok(None) => {}
+            Err(error) => errors.push(error),
         }
 
-        if let Ok(Some(instruction_attr)) = parse_after_instruction_attribute(attr) {
-            hooks.push(ResolverHookSpec {
-                kind: ResolverHookKind::AfterInstruction,
-                account_type_path: instruction_attr.instruction_type_path,
-                fn_name: item_fn.sig.ident.clone(),
-                fn_sig: item_fn.sig.clone(),
-            });
+        match parse_after_instruction_attribute(attr) {
+            Ok(Some(instruction_attr)) => {
+                hooks.push(ResolverHookSpec {
+                    kind: ResolverHookKind::AfterInstruction,
+                    account_type_path: instruction_attr.instruction_type_path,
+                    fn_name: item_fn.sig.ident.clone(),
+                    fn_sig: item_fn.sig.clone(),
+                });
+            }
+            Ok(None) => {}
+            Err(error) => errors.push(error),
         }
     }
 
-    hooks
+    errors.finish()?;
+    Ok(hooks)
 }
 
 #[derive(Debug, Clone)]
@@ -1518,11 +1786,12 @@ pub enum ResolverHookKind {
 // #[derive_from] Attribute Parser
 #[derive(Debug, Clone)]
 pub struct DeriveFromAttribute {
+    pub attr_span: Span,
     pub from_instructions: Vec<Path>,
     pub field: FieldSpec, // Can be special: __timestamp, __slot, __signature
     pub strategy: String, // LastWrite, SetOnce
     pub lookup_by: Option<FieldSpec>,
-    pub condition: Option<String>,
+    pub condition: Option<ConditionExpr>,
     pub transform: Option<syn::Ident>,
     pub target_field_name: String,
 }
@@ -1532,7 +1801,7 @@ struct DeriveFromAttributeArgs {
     field: Option<FieldSpec>,
     strategy: Option<syn::Ident>,
     lookup_by: Option<FieldSpec>,
-    condition: Option<String>,
+    condition: Option<syn::LitStr>,
     transform: Option<syn::Ident>,
 }
 
@@ -1582,7 +1851,7 @@ impl Parse for DeriveFromAttributeArgs {
                 }
             } else if ident_str == "condition" {
                 let condition_lit: syn::LitStr = input.parse()?;
-                condition = Some(condition_lit.value());
+                condition = Some(condition_lit);
             } else if ident_str == "transform" {
                 transform = Some(input.parse()?);
             } else {
@@ -1629,17 +1898,26 @@ pub fn parse_derive_from_attribute(
         syn::Error::new_spanned(attr, "#[derive_from] requires 'field' parameter")
     })?;
 
-    let strategy = args
-        .strategy
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "LastWrite".to_string());
+    let strategy = validate_strategy(
+        "#[derive_from]",
+        args.strategy
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "LastWrite".to_string()),
+        attr,
+        &["SetOnce", "LastWrite"],
+    )?;
 
     Ok(Some(DeriveFromAttribute {
+        attr_span: attr.span(),
         from_instructions: args.from,
         field,
         strategy,
         lookup_by: args.lookup_by,
-        condition: args.condition,
+        condition: args
+            .condition
+            .as_ref()
+            .map(parse_condition_literal)
+            .transpose()?,
         transform: args.transform,
         target_field_name: target_field_name.to_string(),
     }))
@@ -1686,6 +1964,7 @@ fn parse_register_from_list(input: ParseStream) -> syn::Result<Vec<RegisterFromS
 // #[resolve_key] Attribute Parser
 #[derive(Debug, Clone)]
 pub struct ResolveKeyAttribute {
+    pub attr_span: Span,
     pub account_path: Path,
     pub strategy: String, // "pda_reverse_lookup", "direct_field"
     pub lookup_name: Option<String>,
@@ -1765,12 +2044,17 @@ pub fn parse_resolve_key_attribute(attr: &Attribute) -> syn::Result<Option<Resol
         syn::Error::new_spanned(attr, "#[resolve_key] requires 'account' parameter")
     })?;
 
-    let strategy = args
-        .strategy
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "pda_reverse_lookup".to_string());
+    let strategy = validate_strategy(
+        "#[resolve_key]",
+        args.strategy
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "pda_reverse_lookup".to_string()),
+        attr,
+        &["pda_reverse_lookup", "direct_field"],
+    )?;
 
     Ok(Some(ResolveKeyAttribute {
+        attr_span: attr.span(),
         account_path,
         strategy,
         lookup_name: args.lookup_name,
@@ -1781,6 +2065,7 @@ pub fn parse_resolve_key_attribute(attr: &Attribute) -> syn::Result<Option<Resol
 // #[register_pda] Attribute Parser
 #[derive(Debug, Clone)]
 pub struct RegisterPdaAttribute {
+    pub attr_span: Span,
     pub instruction_path: Path,
     pub pda_field: FieldSpec,
     pub primary_key_field: FieldSpec, // The primary key to associate with the PDA
@@ -1861,6 +2146,7 @@ pub fn parse_register_pda_attribute(attr: &Attribute) -> syn::Result<Option<Regi
         .unwrap_or_else(|| "default_pda_lookup".to_string());
 
     Ok(Some(RegisterPdaAttribute {
+        attr_span: attr.span(),
         instruction_path,
         pda_field,
         primary_key_field,
@@ -1868,8 +2154,15 @@ pub fn parse_register_pda_attribute(attr: &Attribute) -> syn::Result<Option<Regi
     }))
 }
 
+#[derive(Debug, Clone)]
+pub struct ViewAttributeSpec {
+    pub view: crate::ast::ViewDef,
+    pub attr_span: Span,
+    pub sort_key_span: Option<Span>,
+}
+
 /// Parse #[view(name = "latest", sort_by = "id.round_id", order = "desc")] attributes
-pub fn parse_view_attributes(attrs: &[Attribute]) -> Vec<crate::ast::ViewDef> {
+pub fn parse_view_attribute_specs(attrs: &[Attribute]) -> syn::Result<Vec<ViewAttributeSpec>> {
     use crate::ast::{FieldPath, SortOrder, ViewDef, ViewOutput, ViewSource, ViewTransform};
 
     let mut views = Vec::new();
@@ -1881,18 +2174,20 @@ pub fn parse_view_attributes(attrs: &[Attribute]) -> Vec<crate::ast::ViewDef> {
 
         let mut name: Option<String> = None;
         let mut sort_by: Option<String> = None;
+        let mut sort_key_span = None;
         let mut order = SortOrder::Desc;
         let mut take: Option<usize> = None;
         let output = ViewOutput::Collection;
 
         if let syn::Meta::List(meta_list) = &attr.meta {
-            let _ = meta_list.parse_nested_meta(|meta| {
+            meta_list.parse_nested_meta(|meta| {
                 if meta.path.is_ident("name") {
                     let value: syn::LitStr = meta.value()?.parse()?;
                     name = Some(value.value());
                 } else if meta.path.is_ident("sort_by") {
                     let value: syn::LitStr = meta.value()?.parse()?;
                     sort_by = Some(value.value());
+                    sort_key_span = Some(value.span());
                 } else if meta.path.is_ident("order") {
                     let value: syn::LitStr = meta.value()?.parse()?;
                     order = match value.value().to_lowercase().as_str() {
@@ -1904,7 +2199,7 @@ pub fn parse_view_attributes(attrs: &[Attribute]) -> Vec<crate::ast::ViewDef> {
                     take = Some(value.base10_parse::<usize>()?);
                 }
                 Ok(())
-            });
+            })?;
         }
 
         if let (Some(view_name), Some(sort_field)) = (name, sort_by) {
@@ -1916,6 +2211,7 @@ pub fn parse_view_attributes(attrs: &[Attribute]) -> Vec<crate::ast::ViewDef> {
                     offsets: None,
                 },
                 order,
+                key_span: sort_key_span,
             }];
 
             // Only add Take transform if explicitly specified in the view definition.
@@ -1925,16 +2221,27 @@ pub fn parse_view_attributes(attrs: &[Attribute]) -> Vec<crate::ast::ViewDef> {
                 pipeline.push(ViewTransform::Take { count: n });
             }
 
-            views.push(ViewDef {
-                id: view_name,
-                source: ViewSource::Entity {
-                    name: String::new(),
+            views.push(ViewAttributeSpec {
+                view: ViewDef {
+                    id: view_name,
+                    source: ViewSource::Entity {
+                        name: String::new(),
+                    },
+                    pipeline,
+                    output,
                 },
-                pipeline,
-                output,
+                attr_span: attr.span(),
+                sort_key_span,
             });
         }
     }
 
-    views
+    Ok(views)
+}
+
+pub fn parse_view_attributes(attrs: &[Attribute]) -> syn::Result<Vec<crate::ast::ViewDef>> {
+    Ok(parse_view_attribute_specs(attrs)?
+        .into_iter()
+        .map(|spec| spec.view)
+        .collect())
 }

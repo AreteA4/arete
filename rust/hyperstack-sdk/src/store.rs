@@ -107,8 +107,6 @@ fn extract_sort_value(entity: &Value, field_path: &[String]) -> SortValue {
     }
 }
 
-
-
 struct ViewData {
     entities: HashMap<String, serde_json::Value>,
     access_order: VecDeque<String>,

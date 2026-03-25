@@ -1,4 +1,5 @@
 {
+  "ast_version": "0.0.1",
   "stack_name": "OreStream",
   "program_ids": [
     "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
@@ -2760,6 +2761,7 @@
   ],
   "entities": [
     {
+      "ast_version": "0.0.1",
       "state_name": "OreRound",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "idl": null,
@@ -4238,15 +4240,6 @@
       },
       "resolver_hooks": [
         {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        },
-        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -4256,6 +4249,15 @@
                   9
                 ]
               ]
+            }
+          }
+        },
+        {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
             }
           }
         }
@@ -4378,7 +4380,7 @@
           "lookup_by": {
             "segments": [
               "accounts",
-              "round"
+              "roundNext"
             ],
             "offsets": null
           }
@@ -5219,7 +5221,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "f4f0834dae1b5a90d32250f96663d719c0697d22d3ef7c95b6189ff7a167079e",
+      "content_hash": "bda084f50f8854df24c0563c80136a3392d32da85d0f373225c50da6a9770172",
       "views": [
         {
           "id": "OreRound/latest",
@@ -5247,6 +5249,7 @@
       ]
     },
     {
+      "ast_version": "0.0.1",
       "state_name": "OreTreasury",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "idl": null,
@@ -5709,15 +5712,6 @@
       },
       "resolver_hooks": [
         {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        },
-        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -5727,6 +5721,15 @@
                   9
                 ]
               ]
+            }
+          }
+        },
+        {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
             }
           }
         }
@@ -5829,10 +5832,11 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "2209440d59e788f8381792812368fc7e1b9bc9f188c8ab8352cc1bf6e05001d5",
+      "content_hash": "8b61718f12587815d1612d502f629bac7a0b329b1a5bf7823d8e560baec1ecfa",
       "views": []
     },
     {
+      "ast_version": "0.0.1",
       "state_name": "OreMiner",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "idl": null,
@@ -7156,15 +7160,6 @@
       },
       "resolver_hooks": [
         {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        },
-        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -7176,13 +7171,22 @@
               ]
             }
           }
+        },
+        {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
         }
       ],
       "instruction_hooks": [],
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "22aea1c2e9647ccbed3ff8311ce336354a0b79e8d9ef11933d262faed8b1adb9",
+      "content_hash": "3baa6071649b1f3eecb57301df88da9a77b3357de91abf7f3d98798fbc926c1f",
       "views": []
     }
   ],
@@ -9122,5 +9126,5 @@
       ]
     }
   ],
-  "content_hash": "3cb0cdf6716a7a3c096d4b92cdb60adcb8d982b4d6f22d2f96a7381b2583c84f"
+  "content_hash": "d4f5cd3bb0d5528a463d9ddbd1839926344eac8e6ce6519bbec71ecbecdfadd9"
 }

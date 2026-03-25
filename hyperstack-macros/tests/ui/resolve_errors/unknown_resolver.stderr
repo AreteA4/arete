@@ -1,0 +1,5 @@
+error: unknown resolver 'Toke'. Did you mean: Token?
+ --> tests/ui/resolve_errors/unknown_resolver.rs:9:19
+  |
+9 |         metadata: String,
+  |                   ^^^^^^

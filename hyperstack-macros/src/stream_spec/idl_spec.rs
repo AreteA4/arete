@@ -6,21 +6,22 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use proc_macro::TokenStream;
 use quote::quote;
+use syn::spanned::Spanned;
 use syn::{Item, ItemMod};
 
 use crate::ast::writer::{extract_instructions_from_idl, extract_pdas_from_idl};
 use crate::ast::SerializableStackSpec;
 use crate::codegen::generate_multi_entity_builder;
+use crate::diagnostic::{idl_error_to_syn, internal_codegen_error, parse_generated_items};
 use crate::idl_codegen;
 use crate::idl_parser_gen;
 use crate::idl_vixen_gen;
 use crate::parse;
 use crate::parse::idl as idl_parser;
-use crate::parse::pda_validation::PdaValidationContext;
 use crate::parse::pdas::PdasBlock;
 use crate::utils::{to_pascal_case, to_snake_case};
+use crate::validation::validate_pda_blocks;
 
 use super::entity::process_entity_struct_with_idl;
 use super::handlers::{
@@ -36,7 +37,10 @@ struct IdlInfo {
     parser_module_name: String,
 }
 
-pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStream {
+pub fn process_idl_spec(
+    mut module: ItemMod,
+    idl_paths: &[String],
+) -> syn::Result<proc_macro2::TokenStream> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
 
     let mut idl_infos: Vec<IdlInfo> = Vec::new();
@@ -47,11 +51,13 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
         let idl = match idl_parser::parse_idl_file(&full_path) {
             Ok(idl) => idl,
             Err(e) => {
-                let error_msg = format!("Failed to parse IDL file {}: {}", idl_path, e);
-                return quote! {
-                    compile_error!(#error_msg);
-                }
-                .into();
+                return Err(idl_error_to_syn(
+                    module.ident.span(),
+                    hyperstack_idl::error::IdlSearchError::ParseError {
+                        path: idl_path.clone(),
+                        source: e,
+                    },
+                ));
             }
         };
 
@@ -135,13 +141,7 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
                 if item_macro.mac.path.is_ident("pdas") {
                     match syn::parse2::<PdasBlock>(item_macro.mac.tokens.clone()) {
                         Ok(block) => manual_pdas_blocks.push(block),
-                        Err(e) => {
-                            let err_msg = e.to_string();
-                            return quote! {
-                                compile_error!(#err_msg);
-                            }
-                            .into();
-                        }
+                        Err(e) => return Err(e),
                     }
                 }
             }
@@ -150,14 +150,14 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
 
     let mut all_resolver_hooks = Vec::new();
     for impl_block in &impl_blocks {
-        let hooks = parse::extract_resolver_hooks(impl_block);
+        let hooks = parse::extract_resolver_hooks(impl_block)?;
         all_resolver_hooks.extend(hooks);
     }
 
     if let Some((_, items)) = &module.content {
         for item in items {
             if let Item::Fn(item_fn) = item {
-                let hooks = parse::extract_resolver_hooks_from_fn(item_fn);
+                let hooks = parse::extract_resolver_hooks_from_fn(item_fn)?;
                 all_resolver_hooks.extend(hooks);
             }
         }
@@ -168,17 +168,17 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
 
     // Collect per-entity PDA registrations to avoid cross-entity contamination
     let per_entity_pda_regs =
-        collect_pda_registrations_per_entity(&entity_structs, &section_structs);
+        collect_pda_registrations_per_entity(&entity_structs, &section_structs)?;
 
     if let Some((_, items)) = &module.content {
         for item in items {
             if let Item::Struct(item_struct) = item {
                 for attr in &item_struct.attrs {
-                    if let Ok(Some(resolve_attr)) = parse::parse_resolve_key_attribute(attr) {
+                    if let Some(resolve_attr) = parse::parse_resolve_key_attribute(attr)? {
                         resolver_hooks.push(resolve_attr);
                     }
 
-                    if let Ok(Some(register_attr)) = parse::parse_register_pda_attribute(attr) {
+                    if let Some(register_attr) = parse::parse_register_pda_attribute(attr)? {
                         pda_registrations.push(register_attr);
                     }
                 }
@@ -192,7 +192,7 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
         &section_structs,
         &mut resolver_hooks,
         &mut pda_registrations,
-    );
+    )?;
 
     let mut seen_resolver_fns: HashSet<String> = HashSet::new();
     resolver_hooks.retain(|hook| {
@@ -215,7 +215,7 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
             .unwrap_or_else(|| "unknown".to_string());
         let fn_name = syn::Ident::new(
             &format!("resolve_{}_key", to_snake_case(&account_name)),
-            proc_macro2::Span::call_site(),
+            resolve_attr.account_path.span(),
         );
 
         let fn_sig: syn::Signature = syn::parse_quote! {
@@ -237,7 +237,7 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
     for (i, pda_attr) in pda_registrations.iter().enumerate() {
         let fn_name = syn::Ident::new(
             &format!("register_pda_{}", i),
-            proc_macro2::Span::call_site(),
+            pda_attr.instruction_path.span(),
         );
 
         let fn_sig: syn::Signature = syn::parse_quote! {
@@ -278,7 +278,7 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
                     .get(&entity_name)
                     .cloned()
                     .unwrap_or_default(),
-            );
+            )?;
 
             for hook in &result.auto_resolver_hooks {
                 let account_name =
@@ -341,26 +341,32 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
             }
 
             for sdk_tokens in &all_sdk_tokens {
-                if let Ok(generated_items) = syn::parse::<syn::File>(sdk_tokens.clone().into()) {
-                    for gen_item in generated_items.items {
-                        items.push(gen_item);
-                    }
+                for gen_item in parse_generated_items(
+                    sdk_tokens.clone(),
+                    module.ident.span(),
+                    "IDL SDK module",
+                )? {
+                    items.push(gen_item);
                 }
             }
 
             for parser_tokens in &all_parser_tokens {
-                if let Ok(generated_items) = syn::parse::<syn::File>(parser_tokens.clone().into()) {
-                    for gen_item in generated_items.items {
-                        items.push(gen_item);
-                    }
+                for gen_item in parse_generated_items(
+                    parser_tokens.clone(),
+                    module.ident.span(),
+                    "IDL parser module",
+                )? {
+                    items.push(gen_item);
                 }
             }
 
             for result in &all_outputs {
-                if let Ok(generated_items) = syn::parse::<syn::File>(result.token_stream.clone()) {
-                    for gen_item in generated_items.items {
-                        items.push(gen_item);
-                    }
+                for gen_item in parse_generated_items(
+                    result.token_stream.clone(),
+                    module.ident.span(),
+                    "entity expansion",
+                )? {
+                    items.push(gen_item);
                 }
             }
 
@@ -378,10 +384,10 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
             }
             if !deduped_auto_hooks.is_empty() {
                 let auto_fns = generate_auto_resolver_functions(&deduped_auto_hooks);
-                if let Ok(generated_items) = syn::parse::<syn::File>(auto_fns.into()) {
-                    for gen_item in generated_items.items {
-                        items.push(gen_item);
-                    }
+                for gen_item in
+                    parse_generated_items(auto_fns, module.ident.span(), "auto resolver functions")?
+                {
+                    items.push(gen_item);
                 }
             }
 
@@ -392,10 +398,12 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
                 #resolver_fns
                 #pda_registration_fns
             };
-            if let Ok(generated_items) = syn::parse::<syn::File>(combined_hook_fns.into()) {
-                for gen_item in generated_items.items {
-                    items.push(gen_item);
-                }
+            for gen_item in parse_generated_items(
+                combined_hook_fns,
+                module.ident.span(),
+                "resolver hook functions",
+            )? {
+                items.push(gen_item);
             }
 
             let entity_asts: Vec<crate::ast::SerializableStreamSpec> = all_outputs
@@ -433,17 +441,9 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
                 .iter()
                 .map(|info| (info.program_name.clone(), info.idl.clone()))
                 .collect();
-            let validation_ctx = PdaValidationContext::new(&idl_map);
+            validate_pda_blocks(&idl_map, &manual_pdas_blocks)?;
 
             for manual_block in &manual_pdas_blocks {
-                if let Err(e) = validation_ctx.validate(manual_block) {
-                    let err_msg = e.to_string();
-                    return quote! {
-                        compile_error!(#err_msg);
-                    }
-                    .into();
-                }
-
                 for program_pdas in &manual_block.programs {
                     let program_entry = all_pdas
                         .entry(program_pdas.program_name.clone())
@@ -471,28 +471,53 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
                 instructions: all_instructions,
                 content_hash: None,
             }
-            .with_content_hash();
+            .try_with_content_hash()
+            .map_err(|error| {
+                internal_codegen_error(
+                    module.ident.span(),
+                    format!("failed to serialize stack spec for hashing: {error}"),
+                )
+            })?;
 
-            if let Err(e) = crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name) {
-                eprintln!("Warning: Failed to write stack AST: {}", e);
-            }
+            let stack_spec_json = serde_json::to_string(&stack_spec).map_err(|error| {
+                internal_codegen_error(
+                    module.ident.span(),
+                    format!("failed to serialize embedded stack spec: {error}"),
+                )
+            })?;
 
-            let multi_entity_builder =
-                generate_multi_entity_builder(&entity_names, &[], false, &stack_name);
-            if let Ok(generated_items) = syn::parse::<syn::File>(multi_entity_builder.into()) {
-                for gen_item in generated_items.items {
-                    items.push(gen_item);
-                }
+            crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name).map_err(|e| {
+                syn::Error::new(
+                    module.ident.span(),
+                    format!("Failed to write stack AST: {e}"),
+                )
+            })?;
+
+            let multi_entity_builder = generate_multi_entity_builder(
+                &entity_names,
+                &[],
+                false,
+                &stack_name,
+                &stack_spec_json,
+            );
+            for gen_item in parse_generated_items(
+                multi_entity_builder,
+                module.ident.span(),
+                "multi-entity builder",
+            )? {
+                items.push(gen_item);
             }
 
             let resolver_registries = idl_vixen_gen::generate_resolver_registries(
                 &all_resolver_hooks,
                 &primary.program_name,
             );
-            if let Ok(generated_items) = syn::parse::<syn::File>(resolver_registries.into()) {
-                for gen_item in generated_items.items {
-                    items.push(gen_item);
-                }
+            for gen_item in parse_generated_items(
+                resolver_registries,
+                module.ident.span(),
+                "resolver registries",
+            )? {
+                items.push(gen_item);
             }
 
             let spec_function = idl_vixen_gen::generate_multi_idl_spec_function(
@@ -507,34 +532,35 @@ pub fn process_idl_spec(mut module: ItemMod, idl_paths: &[String]) -> TokenStrea
                     })
                     .collect::<Vec<_>>(),
             );
-            if let Ok(generated_items) = syn::parse::<syn::File>(spec_function.into()) {
-                for gen_item in generated_items.items {
-                    items.push(gen_item);
-                }
+            for gen_item in
+                parse_generated_items(spec_function, module.ident.span(), "IDL spec function")?
+            {
+                items.push(gen_item);
             }
         }
     } else if let Some((_brace, items)) = &mut module.content {
         for sdk_tokens in &all_sdk_tokens {
-            if let Ok(generated_items) = syn::parse::<syn::File>(sdk_tokens.clone().into()) {
-                for gen_item in generated_items.items {
-                    items.push(gen_item);
-                }
+            for gen_item in
+                parse_generated_items(sdk_tokens.clone(), module.ident.span(), "IDL SDK module")?
+            {
+                items.push(gen_item);
             }
         }
 
         for parser_tokens in &all_parser_tokens {
-            if let Ok(generated_items) = syn::parse::<syn::File>(parser_tokens.clone().into()) {
-                for gen_item in generated_items.items {
-                    items.push(gen_item);
-                }
+            for gen_item in parse_generated_items(
+                parser_tokens.clone(),
+                module.ident.span(),
+                "IDL parser module",
+            )? {
+                items.push(gen_item);
             }
         }
     }
 
-    quote! {
+    Ok(quote! {
         #module
-    }
-    .into()
+    })
 }
 
 fn collect_register_from_specs(
@@ -542,7 +568,7 @@ fn collect_register_from_specs(
     section_structs: &HashMap<String, syn::ItemStruct>,
     resolver_hooks: &mut Vec<parse::ResolveKeyAttribute>,
     pda_registrations: &mut Vec<parse::RegisterPdaAttribute>,
-) {
+) -> syn::Result<()> {
     let mut all_structs_to_scan: Vec<&syn::ItemStruct> = entity_structs.iter().collect();
     all_structs_to_scan.extend(section_structs.values());
 
@@ -555,7 +581,9 @@ fn collect_register_from_specs(
                     .map(|i| i.to_string())
                     .unwrap_or_default();
                 for attr in &field.attrs {
-                    if let Ok(Some(map_attrs)) = parse::parse_map_attribute(attr, &field_name) {
+                    if let Some(parse::RecognizedFieldAttribute::Map(map_attrs)) =
+                        parse::parse_recognized_field_attribute(attr, &field_name)?
+                    {
                         for map_attr in &map_attrs {
                             if !map_attr.register_from.is_empty() {
                                 let account_path = map_attr.source_type_path.clone();
@@ -566,6 +594,7 @@ fn collect_register_from_specs(
                                     .collect();
 
                                 resolver_hooks.push(parse::ResolveKeyAttribute {
+                                    attr_span: map_attr.attr_span,
                                     account_path,
                                     strategy: "pda_reverse_lookup".to_string(),
                                     lookup_name: None,
@@ -574,6 +603,7 @@ fn collect_register_from_specs(
 
                                 for rf in &map_attr.register_from {
                                     pda_registrations.push(parse::RegisterPdaAttribute {
+                                        attr_span: map_attr.attr_span,
                                         instruction_path: rf.instruction_path.clone(),
                                         pda_field: rf.pda_field.clone(),
                                         primary_key_field: rf.primary_key_field.clone(),
@@ -587,6 +617,8 @@ fn collect_register_from_specs(
             }
         }
     }
+
+    Ok(())
 }
 
 /// Collect PDA registrations per-entity to prevent cross-entity contamination.
@@ -599,7 +631,7 @@ fn collect_register_from_specs(
 fn collect_pda_registrations_per_entity(
     entity_structs: &[syn::ItemStruct],
     section_structs: &HashMap<String, syn::ItemStruct>,
-) -> HashMap<String, Vec<parse::RegisterPdaAttribute>> {
+) -> syn::Result<HashMap<String, Vec<parse::RegisterPdaAttribute>>> {
     let mut per_entity_regs: HashMap<String, Vec<parse::RegisterPdaAttribute>> = HashMap::new();
 
     for entity_struct in entity_structs {
@@ -631,11 +663,14 @@ fn collect_pda_registrations_per_entity(
                         .map(|i| i.to_string())
                         .unwrap_or_default();
                     for attr in &field.attrs {
-                        if let Ok(Some(map_attrs)) = parse::parse_map_attribute(attr, &field_name) {
+                        if let Some(parse::RecognizedFieldAttribute::Map(map_attrs)) =
+                            parse::parse_recognized_field_attribute(attr, &field_name)?
+                        {
                             for map_attr in &map_attrs {
                                 if !map_attr.register_from.is_empty() {
                                     for rf in &map_attr.register_from {
                                         entity_regs.push(parse::RegisterPdaAttribute {
+                                            attr_span: map_attr.attr_span,
                                             instruction_path: rf.instruction_path.clone(),
                                             pda_field: rf.pda_field.clone(),
                                             primary_key_field: rf.primary_key_field.clone(),
@@ -655,5 +690,5 @@ fn collect_pda_registrations_per_entity(
         }
     }
 
-    per_entity_regs
+    Ok(per_entity_regs)
 }

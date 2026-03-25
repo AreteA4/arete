@@ -1,6 +1,8 @@
 //! Search utilities for IDL specs with fuzzy matching
 
+use crate::error::IdlSearchError;
 use crate::types::IdlSpec;
+use crate::types::{IdlAccount, IdlInstruction, IdlTypeDef};
 use strsim::levenshtein;
 
 /// A fuzzy match suggestion with candidate name and edit distance.
@@ -36,6 +38,114 @@ pub struct SearchResult {
     pub name: String,
     pub section: IdlSection,
     pub match_type: MatchType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstructionFieldKind {
+    Account,
+    Arg,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct InstructionFieldLookup<'a> {
+    pub instruction: &'a IdlInstruction,
+    pub kind: InstructionFieldKind,
+}
+
+fn build_not_found_error(input: &str, section: String, available: Vec<String>) -> IdlSearchError {
+    let candidate_refs: Vec<&str> = available.iter().map(String::as_str).collect();
+    let suggestions = suggest_similar(input, &candidate_refs, 3);
+    IdlSearchError::NotFound {
+        input: input.to_string(),
+        section,
+        suggestions,
+        available,
+    }
+}
+
+pub fn lookup_instruction<'a>(
+    idl: &'a IdlSpec,
+    instruction_name: &str,
+) -> Result<&'a IdlInstruction, IdlSearchError> {
+    // Anchor IDLs use snake_case instruction names while Rust SDK paths use
+    // PascalCase; case-insensitive matching bridges the two conventions.
+    let available: Vec<String> = idl.instructions.iter().map(|ix| ix.name.clone()).collect();
+    idl.instructions
+        .iter()
+        .find(|ix| ix.name.eq_ignore_ascii_case(instruction_name))
+        .ok_or_else(|| {
+            build_not_found_error(instruction_name, "instructions".to_string(), available)
+        })
+}
+
+pub fn lookup_account<'a>(
+    idl: &'a IdlSpec,
+    account_name: &str,
+) -> Result<&'a IdlAccount, IdlSearchError> {
+    // Account names are PascalCase in both Rust and IDLs, so case-insensitive
+    // matching bridges minor casing differences across IDL versions.
+    let available: Vec<String> = idl
+        .accounts
+        .iter()
+        .map(|account| account.name.clone())
+        .collect();
+    idl.accounts
+        .iter()
+        .find(|account| account.name.eq_ignore_ascii_case(account_name))
+        .ok_or_else(|| build_not_found_error(account_name, "accounts".to_string(), available))
+}
+
+pub fn lookup_type<'a>(
+    idl: &'a IdlSpec,
+    type_name: &str,
+) -> Result<&'a IdlTypeDef, IdlSearchError> {
+    let available: Vec<String> = idl.types.iter().map(|ty| ty.name.clone()).collect();
+    idl.types
+        .iter()
+        .find(|ty| ty.name.eq_ignore_ascii_case(type_name))
+        .ok_or_else(|| build_not_found_error(type_name, "types".to_string(), available))
+}
+
+pub fn lookup_instruction_field<'a>(
+    idl: &'a IdlSpec,
+    instruction_name: &str,
+    field_name: &str,
+) -> Result<InstructionFieldLookup<'a>, IdlSearchError> {
+    let instruction = lookup_instruction(idl, instruction_name)?;
+    // Use case-insensitive matching to stay consistent with lookup_instruction.
+    if instruction
+        .accounts
+        .iter()
+        .any(|account| account.name.eq_ignore_ascii_case(field_name))
+    {
+        return Ok(InstructionFieldLookup {
+            instruction,
+            kind: InstructionFieldKind::Account,
+        });
+    }
+
+    if instruction
+        .args
+        .iter()
+        .any(|arg| arg.name.eq_ignore_ascii_case(field_name))
+    {
+        return Ok(InstructionFieldLookup {
+            instruction,
+            kind: InstructionFieldKind::Arg,
+        });
+    }
+
+    let mut available: Vec<String> = instruction
+        .accounts
+        .iter()
+        .map(|acc| acc.name.clone())
+        .collect();
+    available.extend(instruction.args.iter().map(|arg| arg.name.clone()));
+    Err(build_not_found_error(
+        field_name,
+        format!("instruction fields for '{}'", instruction.name),
+        available,
+    ))
 }
 
 /// Suggest similar names from a list of candidates using fuzzy matching.
@@ -194,5 +304,77 @@ mod tests {
         let idl = parse_idl_file(&path).expect("should parse");
         let results = search_idl(&idl, "swap");
         assert!(!results.is_empty(), "should find results for 'swap'");
+    }
+
+    #[test]
+    fn test_lookup_instruction_with_suggestion() {
+        use crate::parse::parse_idl_file;
+        use std::path::PathBuf;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pump.json");
+        let idl = parse_idl_file(&path).expect("should parse");
+
+        let error = lookup_instruction(&idl, "initialise").expect_err("lookup should fail");
+        match error {
+            IdlSearchError::NotFound { suggestions, .. } => {
+                assert_eq!(suggestions[0].candidate, "initialize");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_lookup_instruction_field_with_suggestion() {
+        use crate::parse::parse_idl_file;
+        use std::path::PathBuf;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pump.json");
+        let idl = parse_idl_file(&path).expect("should parse");
+
+        let error = lookup_instruction_field(&idl, "buy", "usr").expect_err("lookup should fail");
+        match error {
+            IdlSearchError::NotFound { suggestions, .. } => {
+                assert_eq!(suggestions[0].candidate, "user");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_lookup_account_success() {
+        use crate::parse::parse_idl_file;
+        use std::path::PathBuf;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pump.json");
+        let idl = parse_idl_file(&path).expect("should parse");
+
+        let account = lookup_account(&idl, "BondingCurve").expect("account should exist");
+        assert_eq!(account.name, "BondingCurve");
+    }
+
+    #[test]
+    fn test_lookup_instruction_case_insensitive() {
+        use crate::parse::parse_idl_file;
+        use std::path::PathBuf;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pump.json");
+        let idl = parse_idl_file(&path).expect("should parse");
+
+        // PascalCase SDK name matches snake_case IDL name
+        let instruction = lookup_instruction(&idl, "Buy").expect("should match case-insensitively");
+        assert_eq!(instruction.name, "buy");
+    }
+
+    #[test]
+    fn test_lookup_account_case_insensitive() {
+        use crate::parse::parse_idl_file;
+        use std::path::PathBuf;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pump.json");
+        let idl = parse_idl_file(&path).expect("should parse");
+
+        let account =
+            lookup_account(&idl, "bondingCurve").expect("should match case-insensitively");
+        assert_eq!(account.name, "BondingCurve");
     }
 }

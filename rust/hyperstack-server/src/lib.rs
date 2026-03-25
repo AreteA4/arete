@@ -372,6 +372,9 @@ mod tests {
     fn test_spec_creation() {
         let bytecode = hyperstack_interpreter::compiler::MultiEntityBytecode::new().build();
         let spec = Spec::new(bytecode, "test_program");
-        assert_eq!(spec.program_ids.first().map(String::as_str), Some("test_program"));
+        assert_eq!(
+            spec.program_ids.first().map(String::as_str),
+            Some("test_program")
+        );
     }
 }

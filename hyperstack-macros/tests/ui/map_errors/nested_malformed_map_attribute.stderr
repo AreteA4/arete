@@ -1,0 +1,5 @@
+error: Source path must be in format ModulePath::TypeName::field_name
+ --> tests/ui/map_errors/nested_malformed_map_attribute.rs:7:15
+  |
+7 |         #[map(source)]
+  |               ^^^^^^

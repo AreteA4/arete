@@ -1,0 +1,5 @@
+error: Unclosed '{' in URL template: https://example.com/{mint
+ --> tests/ui/resolve_errors/malformed_url_template.rs:7:9
+  |
+7 |         #[resolve(url = "https://example.com/{mint", extract = "name")]
+  |         ^

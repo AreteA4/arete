@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use syn::Error;
 
+use crate::diagnostic::suggestion_or_available_suffix;
+
 use super::idl::IdlSpec;
 use super::pdas::{ParsedSeedKind, PdasBlock, ProgramPdas};
 
@@ -23,12 +25,17 @@ impl<'a> PdaValidationContext<'a> {
 
     fn validate_program(&self, program: &ProgramPdas) -> Result<(), Error> {
         let idl = self.idls.get(&program.program_name).ok_or_else(|| {
-            let available: Vec<_> = self.idls.keys().collect();
+            let available: Vec<String> = self.idls.keys().cloned().collect();
             Error::new(
                 program.program_name_span,
                 format!(
-                    "unknown program '{}' in pdas! block. Available programs: {:?}",
-                    program.program_name, available
+                    "unknown program '{}' in pdas! block{}",
+                    program.program_name,
+                    suggestion_or_available_suffix(
+                        &program.program_name,
+                        &available,
+                        "Available programs",
+                    )
                 ),
             )
         })?;
@@ -74,8 +81,14 @@ impl<'a> PdaValidationContext<'a> {
                     return Err(Error::new(
                         seed.span,
                         format!(
-                            "account '{}' not found in program '{}'. Available accounts: {:?}",
-                            account_name, program_name, available
+                            "unknown account '{}' in program '{}'{}",
+                            account_name,
+                            program_name,
+                            suggestion_or_available_suffix(
+                                account_name,
+                                &available,
+                                "Available accounts",
+                            )
                         ),
                     ));
                 }
@@ -94,8 +107,14 @@ impl<'a> PdaValidationContext<'a> {
                         Err(Error::new(
                             seed.span,
                             format!(
-                                "arg '{}' not found in any instruction of program '{}'. Available args: {:?}",
-                                name, program_name, available
+                                "unknown instruction argument '{}' in program '{}'{}",
+                                name,
+                                program_name,
+                                suggestion_or_available_suffix(
+                                    name,
+                                    &available,
+                                    "Available instruction arguments",
+                                )
                             ),
                         ))
                     }
@@ -105,8 +124,8 @@ impl<'a> PdaValidationContext<'a> {
                             Err(Error::new(
                                 seed.span,
                                 format!(
-                                    "arg '{}' type mismatch: declared {}, but IDL has {}",
-                                    name, arg_type, actual_type
+                                    "invalid instruction argument type for '{}'. Expected '{}', found '{}'.",
+                                    name, actual_type, arg_type
                                 ),
                             ))
                         } else {
@@ -245,7 +264,7 @@ mod tests {
 
         let result = ctx.validate(&block);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(result.unwrap_err().to_string().contains("unknown account"));
     }
 
     #[test]
@@ -265,7 +284,10 @@ mod tests {
 
         let result = ctx.validate(&block);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("type mismatch"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid instruction argument type"));
     }
 
     #[test]

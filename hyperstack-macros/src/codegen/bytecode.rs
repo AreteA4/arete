@@ -6,7 +6,15 @@ use quote::quote;
 use crate::ast::SerializableStreamSpec;
 
 pub fn generate_bytecode_from_spec(spec: &SerializableStreamSpec) -> TokenStream {
-    let spec_json = serde_json::to_string(spec).unwrap_or_else(|_| "{}".to_string());
+    let spec_json = match serde_json::to_string(spec) {
+        Ok(json) => json,
+        Err(error) => {
+            let error_message = format!("failed to serialize embedded AST JSON: {error}");
+            return quote! {
+                compile_error!(#error_message);
+            };
+        }
+    };
     let entity_name = &spec.state_name;
 
     quote! {

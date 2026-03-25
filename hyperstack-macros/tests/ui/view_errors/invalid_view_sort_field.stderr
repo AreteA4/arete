@@ -1,0 +1,5 @@
+error: unknown view field 'ghost.value' on entity 'Thing'
+ --> tests/ui/view_errors/invalid_view_sort_field.rs:6:39
+  |
+6 |     #[view(name = "latest", sort_by = "ghost.value")]
+  |                                       ^^^^^^^^^^^^^

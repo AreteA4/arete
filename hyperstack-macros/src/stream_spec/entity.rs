@@ -16,6 +16,7 @@
 use std::collections::{HashMap, HashSet};
 
 use quote::{format_ident, quote};
+use syn::spanned::Spanned;
 use syn::{Fields, GenericArgument, ItemStruct, PathArguments, Type};
 
 use super::resolve_snapshot_source;
@@ -25,9 +26,11 @@ use crate::ast::{
     UrlSource, UrlTemplatePart,
 };
 use crate::codegen;
+use crate::diagnostic::{internal_codegen_error, unknown_value_message};
 use crate::event_type_helpers::IdlLookup;
 use crate::parse;
 use crate::utils::{path_to_string, to_pascal_case, to_snake_case};
+use crate::validation::{validate_semantics, ComputedFieldValidation, ValidationInput};
 
 // ============================================================================
 // Process Entity Result
@@ -37,7 +40,7 @@ use crate::utils::{path_to_string, to_pascal_case, to_snake_case};
 /// and any auto-generated resolver hooks that need to be threaded into the
 /// resolver registry.
 pub struct ProcessEntityResult {
-    pub token_stream: proc_macro::TokenStream,
+    pub token_stream: proc_macro2::TokenStream,
     /// Auto-generated resolver hooks (e.g., for lookup_index account types).
     /// These come from the AST's `auto_generate_lookup_resolvers()` and need
     /// to be converted to `ResolverHookSpec` entries in the IDL path.
@@ -59,7 +62,7 @@ use super::sections::{
     process_nested_struct,
 };
 
-pub fn parse_url_template(s: &str) -> Vec<UrlTemplatePart> {
+pub fn parse_url_template(s: &str, span: proc_macro2::Span) -> syn::Result<Vec<UrlTemplatePart>> {
     let mut parts = Vec::new();
     let mut rest = s;
 
@@ -69,9 +72,15 @@ pub fn parse_url_template(s: &str) -> Vec<UrlTemplatePart> {
         }
         let close = rest[open..]
             .find('}')
-            .expect("Unclosed '{' in URL template")
+            .ok_or_else(|| syn::Error::new(span, format!("Unclosed '{{' in URL template: {s}")))?
             + open;
         let field_ref = rest[open + 1..close].trim().to_string();
+        if field_ref.is_empty() {
+            return Err(syn::Error::new(
+                span,
+                format!("Empty field reference '{{}}' in URL template: {s}"),
+            ));
+        }
         parts.push(UrlTemplatePart::FieldRef(field_ref));
         rest = &rest[close + 1..];
     }
@@ -80,7 +89,7 @@ pub fn parse_url_template(s: &str) -> Vec<UrlTemplatePart> {
         parts.push(UrlTemplatePart::Literal(rest.to_string()));
     }
 
-    parts
+    Ok(parts)
 }
 
 // ============================================================================
@@ -93,7 +102,7 @@ pub fn process_entity_struct(
     section_structs: HashMap<String, ItemStruct>,
     skip_game_event: bool,
     stack_name: &str,
-) -> ProcessEntityResult {
+) -> syn::Result<ProcessEntityResult> {
     process_entity_struct_with_idl(
         input,
         entity_name,
@@ -119,11 +128,11 @@ pub fn process_entity_struct_with_idl(
     entity_name: String,
     section_structs: HashMap<String, ItemStruct>,
     skip_game_event: bool,
-    stack_name: &str,
+    _stack_name: &str,
     idls: IdlLookup,
     resolver_hooks: Vec<parse::ResolveKeyAttribute>,
     pda_registrations: Vec<parse::RegisterPdaAttribute>,
-) -> ProcessEntityResult {
+) -> syn::Result<ProcessEntityResult> {
     let _name = syn::Ident::new(&entity_name, input.ident.span());
     let state_name = syn::Ident::new(&format!("{}State", entity_name), input.ident.span());
     let spec_fn_name = format_ident!("create_{}_spec", to_snake_case(&entity_name));
@@ -144,12 +153,13 @@ pub fn process_entity_struct_with_idl(
     let program_name = idl.map(|idl| idl.get_name());
     let mut has_events = false;
     let mut computed_fields: Vec<(String, proc_macro2::TokenStream, syn::Type)> = Vec::new();
+    let mut computed_field_validations: Vec<ComputedFieldValidation> = Vec::new();
     let mut resolve_specs: Vec<parse::ResolveSpec> = Vec::new();
 
     // Level 1: Declarative hook macros passed from caller
     // resolver_hooks and pda_registrations are now passed as parameters
     let mut derive_from_mappings: HashMap<String, Vec<parse::DeriveFromAttribute>> = HashMap::new();
-    let mut aggregate_conditions: HashMap<String, String> = HashMap::new();
+    let mut aggregate_conditions: HashMap<String, crate::ast::ConditionExpr> = HashMap::new();
 
     // Collect ALL section names from the entity struct FIRST
     // This is needed to properly detect cross-section references in #[computed] expressions
@@ -189,7 +199,7 @@ pub fn process_entity_struct_with_idl(
                                 section_struct,
                                 None,
                                 idls,
-                            );
+                            )?;
                             section_specs.push(section);
                         } else {
                             let field_type_info = sections::analyze_field_type_with_idl(
@@ -201,7 +211,7 @@ pub fn process_entity_struct_with_idl(
                                 field,
                                 field_name,
                                 field_type_info,
-                            ));
+                            )?);
                         }
                     }
                 }
@@ -214,7 +224,7 @@ pub fn process_entity_struct_with_idl(
                 if field_type_info.resolved_type.is_some()
                     || field_type_info.base_type == crate::ast::BaseType::Object
                 {
-                    root_fields.push(field_emit_override(field, field_name, field_type_info));
+                    root_fields.push(field_emit_override(field, field_name, field_type_info)?);
                 }
             }
         }
@@ -234,276 +244,270 @@ pub fn process_entity_struct_with_idl(
         for field in &fields.named {
             let field_name = field.ident.as_ref().unwrap();
             let field_type = &field.ty;
+            let field_name_str = field_name.to_string();
 
             let mut has_attrs = false;
             for attr in &field.attrs {
-                if let Ok(Some(map_attrs)) =
-                    parse::parse_map_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
-                    for map_attr in map_attrs {
-                        process_map_attribute(
-                            &map_attr,
-                            field_name,
-                            field_type,
-                            &mut state_fields,
-                            &mut accessor_defs,
-                            &mut accessor_names,
-                            &mut primary_keys,
-                            &mut lookup_indexes,
-                            &mut sources_by_type,
-                            &mut field_mappings,
-                        );
+                match parse::parse_recognized_field_attribute(attr, &field_name_str)? {
+                    Some(parse::RecognizedFieldAttribute::Map(map_attrs))
+                    | Some(parse::RecognizedFieldAttribute::FromInstruction(map_attrs)) => {
+                        has_attrs = true;
+                        for map_attr in map_attrs {
+                            process_map_attribute(
+                                &map_attr,
+                                field_name,
+                                field_type,
+                                &mut state_fields,
+                                &mut accessor_defs,
+                                &mut accessor_names,
+                                &mut primary_keys,
+                                &mut lookup_indexes,
+                                &mut sources_by_type,
+                                &mut field_mappings,
+                            );
+                        }
                     }
-                } else if let Ok(Some(map_attrs)) =
-                    parse::parse_from_instruction_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
-                    for map_attr in map_attrs {
-                        process_map_attribute(
-                            &map_attr,
-                            field_name,
-                            field_type,
-                            &mut state_fields,
-                            &mut accessor_defs,
-                            &mut accessor_names,
-                            &mut primary_keys,
-                            &mut lookup_indexes,
-                            &mut sources_by_type,
-                            &mut field_mappings,
-                        );
-                    }
-                } else if let Ok(Some(mut event_attr)) =
-                    parse::parse_event_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
-                    has_events = true;
+                    Some(parse::RecognizedFieldAttribute::Event(mut event_attr)) => {
+                        has_attrs = true;
+                        has_events = true;
 
-                    state_fields.push(quote! {
-                        pub #field_name: #field_type
-                    });
+                        state_fields.push(quote! {
+                            pub #field_name: #field_type
+                        });
 
-                    // Determine instruction path (type-safe or legacy)
-                    if let Some((_instruction_path, instruction_str)) =
-                        determine_event_instruction(&mut event_attr, field_type, program_name)
-                    {
-                        events_by_instruction
-                            .entry(instruction_str)
-                            .or_default()
-                            .push((
-                                event_attr.target_field_name.clone(),
-                                event_attr,
-                                field_type.clone(),
-                            ));
-                    } else {
-                        // Fallback to legacy instruction string
-                        events_by_instruction
-                            .entry(event_attr.instruction.clone())
-                            .or_default()
-                            .push((
-                                event_attr.target_field_name.clone(),
-                                event_attr,
-                                field_type.clone(),
-                            ));
-                    }
-                } else if let Ok(Some(mut snapshot_attr)) =
-                    parse::parse_snapshot_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
-
-                    state_fields.push(quote! {
-                        pub #field_name: #field_type
-                    });
-
-                    // Infer account type from field type if not explicitly specified
-                    let account_path = if let Some(ref path) = snapshot_attr.from_account {
-                        Some(path.clone())
-                    } else if let Some(inferred_path) = extract_account_type_from_field(field_type)
-                    {
-                        snapshot_attr.inferred_account = Some(inferred_path.clone());
-                        Some(inferred_path)
-                    } else {
-                        None
-                    };
-
-                    if let Some(acct_path) = account_path {
-                        let source_type_str = path_to_string(&acct_path);
-
-                        // Determine source field name and whether this is a whole-source capture
-                        let (source_field_name, is_whole_source) =
-                            resolve_snapshot_source(&snapshot_attr);
-
-                        let map_attr = parse::MapAttribute {
-                            source_type_path: acct_path,
-                            source_field_name,
-                            target_field_name: snapshot_attr.target_field_name.clone(),
-                            is_primary_key: false,
-                            is_lookup_index: false,
-                            register_from: Vec::new(),
-                            temporal_field: None,
-                            strategy: snapshot_attr.strategy.clone(),
-                            join_on: snapshot_attr
-                                .join_on
-                                .as_ref()
-                                .map(|fs| fs.ident.to_string()),
-                            transform: None,
-                            resolver_transform: None,
-                            is_instruction: false,
-                            is_whole_source,
-                            lookup_by: snapshot_attr.lookup_by.clone(),
-                            condition: None,
-                            when: snapshot_attr.when.clone(),
-                            stop: None,
-                            stop_lookup_by: None,
-                            emit: true,
-                        };
-
-                        sources_by_type
-                            .entry(source_type_str)
-                            .or_default()
-                            .push(map_attr);
-                    }
-                } else if let Ok(Some(aggr_attr)) =
-                    parse::parse_aggregate_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
-
-                    state_fields.push(quote! {
-                        pub #field_name: #field_type
-                    });
-
-                    // Level 1: Store condition for later AST generation
-                    if let Some(condition) = &aggr_attr.condition {
-                        let field_path = format!("{}.{}", entity_name, field_name);
-                        aggregate_conditions.insert(field_path, condition.clone());
-                    }
-
-                    // Convert aggregate to map attributes for each instruction
-                    for instr_path in &aggr_attr.from_instructions {
-                        let source_field_name = aggr_attr
-                            .field
-                            .as_ref()
-                            .map(|fs| fs.ident.to_string())
-                            .unwrap_or_default();
-
-                        let map_attr = parse::MapAttribute {
-                            source_type_path: instr_path.clone(),
-                            source_field_name,
-                            target_field_name: aggr_attr.target_field_name.clone(),
-                            is_primary_key: false,
-                            is_lookup_index: false,
-                            register_from: Vec::new(),
-                            temporal_field: None,
-                            strategy: aggr_attr.strategy.clone(),
-                            join_on: aggr_attr.join_on.as_ref().map(|fs| fs.ident.to_string()),
-                            transform: aggr_attr.transform.as_ref().map(|t| t.to_string()),
-                            resolver_transform: None,
-                            is_instruction: true,
-                            is_whole_source: false,
-                            lookup_by: aggr_attr.lookup_by.clone(),
-                            condition: None,
-                            when: None,
-                            stop: None,
-                            stop_lookup_by: None,
-                            emit: true,
-                        };
-
-                        // Add to sources_by_type for handler generation
-                        let source_type_str = path_to_string(instr_path);
-                        sources_by_type
-                            .entry(source_type_str)
-                            .or_default()
-                            .push(map_attr);
-                    }
-                } else if let Ok(Some(derive_attr)) =
-                    parse::parse_derive_from_attribute(attr, &field_name.to_string())
-                {
-                    // Level 1: Process #[derive_from] attribute
-                    // This code successfully parses derive_from attributes and adds them to derive_from_mappings.
-                    // The AST writer then processes these mappings to populate instruction_hooks in the AST.
-                    has_attrs = true;
-                    state_fields.push(quote! { pub #field_name: #field_type });
-
-                    // Group by instruction for handler merging
-                    for instr_path in &derive_attr.from_instructions {
-                        let source_type_str = path_to_string(instr_path);
-                        derive_from_mappings
-                            .entry(source_type_str)
-                            .or_default()
-                            .push(derive_attr.clone());
-                    }
-                } else if let Ok(Some(resolve_attr)) =
-                    parse::parse_resolve_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
-
-                    state_fields.push(quote! {
-                        pub #field_name: #field_type
-                    });
-
-                    // Determine resolver type: URL resolver if url is present, otherwise Token resolver
-                    let resolver = if let Some(url_path) = resolve_attr.url.clone() {
-                        // URL resolver
-                        let method = resolve_attr
-                            .method
-                            .as_deref()
-                            .map(|m| match m.to_lowercase().as_str() {
-                                "post" => HttpMethod::Post,
-                                _ => HttpMethod::Get,
-                            })
-                            .unwrap_or(HttpMethod::Get);
-
-                        let url_source = if resolve_attr.url_is_template {
-                            UrlSource::Template(parse_url_template(&url_path))
+                        if let Some((_instruction_path, instruction_str)) =
+                            determine_event_instruction(&mut event_attr, field_type, program_name)
+                        {
+                            events_by_instruction
+                                .entry(instruction_str)
+                                .or_default()
+                                .push((
+                                    event_attr.target_field_name.clone(),
+                                    event_attr,
+                                    field_type.clone(),
+                                ));
                         } else {
-                            UrlSource::FieldPath(url_path)
+                            events_by_instruction
+                                .entry(event_attr.instruction.clone())
+                                .or_default()
+                                .push((
+                                    event_attr.target_field_name.clone(),
+                                    event_attr,
+                                    field_type.clone(),
+                                ));
+                        }
+                    }
+                    Some(parse::RecognizedFieldAttribute::Snapshot(mut snapshot_attr)) => {
+                        has_attrs = true;
+
+                        state_fields.push(quote! {
+                            pub #field_name: #field_type
+                        });
+
+                        let account_path = if let Some(ref path) = snapshot_attr.from_account {
+                            Some(path.clone())
+                        } else if let Some(inferred_path) =
+                            extract_account_type_from_field(field_type)
+                        {
+                            snapshot_attr.inferred_account = Some(inferred_path.clone());
+                            Some(inferred_path)
+                        } else {
+                            None
                         };
 
-                        ResolverType::Url(UrlResolverConfig {
-                            url_source,
-                            method,
-                            extract_path: resolve_attr.extract.clone(),
-                        })
-                    } else if let Some(name) = resolve_attr.resolver.as_deref() {
-                        // Token resolver with explicit type
-                        parse_resolver_type_name(name, field_type)
-                            .unwrap_or_else(|err| panic!("{}", err))
-                    } else {
-                        // Token resolver with inferred type
-                        infer_resolver_type(field_type).unwrap_or_else(|err| panic!("{}", err))
-                    };
+                        if let Some(acct_path) = account_path {
+                            let source_type_str = path_to_string(&acct_path);
+                            let (source_field_name, is_whole_source) =
+                                resolve_snapshot_source(&snapshot_attr);
+                            let source_field_span = snapshot_attr
+                                .field
+                                .as_ref()
+                                .map(|field| field.span())
+                                .unwrap_or(snapshot_attr.attr_span);
 
-                    let from = if resolve_attr.url_is_template {
-                        None
-                    } else {
-                        resolve_attr.url.clone().or(resolve_attr.from)
-                    };
+                            let map_attr = parse::MapAttribute {
+                                attr_span: snapshot_attr.attr_span,
+                                source_type_span: acct_path.span(),
+                                source_field_span,
+                                // NOTE: is_event_source=false is correct here.
+                                // Event-derived attributes are created in handlers.rs with
+                                // is_event_source=true and validated separately via
+                                // validate_event_handler_keys before being merged.
+                                is_event_source: false,
+                                is_account_source: true,
+                                source_type_path: acct_path,
+                                source_field_name,
+                                target_field_name: snapshot_attr.target_field_name.clone(),
+                                is_primary_key: false,
+                                is_lookup_index: false,
+                                register_from: Vec::new(),
+                                temporal_field: None,
+                                strategy: snapshot_attr.strategy.clone(),
+                                join_on: snapshot_attr.join_on.clone(),
+                                transform: None,
+                                resolver_transform: None,
+                                is_instruction: false,
+                                is_whole_source,
+                                lookup_by: snapshot_attr.lookup_by.clone(),
+                                condition: None,
+                                when: snapshot_attr.when.clone(),
+                                stop: None,
+                                stop_lookup_by: None,
+                                emit: true,
+                            };
 
-                    resolve_specs.push(parse::ResolveSpec {
-                        resolver,
-                        from,
-                        address: resolve_attr.address,
-                        extract: resolve_attr.extract,
-                        target_field_name: resolve_attr.target_field_name,
-                        strategy: resolve_attr.strategy,
-                        condition: resolve_attr.condition,
-                        schedule_at: resolve_attr.schedule_at,
-                    });
-                } else if let Ok(Some(computed_attr)) =
-                    parse::parse_computed_attribute(attr, &field_name.to_string())
-                {
-                    has_attrs = true;
+                            sources_by_type
+                                .entry(source_type_str)
+                                .or_default()
+                                .push(map_attr);
+                        }
+                    }
+                    Some(parse::RecognizedFieldAttribute::Aggregate(aggr_attr)) => {
+                        has_attrs = true;
 
-                    state_fields.push(quote! {
-                        pub #field_name: #field_type
-                    });
+                        state_fields.push(quote! {
+                            pub #field_name: #field_type
+                        });
 
-                    // Store computed field for later processing (after aggregations)
-                    computed_fields.push((
-                        computed_attr.target_field_name.clone(),
-                        computed_attr.expression.clone(),
-                        field_type.clone(),
-                    ));
+                        if let Some(condition) = &aggr_attr.condition {
+                            let field_path = format!("{}.{}", entity_name, field_name);
+                            aggregate_conditions.insert(field_path, condition.clone());
+                        }
+
+                        for instr_path in &aggr_attr.from_instructions {
+                            let source_field_name = aggr_attr
+                                .field
+                                .as_ref()
+                                .map(|fs| fs.ident.to_string())
+                                .unwrap_or_default();
+                            let source_field_span = aggr_attr
+                                .field
+                                .as_ref()
+                                .map(|field| field.ident.span())
+                                .unwrap_or(aggr_attr.attr_span);
+
+                            let map_attr = parse::MapAttribute {
+                                attr_span: aggr_attr.attr_span,
+                                source_type_span: instr_path.span(),
+                                source_field_span,
+                                // NOTE: is_event_source=false is correct here.
+                                // Event-derived attributes are created in handlers.rs with
+                                // is_event_source=true and validated separately via
+                                // validate_event_handler_keys before being merged.
+                                is_event_source: false,
+                                is_account_source: false,
+                                source_type_path: instr_path.clone(),
+                                source_field_name,
+                                target_field_name: aggr_attr.target_field_name.clone(),
+                                is_primary_key: false,
+                                is_lookup_index: false,
+                                register_from: Vec::new(),
+                                temporal_field: None,
+                                strategy: aggr_attr.strategy.clone(),
+                                join_on: aggr_attr.join_on.clone(),
+                                transform: aggr_attr.transform.as_ref().map(|t| t.to_string()),
+                                resolver_transform: None,
+                                is_instruction: true,
+                                is_whole_source: false,
+                                lookup_by: aggr_attr.lookup_by.clone(),
+                                condition: None,
+                                when: None,
+                                stop: None,
+                                stop_lookup_by: None,
+                                emit: true,
+                            };
+
+                            let source_type_str = path_to_string(instr_path);
+                            sources_by_type
+                                .entry(source_type_str)
+                                .or_default()
+                                .push(map_attr);
+                        }
+                    }
+                    Some(parse::RecognizedFieldAttribute::DeriveFrom(derive_attr)) => {
+                        has_attrs = true;
+                        state_fields.push(quote! { pub #field_name: #field_type });
+
+                        for instr_path in &derive_attr.from_instructions {
+                            let source_type_str = path_to_string(instr_path);
+                            derive_from_mappings
+                                .entry(source_type_str)
+                                .or_default()
+                                .push(derive_attr.clone());
+                        }
+                    }
+                    Some(parse::RecognizedFieldAttribute::Resolve(resolve_attr)) => {
+                        has_attrs = true;
+
+                        state_fields.push(quote! {
+                            pub #field_name: #field_type
+                        });
+
+                        let resolver = if let Some(url_path) = resolve_attr.url.clone() {
+                            let method = resolve_attr
+                                .method
+                                .as_deref()
+                                .map(|m| match m.to_lowercase().as_str() {
+                                    "post" => HttpMethod::Post,
+                                    _ => HttpMethod::Get,
+                                })
+                                .unwrap_or(HttpMethod::Get);
+
+                            let url_source = if resolve_attr.url_is_template {
+                                UrlSource::Template(parse_url_template(&url_path, attr.span())?)
+                            } else {
+                                UrlSource::FieldPath(url_path)
+                            };
+
+                            ResolverType::Url(UrlResolverConfig {
+                                url_source,
+                                method,
+                                extract_path: resolve_attr.extract.clone(),
+                            })
+                        } else if let Some(name) = resolve_attr.resolver.as_deref() {
+                            parse_resolver_type_name(name, field_type)?
+                        } else {
+                            infer_resolver_type(field_type)?
+                        };
+
+                        let from = if resolve_attr.url_is_template {
+                            None
+                        } else {
+                            resolve_attr.url.clone().or(resolve_attr.from)
+                        };
+
+                        resolve_specs.push(parse::ResolveSpec {
+                            attr_span: resolve_attr.attr_span,
+                            from_span: resolve_attr.from_span,
+                            resolver,
+                            from,
+                            address: resolve_attr.address,
+                            extract: resolve_attr.extract,
+                            target_field_name: resolve_attr.target_field_name,
+                            strategy: resolve_attr.strategy,
+                            condition: resolve_attr.condition,
+                            schedule_at: resolve_attr.schedule_at,
+                        });
+                    }
+                    Some(parse::RecognizedFieldAttribute::Computed(computed_attr)) => {
+                        has_attrs = true;
+
+                        state_fields.push(quote! {
+                            pub #field_name: #field_type
+                        });
+
+                        computed_fields.push((
+                            computed_attr.target_field_name.clone(),
+                            computed_attr.expression.clone(),
+                            field_type.clone(),
+                        ));
+                        computed_field_validations.push(ComputedFieldValidation {
+                            target_path: computed_attr.target_field_name.clone(),
+                            expression: computed_attr.expression.clone(),
+                            span: computed_attr.attr_span,
+                        });
+                    }
+                    None => {}
                 }
             }
 
@@ -526,11 +530,12 @@ pub fn process_entity_struct_with_idl(
                                 &mut events_by_instruction,
                                 &mut has_events,
                                 &mut computed_fields,
+                                &mut computed_field_validations,
                                 &mut resolve_specs,
                                 &mut derive_from_mappings,
                                 &mut aggregate_conditions,
                                 program_name,
-                            );
+                            )?;
                         }
                     }
                 }
@@ -573,8 +578,9 @@ pub fn process_entity_struct_with_idl(
         }
     }
 
-    let mut views = parse::parse_view_attributes(&input.attrs);
-    for view in &mut views {
+    let mut view_specs = parse::parse_view_attribute_specs(&input.attrs)?;
+    for view_spec in &mut view_specs {
+        let view = &mut view_spec.view;
         if let crate::ast::ViewSource::Entity { name } = &mut view.source {
             *name = entity_name.clone();
         }
@@ -582,6 +588,23 @@ pub fn process_entity_struct_with_idl(
             view.id = format!("{}/{}", entity_name, view.id);
         }
     }
+    validate_semantics(ValidationInput {
+        entity_name: &entity_name,
+        primary_keys: &primary_keys,
+        lookup_indexes: &lookup_indexes,
+        sources_by_type: &sources_by_type,
+        events_by_instruction: &events_by_instruction,
+        derive_from_mappings: &derive_from_mappings,
+        aggregate_conditions: &aggregate_conditions,
+        resolver_hooks: &resolver_hooks,
+        computed_fields: &computed_field_validations,
+        resolve_specs: &resolve_specs,
+        section_specs: &section_specs,
+        view_specs: &view_specs,
+        idls,
+    })?;
+
+    let views = view_specs.into_iter().map(|spec| spec.view).collect();
 
     let ast = build_and_write_ast(
         &entity_name,
@@ -598,7 +621,23 @@ pub fn process_entity_struct_with_idl(
         &section_specs,
         idls,
         views,
-    );
+    )?;
+
+    let spec_json = serde_json::to_string(&ast).map_err(|error| {
+        internal_codegen_error(
+            input.ident.span(),
+            format!("failed to serialize embedded stream spec: {error}"),
+        )
+    })?;
+
+    // Round-trip check: ensure the JSON we embed can be deserialized at runtime
+    let _: crate::ast::SerializableStreamSpec =
+        serde_json::from_str(&spec_json).map_err(|error| {
+            internal_codegen_error(
+                input.ident.span(),
+                format!("embedded stream spec round-trip check failed: {error}"),
+            )
+        })?;
 
     let explicit_account_types: HashSet<String> = resolver_hooks
         .iter()
@@ -695,7 +734,6 @@ pub fn process_entity_struct_with_idl(
     let field_accessors = codegen::generate_field_accessors(&section_specs);
 
     let module_name = format_ident!("{}", to_snake_case(&entity_name));
-    let stack_file_name = format!("{}.stack.json", stack_name);
 
     let output = quote! {
         #[derive(Debug, Clone, hyperstack::runtime::serde::Serialize, hyperstack::runtime::serde::Deserialize)]
@@ -717,21 +755,10 @@ pub fn process_entity_struct_with_idl(
         }
 
         pub fn #spec_fn_name() -> hyperstack::runtime::hyperstack_interpreter::ast::TypedStreamSpec<#state_name> {
-            let stack_json = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.hyperstack/", #stack_file_name));
-            let stack_spec: hyperstack::runtime::hyperstack_interpreter::ast::SerializableStackSpec =
-                hyperstack::runtime::serde_json::from_str(stack_json)
-                    .expect("Failed to parse stack AST file");
-
-            let entity_spec = stack_spec
-                .entities
-                .iter()
-                .find(|e| e.state_name == #entity_name)
-                .expect(&format!("Entity {} not found in stack AST", #entity_name));
-
-            let mut spec = entity_spec.clone();
-            if spec.idl.is_none() {
-                spec.idl = stack_spec.idls.first().cloned();
-            }
+            let spec_json = #spec_json;
+            let spec: hyperstack::runtime::hyperstack_interpreter::ast::SerializableStreamSpec =
+                hyperstack::runtime::serde_json::from_str(spec_json)
+                    .unwrap_or_else(|error| panic!("embedded stream spec is invalid: {}", error));
 
             hyperstack::runtime::hyperstack_interpreter::ast::TypedStreamSpec::from_serializable(spec)
         }
@@ -739,34 +766,31 @@ pub fn process_entity_struct_with_idl(
         #(#handler_fns)*
     };
 
-    ProcessEntityResult {
-        token_stream: output.into(),
+    Ok(ProcessEntityResult {
+        token_stream: output,
         auto_resolver_hooks,
         ast_spec: Some(ast),
-    }
+    })
 }
 
 fn field_emit_override(
     field: &syn::Field,
     field_name: String,
     mut field_type_info: FieldTypeInfo,
-) -> FieldTypeInfo {
+) -> syn::Result<FieldTypeInfo> {
     let mut found_mapping = false;
     let mut any_emit = false;
 
     for attr in &field.attrs {
-        if let Ok(Some(map_attrs)) = parse::parse_map_attribute(attr, &field_name) {
-            found_mapping = true;
-            if map_attrs.iter().any(|m| m.emit) {
-                any_emit = true;
+        match parse::parse_recognized_field_attribute(attr, &field_name)? {
+            Some(parse::RecognizedFieldAttribute::Map(map_attrs))
+            | Some(parse::RecognizedFieldAttribute::FromInstruction(map_attrs)) => {
+                found_mapping = true;
+                if map_attrs.iter().any(|m| m.emit) {
+                    any_emit = true;
+                }
             }
-        }
-
-        if let Ok(Some(map_attrs)) = parse::parse_from_instruction_attribute(attr, &field_name) {
-            found_mapping = true;
-            if map_attrs.iter().any(|m| m.emit) {
-                any_emit = true;
-            }
+            _ => {}
         }
     }
 
@@ -774,7 +798,7 @@ fn field_emit_override(
         field_type_info.emit = any_emit;
     }
 
-    field_type_info
+    Ok(field_type_info)
 }
 
 pub(super) fn parse_resolver_type_name(name: &str, field_type: &Type) -> syn::Result<ResolverType> {
@@ -782,7 +806,12 @@ pub(super) fn parse_resolver_type_name(name: &str, field_type: &Type) -> syn::Re
         "token" => Ok(ResolverType::Token),
         _ => Err(syn::Error::new_spanned(
             field_type,
-            format!("Unknown resolver type '{}'.", name),
+            unknown_value_message(
+                "resolver",
+                name,
+                "Available resolvers",
+                &["Token".to_string()],
+            ),
         )),
     }
 }
@@ -796,7 +825,12 @@ pub(super) fn infer_resolver_type(field_type: &Type) -> syn::Result<ResolverType
         "TokenMetadata" => Ok(ResolverType::Token),
         _ => Err(syn::Error::new_spanned(
             field_type,
-            format!("No resolver registered for type '{}'.", type_ident),
+            unknown_value_message(
+                "resolver-backed type",
+                &type_ident,
+                "Available types",
+                &["TokenMetadata".to_string()],
+            ),
         )),
     }
 }
@@ -1006,12 +1040,12 @@ fn generate_computed_fields_hook(
         let deps = section_dependencies.get(section).cloned().unwrap_or_default();
 
         let section_str = section.as_str();
-        
+
         // Collect all computed field names in this section for cache tracking
         let computed_field_names: Vec<String> = fields.iter().map(|(field_name, _expression, _field_type)| {
             field_name.clone()
         }).collect();
-        
+
         let field_evaluations: Vec<_> = fields.iter().map(|(field_name, expression, field_type)| {
             let field_str = field_name.as_str();
             let field_ident = format_ident!("{}", field_name);

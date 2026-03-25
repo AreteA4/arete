@@ -8,7 +8,7 @@
 //! and generates the corresponding Rust code for creating a `TypedHandlerSpec`.
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 
 use crate::ast::{
     ComparisonOp, ConditionExpr, FieldPath, IdlSerializationSnapshot, KeyResolutionStrategy,
@@ -49,7 +49,7 @@ pub fn build_handler_code(
 
     let emit = handler.emit;
 
-    quote! {
+    quote_spanned! { state_name.span()=>
         hyperstack::runtime::hyperstack_interpreter::ast::TypedHandlerSpec::<#state_name>::new(
             #source_code,
             #key_resolution_code,
@@ -77,7 +77,7 @@ pub fn build_handler_fn(
 ) -> TokenStream {
     let handler_code = build_handler_code(handler, state_name);
 
-    quote! {
+    quote_spanned! { handler_name.span()=>
         fn #handler_name() -> hyperstack::runtime::hyperstack_interpreter::ast::TypedHandlerSpec<#state_name> {
             #handler_code
         }

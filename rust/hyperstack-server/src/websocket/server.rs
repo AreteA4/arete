@@ -609,7 +609,10 @@ async fn attach_client_to_bus(
                     let _ = ctx.client_manager.send_to_client(ctx.client_id, data);
                 }
             } else {
-                info!("Client {} subscribed to {} without snapshot", ctx.client_id, view_id);
+                info!(
+                    "Client {} subscribed to {} without snapshot",
+                    ctx.client_id, view_id
+                );
                 rx.borrow_and_update();
             }
 
@@ -653,7 +656,9 @@ async fn attach_client_to_bus(
             if should_send_snapshot {
                 // Determine which entities to send based on cursor
                 let mut snapshots = if let Some(ref cursor) = subscription.after {
-                    ctx.entity_cache.get_after(view_id, cursor, subscription.snapshot_limit).await
+                    ctx.entity_cache
+                        .get_after(view_id, cursor, subscription.snapshot_limit)
+                        .await
                 } else {
                     ctx.entity_cache.get_all(view_id).await
                 };
@@ -698,7 +703,10 @@ async fn attach_client_to_bus(
                     }
                 }
             } else {
-                info!("Client {} subscribed to {} without snapshot", ctx.client_id, view_id);
+                info!(
+                    "Client {} subscribed to {} without snapshot",
+                    ctx.client_id, view_id
+                );
             }
 
             let client_id = ctx.client_id;
@@ -1022,7 +1030,10 @@ async fn attach_client_to_bus(
                     let _ = ctx.client_manager.send_to_client(ctx.client_id, data);
                 }
             } else {
-                info!("Client {} subscribed to {} without snapshot", ctx.client_id, view_id);
+                info!(
+                    "Client {} subscribed to {} without snapshot",
+                    ctx.client_id, view_id
+                );
                 rx.borrow_and_update();
             }
 
@@ -1062,7 +1073,9 @@ async fn attach_client_to_bus(
             if should_send_snapshot {
                 // Determine which entities to send based on cursor
                 let mut snapshots = if let Some(ref cursor) = subscription.after {
-                    ctx.entity_cache.get_after(view_id, cursor, subscription.snapshot_limit).await
+                    ctx.entity_cache
+                        .get_after(view_id, cursor, subscription.snapshot_limit)
+                        .await
                 } else {
                     ctx.entity_cache.get_all(view_id).await
                 };
@@ -1105,7 +1118,10 @@ async fn attach_client_to_bus(
                     }
                 }
             } else {
-                info!("Client {} subscribed to {} without snapshot", ctx.client_id, view_id);
+                info!(
+                    "Client {} subscribed to {} without snapshot",
+                    ctx.client_id, view_id
+                );
             }
 
             let client_id = ctx.client_id;

@@ -29,7 +29,7 @@ pub fn compute_discriminator(namespace: &str, name: &str) -> [u8; 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_discriminator_global_initialize() {
         // Known Anchor discriminator for "global:initialize"
@@ -38,7 +38,7 @@ mod tests {
         assert_eq!(disc.len(), 8);
         assert!(disc.iter().any(|&b| b != 0));
     }
-    
+
     #[test]
     fn test_discriminator_consistency() {
         // Same inputs always produce same output
@@ -46,7 +46,7 @@ mod tests {
         let disc2 = compute_discriminator("global", "deposit");
         assert_eq!(disc1, disc2);
     }
-    
+
     #[test]
     fn test_discriminator_different_names() {
         // Different names produce different discriminators

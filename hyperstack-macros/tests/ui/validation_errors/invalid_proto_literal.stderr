@@ -1,0 +1,5 @@
+error: Expected string literal or array of string literals
+ --> tests/ui/validation_errors/invalid_proto_literal.rs:3:22
+  |
+3 | #[hyperstack(proto = true)]
+  |                      ^^^^

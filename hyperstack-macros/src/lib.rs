@@ -38,6 +38,7 @@
 
 // Public modules - AST types needed for SDK generation
 pub(crate) mod ast;
+mod diagnostic;
 pub(crate) mod event_type_helpers;
 
 // Internal modules - not exposed publicly
@@ -49,10 +50,11 @@ mod parse;
 mod proto_codegen;
 mod stream_spec;
 mod utils;
+mod validation;
 
 use proc_macro::TokenStream;
 use std::collections::HashMap;
-use syn::{parse_macro_input, ItemMod, ItemStruct};
+use syn::{ItemMod, ItemStruct};
 
 // Use the stream_spec module functions
 use stream_spec::{process_module, process_struct_with_context};
@@ -85,11 +87,36 @@ use stream_spec::{process_module, process_struct_with_context};
 /// ```
 #[proc_macro_attribute]
 pub fn hyperstack(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if let Ok(module) = syn::parse::<ItemMod>(item.clone()) {
-        return process_module(module, attr);
+    expand_hyperstack(attr, item)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+fn expand_hyperstack(
+    attr: TokenStream,
+    item: TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mod_err = match syn::parse::<ItemMod>(item.clone()) {
+        Ok(module) => return process_module(module, attr),
+        Err(e) => e,
+    };
+
+    let input = syn::parse::<ItemStruct>(item).map_err(|struct_err| {
+        // If neither parse succeeds, prefer the module error since most usages
+        // of #[hyperstack] are on modules.
+        let mut combined = mod_err;
+        combined.combine(struct_err);
+        combined
+    })?;
+
+    let config = parse::parse_stream_spec_attribute(attr)?;
+    if !config.proto_files.is_empty() || !config.idl_files.is_empty() || config.skip_decoders {
+        return Err(syn::Error::new(
+            input.ident.span(),
+            "#[hyperstack(...)] arguments are only supported on modules",
+        ));
     }
 
-    let input = parse_macro_input!(item as ItemStruct);
     process_struct_with_context(input, HashMap::new(), false)
 }
 

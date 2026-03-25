@@ -11,6 +11,7 @@ use syn::{Item, ItemMod};
 
 use crate::ast::SerializableStackSpec;
 use crate::codegen::generate_multi_entity_builder;
+use crate::diagnostic::{internal_codegen_error, parse_generated_items};
 use crate::parse;
 use crate::parse::proto as proto_parser;
 use crate::proto_codegen;
@@ -18,6 +19,12 @@ use crate::utils::to_pascal_case;
 
 use super::entity::process_entity_struct;
 use super::proto_struct::process_struct_with_context;
+
+type ParsedProtoAttrs = (
+    Vec<(String, proto_parser::ProtoAnalysis)>,
+    bool,
+    Vec<String>,
+);
 
 // ============================================================================
 // Module Processing
@@ -29,13 +36,16 @@ use super::proto_struct::process_struct_with_context;
 /// - Proto-based streams with `proto = ["file.proto"]` attribute
 /// - IDL-based streams with `idl = "file.json"` attribute
 /// - Multi-entity modules with multiple `#[entity]` structs
-pub fn process_module(mut module: ItemMod, attr: TokenStream) -> TokenStream {
+pub fn process_module(
+    mut module: ItemMod,
+    attr: TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
     let mut section_structs = HashMap::new();
     let mut main_struct = None;
     let mut entity_structs = Vec::new();
     let mut has_game_event = false;
 
-    let (proto_analyses, skip_decoders, idl_files) = parse_proto_files_from_attr(attr.clone());
+    let (proto_analyses, skip_decoders, idl_files) = parse_proto_files_from_attr(attr.clone())?;
 
     if !idl_files.is_empty() {
         return super::idl_spec::process_idl_spec(module, &idl_files);
@@ -92,7 +102,7 @@ pub fn process_module(mut module: ItemMod, attr: TokenStream) -> TokenStream {
                 section_structs.clone(),
                 has_game_event,
                 &stack_name,
-            );
+            )?;
             all_outputs.push(output);
         }
 
@@ -109,18 +119,23 @@ pub fn process_module(mut module: ItemMod, attr: TokenStream) -> TokenStream {
             if !proto_analyses.is_empty() {
                 let proto_modules =
                     proto_codegen::generate_proto_module_declarations(&proto_analyses);
-                if let Ok(generated_items) = syn::parse::<syn::File>(proto_modules.into()) {
-                    for gen_item in generated_items.items.into_iter().rev() {
-                        items.insert(0, gen_item);
-                    }
+                let generated_items = parse_generated_items(
+                    proto_modules,
+                    module.ident.span(),
+                    "proto module declarations",
+                )?;
+                for gen_item in generated_items.into_iter().rev() {
+                    items.insert(0, gen_item);
                 }
             }
 
             for output in &all_outputs {
-                if let Ok(generated_items) = syn::parse::<syn::File>(output.token_stream.clone()) {
-                    for gen_item in generated_items.items {
-                        items.push(gen_item);
-                    }
+                for gen_item in parse_generated_items(
+                    output.token_stream.clone(),
+                    module.ident.span(),
+                    "entity expansion",
+                )? {
+                    items.push(gen_item);
                 }
             }
 
@@ -139,10 +154,23 @@ pub fn process_module(mut module: ItemMod, attr: TokenStream) -> TokenStream {
                 instructions: vec![],
                 content_hash: None,
             }
-            .with_content_hash();
+            .try_with_content_hash()
+            .map_err(|error| {
+                internal_codegen_error(
+                    module.ident.span(),
+                    format!("failed to serialize stack spec for hashing: {error}"),
+                )
+            })?;
 
-            if let Err(e) = crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name) {
-                eprintln!("Warning: Failed to write stack AST: {}", e);
+            let stack_spec_json = serde_json::to_string(&stack_spec).map_err(|error| {
+                internal_codegen_error(
+                    module.ident.span(),
+                    format!("failed to serialize embedded stack spec: {error}"),
+                )
+            })?;
+
+            if let Err(error) = crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name) {
+                eprintln!("Warning: Failed to write stack AST: {error}");
             }
 
             let multi_entity_builder = generate_multi_entity_builder(
@@ -150,17 +178,21 @@ pub fn process_module(mut module: ItemMod, attr: TokenStream) -> TokenStream {
                 &proto_analyses,
                 skip_decoders,
                 &stack_name,
+                &stack_spec_json,
             );
-            if let Ok(generated_items) = syn::parse::<syn::File>(multi_entity_builder.into()) {
-                for gen_item in generated_items.items {
-                    items.push(gen_item);
-                }
+            for gen_item in parse_generated_items(
+                multi_entity_builder,
+                module.ident.span(),
+                "multi-entity builder",
+            )? {
+                items.push(gen_item);
             }
         }
 
-        quote! { #module }.into()
+        Ok(quote! { #module })
     } else if let Some(main) = main_struct {
-        let output = process_struct_with_context(main, section_structs, has_game_event);
+        let main_span = main.ident.span();
+        let output = process_struct_with_context(main, section_structs, has_game_event)?;
 
         if let Some((_brace, items)) = &mut module.content {
             items.retain(|item| {
@@ -173,16 +205,14 @@ pub fn process_module(mut module: ItemMod, attr: TokenStream) -> TokenStream {
                 }
             });
 
-            if let Ok(generated_items) = syn::parse::<syn::File>(output.clone()) {
-                for gen_item in generated_items.items {
-                    items.push(gen_item);
-                }
+            for gen_item in parse_generated_items(output, main_span, "module struct expansion")? {
+                items.push(gen_item);
             }
         }
 
-        quote! { #module }.into()
+        Ok(quote! { #module })
     } else {
-        quote! { #module }.into()
+        Ok(quote! { #module })
     }
 }
 
@@ -190,22 +220,19 @@ pub fn process_module(mut module: ItemMod, attr: TokenStream) -> TokenStream {
 // Attribute Parsing
 // ============================================================================
 
-pub fn parse_proto_files_from_attr(
-    attr: TokenStream,
-) -> (
-    Vec<(String, proto_parser::ProtoAnalysis)>,
-    bool,
-    Vec<String>,
-) {
-    let hyperstack_attr = match parse::parse_stream_spec_attribute(attr) {
-        Ok(attr) => attr,
-        Err(_) => return (Vec::new(), false, Vec::new()),
-    };
+pub fn parse_proto_files_from_attr(attr: TokenStream) -> syn::Result<ParsedProtoAttrs> {
+    let hyperstack_attr = parse::parse_stream_spec_attribute(attr)?;
 
+    parse_proto_files_from_parsed_attr(hyperstack_attr)
+}
+
+fn parse_proto_files_from_parsed_attr(
+    hyperstack_attr: parse::StreamSpecAttribute,
+) -> syn::Result<ParsedProtoAttrs> {
     let idl_files = hyperstack_attr.idl_files.clone();
 
     if hyperstack_attr.proto_files.is_empty() {
-        return (Vec::new(), hyperstack_attr.skip_decoders, idl_files);
+        return Ok((Vec::new(), hyperstack_attr.skip_decoders, idl_files));
     }
 
     let mut analyses = Vec::new();
@@ -228,5 +255,25 @@ pub fn parse_proto_files_from_attr(
         }
     }
 
-    (analyses, hyperstack_attr.skip_decoders, idl_files)
+    Ok((analyses, hyperstack_attr.skip_decoders, idl_files))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_proto_file_is_non_fatal() {
+        let (analyses, skip_decoders, idl_files) =
+            parse_proto_files_from_parsed_attr(parse::StreamSpecAttribute {
+                proto_files: vec!["missing.proto".to_string()],
+                idl_files: Vec::new(),
+                skip_decoders: false,
+            })
+            .expect("missing proto files should remain non-fatal");
+
+        assert!(analyses.is_empty());
+        assert!(!skip_decoders);
+        assert!(idl_files.is_empty());
+    }
 }

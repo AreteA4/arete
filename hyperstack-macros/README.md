@@ -73,6 +73,37 @@ The macro generates:
 - `create_spec()` function returning `TypedStreamSpec`
 - Handler creation functions for each source
 
+## Diagnostics
+
+The macro now validates most authoring mistakes before code generation. Common failures include:
+
+- unknown account, instruction, or field references in `#[map]`, `#[event]`, and `#[derive_from]`
+- invalid resolver inputs, unsupported resolver-backed field types, and malformed URL templates
+- invalid view `sort_by` fields and computed-field dependency cycles
+- invalid `pdas!` programs, seed accounts, and seed argument types
+
+Most diagnostics include either a `Did you mean: ...?` suggestion or a short list of available values.
+
+## Troubleshooting
+
+- `unknown ... on entity ...`: check the field path against the generated state shape; nested fields must use `section.field`
+- `unknown ... in instructions/accounts/...`: the IDL lookup failed; verify the SDK path or instruction/account spelling
+- `invalid strategy ...`: use one of the listed strategy values exactly as shown in the error
+- `unknown resolver ...` or `unknown resolver-backed type ...`: use a supported resolver name or change the target field type to a supported resolver-backed type
+- `computed fields contain a dependency cycle ...`: break the cycle by making one field depend only on stored state, not another computed field in the loop
+
+## Testing
+
+Useful commands while working on macro diagnostics:
+
+```bash
+cargo test -p hyperstack-macros
+cargo test -p hyperstack-idl
+cargo check --manifest-path stacks/ore/Cargo.toml
+```
+
+The macro crate includes both `trybuild` UI tests under `hyperstack-macros/tests/ui/` and higher-level dynamic compile-failure tests under `hyperstack-macros/tests/phase*_dynamic.rs`.
+
 ## License
 
 Apache-2.0
