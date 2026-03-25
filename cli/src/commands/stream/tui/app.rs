@@ -30,6 +30,10 @@ pub enum TuiAction {
     // Detail pane scroll
     ScrollDetailDown,
     ScrollDetailUp,
+    ScrollDetailTop,
+    ScrollDetailBottom,
+    ScrollDetailHalfDown,
+    ScrollDetailHalfUp,
     // Vim motions
     GotoTop,
     GotoBottom,
@@ -203,6 +207,23 @@ impl App {
             TuiAction::ScrollDetailUp => {
                 let n = self.take_count();
                 self.scroll_offset = self.scroll_offset.saturating_sub(n as u16);
+            }
+            TuiAction::ScrollDetailTop => {
+                self.pending_count = None;
+                self.scroll_offset = 0;
+            }
+            TuiAction::ScrollDetailBottom => {
+                self.pending_count = None;
+                // Set to a large value; rendering will clamp naturally
+                self.scroll_offset = u16::MAX;
+            }
+            TuiAction::ScrollDetailHalfDown => {
+                let half = (self.visible_rows / 2).max(1);
+                self.scroll_offset = self.scroll_offset.saturating_add(half as u16);
+            }
+            TuiAction::ScrollDetailHalfUp => {
+                let half = (self.visible_rows / 2).max(1);
+                self.scroll_offset = self.scroll_offset.saturating_sub(half as u16);
             }
             TuiAction::NextEntity => {
                 let n = self.take_count();

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use self::app::{App, TuiAction};
+use self::app::{App, TuiAction, ViewMode};
 use super::StreamArgs;
 
 pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
@@ -236,13 +236,38 @@ async fn run_loop(
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             TuiAction::Quit
                         }
-                        KeyCode::Down | KeyCode::Char('j') => TuiAction::NextEntity,
-                        KeyCode::Up | KeyCode::Char('k') => TuiAction::PrevEntity,
-                        KeyCode::Char('G') => TuiAction::GotoBottom,
+                        // In Detail mode: j/k scroll the JSON pane; arrows still navigate entities
+                        KeyCode::Char('j') => {
+                            if app.view_mode == ViewMode::Detail {
+                                TuiAction::ScrollDetailDown
+                            } else {
+                                TuiAction::NextEntity
+                            }
+                        }
+                        KeyCode::Char('k') => {
+                            if app.view_mode == ViewMode::Detail {
+                                TuiAction::ScrollDetailUp
+                            } else {
+                                TuiAction::PrevEntity
+                            }
+                        }
+                        KeyCode::Down => TuiAction::NextEntity,
+                        KeyCode::Up => TuiAction::PrevEntity,
+                        KeyCode::Char('G') => {
+                            if app.view_mode == ViewMode::Detail {
+                                TuiAction::ScrollDetailBottom
+                            } else {
+                                TuiAction::GotoBottom
+                            }
+                        }
                         KeyCode::Char('g') => {
                             if app.pending_g {
-                                // gg = go to top
-                                TuiAction::GotoTop
+                                // gg = go to top (of list or detail pane)
+                                if app.view_mode == ViewMode::Detail {
+                                    TuiAction::ScrollDetailTop
+                                } else {
+                                    TuiAction::GotoTop
+                                }
                             } else {
                                 app.pending_g = true;
                                 app.pending_count = None;
@@ -250,10 +275,18 @@ async fn run_loop(
                             }
                         }
                         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            TuiAction::HalfPageDown
+                            if app.view_mode == ViewMode::Detail {
+                                TuiAction::ScrollDetailHalfDown
+                            } else {
+                                TuiAction::HalfPageDown
+                            }
                         }
                         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            TuiAction::HalfPageUp
+                            if app.view_mode == ViewMode::Detail {
+                                TuiAction::ScrollDetailHalfUp
+                            } else {
+                                TuiAction::HalfPageUp
+                            }
                         }
                         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             TuiAction::ScrollDetailDown
