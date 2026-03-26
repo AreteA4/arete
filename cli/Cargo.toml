@@ -19,6 +19,8 @@ path = "src/main.rs"
 default = []
 # Enable local development mode (uses http://localhost:3000 instead of production API)
 local = []
+# Enable interactive TUI for `hs stream --tui`
+tui = ["ratatui", "crossterm"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive", "cargo"] }
@@ -33,6 +35,7 @@ indicatif = "0.17"
 console = "0.15"
 hyperstack-interpreter = { version = "0.5.10", path = "../interpreter" }
 hyperstack-idl = { path = "../hyperstack-idl", version = "0.1.5" }
+hyperstack-sdk = { path = "../rust/hyperstack-sdk", version = "0.5.10" }
 reqwest = { version = "0.11", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 dirs = "5.0"
 rpassword = "7.3"
@@ -41,4 +44,9 @@ flate2 = "1.0"
 tar = "0.4"
 uuid = { version = "1.0", features = ["v4"] }
 regex = "1.10"
+tokio = { version = "1.0", features = ["rt-multi-thread", "sync", "time", "macros", "signal"] }
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
 

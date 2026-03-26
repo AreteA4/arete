@@ -33,13 +33,16 @@ pub use client::{HyperStack, HyperStackBuilder};
 pub use connection::ConnectionState;
 pub use entity::Stack;
 pub use error::HyperStackError;
-pub use frame::{Frame, Mode, Operation};
-pub use store::{SharedStore, StoreUpdate};
+pub use frame::{
+    parse_frame, parse_snapshot_entities, try_parse_subscribed_frame, Frame, Mode, Operation,
+    SnapshotEntity,
+};
+pub use store::{deep_merge_with_append, SharedStore, StoreUpdate};
 pub use stream::{
     EntityStream, FilterMapStream, FilteredStream, KeyFilter, MapStream, RichEntityStream,
     RichUpdate, Update, UseStream,
 };
-pub use subscription::Subscription;
-pub use view::{
-    RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewHandle, Views, WatchBuilder,
-};
+
+pub use subscription::{ClientMessage, Subscription};
+pub use view::{RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewHandle, Views, WatchBuilder};
+

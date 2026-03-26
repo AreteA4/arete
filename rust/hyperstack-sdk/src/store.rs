@@ -114,7 +114,7 @@ struct ViewData {
     sorted_keys: BTreeMap<SortKey, ()>,
 }
 
-fn deep_merge_with_append(
+pub fn deep_merge_with_append(
     target: &mut Value,
     patch: &Value,
     append_paths: &[String],

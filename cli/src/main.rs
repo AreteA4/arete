@@ -146,6 +146,9 @@ enum Commands {
 
     /// Inspect and analyze Anchor/Shank IDL files
     Idl(commands::idl::IdlArgs),
+
+    /// Stream live entity data from a deployed stack via WebSocket
+    Stream(commands::stream::StreamArgs),
 }
 
 #[derive(Subcommand)]
@@ -418,6 +421,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Build(_) => "build",
         Commands::Telemetry(_) => "telemetry",
         Commands::Idl(_) => "idl",
+        Commands::Stream(_) => "stream",
     }
 }
 
@@ -540,6 +544,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             } => commands::build::status(build_id, watch, json || cli.json),
         },
         Commands::Idl(args) => commands::idl::run(args),
+        Commands::Stream(args) => commands::stream::run(args, &cli.config),
         Commands::Telemetry(telemetry_cmd) => match telemetry_cmd {
             TelemetryCommands::Status => commands::telemetry::status(),
             TelemetryCommands::Enable => commands::telemetry::enable(),
