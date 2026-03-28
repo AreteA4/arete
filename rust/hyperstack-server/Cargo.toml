@@ -18,6 +18,7 @@ futures-util = "0.3"
 anyhow = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
+async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.0", features = ["v4", "serde"] }
@@ -31,6 +32,9 @@ yellowstone-vixen-yellowstone-grpc-source = { workspace = true }
 
 # Interpreter library
 hyperstack-interpreter = { version = "0.5.10", path = "../../interpreter" }
+
+# Auth library
+hyperstack-auth = { version = "0.5.10", path = "../hyperstack-auth" }
 
 # Async utilities
 tokio-util = "0.7"

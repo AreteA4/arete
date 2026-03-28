@@ -63,6 +63,7 @@ export function HyperstackProvider({
       maxReconnectAttempts: config.maxReconnectAttempts,
       maxEntriesPerView: config.maxEntriesPerView,
       flushIntervalMs: config.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS,
+      auth: config.auth,
     }).then((client) => {
       client.onConnectionStateChange((state, error) => {
         adapter.setConnectionState(state, error);
@@ -80,7 +81,7 @@ export function HyperstackProvider({
 
     connectingRef.current.set(cacheKey, connectionPromise);
     return connectionPromise as Promise<HyperStack<TStack>>;
-  }, [config.autoConnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, notifyClientChange]);
+  }, [config.autoConnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.auth, notifyClientChange]);
 
   const getClient = useCallback(<TStack extends StackDefinition>(stack: TStack | undefined): HyperStack<TStack> | null => {
     if (!stack) {

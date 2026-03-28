@@ -1,5 +1,6 @@
 use super::subscription::Subscription;
 use crate::compression::CompressedPayload;
+use crate::websocket::auth::AuthContext;
 use bytes::Bytes;
 use dashmap::DashMap;
 use futures_util::stream::SplitSink;
@@ -47,16 +48,19 @@ pub struct ClientInfo {
     pub last_seen: SystemTime,
     pub sender: mpsc::Sender<Message>,
     subscriptions: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    /// Authentication context for this client
+    pub auth_context: Option<AuthContext>,
 }
 
 impl ClientInfo {
-    pub fn new(id: Uuid, sender: mpsc::Sender<Message>) -> Self {
+    pub fn new(id: Uuid, sender: mpsc::Sender<Message>, auth_context: Option<AuthContext>) -> Self {
         Self {
             id,
             subscription: None,
             last_seen: SystemTime::now(),
             sender,
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
+            auth_context,
         }
     }
 
@@ -142,9 +146,9 @@ impl ClientManager {
     /// Spawns a dedicated sender task for this client that reads from its mpsc channel
     /// and writes to the WebSocket. If the WebSocket write fails, the client is automatically
     /// removed from the registry.
-    pub fn add_client(&self, client_id: Uuid, mut ws_sender: WebSocketSender) {
+    pub fn add_client(&self, client_id: Uuid, mut ws_sender: WebSocketSender, auth_context: Option<AuthContext>) {
         let (client_tx, mut client_rx) = mpsc::channel::<Message>(self.message_queue_size);
-        let client_info = ClientInfo::new(client_id, client_tx);
+        let client_info = ClientInfo::new(client_id, client_tx, auth_context);
 
         let clients_ref = self.clients.clone();
         tokio::spawn(async move {
@@ -365,6 +369,96 @@ impl ClientManager {
                 }
             }
         });
+    }
+
+    /// ENFORCEMENT HOOKS
+    /// 
+    /// These methods provide hooks for enforcing limits based on auth context.
+    /// They check limits before allowing operations and return errors if limits are exceeded.
+
+    /// Check if a connection is allowed for the given auth context.
+    /// 
+    /// Returns Ok(()) if the connection is allowed, or an error with a reason if not.
+    pub fn check_connection_allowed(&self, auth_context: &Option<AuthContext>) -> Result<(), String> {
+        if let Some(ctx) = auth_context {
+            // Check max connections per subject
+            if let Some(max_connections) = ctx.limits.max_connections {
+                let current_connections = self.count_connections_for_subject(&ctx.subject);
+                if current_connections >= max_connections as usize {
+                    return Err(format!(
+                        "Connection limit exceeded: {} of {} connections for subject {}",
+                        current_connections, max_connections, ctx.subject
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Count connections for a specific subject
+    fn count_connections_for_subject(&self, subject: &str) -> usize {
+        self.clients
+            .iter()
+            .filter(|entry| {
+                entry
+                    .value()
+                    .auth_context
+                    .as_ref()
+                    .map(|ctx| ctx.subject == subject)
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// Check if a subscription is allowed for the given client.
+    /// 
+    /// Returns Ok(()) if the subscription is allowed, or an error with a reason if not.
+    pub async fn check_subscription_allowed(&self, client_id: Uuid) -> Result<(), String> {
+        if let Some(client) = self.clients.get(&client_id) {
+            let current_subs = client.subscription_count().await;
+            
+            // Check max subscriptions per connection from auth context
+            if let Some(ref ctx) = client.auth_context {
+                if let Some(max_subs) = ctx.limits.max_subscriptions {
+                    if current_subs >= max_subs as usize {
+                        return Err(format!(
+                            "Subscription limit exceeded: {} of {} subscriptions for client {}",
+                            current_subs, max_subs, client_id
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Get metering key for a client
+    pub fn get_metering_key(&self, client_id: Uuid) -> Option<String> {
+        self.clients
+            .get(&client_id)
+            .and_then(|client| {
+                client
+                    .auth_context
+                    .as_ref()
+                    .map(|ctx| ctx.metering_key.clone())
+            })
+    }
+
+    /// Check if a snapshot request is allowed (based on max_snapshot_rows limit)
+    pub fn check_snapshot_allowed(&self, client_id: Uuid, requested_rows: u32) -> Result<(), String> {
+        if let Some(client) = self.clients.get(&client_id) {
+            if let Some(ref ctx) = client.auth_context {
+                if let Some(max_rows) = ctx.limits.max_snapshot_rows {
+                    if requested_rows > max_rows {
+                        return Err(format!(
+                            "Snapshot limit exceeded: requested {} rows, max allowed is {} for client {}",
+                            requested_rows, max_rows, client_id
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 

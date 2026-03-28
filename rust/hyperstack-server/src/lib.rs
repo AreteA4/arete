@@ -65,7 +65,10 @@ pub use telemetry::{init as init_telemetry, TelemetryConfig};
 #[cfg(feature = "otel")]
 pub use telemetry::{init_with_otel, TelemetryGuard};
 pub use view::{Delivery, Filters, Projection, ViewIndex, ViewSpec};
-pub use websocket::{ClientInfo, ClientManager, Frame, Mode, Subscription, WebSocketServer};
+pub use websocket::{
+    AllowAllAuthPlugin, AuthDecision, AuthDeny, ClientInfo, ClientManager, ConnectionAuthRequest,
+    Frame, Mode, StaticTokenAuthPlugin, Subscription, WebSocketAuthPlugin, WebSocketServer,
+};
 
 use anyhow::Result;
 use hyperstack_interpreter::ast::ViewDef;
@@ -132,6 +135,8 @@ pub struct ServerBuilder {
     views: Option<ViewIndex>,
     materialized_views: Option<MaterializedViewRegistry>,
     config: ServerConfig,
+    websocket_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
+    websocket_max_clients: Option<usize>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -143,6 +148,8 @@ impl ServerBuilder {
             views: None,
             materialized_views: None,
             config: ServerConfig::new(),
+            websocket_auth_plugin: None,
+            websocket_max_clients: None,
             #[cfg(feature = "otel")]
             metrics: None,
         }
@@ -176,6 +183,18 @@ impl ServerBuilder {
     /// Configure WebSocket server
     pub fn websocket_config(mut self, config: WebSocketConfig) -> Self {
         self.config.websocket = Some(config);
+        self
+    }
+
+    /// Set a WebSocket auth plugin used to authorize inbound connections.
+    pub fn websocket_auth_plugin(mut self, plugin: Arc<dyn WebSocketAuthPlugin>) -> Self {
+        self.websocket_auth_plugin = Some(plugin);
+        self
+    }
+
+    /// Set the maximum number of concurrent WebSocket clients.
+    pub fn websocket_max_clients(mut self, max_clients: usize) -> Self {
+        self.websocket_max_clients = Some(max_clients);
         self
     }
 
@@ -249,6 +268,14 @@ impl ServerBuilder {
         let mut runtime = Runtime::new(self.config, view_index, self.metrics);
         #[cfg(not(feature = "otel"))]
         let mut runtime = Runtime::new(self.config, view_index);
+
+        if let Some(plugin) = self.websocket_auth_plugin {
+            runtime = runtime.with_websocket_auth_plugin(plugin);
+        }
+
+        if let Some(max_clients) = self.websocket_max_clients {
+            runtime = runtime.with_websocket_max_clients(max_clients);
+        }
 
         if let Some(registry) = materialized_registry {
             runtime = runtime.with_materialized_views(registry);
@@ -345,6 +372,14 @@ impl ServerBuilder {
         let mut runtime = Runtime::new(self.config, view_index, self.metrics);
         #[cfg(not(feature = "otel"))]
         let mut runtime = Runtime::new(self.config, view_index);
+
+        if let Some(plugin) = self.websocket_auth_plugin {
+            runtime = runtime.with_websocket_auth_plugin(plugin);
+        }
+
+        if let Some(max_clients) = self.websocket_max_clients {
+            runtime = runtime.with_websocket_max_clients(max_clients);
+        }
 
         if let Some(registry) = materialized_registry {
             runtime = runtime.with_materialized_views(registry);

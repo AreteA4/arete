@@ -44,6 +44,8 @@ export interface HyperstackConfig {
   maxReconnectAttempts?: number;
   maxEntriesPerView?: number | null;
   flushIntervalMs?: number;
+  /** Authentication configuration */
+  auth?: import('hyperstack-typescript').AuthConfig;
 }
 
 /**

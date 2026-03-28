@@ -2,6 +2,7 @@ use crate::bus::BusManager;
 use crate::cache::{cmp_seq, EntityCache, SnapshotBatchConfig};
 use crate::compression::maybe_compress;
 use crate::view::{ViewIndex, ViewSpec};
+use crate::websocket::auth::{AuthDecision, ConnectionAuthRequest, WebSocketAuthPlugin};
 use crate::websocket::client_manager::ClientManager;
 use crate::websocket::frame::{
     transform_large_u64_to_strings, Frame, Mode, SnapshotEntity, SnapshotFrame, SortConfig,
@@ -10,7 +11,7 @@ use crate::websocket::frame::{
 use crate::websocket::subscription::{ClientMessage, Subscription};
 use anyhow::Result;
 use bytes::Bytes;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,6 +19,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::net::{TcpListener, TcpStream};
+use tokio_tungstenite::{
+    accept_hdr_async,
+    tungstenite::handshake::server::Request,
+    tungstenite::protocol::{
+        frame::{coding::CloseCode, CloseFrame},
+        Message,
+    },
+};
 use tokio_tungstenite::accept_async;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, warn, Instrument};
@@ -43,6 +52,7 @@ pub struct WebSocketServer {
     entity_cache: EntityCache,
     view_index: Arc<ViewIndex>,
     max_clients: usize,
+    auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -63,6 +73,7 @@ impl WebSocketServer {
             entity_cache,
             view_index,
             max_clients: 10000,
+            auth_plugin: Arc::new(crate::websocket::auth::AllowAllAuthPlugin),
             metrics,
         }
     }
@@ -81,11 +92,17 @@ impl WebSocketServer {
             entity_cache,
             view_index,
             max_clients: 10000,
+            auth_plugin: Arc::new(crate::websocket::auth::AllowAllAuthPlugin),
         }
     }
 
     pub fn with_max_clients(mut self, max_clients: usize) -> Self {
         self.max_clients = max_clients;
+        self
+    }
+
+    pub fn with_auth_plugin(mut self, auth_plugin: Arc<dyn WebSocketAuthPlugin>) -> Self {
+        self.auth_plugin = auth_plugin;
         self
     }
 
@@ -131,6 +148,8 @@ impl WebSocketServer {
                     #[cfg(feature = "otel")]
                     let metrics = self.metrics.clone();
 
+                    let auth_plugin = self.auth_plugin.clone();
+
                     tokio::spawn(
                         async move {
                             #[cfg(feature = "otel")]
@@ -140,6 +159,8 @@ impl WebSocketServer {
                                 bus_manager,
                                 entity_cache,
                                 view_index,
+                                addr,
+                                auth_plugin,
                                 metrics,
                             )
                             .await;
@@ -150,6 +171,8 @@ impl WebSocketServer {
                                 bus_manager,
                                 entity_cache,
                                 view_index,
+                                addr,
+                                auth_plugin,
                             )
                             .await;
 
@@ -175,9 +198,69 @@ async fn handle_connection(
     bus_manager: BusManager,
     entity_cache: EntityCache,
     view_index: Arc<ViewIndex>,
+    remote_addr: std::net::SocketAddr,
+    auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     metrics: Option<Arc<Metrics>>,
 ) -> Result<()> {
-    let ws_stream = accept_async(stream).await?;
+    // Capture the connection request during handshake
+    use std::sync::Mutex;
+    let request_capture = Arc::new(Mutex::new(None::<ConnectionAuthRequest>));
+    let capture_ref = request_capture.clone();
+    
+    let ws_stream = accept_hdr_async(stream, move |request: &Request, response| {
+        let connection_request = ConnectionAuthRequest::from_http_request(remote_addr, request);
+        let mut capture_lock = capture_ref.lock().expect("capture lock poisoned");
+        *capture_lock = Some(connection_request);
+        Ok(response)
+    })
+    .await?;
+
+    // Get the captured request
+    let connection_request = request_capture
+        .lock()
+        .expect("capture lock poisoned")
+        .clone()
+        .unwrap_or_else(|| ConnectionAuthRequest {
+            remote_addr,
+            path: "/".to_string(),
+            query: None,
+            headers: Default::default(),
+            origin: None,
+        });
+
+    // Perform authorization
+    let auth_context = match auth_plugin.authorize(&connection_request).await {
+        AuthDecision::Allow(ctx) => {
+            // Check connection limits
+            if let Err(reason) = client_manager.check_connection_allowed(&Some(ctx.clone())) {
+                warn!("Connection rejected from {}: {}", remote_addr, reason);
+                let mut ws_stream = ws_stream;
+                let _ = ws_stream
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CloseCode::Policy,
+                        reason: reason.into(),
+                    })))
+                    .await;
+                return Ok(());
+            }
+            Some(ctx)
+        }
+        AuthDecision::Deny(deny) => {
+            warn!(
+                "Rejecting unauthorized websocket connection from {}: {}",
+                remote_addr, deny.reason
+            );
+            let mut ws_stream = ws_stream;
+            let _ = ws_stream
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Policy,
+                    reason: deny.reason.into(),
+                })))
+                .await;
+            return Ok(());
+        }
+    };
+    
     let client_id = Uuid::new_v4();
     let connection_start = Instant::now();
 
@@ -185,7 +268,8 @@ async fn handle_connection(
 
     let (ws_sender, mut ws_receiver) = ws_stream.split();
 
-    client_manager.add_client(client_id, ws_sender);
+    // Add client with auth context
+    client_manager.add_client(client_id, ws_sender, auth_context);
 
     let ctx = SubscriptionContext {
         client_id,
@@ -223,6 +307,13 @@ async fn handle_connection(
                                         ClientMessage::Subscribe(subscription) => {
                                             let view_id = subscription.view.clone();
                                             let sub_key = subscription.sub_key();
+
+                                            // Check subscription limits
+                                            if let Err(reason) = client_manager.check_subscription_allowed(client_id).await {
+                                                warn!("Subscription rejected for client {}: {}", client_id, reason);
+                                                continue;
+                                            }
+
                                             client_manager.update_subscription(client_id, subscription.clone());
 
                                             let cancel_token = CancellationToken::new();
@@ -329,15 +420,76 @@ async fn handle_connection(
     bus_manager: BusManager,
     entity_cache: EntityCache,
     view_index: Arc<ViewIndex>,
+    remote_addr: std::net::SocketAddr,
+    auth_plugin: Arc<dyn WebSocketAuthPlugin>,
 ) -> Result<()> {
-    let ws_stream = accept_async(stream).await?;
+    // Capture the connection request during handshake
+    use std::sync::Mutex;
+    let request_capture = Arc::new(Mutex::new(None::<ConnectionAuthRequest>));
+    let capture_ref = request_capture.clone();
+    
+    let ws_stream = accept_hdr_async(stream, move |request: &Request, response| {
+        let connection_request = ConnectionAuthRequest::from_http_request(remote_addr, request);
+        let mut capture_lock = capture_ref.lock().expect("capture lock poisoned");
+        *capture_lock = Some(connection_request);
+        Ok(response)
+    })
+    .await?;
+
+    // Get the captured request
+    let connection_request = request_capture
+        .lock()
+        .expect("capture lock poisoned")
+        .clone()
+        .unwrap_or_else(|| ConnectionAuthRequest {
+            remote_addr,
+            path: "/".to_string(),
+            query: None,
+            headers: Default::default(),
+            origin: None,
+        });
+
+    // Perform authorization
+    let auth_context = match auth_plugin.authorize(&connection_request).await {
+        AuthDecision::Allow(ctx) => {
+            // Check connection limits
+            if let Err(reason) = client_manager.check_connection_allowed(&Some(ctx.clone())) {
+                warn!("Connection rejected from {}: {}", remote_addr, reason);
+                let mut ws_stream = ws_stream;
+                let _ = ws_stream
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CloseCode::Policy,
+                        reason: reason.into(),
+                    })))
+                    .await;
+                return Ok(());
+            }
+            Some(ctx)
+        }
+        AuthDecision::Deny(deny) => {
+            warn!(
+                "Rejecting unauthorized websocket connection from {}: {}",
+                remote_addr, deny.reason
+            );
+            let mut ws_stream = ws_stream;
+            let _ = ws_stream
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Policy,
+                    reason: deny.reason.into(),
+                })))
+                .await;
+            return Ok(());
+        }
+    };
+    
     let client_id = Uuid::new_v4();
 
     info!("WebSocket connection established for client {}", client_id);
 
     let (ws_sender, mut ws_receiver) = ws_stream.split();
 
-    client_manager.add_client(client_id, ws_sender);
+    // Add client with auth context
+    client_manager.add_client(client_id, ws_sender, auth_context);
 
     let ctx = SubscriptionContext {
         client_id,

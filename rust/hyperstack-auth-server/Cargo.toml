@@ -1,0 +1,63 @@
+[package]
+name = "hyperstack-auth-server"
+version = "0.5.10"
+edition.workspace = true
+license-file = "LICENSE"
+repository.workspace = true
+authors.workspace = true
+description = "Reference authentication server for Hyperstack"
+readme = "README.md"
+documentation = "https://docs.rs/hyperstack-auth-server"
+keywords = ["hyperstack", "auth", "server", "websocket"]
+categories = ["authentication", "web-programming"]
+
+[dependencies]
+# Web framework
+axum = { version = "0.8", features = ["tokio", "http1", "json"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Auth utilities (our crate)
+hyperstack-auth = { version = "0.5.10", path = "../hyperstack-auth" }
+
+# HTTP client for JWKS (optional, if needed)
+reqwest = { version = "0.12", features = ["json"], optional = true }
+
+# Database/SQLite for key storage (optional)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
+
+# Time
+chrono = "0.4"
+
+# Environment/config
+dotenvy = "0.15"
+
+# Errors
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Base64
+base64 = "0.22"
+
+# Random
+rand = "0.8"
+
+# Rate limiting (optional)
+governor = { version = "0.8", optional = true }
+
+[features]
+default = ["sqlite"]
+sqlite = ["sqlx"]
+jwks = ["reqwest"]
+rate-limit = ["governor"]

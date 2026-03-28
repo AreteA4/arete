@@ -9,6 +9,7 @@ use crate::projector::Projector;
 use crate::view::ViewIndex;
 use crate::websocket::WebSocketServer;
 use crate::Spec;
+use crate::WebSocketAuthPlugin;
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,6 +53,8 @@ pub struct Runtime {
     view_index: Arc<ViewIndex>,
     spec: Option<Spec>,
     materialized_views: Option<MaterializedViewRegistry>,
+    websocket_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
+    websocket_max_clients: Option<usize>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -64,6 +67,8 @@ impl Runtime {
             view_index: Arc::new(view_index),
             spec: None,
             materialized_views: None,
+            websocket_auth_plugin: None,
+            websocket_max_clients: None,
             metrics,
         }
     }
@@ -75,6 +80,8 @@ impl Runtime {
             view_index: Arc::new(view_index),
             spec: None,
             materialized_views: None,
+            websocket_auth_plugin: None,
+            websocket_max_clients: None,
         }
     }
 
@@ -85,6 +92,19 @@ impl Runtime {
 
     pub fn with_materialized_views(mut self, registry: MaterializedViewRegistry) -> Self {
         self.materialized_views = Some(registry);
+        self
+    }
+
+    pub fn with_websocket_auth_plugin(
+        mut self,
+        websocket_auth_plugin: Arc<dyn WebSocketAuthPlugin>,
+    ) -> Self {
+        self.websocket_auth_plugin = Some(websocket_auth_plugin);
+        self
+    }
+
+    pub fn with_websocket_max_clients(mut self, websocket_max_clients: usize) -> Self {
+        self.websocket_max_clients = Some(websocket_max_clients);
         self
     }
 
@@ -130,7 +150,7 @@ impl Runtime {
 
         let ws_handle = if let Some(ws_config) = &self.config.websocket {
             #[cfg(feature = "otel")]
-            let ws_server = WebSocketServer::new(
+            let mut ws_server = WebSocketServer::new(
                 ws_config.bind_address,
                 bus_manager.clone(),
                 entity_cache.clone(),
@@ -138,12 +158,20 @@ impl Runtime {
                 self.metrics.clone(),
             );
             #[cfg(not(feature = "otel"))]
-            let ws_server = WebSocketServer::new(
+            let mut ws_server = WebSocketServer::new(
                 ws_config.bind_address,
                 bus_manager.clone(),
                 entity_cache.clone(),
                 self.view_index.clone(),
             );
+
+            if let Some(max_clients) = self.websocket_max_clients {
+                ws_server = ws_server.with_max_clients(max_clients);
+            }
+
+            if let Some(plugin) = self.websocket_auth_plugin.clone() {
+                ws_server = ws_server.with_auth_plugin(plugin);
+            }
 
             let bind_addr = ws_config.bind_address;
             Some(tokio::spawn(
