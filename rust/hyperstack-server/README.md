@@ -40,6 +40,31 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+### WebSocket Auth Plugins
+
+`hyperstack-server` now supports pluggable WebSocket auth. By default, all
+connections are allowed.
+
+```rust
+use std::sync::Arc;
+
+use hyperstack_server::{Server, StaticTokenAuthPlugin};
+
+Server::builder()
+    .spec(my_spec())
+    .websocket()
+    .websocket_auth_plugin(Arc::new(StaticTokenAuthPlugin::new([
+        "dev-secret".to_string(),
+    ])))
+    .start()
+    .await?;
+```
+
+The built-in `StaticTokenAuthPlugin` accepts either:
+
+- `Authorization: Bearer <token>`
+- `?token=<token>` query param
+
 ### With Configuration
 
 ```rust
