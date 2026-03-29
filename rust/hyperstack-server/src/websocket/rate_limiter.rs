@@ -241,9 +241,10 @@ impl RateLimiterConfig {
 
     /// Disable rate limiting (useful for testing)
     pub fn disabled() -> Self {
-        let mut config = Self::default();
-        config.enabled = false;
-        config
+        Self {
+            enabled: false,
+            ..Default::default()
+        }
     }
 }
 
@@ -405,7 +406,7 @@ impl WebSocketRateLimiter {
     /// Clean up stale buckets to prevent memory growth
     pub async fn cleanup_stale_buckets(&self) {
         let now = Instant::now();
-        let cutoff = now - Duration::from_secs(300); // 5 minutes
+        let _cutoff = now - Duration::from_secs(300); // 5 minutes
 
         // Clean up IP buckets
         {

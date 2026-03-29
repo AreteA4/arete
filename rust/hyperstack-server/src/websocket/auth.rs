@@ -186,7 +186,7 @@ impl AuthDeny {
         )
         .with_retry_policy(RetryPolicy::RetryAfter(retry_after))
         .with_reset_at(reset_at)
-        .with_suggested_action(&format!("Wait {:?} before retrying the request", retry_after))
+        .with_suggested_action(format!("Wait {:?} before retrying the request", retry_after))
     }
 
     /// Create an AuthDeny for connection limits

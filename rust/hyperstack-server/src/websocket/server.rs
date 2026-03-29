@@ -898,6 +898,7 @@ async fn handle_connection(
 }
 
 #[cfg(not(feature = "otel"))]
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     stream: TcpStream,
     client_manager: ClientManager,

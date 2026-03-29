@@ -376,6 +376,7 @@ impl RuntimeAuthState {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_connection_loop(
     url: String,
     state: Arc<RwLock<ConnectionState>>,

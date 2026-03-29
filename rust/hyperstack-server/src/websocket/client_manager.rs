@@ -791,6 +791,7 @@ impl ClientManager {
     }
 
     /// Check whether an inbound message is allowed for a client.
+    #[allow(clippy::result_large_err)]
     pub fn check_inbound_message_allowed(&self, client_id: Uuid) -> Result<(), AuthDeny> {
         if self.check_and_remove_expired(client_id) {
             return Err(AuthDeny::new(
@@ -898,7 +899,6 @@ impl ClientManager {
     ///
     /// These methods provide hooks for enforcing limits based on auth context.
     /// They check limits before allowing operations and return errors if limits are exceeded.
-
     /// Check if a connection is allowed for the given auth context.
     ///
     /// Returns Ok(()) if the connection is allowed, or an error with a reason if not.
@@ -1129,6 +1129,7 @@ impl ClientManager {
     /// Check if a snapshot request is allowed (based on max_snapshot_rows limit)
     ///
     /// Uses token limits if available, falls back to default limits from RateLimitConfig.
+    #[allow(clippy::result_large_err)]
     pub fn check_snapshot_allowed(
         &self,
         client_id: Uuid,
