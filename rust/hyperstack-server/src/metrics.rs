@@ -387,10 +387,24 @@ impl Metrics {
         self.ws_connections_active.add(1, &[]);
     }
 
+    /// Record a new WebSocket connection with metering key attribution
+    pub fn record_ws_connection_with_metering(&self, metering_key: &str) {
+        let attrs = &[KeyValue::new("metering_key", metering_key.to_string())];
+        self.ws_connections_total.add(1, attrs);
+        self.ws_connections_active.add(1, attrs);
+    }
+
     /// Record a WebSocket disconnection with duration
     pub fn record_ws_disconnection(&self, duration_secs: f64) {
         self.ws_connections_active.add(-1, &[]);
         self.ws_connection_duration.record(duration_secs, &[]);
+    }
+
+    /// Record a WebSocket disconnection with metering key attribution
+    pub fn record_ws_disconnection_with_metering(&self, duration_secs: f64, metering_key: &str) {
+        let attrs = &[KeyValue::new("metering_key", metering_key.to_string())];
+        self.ws_connections_active.add(-1, attrs);
+        self.ws_connection_duration.record(duration_secs, attrs);
     }
 
     /// Record a WebSocket message received
@@ -398,9 +412,25 @@ impl Metrics {
         self.ws_messages_received.add(1, &[]);
     }
 
+    /// Record a WebSocket message received with metering key attribution
+    pub fn record_ws_message_received_with_metering(&self, metering_key: &str) {
+        self.ws_messages_received.add(
+            1,
+            &[KeyValue::new("metering_key", metering_key.to_string())],
+        );
+    }
+
     /// Record a WebSocket message sent
     pub fn record_ws_message_sent(&self) {
         self.ws_messages_sent.add(1, &[]);
+    }
+
+    /// Record a WebSocket message sent with metering key attribution
+    pub fn record_ws_message_sent_with_metering(&self, metering_key: &str) {
+        self.ws_messages_sent.add(
+            1,
+            &[KeyValue::new("metering_key", metering_key.to_string())],
+        );
     }
 
     /// Record a subscription created for a view
@@ -409,10 +439,32 @@ impl Metrics {
             .add(1, &[KeyValue::new("view_id", view_id.to_string())]);
     }
 
+    /// Record a subscription created with metering key attribution
+    pub fn record_subscription_created_with_metering(&self, view_id: &str, metering_key: &str) {
+        self.ws_subscriptions_active.add(
+            1,
+            &[
+                KeyValue::new("view_id", view_id.to_string()),
+                KeyValue::new("metering_key", metering_key.to_string()),
+            ],
+        );
+    }
+
     /// Record a subscription removed for a view
     pub fn record_subscription_removed(&self, view_id: &str) {
         self.ws_subscriptions_active
             .add(-1, &[KeyValue::new("view_id", view_id.to_string())]);
+    }
+
+    /// Record a subscription removed with metering key attribution
+    pub fn record_subscription_removed_with_metering(&self, view_id: &str, metering_key: &str) {
+        self.ws_subscriptions_active.add(
+            -1,
+            &[
+                KeyValue::new("view_id", view_id.to_string()),
+                KeyValue::new("metering_key", metering_key.to_string()),
+            ],
+        );
     }
 
     // ==================== Projector Helpers ====================

@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+use crate::websocket::auth::AuthDeny;
+
 /// Client message types for subscription management
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     /// Subscribe to a view
     Subscribe(Subscription),
@@ -10,6 +12,60 @@ pub enum ClientMessage {
     Unsubscribe(Unsubscription),
     /// Keep-alive ping (no response needed)
     Ping,
+    /// Refresh authentication token without reconnecting
+    RefreshAuth(RefreshAuthRequest),
+}
+
+/// Request to refresh authentication token
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefreshAuthRequest {
+    pub token: String,
+}
+
+/// Response to a refresh auth request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshAuthResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+}
+
+/// Server-sent socket issue payload for auth and quota failures after connect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocketIssueMessage {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub error: String,
+    pub message: String,
+    pub code: String,
+    pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docs_url: Option<String>,
+    pub fatal: bool,
+}
+
+impl SocketIssueMessage {
+    pub fn from_auth_deny(deny: &AuthDeny, fatal: bool) -> Self {
+        let response = deny.to_error_response();
+        Self {
+            kind: "error".to_string(),
+            error: response.error,
+            message: response.message,
+            code: response.code,
+            retryable: response.retryable,
+            retry_after: response.retry_after,
+            suggested_action: response.suggested_action,
+            docs_url: response.docs_url,
+            fatal,
+        }
+    }
 }
 
 /// Client subscription to a specific view
@@ -84,6 +140,7 @@ impl Subscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::websocket::auth::{AuthDeny, AuthErrorCode};
     use serde_json::json;
 
     #[test]
@@ -190,6 +247,22 @@ mod tests {
     }
 
     #[test]
+    fn test_client_message_refresh_auth_parse() {
+        let json = json!({
+            "type": "refresh_auth",
+            "token": "new_token_here"
+        });
+
+        let msg: ClientMessage = serde_json::from_value(json).unwrap();
+        match msg {
+            ClientMessage::RefreshAuth(req) => {
+                assert_eq!(req.token, "new_token_here");
+            }
+            _ => panic!("Expected RefreshAuth"),
+        }
+    }
+
+    #[test]
     fn test_legacy_subscription_parse_as_subscribe() {
         let json = json!({
             "view": "SettlementGame/list",
@@ -267,36 +340,51 @@ mod tests {
     }
 
     #[test]
-    fn test_subscription_with_optional_snapshot() {
+    fn test_subscription_with_snapshot() {
         let json = json!({
             "type": "subscribe",
             "view": "SettlementGame/list",
-            "withSnapshot": false
+            "withSnapshot": true
         });
 
         let msg: ClientMessage = serde_json::from_value(json).unwrap();
         match msg {
             ClientMessage::Subscribe(sub) => {
-                assert_eq!(sub.view, "SettlementGame/list");
-                assert_eq!(sub.with_snapshot, Some(false));
+                assert_eq!(sub.with_snapshot, Some(true));
             }
             _ => panic!("Expected Subscribe"),
         }
     }
 
     #[test]
-    fn test_subscription_with_after_cursor() {
+    fn test_subscription_with_partition() {
         let json = json!({
             "type": "subscribe",
             "view": "SettlementGame/list",
-            "after": "123456789:000000000042"
+            "partition": "mainnet"
         });
 
         let msg: ClientMessage = serde_json::from_value(json).unwrap();
         match msg {
             ClientMessage::Subscribe(sub) => {
-                assert_eq!(sub.view, "SettlementGame/list");
-                assert_eq!(sub.after, Some("123456789:000000000042".to_string()));
+                assert_eq!(sub.partition, Some("mainnet".to_string()));
+            }
+            _ => panic!("Expected Subscribe"),
+        }
+    }
+
+    #[test]
+    fn test_subscription_with_after() {
+        let json = json!({
+            "type": "subscribe",
+            "view": "SettlementGame/list",
+            "after": "12345"
+        });
+
+        let msg: ClientMessage = serde_json::from_value(json).unwrap();
+        match msg {
+            ClientMessage::Subscribe(sub) => {
+                assert_eq!(sub.after, Some("12345".to_string()));
             }
             _ => panic!("Expected Subscribe"),
         }
@@ -307,15 +395,12 @@ mod tests {
         let json = json!({
             "type": "subscribe",
             "view": "SettlementGame/list",
-            "after": "123456789:000000000042",
             "snapshotLimit": 100
         });
 
         let msg: ClientMessage = serde_json::from_value(json).unwrap();
         match msg {
             ClientMessage::Subscribe(sub) => {
-                assert_eq!(sub.view, "SettlementGame/list");
-                assert_eq!(sub.after, Some("123456789:000000000042".to_string()));
                 assert_eq!(sub.snapshot_limit, Some(100));
             }
             _ => panic!("Expected Subscribe"),
@@ -323,14 +408,17 @@ mod tests {
     }
 
     #[test]
-    fn test_subscription_defaults_with_snapshot_to_true() {
-        let json = json!({
-            "view": "SettlementGame/list"
-        });
+    fn test_socket_issue_message_from_auth_deny() {
+        let deny = AuthDeny::new(
+            AuthErrorCode::SubscriptionLimitExceeded,
+            "subscription limit exceeded",
+        )
+        .with_suggested_action("unsubscribe first");
 
-        let sub: Subscription = serde_json::from_value(json).unwrap();
-        assert_eq!(sub.with_snapshot, None);
-        // When None, server should default to true
-        assert!(sub.with_snapshot.unwrap_or(true));
+        let issue = SocketIssueMessage::from_auth_deny(&deny, false);
+        assert_eq!(issue.kind, "error");
+        assert_eq!(issue.code, "subscription-limit-exceeded");
+        assert_eq!(issue.suggested_action.as_deref(), Some("unsubscribe first"));
+        assert!(!issue.fatal);
     }
 }

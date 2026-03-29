@@ -55,6 +55,7 @@ pub use config::{
 };
 pub use health::{HealthMonitor, SlotTracker, StreamStatus};
 pub use http_health::HttpHealthServer;
+pub use hyperstack_auth::{AsyncVerifier, KeyLoader, Limits, TokenVerifier, VerifyingKey};
 pub use materialized_view::{MaterializedView, MaterializedViewRegistry, ViewEffect};
 #[cfg(feature = "otel")]
 pub use metrics::Metrics;
@@ -66,8 +67,13 @@ pub use telemetry::{init as init_telemetry, TelemetryConfig};
 pub use telemetry::{init_with_otel, TelemetryGuard};
 pub use view::{Delivery, Filters, Projection, ViewIndex, ViewSpec};
 pub use websocket::{
-    AllowAllAuthPlugin, AuthDecision, AuthDeny, ClientInfo, ClientManager, ConnectionAuthRequest,
-    Frame, Mode, StaticTokenAuthPlugin, Subscription, WebSocketAuthPlugin, WebSocketServer,
+    AllowAllAuthPlugin, AuthContext, AuthDecision, AuthDeny, AuthErrorDetails,
+    ChannelUsageEmitter, ClientInfo, ClientManager, ConnectionAuthRequest, ErrorResponse, Frame,
+    HttpUsageEmitter, Mode, RateLimitConfig, RateLimitResult, RateLimiterConfig, RetryPolicy,
+    RefreshAuthRequest, RefreshAuthResponse, SignedSessionAuthPlugin, SocketIssueMessage,
+    StaticTokenAuthPlugin, Subscription, WebSocketAuthPlugin, WebSocketRateLimiter,
+    WebSocketServer, WebSocketUsageBatch, WebSocketUsageEmitter, WebSocketUsageEnvelope,
+    WebSocketUsageEvent,
 };
 
 use anyhow::Result;
@@ -136,7 +142,9 @@ pub struct ServerBuilder {
     materialized_views: Option<MaterializedViewRegistry>,
     config: ServerConfig,
     websocket_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
+    websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     websocket_max_clients: Option<usize>,
+    websocket_rate_limit_config: Option<crate::websocket::client_manager::RateLimitConfig>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -149,7 +157,9 @@ impl ServerBuilder {
             materialized_views: None,
             config: ServerConfig::new(),
             websocket_auth_plugin: None,
+            websocket_usage_emitter: None,
             websocket_max_clients: None,
+            websocket_rate_limit_config: None,
             #[cfg(feature = "otel")]
             metrics: None,
         }
@@ -192,9 +202,28 @@ impl ServerBuilder {
         self
     }
 
+    /// Set an async usage emitter for billing-grade websocket usage events.
+    pub fn websocket_usage_emitter(mut self, emitter: Arc<dyn WebSocketUsageEmitter>) -> Self {
+        self.websocket_usage_emitter = Some(emitter);
+        self
+    }
+
     /// Set the maximum number of concurrent WebSocket clients.
     pub fn websocket_max_clients(mut self, max_clients: usize) -> Self {
         self.websocket_max_clients = Some(max_clients);
+        self
+    }
+
+    /// Configure rate limiting for WebSocket connections.
+    ///
+    /// This sets global rate limits such as maximum connections per IP,
+    /// timeouts, and rate windows. Per-subject limits are controlled
+    /// via AuthContext.Limits from the authentication token.
+    pub fn websocket_rate_limit_config(
+        mut self,
+        config: crate::websocket::client_manager::RateLimitConfig,
+    ) -> Self {
+        self.websocket_rate_limit_config = Some(config);
         self
     }
 
@@ -273,8 +302,16 @@ impl ServerBuilder {
             runtime = runtime.with_websocket_auth_plugin(plugin);
         }
 
+        if let Some(emitter) = self.websocket_usage_emitter {
+            runtime = runtime.with_websocket_usage_emitter(emitter);
+        }
+
         if let Some(max_clients) = self.websocket_max_clients {
             runtime = runtime.with_websocket_max_clients(max_clients);
+        }
+
+        if let Some(rate_limit_config) = self.websocket_rate_limit_config {
+            runtime = runtime.with_websocket_rate_limit_config(rate_limit_config);
         }
 
         if let Some(registry) = materialized_registry {
