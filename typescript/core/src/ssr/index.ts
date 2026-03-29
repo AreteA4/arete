@@ -2,11 +2,11 @@
  * Hyperstack SSR - Drop-in Auth Endpoints
  *
  * These modules provide drop-in API route handlers for popular React frameworks.
- * Each handler can mint JWT tokens for WebSocket authentication.
+ * Each handler can mint Ed25519-signed session tokens for WebSocket authentication.
  *
  * Quick Start:
  * ```bash
- * # Generate a signing key
+ * # Generate an Ed25519 signing key (32 bytes)
  * node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
  *
  * # Add to .env
@@ -63,3 +63,6 @@ export {
   handleJwksRequest,
   handleHealthRequest,
 } from './handlers';
+
+// Re-export utilities
+export { base64url } from './utils';

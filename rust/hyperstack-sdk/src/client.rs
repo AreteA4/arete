@@ -1,13 +1,16 @@
+use crate::auth::{AuthConfig, AuthToken, TokenTransport};
 use crate::config::{ConnectionConfig, HyperStackConfig};
 use crate::connection::{ConnectionManager, ConnectionState};
 use crate::entity::Stack;
-use crate::error::HyperStackError;
+use crate::error::{HyperStackError, SocketIssue};
 use crate::frame::Frame;
 use crate::store::{SharedStore, StoreConfig};
 use crate::view::Views;
+use std::future::Future;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 /// HyperStack client with typed views access.
 ///
@@ -45,6 +48,18 @@ impl<S: Stack> HyperStack<S> {
 
     pub async fn connection_state(&self) -> ConnectionState {
         self.connection.state().await
+    }
+
+    pub async fn last_error(&self) -> Option<Arc<HyperStackError>> {
+        self.connection.last_error().await
+    }
+
+    pub async fn last_socket_issue(&self) -> Option<SocketIssue> {
+        self.connection.last_socket_issue().await
+    }
+
+    pub fn subscribe_socket_issues(&self) -> broadcast::Receiver<SocketIssue> {
+        self.connection.subscribe_socket_issues()
     }
 
     pub async fn disconnect(&self) {
@@ -112,17 +127,102 @@ impl<S: Stack> HyperStackBuilder<S> {
         self
     }
 
+    pub fn auth(mut self, auth: AuthConfig) -> Self {
+        self.config.auth = Some(auth);
+        self
+    }
+
+    pub fn auth_token(mut self, token: impl Into<String>) -> Self {
+        let auth = self
+            .config
+            .auth
+            .take()
+            .unwrap_or_default()
+            .with_token(token);
+        self.config.auth = Some(auth);
+        self
+    }
+
+    pub fn publishable_key(mut self, publishable_key: impl Into<String>) -> Self {
+        let auth = self
+            .config
+            .auth
+            .take()
+            .unwrap_or_default()
+            .with_publishable_key(publishable_key);
+        self.config.auth = Some(auth);
+        self
+    }
+
+    pub fn token_endpoint(mut self, token_endpoint: impl Into<String>) -> Self {
+        let auth = self
+            .config
+            .auth
+            .take()
+            .unwrap_or_default()
+            .with_token_endpoint(token_endpoint);
+        self.config.auth = Some(auth);
+        self
+    }
+
+    pub fn token_endpoint_header(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        let auth = self
+            .config
+            .auth
+            .take()
+            .unwrap_or_default()
+            .with_token_endpoint_header(key, value);
+        self.config.auth = Some(auth);
+        self
+    }
+
+    pub fn token_transport(mut self, transport: TokenTransport) -> Self {
+        let auth = self
+            .config
+            .auth
+            .take()
+            .unwrap_or_default()
+            .with_token_transport(transport);
+        self.config.auth = Some(auth);
+        self
+    }
+
+    pub fn get_token<F, Fut>(mut self, provider: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<AuthToken, HyperStackError>> + Send + 'static,
+    {
+        let auth = self
+            .config
+            .auth
+            .take()
+            .unwrap_or_default()
+            .with_token_provider(provider);
+        self.config.auth = Some(auth);
+        self
+    }
+
     pub async fn connect(self) -> Result<HyperStack<S>, HyperStackError> {
+        let HyperStackBuilder {
+            url,
+            config,
+            _stack: _,
+        } = self;
+
         let store_config = StoreConfig {
-            max_entries_per_view: self.config.max_entries_per_view,
+            max_entries_per_view: config.max_entries_per_view,
         };
         let store = SharedStore::with_config(store_config);
         let store_clone = store.clone();
 
         let (frame_tx, mut frame_rx) = mpsc::channel::<Frame>(1000);
 
-        let connection_config: ConnectionConfig = self.config.clone().into();
-        let connection = ConnectionManager::new(self.url, connection_config, frame_tx).await;
+        let connection_config: ConnectionConfig = config.clone().into();
+        let connection = ConnectionManager::new(url, connection_config, frame_tx).await?;
 
         tokio::spawn(async move {
             while let Some(frame) = frame_rx.recv().await {
@@ -133,14 +233,14 @@ impl<S: Stack> HyperStackBuilder<S> {
         let view_builder = crate::view::ViewBuilder::new(
             connection.clone(),
             store.clone(),
-            self.config.initial_data_timeout,
+            config.initial_data_timeout,
         );
         let views = S::Views::from_builder(view_builder);
 
         Ok(HyperStack {
             connection,
             store,
-            config: self.config,
+            config,
             views,
             _stack: PhantomData,
         })

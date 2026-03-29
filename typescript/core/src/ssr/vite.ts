@@ -21,7 +21,7 @@
  * ```
  */
 
-import type { Request, Response, Router } from 'express';
+import type { Request, Response } from 'express';
 import {
   type AuthHandlerConfig,
   mintSessionToken,
@@ -55,9 +55,10 @@ export function createViteAuthMiddleware(options: ViteAuthMiddlewareOptions = {}
     if (req.method === 'POST' && pathname === `${basePath}/sessions`) {
       const subject = (req.headers['x-hyperstack-subject'] as string) || 'anonymous';
       const scope = (req.headers['x-hyperstack-scope'] as string) || 'read';
+      const origin = req.headers.origin as string | undefined;
 
       try {
-        const tokenData = mintSessionToken(config, subject, scope);
+        const tokenData = await mintSessionToken(config, subject, scope, origin);
         res.json(tokenData);
         return;
       } catch (error) {
@@ -70,9 +71,16 @@ export function createViteAuthMiddleware(options: ViteAuthMiddlewareOptions = {}
 
     // GET /{basePath}/.well-known/jwks.json - JWKS
     if (req.method === 'GET' && pathname === `${basePath}/.well-known/jwks.json`) {
-      const jwks = generateJwks(config);
-      res.json(jwks);
-      return;
+      try {
+        const jwks = await generateJwks(config);
+        res.json(jwks);
+        return;
+      } catch (error) {
+        res.status(500).json({
+          error: error instanceof Error ? error.message : 'Failed to generate JWKS',
+        });
+        return;
+      }
     }
 
     // GET /{basePath}/health - Health check

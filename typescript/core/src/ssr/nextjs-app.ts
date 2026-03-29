@@ -28,7 +28,7 @@
  * ```
  */
 
-import { type NextRequest, type NextResponse } from 'next/server';
+import type { NextRequest, NextResponse } from 'next/server';
 import {
   type AuthHandlerConfig,
   mintSessionToken,
@@ -42,22 +42,23 @@ export { type AuthHandlerConfig, type TokenResponse };
  * Create a Next.js App Router POST handler for /ws/sessions
  */
 export function createNextJsSessionRoute(config: AuthHandlerConfig = {}) {
-  return async function POST(request: NextRequest): Promise<NextResponse> {
+  return async function POST(request: NextRequest): Promise<Response> {
     // Get subject from header if provided (e.g., authenticated user)
     const subject = request.headers.get('x-hyperstack-subject') || 'anonymous';
     const scope = request.headers.get('x-hyperstack-scope') || 'read';
+    const origin = request.headers.get('origin') || undefined;
 
     try {
-      const tokenData = mintSessionToken(config, subject, scope);
+      const tokenData = await mintSessionToken(config, subject, scope, origin);
       
-      return new NextResponse(JSON.stringify(tokenData), {
+      return new Response(JSON.stringify(tokenData), {
         status: 200,
         headers: {
           'Content-Type': 'application/json',
         },
       });
     } catch (error) {
-      return new NextResponse(
+      return new Response(
         JSON.stringify({
           error: error instanceof Error ? error.message : 'Failed to mint token',
         }),
@@ -76,15 +77,29 @@ export function createNextJsSessionRoute(config: AuthHandlerConfig = {}) {
  * Create a Next.js App Router GET handler for /.well-known/jwks.json
  */
 export function createNextJsJwksRoute(config: AuthHandlerConfig = {}) {
-  return function GET(): NextResponse {
-    const jwks = generateJwks(config);
-    
-    return new NextResponse(JSON.stringify(jwks), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
+  return async function GET(): Promise<Response> {
+    try {
+      const jwks = await generateJwks(config);
+      
+      return new Response(JSON.stringify(jwks), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+    } catch (error) {
+      return new Response(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : 'Failed to generate JWKS',
+        }),
+        {
+          status: 500,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+    }
   };
 }
 

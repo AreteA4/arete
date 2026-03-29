@@ -1,3 +1,4 @@
+use crate::auth::AuthConfig;
 use crate::store::DEFAULT_MAX_ENTRIES_PER_VIEW;
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ pub struct HyperStackConfig {
     pub ping_interval: Duration,
     pub initial_data_timeout: Duration,
     pub max_entries_per_view: Option<usize>,
+    pub auth: Option<AuthConfig>,
 }
 
 impl Default for HyperStackConfig {
@@ -26,6 +28,7 @@ impl Default for HyperStackConfig {
             ping_interval: Duration::from_secs(15),
             initial_data_timeout: Duration::from_secs(5),
             max_entries_per_view: Some(DEFAULT_MAX_ENTRIES_PER_VIEW),
+            auth: None,
         }
     }
 }
@@ -36,6 +39,7 @@ pub struct ConnectionConfig {
     pub reconnect_intervals: Vec<Duration>,
     pub max_reconnect_attempts: u32,
     pub ping_interval: Duration,
+    pub auth: Option<AuthConfig>,
 }
 
 impl From<HyperStackConfig> for ConnectionConfig {
@@ -45,6 +49,7 @@ impl From<HyperStackConfig> for ConnectionConfig {
             reconnect_intervals: config.reconnect_intervals,
             max_reconnect_attempts: config.max_reconnect_attempts,
             ping_interval: config.ping_interval,
+            auth: config.auth,
         }
     }
 }

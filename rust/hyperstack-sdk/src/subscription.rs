@@ -2,11 +2,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type")]
 pub enum ClientMessage {
+    #[serde(rename = "subscribe")]
     Subscribe(Subscription),
+    #[serde(rename = "unsubscribe")]
     Unsubscribe(Unsubscription),
+    #[serde(rename = "ping")]
     Ping,
+    #[serde(rename = "refresh_auth")]
+    RefreshAuth { token: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

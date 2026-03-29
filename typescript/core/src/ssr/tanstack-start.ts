@@ -46,9 +46,10 @@ export function createTanStackSessionRoute(config: AuthHandlerConfig = {}) {
   return async function POST({ request }: TanStackContext): Promise<Response> {
     const subject = request.headers.get('x-hyperstack-subject') || 'anonymous';
     const scope = request.headers.get('x-hyperstack-scope') || 'read';
+    const origin = request.headers.get('origin') || undefined;
 
     try {
-      const tokenData = mintSessionToken(config, subject, scope);
+      const tokenData = await mintSessionToken(config, subject, scope, origin);
       
       return new Response(JSON.stringify(tokenData), {
         status: 200,
@@ -76,15 +77,29 @@ export function createTanStackSessionRoute(config: AuthHandlerConfig = {}) {
  * Create a TanStack Start handler for GET /.well-known/jwks.json
  */
 export function createTanStackJwksRoute(config: AuthHandlerConfig = {}) {
-  return function GET(): Response {
-    const jwks = generateJwks(config);
-    
-    return new Response(JSON.stringify(jwks), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
+  return async function GET(): Promise<Response> {
+    try {
+      const jwks = await generateJwks(config);
+      
+      return new Response(JSON.stringify(jwks), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+    } catch (error) {
+      return new Response(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : 'Failed to generate JWKS',
+        }),
+        {
+          status: 500,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+    }
   };
 }
 

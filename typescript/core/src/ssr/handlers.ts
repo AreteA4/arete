@@ -2,7 +2,7 @@
  * Hyperstack Auth Server - Drop-in Endpoint Handlers
  *
  * These are framework-agnostic API route handlers that users can mount however they like.
- * They handle token minting and JWKS serving directly.
+ * They handle token minting and JWKS serving directly using Ed25519 signing.
  *
  * @example
  * ```typescript
@@ -19,14 +19,22 @@
  * ```
  */
 
-import jwt from 'jsonwebtoken';
+import * as ed25519 from '@noble/ed25519';
+import { base64url } from './utils.js';
 
 export interface AuthHandlerConfig {
   /**
-   * JWT signing secret (base64-encoded).
+   * Ed25519 signing key seed (base64-encoded, 32 bytes).
    * Set HYPERSTACK_SIGNING_KEY env var OR pass here.
+   * Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
    */
   signingKey?: string;
+
+  /**
+   * Optional: Pre-derived public key (base64-encoded, 32 bytes).
+   * If not provided, will be derived from the signing key.
+   */
+  publicKey?: string;
 
   /**
    * Token issuer (defaults to HYPERSTACK_ISSUER env var or 'hyperstack')
@@ -42,6 +50,11 @@ export interface AuthHandlerConfig {
    * Token TTL in seconds (defaults to 300 = 5 minutes)
    */
   ttlSeconds?: number;
+
+  /**
+   * Key ID for JWKS (defaults to 'key-1')
+   */
+  keyId?: string;
 
   /**
    * Custom limits for tokens
@@ -71,6 +84,10 @@ export interface SessionClaims {
     max_messages_per_minute?: number;
     max_bytes_per_minute?: number;
   };
+  /**
+   * Origin binding for browser tokens (optional defense-in-depth)
+   */
+  origin?: string;
 }
 
 export interface TokenResponse {
@@ -78,39 +95,109 @@ export interface TokenResponse {
   expires_at: number;
 }
 
+export interface JwksKey {
+  kty: 'OKP';
+  crv: 'Ed25519';
+  kid: string;
+  use: 'sig';
+  alg: 'EdDSA';
+  x: string;
+}
+
 export interface JwksResponse {
-  keys: Array<{
-    kty: string;
-    kid: string;
-    use: string;
-    alg: string;
-    x: string;
-  }>;
+  keys: JwksKey[];
 }
 
 /**
- * Mint a session token
+ * Decode base64 to Uint8Array
  */
-export function mintSessionToken(
+function decodeBase64(base64: string): Uint8Array {
+  const binary = Buffer.from(base64, 'base64');
+  return new Uint8Array(binary);
+}
+
+/**
+ * Encode Uint8Array to base64url
+ */
+function encodeBase64url(bytes: Uint8Array): string {
+  return base64url.encode(bytes);
+}
+
+/**
+ * Generate a key ID from public key bytes
+ */
+function deriveKeyId(publicKey: Uint8Array): string {
+  // Use first 8 bytes of public key as hex for kid
+  return Array.from(publicKey.slice(0, 8))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Create JWT header for Ed25519
+ */
+function createJwtHeader(keyId: string): string {
+  const header = {
+    alg: 'EdDSA',
+    typ: 'JWT',
+    kid: keyId,
+  };
+  return encodeBase64url(new TextEncoder().encode(JSON.stringify(header)));
+}
+
+/**
+ * Create JWT payload from claims
+ */
+function createJwtPayload(claims: SessionClaims): string {
+  return encodeBase64url(new TextEncoder().encode(JSON.stringify(claims)));
+}
+
+/**
+ * Sign data with Ed25519
+ */
+async function signEd25519(
+  data: string,
+  privateKey: Uint8Array
+): Promise<Uint8Array> {
+  const messageBytes = new TextEncoder().encode(data);
+  return await ed25519.signAsync(messageBytes, privateKey);
+}
+
+/**
+ * Mint a session token using Ed25519 signing
+ */
+export async function mintSessionToken(
   config: AuthHandlerConfig,
   subject: string = 'anonymous',
-  scope: string = 'read'
-): TokenResponse {
-  const signingKey = config.signingKey || process.env.HYPERSTACK_SIGNING_KEY;
-  if (!signingKey) {
+  scope: string = 'read',
+  origin?: string
+): Promise<TokenResponse> {
+  const signingKeyBase64 = config.signingKey || process.env.HYPERSTACK_SIGNING_KEY;
+  if (!signingKeyBase64) {
     throw new Error(
       'HYPERSTACK_SIGNING_KEY not set. Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"'
     );
   }
 
-  const secret = Buffer.from(signingKey, 'base64');
+  const privateKeyBytes = decodeBase64(signingKeyBase64);
+  if (privateKeyBytes.length !== 32) {
+    throw new Error(
+      `Invalid signing key length: expected 32 bytes, got ${privateKeyBytes.length}. ` +
+      'Ed25519 signing key must be 32 bytes (base64-encoded).'
+    );
+  }
+
+  // Derive public key from private key
+  const publicKeyBytes = await ed25519.getPublicKeyAsync(privateKeyBytes);
+  const keyId = config.keyId || deriveKeyId(publicKeyBytes);
+
   const issuer = config.issuer || process.env.HYPERSTACK_ISSUER || 'hyperstack';
   const audience = config.audience || process.env.HYPERSTACK_AUDIENCE || 'hyperstack';
   const ttlSeconds = config.ttlSeconds || 300;
-  
+
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + ttlSeconds;
-  
+
   const claims: SessionClaims = {
     iss: issuer,
     sub: subject,
@@ -118,7 +205,7 @@ export function mintSessionToken(
     iat: now,
     nbf: now,
     exp: expiresAt,
-    jti: `${subject}-${now}`,
+    jti: `${subject}-${now}-${Math.random().toString(36).substring(2, 8)}`,
     scope,
     metering_key: `meter:${subject}`,
     key_class: 'secret',
@@ -131,7 +218,19 @@ export function mintSessionToken(
     },
   };
 
-  const token = jwt.sign(claims, secret, { algorithm: 'HS256' });
+  // Add origin binding if provided
+  if (origin) {
+    claims.origin = origin;
+  }
+
+  // Create JWT
+  const header = createJwtHeader(keyId);
+  const payload = createJwtPayload(claims);
+  const signingInput = `${header}.${payload}`;
+  const signature = await signEd25519(signingInput, privateKeyBytes);
+  const signatureBase64 = encodeBase64url(signature);
+
+  const token = `${signingInput}.${signatureBase64}`;
 
   return {
     token,
@@ -142,26 +241,47 @@ export function mintSessionToken(
 /**
  * Generate JWKS response from signing key
  */
-export function generateJwks(config: AuthHandlerConfig): JwksResponse {
-  const signingKey = config.signingKey || process.env.HYPERSTACK_SIGNING_KEY;
-  if (!signingKey) {
+export async function generateJwks(config: AuthHandlerConfig): Promise<JwksResponse> {
+  const signingKeyBase64 = config.signingKey || process.env.HYPERSTACK_SIGNING_KEY;
+  const publicKeyBase64 = config.publicKey || process.env.HYPERSTACK_PUBLIC_KEY;
+
+  if (!signingKeyBase64 && !publicKeyBase64) {
     return { keys: [] };
   }
 
-  // For HMAC-SHA256, we return the public key info
-  // Note: In production, you might want to use asymmetric keys (RS256/ES256)
-  // for JWKS, but HS256 is fine for self-hosted setups
-  const secret = Buffer.from(signingKey, 'base64');
-  const publicKey = secret.toString('base64url');
+  let publicKeyBytes: Uint8Array;
+
+  if (publicKeyBase64) {
+    // Use provided public key
+    publicKeyBytes = decodeBase64(publicKeyBase64);
+    if (publicKeyBytes.length !== 32) {
+      throw new Error(
+        `Invalid public key length: expected 32 bytes, got ${publicKeyBytes.length}`
+      );
+    }
+  } else {
+    // Derive public key from private key
+    const privateKeyBytes = decodeBase64(signingKeyBase64!);
+    if (privateKeyBytes.length !== 32) {
+      throw new Error(
+        `Invalid signing key length: expected 32 bytes, got ${privateKeyBytes.length}`
+      );
+    }
+    publicKeyBytes = await ed25519.getPublicKeyAsync(privateKeyBytes);
+  }
+
+  const keyId = config.keyId ||
+    (publicKeyBase64 ? 'key-1' : deriveKeyId(publicKeyBytes));
 
   return {
     keys: [
       {
-        kty: 'oct',
-        kid: 'key-1',
+        kty: 'OKP',
+        crv: 'Ed25519',
+        kid: keyId,
         use: 'sig',
-        alg: 'HS256',
-        x: publicKey,
+        alg: 'EdDSA',
+        x: encodeBase64url(publicKeyBytes),
       },
     ],
   };
@@ -171,14 +291,15 @@ export function generateJwks(config: AuthHandlerConfig): JwksResponse {
  * Framework-agnostic request handler for token minting
  * Returns a Response object that can be used with any framework
  */
-export function handleSessionRequest(
+export async function handleSessionRequest(
   config: AuthHandlerConfig = {},
   subject: string = 'anonymous',
-  scope: string = 'read'
-): Response {
+  scope: string = 'read',
+  origin?: string
+): Promise<Response> {
   try {
-    const tokenData = mintSessionToken(config, subject, scope);
-    
+    const tokenData = await mintSessionToken(config, subject, scope, origin);
+
     return new Response(JSON.stringify(tokenData), {
       status: 200,
       headers: {
@@ -203,15 +324,29 @@ export function handleSessionRequest(
 /**
  * Framework-agnostic request handler for JWKS endpoint
  */
-export function handleJwksRequest(config: AuthHandlerConfig = {}): Response {
-  const jwks = generateJwks(config);
-  
-  return new Response(JSON.stringify(jwks), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  });
+export async function handleJwksRequest(config: AuthHandlerConfig = {}): Promise<Response> {
+  try {
+    const jwks = await generateJwks(config);
+
+    return new Response(JSON.stringify(jwks), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        error: error instanceof Error ? error.message : 'Failed to generate JWKS',
+      }),
+      {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  }
 }
 
 /**

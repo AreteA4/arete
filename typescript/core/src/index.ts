@@ -36,6 +36,9 @@ export type {
   WatchOptions,
   HyperStackOptions,
   HyperStackConfig,
+  AuthConfig,
+  AuthTokenResult,
+  WebSocketFactoryInit,
   TypedViews,
   TypedViewGroup,
   TypedStateView,
@@ -43,6 +46,8 @@ export type {
   SubscribeCallback,
   UnsubscribeFn,
   ConnectionStateCallback,
+  SocketIssue,
+  SocketIssueCallback,
 } from './types';
 
 export { DEFAULT_CONFIG, DEFAULT_MAX_ENTRIES_PER_VIEW, HyperStackError } from './types';

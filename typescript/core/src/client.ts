@@ -4,6 +4,7 @@ import type {
   HyperStackOptions,
   TypedViews,
   ConnectionStateCallback,
+  SocketIssueCallback,
   UnsubscribeFn,
 } from './types';
 import { HyperStackError } from './types';
@@ -161,6 +162,10 @@ export class HyperStack<TStack extends StackDefinition> {
 
   onFrame(callback: (frame: Frame) => void): UnsubscribeFn {
     return this.connection.onFrame(callback);
+  }
+
+  onSocketIssue(callback: SocketIssueCallback): UnsubscribeFn {
+    return this.connection.onSocketIssue(callback);
   }
 
   async connect(): Promise<void> {

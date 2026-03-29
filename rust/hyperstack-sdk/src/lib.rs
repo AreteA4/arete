@@ -16,6 +16,7 @@
 //! }
 //! ```
 
+mod auth;
 mod client;
 mod config;
 mod connection;
@@ -29,10 +30,11 @@ mod stream;
 mod subscription;
 pub mod view;
 
+pub use auth::{AuthConfig, AuthToken, TokenTransport};
 pub use client::{HyperStack, HyperStackBuilder};
 pub use connection::ConnectionState;
 pub use entity::Stack;
-pub use error::HyperStackError;
+pub use error::{AuthErrorCode, HyperStackError, SocketIssue};
 pub use frame::{
     parse_frame, parse_snapshot_entities, try_parse_subscribed_frame, Frame, Mode, Operation,
     SnapshotEntity,
@@ -44,5 +46,6 @@ pub use stream::{
 };
 
 pub use subscription::{ClientMessage, Subscription};
-pub use view::{RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewHandle, Views, WatchBuilder};
-
+pub use view::{
+    RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewHandle, Views, WatchBuilder,
+};
