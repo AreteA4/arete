@@ -60,6 +60,12 @@ jobs:
           cargo publish --allow-dirty || echo "Package may already be published"
           sleep 30
 
+      - name: Publish hyperstack-auth
+        run: |
+          cd rust/hyperstack-auth
+          cargo publish --allow-dirty || echo "Package may already be published"
+          sleep 30
+
       - name: Publish hyperstack-server
         run: |
           cd rust/hyperstack-server

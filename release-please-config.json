@@ -55,6 +55,10 @@
       "release-type": "rust",
       "component": "hyperstack-sdk"
     },
+    "rust/hyperstack-auth": {
+      "release-type": "rust",
+      "component": "hyperstack-auth"
+    },
     "rust/hyperstack-server": {
       "release-type": "rust",
       "component": "hyperstack-server"

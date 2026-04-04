@@ -4,6 +4,7 @@
   "hyperstack-macros": "0.5.10",
   "cli": "0.5.10",
   "rust/hyperstack-sdk": "0.5.10",
+  "rust/hyperstack-auth": "0.5.10",
   "rust/hyperstack-server": "0.5.10",
   "typescript/react": "0.5.10",
   "typescript/core": "0.5.10",
