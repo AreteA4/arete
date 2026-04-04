@@ -25,8 +25,14 @@ impl MintRateLimiter {
             .buckets
             .lock()
             .expect("mint rate limiter lock poisoned");
+
+        // Keep this simple in-memory limiter bounded without a background task.
+        buckets.retain(|_, bucket| {
+            bucket.retain(|instant| now.duration_since(*instant) < self.window);
+            !bucket.is_empty()
+        });
+
         let bucket = buckets.entry(key.to_string()).or_default();
-        bucket.retain(|instant| now.duration_since(*instant) < self.window);
 
         if bucket.len() >= limit as usize {
             return false;
@@ -55,5 +61,28 @@ mod tests {
         assert!(limiter.check("key-a", 1));
         assert!(!limiter.check("key-a", 1));
         assert!(limiter.check("key-b", 1));
+    }
+
+    #[test]
+    fn prunes_stale_buckets_on_check() {
+        let limiter = MintRateLimiter::new(Duration::from_secs(60));
+        let stale = Instant::now() - Duration::from_secs(120);
+
+        {
+            let mut buckets = limiter
+                .buckets
+                .lock()
+                .expect("mint rate limiter lock poisoned");
+            buckets.insert("stale".to_string(), vec![stale]);
+        }
+
+        assert!(limiter.check("fresh", 1));
+
+        let buckets = limiter
+            .buckets
+            .lock()
+            .expect("mint rate limiter lock poisoned");
+        assert!(!buckets.contains_key("stale"));
+        assert_eq!(buckets.get("fresh").map(Vec::len), Some(1));
     }
 }

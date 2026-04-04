@@ -645,4 +645,48 @@ mod tests {
         assert!(limiter.subject_buckets.read().await.is_empty());
         assert!(limiter.metering_key_buckets.read().await.is_empty());
     }
+
+    #[tokio::test]
+    async fn test_remove_client_buckets_clears_connection_specific_state() {
+        let limiter = WebSocketRateLimiter::new(test_config());
+        let client_id = uuid::Uuid::new_v4();
+
+        let _ = limiter.check_subscription(client_id).await;
+        let _ = limiter.check_message(client_id).await;
+        let _ = limiter.check_snapshot(client_id).await;
+
+        assert!(limiter
+            .subscription_buckets
+            .read()
+            .await
+            .contains_key(&client_id));
+        assert!(limiter
+            .message_buckets
+            .read()
+            .await
+            .contains_key(&client_id));
+        assert!(limiter
+            .snapshot_buckets
+            .read()
+            .await
+            .contains_key(&client_id));
+
+        limiter.remove_client_buckets(client_id).await;
+
+        assert!(!limiter
+            .subscription_buckets
+            .read()
+            .await
+            .contains_key(&client_id));
+        assert!(!limiter
+            .message_buckets
+            .read()
+            .await
+            .contains_key(&client_id));
+        assert!(!limiter
+            .snapshot_buckets
+            .read()
+            .await
+            .contains_key(&client_id));
+    }
 }

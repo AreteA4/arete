@@ -862,6 +862,9 @@ async fn handle_connection(
         .cancel_all_client_subscriptions(client_id)
         .await;
     client_manager.remove_client(client_id);
+    if let Some(rate_limiter) = client_manager.rate_limiter().cloned() {
+        rate_limiter.remove_client_buckets(client_id).await;
+    }
 
     if let Some(ref m) = metrics {
         let duration_secs = connection_start.elapsed().as_secs_f64();
@@ -1143,6 +1146,9 @@ async fn handle_connection(
         .cancel_all_client_subscriptions(client_id)
         .await;
     client_manager.remove_client(client_id);
+    if let Some(rate_limiter) = client_manager.rate_limiter().cloned() {
+        rate_limiter.remove_client_buckets(client_id).await;
+    }
 
     for view_id in active_subscriptions.values() {
         emit_usage_event(
