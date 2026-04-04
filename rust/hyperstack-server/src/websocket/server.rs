@@ -482,6 +482,7 @@ mod tests {
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn accept_authorized_connection(
     stream: TcpStream,
     remote_addr: SocketAddr,
