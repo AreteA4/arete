@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.6.0](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-sdk-v0.5.10...hyperstack-sdk-v0.6.0) (2026-04-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* Authentication system with WebSocket integration, SSR support, and security enhancements
+* Merge pull request #75 from HyperTekOrg/auth
+
+### Features
+
+* Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/HyperTekOrg/hyperstack/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* improve SDK auth recovery for websocket connections ([193e442](https://github.com/HyperTekOrg/hyperstack/commit/193e442666aa1cc992c8ee364bbd11175ef7128a))
+* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/HyperTekOrg/hyperstack/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Merge pull request [#75](https://github.com/HyperTekOrg/hyperstack/issues/75) from HyperTekOrg/auth ([d9b90f9](https://github.com/HyperTekOrg/hyperstack/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* **rust-sdk:** Support optional snapshots and cursor-based resume ([9c5fcc0](https://github.com/HyperTekOrg/hyperstack/commit/9c5fcc0a063f8696277bb190ab4fa14e9e0f8e73))
+* **sdk:** Add builder methods and React hooks for new subscription options ([1f7f95b](https://github.com/HyperTekOrg/hyperstack/commit/1f7f95be29e70391c74cec425ee2badd1f87e0bc))
+
+
+### Bug Fixes
+
+* add camelCase serde rename to Subscription struct ([522d7ae](https://github.com/HyperTekOrg/hyperstack/commit/522d7ae2b3d77bbd8cbd9c3ca92764138c826e9c))
+* resolve clippy warnings in SDK and server ([ee68b63](https://github.com/HyperTekOrg/hyperstack/commit/ee68b63aaaf24228114dac6afcb78cb01ae92c25))
+* **rust-sdk:** Wire up new subscription fields through stream layer ([8f4fba0](https://github.com/HyperTekOrg/hyperstack/commit/8f4fba016c6a530d6462b4711b19acc1ca670452))
+
 ## [0.5.10](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-sdk-v0.5.9...hyperstack-sdk-v0.5.10) (2026-03-19)
 
 

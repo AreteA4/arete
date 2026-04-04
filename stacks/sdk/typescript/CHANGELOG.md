@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.0](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-stacks-v0.5.10...hyperstack-stacks-v0.6.0) (2026-04-04)
+
+
+### Miscellaneous Chores
+
+* **hyperstack-stacks:** Synchronize hyperstack versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * hyperstack-typescript bumped from file:../../../typescript/core to 0.6.0
+  * peerDependencies
+    * hyperstack-react bumped from >=0.6 to >=0.6.0
+    * hyperstack-typescript bumped from >=0.6 to >=0.6.0
+
 ## [0.5.10](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-stacks-v0.5.9...hyperstack-stacks-v0.5.10) (2026-03-19)
 
 

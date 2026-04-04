@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.6.0](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-typescript-v0.5.10...hyperstack-typescript-v0.6.0) (2026-04-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* Authentication system with WebSocket integration, SSR support, and security enhancements
+* Merge pull request #75 from HyperTekOrg/auth
+
+### Features
+
+* Add SSR support for Next.js, TanStack Start, and Vite ([70cb1ac](https://github.com/HyperTekOrg/hyperstack/commit/70cb1acbf5b6eedb40947f0accdffd5f722e23d1))
+* Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/HyperTekOrg/hyperstack/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* improve SDK auth recovery for websocket connections ([193e442](https://github.com/HyperTekOrg/hyperstack/commit/193e442666aa1cc992c8ee364bbd11175ef7128a))
+* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/HyperTekOrg/hyperstack/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Merge pull request [#75](https://github.com/HyperTekOrg/hyperstack/issues/75) from HyperTekOrg/auth ([d9b90f9](https://github.com/HyperTekOrg/hyperstack/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* **typescript-sdk:** Support optional snapshots and cursor-based resume ([3f239e9](https://github.com/HyperTekOrg/hyperstack/commit/3f239e9d9fa2f992b7d8eaa1c467c541af9a8a9a))
+
+
+### Bug Fixes
+
+* correct Vite SSR auth route base path handling ([fee273a](https://github.com/HyperTekOrg/hyperstack/commit/fee273aae241b1ef6fc993b7b5beb97bfa747f9f))
+* harden SSR session token issuance ([bde6607](https://github.com/HyperTekOrg/hyperstack/commit/bde6607b6bfcc146e8e7667336860410e8eaefb4))
+
 ## [0.5.10](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-typescript-v0.5.9...hyperstack-typescript-v0.5.10) (2026-03-19)
 
 

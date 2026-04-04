@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.6](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-idl-v0.1.5...hyperstack-idl-v0.1.6) (2026-04-04)
+
+
+### Bug Fixes
+
+* restore case-insensitive IDL lookups and per-event validation ([636fd6d](https://github.com/HyperTekOrg/hyperstack/commit/636fd6d0c6b166c0be50e3cb4b8a9ada43c52050))
+* sort derive_from attrs and align field lookup semantics ([eea1af0](https://github.com/HyperTekOrg/hyperstack/commit/eea1af028bfec5fc52668f2279f7eb2a7c834c92))
+* surface hyperstack macro validation failures during expansion ([7928539](https://github.com/HyperTekOrg/hyperstack/commit/7928539d0a9a4e53db546f4f65d35f26e2e95560))
+* tighten IDL lookup casing and derive_from diagnostics ([de5706d](https://github.com/HyperTekOrg/hyperstack/commit/de5706d59be3942a2f1612426f2b1ee5cb0ce817))
+
 ## [0.1.5](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-idl-v0.1.4...hyperstack-idl-v0.1.5) (2026-03-19)
 
 

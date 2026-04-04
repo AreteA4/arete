@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.6.0](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.5.10...hyperstack-server-v0.6.0) (2026-04-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* Authentication system with WebSocket integration, SSR support, and security enhancements
+* Merge pull request #75 from HyperTekOrg/auth
+
+### Features
+
+* Add authentication system with WebSocket integration ([bd7f8ad](https://github.com/HyperTekOrg/hyperstack/commit/bd7f8adca65e2c0222aab32146faa8d57d357735))
+* Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/HyperTekOrg/hyperstack/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* enforce websocket auth and rate limits on the server ([71a0c04](https://github.com/HyperTekOrg/hyperstack/commit/71a0c04540fa75544eedb250e06aacf5b3709c03))
+* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/HyperTekOrg/hyperstack/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Merge pull request [#75](https://github.com/HyperTekOrg/hyperstack/issues/75) from HyperTekOrg/auth ([d9b90f9](https://github.com/HyperTekOrg/hyperstack/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* **server:** Add optional snapshot and cursor-based filtering to WebSocket protocol ([da7b486](https://github.com/HyperTekOrg/hyperstack/commit/da7b4862375de7a25c0e254d6e90aa2c1e64c546))
+
+
+### Bug Fixes
+
+* add camelCase serde rename to Subscription struct ([fc68ea5](https://github.com/HyperTekOrg/hyperstack/commit/fc68ea51cf1074e4442f7264322908901f1e041e))
+* add truncate after sorting by _seq to respect snapshot_limit ([0782e66](https://github.com/HyperTekOrg/hyperstack/commit/0782e666a33ac9326f53c0b9f5556d66a663badc))
+* allow large error variants in WebSocket handshake closures ([4a5aeec](https://github.com/HyperTekOrg/hyperstack/commit/4a5aeec8e901d3e22e6a3510e65d68560d6e6aa2))
+* apply snapshot_limit after key filter in websocket subscriptions ([12f8f75](https://github.com/HyperTekOrg/hyperstack/commit/12f8f755d2a125f4a255c4da79e699dab842cdd4))
+* apply snapshot_limit when no after cursor is provided ([b3850e6](https://github.com/HyperTekOrg/hyperstack/commit/b3850e6e411576c31bb846508230dd7afda91cb1))
+* correct snapshot ordering when using cursor with limit ([6f4a4d3](https://github.com/HyperTekOrg/hyperstack/commit/6f4a4d36132809ec91cd4a542e4239b82ca83eca))
+* Fix _seq numeric comparison and missing borrow_and_update in cache and WebSocket handlers ([7b2c06c](https://github.com/HyperTekOrg/hyperstack/commit/7b2c06cb699b1f8bc1503a31a190e08a91996158))
+* make snapshot_limit deterministic by sorting before truncation ([1d62917](https://github.com/HyperTekOrg/hyperstack/commit/1d629172fc023aff7576bd79c13351ce12535df7))
+* prune stale rate limiter buckets ([8579fa8](https://github.com/HyperTekOrg/hyperstack/commit/8579fa856b3527b367c9fb06c533848d7847e66d))
+* resolve clippy warnings in SDK and server ([ee68b63](https://github.com/HyperTekOrg/hyperstack/commit/ee68b63aaaf24228114dac6afcb78cb01ae92c25))
+* sort entities by _seq before applying snapshot_limit ([6abba2a](https://github.com/HyperTekOrg/hyperstack/commit/6abba2a923bb725465f579e6f4ee25e2d68ec03e))
+* tighten Rust auth verification and cleanup ([1413a7a](https://github.com/HyperTekOrg/hyperstack/commit/1413a7aff6fbf2fd91976c48657d0a929482c276))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.5.10 to 0.6.0
+
 ## [0.5.10](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.5.9...hyperstack-server-v0.5.10) (2026-03-19)
 
 

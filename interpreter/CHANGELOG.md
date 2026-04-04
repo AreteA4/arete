@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.6.0](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-interpreter-v0.5.10...hyperstack-interpreter-v0.6.0) (2026-04-04)
+
+
+### Features
+
+* Add AST versioning system with automatic migration support ([997706b](https://github.com/HyperTekOrg/hyperstack/commit/997706b2854fc2e95427ef6b67b710db35ad86ac))
+* Add AST versioning system with automatic migration support ([b62d08d](https://github.com/HyperTekOrg/hyperstack/commit/b62d08d99a579f323ea3f4a052fa90b83b269942))
+
+
+### Bug Fixes
+
+* Address code review feedback on AST versioning ([1791986](https://github.com/HyperTekOrg/hyperstack/commit/1791986fa0e37f5762a57c166ecbcf6be26bcb0b))
+* Address code review feedback on into_latest, test assertions, and parsing ([da49bf9](https://github.com/HyperTekOrg/hyperstack/commit/da49bf9358362d27c307c8cc958a60b872ae2a2f))
+* Clarify UnsupportedVersion error message to mention migration support ([51fde69](https://github.com/HyperTekOrg/hyperstack/commit/51fde6960103340b0fd18158f1e6d3a5a2b398ea))
+* Make sync tests fail explicitly when source file not found ([c824e3d](https://github.com/HyperTekOrg/hyperstack/commit/c824e3dc74e102d57eb96485d9dad0c925d0bfc3))
+* Remove Serialize derive from Versioned*Spec enums to prevent duplicate keys ([73ad7b4](https://github.com/HyperTekOrg/hyperstack/commit/73ad7b4b8519a30b7dcfca66badd05daf1eee085))
+* tighten IDL lookup casing and derive_from diagnostics ([de5706d](https://github.com/HyperTekOrg/hyperstack/commit/de5706d59be3942a2f1612426f2b1ee5cb0ce817))
+* Use CURRENT_AST_VERSION constant instead of hardcoded version ([5df9efe](https://github.com/HyperTekOrg/hyperstack/commit/5df9efe883d5880f6c440ae8e0577004041d53ca))
+* Use CURRENT_AST_VERSION in test assertions instead of hardcoded string ([6809f1a](https://github.com/HyperTekOrg/hyperstack/commit/6809f1a632f464e2c1c6b175458fd51a24712acd))
+* validate handler key resolution paths during macro expansion ([a069d1a](https://github.com/HyperTekOrg/hyperstack/commit/a069d1a2a6d0888e44bc9a9e0fbd1f6ba850b11d))
+* validate join_on fields before IDL resolution ([6236f4b](https://github.com/HyperTekOrg/hyperstack/commit/6236f4b3e2c3fe438551a9bddc8613ddf5075f2c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-macros bumped from 0.5.10 to 0.6.0
+    * hyperstack-idl bumped from 0.1.5 to 0.1.6
+
 ## [0.5.10](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-interpreter-v0.5.9...hyperstack-interpreter-v0.5.10) (2026-03-19)
 
 

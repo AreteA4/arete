@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.6.0](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.5.10...hyperstack-cli-v0.6.0) (2026-04-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* Authentication system with WebSocket integration, SSR support, and security enhancements
+* Merge pull request #75 from HyperTekOrg/auth
+
+### Features
+
+* Add AST versioning system with automatic migration support ([997706b](https://github.com/HyperTekOrg/hyperstack/commit/997706b2854fc2e95427ef6b67b710db35ad86ac))
+* Add AST versioning system with automatic migration support ([b62d08d](https://github.com/HyperTekOrg/hyperstack/commit/b62d08d99a579f323ea3f4a052fa90b83b269942))
+* Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/HyperTekOrg/hyperstack/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* **cli:** add --api-url flag and URL-based credential routing ([cc777f1](https://github.com/HyperTekOrg/hyperstack/commit/cc777f1dd4ee9b49c6b3e260d9e1bbfc4f11f929))
+* **cli:** add publishable key management commands ([5b99d43](https://github.com/HyperTekOrg/hyperstack/commit/5b99d431d73a1dd937bbb726648aa05cbeeb6d4e))
+* Merge pull request [#75](https://github.com/HyperTekOrg/hyperstack/issues/75) from HyperTekOrg/auth ([d9b90f9](https://github.com/HyperTekOrg/hyperstack/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+
+
+### Bug Fixes
+
+* Address code review feedback on error messages and examples ([262be58](https://github.com/HyperTekOrg/hyperstack/commit/262be585c0af291dbcec6a41bed14f3184b5d2b8))
+* suppress dead_code warning for CreateApiKeyResponse ([32d68af](https://github.com/HyperTekOrg/hyperstack/commit/32d68af4ab1fc0fd7b369eec51cba646d4b4f6ee))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.5.10 to 0.6.0
+    * hyperstack-idl bumped from 0.1.5 to 0.1.6
+    * hyperstack-sdk bumped from 0.5.10 to 0.6.0
+
 ## [0.5.10](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.5.9...hyperstack-cli-v0.5.10) (2026-03-19)
 
 

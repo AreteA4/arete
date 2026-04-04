@@ -1,14 +1,16 @@
 {
-  "hyperstack": "0.5.10",
-  "interpreter": "0.5.10",
-  "hyperstack-macros": "0.5.10",
-  "cli": "0.5.10",
-  "rust/hyperstack-sdk": "0.5.10",
-  "rust/hyperstack-server": "0.5.10",
-  "typescript/react": "0.5.10",
-  "typescript/core": "0.5.10",
-  "stacks/sdk/typescript": "0.5.10",
-  "stacks/sdk/rust": "0.5.10",
-  "packages/hyperstack": "0.5.10",
-  "hyperstack-idl": "0.1.5"
+  "hyperstack": "0.6.0",
+  "interpreter": "0.6.0",
+  "hyperstack-macros": "0.6.0",
+  "cli": "0.6.0",
+  "rust/hyperstack-sdk": "0.6.0",
+  "rust/hyperstack-server": "0.6.0",
+  "typescript/react": "0.6.0",
+  "typescript/core": "0.6.0",
+  "stacks/sdk/typescript": "0.6.0",
+  "stacks/sdk/rust": "0.6.0",
+  "packages/hyperstack": "0.6.0",
+  "hyperstack-idl": "0.1.6",
+  "rust/hyperstack-auth": "0.1.0",
+  "rust/hyperstack-auth-server": "0.5.11"
 }

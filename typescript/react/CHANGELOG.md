@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.6.0](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-react-v0.5.10...hyperstack-react-v0.6.0) (2026-04-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* Authentication system with WebSocket integration, SSR support, and security enhancements
+* Merge pull request #75 from HyperTekOrg/auth
+
+### Features
+
+* Add authentication system with WebSocket integration ([bd7f8ad](https://github.com/HyperTekOrg/hyperstack/commit/bd7f8adca65e2c0222aab32146faa8d57d357735))
+* Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/HyperTekOrg/hyperstack/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/HyperTekOrg/hyperstack/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Merge pull request [#75](https://github.com/HyperTekOrg/hyperstack/issues/75) from HyperTekOrg/auth ([d9b90f9](https://github.com/HyperTekOrg/hyperstack/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* **sdk:** Add builder methods and React hooks for new subscription options ([1f7f95b](https://github.com/HyperTekOrg/hyperstack/commit/1f7f95be29e70391c74cec425ee2badd1f87e0bc))
+* **typescript-sdk:** Support optional snapshots and cursor-based resume ([3f239e9](https://github.com/HyperTekOrg/hyperstack/commit/3f239e9d9fa2f992b7d8eaa1c467c541af9a8a9a))
+
+
+### Bug Fixes
+
+* guard refresh() isLoading behind withSnapshot check ([18ec45d](https://github.com/HyperTekOrg/hyperstack/commit/18ec45d17f7851e4dce85897a2bf90dff8f0c1da))
+* guard setIsLoading(true) when withSnapshot is false ([3808e59](https://github.com/HyperTekOrg/hyperstack/commit/3808e59d65ccaa1af24477cf29b64e38c718b340))
+* prevent isLoading stuck when withSnapshot is false in view hooks ([b8a3692](https://github.com/HyperTekOrg/hyperstack/commit/b8a369264feba1245a53c8b550fb09875382a03c))
+* Versions ([667c10b](https://github.com/HyperTekOrg/hyperstack/commit/667c10bdafd96b0de277fc1f8fcd0689b1161650))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-typescript bumped from ^0.6 to ^0.6.0
+
 ## [0.5.10](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-react-v0.5.9...hyperstack-react-v0.5.10) (2026-03-19)
 
 

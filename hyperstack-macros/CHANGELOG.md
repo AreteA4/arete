@@ -1,5 +1,94 @@
 # Changelog
 
+## [0.6.0](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-macros-v0.5.10...hyperstack-macros-v0.6.0) (2026-04-04)
+
+
+### Features
+
+* Add AST versioning system with automatic migration support ([997706b](https://github.com/HyperTekOrg/hyperstack/commit/997706b2854fc2e95427ef6b67b710db35ad86ac))
+* Add AST versioning system with automatic migration support ([b62d08d](https://github.com/HyperTekOrg/hyperstack/commit/b62d08d99a579f323ea3f4a052fa90b83b269942))
+* add span field to ConditionExpr for better error reporting ([ec6eadd](https://github.com/HyperTekOrg/hyperstack/commit/ec6eadd3862ad418be8c4b767d9c1e8ab819e0c2))
+
+
+### Bug Fixes
+
+* accept key fields captured by event handlers ([de38610](https://github.com/HyperTekOrg/hyperstack/commit/de38610a578b9afde54af1775f2f6b1e7bf802dd))
+* add compile-time validation and improve lookup_by warnings ([6cb45b4](https://github.com/HyperTekOrg/hyperstack/commit/6cb45b49181d8edb9475cdba13369734e382950f))
+* add debug warnings and deduplicate validation errors ([ca324a4](https://github.com/HyperTekOrg/hyperstack/commit/ca324a4277439462fc2238dd7c49cf20cbff7cef))
+* Address clippy warnings in AST versioning module ([1d6540f](https://github.com/HyperTekOrg/hyperstack/commit/1d6540fd71a66e76a211de35e81a89cfe584dc66))
+* Address code review feedback on AST versioning ([1791986](https://github.com/HyperTekOrg/hyperstack/commit/1791986fa0e37f5762a57c166ecbcf6be26bcb0b))
+* address code review feedback on error handling and diagnostics ([e11a539](https://github.com/HyperTekOrg/hyperstack/commit/e11a5398ec287ecea959993c873364c1c5e6f4cb))
+* Address code review feedback on into_latest, test assertions, and parsing ([da49bf9](https://github.com/HyperTekOrg/hyperstack/commit/da49bf9358362d27c307c8cc958a60b872ae2a2f))
+* address code review issues for dead code, resolver conditions, and event source documentation ([0e0f5be](https://github.com/HyperTekOrg/hyperstack/commit/0e0f5be7ef57fa275948543f8cad4ad27b788347))
+* address code review issues for validation logic ([0ab5734](https://github.com/HyperTekOrg/hyperstack/commit/0ab5734f2ff1454201efc86ddd94054cf44b465d))
+* address code review issues in validation and condition parsing ([49ee76b](https://github.com/HyperTekOrg/hyperstack/commit/49ee76ba26485f535ff35d2c76c39c224dbc4178))
+* address review feedback on macro diagnostics ([c1d6e33](https://github.com/HyperTekOrg/hyperstack/commit/c1d6e33a71e1444a63a91865ac5fa8e327051cd2))
+* align null literal handling and prevent Ident panic on invalid leaves ([6d2935f](https://github.com/HyperTekOrg/hyperstack/commit/6d2935fb51148365f8df4b9134472afc4330019a))
+* align proto UI tests with warning-only behavior ([6b89861](https://github.com/HyperTekOrg/hyperstack/commit/6b89861bcc74ec1819bb8683f6cd3d1c05ca3650))
+* align resolver condition parsing with strict conditions ([a2be077](https://github.com/HyperTekOrg/hyperstack/commit/a2be077ebe3a39d9313cf83318d23adc5a9bccb6))
+* avoid allocating string for comparison in __account_address check ([28cb740](https://github.com/HyperTekOrg/hyperstack/commit/28cb7402dc750036f571754a77900d9b2ac4f0da))
+* Clarify UnsupportedVersion error message to mention migration support ([51fde69](https://github.com/HyperTekOrg/hyperstack/commit/51fde6960103340b0fd18158f1e6d3a5a2b398ea))
+* correct debug_assert logic and add sentinel field filtering ([8bb3559](https://github.com/HyperTekOrg/hyperstack/commit/8bb3559b2f9833561219ada64e91ce9085c06001))
+* correct escape sequence handling and add ZERO constants to resolver conditions ([e85c3ec](https://github.com/HyperTekOrg/hyperstack/commit/e85c3ec2ea709b5ef4c152134af3d0c6e7ad2116))
+* deduplicate condition-leaf errors and validate event-backed aggregates ([aa1bb53](https://github.com/HyperTekOrg/hyperstack/commit/aa1bb53e9e49e3fb65f6a28ecceffebaecfdd6d2))
+* deduplicate derive_from IDL errors ([3af2189](https://github.com/HyperTekOrg/hyperstack/commit/3af2189b984d3b39762c86b855da6fc979e5dc61))
+* deduplicate event join_on errors per instruction group ([cfee9be](https://github.com/HyperTekOrg/hyperstack/commit/cfee9be66346a75321f881acb3f4108eb3e304be))
+* deduplicate invalid source diagnostics ([5dc9621](https://github.com/HyperTekOrg/hyperstack/commit/5dc96217f809c6e05633d75fe6c82bcf14b51b76))
+* deduplicate join_on entity-field errors per source group ([c98efdd](https://github.com/HyperTekOrg/hyperstack/commit/c98efddb98399ad5ff76865218bddb3cda54bf24))
+* deterministic sort order and validate join_on before IDL resolution ([2cad643](https://github.com/HyperTekOrg/hyperstack/commit/2cad643b58b9a920c3cce909ad0bffe26fea3ebf))
+* ensure deterministic AST JSON output by using BTreeMap ([a84b7af](https://github.com/HyperTekOrg/hyperstack/commit/a84b7afbd2956a980a5f5d8cc3b6f5beaceddc99))
+* handle derive_from key fields and non-finite conditions ([117590f](https://github.com/HyperTekOrg/hyperstack/commit/117590fc5f0074dc338cb6121599580a57513797))
+* improve error messages and handle ambiguous mapping sources ([6fa25c7](https://github.com/HyperTekOrg/hyperstack/commit/6fa25c7903470a0bfd5bbdfbc46813e7d8bc95c6))
+* improve error messages and handle ambiguous mapping sources ([fed3b5b](https://github.com/HyperTekOrg/hyperstack/commit/fed3b5b0d2217c2064240ada415f385dfc8fe243))
+* improve validation determinism and error handling for aggregate conditions ([9022603](https://github.com/HyperTekOrg/hyperstack/commit/9022603c39beb8ba6ae4a54bb56a029753c52f56))
+* improve validation robustness and diagnostics ([66cdef1](https://github.com/HyperTekOrg/hyperstack/commit/66cdef19c42f21bf12b56eb7da0e2a2f59a296fd))
+* Make sync tests fail explicitly when source file not found ([c824e3d](https://github.com/HyperTekOrg/hyperstack/commit/c824e3dc74e102d57eb96485d9dad0c925d0bfc3))
+* normalize instruction names to snake_case before IDL lookup ([7814a42](https://github.com/HyperTekOrg/hyperstack/commit/7814a42012650efda2b0f27bbcbc96b3416751c1))
+* only reject two-character operator sequences in condition parser ([fcca1b4](https://github.com/HyperTekOrg/hyperstack/commit/fcca1b42faff1963150a2cea22534b16db907e5b))
+* prevent join_on panic on dotted paths and validate account aggregate conditions ([b4cc12d](https://github.com/HyperTekOrg/hyperstack/commit/b4cc12d9ba1dc53f3016f2fec378b709d6216760))
+* reject invalid legacy event IDL lookups ([a70e9da](https://github.com/HyperTekOrg/hyperstack/commit/a70e9dafd6c3c277f297fbcb475b56ca620dddb5))
+* remove dead code and false-positive validation for event-backed aggregates ([6dc43ed](https://github.com/HyperTekOrg/hyperstack/commit/6dc43edf5593f90673c35dcd1f512849a41759f3))
+* remove incorrect debug_assert for event sources in validation ([6549eb5](https://github.com/HyperTekOrg/hyperstack/commit/6549eb567d350b7c8435181fd45cf3ae016bb8ee))
+* Remove Serialize derive from Versioned*Spec enums to prevent duplicate keys ([73ad7b4](https://github.com/HyperTekOrg/hyperstack/commit/73ad7b4b8519a30b7dcfca66badd05daf1eee085))
+* remove spurious warning for valid event-backed aggregates ([8e66dff](https://github.com/HyperTekOrg/hyperstack/commit/8e66dff9bde3cf36d6ebe55658aeb4c9734dc099))
+* restore case-insensitive IDL lookups and per-event validation ([636fd6d](https://github.com/HyperTekOrg/hyperstack/commit/636fd6d0c6b166c0be50e3cb4b8a9ada43c52050))
+* restore is_event_source guard with corrected comment ([05106ba](https://github.com/HyperTekOrg/hyperstack/commit/05106ba153917e3001875558f3f3a149ef310849))
+* sort derive_from attrs and align field lookup semantics ([eea1af0](https://github.com/HyperTekOrg/hyperstack/commit/eea1af028bfec5fc52668f2279f7eb2a7c834c92))
+* sort filter and computed field refs for deterministic errors ([f8d4a70](https://github.com/HyperTekOrg/hyperstack/commit/f8d4a70f6d68c7322def87903fb3bc793bcaf517))
+* stabilize derive validation diagnostics ([e1d3e57](https://github.com/HyperTekOrg/hyperstack/commit/e1d3e570284dd84414df33f60a523ad48dfc230f))
+* stabilize dynamic macro test harnesses ([9715c2b](https://github.com/HyperTekOrg/hyperstack/commit/9715c2b88772dd5c4f1972a4f1e6abced8dc5d93))
+* stabilize event key validation and resolver parsing ([d026256](https://github.com/HyperTekOrg/hyperstack/commit/d026256085c7433f95c30504d78c82d271874a95))
+* stabilize event lookup handling across validation and codegen ([0911d10](https://github.com/HyperTekOrg/hyperstack/commit/0911d10d900f39394acdbf776b213bab020942ec))
+* strip entity prefix when matching aggregate condition target fields ([07ef86a](https://github.com/HyperTekOrg/hyperstack/commit/07ef86a2cc7d4b66ac320a18bb0c929015b1e534))
+* surface hyperstack macro validation failures during expansion ([7928539](https://github.com/HyperTekOrg/hyperstack/commit/7928539d0a9a4e53db546f4f65d35f26e2e95560))
+* tighten IDL lookup casing and derive_from diagnostics ([de5706d](https://github.com/HyperTekOrg/hyperstack/commit/de5706d59be3942a2f1612426f2b1ee5cb0ce817))
+* tighten macro validation follow-up checks ([b00f678](https://github.com/HyperTekOrg/hyperstack/commit/b00f6785a5e10fcd89c2dc55aa4218e6bcb4e41b))
+* Use CURRENT_AST_VERSION constant instead of hardcoded version ([5df9efe](https://github.com/HyperTekOrg/hyperstack/commit/5df9efe883d5880f6c440ae8e0577004041d53ca))
+* Use CURRENT_AST_VERSION in test assertions instead of hardcoded string ([6809f1a](https://github.com/HyperTekOrg/hyperstack/commit/6809f1a632f464e2c1c6b175458fd51a24712acd))
+* use find_top_level_operator for accurate logical operator detection ([456c5c0](https://github.com/HyperTekOrg/hyperstack/commit/456c5c0a184c9bd7e36f1635e96d8f883225fefc))
+* use stable sort for mappings and remove dead is_event_source guard ([4a22666](https://github.com/HyperTekOrg/hyperstack/commit/4a2266658b3927acae061f2033f8c30c4ce94e33))
+* use stable sort for mappings and remove dead is_event_source guard ([df51dd6](https://github.com/HyperTekOrg/hyperstack/commit/df51dd6e2d22028391f0d7247b1bcd07c4f4b4ed))
+* validate __account_address transform to lookup-index field ([d2a1c45](https://github.com/HyperTekOrg/hyperstack/commit/d2a1c45a37b4c8366842b5d516b1c8d9cbb48a6a))
+* validate account condition fields and sort aggregate source lookups ([bcac30c](https://github.com/HyperTekOrg/hyperstack/commit/bcac30c9d77db46d4f3acfb1e79764ddd38baf8d))
+* validate account lookup_by fields and fix cycle detection ([08611a4](https://github.com/HyperTekOrg/hyperstack/commit/08611a4ea6ffd339f3cda1e7ab49d76863dcc60c))
+* validate condition field paths against IDL sources ([1f63e08](https://github.com/HyperTekOrg/hyperstack/commit/1f63e08da39c386ff0460f19d6c9650457974012))
+* validate derive_from hooks as instruction groups ([607289c](https://github.com/HyperTekOrg/hyperstack/commit/607289c69776d75a11793f3de1bbe45c3ba42492))
+* validate event join_on and URL template references ([de1c775](https://github.com/HyperTekOrg/hyperstack/commit/de1c7751158f47987c800ff5029d8c00ef613e60))
+* validate handler key resolution paths during macro expansion ([a069d1a](https://github.com/HyperTekOrg/hyperstack/commit/a069d1a2a6d0888e44bc9a9e0fbd1f6ba850b11d))
+* validate join_on fields before IDL resolution ([6236f4b](https://github.com/HyperTekOrg/hyperstack/commit/6236f4b3e2c3fe438551a9bddc8613ddf5075f2c))
+* validate legacy event fields and improve view transform error spans ([c70625d](https://github.com/HyperTekOrg/hyperstack/commit/c70625d868fc693dfa7d4d84ecb2dfed0225fbda))
+* validate nested condition fields and prevent Ident panics on dotted paths ([4bb14cb](https://github.com/HyperTekOrg/hyperstack/commit/4bb14cbf0a9d5c17652df3bee0f1e2137737acec))
+* validate view filter fields and source kinds ([18fc19e](https://github.com/HyperTekOrg/hyperstack/commit/18fc19eccec140d6fc7ff47cdac2f85c71d70597))
+* validation and error handling improvements from code review ([d544e28](https://github.com/HyperTekOrg/hyperstack/commit/d544e280f7a9b1e8eb5af80e3edc96c85bc98a82))
+* validation improvements from code review ([3bc7d59](https://github.com/HyperTekOrg/hyperstack/commit/3bc7d597647c7db21b626b7c53bfff9aebc6cf6f))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-idl bumped from 0.1.5 to 0.1.6
+
 ## [0.5.10](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-macros-v0.5.9...hyperstack-macros-v0.5.10) (2026-03-19)
 
 
