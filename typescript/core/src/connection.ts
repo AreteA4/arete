@@ -654,7 +654,7 @@ export class ConnectionManager {
           // Parse close reason for error codes (e.g., "token-expired: Token has expired")
           const closeReason = event.reason || '';
           const errorCodeMatch = closeReason.match(/^([\w-]+):/);
-          const errorCode = errorCodeMatch ? parseErrorCode(errorCodeMatch[1]) : null;
+          const errorCode = errorCodeMatch ? parseErrorCode(errorCodeMatch[1]!) : null;
 
           // Check for auth errors that require token refresh
           if (event.code === 1008 || errorCode) {

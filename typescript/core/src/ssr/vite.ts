@@ -2,6 +2,8 @@
  * Vite SSR integration for Hyperstack Auth
  *
  * Express/Connect middleware that mounts auth endpoints.
+ * `resolveSession` must derive the subject from verified server-side auth.
+ * Never trust caller-supplied headers for identity or scope.
  *
  * @example
  * ```typescript
@@ -12,11 +14,23 @@
  * const app = express();
  *
  * // Mount auth endpoints at /api/hyperstack
- * app.use('/api/hyperstack', createViteAuthMiddleware());
+ * app.use('/api/hyperstack', createViteAuthMiddleware({
+ *   basePath: '/api/hyperstack',
+ *   resolveSession: async (req) => {
+ *     const user = await getAuthenticatedUser(req);
+ *     if (!user) return null;
+ *     return { subject: user.id };
+ *   },
+ * }));
  *
  * // Or mount at root
  * app.use(createViteAuthMiddleware({
  *   basePath: '/auth',
+ *   resolveSession: async (req) => {
+ *     const user = await getAuthenticatedUser(req);
+ *     if (!user) return null;
+ *     return { subject: user.id };
+ *   },
  * }));
  * ```
  */
@@ -27,10 +41,11 @@ import {
   mintSessionToken,
   generateJwks,
   handleHealthRequest,
+  type ResolvedSession,
   type TokenResponse,
 } from './handlers';
 
-export { type AuthHandlerConfig, type TokenResponse };
+export { type AuthHandlerConfig, type ResolvedSession, type TokenResponse };
 
 export interface ViteAuthMiddlewareOptions extends AuthHandlerConfig {
   /**
@@ -38,6 +53,11 @@ export interface ViteAuthMiddlewareOptions extends AuthHandlerConfig {
    * @default '/'
    */
   basePath?: string;
+
+  /**
+   * Resolve the authenticated subject from server-side auth middleware/session state.
+   */
+  resolveSession?: (req: Request, res: Response) => Promise<ResolvedSession | null> | ResolvedSession | null;
 }
 
 /**
@@ -53,12 +73,25 @@ export function createViteAuthMiddleware(options: ViteAuthMiddlewareOptions = {}
 
     // POST /{basePath}/sessions - Mint token
     if (req.method === 'POST' && pathname === `${basePath}/sessions`) {
-      const subject = (req.headers['x-hyperstack-subject'] as string) || 'anonymous';
-      const scope = (req.headers['x-hyperstack-scope'] as string) || 'read';
       const origin = req.headers.origin as string | undefined;
 
       try {
-        const tokenData = await mintSessionToken(config, subject, scope, origin);
+        if (!config.resolveSession) {
+          res.status(500).json({
+            error: 'createViteAuthMiddleware requires resolveSession to derive the subject from authenticated server-side state',
+          });
+          return;
+        }
+
+        const session = await config.resolveSession(req, res);
+        if (!session) {
+          res.status(401).json({
+            error: 'Unauthorized',
+          });
+          return;
+        }
+
+        const tokenData = await mintSessionToken(config, session.subject, session.scope || 'read', origin);
         res.json(tokenData);
         return;
       } catch (error) {
@@ -109,6 +142,11 @@ export function createViteAuthMiddleware(options: ViteAuthMiddlewareOptions = {}
  *   plugins: [
  *     createViteAuthPlugin({
  *       basePath: '/api/hyperstack',
+ *       resolveSession: async (req) => {
+ *         const user = await getAuthenticatedUser(req);
+ *         if (!user) return null;
+ *         return { subject: user.id };
+ *       },
  *     }),
  *   ],
  * });

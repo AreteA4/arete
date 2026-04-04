@@ -2,6 +2,8 @@
  * TanStack Start integration for Hyperstack Auth
  *
  * Drop-in API route handlers for TanStack Start.
+ * `resolveSession` must derive the subject from verified server-side auth.
+ * Never trust caller-supplied headers for identity or scope.
  *
  * @example
  * ```typescript
@@ -9,7 +11,13 @@
  * import { createTanStackSessionRoute, createTanStackJwksRoute } from 'hyperstack-typescript/ssr/tanstack-start';
  * import { json } from '@tanstack/react-start';
  *
- * export const APIRoute = createTanStackSessionRoute();
+ * export const APIRoute = createTanStackSessionRoute({
+ *   resolveSession: async ({ request }) => {
+ *     const user = await getAuthenticatedUser(request);
+ *     if (!user) return null;
+ *     return { subject: user.id };
+ *   },
+ * });
  *
  * // For JWKS at the same route with GET
  * export const GET = createTanStackJwksRoute();
@@ -20,10 +28,11 @@ import {
   type AuthHandlerConfig,
   mintSessionToken,
   generateJwks,
+  type ResolvedSession,
   type TokenResponse,
 } from './handlers';
 
-export { type AuthHandlerConfig, type TokenResponse };
+export { type AuthHandlerConfig, type ResolvedSession, type TokenResponse };
 
 export interface TanStackRequest {
   url: string;
@@ -38,18 +47,49 @@ export interface TanStackContext {
   request: TanStackRequest;
 }
 
+export interface TanStackSessionRouteConfig extends AuthHandlerConfig {
+  resolveSession?: (context: TanStackContext) => Promise<ResolvedSession | null> | ResolvedSession | null;
+}
+
 /**
  * Create a TanStack Start handler for POST /sessions
  * Returns a function compatible with TanStack Start's APIRoute
  */
-export function createTanStackSessionRoute(config: AuthHandlerConfig = {}) {
+export function createTanStackSessionRoute(config: TanStackSessionRouteConfig = {}) {
   return async function POST({ request }: TanStackContext): Promise<Response> {
-    const subject = request.headers.get('x-hyperstack-subject') || 'anonymous';
-    const scope = request.headers.get('x-hyperstack-scope') || 'read';
     const origin = request.headers.get('origin') || undefined;
 
     try {
-      const tokenData = await mintSessionToken(config, subject, scope, origin);
+      if (!config.resolveSession) {
+        return new Response(
+          JSON.stringify({
+            error: 'createTanStackSessionRoute requires resolveSession to derive the subject from authenticated server-side state',
+          }),
+          {
+            status: 500,
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+      }
+
+      const session = await config.resolveSession({ request });
+      if (!session) {
+        return new Response(
+          JSON.stringify({
+            error: 'Unauthorized',
+          }),
+          {
+            status: 401,
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+      }
+
+      const tokenData = await mintSessionToken(config, session.subject, session.scope || 'read', origin);
       
       return new Response(JSON.stringify(tokenData), {
         status: 200,
@@ -112,11 +152,16 @@ export function createTanStackJwksRoute(config: AuthHandlerConfig = {}) {
  * import { createTanStackAuthRoute } from 'hyperstack-typescript/ssr/tanstack-start';
  *
  * export const APIRoute = createTanStackAuthRoute({
+ *   resolveSession: async ({ request }) => {
+ *     const user = await getAuthenticatedUser(request);
+ *     if (!user) return null;
+ *     return { subject: user.id };
+ *   },
  *   ttlSeconds: 600,
  * });
  * ```
  */
-export function createTanStackAuthRoute(config: AuthHandlerConfig = {}) {
+export function createTanStackAuthRoute(config: TanStackSessionRouteConfig = {}) {
   return {
     POST: createTanStackSessionRoute(config),
     GET: createTanStackJwksRoute(config),

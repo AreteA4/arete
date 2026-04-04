@@ -2,13 +2,25 @@
  * Next.js App Router integration for Hyperstack Auth
  *
  * Drop-in route handlers for Next.js App Router.
+ * `resolveSession` must derive the subject from verified server-side auth.
+ * Never trust caller-supplied headers for identity or scope.
  *
  * @example
  * ```typescript
  * // app/api/hyperstack/sessions/route.ts
  * import { createNextJsSessionRoute, createNextJsJwksRoute } from 'hyperstack-typescript/ssr/nextjs-app';
  *
- * export const POST = createNextJsSessionRoute();
+ * async function getAuthenticatedUser() {
+ *   // Return your verified server-side user/session here.
+ * }
+ *
+ * export const POST = createNextJsSessionRoute({
+ *   resolveSession: async () => {
+ *     const user = await getAuthenticatedUser();
+ *     if (!user) return null;
+ *     return { subject: user.id };
+ *   },
+ * });
  * export const GET = createNextJsJwksRoute();
  * ```
  *
@@ -19,6 +31,11 @@
  *
  * export const POST = createNextJsSessionRoute({
  *   signingKey: process.env.HYPERSTACK_SIGNING_KEY,
+ *   resolveSession: async () => {
+ *     const user = await getAuthenticatedUser();
+ *     if (!user) return null;
+ *     return { subject: user.id, scope: 'read' };
+ *   },
  *   ttlSeconds: 600,
  * });
  *
@@ -28,28 +45,59 @@
  * ```
  */
 
-import type { NextRequest, NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
 import {
   type AuthHandlerConfig,
   mintSessionToken,
   generateJwks,
+  type ResolvedSession,
   type TokenResponse,
 } from './handlers';
 
-export { type AuthHandlerConfig, type TokenResponse };
+export { type AuthHandlerConfig, type ResolvedSession, type TokenResponse };
+
+export interface NextJsSessionRouteConfig extends AuthHandlerConfig {
+  resolveSession?: (request: NextRequest) => Promise<ResolvedSession | null> | ResolvedSession | null;
+}
 
 /**
  * Create a Next.js App Router POST handler for /ws/sessions
  */
-export function createNextJsSessionRoute(config: AuthHandlerConfig = {}) {
+export function createNextJsSessionRoute(config: NextJsSessionRouteConfig = {}) {
   return async function POST(request: NextRequest): Promise<Response> {
-    // Get subject from header if provided (e.g., authenticated user)
-    const subject = request.headers.get('x-hyperstack-subject') || 'anonymous';
-    const scope = request.headers.get('x-hyperstack-scope') || 'read';
     const origin = request.headers.get('origin') || undefined;
 
     try {
-      const tokenData = await mintSessionToken(config, subject, scope, origin);
+      if (!config.resolveSession) {
+        return new Response(
+          JSON.stringify({
+            error: 'createNextJsSessionRoute requires resolveSession to derive the subject from authenticated server-side state',
+          }),
+          {
+            status: 500,
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+      }
+
+      const session = await config.resolveSession(request);
+      if (!session) {
+        return new Response(
+          JSON.stringify({
+            error: 'Unauthorized',
+          }),
+          {
+            status: 401,
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+      }
+
+      const tokenData = await mintSessionToken(config, session.subject, session.scope || 'read', origin);
       
       return new Response(JSON.stringify(tokenData), {
         status: 200,
@@ -107,7 +155,7 @@ export function createNextJsJwksRoute(config: AuthHandlerConfig = {}) {
  * Create a combined route handler that supports both POST (sessions) and GET (JWKS)
  * Mount at a single route like /api/hyperstack/auth
  */
-export function createNextJsAuthRoute(config: AuthHandlerConfig = {}) {
+export function createNextJsAuthRoute(config: NextJsSessionRouteConfig = {}) {
   return {
     POST: createNextJsSessionRoute(config),
     GET: createNextJsJwksRoute(config),

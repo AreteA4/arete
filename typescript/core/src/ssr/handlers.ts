@@ -9,8 +9,10 @@
  * // app/api/hyperstack/sessions/route.ts (Next.js App Router)
  * import { handleSessionRequest, handleJwksRequest } from 'hyperstack-typescript/ssr/handlers';
  *
- * export async function POST() {
- *   return handleSessionRequest();
+ * export async function POST(request: Request) {
+ *   const user = await getAuthenticatedUser(request);
+ *   if (!user) return new Response('Unauthorized', { status: 401 });
+ *   return handleSessionRequest({}, user.id);
  * }
  *
  * export async function GET() {
@@ -95,6 +97,15 @@ export interface TokenResponse {
   expires_at: number;
 }
 
+/**
+ * Authenticated session data resolved by framework adapters.
+ * Always derive this from verified server-side auth, never request headers.
+ */
+export interface ResolvedSession {
+  subject: string;
+  scope?: string;
+}
+
 export interface JwksKey {
   kty: 'OKP';
   crv: 'Ed25519';
@@ -165,6 +176,7 @@ async function signEd25519(
 
 /**
  * Mint a session token using Ed25519 signing
+ * `subject` must come from verified server-side auth or trusted service code.
  */
 export async function mintSessionToken(
   config: AuthHandlerConfig,
@@ -205,7 +217,7 @@ export async function mintSessionToken(
     iat: now,
     nbf: now,
     exp: expiresAt,
-    jti: `${subject}-${now}-${Math.random().toString(36).substring(2, 8)}`,
+    jti: crypto.randomUUID(),
     scope,
     metering_key: `meter:${subject}`,
     key_class: 'secret',
@@ -290,6 +302,7 @@ export async function generateJwks(config: AuthHandlerConfig): Promise<JwksRespo
 /**
  * Framework-agnostic request handler for token minting
  * Returns a Response object that can be used with any framework
+ * The `subject` must be derived from verified server-side auth.
  */
 export async function handleSessionRequest(
   config: AuthHandlerConfig = {},
