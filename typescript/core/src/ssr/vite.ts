@@ -15,7 +15,6 @@
  *
  * // Mount auth endpoints at /api/hyperstack
  * app.use('/api/hyperstack', createViteAuthMiddleware({
- *   basePath: '/api/hyperstack',
  *   resolveSession: async (req) => {
  *     const user = await getAuthenticatedUser(req);
  *     if (!user) return null;
@@ -49,8 +48,8 @@ export { type AuthHandlerConfig, type ResolvedSession, type TokenResponse };
 
 export interface ViteAuthMiddlewareOptions extends AuthHandlerConfig {
   /**
-   * Base path for auth endpoints
-   * @default '/'
+   * Base path for auth endpoints relative to this middleware mount point
+   * @default ''
    */
   basePath?: string;
 
@@ -64,7 +63,7 @@ export interface ViteAuthMiddlewareOptions extends AuthHandlerConfig {
  * Create Express middleware that mounts Hyperstack auth endpoints
  */
 export function createViteAuthMiddleware(options: ViteAuthMiddlewareOptions = {}) {
-  const { basePath = '/', ...config } = options;
+  const { basePath = '', ...config } = options;
 
   // Note: In production, you'd use express.Router(), but for Vite SSR
   // we just return a middleware function that checks the path
@@ -156,7 +155,10 @@ export function createViteAuthPlugin(options: ViteAuthMiddlewareOptions = {}) {
   return {
     name: 'hyperstack-auth',
     configureServer(server: { middlewares: { use: (path: string, middleware: unknown) => void } }) {
-      server.middlewares.use(options.basePath || '/api/hyperstack', createViteAuthMiddleware(options));
+      server.middlewares.use(
+        options.basePath || '/api/hyperstack',
+        createViteAuthMiddleware({ ...options, basePath: '' })
+      );
     },
   };
 }

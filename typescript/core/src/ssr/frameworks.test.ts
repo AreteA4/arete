@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import type { AuthHandlerConfig } from './handlers';
 import { createNextJsSessionRoute } from './nextjs-app';
 import { createTanStackSessionRoute } from './tanstack-start';
-import { createViteAuthMiddleware } from './vite';
+import { createViteAuthMiddleware, createViteAuthPlugin } from './vite';
 
 const testSeed = crypto.randomBytes(32);
 const testConfig: AuthHandlerConfig = {
@@ -114,5 +114,101 @@ describe('SSR framework adapters', () => {
     const payload = decodePayload((sent.body as { token: string }).token);
     expect(payload.sub).toBe('trusted-user');
     expect(payload.scope).toBe('write');
+  });
+
+  it('vite middleware handles root auth routes when basePath is omitted', async () => {
+    const middleware = createViteAuthMiddleware({
+      ...testConfig,
+      resolveSession: async () => ({
+        subject: 'trusted-user',
+      }),
+    });
+
+    const sent: { status?: number; body?: unknown } = {};
+    const res = {
+      json(data: unknown) {
+        sent.body = data;
+        return res;
+      },
+      status(code: number) {
+        sent.status = code;
+        return res;
+      },
+    };
+    const next = vi.fn();
+
+    await middleware(
+      {
+        method: 'POST',
+        path: '/sessions',
+        headers: {
+          origin: 'https://example.com',
+        },
+      } as any,
+      res as any,
+      next
+    );
+
+    expect(next).not.toHaveBeenCalled();
+    expect(sent.status).toBeUndefined();
+
+    const payload = decodePayload((sent.body as { token: string }).token);
+    expect(payload.sub).toBe('trusted-user');
+  });
+
+  it('vite plugin mounts middleware with an empty internal basePath', async () => {
+    const plugin = createViteAuthPlugin({
+      ...testConfig,
+      basePath: '/api/hyperstack',
+      resolveSession: async () => ({
+        subject: 'trusted-user',
+      }),
+    });
+
+    let mountPath: string | undefined;
+    let mountedMiddleware: ((req: any, res: any, next: () => void) => Promise<void>) | undefined;
+
+    plugin.configureServer({
+      middlewares: {
+        use(path: string, middleware: unknown) {
+          mountPath = path;
+          mountedMiddleware = middleware as typeof mountedMiddleware;
+        },
+      },
+    });
+
+    expect(mountPath).toBe('/api/hyperstack');
+    expect(mountedMiddleware).toBeTypeOf('function');
+
+    const sent: { status?: number; body?: unknown } = {};
+    const res = {
+      json(data: unknown) {
+        sent.body = data;
+        return res;
+      },
+      status(code: number) {
+        sent.status = code;
+        return res;
+      },
+    };
+    const next = vi.fn();
+
+    await mountedMiddleware!(
+      {
+        method: 'POST',
+        path: '/sessions',
+        headers: {
+          origin: 'https://example.com',
+        },
+      },
+      res as any,
+      next
+    );
+
+    expect(next).not.toHaveBeenCalled();
+    expect(sent.status).toBeUndefined();
+
+    const payload = decodePayload((sent.body as { token: string }).token);
+    expect(payload.sub).toBe('trusted-user');
   });
 });
