@@ -93,7 +93,7 @@ impl AuthMetrics {
         self.jwks_fetch_latency_us.load(Ordering::Relaxed)
     }
 
-    /// Get JWKS fetch failure count
+    /// Get number of JWKS fetch failures
     pub fn jwks_fetch_failures(&self) -> u64 {
         self.jwks_fetch_failures.load(Ordering::Relaxed)
     }
