@@ -198,7 +198,7 @@ const DEFAULT_MAX_TEMPORAL_INDEX_KEYS: usize = 2_500;
 const DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES: usize = 2_500;
 
 const DEFAULT_MAX_RESOLVER_CACHE_ENTRIES: usize = 20_000;
-const DEFAULT_RESOLVER_CACHE_TTL_SECS: u64 = 300;
+const DEFAULT_RESOLVER_CACHE_TTL_SECS: u64 = 3600; // 1 hour
 
 static RESOLVER_CACHE_CAPACITY: Lazy<NonZeroUsize> = Lazy::new(|| {
     NonZeroUsize::new(
@@ -1123,12 +1123,19 @@ impl VmContext {
         let cached = self.resolver_cache.get(cache_key).cloned();
 
         match cached {
-            Some(entry) if entry.cached_at.elapsed() <= resolver_cache_ttl() => Some(entry.value),
+            Some(entry) if entry.cached_at.elapsed() <= resolver_cache_ttl() => {
+                self.resolver_cache_hits += 1;
+                Some(entry.value)
+            }
             Some(_) => {
                 self.resolver_cache.pop(cache_key);
+                self.resolver_cache_misses += 1;
                 None
             }
-            None => None,
+            None => {
+                self.resolver_cache_misses += 1;
+                None
+            }
         }
     }
 
