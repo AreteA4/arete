@@ -212,13 +212,22 @@ static RESOLVER_CACHE_CAPACITY: Lazy<NonZeroUsize> = Lazy::new(|| {
 });
 
 static RESOLVER_CACHE_TTL: Lazy<Duration> = Lazy::new(|| {
-    Duration::from_secs(
-        std::env::var("HYPERSTACK_RESOLVER_CACHE_TTL_SECS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_RESOLVER_CACHE_TTL_SECS),
-    )
+    let ttl_secs = match std::env::var("HYPERSTACK_RESOLVER_CACHE_TTL_SECS") {
+        Ok(value) => match value.parse::<u64>() {
+            Ok(0) => {
+                tracing::warn!(
+                    default_ttl_secs = DEFAULT_RESOLVER_CACHE_TTL_SECS,
+                    "HYPERSTACK_RESOLVER_CACHE_TTL_SECS=0 is not supported; using default"
+                );
+                DEFAULT_RESOLVER_CACHE_TTL_SECS
+            }
+            Ok(value) => value,
+            Err(_) => DEFAULT_RESOLVER_CACHE_TTL_SECS,
+        },
+        Err(_) => DEFAULT_RESOLVER_CACHE_TTL_SECS,
+    };
+
+    Duration::from_secs(ttl_secs)
 });
 
 #[derive(Debug, Clone)]
@@ -2933,7 +2942,6 @@ impl VmContext {
                         let cache_key = resolver_cache_key(resolver, &input);
 
                         if let Some(cached) = self.get_cached_resolver_value(&cache_key) {
-                            self.resolver_cache_hits += 1;
                             Self::apply_resolver_extractions_to_value(
                                 &mut self.registers[*state],
                                 &cached,
@@ -2942,7 +2950,6 @@ impl VmContext {
                                 &should_emit,
                             )?;
                         } else {
-                            self.resolver_cache_misses += 1;
                             let target = ResolverTarget {
                                 state_id: actual_state_id,
                                 entity_name: entity_name.clone(),
