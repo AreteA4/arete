@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.6](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-typescript-v0.6.5...hyperstack-typescript-v0.6.6) (2026-04-05)
+
+
+### Bug Fixes
+
+* require authentication for hosted Hyperstack connections ([7b18719](https://github.com/HyperTekOrg/hyperstack/commit/7b187190a9b2e49e2fa4d694530c59f4d3a224cf))
+
 ## [0.6.5](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-typescript-v0.6.4...hyperstack-typescript-v0.6.5) (2026-04-05)
 
 

@@ -1,6 +1,6 @@
 {
   "name": "hyperstack-cli",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Hyperstack CLI - Real-time Solana streaming pipelines",
   "bin": {
     "hyperstack-cli": "./bin/hs.js"
