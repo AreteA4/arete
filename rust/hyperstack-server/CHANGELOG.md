@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.6.3...hyperstack-server-v0.6.4) (2026-04-05)
+
+
+### Features
+
+* RuntimeResolver abstraction with enhanced caching ([9166434](https://github.com/HyperTekOrg/hyperstack/commit/9166434e52468f0d152781a4d81bb0db0fd9be21))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.6.3 to 0.6.4
+
 ## [0.6.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.6.2...hyperstack-server-v0.6.3) (2026-04-05)
 
 
