@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.6](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.6.5...hyperstack-cli-v0.6.6) (2026-04-05)
+
+
+### Miscellaneous Chores
+
+* **hyperstack-cli:** Synchronize hyperstack versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.6.5 to 0.6.6
+    * hyperstack-sdk bumped from 0.6.5 to 0.6.6
+
 ## [0.6.5](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.6.4...hyperstack-cli-v0.6.5) (2026-04-05)
 
 
