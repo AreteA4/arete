@@ -1,6 +1,9 @@
 use hyperstack_sdk::prelude::*;
 use hyperstack_stacks::ore::{OreRound, OreStreamStack, OreTreasury};
 
+// Use your own API key in production (can be secret or publishable)
+const API_KEY: &str = "hspk_alt8MN3BmJebxARE3IlOnnaAEibCrqqXfdG5VoGW";
+
 fn print_round(round: &OreRound) {
     println!("\n=== Round #{} ===", round.id.round_id.unwrap_or(0));
     println!("Address: {:?}", round.id.round_address);
@@ -24,7 +27,10 @@ fn print_treasury(treasury: &OreTreasury) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hs = HyperStack::<OreStreamStack>::connect().await?;
+    let hs = HyperStack::<OreStreamStack>::builder()
+        .api_key(API_KEY)
+        .connect()
+        .await?;
 
     println!("--- Streaming OreRound and OreTreasury updates ---\n");
 
