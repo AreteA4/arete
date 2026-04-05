@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-v0.6.3...hyperstack-v0.6.4) (2026-04-05)
+
+
+### Miscellaneous Chores
+
+* **hyperstack:** Synchronize hyperstack versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.6.3 to 0.6.4
+    * hyperstack-macros bumped from 0.6.3 to 0.6.4
+    * hyperstack-server bumped from 0.6.3 to 0.6.4
+    * hyperstack-sdk bumped from 0.6.3 to 0.6.4
+
 ## [0.6.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-v0.6.2...hyperstack-v0.6.3) (2026-04-05)
 
 

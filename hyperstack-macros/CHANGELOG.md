@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-macros-v0.6.3...hyperstack-macros-v0.6.4) (2026-04-05)
+
+
+### Features
+
+* RuntimeResolver abstraction with enhanced caching ([9166434](https://github.com/HyperTekOrg/hyperstack/commit/9166434e52468f0d152781a4d81bb0db0fd9be21))
+
 ## [0.6.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-macros-v0.6.2...hyperstack-macros-v0.6.3) (2026-04-05)
 
 

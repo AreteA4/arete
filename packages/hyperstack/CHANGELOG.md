@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-npm-v0.6.3...hyperstack-npm-v0.6.4) (2026-04-05)
+
+
+### Miscellaneous Chores
+
+* **hyperstack-npm:** Synchronize hyperstack versions
+
 ## [0.6.3](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-npm-v0.6.2...hyperstack-npm-v0.6.3) (2026-04-05)
 
 
