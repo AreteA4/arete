@@ -19,7 +19,7 @@ hyperstack-interpreter = { version = "0.6.2", path = "../interpreter", optional 
 hyperstack-macros = { version = "0.6.2", path = "../hyperstack-macros", optional = true }
 
 # Server - WebSocket server and projection handlers
-hyperstack-server = { version = "0.6.2", path = "../rust/hyperstack-server", optional = true }
+hyperstack-server = { version = "0.6", path = "../rust/hyperstack-server", optional = true }
 
 # SDK - Rust client for connecting to HyperStack servers
 hyperstack-sdk = { version = "0.6.2", path = "../rust/hyperstack-sdk", optional = true }
