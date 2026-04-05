@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "bs58",
@@ -1973,7 +1973,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-auth"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1993,7 +1993,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-auth-server"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -2018,7 +2018,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-cli"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-interpreter"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bs58",
  "dashmap",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-macros"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bs58",
  "hex",
@@ -2109,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-sdk"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2131,7 +2131,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-server"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-stacks"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "hyperstack-sdk",
  "serde",
