@@ -1,3 +1,5 @@
+"""HyperStack client with authentication support."""
+
 import asyncio
 import json
 import logging
@@ -6,11 +8,13 @@ from typing import Dict, List, Optional, Callable
 from hyperstack.websocket import WebSocketManager
 from hyperstack.store import Store, Mode
 from hyperstack.types import Subscription, Unsubscription, Frame
+from hyperstack.auth import AuthConfig
 
 logger = logging.getLogger(__name__)
 
 
 def parse_mode(view: str) -> Mode:
+    """Parse view mode from view path."""
     if view.endswith("/state"):
         return Mode.STATE
     elif view.endswith("/list"):
@@ -22,15 +26,50 @@ def parse_mode(view: str) -> Mode:
 
 
 class HyperStackClient:
+    """HyperStack WebSocket client with real-time data synchronization.
+
+    Supports authentication via publishable keys, static tokens, or custom token providers.
+
+    Example:
+        # Using publishable key (for hosted Hyperstack)
+        auth = AuthConfig(publishable_key="hspk_...")
+        client = HyperStackClient("wss://demo.stack.usehyperstack.com", auth=auth)
+
+        # Using static token
+        auth = AuthConfig(token="static_token_here")
+        client = HyperStackClient("wss://example.com", auth=auth)
+
+        # Using async context manager
+        async with HyperStackClient(url, auth=auth) as client:
+            store = client.subscribe("Entity/list")
+            # ... use store
+    """
+
     def __init__(
         self,
         url: str,
-        reconnect_intervals: List[int] = [1, 2, 4, 8, 16],
+        reconnect_intervals: Optional[List[int]] = None,
         ping_interval: int = 15,
         on_connect: Optional[Callable] = None,
         on_disconnect: Optional[Callable] = None,
         on_error: Optional[Callable] = None,
+        on_socket_issue: Optional[Callable[[dict], None]] = None,
+        auth: Optional[AuthConfig] = None,
     ):
+        """
+        Initialize HyperStack client.
+
+        Args:
+            url: WebSocket server URL
+            reconnect_intervals: List of wait intervals (in seconds) between reconnection attempts.
+                Defaults to [1, 2, 4, 8, 16].
+            ping_interval: Seconds between keep-alive ping messages. Defaults to 15.
+            on_connect: Optional callback invoked when connection is established
+            on_disconnect: Optional callback invoked when connection is closed
+            on_error: Optional callback invoked when an error occurs
+            on_socket_issue: Optional callback for structured socket issues from server
+            auth: Optional authentication configuration. Required for hosted Hyperstack URLs.
+        """
         self.url = url
         self._stores: Dict[str, Store] = {}
         self._pending_subs: List[Subscription] = []
@@ -43,6 +82,8 @@ class HyperStackClient:
             on_connect=self._on_connect,
             on_disconnect=on_disconnect,
             on_error=on_error,
+            on_socket_issue=on_socket_issue,
+            auth=auth,
         )
         self.ws_manager.set_message_handler(self._on_message)
 
@@ -65,15 +106,15 @@ class HyperStackClient:
         self, view: str, key: Optional[str] = None, parser: Optional[Callable] = None
     ) -> Store:
         """
-        # Subscribes to updates for the specified view (and optional key) on the HyperStack server.
-        #
-        # Args:
-        #     view (str): The view to subscribe to, in the format 'Entity/mode'.
-        #     key (Optional[str]): An optional key to filter the subscription to a specific entity or item.
-        #     parser (Optional[Callable]): An optional parser function to transform raw data into custom types.
-        #
-        # Returns:
-        #     Store: A Store instance that provides access to real-time updates for the subscribed view.
+        Subscribe to updates for the specified view (and optional key) on the HyperStack server.
+
+        Args:
+            view: The view to subscribe to, in the format 'Entity/mode'.
+            key: An optional key to filter the subscription to a specific entity or item.
+            parser: An optional parser function to transform raw data into custom types.
+
+        Returns:
+            Store: A Store instance that provides access to real-time updates for the subscribed view.
         """
         if "/" not in view:
             raise ValueError(f"Invalid view '{view}'. Expected: Entity/mode")
