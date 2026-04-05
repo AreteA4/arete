@@ -611,9 +611,8 @@ async fn handle_connection(
     let connection_start = Instant::now();
 
     let auth_context = Some(auth_context);
-    let auth_context_ref = Some(&auth_context);
     let (usage_metering_key, usage_subject, usage_key_class, usage_deployment_id) =
-        usage_identity(auth_context_ref);
+        usage_identity(auth_context.as_ref());
 
     // Extract metering key from auth context for metrics attribution
     let metering_key = auth_context.as_ref().map(|ctx| ctx.metering_key.clone());
@@ -1421,6 +1420,7 @@ async fn attach_client_to_bus(
             let usage_emitter = ctx.usage_emitter.clone();
             let metrics_clone = ctx.metrics.clone();
             let view_id_clone = view_id.clone();
+            let view_id_span = view_id.clone();
             let key_clone = key.to_string();
             tokio::spawn(
                 async move {
@@ -1435,13 +1435,13 @@ async fn attach_client_to_bus(
                                     break;
                                 }
                                 let data = rx.borrow().clone();
+                                let data_len = data.len();
                                 if client_mgr.send_to_client(client_id, data).is_err() {
                                     break;
                                 }
                                 if let Some(ref m) = metrics_clone {
                                     m.record_ws_message_sent();
                                 }
-                                let data_len = data.len();
                                 emit_update_sent_for_client(
                                     &usage_emitter,
                                     &client_mgr,
@@ -1453,7 +1453,7 @@ async fn attach_client_to_bus(
                         }
                     }
                 }
-                .instrument(info_span!("ws.subscribe.state", %client_id, view = %view_id_clone, key = %key_clone)),
+                .instrument(info_span!("ws.subscribe.state", %client_id, view = %view_id_span, key = %key_clone)),
             );
         }
         Mode::List | Mode::Append => {
@@ -1522,6 +1522,7 @@ async fn attach_client_to_bus(
             let sub = subscription.clone();
             let metrics_clone = ctx.metrics.clone();
             let view_id_clone = view_id.clone();
+            let view_id_span = view_id.clone();
             let mode = view_spec.mode;
             tokio::spawn(
                 async move {
@@ -1559,7 +1560,7 @@ async fn attach_client_to_bus(
                         }
                     }
                 }
-                .instrument(info_span!("ws.subscribe.list", %client_id, view = %view_id_clone, mode = ?mode)),
+                .instrument(info_span!("ws.subscribe.list", %client_id, view = %view_id_span, mode = ?mode)),
             );
         }
     }
