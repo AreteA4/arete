@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.7](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.6.6...hyperstack-server-v0.6.7) (2026-04-05)
+
+
+### Bug Fixes
+
+* allow WebSocket connections when Origin header is missing and not required ([31c748c](https://github.com/HyperTekOrg/hyperstack/commit/31c748c17389b21308157483fa7a02a1f729c4bb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.6.6 to 0.6.7
+    * hyperstack-auth bumped from 0.2.1 to 0.2.2
+
 ## [0.6.6](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.6.5...hyperstack-server-v0.6.6) (2026-04-05)
 
 

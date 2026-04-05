@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-auth-v0.2.1...hyperstack-auth-v0.2.2) (2026-04-05)
+
+
+### Bug Fixes
+
+* allow WebSocket connections when Origin header is missing and not required ([31c748c](https://github.com/HyperTekOrg/hyperstack/commit/31c748c17389b21308157483fa7a02a1f729c4bb))
+
 ## [0.2.1](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-auth-v0.2.0...hyperstack-auth-v0.2.1) (2026-04-05)
 
 
