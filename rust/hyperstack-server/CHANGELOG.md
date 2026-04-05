@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.2](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.6.1...hyperstack-server-v0.6.2) (2026-04-05)
+
+
+### Bug Fixes
+
+* Version ([b8fff64](https://github.com/HyperTekOrg/hyperstack/commit/b8fff64d58037389faf7352775f48ea2371fc03d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.6 to 0.6.2
+
 ## [0.6.1](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-server-v0.6.0...hyperstack-server-v0.6.1) (2026-04-05)
 
 
