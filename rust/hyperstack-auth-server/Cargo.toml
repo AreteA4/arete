@@ -1,6 +1,6 @@
 [package]
 name = "hyperstack-auth-server"
-version = "0.5.11"
+version = "0.5.12"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
@@ -25,7 +25,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Auth utilities (our crate)
-hyperstack-auth = { version = "0.1.0", path = "../hyperstack-auth" }
+hyperstack-auth = { version = "0.2.0", path = "../hyperstack-auth" }
 
 # HTTP client for JWKS (optional, if needed)
 reqwest = { version = "0.12", features = ["json"], optional = true }
