@@ -3,9 +3,9 @@
 import asyncio
 import json
 import logging
-from typing import Optional, Callable, List, Any
+from typing import Any, Awaitable, Callable, List, Optional, Union
 from websockets import connect as ws_connect
-from websockets.client import WebSocketClientProtocol
+from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import WebSocketException
 
 from hyperstack.errors import ConnectionError, AuthError
@@ -31,10 +31,10 @@ class ConnectionManager:
         url: str,
         reconnect_intervals: List[int] = None,
         ping_interval: int = 15,
-        on_connect: Optional[Callable] = None,
-        on_disconnect: Optional[Callable] = None,
-        on_error: Optional[Callable] = None,
-        on_socket_issue: Optional[Callable[[dict], Any]] = None,
+        on_connect: Optional[Callable[[], Awaitable[None]]] = None,
+        on_disconnect: Optional[Callable[[], Awaitable[None]]] = None,
+        on_error: Optional[Callable[[Exception], Awaitable[None]]] = None,
+        on_socket_issue: Optional[Callable[[dict], Awaitable[Any]]] = None,
         auth: Optional[AuthConfig] = None,
     ):
         """
@@ -62,20 +62,23 @@ class ConnectionManager:
         self.auth = AuthState(url, auth)
         self._auth_config = auth
 
-        self.ws: Optional[WebSocketClientProtocol] = None
+        self.ws: Optional[ClientConnection] = None
         self.is_running = False
         self.reconnect_attempts = 0
         self.receive_task: Optional[asyncio.Task] = None
         self.ping_task: Optional[asyncio.Task] = None
         self.refresh_task: Optional[asyncio.Task] = None
-        self.message_handler: Optional[Callable] = None
+        self.message_handler: Optional[Callable[[Union[bytes, str]], Awaitable[None]]] = None
         self._state: ConnectionState = ConnectionState.DISCONNECTED
 
+    def set_message_handler(self, handler: Callable[[Union[bytes, str]], Awaitable[None]]) -> None:
         # Track if we're reconnecting for token refresh
         self._force_token_refresh = False
         self._immediate_reconnect = False
 
-    def set_message_handler(self, handler: Callable) -> None:
+    def set_message_handler(
+        self, handler: Callable[[Union[bytes, str]], Awaitable[None]]
+    ) -> None:
         """
         Set the callback function for handling incoming WebSocket messages.
 

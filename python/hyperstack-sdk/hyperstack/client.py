@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from typing import Dict, List, Optional, Callable
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from hyperstack.connection import ConnectionManager
 from hyperstack.store import Store, Mode, SharedStore
@@ -63,10 +63,10 @@ class HyperStackClient:
         url: str,
         reconnect_intervals: Optional[List[int]] = None,
         ping_interval: int = 15,
-        on_connect: Optional[Callable] = None,
-        on_disconnect: Optional[Callable] = None,
-        on_error: Optional[Callable] = None,
-        on_socket_issue: Optional[Callable[[dict], None]] = None,
+        on_connect: Optional[Callable[[], Awaitable[None]]] = None,
+        on_disconnect: Optional[Callable[[], Awaitable[None]]] = None,
+        on_error: Optional[Callable[[Exception], Awaitable[None]]] = None,
+        on_socket_issue: Optional[Callable[[dict], Awaitable[None]]] = None,
         auth: Optional[AuthConfig] = None,
     ):
         """
@@ -108,15 +108,15 @@ class HyperStackClient:
         """Disconnect from server."""
         await self.ws_manager.disconnect()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "HyperStackClient":
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.disconnect()
 
     def subscribe(
-        self, view: str, key: Optional[str] = None, parser: Optional[Callable] = None
+        self, view: str, key: Optional[str] = None, parser: Optional[Callable[[Dict[str, Any]], Any]] = None
     ) -> Store:
         """
         Subscribe to updates for the specified view (and optional key) on the HyperStack server.
@@ -150,7 +150,7 @@ class HyperStackClient:
         self,
         entity: Entity,
         key: str,
-        parser: Optional[Callable] = None,
+        parser: Optional[Callable[[Dict[str, Any]], Any]] = None,
         timeout: Optional[float] = None,
     ) -> Optional[Dict]:
         view = entity.state_view()
@@ -161,7 +161,7 @@ class HyperStackClient:
     async def list(
         self,
         entity: Entity,
-        parser: Optional[Callable] = None,
+        parser: Optional[Callable[[Dict[str, Any]], Any]] = None,
         timeout: Optional[float] = None,
     ) -> List:
         view = entity.list_view()
@@ -169,11 +169,11 @@ class HyperStackClient:
         await self._store.wait_for_view_ready(view, timeout=timeout)
         return await self._store.list(entity.list_view())
 
-    def watch(self, entity: Entity, parser: Optional[Callable] = None) -> Store:
+    def watch(self, entity: Entity, parser: Optional[Callable[[Dict[str, Any]], Any]] = None) -> Store:
         return self.subscribe(entity.list_view(), parser=parser)
 
     def watch_key(
-        self, entity: Entity, key: str, parser: Optional[Callable] = None
+        self, entity: Entity, key: str, parser: Optional[Callable[[Dict[str, Any]], Any]] = None
     ) -> Store:
         return self.subscribe(entity.list_view(), key=key, parser=parser)
 
