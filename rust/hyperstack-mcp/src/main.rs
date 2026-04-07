@@ -6,6 +6,7 @@
 //! per-connection registry.
 
 mod connections;
+mod subscriptions;
 
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -17,11 +18,13 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::connections::ConnectionRegistry;
+use crate::subscriptions::SubscriptionRegistry;
 
 #[derive(Clone)]
 pub struct HyperstackMcp {
     tool_router: ToolRouter<HyperstackMcp>,
     connections: ConnectionRegistry,
+    subscriptions: SubscriptionRegistry,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -40,6 +43,42 @@ pub struct DisconnectArgs {
     pub connection_id: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SubscribeArgs {
+    /// Connection ID returned from `connect`.
+    pub connection_id: String,
+    /// View name to subscribe to (e.g. `OreRound/latest`).
+    pub view: String,
+    /// Optional entity key to narrow the subscription to a single record.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Whether to request the initial snapshot. Defaults to true.
+    #[serde(default)]
+    pub with_snapshot: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UnsubscribeArgs {
+    /// Subscription ID returned from a previous `subscribe` call.
+    pub subscription_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListSubscriptionsArgs {
+    /// Optional connection_id filter — only list subscriptions for that connection.
+    #[serde(default)]
+    pub connection_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SubscriptionInfo {
+    subscription_id: String,
+    connection_id: String,
+    view: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct ConnectionInfo {
     connection_id: String,
@@ -53,6 +92,7 @@ impl HyperstackMcp {
         Self {
             tool_router: Self::tool_router(),
             connections: ConnectionRegistry::new(),
+            subscriptions: SubscriptionRegistry::new(),
         }
     }
 
@@ -82,13 +122,16 @@ impl HyperstackMcp {
         )]))
     }
 
-    #[tool(description = "Close an open HyperStack connection by id.")]
+    #[tool(description = "Close an open HyperStack connection by id. \
+                          Also drops every subscription bound to that connection.")]
     async fn disconnect(
         &self,
         Parameters(args): Parameters<DisconnectArgs>,
     ) -> Result<CallToolResult, McpError> {
         let removed = self.connections.disconnect(&args.connection_id).await;
         if removed {
+            self.subscriptions
+                .remove_for_connection(&args.connection_id);
             Ok(CallToolResult::success(vec![Content::text("disconnected")]))
         } else {
             Err(McpError::invalid_params(
@@ -96,6 +139,83 @@ impl HyperstackMcp {
                 None,
             ))
         }
+    }
+
+    #[tool(description = "Subscribe to a HyperStack view on an existing connection. \
+                          Streamed entities are cached for query tools to read. \
+                          Returns a subscription_id.")]
+    async fn subscribe(
+        &self,
+        Parameters(args): Parameters<SubscribeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let conn = self.connections.get(&args.connection_id).ok_or_else(|| {
+            McpError::invalid_params(
+                format!("unknown connection_id: {}", args.connection_id),
+                None,
+            )
+        })?;
+
+        let entry =
+            self.subscriptions
+                .insert(args.connection_id.clone(), args.view.clone(), args.key.clone());
+
+        let mut sub = entry.to_sdk_subscription();
+        if let Some(snap) = args.with_snapshot {
+            sub = sub.with_snapshot(snap);
+        }
+        conn.manager.subscribe(sub).await;
+
+        let info = SubscriptionInfo {
+            subscription_id: entry.id.clone(),
+            connection_id: entry.connection_id.clone(),
+            view: entry.view.clone(),
+            key: entry.key.clone(),
+        };
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&info).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "Cancel a subscription by id.")]
+    async fn unsubscribe(
+        &self,
+        Parameters(args): Parameters<UnsubscribeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let entry = self
+            .subscriptions
+            .remove(&args.subscription_id)
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!("unknown subscription_id: {}", args.subscription_id),
+                    None,
+                )
+            })?;
+
+        if let Some(conn) = self.connections.get(&entry.connection_id) {
+            conn.manager.unsubscribe(entry.to_sdk_unsubscription()).await;
+        }
+        Ok(CallToolResult::success(vec![Content::text("unsubscribed")]))
+    }
+
+    #[tool(description = "List active subscriptions, optionally filtered by connection_id.")]
+    async fn list_subscriptions(
+        &self,
+        Parameters(args): Parameters<ListSubscriptionsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let out: Vec<SubscriptionInfo> = self
+            .subscriptions
+            .list(args.connection_id.as_deref())
+            .into_iter()
+            .map(|e| SubscriptionInfo {
+                subscription_id: e.id.clone(),
+                connection_id: e.connection_id.clone(),
+                view: e.view.clone(),
+                key: e.key.clone(),
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&out).unwrap_or_default(),
+        )]))
     }
 
     #[tool(description = "List all currently open HyperStack connections.")]

@@ -4,23 +4,26 @@
 //! removes one. The registry is a `DashMap` so per-entry locking does not
 //! contend across tools running concurrently.
 //!
-//! Subscriptions are intentionally **not** modeled here yet — that lands in
-//! step 3 of HYP-189. For now each entry only owns its `ConnectionManager`
-//! plus the `frame_rx` task handle so that v1 can verify connect/disconnect
-//! end-to-end against a real stack before any data flows.
+//! Each connection owns one [`SharedStore`] (from `hyperstack-sdk`) into which
+//! the ingest task applies every inbound `Frame`. The store is keyed by view
+//! internally, so a single connection can hold many subscribed views without
+//! needing a second WebSocket. Subscription bookkeeping (which `subscription_id`
+//! maps to which `(view, key)` on which connection) lives in
+//! [`crate::subscriptions`].
 
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use hyperstack_sdk::{
-    AuthConfig, ConnectionConfig, ConnectionManager, ConnectionState, Frame, HyperStackError,
+    AuthConfig, ConnectionConfig, ConnectionManager, ConnectionState, HyperStackError, SharedStore,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-/// Channel buffer for inbound frames before any subscription consumer is wired up.
-/// In step 3 the ingest task will route these into per-subscription stores.
+/// Channel buffer for inbound frames. The ingest task drains this and applies
+/// each frame to the connection's `SharedStore`. 1024 gives ample headroom for
+/// burst snapshots without backpressuring the WebSocket reader.
 const FRAME_CHANNEL_CAPACITY: usize = 1024;
 
 /// Opaque identifier returned to the MCP client. Hex UUID v4.
@@ -31,10 +34,13 @@ pub struct ConnectionEntry {
     pub id: ConnectionId,
     pub url: String,
     pub manager: ConnectionManager,
-    /// Background task that drains the frame channel. Until subscriptions
-    /// land in step 3 this just discards frames so the channel never fills.
-    /// Aborted on disconnect.
-    drain_task: JoinHandle<()>,
+    /// Per-connection cache. All subscribed views on this connection land here,
+    /// keyed by view name internally. Shared with query tools via `Arc`.
+    #[allow(dead_code)] // Read by query tools landing in step 4.
+    pub store: Arc<SharedStore>,
+    /// Background task that drains the frame channel and applies each frame
+    /// to `store`. Aborted on disconnect.
+    ingest_task: JoinHandle<()>,
 }
 
 impl ConnectionEntry {
@@ -45,7 +51,7 @@ impl ConnectionEntry {
 
 impl Drop for ConnectionEntry {
     fn drop(&mut self) {
-        self.drain_task.abort();
+        self.ingest_task.abort();
     }
 }
 
@@ -72,14 +78,16 @@ impl ConnectionRegistry {
             config.auth = Some(AuthConfig::default().with_publishable_key(key));
         }
 
-        let (frame_tx, mut frame_rx) = mpsc::channel::<Frame>(FRAME_CHANNEL_CAPACITY);
+        let (frame_tx, mut frame_rx) = mpsc::channel(FRAME_CHANNEL_CAPACITY);
         let manager = ConnectionManager::new(url.clone(), config, frame_tx).await?;
 
-        // TODO(HYP-189 step 3): replace this drain with the per-subscription
-        // ingest task that routes frames into SharedStores.
-        let drain_task = tokio::spawn(async move {
-            while frame_rx.recv().await.is_some() {
-                // discard
+        // TODO(HYP-189): SDK's StoreConfig defaults to 10k entries/view.
+        // Revisit per-subscription overrides once we have real agent usage data.
+        let store = Arc::new(SharedStore::new());
+        let store_for_task = store.clone();
+        let ingest_task = tokio::spawn(async move {
+            while let Some(frame) = frame_rx.recv().await {
+                store_for_task.apply_frame(frame).await;
             }
         });
 
@@ -88,14 +96,14 @@ impl ConnectionRegistry {
             id: id.clone(),
             url,
             manager,
-            drain_task,
+            store,
+            ingest_task,
         });
         self.inner.insert(id.clone(), entry);
         Ok(id)
     }
 
-    /// Look up a connection by id. Used by subscribe/query tools in step 3+.
-    #[allow(dead_code)]
+    /// Look up a connection by id.
     pub fn get(&self, id: &str) -> Option<Arc<ConnectionEntry>> {
         self.inner.get(id).map(|e| e.clone())
     }
