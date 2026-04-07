@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "MCP (Model Context Protocol) server wrapping HyperStack streams for AI agent integration"
+readme = "README.md"
 
 [[bin]]
 name = "hs-mcp"
