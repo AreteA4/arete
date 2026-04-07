@@ -6,6 +6,7 @@
 //! per-connection registry.
 
 mod connections;
+mod filter;
 mod subscriptions;
 
 use rmcp::{
@@ -18,6 +19,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::connections::ConnectionRegistry;
+use crate::filter::{Filter, StructuredPredicate};
 use crate::subscriptions::SubscriptionRegistry;
 
 #[derive(Clone)]
@@ -95,6 +97,29 @@ pub struct GetRecentArgs {
 /// Hard ceiling on entities returned by any single query tool call.
 /// Protects the stdio transport from runaway agents that ask for everything.
 const QUERY_LIMIT_MAX: usize = 1000;
+const QUERY_LIMIT_DEFAULT: usize = 100;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct QueryEntitiesArgs {
+    /// Subscription ID returned from `subscribe`.
+    pub subscription_id: String,
+    /// String-DSL filter expressions, ANDed together. Same syntax as the
+    /// `hs stream --where` flag: `field=value`, `field>N`, `field~regex`,
+    /// `field?` (exists), `field!?` (not exists), `field!=value`, `field!~re`.
+    #[serde(default)]
+    pub r#where: Vec<String>,
+    /// Structured filter predicates, ANDed with `where`. LLM-friendly form
+    /// that avoids escaping pitfalls in the string DSL.
+    #[serde(default)]
+    pub filters: Vec<StructuredPredicate>,
+    /// Comma-separated dot-paths to project from each matching entity.
+    /// If omitted, returns the full entity.
+    #[serde(default)]
+    pub select: Option<String>,
+    /// Maximum number of entities to return. Defaults to 100, capped at 1000.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
 
 #[derive(Debug, Serialize)]
 struct SubscriptionInfo {
@@ -221,6 +246,57 @@ impl HyperstackMcp {
             conn.manager.unsubscribe(entry.to_sdk_unsubscription()).await;
         }
         Ok(CallToolResult::success(vec![Content::text("unsubscribed")]))
+    }
+
+    #[tool(description = "Filter and project entities cached for a subscription. \
+                          Accepts both a string-DSL `where` (CLI-compatible) and \
+                          structured `filters` (LLM-friendly). Both are ANDed. \
+                          `select` projects fields by dot-path. `limit` defaults \
+                          to 100 and is capped at 1000.")]
+    async fn query_entities(
+        &self,
+        Parameters(args): Parameters<QueryEntitiesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (store, view) = self.resolve_subscription(&args.subscription_id)?;
+
+        let mut compiled = Filter::parse(&args.r#where)
+            .map_err(|e| McpError::invalid_params(format!("invalid where: {e}"), None))?;
+        let structured = Filter::from_structured(&args.filters)
+            .map_err(|e| McpError::invalid_params(format!("invalid filters: {e}"), None))?;
+        compiled.extend(structured);
+
+        let select_paths = args.select.as_deref().map(filter::parse_select);
+        let limit = args.limit.unwrap_or(QUERY_LIMIT_DEFAULT).min(QUERY_LIMIT_MAX);
+
+        // Snapshot raw entries under the read lock, then filter/project outside
+        // the lock to keep the critical section short.
+        let raw = store.all_raw(&view).await;
+        let total_scanned = raw.len();
+        let mut matched: Vec<serde_json::Value> = Vec::new();
+        for (_key, value) in raw {
+            if !compiled.is_empty() && !compiled.matches(&value) {
+                continue;
+            }
+            let projected = match &select_paths {
+                Some(paths) => filter::select_fields(&value, paths),
+                None => value,
+            };
+            matched.push(projected);
+            if matched.len() >= limit {
+                break;
+            }
+        }
+
+        let payload = serde_json::json!({
+            "view": view,
+            "total_scanned": total_scanned,
+            "returned": matched.len(),
+            "limit_applied": limit,
+            "entities": matched,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload).unwrap_or_default(),
+        )]))
     }
 
     #[tool(description = "Fetch a single entity by key from a subscription's cache.")]
