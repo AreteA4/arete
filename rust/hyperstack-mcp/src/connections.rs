@@ -36,7 +36,6 @@ pub struct ConnectionEntry {
     pub manager: ConnectionManager,
     /// Per-connection cache. All subscribed views on this connection land here,
     /// keyed by view name internally. Shared with query tools via `Arc`.
-    #[allow(dead_code)] // Read by query tools landing in step 4.
     pub store: Arc<SharedStore>,
     /// Background task that drains the frame channel and applies each frame
     /// to `store`. Aborted on disconnect.

@@ -70,6 +70,32 @@ pub struct ListSubscriptionsArgs {
     pub connection_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetEntityArgs {
+    /// Subscription ID returned from `subscribe`.
+    pub subscription_id: String,
+    /// Entity key to fetch.
+    pub key: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListEntitiesArgs {
+    /// Subscription ID returned from `subscribe`.
+    pub subscription_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetRecentArgs {
+    /// Subscription ID returned from `subscribe`.
+    pub subscription_id: String,
+    /// How many recent entities to return. Hard cap is 1000.
+    pub n: usize,
+}
+
+/// Hard ceiling on entities returned by any single query tool call.
+/// Protects the stdio transport from runaway agents that ask for everything.
+const QUERY_LIMIT_MAX: usize = 1000;
+
 #[derive(Debug, Serialize)]
 struct SubscriptionInfo {
     subscription_id: String,
@@ -197,6 +223,70 @@ impl HyperstackMcp {
         Ok(CallToolResult::success(vec![Content::text("unsubscribed")]))
     }
 
+    #[tool(description = "Fetch a single entity by key from a subscription's cache.")]
+    async fn get_entity(
+        &self,
+        Parameters(args): Parameters<GetEntityArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (store, view) = self.resolve_subscription(&args.subscription_id)?;
+        let value: Option<serde_json::Value> = store.get(&view, &args.key).await;
+        let payload = serde_json::json!({
+            "view": view,
+            "key": args.key,
+            "found": value.is_some(),
+            "data": value,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "List entity keys currently cached for a subscription. \
+                          Returns keys only — use get_entity for values.")]
+    async fn list_entities(
+        &self,
+        Parameters(args): Parameters<ListEntitiesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (store, view) = self.resolve_subscription(&args.subscription_id)?;
+        let raw = store.all_raw(&view).await;
+        let keys: Vec<String> = raw.into_keys().collect();
+        let payload = serde_json::json!({
+            "view": view,
+            "count": keys.len(),
+            "keys": keys,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload).unwrap_or_default(),
+        )]))
+    }
+
+    #[tool(description = "Return up to N entities from a subscription's cache. \
+                          Order matches the view's sort config when configured, \
+                          otherwise hash order — not strict insertion recency.")]
+    async fn get_recent(
+        &self,
+        Parameters(args): Parameters<GetRecentArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (store, view) = self.resolve_subscription(&args.subscription_id)?;
+        let n = args.n.min(QUERY_LIMIT_MAX);
+        let all: Vec<serde_json::Value> = store.list(&view).await;
+        // TODO(HYP-189): SharedStore exposes no native "last N inserted" view.
+        // For sorted views the tail is meaningful; for unsorted views it is
+        // hash order. If real usage needs strict recency, add a per-view ring
+        // buffer in the ingest task.
+        let total = all.len();
+        let recent: Vec<serde_json::Value> = all.into_iter().rev().take(n).collect();
+        let payload = serde_json::json!({
+            "view": view,
+            "total_cached": total,
+            "returned": recent.len(),
+            "entities": recent,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&payload).unwrap_or_default(),
+        )]))
+    }
+
     #[tool(description = "List active subscriptions, optionally filtered by connection_id.")]
     async fn list_subscriptions(
         &self,
@@ -231,6 +321,33 @@ impl HyperstackMcp {
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&out).unwrap_or_default(),
         )]))
+    }
+}
+
+impl HyperstackMcp {
+    /// Resolve a `subscription_id` to its connection's `SharedStore` and the
+    /// view name to query inside it. Returns an MCP `invalid_params` error if
+    /// either the subscription or its underlying connection is gone.
+    fn resolve_subscription(
+        &self,
+        subscription_id: &str,
+    ) -> Result<(std::sync::Arc<hyperstack_sdk::SharedStore>, String), McpError> {
+        let sub = self.subscriptions.get(subscription_id).ok_or_else(|| {
+            McpError::invalid_params(
+                format!("unknown subscription_id: {subscription_id}"),
+                None,
+            )
+        })?;
+        let conn = self.connections.get(&sub.connection_id).ok_or_else(|| {
+            McpError::internal_error(
+                format!(
+                    "subscription {} references unknown connection_id {}",
+                    sub.id, sub.connection_id
+                ),
+                None,
+            )
+        })?;
+        Ok((conn.store.clone(), sub.view.clone()))
     }
 }
 

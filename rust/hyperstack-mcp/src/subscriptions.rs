@@ -75,7 +75,6 @@ impl SubscriptionRegistry {
         entry
     }
 
-    #[allow(dead_code)] // Used by query tools landing in step 4.
     pub fn get(&self, id: &str) -> Option<Arc<SubscriptionEntry>> {
         self.inner.get(id).map(|e| e.clone())
     }
