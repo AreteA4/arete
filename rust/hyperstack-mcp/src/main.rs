@@ -10,6 +10,102 @@ mod credentials;
 mod filter;
 mod subscriptions;
 
+/// LLM-friendly deserializers that accept both the typed form and a string
+/// encoding of the typed form. LLMs frequently emit `"5"` instead of `5` when
+/// filling out tool-call arguments; strict serde refuses the coercion, which
+/// produces `invalid type: string "5"` errors that make the agent think the
+/// tool is broken. Using these helpers on numeric fields makes the schema
+/// forgiving without losing validation on bad input.
+mod lenient {
+    use serde::{de::Error, Deserialize, Deserializer};
+    use serde_json::Value;
+
+    fn value_to_usize<E: Error>(v: Value) -> Result<Option<usize>, E> {
+        match v {
+            Value::Null => Ok(None),
+            Value::Number(n) => n
+                .as_u64()
+                .map(|u| Some(u as usize))
+                .ok_or_else(|| E::custom(format!("expected non-negative integer, got {n}"))),
+            Value::String(s) => {
+                let t = s.trim();
+                if t.is_empty() {
+                    Ok(None)
+                } else {
+                    t.parse::<usize>()
+                        .map(Some)
+                        .map_err(|e| E::custom(format!("expected integer, got {s:?}: {e}")))
+                }
+            }
+            other => Err(E::custom(format!(
+                "expected integer or numeric string, got {other}"
+            ))),
+        }
+    }
+
+    pub fn usize<'de, D: Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
+        let v = Value::deserialize(d)?;
+        match value_to_usize::<D::Error>(v)? {
+            Some(n) => Ok(n),
+            None => Err(D::Error::custom(
+                "expected integer, got null or empty string",
+            )),
+        }
+    }
+
+    pub fn opt_usize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+        let v = Value::deserialize(d)?;
+        value_to_usize::<D::Error>(v)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        struct S {
+            #[serde(deserialize_with = "super::usize")]
+            n: usize,
+            #[serde(default, deserialize_with = "super::opt_usize")]
+            limit: Option<usize>,
+        }
+
+        fn parse(json: &str) -> serde_json::Result<S> {
+            serde_json::from_str(json)
+        }
+
+        #[test]
+        fn accepts_int() {
+            let s = parse(r#"{"n": 10, "limit": 5}"#).unwrap();
+            assert_eq!(s.n, 10);
+            assert_eq!(s.limit, Some(5));
+        }
+
+        #[test]
+        fn accepts_string() {
+            let s = parse(r#"{"n": "10", "limit": "5"}"#).unwrap();
+            assert_eq!(s.n, 10);
+            assert_eq!(s.limit, Some(5));
+        }
+
+        #[test]
+        fn opt_accepts_null_and_missing() {
+            let s1 = parse(r#"{"n": 3, "limit": null}"#).unwrap();
+            assert_eq!(s1.limit, None);
+            let s2 = parse(r#"{"n": 3}"#).unwrap();
+            assert_eq!(s2.limit, None);
+            let s3 = parse(r#"{"n": 3, "limit": ""}"#).unwrap();
+            assert_eq!(s3.limit, None);
+        }
+
+        #[test]
+        fn rejects_nonsense() {
+            assert!(parse(r#"{"n": "not a number"}"#).is_err());
+            assert!(parse(r#"{"n": true}"#).is_err());
+        }
+    }
+}
+
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
@@ -95,7 +191,10 @@ pub struct ListEntitiesArgs {
 pub struct GetRecentArgs {
     /// Subscription ID returned from `subscribe`.
     pub subscription_id: String,
-    /// How many recent entities to return. Hard cap is 1000.
+    /// How many recent entities to return. Hard cap is 1000. Accepts either
+    /// an integer (`5`) or a string-encoded integer (`"5"`) because LLM
+    /// tool-call arguments sometimes stringify numbers.
+    #[serde(deserialize_with = "lenient::usize")]
     pub n: usize,
 }
 
@@ -122,7 +221,9 @@ pub struct QueryEntitiesArgs {
     #[serde(default)]
     pub select: Option<String>,
     /// Maximum number of entities to return. Defaults to 100, capped at 1000.
-    #[serde(default)]
+    /// Accepts either an integer (`5`) or a string-encoded integer (`"5"`)
+    /// because LLM tool-call arguments sometimes stringify numbers.
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
     pub limit: Option<usize>,
 }
 
@@ -244,6 +345,19 @@ impl HyperstackMcp {
         &self,
         Parameters(args): Parameters<SubscribeArgs>,
     ) -> Result<CallToolResult, McpError> {
+        // Agents sometimes retry with an empty string after an initial
+        // "missing field view" error. Reject that explicitly — an empty view
+        // name is never valid and silently accepting it produces a confusing
+        // "successful subscription with no data" state.
+        if args.view.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "`view` must be a non-empty string like 'PumpfunToken/list'. \
+                 See the subscribe tool description for the naming convention."
+                    .to_string(),
+                None,
+            ));
+        }
+
         let conn = self.connections.get(&args.connection_id).ok_or_else(|| {
             McpError::invalid_params(
                 format!("unknown connection_id: {}", args.connection_id),
