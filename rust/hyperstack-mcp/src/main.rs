@@ -324,39 +324,34 @@ impl HyperstackMcp {
                           Streamed entities land in an in-memory cache that the query \
                           tools (get_entity, list_entities, get_recent, query_entities) \
                           read from.\n\n\
-                          VIEW NAMING: Views are named '<EntityName>/<mode>'. Every \
-                          entity declared in a stack auto-generates three modes:\n\
-                          - '<EntityName>/state'  — per-key current-state cache. May \
+                          VIEW NAMING: A view name ALWAYS has the shape \
+                          `EntityName/mode` — an entity name, a slash, and a mode. \
+                          Pass the full string, never just the mode. Concrete \
+                          examples:\n\
+                          - `PumpfunToken/list`   (pump.fun tokens, list view)\n\
+                          - `PumpfunToken/state`  (pump.fun tokens, per-key state)\n\
+                          - `PumpfunToken/append` (pump.fun tokens, append-only events)\n\
+                          - `OreRound/latest`     (ore rounds, custom view)\n\n\
+                          Every entity in a stack auto-generates three built-in modes:\n\
+                          - `/list`   — ordered recent-items list, sorted by _seq desc. \
+                          Best default for 'show me recent X' queries.\n\
+                          - `/state`  — per-key current-state cache. May legitimately \
                           be empty if entities have not written state yet.\n\
-                          - '<EntityName>/list'   — ordered recent-items list, usually \
-                          sorted by _seq desc. Best default for 'show me recent X' \
-                          queries.\n\
-                          - '<EntityName>/append' — append-only event stream of every \
-                          write.\n\
-                          Stacks may also expose custom views with non-standard \
-                          suffixes (e.g. 'OreRound/latest'). Custom view names can only \
-                          be learned from the stack's source or documentation — there \
-                          is no discovery protocol.\n\n\
+                          - `/append` — append-only event stream of every write.\n\
+                          Stacks may also expose custom view modes (like `/latest` \
+                          in the ore stack); custom names can only be learned from the \
+                          stack's source or docs.\n\n\
                           IF YOUR CACHE STAYS EMPTY after subscribing and waiting a \
                           few seconds, the most likely cause is wrong mode choice — \
-                          try '<EntityName>/list' before concluding the stack is empty.\n\n\
+                          try `EntityName/list` before concluding the stack is empty. \
+                          If the view name you passed did not include a slash and an \
+                          entity name, that is a bug — always prepend the entity.\n\n\
                           Returns { subscription_id, connection_id, view, key }.")]
     async fn subscribe(
         &self,
         Parameters(args): Parameters<SubscribeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        // Agents sometimes retry with an empty string after an initial
-        // "missing field view" error. Reject that explicitly — an empty view
-        // name is never valid and silently accepting it produces a confusing
-        // "successful subscription with no data" state.
-        if args.view.trim().is_empty() {
-            return Err(McpError::invalid_params(
-                "`view` must be a non-empty string like 'PumpfunToken/list'. \
-                 See the subscribe tool description for the naming convention."
-                    .to_string(),
-                None,
-            ));
-        }
+        validate_view_name(&args.view)?;
 
         let conn = self.connections.get(&args.connection_id).ok_or_else(|| {
             McpError::invalid_params(
@@ -568,6 +563,50 @@ impl HyperstackMcp {
     }
 }
 
+/// Validate that a subscribe `view` argument has the expected
+/// `<EntityName>/<mode>` shape. Catches two real agent failure modes:
+///
+/// 1. Empty or whitespace — sometimes emitted as a retry after an initial
+///    "missing field view" error.
+/// 2. Only the mode — e.g. `"list"` or `"state"`. This happens when weaker
+///    LLMs read the tool description's `<EntityName>/list` template and strip
+///    the placeholder, leaving just the suffix. The HyperStack server will
+///    actually accept a single-segment view name and return zero data, which
+///    the agent then misreads as "the stack is empty".
+fn validate_view_name(view: &str) -> Result<(), McpError> {
+    let trimmed = view.trim();
+    if trimmed.is_empty() {
+        return Err(McpError::invalid_params(
+            "`view` must be a non-empty string shaped like `PumpfunToken/list` \
+             or `OreRound/latest`. See the subscribe tool description for \
+             the naming convention."
+                .to_string(),
+            None,
+        ));
+    }
+    let Some((entity, mode)) = trimmed.split_once('/') else {
+        return Err(McpError::invalid_params(
+            format!(
+                "`view` must be shaped like `<EntityName>/<mode>` (e.g. \
+                 `PumpfunToken/list`). Got `{view}` — looks like only the \
+                 mode portion. Prepend the entity name from the stack's \
+                 source (e.g. `PumpfunToken/{view}`)."
+            ),
+            None,
+        ));
+    };
+    if entity.trim().is_empty() || mode.trim().is_empty() {
+        return Err(McpError::invalid_params(
+            format!(
+                "`view` must have non-empty entity and mode halves, got \
+                 `{view}`. Example: `PumpfunToken/list`."
+            ),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 impl HyperstackMcp {
     /// Resolve a `subscription_id` to its connection's `SharedStore` and the
     /// view name to query inside it. Returns an MCP `invalid_params` error if
@@ -628,4 +667,50 @@ async fn main() -> anyhow::Result<()> {
     let service = HyperstackMcp::new().serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod view_validation_tests {
+    use super::validate_view_name;
+
+    #[test]
+    fn accepts_standard_views() {
+        assert!(validate_view_name("PumpfunToken/list").is_ok());
+        assert!(validate_view_name("PumpfunToken/state").is_ok());
+        assert!(validate_view_name("PumpfunToken/append").is_ok());
+        assert!(validate_view_name("OreRound/latest").is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_and_whitespace() {
+        assert!(validate_view_name("").is_err());
+        assert!(validate_view_name("   ").is_err());
+    }
+
+    #[test]
+    fn rejects_mode_only_without_entity_prefix() {
+        // The key regression: agents sometimes emit just "list" after stripping
+        // the `<EntityName>` placeholder in the tool description.
+        let err = validate_view_name("list").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("EntityName"),
+            "error should explain the format: {msg}"
+        );
+        assert!(
+            msg.contains("PumpfunToken/list"),
+            "error should suggest a concrete fix: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_entity_without_mode() {
+        assert!(validate_view_name("PumpfunToken/").is_err());
+        assert!(validate_view_name("PumpfunToken").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_entity_with_mode() {
+        assert!(validate_view_name("/list").is_err());
+    }
 }
