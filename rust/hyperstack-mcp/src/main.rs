@@ -6,6 +6,7 @@
 //! per-connection registry.
 
 mod connections;
+mod credentials;
 mod filter;
 mod subscriptions;
 
@@ -34,7 +35,11 @@ pub struct ConnectArgs {
     /// WebSocket URL of the HyperStack stack
     /// (e.g. `wss://your-stack.stack.usehyperstack.com`).
     pub url: String,
-    /// Optional publishable API key for authenticated stacks.
+    /// Optional explicit API key (override). If omitted, the server resolves
+    /// the key from the `HYPERSTACK_API_KEY` env var, then from
+    /// `~/.hyperstack/credentials.toml` (the file managed by `hs auth login`).
+    /// Prefer leaving this blank in agent calls so the key does not enter
+    /// the model context or chat transcript.
     #[serde(default)]
     pub api_key: Option<String>,
 }
@@ -135,6 +140,14 @@ struct ConnectionInfo {
     connection_id: String,
     url: String,
     state: String,
+    /// Where the api key came from for this connect call. One of
+    /// `explicit_argument`, `env:HYPERSTACK_API_KEY`,
+    /// `~/.hyperstack/credentials.toml`, or `none`. Never contains the key
+    /// itself — this field is safe to log and to expose to the agent.
+    /// Only populated on `connect`; omitted from `list_connections` because
+    /// we don't store per-connection credential provenance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_source: Option<&'static str>,
 }
 
 #[tool_router]
@@ -153,20 +166,34 @@ impl HyperstackMcp {
     }
 
     #[tool(description = "Open a WebSocket connection to a HyperStack stack. \
-                          Returns a connection_id used by subscribe and query tools.")]
+                          Returns a connection_id used by subscribe and query tools.\n\n\
+                          AUTH: Prefer omitting `api_key` in agent calls — the \
+                          server resolves it automatically from (1) explicit arg, \
+                          (2) `HYPERSTACK_API_KEY` env var, (3) \
+                          `~/.hyperstack/credentials.toml` (managed by \
+                          `hs auth login`). Passing the key as an argument puts it \
+                          in the model context and chat transcript, which is \
+                          usually not what you want. The response includes a \
+                          `key_source` field so you can see which lookup path \
+                          produced the credential (never the key itself).")]
     async fn connect(
         &self,
         Parameters(args): Parameters<ConnectArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let resolved = credentials::resolve(args.api_key, &args.url)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+
         let id = self
             .connections
-            .connect(args.url.clone(), args.api_key)
+            .connect(args.url.clone(), resolved.key)
             .await
             .map_err(|e| McpError::internal_error(format!("connect failed: {e}"), None))?;
+
         let info = ConnectionInfo {
             connection_id: id,
             url: args.url,
             state: "Connecting".to_string(),
+            key_source: Some(resolved.source.as_str()),
         };
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string(&info).unwrap_or_default(),
@@ -418,6 +445,7 @@ impl HyperstackMcp {
                 connection_id: entry.id.clone(),
                 url: entry.url.clone(),
                 state: format!("{:?}", entry.state().await),
+                key_source: None,
             });
         }
         Ok(CallToolResult::success(vec![Content::text(

@@ -173,10 +173,52 @@ All tools are stateful: a typical session calls `connect` once, then
 ### Connection management
 
 - `connect({ url, api_key? })` — open a WebSocket to a HyperStack stack.
-  Returns a `connection_id`. `api_key` is treated as a publishable key.
+  Returns `{ connection_id, url, state, key_source }`. `api_key` is an
+  **optional override** — the server resolves it automatically via the
+  precedence described in [Authentication](#authentication) below. Prefer
+  omitting it in agent calls.
 - `disconnect({ connection_id })` — close a connection. Also drops every
   subscription bound to it.
 - `list_connections()` — id, URL, current connection state.
+
+#### Authentication
+
+An agent should **never** pass a HyperStack API key as a tool-call argument
+in normal operation: the key would end up in the model's context window,
+chat transcript, and the JSON-RPC stdio traffic between the client and
+`hs-mcp`. Instead, `hs-mcp` resolves the key itself using this precedence:
+
+1. **Explicit `api_key` argument** on the `connect` call (override, useful
+   for testing or multi-stack setups)
+2. **`HYPERSTACK_API_KEY` env var** set in the MCP server's process
+   environment — the recommended pattern for headless/CI use. Set it in
+   `.vscode/mcp.json`'s `env` block, or via
+   `claude mcp add -e HYPERSTACK_API_KEY=hsk_... hyperstack -- hs-mcp`.
+3. **`~/.hyperstack/credentials.toml`** — the file managed by the CLI's
+   `hs auth login` command. Both schemas the CLI writes are supported:
+
+   ```toml
+   # New format (URL-keyed, written by recent `hs auth login`):
+   [keys]
+   "https://api.usehyperstack.com" = "hsk_..."
+
+   # Legacy format (top-level key, still honored):
+   api_key = "hsk_..."
+   ```
+
+   The file lookup honors `HYPERSTACK_API_URL` if set; otherwise falls back
+   to `https://api.usehyperstack.com`.
+
+If none of the three produces a key **and** the target stack URL is a
+hosted HyperStack stack (`*.stack.usehyperstack.com`), `connect` fails
+with a descriptive error telling the agent exactly what to do. Self-hosted
+/ custom WebSocket URLs are allowed to proceed without a key because they
+may not require auth at all.
+
+The `connect` tool response includes a `key_source` field identifying
+which of the three lookup paths won (`explicit_argument`,
+`env:HYPERSTACK_API_KEY`, `~/.hyperstack/credentials.toml`, or `none`).
+The key itself is never included in responses or log output.
 
 ### Subscription management
 
