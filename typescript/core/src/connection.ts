@@ -660,10 +660,10 @@ export class ConnectionManager {
             const detail = event.reason
               ? `${event.code}: ${event.reason}`
               : `code ${event.code}`;
+            const errorMessage = `WebSocket closed before open (${detail})`;
+            this.updateState('error', errorMessage);
             finish(() =>
-              reject(
-                new HyperStackError(`WebSocket closed before open (${detail})`, 'CONNECTION_ERROR')
-              )
+              reject(new HyperStackError(errorMessage, 'CONNECTION_ERROR'))
             );
             return;
           }
