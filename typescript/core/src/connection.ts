@@ -588,6 +588,15 @@ export class ConnectionManager {
     const wsUrl = this.buildAuthUrl(token);
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        fn();
+      };
+
       try {
         this.ws = this.createWebSocket(wsUrl, token);
 
@@ -598,7 +607,7 @@ export class ConnectionManager {
           this.scheduleTokenRefresh();
           this.resubscribeActive();
           this.flushSubscriptionQueue();
-          resolve();
+          finish(() => resolve());
         };
 
         this.ws.onmessage = async (event) => {
@@ -635,9 +644,10 @@ export class ConnectionManager {
 
         this.ws.onerror = () => {
           const error = new HyperStackError('WebSocket connection error', 'CONNECTION_ERROR');
+          const wasConnecting = this.currentState === 'connecting';
           this.updateState('error', error.message);
-          if (this.currentState === 'connecting') {
-            reject(error);
+          if (wasConnecting) {
+            finish(() => reject(error));
           }
         };
 
@@ -645,6 +655,18 @@ export class ConnectionManager {
           this.stopPingInterval();
           this.clearTokenRefreshTimeout();
           this.ws = null;
+
+          if (!settled) {
+            const detail = event.reason
+              ? `${event.code}: ${event.reason}`
+              : `code ${event.code}`;
+            finish(() =>
+              reject(
+                new HyperStackError(`WebSocket closed before open (${detail})`, 'CONNECTION_ERROR')
+              )
+            );
+            return;
+          }
 
           if (this.reconnectForTokenRefresh) {
             this.reconnectForTokenRefresh = false;
