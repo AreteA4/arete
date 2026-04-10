@@ -87,13 +87,14 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     let mut state = build_state(args, view, &url)?;
 
     let (ws, _) = connect_async(&url).await.map_err(|err| {
-        anyhow::anyhow!(
-            "Failed to connect to {}: {}\n\
-             Hint: hosted stacks need a valid `hs_token` (the CLI adds one after `hs auth login`). \
-             On some systems, TLS uses the OS trust store — if this persists, report the error above.",
-            token::redact_hs_token_for_display(&url),
-            err
-        )
+        let redacted = token::redact_hs_token_for_display(&url);
+        let hint = if token::is_hosted_hyperstack_cloud_url(&url) {
+            "\nHint: hosted stacks need a valid `hs_token` (the CLI adds one after `hs auth login`). \
+             On some systems, TLS uses the OS trust store — if this persists, report the error above."
+        } else {
+            ""
+        };
+        anyhow::anyhow!("Failed to connect to {}: {}{}", redacted, err, hint)
     })?;
 
     eprintln!("Connected.");

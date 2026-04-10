@@ -1,5 +1,7 @@
 //! Hosted-stack WebSocket session tokens (`hs_token`), matching `hyperstack-sdk` behavior.
 
+use std::time::Duration;
+
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -48,6 +50,17 @@ struct MintResponse {
     token: String,
 }
 
+/// True if the URL targets Hyperstack Cloud WebSockets (`*.stack.usehyperstack.com`), regardless of `hs_token`.
+pub fn is_hosted_hyperstack_cloud_url(url: &str) -> bool {
+    let Ok(u) = Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = u.host_str() else {
+        return false;
+    };
+    host.to_ascii_lowercase().ends_with(HOSTED_SUFFIX)
+}
+
 /// Returns true if this URL points at hosted Hyperstack infrastructure and has no `hs_token` yet.
 pub fn hosted_url_needs_token(url: &str) -> bool {
     let Ok(u) = Url::parse(url) else {
@@ -78,7 +91,10 @@ pub fn ensure_hosted_ws_token(url: String) -> Result<String> {
     let base = config::get_api_url(None);
     let endpoint = format!("{}/ws/sessions", base.trim_end_matches('/'));
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("Failed to build HTTP client for token mint")?;
     let response = client
         .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key.trim()))
