@@ -14,9 +14,10 @@ import manifest from "../../../../.release-please-manifest.json";
 const { entry } = Astro.locals.starlightRoute;
 const { title } = entry.data;
 
+// TODO: Rename when packages are changed over
 // Get version from the imported manifest (resolved at build time by Vite)
 const version =
-  manifest["arete"] || manifest["packages/arete"] || "0.0.0";
+  manifest["hyperstack"] || manifest["packages/hyperstack"] || "0.0.0";
 
 // Build clean markdown content with title, replacing {{VERSION}} placeholders
 const rawBody = entry.body || "";
