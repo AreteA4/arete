@@ -4,18 +4,18 @@ sidebar:
   order: 2
 ---
 
-Hyperstack uses Rust procedural macros to define data pipelines declaratively. These macros transform your Rust structs into a unified stack spec (`.stack.json`), which is then used for both local execution and cloud deployment.
+Arete uses Rust procedural macros to define data pipelines declaratively. These macros transform your Rust structs into a unified stack spec (`.stack.json`), which is then used for both local execution and cloud deployment.
 
 ---
 
 ## Module Macro
 
-### `#[hyperstack]`
+### `#[arete]`
 
-The entry point for any Hyperstack stream definition. It must be applied to a `pub mod` that contains your entity definitions.
+The entry point for any Arete stream definition. It must be applied to a `pub mod` that contains your entity definitions.
 
 ```rust
-#[hyperstack(idl = "idl.json")]
+#[arete(idl = "idl.json")]
 pub mod my_stream {
     // Entity definitions...
 }
@@ -37,7 +37,7 @@ _\* Either `idl` or `proto` must be provided._
 
 ### `#[entity]`
 
-Defines a struct as a Hyperstack entity (state projection). Each entity results in a separate typed stream.
+Defines a struct as a Arete entity (state projection). Each entity results in a separate typed stream.
 
 ```rust
 #[entity(name = "TradeTracker")]
@@ -175,7 +175,7 @@ Takes a single Rust expression. Can reference other fields in the entity.
 
 ### `#[resolve]`
 
-Attaches a resolver to a field. Hyperstack fetches the external data server-side and delivers it as part of the entity — no extra API calls needed from the client.
+Attaches a resolver to a field. Arete fetches the external data server-side and delivers it as part of the entity — no extra API calls needed from the client.
 
 ```rust
 #[resolve(address = "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp")]
@@ -246,11 +246,11 @@ pub last_updated: i64,
 
 ## Cross-Account Resolution with `register_from`
 
-When an entity's state includes data from a **secondary account** (one that doesn't store the entity's primary key directly), you need a way to tell Hyperstack how to map that account's address back to an entity instance. The `lookup_index(register_from = [...])` syntax on `#[map]` handles this declaratively.
+When an entity's state includes data from a **secondary account** (one that doesn't store the entity's primary key directly), you need a way to tell Arete how to map that account's address back to an entity instance. The `lookup_index(register_from = [...])` syntax on `#[map]` handles this declaratively.
 
 ### The Problem
 
-Consider a Solana program where a `BondingCurve` PDA is derived from a token `mint`. When a `BondingCurve` account update arrives, Hyperstack needs to know which `Token` entity (keyed by `mint`) it belongs to. The `BondingCurve` account itself doesn't store the `mint` — the relationship only exists in instructions that reference both accounts together.
+Consider a Solana program where a `BondingCurve` PDA is derived from a token `mint`. When a `BondingCurve` account update arrives, Arete needs to know which `Token` entity (keyed by `mint`) it belongs to. The `BondingCurve` account itself doesn't store the `mint` — the relationship only exists in instructions that reference both accounts together.
 
 ### The Solution
 
@@ -275,14 +275,14 @@ Each tuple in `register_from` specifies:
 | 2nd      | The instruction account containing the PDA address          | `accounts::bonding_curve`        |
 | 3rd      | The instruction account containing the entity's primary key | `accounts::mint`                 |
 
-When any of these instructions are processed, Hyperstack registers the mapping `bonding_curve_address → mint`. Subsequent `BondingCurve` account updates are then routed to the correct `Token` entity.
+When any of these instructions are processed, Arete registers the mapping `bonding_curve_address → mint`. Subsequent `BondingCurve` account updates are then routed to the correct `Token` entity.
 
 ### Cross-Program Example
 
 `register_from` also works across programs in multi-IDL stacks. For example, linking an entropy program's `Var` account to an ore program's `Round` entity:
 
 ```rust
-#[hyperstack(idl = ["idl/ore.json", "idl/entropy.json"])]
+#[arete(idl = ["idl/ore.json", "idl/entropy.json"])]
 pub mod ore_stream {
     // ... entity definition ...
 
@@ -303,7 +303,7 @@ pub mod ore_stream {
 }
 ```
 
-Here, the `Deploy` and `Reset` instructions (from the ore program) reference both the `entropyVar` account (from the entropy program) and the `round` account. This is enough for Hyperstack to establish the mapping.
+Here, the `Deploy` and `Reset` instructions (from the ore program) reference both the `entropyVar` account (from the entropy program) and the `round` account. This is enough for Arete to establish the mapping.
 
 :::tip[When to use `register_from`]
 Use `register_from` whenever you map fields from an account that **doesn't contain the entity's primary key in its own data**. If the account already contains the primary key (or its address _is_ the primary key), a plain `lookup_index` is sufficient.

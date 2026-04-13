@@ -1,32 +1,32 @@
 # Installation
 
-Set up the Hyperstack CLI and SDKs for your project.
+Set up the Arete CLI and SDKs for your project.
 
 ---
 
 ## CLI Installation
 
-The Hyperstack CLI (`hs`) manages stacks, deployments, and SDK generation.
+The Arete CLI (`a4`) manages stacks, deployments, and SDK generation.
 
 ### From Source (Recommended)
 
 ```bash
 # Clone the repository
-git clone https://github.com/HyperTekOrg/hyperstack
-cd hyperstack-oss
+git clone https://github.com/HyperTekOrg/arete
+cd arete-oss
 
 # Install globally
 cargo install --path cli
 
 # Verify installation
-hs --version
+a4 --version
 ```
 
 ### Build Without Installing
 
 ```bash
-cargo build --release -p hyperstack-cli
-# Binary available at: target/release/hs
+cargo build --release -p a4-cli
+# Binary available at: target/release/a4
 ```
 
 ---
@@ -36,7 +36,7 @@ cargo build --release -p hyperstack-cli
 ### TypeScript / React
 
 ```bash
-npm install hyperstack-react
+npm install arete-react
 ```
 
 **Peer dependencies:**
@@ -54,25 +54,25 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hyperstack-sdk = "0.2"
+a4-sdk = "0.2"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
 Quick example:
 
 ```rust
-use hyperstack_sdk::prelude::*;
+use a4_sdk::prelude::*;
 use my_stack::{Token, TokenEntity};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hs = HyperStack::connect("wss://ore.stack.usehyperstack.com").await?;
+    let a4 = Arete::connect("wss://ore.stack.arete.run").await?;
     
     // List all entities
-    let tokens = hs.list::<TokenEntity>().await;
+    let tokens = a4.list::<TokenEntity>().await;
     
     // Watch for live updates (lazy - no await needed)
-    let mut stream = hs.watch::<TokenEntity>()
+    let mut stream = a4.watch::<TokenEntity>()
         .filter(|u| u.data().map(|t| t.volume > 1000).unwrap_or(false));
     
     while let Some(update) = stream.next().await {
@@ -83,32 +83,32 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-See the [Rust SDK README](https://github.com/HyperTekOrg/hyperstack/tree/main/rust/hyperstack-sdk) for full documentation.
+See the [Rust SDK README](https://github.com/HyperTekOrg/arete/tree/main/rust/a4-sdk) for full documentation.
 
 ### Python
 
 ```bash
-pip install hyperstack-sdk
+pip install arete-sdk
 ```
 
 ---
 
 ## Authentication
 
-Before deploying stacks, authenticate with Hyperstack:
+Before deploying stacks, authenticate with Arete:
 
 ```bash
 # Create a new account
-hs auth register
+a4 auth register
 
 # Or login to existing account
-hs auth login
+a4 auth login
 
 # Verify authentication
-hs auth whoami
+a4 auth whoami
 ```
 
-Credentials are stored in `~/.hyperstack/credentials.toml`.
+Credentials are stored in `~/.arete/credentials.toml`.
 
 ---
 
@@ -118,14 +118,14 @@ Credentials are stored in `~/.hyperstack/credentials.toml`.
 
 ```bash
 # In your project directory
-hs init
+a4 init
 ```
 
-This creates `hyperstack.toml` and auto-discovers any existing AST files.
+This creates `arete.toml` and auto-discovers any existing AST files.
 
 ### Configuration File
 
-**hyperstack.toml:**
+**arete.toml:**
 
 ```toml
 [project]
@@ -134,7 +134,7 @@ name = "my-project"
 [sdk]
 output_dir = "./generated"
 
-# Stacks are auto-discovered from .hyperstack/*.ast.json
+# Stacks are auto-discovered from .arete/*.ast.json
 # Define explicitly for custom naming:
 [[stacks]]
 name = "my-stack"
@@ -144,7 +144,7 @@ ast = "MyEntity"
 ### Validate Configuration
 
 ```bash
-hs config validate
+a4 config validate
 ```
 
 ---
@@ -157,12 +157,12 @@ If you're writing stacks, add these dependencies:
 
 ```toml
 [dependencies]
-hyperstack = { path = "../hyperstack-oss/main/hyperstack", features = ["full"] }
-hyperstack-macros = { path = "../hyperstack-oss/main/hyperstack-macros" }
-hyperstack-interpreter = { path = "../hyperstack-oss/main/interpreter" }
+arete = { path = "../arete-oss/main/arete", features = ["full"] }
+a4-macros = { path = "../arete-oss/main/a4-macros" }
+a4-interpreter = { path = "../arete-oss/main/interpreter" }
 
 # For local server
-hyperstack-server = { path = "../hyperstack-oss/main/rust/hyperstack-server" }
+a4-server = { path = "../arete-oss/main/rust/a4-server" }
 
 # Required
 tokio = { version = "1.0", features = ["full"] }
@@ -174,7 +174,7 @@ borsh = { version = "1.5", features = ["derive"] }
 
 ```bash
 # Install SDK
-npm install hyperstack-react
+npm install arete-react
 
 # For local development, use localhost WebSocket
 # For production, use your deployed stack URL
@@ -186,7 +186,7 @@ npm install hyperstack-react
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `HYPERSTACK_API_URL` | Override API endpoint | Production API |
+| `ARETE_API_URL` | Override API endpoint | Production API |
 
 ---
 
@@ -195,14 +195,14 @@ npm install hyperstack-react
 ### CLI
 
 ```bash
-hs --help
-hs auth status
+a4 --help
+a4 auth status
 ```
 
 ### TypeScript SDK
 
 ```tsx
-import { HyperstackProvider, useHyperstack, defineStack } from 'hyperstack-react';
+import { AreteProvider, useArete, defineStack } from 'arete-react';
 
 // If this compiles, you're ready to go
 const TestStack = defineStack({
@@ -227,7 +227,7 @@ const TestStack = defineStack({
 
 | Issue | Solution |
 |-------|----------|
-| `hs: command not found` | Ensure `~/.cargo/bin` is in your PATH |
-| `Cannot find module 'hyperstack-react'` | Run `npm install hyperstack-react` |
+| `a4: command not found` | Ensure `~/.cargo/bin` is in your PATH |
+| `Cannot find module 'arete-react'` | Run `npm install arete-react` |
 | `Peer dependency warnings` | Install `react` and `zustand` explicitly |
-| `Authentication failed` | Run `hs auth login` to refresh credentials |
+| `Authentication failed` | Run `a4 auth login` to refresh credentials |

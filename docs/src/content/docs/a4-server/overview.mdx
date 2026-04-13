@@ -1,22 +1,22 @@
 ---
-title: hyperstack-server
-description: Run your Hyperstack projections as a WebSocket server.
+title: a4-server
+description: Run your Arete projections as a WebSocket server.
 sidebar:
   order: 1
 ---
 
-`hyperstack-server` is a Rust crate that lets you run your compiled stack as a standalone WebSocket server. It connects to a Yellowstone gRPC endpoint, processes Solana data through your projections, and streams the results to connected clients.
+`a4-server` is a Rust crate that lets you run your compiled stack as a standalone WebSocket server. It connects to a Yellowstone gRPC endpoint, processes Solana data through your projections, and streams the results to connected clients.
 
 ## Prerequisites
 
-To run a stack with `hyperstack-server`, you need:
+To run a stack with `a4-server`, you need:
 
 | Requirement                   | Description                                                                                                                                          |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Yellowstone gRPC Endpoint** | A URL to a Solana node running the [Yellowstone Geyser plugin](https://github.com/rpcpool/yellowstone-grpc). This is your source of blockchain data. |
 | **X-Token**                   | Authentication token for your Yellowstone provider (most providers require this).                                                                    |
 | **Rust 1.75+**                | Required to build the server binary.                                                                                                                 |
-| **A compiled stack**          | Your stack crate with the `#[hyperstack(...)]` macro, which generates a `spec()` function.                                                           |
+| **A compiled stack**          | Your stack crate with the `#[arete(...)]` macro, which generates a `spec()` function.                                                           |
 
 :::caution[Yellowstone Access Required]
 You must have access to a Yellowstone gRPC endpoint. Options include:
@@ -27,23 +27,23 @@ You must have access to a Yellowstone gRPC endpoint. Options include:
 
 ## Environment Variables
 
-`hyperstack-server` reads configuration from environment variables:
+`a4-server` reads configuration from environment variables:
 
 | Variable               | Required | Description                           |
 | ---------------------- | -------- | ------------------------------------- |
 | `YELLOWSTONE_ENDPOINT` | Yes      | Your Yellowstone gRPC endpoint URL    |
 | `YELLOWSTONE_X_TOKEN`  | Usually  | Authentication token for the endpoint |
 
-## When to Use hyperstack-server
+## When to Use a4-server
 
-**Use hyperstack-server when:**
+**Use a4-server when:**
 
 - Developing and testing stacks locally
 - Running a single stack in your own infrastructure
 - You need full control over the server deployment
 - You already have Yellowstone gRPC access
 
-**Consider Hyperstack Cloud when:**
+**Consider Arete Cloud when:**
 
 - You need multi-stack orchestration
 - You want managed Yellowstone infrastructure

@@ -2,18 +2,18 @@
 title: Workflow
 sidebar:
   order: 1
-description: The end-to-end process of building and deploying a Hyperstack data pipeline.
+description: The end-to-end process of building and deploying a Arete data pipeline.
 ---
 
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 import Workflow from "../../../components/Workflow.astro";
 
-Building a stack follows a straightforward four-step workflow: define your data model in Rust, compile to build the stack, deploy to Hyperstack Cloud, and connect from your application.
+Building a stack follows a straightforward four-step workflow: define your data model in Rust, compile to build the stack, deploy to Arete Cloud, and connect from your application.
 
 <Workflow steps={[
   {
     title: "Write Rust",
-    description: "Define entities using #[hyperstack] macro"
+    description: "Define entities using #[arete] macro"
   },
   {
     title: "Build Stack",
@@ -21,7 +21,7 @@ Building a stack follows a straightforward four-step workflow: define your data 
   },
   {
     title: "Deploy via CLI",
-    description: "Push to cloud with hs up"
+    description: "Push to cloud with a4 up"
   },
   {
     title: "Connect from App",
@@ -33,12 +33,12 @@ Building a stack follows a straightforward four-step workflow: define your data 
 
 ## Step 1: Write Your Stack Definition
 
-A stack definition is a Rust module that maps structure from the IDL into a rich, queryable state ready to consume in your application layer. Using Hyperstack's expressive DSL, you define **entities**, field mappings, aggregations, computed fields, relationships, and more — all in declarative Rust syntax.
+A stack definition is a Rust module that maps structure from the IDL into a rich, queryable state ready to consume in your application layer. Using Arete's expressive DSL, you define **entities**, field mappings, aggregations, computed fields, relationships, and more — all in declarative Rust syntax.
 
 ```rust
-use hyperstack::{hyperstack, Stream};
+use arete::{arete, Stream};
 
-#[hyperstack(idl = "my_program.json")]
+#[arete(idl = "my_program.json")]
 pub mod ore_stack {
     #[entity]
     #[derive(Stream)]
@@ -55,7 +55,7 @@ pub mod ore_stack {
 }
 ```
 
-The Rust code is purely declarative—you're describing **what** data you want, not **how** to fetch it. Hyperstack handles all the account parsing, event processing, and state management.
+The Rust code is purely declarative—you're describing **what** data you want, not **how** to fetch it. Arete handles all the account parsing, event processing, and state management.
 
 :::note
 In practice, field paths use fully qualified names with the generated SDK module: e.g., `ore_sdk::accounts::RoundState::round_id`. The module name (`ore_sdk`) is derived from the IDL's program metadata. The example above is simplified for clarity.
@@ -67,40 +67,40 @@ In practice, field paths use fully qualified names with the generated SDK module
 
 ## Step 2: Build the Stack
 
-When you compile your Rust project, Hyperstack macros transform your definition into a portable JSON specification. This is the compiled representation of your data pipeline.
+When you compile your Rust project, Arete macros transform your definition into a portable JSON specification. This is the compiled representation of your data pipeline.
 
 ```bash
 cargo build
 ```
 
-After building, you'll find the generated specification in `.hyperstack/`:
+After building, you'll find the generated specification in `.arete/`:
 
 ```
 my-stack/
 ├── src/lib.rs
 ├── Cargo.toml
-└── .hyperstack/
+└── .arete/
     └── OreStack.stack.json    # Generated stack specification
 ```
 
-The `.stack.json` file contains everything Hyperstack needs to execute your pipeline: all entities, field mappings, aggregation logic, key resolution rules, and more. A single stack file can contain multiple entities.
+The `.stack.json` file contains everything Arete needs to execute your pipeline: all entities, field mappings, aggregation logic, key resolution rules, and more. A single stack file can contain multiple entities.
 
 ---
 
 ## Step 3: Deploy with the CLI
 
-The Hyperstack CLI (`hs`) handles deployment to Hyperstack Cloud. A single command pushes your stack specification, builds the execution environment, and deploys to a global edge network.
+The Arete CLI (`a4`) handles deployment to Arete Cloud. A single command pushes your stack specification, builds the execution environment, and deploys to a global edge network.
 
 :::caution[Closed Beta]
-Hyperstack is currently in closed beta. You'll need an API key to deploy. [Contact us on X](https://x.com/usehyperstack) to request access.
+Arete is currently in closed beta. You'll need an API key to deploy. [Contact us on X](https://x.com/usearete) to request access.
 :::
 
 ```bash
-# Initialize project config (creates hyperstack.toml)
-hs init
+# Initialize project config (creates arete.toml)
+a4 init
 
 # Deploy your stack
-hs up
+a4 up
 ```
 
 On success, you'll receive a WebSocket URL:
@@ -108,7 +108,7 @@ On success, you'll receive a WebSocket URL:
 ```
 ✔ Stack pushed (v1)
 ✔ Build completed
-🚀 Deployed to: wss://ore.stack.usehyperstack.com
+🚀 Deployed to: wss://ore.stack.arete.run
 ```
 
 → [CLI Reference](/cli/commands) — Full command documentation
@@ -123,35 +123,35 @@ Once deployed, generate a typed SDK for your stack:
 <TabItem label="TypeScript">
 
 ```bash
-hs sdk create typescript ore
+a4 sdk create typescript ore
 ```
 
 </TabItem>
 <TabItem label="Rust">
 
 ```bash
-hs sdk create rust ore
+a4 sdk create rust ore
 ```
 
 </TabItem>
 </Tabs>
 
-This creates a package containing the stack definition that tells the Hyperstack client how to interact with your feed, including all entities and their views. Import it in your application:
+This creates a package containing the stack definition that tells the Arete client how to interact with your feed, including all entities and their views. Import it in your application:
 
 <Tabs>
 <TabItem label="React">
 
 ```tsx
-import { HyperstackProvider, useHyperstack } from "hyperstack-react";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore"; // Generated in Step 4
+import { AreteProvider, useArete } from "arete-react";
+import { ORE_STREAM_STACK } from "arete-stacks/ore"; // Generated in Step 4
 
 // Wrap your app
-<HyperstackProvider>
+<AreteProvider>
   <App />
-</HyperstackProvider>;
+</AreteProvider>;
 
 // In your component
-const stack = useHyperstack(ORE_STREAM_STACK);
+const stack = useArete(ORE_STREAM_STACK);
 const { data: rounds } = stack.views.OreRound.list.use();
 ```
 
@@ -159,12 +159,12 @@ const { data: rounds } = stack.views.OreRound.list.use();
 <TabItem label="TypeScript">
 
 ```typescript
-import { HyperStack } from "hyperstack-typescript";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore"; // Generated in Step 4
+import { Arete } from "arete-typescript";
+import { ORE_STREAM_STACK } from "arete-stacks/ore"; // Generated in Step 4
 
-const hs = await HyperStack.connect(ORE_STREAM_STACK);
+const a4 = await Arete.connect(ORE_STREAM_STACK);
 
-for await (const round of hs.views.OreRound.list.use()) {
+for await (const round of a4.views.OreRound.list.use()) {
   console.log("Round updated:", round);
 }
 ```
@@ -173,16 +173,16 @@ for await (const round of hs.views.OreRound.list.use()) {
 <TabItem label="Rust">
 
 ```rust
-use hyperstack_sdk::prelude::*;
+use a4_sdk::prelude::*;
 use ore_stack::{OreStack, OreRound};  // Generated in Step 4
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Connect to your deployed stack
-    let hs = HyperStack::<OreStack>::connect().await?;
+    let a4 = Arete::<OreStack>::connect().await?;
 
     // Stream updates via typed views
-    let mut stream = hs.views.ore_round.latest().listen();
+    let mut stream = a4.views.ore_round.latest().listen();
 
     while let Some(round) = stream.next().await {
         println!("Round #{:?}: motherlode={:?}",

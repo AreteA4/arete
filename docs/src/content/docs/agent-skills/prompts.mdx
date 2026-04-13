@@ -2,15 +2,15 @@
 title: Prompt Cookbook
 sidebar:
   order: 4
-description: Copy-paste prompts for building with Hyperstack using AI coding agents.
+description: Copy-paste prompts for building with Arete using AI coding agents.
 ---
 
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-Curated prompts to help your AI agent build with Hyperstack. These are designed to be copied directly into your agent chat (Cursor, Claude Code, etc.) to automate discovery and implementation.
+Curated prompts to help your AI agent build with Arete. These are designed to be copied directly into your agent chat (Cursor, Claude Code, etc.) to automate discovery and implementation.
 
 :::note[Skills required]
-These prompts assume the Hyperstack agent skills are installed. The skills teach your agent the SDK patterns, CLI commands, and when to run `hs explore` — so you don't have to spell it out in every prompt.
+These prompts assume the Arete agent skills are installed. The skills teach your agent the SDK patterns, CLI commands, and when to run `a4 explore` — so you don't have to spell it out in every prompt.
 
 Not installed yet? See [Editor Setup](/agent-skills/setup/) to get started.
 :::
@@ -32,7 +32,7 @@ Use Tailwind for styling.
 
 </CopyPrompt>
 
-**What you should get:** A React app with `HyperstackProvider`, `useHyperstack` hook, live-updating round stats, and a connection badge.
+**What you should get:** A React app with `AreteProvider`, `useArete` hook, live-updating round stats, and a connection badge.
 
 ### ORE Round History Table
 
@@ -77,15 +77,15 @@ Build a TypeScript script that tracks the ORE treasury state in real-time. Log: 
 ### Build a custom stack for [Protocol X]
 
 <CopyPrompt>
-I want to build a Hyperstack stack that tracks [describe the protocol and what data you want]. The program ID is [PROGRAM_ID]. Find the IDL and build a stack that defines entities for the account types I want to track.
+I want to build a Arete stack that tracks [describe the protocol and what data you want]. The program ID is [PROGRAM_ID]. Find the IDL and build a stack that defines entities for the account types I want to track.
 </CopyPrompt>
 
-**What you should get:** The agent finds or guides you to the IDL, then scaffolds a new Hyperstack project with entities, field mappings, and views.
+**What you should get:** The agent finds or guides you to the IDL, then scaffolds a new Arete project with entities, field mappings, and views.
 
 ### Add a new entity to my stack
 
 <CopyPrompt>
-I have an existing Hyperstack stack and I want to add a new entity that tracks [describe account type]. The IDL is already at `idl/[program].json`. Add an entity for the [AccountName] account with appropriate sections and field mappings, following the same patterns as the existing entities.
+I have an existing Arete stack and I want to add a new entity that tracks [describe account type]. The IDL is already at `idl/[program].json`. Add an entity for the [AccountName] account with appropriate sections and field mappings, following the same patterns as the existing entities.
 </CopyPrompt>
 
 **What you should get:** A new entity definition added to your `stack.rs` with correct type mappings from the IDL.
@@ -97,7 +97,7 @@ I have an existing Hyperstack stack and I want to add a new entity that tracks [
 ### What data is available?
 
 <CopyPrompt>
-Run `hs explore --json` and tell me what Hyperstack stacks are available. For each stack, run `hs explore [stack-name] --json` to list the entities. Then for the most interesting entities, run `hs explore [stack-name] [Entity] --json` to show me the fields and types. Summarize what data I can stream from each stack.
+Run `a4 explore --json` and tell me what Arete stacks are available. For each stack, run `a4 explore [stack-name] --json` to list the entities. Then for the most interesting entities, run `a4 explore [stack-name] [Entity] --json` to show me the fields and types. Summarize what data I can stream from each stack.
 </CopyPrompt>
 
-**What you should get:** A comprehensive overview of all data you can currently access through your Hyperstack installation.
+**What you should get:** A comprehensive overview of all data you can currently access through your Arete installation.

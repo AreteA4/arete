@@ -4,7 +4,7 @@ sidebar:
   order: 3
 ---
 
-The Hyperstack Rust SDK is an asynchronous client for consuming streaming data from Hyperstack. It is designed for backend services, trading bots, and CLI tools that require type-safe access to Solana state projections.
+The Arete Rust SDK is an asynchronous client for consuming streaming data from Arete. It is designed for backend services, trading bots, and CLI tools that require type-safe access to Solana state projections.
 
 ---
 
@@ -14,14 +14,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hyperstack-sdk = "{{VERSION}}"
-hyperstack-stacks = { version = "{{VERSION}}", optional = true }
+a4-sdk = "{{VERSION}}"
+a4-stacks = { version = "{{VERSION}}", optional = true }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 futures = "0.3"
 ```
 
-The `hyperstack-stacks` crate provides pre-built stack definitions for popular Solana protocols (optional but recommended).
+The `a4-stacks` crate provides pre-built stack definitions for popular Solana protocols (optional but recommended).
 
 ### TLS Options
 
@@ -29,7 +29,7 @@ By default, the SDK uses `rustls` for TLS. You can switch to native TLS:
 
 ```toml
 [dependencies]
-hyperstack-sdk = { version = "{{VERSION}}", default-features = false, features = ["native-tls"] }
+a4-sdk = { version = "{{VERSION}}", default-features = false, features = ["native-tls"] }
 ```
 
 ### Tokio Runtime
@@ -43,18 +43,18 @@ The SDK requires the [Tokio](https://tokio.rs/) runtime. Ensure you have it enab
 ### Connect and Stream
 
 ```rust
-use hyperstack_sdk::prelude::*;
-use hyperstack_stacks::ore::{OreStack, OreRound};
+use a4_sdk::prelude::*;
+use a4_stacks::ore::{OreStack, OreRound};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Connect to the ORE stack (URL is defined in OreStack)
-    let hs = HyperStack::<OreStack>::connect().await?;
+    let a4 = Arete::<OreStack>::connect().await?;
 
     println!("Connected! Streaming ORE rounds...\n");
 
     // Access views directly
-    let mut stream = hs.views.ore_round.latest().listen();
+    let mut stream = a4.views.ore_round.latest().listen();
 
     // Stream updates
     while let Some(round) = stream.next().await {
@@ -80,16 +80,16 @@ cargo run
 ### 1. Create a New Project
 
 ```bash
-cargo new my-hyperstack-app
-cd my-hyperstack-app
+cargo new my-arete-app
+cd my-arete-app
 ```
 
 ### 2. Add Dependencies
 
 ```toml
 [dependencies]
-hyperstack-sdk = "{{VERSION}}"
-hyperstack-stacks = "{{VERSION}}"
+a4-sdk = "{{VERSION}}"
+a4-stacks = "{{VERSION}}"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 anyhow = "1"
 futures = "0.3"
@@ -99,14 +99,14 @@ futures = "0.3"
 
 ```rust
 // src/main.rs
-use hyperstack_sdk::prelude::*;
-use hyperstack_stacks::ore::{OreStack, OreRound};
+use a4_sdk::prelude::*;
+use a4_stacks::ore::{OreStack, OreRound};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hs = HyperStack::<OreStack>::connect().await?;
+    let a4 = Arete::<OreStack>::connect().await?;
 
-    let mut stream = hs.views.ore_round.latest().listen();
+    let mut stream = a4.views.ore_round.latest().listen();
 
     while let Some(round) = stream.next().await {
         println!("Round: {:?}", round.id.round_id);
@@ -125,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
 Each stack defines its own URL, so connection is simple:
 
 ```rust
-let hs = HyperStack::<OreStack>::connect().await?;
+let a4 = Arete::<OreStack>::connect().await?;
 ```
 
 ### With Custom URL
@@ -133,7 +133,7 @@ let hs = HyperStack::<OreStack>::connect().await?;
 Override the default URL if needed:
 
 ```rust
-let hs = HyperStack::<OreStack>::connect_url("wss://custom.endpoint.com").await?;
+let a4 = Arete::<OreStack>::connect_url("wss://custom.endpoint.com").await?;
 ```
 
 ### Builder Pattern
@@ -143,7 +143,7 @@ Configure the client with custom reconnection logic and intervals:
 ```rust
 use std::time::Duration;
 
-let hs = HyperStack::<OreStack>::builder()
+let a4 = Arete::<OreStack>::builder()
     .url("wss://custom.endpoint.com")  // Optional: override default
     .auto_reconnect(true)
     .max_reconnect_attempts(10)
@@ -163,7 +163,7 @@ let hs = HyperStack::<OreStack>::builder()
 
 ```rust
 // Check current state
-match hs.connection_state().await {
+match a4.connection_state().await {
     ConnectionState::Connected => println!("Connected!"),
     ConnectionState::Connecting => println!("Connecting..."),
     ConnectionState::Disconnected => println!("Disconnected"),
@@ -176,7 +176,7 @@ match hs.connection_state().await {
 
 ```rust
 // Graceful disconnect
-hs.disconnect().await;
+a4.disconnect().await;
 ```
 
 ---
@@ -187,13 +187,13 @@ By default, each view is limited to 10,000 entries to prevent memory issues on l
 
 ```rust
 // Custom limit
-let hs = HyperStack::<OreStack>::builder()
+let a4 = Arete::<OreStack>::builder()
     .max_entries_per_view(5000)
     .connect()
     .await?;
 
 // Unlimited (not recommended for long-running clients)
-let hs = HyperStack::<OreStack>::builder()
+let a4 = Arete::<OreStack>::builder()
     .unlimited_entries()
     .connect()
     .await?;
@@ -203,23 +203,23 @@ let hs = HyperStack::<OreStack>::builder()
 
 ## Views
 
-Views provide typed access to your stack's data. Access them directly through `hs.views`:
+Views provide typed access to your stack's data. Access them directly through `a4.views`:
 
 ```rust
 // Direct field access
-let rounds = hs.views.ore_round.latest().get().await;
-let all_rounds = hs.views.ore_round.list().get().await;
-let specific = hs.views.ore_round.state().get("round_key").await;
+let rounds = a4.views.ore_round.latest().get().await;
+let all_rounds = a4.views.ore_round.list().get().await;
+let specific = a4.views.ore_round.state().get("round_key").await;
 ```
 
 ### Pre-Built Stacks
 
-The `hyperstack-stacks` crate includes view definitions for popular protocols:
+The `a4-stacks` crate includes view definitions for popular protocols:
 
 ```rust
-use hyperstack_stacks::ore::OreStack;
+use a4_stacks::ore::OreStack;
 
-let ore = HyperStack::<OreStack>::connect().await?;
+let ore = Arete::<OreStack>::connect().await?;
 ```
 
 ### Building Your Own Stack
@@ -243,7 +243,7 @@ The SDK provides three streaming methods with different levels of detail:
 The simplest API - emits merged entities directly, filtering out deletes:
 
 ```rust
-let mut stream = hs.views.ore_round.latest().listen();
+let mut stream = a4.views.ore_round.latest().listen();
 
 while let Some(round) = stream.next().await {
     println!("Round: {:?}", round.id.round_id);
@@ -255,7 +255,7 @@ while let Some(round) = stream.next().await {
 Stream all update types (upsert, patch, delete):
 
 ```rust
-let mut stream = hs.views.ore_round.latest().watch();
+let mut stream = a4.views.ore_round.latest().watch();
 
 while let Some(update) = stream.next().await {
     match update {
@@ -277,7 +277,7 @@ while let Some(update) = stream.next().await {
 Track changes over time with before/after diffs:
 
 ```rust
-let mut stream = hs.views.ore_round.latest().watch_rich();
+let mut stream = a4.views.ore_round.latest().watch_rich();
 
 while let Some(update) = stream.next().await {
     match update {
@@ -302,7 +302,7 @@ Stream updates for a specific key using state views:
 
 ```rust
 let specific_round = "some-round-key";
-let mut stream = hs.views.ore_round.state().watch(specific_round);
+let mut stream = a4.views.ore_round.state().watch(specific_round);
 
 while let Some(update) = stream.next().await {
     println!("Round updated: {:?}", update);
@@ -315,13 +315,13 @@ All stream builders support server-side options:
 
 ```rust
 // Limit to top 10 items
-let mut stream = hs.views.ore_round.list().watch().take(10);
+let mut stream = a4.views.ore_round.list().watch().take(10);
 
 // Skip first 5, take next 10
-let mut stream = hs.views.ore_round.list().watch().skip(5).take(10);
+let mut stream = a4.views.ore_round.list().watch().skip(5).take(10);
 
 // Filter by field
-let mut stream = hs.views.ore_round.list().watch().filter("status", "active");
+let mut stream = a4.views.ore_round.list().watch().filter("status", "active");
 ```
 
 ### Client-Side Filtering
@@ -331,7 +331,7 @@ Use standard stream adapters for client-side filtering:
 ```rust
 use futures::StreamExt;
 
-let mut stream = hs.views.ore_round.latest().watch().filter(|update| {
+let mut stream = a4.views.ore_round.latest().watch().filter(|update| {
     futures::future::ready(matches!(update, Update::Upsert { .. }))
 });
 
@@ -350,7 +350,7 @@ use std::collections::HashSet;
 
 let watchlist: HashSet<String> = /* tokens to watch */;
 
-let mut price_alerts = hs.views.ore_round.list()
+let mut price_alerts = a4.views.ore_round.list()
     .watch_rich()
     .filter(move |u| watchlist.contains(u.key()))
     .filter_map(|update| match update {
@@ -381,11 +381,11 @@ Fetch current state without streaming:
 
 ```rust
 // Get all items from a view
-let rounds: Vec<OreRound> = hs.views.ore_round.latest().get().await;
+let rounds: Vec<OreRound> = a4.views.ore_round.latest().get().await;
 println!("Found {} rounds", rounds.len());
 
 // Get a specific entity by key
-let round: Option<OreRound> = hs.views.ore_round.state().get("round-key").await;
+let round: Option<OreRound> = a4.views.ore_round.state().get("round-key").await;
 if let Some(r) = round {
     println!("Round: {:?}", r.id.round_id);
 }
@@ -397,8 +397,8 @@ For hot paths where you can't await, use sync methods to read from cache:
 
 ```rust
 // Synchronous - returns cached data immediately
-let cached_rounds = hs.views.ore_round.latest().get_sync();
-let cached_round = hs.views.ore_round.state().get_sync("round-key");
+let cached_rounds = a4.views.ore_round.latest().get_sync();
+let cached_round = a4.views.ore_round.state().get_sync("round-key");
 ```
 
 Note: Sync methods return empty/None if data hasn't been loaded yet.
@@ -476,7 +476,7 @@ if update.has_patch_field("trading") {
 
 ## Understanding `Option<Option<T>>` Fields
 
-Generated entity types often have fields typed as `Option<Option<T>>`. This represents the **patch semantics** of HyperStack updates:
+Generated entity types often have fields typed as `Option<Option<T>>`. This represents the **patch semantics** of Arete updates:
 
 | Value               | Meaning                                               |
 | ------------------- | ----------------------------------------------------- |
@@ -509,20 +509,20 @@ if before.trading.last_trade_price != after.trading.last_trade_price {
 
 ## Generating a Rust SDK
 
-Use the HyperStack CLI to generate a typed Rust SDK from your spec. See [CLI Commands](/cli/commands/) for the full reference and [Configuration](/building-stacks/configuration/) for `hyperstack.toml` options.
+Use the Arete CLI to generate a typed Rust SDK from your spec. See [CLI Commands](/cli/commands/) for the full reference and [Configuration](/building-stacks/configuration/) for `arete.toml` options.
 
 ```bash
 # Generate SDK crate
-hs sdk create rust settlement-game
+a4 sdk create rust settlement-game
 
 # With custom output directory
-hs sdk create rust settlement-game --output ./crates/game-sdk
+a4 sdk create rust settlement-game --output ./crates/game-sdk
 
 # With custom crate name
-hs sdk create rust settlement-game --crate-name game-sdk
+a4 sdk create rust settlement-game --crate-name game-sdk
 
 # Generate as a module instead of a standalone crate
-hs sdk create rust settlement-game --module --output ./src/stacks/game
+a4 sdk create rust settlement-game --module --output ./src/stacks/game
 ```
 
 ### Crate vs Module Output
@@ -553,19 +553,19 @@ Add the generated crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hyperstack-sdk = "{{VERSION}}"
+a4-sdk = "{{VERSION}}"
 settlement-game-stack = { path = "./generated/settlement-game-stack" }
 ```
 
 Then use it:
 
 ```rust
-use hyperstack_sdk::prelude::*;
+use a4_sdk::prelude::*;
 use settlement_game_stack::{SettlementStack, GameState};
 
-let hs = HyperStack::<SettlementStack>::connect().await?;
-let scores = hs.views.player_score.leaderboard().get().await;
-let game = hs.views.game_state.state().get("game-key").await;
+let a4 = Arete::<SettlementStack>::connect().await?;
+let scores = a4.views.player_score.leaderboard().get().await;
+let game = a4.views.game_state.state().get("game-key").await;
 ```
 
 Or if using module mode, add to your `lib.rs`:
@@ -579,14 +579,14 @@ pub mod game;  // Points to src/game/mod.rs
 ## Error Handling
 
 ```rust
-use hyperstack_sdk::HyperStackError;
+use a4_sdk::AreteError;
 
-match HyperStack::<OreStack>::connect().await {
-    Ok(hs) => println!("Connected!"),
-    Err(HyperStackError::Connection(e)) => {
+match Arete::<OreStack>::connect().await {
+    Ok(a4) => println!("Connected!"),
+    Err(AreteError::Connection(e)) => {
         eprintln!("Connection failed: {}", e);
     }
-    Err(HyperStackError::Authentication(e)) => {
+    Err(AreteError::Authentication(e)) => {
         eprintln!("Auth failed: {}", e);
     }
     Err(e) => {
@@ -602,7 +602,7 @@ match HyperStack::<OreStack>::connect().await {
 The SDK automatically reconnects on connection loss with configurable backoff:
 
 ```rust
-let hs = HyperStack::<OreStack>::builder()
+let a4 = Arete::<OreStack>::builder()
     .auto_reconnect(true)
     .reconnect_intervals(vec![
         Duration::from_secs(1),
@@ -623,25 +623,25 @@ A full command-line app that streams ORE mining rounds:
 
 ```rust
 // src/main.rs
-use hyperstack_sdk::prelude::*;
-use hyperstack_stacks::ore::{OreStack, OreRound};
+use a4_sdk::prelude::*;
+use a4_stacks::ore::{OreStack, OreRound};
 use std::time::Duration;
 use tokio::time::timeout;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("-----------------------------------");
-    println!("  Hyperstack ORE Round Monitor     ");
+    println!("  Arete ORE Round Monitor     ");
     println!("-----------------------------------\n");
 
     // Connect with 10 second timeout
-    let hs = match timeout(
+    let a4 = match timeout(
         Duration::from_secs(10),
-        HyperStack::<OreStack>::connect()
+        Arete::<OreStack>::connect()
     ).await {
-        Ok(Ok(hs)) => {
+        Ok(Ok(a4)) => {
             println!("Connected to ORE stack\n");
-            hs
+            a4
         }
         Ok(Err(e)) => {
             eprintln!("Connection error: {}", e);
@@ -656,7 +656,7 @@ async fn main() -> anyhow::Result<()> {
     // Stream with stats
     let mut round_count = 0;
     let mut update_count = 0;
-    let mut stream = hs.views.ore_round.latest().watch();
+    let mut stream = a4.views.ore_round.latest().watch();
 
     println!("Streaming live ORE rounds (press Ctrl+C to exit)...\n");
 
@@ -713,8 +713,8 @@ cargo run
 use futures::future::join;
 
 // Watch multiple views concurrently
-let latest_stream = hs.views.ore_round.latest().watch();
-let list_stream = hs.views.ore_round.list().watch();
+let latest_stream = a4.views.ore_round.latest().watch();
+let list_stream = a4.views.ore_round.list().watch();
 
 let (latest_result, list_result) = join(
     process_stream(latest_stream),
@@ -726,11 +726,11 @@ let (latest_result, list_result) = join(
 
 ```rust
 loop {
-    match HyperStack::<OreStack>::connect().await {
-        Ok(hs) => {
+    match Arete::<OreStack>::connect().await {
+        Ok(a4) => {
             println!("Connected!");
 
-            let mut stream = hs.views.ore_round.latest().watch();
+            let mut stream = a4.views.ore_round.latest().watch();
 
             while let Some(update) = stream.next().await {
                 process_update(update);
@@ -752,8 +752,8 @@ loop {
 ```rust
 use tokio::signal;
 
-let hs = HyperStack::<OreStack>::connect().await?;
-let mut stream = hs.views.ore_round.latest().watch();
+let a4 = Arete::<OreStack>::connect().await?;
+let mut stream = a4.views.ore_round.latest().watch();
 
 loop {
     tokio::select! {
@@ -762,7 +762,7 @@ loop {
         }
         _ = signal::ctrl_c() => {
             println!("\nShutting down gracefully...");
-            hs.disconnect().await;
+            a4.disconnect().await;
             break;
         }
     }
@@ -776,18 +776,18 @@ loop {
 Scaffold a complete Rust example that streams ORE mining rounds:
 
 ```bash
-hs create my-ore-app --template rust-ore
+a4 create my-ore-app --template rust-ore
 cd my-ore-app
 cargo run
 ```
 
-Or run `hs create` interactively and select the `rust-ore` template.
+Or run `a4 create` interactively and select the `rust-ore` template.
 
 ---
 
 ## Next Steps
 
-- [TypeScript SDK](/sdks/typescript/) - Use Hyperstack in Node.js or browsers
+- [TypeScript SDK](/sdks/typescript/) - Use Arete in Node.js or browsers
 - [React SDK](/sdks/react/) - Build web apps with React hooks
 - [Build Your Own Stack](/building-stacks/workflow) - Create custom data streams for any Solana program
 - [CLI Reference](/cli/commands) - Deployment and management commands

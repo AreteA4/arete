@@ -8,10 +8,10 @@ description: Run the ORE demo and see live Solana data streaming in minutes.
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 import Workflow from "../../../components/Workflow.astro";
 
-This quickstart gets you streaming live Solana data in a few minutes using the ORE demo — a real, deployed Hyperstack stack for the ORE mining program. It's the fastest way to see Hyperstack in action.
+This quickstart gets you streaming live Solana data in a few minutes using the ORE demo — a real, deployed Arete stack for the ORE mining program. It's the fastest way to see Arete in action.
 
 :::note[What this covers]
-This guide walks through the ORE demo only. It's a good starting point to understand how Hyperstack feels, but it doesn't cover building your own stacks or integrating with your own on-chain programs. For those paths, see the [Next Steps](#next-steps) section below.
+This guide walks through the ORE demo only. It's a good starting point to understand how Arete feels, but it doesn't cover building your own stacks or integrating with your own on-chain programs. For those paths, see the [Next Steps](#next-steps) section below.
 :::
 
 :::tip[Prefer AI-assisted development?]
@@ -30,16 +30,16 @@ Choose how you want to run the CLI:
 Install the native binary via Cargo:
 
 ```bash
-cargo install hyperstack-cli
+cargo install a4-cli
 ```
 
-Then use the `hs` command:
+Then use the `a4` command:
 
 ```bash
-hs create my-app
+a4 create my-app
 ```
 
-This is the same CLI — Cargo installs it as `hs` while npm uses `hyperstack-cli`.
+This is the same CLI — Cargo installs it as `a4` while npm uses `arete-cli`.
 
 </TabItem>
 <TabItem label="npx (no install)">
@@ -47,7 +47,7 @@ This is the same CLI — Cargo installs it as `hs` while npm uses `hyperstack-cl
 No installation needed — just run:
 
 ```bash
-npx hyperstack-cli create my-app
+npx arete-cli create my-app
 ```
 
 This downloads and runs the CLI without installing it globally.
@@ -58,13 +58,13 @@ This downloads and runs the CLI without installing it globally.
 Install globally via npm:
 
 ```bash
-npm install -g hyperstack-cli
+npm install -g arete-cli
 ```
 
-Then use the `hyperstack-cli` command:
+Then use the `arete-cli` command:
 
 ```bash
-hyperstack-cli create my-app
+arete-cli create my-app
 ```
 
 </TabItem>
@@ -78,21 +78,21 @@ hyperstack-cli create my-app
 <TabItem label="Cargo (Rust)">
 
 ```bash
-hs create my-app
+a4 create my-app
 ```
 
 </TabItem>
 <TabItem label="npx (no install)">
 
 ```bash
-npx hyperstack-cli create my-app
+npx arete-cli create my-app
 ```
 
 </TabItem>
 <TabItem label="npm (global)">
 
 ```bash
-hyperstack-cli create my-app
+arete-cli create my-app
 ```
 
 </TabItem>
@@ -116,21 +116,21 @@ Or specify the template directly:
 <TabItem label="Cargo (Rust)">
 
 ```bash
-hs create my-app --template rust-ore  # or react-ore, typescript-ore
+a4 create my-app --template rust-ore  # or react-ore, typescript-ore
 ```
 
 </TabItem>
 <TabItem label="npx (no install)">
 
 ```bash
-npx hyperstack-cli create my-app --template react-ore  # or typescript-ore, rust-ore
+npx arete-cli create my-app --template react-ore  # or typescript-ore, rust-ore
 ```
 
 </TabItem>
 <TabItem label="npm (global)">
 
 ```bash
-hyperstack-cli create my-app --template react-ore  # or typescript-ore, rust-ore
+arete-cli create my-app --template react-ore  # or typescript-ore, rust-ore
 ```
 
 </TabItem>
@@ -142,7 +142,7 @@ That's it. You're streaming live Solana data.
 
 ## What You Just Built
 
-The scaffolded app connects to a deployed **Hyperstack Stack** — a streaming data pipeline that:
+The scaffolded app connects to a deployed **Arete Stack** — a streaming data pipeline that:
 
 1. **Watches Solana** for ORE mining program activity
 2. **Transforms raw transactions** into structured round data (round ID, motherlode, deployment totals)
@@ -154,7 +154,7 @@ The scaffolded app connects to a deployed **Hyperstack Stack** — a streaming d
     description: "ORE program"
   },
   {
-    title: "Hyperstack",
+    title: "Arete",
     description: "ORE stack"
   },
   {
@@ -171,16 +171,16 @@ No RPC calls. No polling. No custom indexer. Just streaming data.
 
 | Template           | Command                            | What You Get                                          |
 | ------------------ | ---------------------------------- | ----------------------------------------------------- |
-| **react-ore**      | `npx hyperstack-cli create my-app` | React + Vite dashboard showing live ORE mining rounds |
-| **typescript-ore** | `npx hyperstack-cli create my-app` | TypeScript CLI that streams ORE data to your terminal |
-| **rust-ore**       | `npx hyperstack-cli create my-app` | Rust + Tokio client streaming ORE round updates       |
+| **react-ore**      | `npx arete-cli create my-app` | React + Vite dashboard showing live ORE mining rounds |
+| **typescript-ore** | `npx arete-cli create my-app` | TypeScript CLI that streams ORE data to your terminal |
+| **rust-ore**       | `npx arete-cli create my-app` | Rust + Tokio client streaming ORE round updates       |
 
-All templates connect to the public ORE stack at `wss://ore.stack.usehyperstack.com`.
+All templates connect to the public ORE stack at `wss://ore.stack.arete.run`.
 
 You can also specify the template directly:
 
 ```bash
-npx hyperstack-cli create my-app --template react-ore
+npx arete-cli create my-app --template react-ore
 ```
 
 ---
@@ -190,32 +190,32 @@ npx hyperstack-cli create my-app --template react-ore
 <Tabs>
 <TabItem label="React Template">
 
-The React template uses `hyperstack-react` with a pre-built stack definition:
+The React template uses `arete-react` with a pre-built stack definition:
 
 ```tsx
 // App.tsx
-import { HyperstackProvider } from "hyperstack-react";
+import { AreteProvider } from "arete-react";
 import { OreDashboard } from "./components/OreDashboard";
 
 export default function App() {
   return (
-    <HyperstackProvider
-      websocketUrl="wss://ore.stack.usehyperstack.com"
+    <AreteProvider
+      websocketUrl="wss://ore.stack.arete.run"
       autoConnect={true}
     >
       <OreDashboard />
-    </HyperstackProvider>
+    </AreteProvider>
   );
 }
 ```
 
 ```tsx
 // components/OreDashboard.tsx
-import { useHyperstack } from "hyperstack-react";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { useArete } from "arete-react";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 export function OreDashboard() {
-  const { views, isConnected } = useHyperstack(ORE_STREAM_STACK);
+  const { views, isConnected } = useArete(ORE_STREAM_STACK);
   const { data: rounds } = views.OreRound.latest.use({ take: 5 });
 
   return (
@@ -234,18 +234,18 @@ export function OreDashboard() {
 </TabItem>
 <TabItem label="TypeScript Template">
 
-The TypeScript template uses `hyperstack-typescript` with typed views:
+The TypeScript template uses `arete-typescript` with typed views:
 
 ```typescript
 // main.ts
-import { HyperStack } from "hyperstack-typescript";
-import { ORE_STREAM_STACK, type OreRound } from "hyperstack-stacks/ore";
+import { Arete } from "arete-typescript";
+import { ORE_STREAM_STACK, type OreRound } from "arete-stacks/ore";
 
-const hs = await HyperStack.connect("wss://ore.stack.usehyperstack.com", {
+const a4 = await Arete.connect("wss://ore.stack.arete.run", {
   stack: ORE_STREAM_STACK,
 });
 
-for await (const update of hs.views.OreRound.latest.watch({ take: 1 })) {
+for await (const update of a4.views.OreRound.latest.watch({ take: 1 })) {
   if (update.type === "upsert" || update.type === "patch") {
     console.log(`Round #${update.data.id?.round_id}`);
     console.log(`Motherlode: ${update.data.state?.motherlode}`);
@@ -256,18 +256,18 @@ for await (const update of hs.views.OreRound.latest.watch({ take: 1 })) {
 </TabItem>
 <TabItem label="Rust Template">
 
-The Rust template uses `hyperstack-sdk` with typed views:
+The Rust template uses `a4-sdk` with typed views:
 
 ```rust
 // main.rs
-use hyperstack_sdk::prelude::*;
-use hyperstack_stacks::ore::{OreStack, OreRound};
+use a4_sdk::prelude::*;
+use a4_stacks::ore::{OreStack, OreRound};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hs = HyperStack::<OreStack>::connect().await?;
+    let a4 = Arete::<OreStack>::connect().await?;
 
-    let mut stream = hs.views.ore_round.latest().listen();
+    let mut stream = a4.views.ore_round.latest().listen();
 
     while let Some(round) = stream.next().await {
         println!("Round # {:?}", round.id.round_id);
@@ -284,10 +284,10 @@ async fn main() -> anyhow::Result<()> {
 
 ## Using an AI Coding Agent?
 
-Install Hyperstack agent skills so your AI can write correct code without you looking up docs:
+Install Arete agent skills so your AI can write correct code without you looking up docs:
 
 ```bash
-npx skills add usehyperstack/skills
+npx skills add usearete/skills
 ```
 
 Now try asking your agent: "Show me the ORE mining round data in a table with live updates."
@@ -298,13 +298,13 @@ See [Build with AI](/agent-skills/overview/) for the full guide and prompt cookb
 
 ## Next Steps
 
-Now that you've seen Hyperstack in action, where you go next depends on what you're building:
+Now that you've seen Arete in action, where you go next depends on what you're building:
 
-**Using an existing on-chain program that has a Hyperstack stack?**
+**Using an existing on-chain program that has a Arete stack?**
 
-- [Connect to a Stack](/using-stacks/connect/) — Add Hyperstack to an existing project
+- [Connect to a Stack](/using-stacks/connect/) — Add Arete to an existing project
 - [React SDK](/sdks/react/) — Build a full React app against a deployed stack
-- [TypeScript SDK](/sdks/typescript/) — Use Hyperstack in Node.js, Vue, Svelte, or vanilla JS
+- [TypeScript SDK](/sdks/typescript/) — Use Arete in Node.js, Vue, Svelte, or vanilla JS
 - [Rust SDK](/sdks/rust/) — Native Rust client
 
 **Have your own on-chain program and want to stream its data?**
@@ -317,4 +317,4 @@ Now that you've seen Hyperstack in action, where you go next depends on what you
 
 **Using an AI coding tool?**
 
-- [Build with AI](/agent-skills/overview/) — Let your agent write Hyperstack code with the right context
+- [Build with AI](/agent-skills/overview/) — Let your agent write Arete code with the right context

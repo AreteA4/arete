@@ -4,7 +4,7 @@ sidebar:
   order: 2
 ---
 
-The `hyperstack-typescript` SDK is a framework-agnostic client for consuming streaming data from Hyperstack. It uses `AsyncIterable`-based streaming and works in any JavaScript environment — Node.js, browsers, Deno, or Bun.
+The `arete-typescript` SDK is a framework-agnostic client for consuming streaming data from Arete. It uses `AsyncIterable`-based streaming and works in any JavaScript environment — Node.js, browsers, Deno, or Bun.
 
 :::tip[Using React?]
 If you're building a React application, use the [React SDK](/sdks/react/) instead. It provides hooks and providers built on top of this core SDK.
@@ -15,7 +15,7 @@ If you're building a React application, use the [React SDK](/sdks/react/) instea
 ## Installation
 
 ```bash
-npm install hyperstack-typescript
+npm install arete-typescript
 ```
 
 No peer dependencies. Works anywhere JavaScript runs.
@@ -25,14 +25,14 @@ No peer dependencies. Works anywhere JavaScript runs.
 ## Quick Start
 
 ```typescript
-import { HyperStack } from "hyperstack-typescript";
-import { ORE_STREAM_STACK, type OreRound } from "hyperstack-stacks/ore";
+import { Arete } from "arete-typescript";
+import { ORE_STREAM_STACK, type OreRound } from "arete-stacks/ore";
 
 // Connect using the stack (URL is embedded in the stack definition)
-const hs = await HyperStack.connect(ORE_STREAM_STACK);
+const a4 = await Arete.connect(ORE_STREAM_STACK);
 
 // Stream entities with full type safety
-for await (const round of hs.views.OreRound.latest.use()) {
+for await (const round of a4.views.OreRound.latest.use()) {
   console.log("Round:", round.id.round_id);
 }
 ```
@@ -46,14 +46,14 @@ for await (const round of hs.views.OreRound.latest.use()) {
 Each stack definition includes its own URL, so connecting is simple:
 
 ```typescript
-import { HyperStack } from "hyperstack-typescript";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { Arete } from "arete-typescript";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 // Stack includes its URL - just pass the stack
-const hs = await HyperStack.connect(ORE_STREAM_STACK);
+const a4 = await Arete.connect(ORE_STREAM_STACK);
 
 // Now you have fully typed views
-const rounds = await hs.views.OreRound.latest.get();
+const rounds = await a4.views.OreRound.latest.get();
 ```
 
 ### Override Stack URL
@@ -61,7 +61,7 @@ const rounds = await hs.views.OreRound.latest.get();
 You can override the stack's default URL if needed:
 
 ```typescript
-const hs = await HyperStack.connect(ORE_STREAM_STACK, {
+const a4 = await Arete.connect(ORE_STREAM_STACK, {
   url: "wss://custom.endpoint.com",
 });
 ```
@@ -69,7 +69,7 @@ const hs = await HyperStack.connect(ORE_STREAM_STACK, {
 ### Connection Options
 
 ```typescript
-const hs = await HyperStack.connect(ORE_STREAM_STACK, {
+const a4 = await Arete.connect(ORE_STREAM_STACK, {
   maxEntriesPerView: 5000, // Limit entries per view (default: 10000)
 });
 ```
@@ -84,11 +84,11 @@ const hs = await HyperStack.connect(ORE_STREAM_STACK, {
 
 ```typescript
 // Check current state
-console.log(hs.connectionState);
+console.log(a4.connectionState);
 // 'connected' | 'connecting' | 'disconnected' | 'reconnecting' | 'error'
 
 // Listen for changes
-const unsubscribe = hs.onConnectionStateChange((state) => {
+const unsubscribe = a4.onConnectionStateChange((state) => {
   console.log("Connection state:", state);
 });
 
@@ -99,7 +99,7 @@ unsubscribe();
 ### Disconnect
 
 ```typescript
-await hs.disconnect();
+await a4.disconnect();
 ```
 
 ---
@@ -126,10 +126,10 @@ By default, each entity in a stack exposes two views:
 
 ```typescript
 // State view — get a specific round by address
-const round = await hs.views.OreRound.state.get(roundAddress);
+const round = await a4.views.OreRound.state.get(roundAddress);
 
 // List view — get all rounds
-const rounds = await hs.views.OreRound.list.get();
+const rounds = await a4.views.OreRound.list.get();
 ```
 
 ### Custom Views
@@ -140,7 +140,7 @@ Custom views are accessed the same way as default views:
 
 ```typescript
 // Custom list view defined in the ORE stack
-for await (const round of hs.views.OreRound.latest.use()) {
+for await (const round of a4.views.OreRound.latest.use()) {
   console.log("Recent round:", round.id.round_id);
 }
 ```
@@ -165,14 +165,14 @@ The simplest streaming method. Emits the full merged entity after each change:
 
 ```typescript
 // List view — no key required
-for await (const round of hs.views.OreRound.latest.use()) {
+for await (const round of a4.views.OreRound.latest.use()) {
   console.log("Round:", round.id.round_id);
   console.log("Motherlode:", round.state.motherlode);
 }
 
 // State view — key required
 const roundAddress = "So11111111111111111111111111111111111111112";
-for await (const round of hs.views.OreRound.state.use(roundAddress)) {
+for await (const round of a4.views.OreRound.state.use(roundAddress)) {
   console.log("Round updated:", round.state.motherlode);
 }
 ```
@@ -192,7 +192,7 @@ use(options?: WatchOptions): AsyncIterable<T>
 Use when you need to know what operation occurred:
 
 ```typescript
-for await (const update of hs.views.OreRound.latest.watch()) {
+for await (const update of a4.views.OreRound.latest.watch()) {
   switch (update.type) {
     case "upsert":
       console.log("Created or replaced:", update.data);
@@ -231,7 +231,7 @@ type Update<T> =
 Use when you need to compare the previous and new state:
 
 ```typescript
-for await (const update of hs.views.OreRound.latest.watchRich()) {
+for await (const update of a4.views.OreRound.latest.watchRich()) {
   switch (update.type) {
     case "created":
       console.log("New entity:", update.data);
@@ -282,11 +282,11 @@ Fetches the current state. Returns a promise that resolves when data is availabl
 
 ```typescript
 // List view — returns all entities
-const rounds = await hs.views.OreRound.latest.get();
+const rounds = await a4.views.OreRound.latest.get();
 console.log(`Found ${rounds.length} rounds`);
 
 // State view — returns single entity or null
-const round = await hs.views.OreRound.state.get(roundAddress);
+const round = await a4.views.OreRound.state.get(roundAddress);
 if (round) {
   console.log("Round:", round.id.round_id);
 }
@@ -308,7 +308,7 @@ Returns immediately with cached data. Returns `undefined` if data hasn't been lo
 
 ```typescript
 // List view
-const rounds = hs.views.OreRound.latest.getSync();
+const rounds = a4.views.OreRound.latest.getSync();
 if (rounds) {
   console.log(`Cached: ${rounds.length} rounds`);
 } else {
@@ -316,7 +316,7 @@ if (rounds) {
 }
 
 // State view
-const round = hs.views.OreRound.state.getSync(roundAddress);
+const round = a4.views.OreRound.state.getSync(roundAddress);
 ```
 
 **Signatures:**
@@ -340,7 +340,7 @@ Use `getSync()` in synchronous contexts like React render functions where you ca
 Each view maintains an in-memory store of entities. By default, stores are limited to 10,000 entries to prevent memory issues on long-running clients. When the limit is reached, oldest entries are evicted (LRU).
 
 ```typescript
-const hs = await HyperStack.connect(ORE_STREAM_STACK, {
+const a4 = await Arete.connect(ORE_STREAM_STACK, {
   maxEntriesPerView: 5000, // Custom limit
 });
 ```
@@ -348,7 +348,7 @@ const hs = await HyperStack.connect(ORE_STREAM_STACK, {
 To disable limiting (not recommended for production):
 
 ```typescript
-const hs = await HyperStack.connect(ORE_STREAM_STACK, {
+const a4 = await Arete.connect(ORE_STREAM_STACK, {
   maxEntriesPerView: null, // Unlimited
 });
 ```
@@ -371,7 +371,7 @@ interface WatchOptions {
 
 ```typescript
 // Only receive the first 10 entities
-for await (const round of hs.views.OreRound.latest.use({ take: 10 })) {
+for await (const round of a4.views.OreRound.latest.use({ take: 10 })) {
   console.log("Round:", round.id.round_id);
 }
 ```
@@ -380,7 +380,7 @@ for await (const round of hs.views.OreRound.latest.use({ take: 10 })) {
 
 ```typescript
 // Skip first 20, take next 10
-for await (const round of hs.views.OreRound.latest.use({ skip: 20, take: 10 })) {
+for await (const round of a4.views.OreRound.latest.use({ skip: 20, take: 10 })) {
   console.log("Round:", round.id.round_id);
 }
 ```
@@ -400,7 +400,7 @@ Use standard `AsyncIterable` patterns to control streams client-side.
 ### Stop on Condition
 
 ```typescript
-for await (const update of hs.views.OreRound.latest.watch()) {
+for await (const update of a4.views.OreRound.latest.watch()) {
   if (update.type === "upsert") {
     const round = update.data;
     if (round.state.motherlode && round.state.motherlode > 1_000_000_000) {
@@ -420,7 +420,7 @@ const controller = new AbortController();
 setTimeout(() => controller.abort(), 30_000); // Cancel after 30s
 
 try {
-  for await (const update of hs.views.OreRound.latest.watch()) {
+  for await (const update of a4.views.OreRound.latest.watch()) {
     if (controller.signal.aborted) break;
     console.log("Update:", update.data);
   }
@@ -432,7 +432,7 @@ try {
 ### Client-Side Filtering
 
 ```typescript
-for await (const update of hs.views.OreRound.latest.watch()) {
+for await (const update of a4.views.OreRound.latest.watch()) {
   if (update.type !== "upsert") continue;
   if ((update.data.metrics.deploy_count ?? 0) < 100) continue;
 
@@ -451,7 +451,7 @@ Every stack ships with [Zod](https://zod.dev) schemas alongside its TypeScript i
 Enable `validateFrames` on connect to automatically drop malformed data before it enters your local store:
 
 ```typescript
-const hs = await HyperStack.connect(ORE_STREAM_STACK, {
+const a4 = await Arete.connect(ORE_STREAM_STACK, {
   validateFrames: true,
 });
 ```
@@ -461,10 +461,10 @@ const hs = await HyperStack.connect(ORE_STREAM_STACK, {
 Pass a `schema` to `.use()` to filter out entities that don't match:
 
 ```typescript
-import { OreRoundCompletedSchema } from "hyperstack-stacks/ore";
+import { OreRoundCompletedSchema } from "arete-stacks/ore";
 
 // Only emit rounds where every field is present
-for await (const round of hs.views.OreRound.latest.use({
+for await (const round of a4.views.OreRound.latest.use({
   schema: OreRoundCompletedSchema,
 })) {
   console.log(round.id.round_id, round.state.motherlode);
@@ -477,10 +477,10 @@ See [Schema Validation](/sdks/validation/) for the full guide on generated schem
 
 ## Resolved Data
 
-Hyperstack can automatically enrich your entities with data that doesn't live on-chain. For example, the ORE stack includes token metadata (name, symbol, decimals, logo) resolved server-side from the DAS API:
+Arete can automatically enrich your entities with data that doesn't live on-chain. For example, the ORE stack includes token metadata (name, symbol, decimals, logo) resolved server-side from the DAS API:
 
 ```typescript
-for await (const round of hs.views.OreRound.latest.use()) {
+for await (const round of a4.views.OreRound.latest.use()) {
   // Token metadata is resolved automatically — no extra API calls
   console.log(round.ore_metadata?.name);     // "Ore"
   console.log(round.ore_metadata?.symbol);   // "ORE"
@@ -497,14 +497,14 @@ See [Resolvers](/building-stacks/rust-dsl/resolvers/) for how to add resolved da
 ## Error Handling
 
 ```typescript
-import { HyperStack, HyperStackError } from "hyperstack-typescript";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { Arete, AreteError } from "arete-typescript";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 try {
-  const hs = await HyperStack.connect(ORE_STREAM_STACK);
+  const a4 = await Arete.connect(ORE_STREAM_STACK);
 } catch (error) {
-  if (error instanceof HyperStackError) {
-    console.error("Hyperstack error:", error.message);
+  if (error instanceof AreteError) {
+    console.error("Arete error:", error.message);
     console.error("Code:", error.code);
   } else {
     throw error;
@@ -516,9 +516,9 @@ try {
 
 ## API Reference
 
-### `HyperStack.connect(stack, options?)`
+### `Arete.connect(stack, options?)`
 
-Establishes a WebSocket connection to a Hyperstack stack.
+Establishes a WebSocket connection to a Arete stack.
 
 **Parameters:**
 
@@ -527,18 +527,18 @@ Establishes a WebSocket connection to a Hyperstack stack.
 - `options.maxEntriesPerView` — Max entries per view before LRU eviction (optional)
 - `options.validateFrames` — Validate incoming frames against Zod schemas (optional)
 
-**Returns:** `Promise<HyperStack>`
+**Returns:** `Promise<Arete>`
 
-### `hs.views`
+### `a4.views`
 
 Typed views interface based on your stack definition. Access pattern:
 
 ```typescript
-hs.views.<entity>.<viewName>.<method>()
+a4.views.<entity>.<viewName>.<method>()
 
 // Examples with default views:
-hs.views.OreRound.state.get(key)     // State mode — requires key
-hs.views.OreRound.list.get()         // List mode — no key
+a4.views.OreRound.state.get(key)     // State mode — requires key
+a4.views.OreRound.list.get()         // List mode — no key
 ```
 
 #### State Mode Methods
@@ -579,7 +579,7 @@ interface WatchOptions {
 
 See [Schema Validation](/sdks/validation/) for details on using schemas to filter and validate streamed data.
 
-### `hs.connectionState`
+### `a4.connectionState`
 
 Current connection state:
 
@@ -589,11 +589,11 @@ Current connection state:
 - `reconnecting` — Auto-reconnecting after failure
 - `error` — Connection failed
 
-### `hs.onConnectionStateChange(callback)`
+### `a4.onConnectionStateChange(callback)`
 
 Subscribe to connection state changes. Returns unsubscribe function.
 
-### `hs.disconnect()`
+### `a4.disconnect()`
 
 Close the WebSocket connection gracefully.
 

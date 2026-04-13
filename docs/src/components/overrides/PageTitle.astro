@@ -16,7 +16,7 @@ const { title } = entry.data;
 
 // Get version from the imported manifest (resolved at build time by Vite)
 const version =
-  manifest["hyperstack"] || manifest["packages/hyperstack"] || "0.0.0";
+  manifest["arete"] || manifest["packages/arete"] || "0.0.0";
 
 // Build clean markdown content with title, replacing {{VERSION}} placeholders
 const rawBody = entry.body || "";

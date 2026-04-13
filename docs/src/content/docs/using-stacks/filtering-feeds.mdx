@@ -13,7 +13,7 @@ When streaming data from views, you can control what the server sends to reduce 
 
 ## Feed Parameters
 
-All Hyperstack SDKs support these parameters when subscribing to feeds:
+All Arete SDKs support these parameters when subscribing to feeds:
 
 | Parameter | Type     | Description                                 |
 | --------- | -------- | ------------------------------------------- |
@@ -29,16 +29,16 @@ Use `take` and `skip` to paginate through large datasets:
 <TabItem label="React">
 
 ```typescript
-import { useHyperStack } from "hyperstack-react";
-import { TOKEN_STACK } from "hyperstack-stacks/token";
+import { useArete } from "arete-react";
+import { TOKEN_STACK } from "arete-stacks/token";
 
 function TokenList() {
-  const hs = useHyperStack(TOKEN_STACK);
+  const a4 = useArete(TOKEN_STACK);
   const [page, setPage] = useState(1);
   const pageSize = 10;
 
   // Paginated subscription
-  const { data: tokens } = hs.views.Token.list.use({
+  const { data: tokens } = a4.views.Token.list.use({
     take: pageSize,
     skip: (page - 1) * pageSize,
   });
@@ -56,22 +56,22 @@ function TokenList() {
 <TabItem label="TypeScript">
 
 ```typescript
-import { HyperStack } from "hyperstack-typescript";
-import { TOKEN_STACK } from "hyperstack-stacks/token";
+import { Arete } from "arete-typescript";
+import { TOKEN_STACK } from "arete-stacks/token";
 
-const hs = await HyperStack.connect("wss://token.stack.usehyperstack.com", {
+const a4 = await Arete.connect("wss://token.stack.arete.run", {
   stack: TOKEN_STACK,
 });
 
 // Get first 10 entities
-for await (const token of hs.views.Token.list.use({ take: 10 })) {
+for await (const token of a4.views.Token.list.use({ take: 10 })) {
   console.log(token.id.mint);
 }
 
 // Get page 3 (skip 20, take 10)
 const page = 3;
 const pageSize = 10;
-for await (const token of hs.views.Token.list.use({
+for await (const token of a4.views.Token.list.use({
   take: pageSize,
   skip: (page - 1) * pageSize
 })) {
@@ -83,20 +83,20 @@ for await (const token of hs.views.Token.list.use({
 <TabItem label="Rust">
 
 ```rust
-use hyperstack_sdk::prelude::*;
-use hyperstack_stacks::token::{TokenStack, Token};
+use a4_sdk::prelude::*;
+use a4_stacks::token::{TokenStack, Token};
 
-let hs = HyperStack::<TokenStack>::connect().await?;
+let a4 = Arete::<TokenStack>::connect().await?;
 
 // Get first 10 entities
-let mut stream = hs.views.token.list()
+let mut stream = a4.views.token.list()
     .listen()
     .take(10);
 
 // Get page 3 (skip 20, take 10)
 let page = 3;
 let page_size = 10;
-let mut stream = hs.views.token.list()
+let mut stream = a4.views.token.list()
     .listen()
     .skip((page - 1) * page_size)
     .take(page_size);
@@ -117,7 +117,7 @@ For state views, pass the entity key to subscribe to a specific entity:
 <TabItem label="React">
 
 ```typescript
-const { data: token } = hs.views.Token.state.use(tokenAddress);
+const { data: token } = a4.views.Token.state.use(tokenAddress);
 ```
 
 </TabItem>
@@ -127,10 +127,10 @@ const { data: token } = hs.views.Token.state.use(tokenAddress);
 const tokenAddress = "So11111111111111111111111111111111111111112";
 
 // One-shot query
-const token = await hs.views.Token.state.get(tokenAddress);
+const token = await a4.views.Token.state.get(tokenAddress);
 
 // Stream updates
-for await (const token of hs.views.Token.state.use(tokenAddress)) {
+for await (const token of a4.views.Token.state.use(tokenAddress)) {
   console.log("Token updated:", token.id.mint);
 }
 ```
@@ -172,9 +172,9 @@ Custom views are defined when [building a stack](/building-stacks/stack-definiti
 Custom views are defined using the `#[view]` attribute on your entity struct:
 
 ```rust
-use hyperstack::prelude::*;
+use arete::prelude::*;
 
-#[hyperstack(idl = "idl/ore.json")]
+#[arete(idl = "idl/ore.json")]
 pub mod ore_stream {
     #[entity(name = "OreRound")]
     #[view(name = "latest", sort_by = "id.round_id", order = "desc")]
@@ -203,18 +203,18 @@ Custom views appear alongside the default views in your SDK:
 <TabItem label="React">
 
 ```typescript
-import { useHyperStack } from "hyperstack-react";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { useArete } from "arete-react";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 function LatestRounds() {
-  const hs = useHyperStack(ORE_STREAM_STACK);
+  const a4 = useArete(ORE_STREAM_STACK);
 
   // Default views
-  const { data: allRounds } = hs.views.OreRound.list.use();
-  const { data: round } = hs.views.OreRound.state.use(roundAddress);
+  const { data: allRounds } = a4.views.OreRound.list.use();
+  const { data: round } = a4.views.OreRound.state.use(roundAddress);
 
   // Custom view - sorted by round_id desc
-  const { data: latestRounds } = hs.views.OreRound.latest.use();
+  const { data: latestRounds } = a4.views.OreRound.latest.use();
 
   return <div>{latestRounds?.map(r => <Round key={r.id.round_id} round={r} />)}</div>;
 }
@@ -224,19 +224,19 @@ function LatestRounds() {
 <TabItem label="TypeScript">
 
 ```typescript
-import { HyperStack } from "hyperstack-typescript";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { Arete } from "arete-typescript";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
-const hs = await HyperStack.connect("wss://ore.stack.usehyperstack.com", {
+const a4 = await Arete.connect("wss://ore.stack.arete.run", {
   stack: ORE_STREAM_STACK,
 });
 
 // Default views
-const allRounds = await hs.views.OreRound.list.get();
-const round = await hs.views.OreRound.state.get(roundAddress);
+const allRounds = await a4.views.OreRound.list.get();
+const round = await a4.views.OreRound.state.get(roundAddress);
 
 // Custom view - sorted by round_id desc
-for await (const round of hs.views.OreRound.latest.use()) {
+for await (const round of a4.views.OreRound.latest.use()) {
   console.log("Round:", round.id.round_id);
 }
 ```
@@ -245,18 +245,18 @@ for await (const round of hs.views.OreRound.latest.use()) {
 <TabItem label="Rust">
 
 ```rust
-use hyperstack_sdk::prelude::*;
-use hyperstack_stacks::ore::{OreStack, OreRound};
+use a4_sdk::prelude::*;
+use a4_stacks::ore::{OreStack, OreRound};
 
-let hs = HyperStack::<OreStack>::connect().await?;
+let a4 = Arete::<OreStack>::connect().await?;
 
 // Default views
-let mut list_stream = hs.views.ore_round.list().listen();
+let mut list_stream = a4.views.ore_round.list().listen();
 let round_address = "some-round-address";
-let mut state_stream = hs.views.ore_round.state().listen(round_address);
+let mut state_stream = a4.views.ore_round.state().listen(round_address);
 
 // Custom view - sorted by round_id desc
-let mut latest_stream = hs.views.ore_round.latest().listen();
+let mut latest_stream = a4.views.ore_round.latest().listen();
 
 while let Some(round) = latest_stream.next().await {
     println!("Round: {:?}", round.id.round_id);
@@ -279,7 +279,7 @@ pub struct Token {
 
 ```typescript
 // Get top 10 tokens by volume
-for await (const token of hs.views.Token.topByVolume.use()) {
+for await (const token of a4.views.Token.topByVolume.use()) {
   console.log(token.id.mint, token.metrics.total_volume);
 }
 ```
@@ -298,14 +298,14 @@ If you need dynamic filtering that changes at runtime, apply filters client-side
 The React SDK provides a `where` clause for declarative client-side filtering:
 
 ```typescript
-import { useHyperStack } from "hyperstack-react";
-import { TOKEN_STACK } from "hyperstack-stacks/token";
+import { useArete } from "arete-react";
+import { TOKEN_STACK } from "arete-stacks/token";
 
 function HighVolumeTokens() {
-  const hs = useHyperStack(TOKEN_STACK);
+  const a4 = useArete(TOKEN_STACK);
 
   // Client-side filtering with where clause
-  const { data: tokens } = hs.views.Token.list.use({
+  const { data: tokens } = a4.views.Token.list.use({
     where: {
       volume: { gte: 10000 },
       price: { lte: 100 }
@@ -333,15 +333,15 @@ function HighVolumeTokens() {
 Filter data as it streams using standard JavaScript:
 
 ```typescript
-import { HyperStack } from "hyperstack-typescript";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { Arete } from "arete-typescript";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
-const hs = await HyperStack.connect("wss://ore.stack.usehyperstack.com", {
+const a4 = await Arete.connect("wss://ore.stack.arete.run", {
   stack: ORE_STREAM_STACK,
 });
 
 // Filter in the streaming loop
-for await (const round of hs.views.OreRound.latest.use()) {
+for await (const round of a4.views.OreRound.latest.use()) {
   // Skip rounds below threshold
   if ((round.state.motherlode ?? 0) < 1_000_000_000) continue;
 
@@ -355,14 +355,14 @@ for await (const round of hs.views.OreRound.latest.use()) {
 Use iterator adapters to filter streams:
 
 ```rust
-use hyperstack_sdk::prelude::*;
-use hyperstack_stacks::ore::{OreStack, OreRound};
+use a4_sdk::prelude::*;
+use a4_stacks::ore::{OreStack, OreRound};
 use futures::StreamExt;
 
-let hs = HyperStack::<OreStack>::connect().await?;
+let a4 = Arete::<OreStack>::connect().await?;
 
 // Filter using stream adapters
-let mut stream = hs.views.ore_round.latest()
+let mut stream = a4.views.ore_round.latest()
     .listen()
     .filter(|round| {
         let high_value = round.state.motherlode.flatten().unwrap_or(0) >= 1_000_000_000;

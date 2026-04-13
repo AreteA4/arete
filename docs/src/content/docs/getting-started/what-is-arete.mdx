@@ -1,14 +1,14 @@
 ---
-title: What is Hyperstack?
+title: What is Arete?
 sidebar:
   order: 0
-description: A plain-English introduction to Hyperstack and what you can build with it.
+description: A plain-English introduction to Arete and what you can build with it.
 ---
 
 import { Card, CardGrid } from "@astrojs/starlight/components";
 import Workflow from "../../../components/Workflow.astro";
 
-**Programmable data streams for Solana.** You declare what you want — which programs, which accounts, which fields — and Hyperstack delivers a typed, live stream straight to your app. No polling, no backend plumbing, no data wrangling.
+**Programmable data streams for Solana.** You declare what you want — which programs, which accounts, which fields — and Arete delivers a typed, live stream straight to your app. No polling, no backend plumbing, no data wrangling.
 
 ---
 
@@ -22,7 +22,7 @@ Here's the flow:
     description: "Someone trades a token, mines ORE, or stakes"
   },
   {
-    title: "Hyperstack",
+    title: "Arete",
     description: "Transforms the raw data into what you need"
   },
   {
@@ -32,14 +32,14 @@ Here's the flow:
 ]} />
 
 1. **Something happens on Solana** — a trade, a transfer, a vote, anything
-2. **Hyperstack processes it** — turns raw blockchain data into clean, structured information
+2. **Arete processes it** — turns raw blockchain data into clean, structured information
 3. **Your app gets it instantly** — no delay, no polling, no manual refreshing
 
 ---
 
 ## What Can You Build?
 
-Hyperstack is especially good for apps that need **live data**:
+Arete is especially good for apps that need **live data**:
 
 - **Dashboards** — Show mining stats, token prices, or DeFi positions updating in real-time
 - **Real-time UIs** — Build interfaces that react instantly to on-chain state changes without a single refresh
@@ -52,9 +52,9 @@ Hyperstack is especially good for apps that need **live data**:
 
 ## How People Build With It
 
-Without Hyperstack, getting live on-chain data means writing polling loops, handling RPC rate limits, and parsing raw account bytes. It's a lot of plumbing before you write a single line of actual product.
+Without Arete, getting live on-chain data means writing polling loops, handling RPC rate limits, and parsing raw account bytes. It's a lot of plumbing before you write a single line of actual product.
 
-With Hyperstack, you declare the stream — Hyperstack handles the rest. The typed data flows to wherever you consume it:
+With Arete, you declare the stream — Arete handles the rest. The typed data flows to wherever you consume it:
 
 ```tsx
 // React UI — component re-renders live as chain state changes
@@ -81,7 +81,7 @@ The data is fully typed regardless of how you consume it. It updates the moment 
 
 ### Two ways to get there
 
-**AI-assisted** — Describe what you want in plain English. Your AI coding tool (Cursor, Claude Code, etc.) writes all the Hyperstack code for you. Most people have something running in under 30 minutes — no prior coding experience needed.
+**AI-assisted** — Describe what you want in plain English. Your AI coding tool (Cursor, Claude Code, etc.) writes all the Arete code for you. Most people have something running in under 30 minutes — no prior coding experience needed.
 
 **Direct SDK** — Use the React, TypeScript, or Rust SDKs yourself. Full type safety, React hooks, streaming iterators for backends, and native Rust for high-performance services.
 
@@ -89,7 +89,7 @@ The data is fully typed regardless of how you consume it. It updates the moment 
 
 ## Key Ideas
 
-Hyperstack is built around a simple contract: **you declare what you want, we deliver the stream.**
+Arete is built around a simple contract: **you declare what you want, we deliver the stream.**
 
 **Stacks** are your declaration. A Stack is a named collection of semantically related data — the accounts, fields, and programs needed for a specific feature or app. That data might come from one program or many. When you connect to a Stack, you're saying _"give me everything I need for this."_ Existing stacks (like ORE) are ready to use. You can also build your own.
 
@@ -123,7 +123,7 @@ Note that views maintain a rolling cache — they're optimised for live data, no
 
 <CardGrid>
   <Card title="New to Coding?" icon="rocket">
-    Set up AI coding tools and build your first Hyperstack app with zero programming experience.
+    Set up AI coding tools and build your first Arete app with zero programming experience.
 
     [Set up your tools →](/agent-skills/setup-tools/)
 

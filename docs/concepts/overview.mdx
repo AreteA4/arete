@@ -1,6 +1,6 @@
-# How Hyperstack Works
+# How Arete Works
 
-Hyperstack is a declarative data layer for Solana. You define the data shape you need, and Hyperstack handles all the infrastructure to stream it to your app.
+Arete is a declarative data layer for Solana. You define the data shape you need, and Arete handles all the infrastructure to stream it to your app.
 
 ---
 
@@ -17,7 +17,7 @@ Most teams spend weeks on infrastructure before shipping features.
 
 ---
 
-## The Hyperstack Solution
+## The Arete Solution
 
 Instead of building infrastructure, you **declare what data you need**:
 
@@ -35,7 +35,7 @@ pub struct Token {
 }
 ```
 
-Hyperstack then:
+Arete then:
 - Subscribes to the relevant on-chain events
 - Transforms raw data into your entity shape
 - Streams updates to your app as they happen on-chain
@@ -52,7 +52,7 @@ Hyperstack then:
 └─────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────┐
-│                   HYPERSTACK CLOUD                       │
+│                   ARETE CLOUD                       │
 │                                                          │
 │   ┌────────────┐    ┌────────────┐    ┌────────────┐    │
 │   │  Compiler  │ →  │     VM     │ →  │  Streamer  │    │
@@ -83,7 +83,7 @@ Hyperstack then:
 A **stream** is a declarative definition of your data model. Written in Rust using macros:
 
 ```rust
-#[hyperstack(idl = "parser/idl.json")]
+#[arete(idl = "parser/idl.json")]
 pub mod my_stream {
     #[entity(name = "Token")]
     pub struct Token {
@@ -170,8 +170,8 @@ const TokenStack = defineStack({
 ### Specification Time
 
 1. Write stream definition using Rust macros
-2. Build generates AST (`.hyperstack/*.ast.json`)
-3. Deploy with `hs up`
+2. Build generates AST (`.arete/*.ast.json`)
+3. Deploy with `a4 up`
 4. Cloud compiles AST to bytecode
 
 ### Runtime
@@ -215,7 +215,7 @@ const { data: token } = stack.views.tokens.state.use({ key: mintAddress })
 
 ## Type Safety
 
-Hyperstack provides end-to-end type safety:
+Arete provides end-to-end type safety:
 
 1. **Spec types** - Rust ensures valid mappings at compile time
 2. **Generated types** - SDK types match your entity definitions
@@ -232,7 +232,7 @@ console.log(token.volume)  // bigint
 
 ## Self-Hosting vs Managed
 
-| Aspect | Self-Hosted | Managed (Hyperstack Cloud) |
+| Aspect | Self-Hosted | Managed (Arete Cloud) |
 |--------|-------------|---------------------------|
 | Setup | Bring your own Geyser gRPC | Zero config |
 | Scaling | You manage | We handle |
@@ -253,7 +253,7 @@ const { data: tokens } = stack.views.tokens.list.use();
 
 ```rust
 // Lazy streams with chainable operators
-let mut alerts = hs.watch_rich::<TokenEntity>()
+let mut alerts = a4.watch_rich::<TokenEntity>()
     .filter(|u| watchlist.contains(u.key()))
     .filter_map(|update| match update {
         RichUpdate::Updated { before, after, .. } => {

@@ -4,32 +4,32 @@ sidebar:
   order: 4
 ---
 
-Resolvers enrich your entities with data that doesn't live on-chain. When you define a resolver on an entity field, Hyperstack automatically fetches the external data server-side and delivers it to your clients as part of the entity — no extra API calls needed.
+Resolvers enrich your entities with data that doesn't live on-chain. When you define a resolver on an entity field, Arete automatically fetches the external data server-side and delivers it to your clients as part of the entity — no extra API calls needed.
 
 ---
 
 ## Token Metadata
 
-The built-in `TokenMetadata` resolver enriches your entity with SPL token metadata (name, symbol, decimals, logo) for any mint address. Hyperstack resolves this automatically server-side when your entity includes a field typed as `TokenMetadata`:
+The built-in `TokenMetadata` resolver enriches your entity with SPL token metadata (name, symbol, decimals, logo) for any mint address. Arete resolves this automatically server-side when your entity includes a field typed as `TokenMetadata`:
 
 ```rust
-#[hyperstack(idl = "idl/ore.json")]
+#[arete(idl = "idl/ore.json")]
 pub mod ore_stream {
     #[entity]
     pub struct OreRound {
         #[map(ore_sdk::accounts::Round::reward_mint, primary_key, strategy = SetOnce)]
         pub mint: String,
 
-        // Hyperstack resolves this automatically from the mint
+        // Arete resolves this automatically from the mint
         pub ore_metadata: Option<TokenMetadata>,
     }
 }
 ```
 
-When a new `OreRound` entity is created, Hyperstack sees the `TokenMetadata` field, resolves the metadata server-side, and delivers it as part of the entity. By the time data reaches your TypeScript client, the field is already filled in:
+When a new `OreRound` entity is created, Arete sees the `TokenMetadata` field, resolves the metadata server-side, and delivers it as part of the entity. By the time data reaches your TypeScript client, the field is already filled in:
 
 ```typescript
-for await (const round of hs.views.OreRound.latest.use()) {
+for await (const round of a4.views.OreRound.latest.use()) {
   console.log(round.ore_metadata?.name);     // "Ore"
   console.log(round.ore_metadata?.symbol);   // "ORE"
   console.log(round.ore_metadata?.decimals); // 11
@@ -102,7 +102,7 @@ pub struct OreRound {
 On the client, `motherlode_ui` arrives as a ready-to-display number:
 
 ```typescript
-for await (const round of hs.views.OreRound.latest.use()) {
+for await (const round of a4.views.OreRound.latest.use()) {
   console.log(round.motherlode_ui); // 1.5 (human-readable ORE amount)
 }
 ```
@@ -112,7 +112,7 @@ for await (const round of hs.views.OreRound.latest.use()) {
 ## How It Works
 
 1. **You define** a `TokenMetadata` field on your entity in Rust
-2. **Hyperstack resolves** the metadata server-side when the entity is first created
+2. **Arete resolves** the metadata server-side when the entity is first created
 3. **Computed fields** referencing the resolver are evaluated server-side on every update
 4. **Your client receives** the fully enriched entity — metadata and computed values included
 

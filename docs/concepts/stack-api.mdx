@@ -1,13 +1,13 @@
 # Stack API Reference
 
-The Stack API is the client-side interface to your deployed Hyperstack stream. It provides type-safe access to views, transactions, and helpers.
+The Stack API is the client-side interface to your deployed Arete stream. It provides type-safe access to views, transactions, and helpers.
 
 ---
 
 ## Overview
 
 ```typescript
-import { defineStack, useHyperstack, createListView, createStateView } from 'hyperstack-react';
+import { defineStack, useArete, createListView, createStateView } from 'arete-react';
 
 // 1. Define your stack
 const MyStack = defineStack({
@@ -19,7 +19,7 @@ const MyStack = defineStack({
 
 // 2. Use in components
 function Component() {
-  const stack = useHyperstack(MyStack);
+  const stack = useArete(MyStack);
   const { data } = stack.views.tokens.list.use();
 }
 ```
@@ -86,12 +86,12 @@ const TokenStack = defineStack({
 
 ---
 
-## useHyperstack
+## useArete
 
 Main hook that provides access to a stack's features.
 
 ```typescript
-function useHyperstack<TStack>(stack: TStack): StackClient<TStack>
+function useArete<TStack>(stack: TStack): StackClient<TStack>
 ```
 
 ### Return Value
@@ -101,8 +101,8 @@ interface StackClient<TStack> {
   views: ViewInterface;      // Real-time data subscriptions
   tx: TransactionMethods;    // Transaction submission
   helpers: TStack['helpers']; // Utility functions
-  store: HyperstackStore;    // Direct store access
-  runtime: HyperstackRuntime; // Runtime instance
+  store: AreteStore;    // Direct store access
+  runtime: AreteRuntime; // Runtime instance
 }
 ```
 
@@ -110,7 +110,7 @@ interface StackClient<TStack> {
 
 ```typescript
 function TokenDashboard() {
-  const stack = useHyperstack(TokenStack);
+  const stack = useArete(TokenStack);
   
   // Access views
   const { data: tokens } = stack.views.tokens.list.use();
@@ -370,7 +370,7 @@ interface UseMutationReturn {
 
 ```typescript
 function CreateTokenButton() {
-  const stack = useHyperstack(MyStack);
+  const stack = useArete(MyStack);
   const { submit, status, error, signature } = stack.tx.useMutation();
   
   const handleCreate = async () => {
@@ -422,7 +422,7 @@ const TokenStack = defineStack({
 
 ```typescript
 function TokenCard({ token }: { token: Token }) {
-  const stack = useHyperstack(TokenStack);
+  const stack = useArete(TokenStack);
   
   return (
     <div>
@@ -437,14 +437,14 @@ function TokenCard({ token }: { token: Token }) {
 
 ## Connection State
 
-Monitor WebSocket connection status via `useHyperstack`:
+Monitor WebSocket connection status via `useArete`:
 
 ```typescript
-import { useHyperstack } from 'hyperstack-react';
+import { useArete } from 'arete-react';
 import { MY_STACK } from './stack';
 
 function ConnectionIndicator() {
-  const { connectionState, isConnected } = useHyperstack(MY_STACK);
+  const { connectionState, isConnected } = useArete(MY_STACK);
   // connectionState: 'disconnected' | 'connecting' | 'connected' | 'error' | 'reconnecting'
   // isConnected: boolean (true when connectionState === 'connected')
   
@@ -490,7 +490,7 @@ stack.transactions.createToken.build({
 
 ```typescript
 function TokenDetail({ mint }: { mint: string | null }) {
-  const stack = useHyperstack(TokenStack);
+  const stack = useArete(TokenStack);
   
   // Only subscribe when mint is available
   const { data } = stack.views.tokens.state.use(
@@ -507,7 +507,7 @@ function TokenDetail({ mint }: { mint: string | null }) {
 
 ```typescript
 function Dashboard() {
-  const stack = useHyperstack(MyStack);
+  const stack = useArete(MyStack);
   
   const { data: tokens } = stack.views.tokens.list.use();
   const { data: stats } = stack.views.stats.state.use({ key: 'global' });
@@ -523,7 +523,7 @@ function Dashboard() {
 
 ```typescript
 function RefreshableList() {
-  const stack = useHyperstack(TokenStack);
+  const stack = useArete(TokenStack);
   const { data, refresh, isLoading } = stack.views.tokens.list.use();
   
   return (

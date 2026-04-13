@@ -17,8 +17,8 @@ If you haven't set up a coding tool yet, start with the [Setup Guide](/agent-ski
 
 ## Prerequisites
 
-- Install agent skills: `npx skills add usehyperstack/skills`
-- Install Hyperstack CLI: `npm i -g hyperstack-cli`
+- Install agent skills: `npx skills add usearete/skills`
+- Install Arete CLI: `npm i -g arete-cli`
 - A code editor with an AI agent (Cursor, VS Code with Copilot, etc.)
 
 ---
@@ -30,7 +30,7 @@ Start by creating the basic project structure and installing dependencies.
 **Prompt:**
 
 <CopyPrompt>
-Create a new React + Vite + TypeScript project. Install these dependencies: hyperstack-react, hyperstack-stacks, tailwindcss. Set up Tailwind with the Vite plugin.
+Create a new React + Vite + TypeScript project. Install these dependencies: arete-react, arete-stacks, tailwindcss. Set up Tailwind with the Vite plugin.
 </CopyPrompt>
 
 ---
@@ -42,7 +42,7 @@ Ask your agent to look at the available ORE data to understand what you can buil
 **Prompt:**
 
 <CopyPrompt>
-Run `hs explore ore --json` and `hs explore ore OreRound --json` to understand the ORE stack schema. Summarize the available entities, views, and fields.
+Run `a4 explore ore --json` and `a4 explore ore OreRound --json` to understand the ORE stack schema. Summarize the available entities, views, and fields.
 </CopyPrompt>
 
 ---
@@ -54,7 +54,7 @@ Set up the application shell with a connection status indicator.
 **Prompt:**
 
 <CopyPrompt>
-Create the main `App.tsx` with a `HyperstackProvider` (autoConnect={true}). Create an `OreDashboard` component that will hold our mining data display. Use a dark theme with tailwind (bg-gray-900, text-white). Add a header that says "ORE Mining Dashboard" with a connection status indicator.
+Create the main `App.tsx` with a `AreteProvider` (autoConnect={true}). Create an `OreDashboard` component that will hold our mining data display. Use a dark theme with tailwind (bg-gray-900, text-white). Add a header that says "ORE Mining Dashboard" with a connection status indicator.
 </CopyPrompt>
 
 ---
@@ -66,7 +66,7 @@ Connect to the live round view to show the current mining status.
 **Prompt:**
 
 <CopyPrompt>
-In the `OreDashboard` component, use the `useHyperstack` hook with `ORE_STREAM_STACK` from `hyperstack-stacks/ore`. Subscribe to the `OreRound.latest` view using `useOne()` to get the current round. Display: Round number (`id.round_id`), Motherlode amount (`state.motherlode`), Total miners (`state.total_miners`), Total deployed (`state.total_deployed`), and Deploy count (`metrics.deploy_count`). Format large numbers with commas.
+In the `OreDashboard` component, use the `useArete` hook with `ORE_STREAM_STACK` from `arete-stacks/ore`. Subscribe to the `OreRound.latest` view using `useOne()` to get the current round. Display: Round number (`id.round_id`), Motherlode amount (`state.motherlode`), Total miners (`state.total_miners`), Total deployed (`state.total_deployed`), and Deploy count (`metrics.deploy_count`). Format large numbers with commas.
 </CopyPrompt>
 
 ---
@@ -102,13 +102,13 @@ Make the dashboard look professional and responsive.
 **Prompt:**
 
 <CopyPrompt>
-Clean up the layout. Add subtle animations for when data updates like a brief highlight or pulse effect. Make the stat cards have a slightly lighter background (`bg-gray-800`). Add a footer that says "Powered by Hyperstack" with a link to `docs.usehyperstack.com`. Ensure the app is responsive on mobile devices.
+Clean up the layout. Add subtle animations for when data updates like a brief highlight or pulse effect. Make the stat cards have a slightly lighter background (`bg-gray-800`). Add a footer that says "Powered by Arete" with a link to `docs.arete.run`. Ensure the app is responsive on mobile devices.
 </CopyPrompt>
 
 ---
 
 ## The Result
 
-Once your agent finishes the final step, you will have a fully functional, real-time dashboard. The app connects to the Hyperstack ORE stream and updates automatically as new data hits the Solana blockchain.
+Once your agent finishes the final step, you will have a fully functional, real-time dashboard. The app connects to the Arete ORE stream and updates automatically as new data hits the Solana blockchain.
 
 You built a complex, data-heavy application in minutes without writing a single line of manual code.

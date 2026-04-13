@@ -1,18 +1,18 @@
 ---
-title: hs idl — IDL Explorer
+title: a4 idl — IDL Explorer
 sidebar:
   order: 2
 ---
 
 Explore and analyze Solana IDL (Interface Definition Language) files directly from the command line.
 
-The `hs idl` suite helps you understand a program's structure, account layouts, and relationships before you start building your stack.
+The `a4 idl` suite helps you understand a program's structure, account layouts, and relationships before you start building your stack.
 
 ---
 
 ## Global Behavior
 
-These rules apply to all `hs idl` subcommands:
+These rules apply to all `a4 idl` subcommands:
 
 - **Path argument**: Every subcommand takes `<path>` as its first positional argument (the path to the IDL JSON file).
 - **JSON output**: Most commands support the `--json` flag for machine-readable output.
@@ -25,51 +25,51 @@ These rules apply to all `hs idl` subcommands:
 
 | Command                                  | Description                              |
 | ---------------------------------------- | ---------------------------------------- |
-| [`summary`](#hs-idl-summary)             | Quick overview of the IDL structure      |
-| [`instructions`](#hs-idl-instructions)   | List all instructions                    |
-| [`instruction`](#hs-idl-instruction)     | Detail view of a specific instruction    |
-| [`accounts`](#hs-idl-accounts)           | List all account types                   |
-| [`account`](#hs-idl-account)             | Detail view of a specific account        |
-| [`types`](#hs-idl-types)                 | List all custom types                    |
-| [`type`](#hs-idl-type)                   | Detail view of a specific custom type    |
-| [`errors`](#hs-idl-errors)               | List all program errors                  |
-| [`events`](#hs-idl-events)               | List all program events                  |
-| [`constants`](#hs-idl-constants)         | List all defined constants               |
-| [`search`](#hs-idl-search)               | Fuzzy search across the entire IDL       |
-| [`discriminator`](#hs-idl-discriminator) | Compute Anchor discriminators            |
-| [`relations`](#hs-idl-relations)         | Categorize accounts by their role        |
-| [`account-usage`](#hs-idl-account-usage) | Find all instructions using an account   |
-| [`links`](#hs-idl-links)                 | Find instructions linking two accounts   |
-| [`pda-graph`](#hs-idl-pda-graph)         | Visualize PDA derivation paths           |
-| [`type-graph`](#hs-idl-type-graph)       | Visualize field-to-account relationships |
-| [`connect`](#hs-idl-connect)             | Analyze how to connect new accounts      |
+| [`summary`](#a4-idl-summary)             | Quick overview of the IDL structure      |
+| [`instructions`](#a4-idl-instructions)   | List all instructions                    |
+| [`instruction`](#a4-idl-instruction)     | Detail view of a specific instruction    |
+| [`accounts`](#a4-idl-accounts)           | List all account types                   |
+| [`account`](#a4-idl-account)             | Detail view of a specific account        |
+| [`types`](#a4-idl-types)                 | List all custom types                    |
+| [`type`](#a4-idl-type)                   | Detail view of a specific custom type    |
+| [`errors`](#a4-idl-errors)               | List all program errors                  |
+| [`events`](#a4-idl-events)               | List all program events                  |
+| [`constants`](#a4-idl-constants)         | List all defined constants               |
+| [`search`](#a4-idl-search)               | Fuzzy search across the entire IDL       |
+| [`discriminator`](#a4-idl-discriminator) | Compute Anchor discriminators            |
+| [`relations`](#a4-idl-relations)         | Categorize accounts by their role        |
+| [`account-usage`](#a4-idl-account-usage) | Find all instructions using an account   |
+| [`links`](#a4-idl-links)                 | Find instructions linking two accounts   |
+| [`pda-graph`](#a4-idl-pda-graph)         | Visualize PDA derivation paths           |
+| [`type-graph`](#a4-idl-type-graph)       | Visualize field-to-account relationships |
+| [`connect`](#a4-idl-connect)             | Analyze how to connect new accounts      |
 
 ---
 
 ## Data Commands
 
-### hs idl summary
+### a4 idl summary
 
 Show a high-level overview of the program.
 
 ```bash
 # Get a quick summary
-hs idl summary meteora_dlmm.json
+a4 idl summary meteora_dlmm.json
 # Output: Name: meteora_dlmm, Format: modern, Instructions: 74, Constants: 30
 ```
 
 Shows program name, IDL format (modern or legacy), program address, version, and counts for all sections.
 
-### hs idl instructions
+### a4 idl instructions
 
 List all instructions defined in the IDL.
 
 ```bash
 # List all instructions
-hs idl instructions ore.json
+a4 idl instructions ore.json
 
 # Count instructions via JSON
-hs idl instructions ore.json --json | jq length
+a4 idl instructions ore.json --json | jq length
 # Output: 19
 ```
 
@@ -79,16 +79,16 @@ hs idl instructions ore.json --json | jq length
 | -------- | --------------------------------- |
 | `--json` | Output as JSON (machine-readable) |
 
-### hs idl instruction
+### a4 idl instruction
 
 Show detailed information about a specific instruction, including its discriminator, accounts, and arguments.
 
 ```bash
 # Detail view for an instruction
-hs idl instruction ore.json deposit
+a4 idl instruction ore.json deposit
 
 # Fuzzy matching on typos
-hs idl instruction ore.json depositt
+a4 idl instruction ore.json depositt
 # Error: instruction 'depositt' not found, did you mean: deposit?
 ```
 
@@ -98,13 +98,13 @@ hs idl instruction ore.json depositt
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl accounts
+### a4 idl accounts
 
 List all account structures defined in the IDL.
 
 ```bash
 # List all accounts
-hs idl accounts meteora_dlmm.json
+a4 idl accounts meteora_dlmm.json
 ```
 
 **Options:**
@@ -113,13 +113,13 @@ hs idl accounts meteora_dlmm.json
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl account
+### a4 idl account
 
 Show the detailed field layout of a specific account type.
 
 ```bash
 # View account fields and types
-hs idl account meteora_dlmm.json lb_pair
+a4 idl account meteora_dlmm.json lb_pair
 ```
 
 **Options:**
@@ -128,13 +128,13 @@ hs idl account meteora_dlmm.json lb_pair
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl types
+### a4 idl types
 
 List all custom types and enums.
 
 ```bash
 # List all custom types
-hs idl types ore.json
+a4 idl types ore.json
 ```
 
 **Options:**
@@ -143,13 +143,13 @@ hs idl types ore.json
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl type
+### a4 idl type
 
 Show the full definition of a custom type or enum.
 
 ```bash
 # View type details
-hs idl type ore.json Config
+a4 idl type ore.json Config
 ```
 
 **Options:**
@@ -158,13 +158,13 @@ hs idl type ore.json Config
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl errors
+### a4 idl errors
 
 List all custom program errors with their codes and messages.
 
 ```bash
 # List all errors
-hs idl errors meteora_dlmm.json
+a4 idl errors meteora_dlmm.json
 ```
 
 **Options:**
@@ -173,13 +173,13 @@ hs idl errors meteora_dlmm.json
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl events
+### a4 idl events
 
 List all events emitted by the program.
 
 ```bash
 # List all events
-hs idl events meteora_dlmm.json
+a4 idl events meteora_dlmm.json
 ```
 
 **Options:**
@@ -188,13 +188,13 @@ hs idl events meteora_dlmm.json
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl constants
+### a4 idl constants
 
 List all constants defined in the program.
 
 ```bash
 # List all constants
-hs idl constants ore.json
+a4 idl constants ore.json
 ```
 
 **Options:**
@@ -203,16 +203,16 @@ hs idl constants ore.json
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl search
+### a4 idl search
 
 Perform a fuzzy search across instructions, accounts, types, errors, events, and constants.
 
 ```bash
 # Search for anything related to "swap"
-hs idl search meteora_dlmm.json swap
+a4 idl search meteora_dlmm.json swap
 
 # Use JSON to see where matches were found
-hs idl search meteora_dlmm.json swap --json | jq '.[].section' | sort -u
+a4 idl search meteora_dlmm.json swap --json | jq '.[].section' | sort -u
 # Output: "error", "event", "instruction", "type"
 ```
 
@@ -222,17 +222,17 @@ hs idl search meteora_dlmm.json swap --json | jq '.[].section' | sort -u
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl discriminator
+### a4 idl discriminator
 
 Compute the Anchor discriminator for an instruction or account.
 
 ```bash
 # Compute instruction discriminator (global namespace)
-hs idl discriminator pump.json buy
+a4 idl discriminator pump.json buy
 # Output: Name: buy, Namespace: global, Discriminator: [66, 06, 3d, 12, 01, da, eb, ea]
 
 # Compute account discriminator (account namespace)
-hs idl discriminator pump.json LastIdlBlock
+a4 idl discriminator pump.json LastIdlBlock
 ```
 
 **Options:**
@@ -245,16 +245,16 @@ hs idl discriminator pump.json LastIdlBlock
 
 ## Relationship Commands
 
-### hs idl relations
+### a4 idl relations
 
 Analyze and categorize all accounts in the IDL.
 
 ```bash
 # See how accounts are categorized
-hs idl relations meteora_dlmm.json
+a4 idl relations meteora_dlmm.json
 
 # Find core entity accounts
-hs idl relations meteora_dlmm.json --json | jq '.[] | select(.category == "Entity") | .account_name'
+a4 idl relations meteora_dlmm.json --json | jq '.[] | select(.category == "Entity") | .account_name'
 # Output includes: "lb_pair"
 ```
 
@@ -271,16 +271,16 @@ Accounts are classified into:
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl account-usage
+### a4 idl account-usage
 
 Find every instruction that uses a specific account.
 
 ```bash
 # See where 'lb_pair' is used
-hs idl account-usage meteora_dlmm.json lb_pair
+a4 idl account-usage meteora_dlmm.json lb_pair
 
 # Count usages
-hs idl account-usage meteora_dlmm.json lb_pair --json | jq length
+a4 idl account-usage meteora_dlmm.json lb_pair --json | jq length
 # Output: 59
 ```
 
@@ -292,16 +292,16 @@ Instructions are grouped by the role the account plays: Writable, Signer, or Rea
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl links
+### a4 idl links
 
 Find instructions that involve a specific pair of accounts. This is useful for discovering how two entities interact.
 
 ```bash
 # Find instructions linking 'round' and 'entropyVar'
-hs idl links ore.json round entropyVar
+a4 idl links ore.json round entropyVar
 
 # Count shared instructions
-hs idl links ore.json round entropyVar --json | jq length
+a4 idl links ore.json round entropyVar --json | jq length
 # Output: 2
 ```
 
@@ -311,13 +311,13 @@ hs idl links ore.json round entropyVar --json | jq length
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl pda-graph
+### a4 idl pda-graph
 
 Extract and visualize the PDA (Program Derived Address) derivation graph.
 
 ```bash
 # Extract PDA graph
-hs idl pda-graph idl.json
+a4 idl pda-graph idl.json
 ```
 
 Shows seeds (constants, accounts, or arguments) used to derive each PDA account.
@@ -328,13 +328,13 @@ Shows seeds (constants, accounts, or arguments) used to derive each PDA account.
 | -------- | -------------- |
 | `--json` | Output as JSON |
 
-### hs idl type-graph
+### a4 idl type-graph
 
 Analyze field types to find implicit references to account types.
 
 ```bash
 # Extract type reference graph
-hs idl type-graph idl.json
+a4 idl type-graph idl.json
 ```
 
 Useful for identifying when a field named `lb_pair` (type `Pubkey`) refers to an account of type `LbPair`.
@@ -349,20 +349,20 @@ Useful for identifying when a field named `lb_pair` (type `Pubkey`) refers to an
 
 ## Connection Command
 
-### hs idl connect
+### a4 idl connect
 
 Analyze how a new account can be connected to existing accounts in the program.
 
 ```bash
 # Analyze connection between reward_vault and lb_pair
-hs idl connect meteora_dlmm.json reward_vault --existing lb_pair
+a4 idl connect meteora_dlmm.json reward_vault --existing lb_pair
 
-# With HyperStack-specific suggestions
-hs idl connect meteora_dlmm.json reward_vault --existing lb_pair --suggest-hs
+# With Arete-specific suggestions
+a4 idl connect meteora_dlmm.json reward_vault --existing lb_pair --suggest-a4
 # Shows: register_from suggestions
 
 # Partial success handling
-hs idl connect ore.json entropyVar --existing round,bogus_account
+a4 idl connect ore.json entropyVar --existing round,bogus_account
 # Warning: account 'bogus_account' not found in IDL, skipping
 # (then shows connections to round)
 ```
@@ -373,8 +373,8 @@ hs idl connect ore.json entropyVar --existing round,bogus_account
 | -------------------- | ---------------------------------------------------------------------- |
 | `--existing <names>` | Comma-separated list of existing account names                         |
 | `--json`             | Output as JSON                                                         |
-| `--suggest-hs`       | Show HyperStack integration suggestions (`register_from`, `aggregate`) |
+| `--suggest-a4`       | Show Arete integration suggestions (`register_from`, `aggregate`) |
 
-:::note[HyperStack Suggestions]
-The `--suggest-hs` flag is specifically for HyperStack stack builders. It suggests the most appropriate projection patterns based on the detected relationship.
+:::note[Arete Suggestions]
+The `--suggest-a4` flag is specifically for Arete stack builders. It suggests the most appropriate projection patterns based on the detected relationship.
 :::

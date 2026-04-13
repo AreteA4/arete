@@ -1,11 +1,11 @@
 ---
 title: Running a Stack
-description: Step-by-step guide to running a stack with hyperstack-server.
+description: Step-by-step guide to running a stack with a4-server.
 sidebar:
   order: 2
 ---
 
-This guide shows how to run your compiled stack as a WebSocket server using `hyperstack-server`.
+This guide shows how to run your compiled stack as a WebSocket server using `a4-server`.
 
 ## 1. Set Environment Variables
 
@@ -34,7 +34,7 @@ Add dependencies to your `Cargo.toml`:
 ```toml title="Cargo.toml"
 [dependencies]
 your-stack = { path = "../path/to/your/stack" }
-hyperstack-server = "{{VERSION}}"
+a4-server = "{{VERSION}}"
 tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -47,7 +47,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 Create your `main.rs`:
 
 ```rust title="src/main.rs"
-use hyperstack_server::Server;
+use a4_server::Server;
 use your_stack as my_stream;
 use std::net::SocketAddr;
 
@@ -94,27 +94,27 @@ cargo run --release
 You should see output like:
 
 ```
-INFO hyperstack_server: Starting WebSocket server on [::]:8877
-INFO hyperstack_server: Connected to Yellowstone gRPC
-INFO hyperstack_server: Health monitoring enabled
+INFO a4_server: Starting WebSocket server on [::]:8877
+INFO a4_server: Connected to Yellowstone gRPC
+INFO a4_server: Health monitoring enabled
 ```
 
 ## 4. Connect Clients
 
-Once running, connect using any Hyperstack SDK:
+Once running, connect using any Arete SDK:
 
 ```typescript title="TypeScript"
-import { HyperStack } from "hyperstack-react";
+import { Arete } from "arete-react";
 
-const stack = new HyperStack({
+const stack = new Arete({
   endpoint: "ws://localhost:8877",
 });
 ```
 
 ```rust title="Rust"
-use hyperstack_sdk::HyperStack;
+use a4_sdk::Arete;
 
-let stack = HyperStack::connect("ws://localhost:8877").await?;
+let stack = Arete::connect("ws://localhost:8877").await?;
 ```
 
 ## Production Tips
@@ -140,12 +140,12 @@ Server::builder()
 Enable OpenTelemetry for Prometheus metrics:
 
 ```toml title="Cargo.toml"
-hyperstack-server = { version = "{{VERSION}}", features = ["otel"] }
+a4-server = { version = "{{VERSION}}", features = ["otel"] }
 ```
 
 ### Graceful Shutdown
 
-`hyperstack-server` handles `SIGINT` and `SIGTERM` automatically, ensuring clean disconnection from the Yellowstone stream.
+`a4-server` handles `SIGINT` and `SIGTERM` automatically, ensuring clean disconnection from the Yellowstone stream.
 
 ### Resource Considerations
 

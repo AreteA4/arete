@@ -4,13 +4,13 @@ sidebar:
   order: 4
 ---
 
-Every Hyperstack stack ships with [Zod](https://zod.dev) schemas alongside its TypeScript interfaces. These schemas give you runtime validation at two levels: **automatic frame validation** on the wire, and **per-query validation** in your application code.
+Every Arete stack ships with [Zod](https://zod.dev) schemas alongside its TypeScript interfaces. These schemas give you runtime validation at two levels: **automatic frame validation** on the wire, and **per-query validation** in your application code.
 
 ---
 
 ## Generated Schemas
 
-When you run `hs sdk create typescript`, the CLI generates a Zod schema for every entity and sub-type. These mirror the TypeScript interfaces exactly:
+When you run `a4 sdk create typescript`, the CLI generates a Zod schema for every entity and sub-type. These mirror the TypeScript interfaces exactly:
 
 ```typescript
 import {
@@ -18,7 +18,7 @@ import {
   PumpfunTokenIdSchema,
   PumpfunTokenReservesSchema,
   PumpfunTokenCompletedSchema,
-} from "hyperstack-stacks/pumpfun";
+} from "arete-stacks/pumpfun";
 ```
 
 Each entity gets two schema variants:
@@ -39,10 +39,10 @@ Enable `validateFrames` when connecting to automatically validate every incoming
 ### TypeScript (Core SDK)
 
 ```typescript
-import { HyperStack } from "hyperstack-typescript";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { Arete } from "arete-typescript";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
-const hs = await HyperStack.connect(ORE_STREAM_STACK, {
+const a4 = await Arete.connect(ORE_STREAM_STACK, {
   validateFrames: true,
 });
 ```
@@ -50,13 +50,13 @@ const hs = await HyperStack.connect(ORE_STREAM_STACK, {
 ### React
 
 ```tsx
-import { HyperstackProvider } from "hyperstack-react";
+import { AreteProvider } from "arete-react";
 
 function App() {
   return (
-    <HyperstackProvider validateFrames>
+    <AreteProvider validateFrames>
       <Dashboard />
-    </HyperstackProvider>
+    </AreteProvider>
   );
 }
 ```
@@ -78,16 +78,16 @@ Pass a `schema` option to any streaming method to filter entities that don't mat
 The `.use()` method accepts a `schema` in its options. Entities that fail validation are silently skipped:
 
 ```typescript
-import { HyperStack } from "hyperstack-typescript";
+import { Arete } from "arete-typescript";
 import {
   ORE_STREAM_STACK,
   OreRoundCompletedSchema,
-} from "hyperstack-stacks/ore";
+} from "arete-stacks/ore";
 
-const hs = await HyperStack.connect(ORE_STREAM_STACK);
+const a4 = await Arete.connect(ORE_STREAM_STACK);
 
 // Only emit rounds where every field is present
-for await (const round of hs.views.OreRound.latest.use({
+for await (const round of a4.views.OreRound.latest.use({
   schema: OreRoundCompletedSchema,
 })) {
   // round is guaranteed to have all fields populated
@@ -100,14 +100,14 @@ for await (const round of hs.views.OreRound.latest.use({
 Both `.use()` and `.useOne()` accept `schema` in their params. Entities that fail validation are filtered out of the results:
 
 ```tsx
-import { useHyperstack } from "hyperstack-react";
+import { useArete } from "arete-react";
 import {
   ORE_STREAM_STACK,
   OreRoundCompletedSchema,
-} from "hyperstack-stacks/ore";
+} from "arete-stacks/ore";
 
 function FullyLoadedRounds() {
-  const { views } = useHyperstack(ORE_STREAM_STACK);
+  const { views } = useArete(ORE_STREAM_STACK);
 
   // Only returns rounds where all fields are present
   const { data: rounds } = views.OreRound.latest.use({
@@ -156,7 +156,7 @@ const { data: tokens } = views.PumpfunToken.list.use({
 });
 
 // Or in core SDK
-for await (const token of hs.views.PumpfunToken.list.use({
+for await (const token of a4.views.PumpfunToken.list.use({
   schema: TradableTokenSchema,
 })) {
   console.log(token.id.mint, token.reserves.current_price_sol);
@@ -189,4 +189,4 @@ Any object with a `safeParse` method works — Zod schemas satisfy this out of t
 
 - [TypeScript SDK](/sdks/typescript/) — Core streaming API reference
 - [React SDK](/sdks/react/) — Hooks and providers for React apps
-- [Resolvers](/building-stacks/rust-dsl/resolvers/) — How Hyperstack enriches entities with external data like token metadata
+- [Resolvers](/building-stacks/rust-dsl/resolvers/) — How Arete enriches entities with external data like token metadata

@@ -2,13 +2,13 @@
 title: How It Works
 sidebar:
   order: 3
-description: Architecture, core concepts, and data flow in Hyperstack.
+description: Architecture, core concepts, and data flow in Arete.
 ---
 
-Hyperstack is a declarative data layer for Solana. You define the data shape you need, and Hyperstack handles all the infrastructure to stream it to your app.
+Arete is a declarative data layer for Solana. You define the data shape you need, and Arete handles all the infrastructure to stream it to your app.
 
 :::tip[Prefer AI-assisted development?]
-You don't need to understand all of this to build with Hyperstack. Check out the [Build with AI](/agent-skills/overview/) path to get started with prompts instead of code.
+You don't need to understand all of this to build with Arete. Check out the [Build with AI](/agent-skills/overview/) path to get started with prompts instead of code.
 :::
 
 ---
@@ -26,7 +26,7 @@ Most teams spend weeks on infrastructure before shipping features.
 
 ---
 
-## The Hyperstack Solution
+## The Arete Solution
 
 Instead of building infrastructure, you **declare what data you need**:
 
@@ -44,7 +44,7 @@ pub struct Token {
 }
 ```
 
-Hyperstack then:
+Arete then:
 
 - Subscribes to the relevant on-chain events
 - Transforms raw data into your entity shape
@@ -64,7 +64,7 @@ Hyperstack then:
                               │ WebSocket (live updates)
                               ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  HYPERSTACK CLOUD                                            │
+│  ARETE CLOUD                                            │
 │                                                              │
 │   ┌────────────┐    ┌────────────┐    ┌────────────┐         │
 │   │  Compiler  │ -> │     VM     │ -> │  Streamer  │         │
@@ -102,7 +102,7 @@ A **Stack** is a deployed data pipeline that:
 
 A stack isn't limited to a single program. You can pull data from multiple programs into a single unified set of entities — as long as you provide an IDL for each. For example, a DeFi stack might combine instructions from a DEX program, a token program, and a rewards program into one coherent stream.
 
-Think of it as a "live query" across Solana — you declare the programs and data shape you need, and Hyperstack keeps it updated.
+Think of it as a "live query" across Solana — you declare the programs and data shape you need, and Arete keeps it updated.
 
 ### Entities
 
@@ -170,7 +170,7 @@ const { data: token } = stack.views.tokens.state.use({ key: mintAddress });
 
 ### Stack SDKs
 
-A **Stack SDK** is a generated package that tells the Hyperstack client how to interact with a specific feed. It contains:
+A **Stack SDK** is a generated package that tells the Arete client how to interact with a specific feed. It contains:
 
 - **Entity types** — The shape of your data
 - **View definitions** — How to access entities (list, state, etc.)
@@ -185,8 +185,8 @@ You can share generated SDKs with your team or publish them to npm/crates.io.
 ### Specification Time
 
 1. Write stream definition using Rust macros
-2. Build generates stack spec (`.hyperstack/*.stack.json`)
-3. Deploy with `hs up`
+2. Build generates stack spec (`.arete/*.stack.json`)
+3. Deploy with `a4 up`
 4. Cloud compiles spec to bytecode
 
 ### Client
@@ -200,7 +200,7 @@ You can share generated SDKs with your team or publish them to npm/crates.io.
 
 ## Live Updates
 
-Unlike traditional APIs where you poll for changes, Hyperstack **pushes** updates to you.
+Unlike traditional APIs where you poll for changes, Arete **pushes** updates to you.
 
 ### Update Types
 
@@ -210,7 +210,7 @@ Unlike traditional APIs where you poll for changes, Hyperstack **pushes** update
 | `delete` | Entity was removed            |
 
 ```typescript
-for await (const update of hs.views.token.list.watch()) {
+for await (const update of a4.views.token.list.watch()) {
   if (update.type === "upsert") {
     console.log("Token changed:", update.data);
   } else if (update.type === "delete") {
@@ -242,7 +242,7 @@ The SDK handles reconnection automatically. Your subscriptions resume when the c
 
 ## Type Safety
 
-Hyperstack provides end-to-end type safety:
+Arete provides end-to-end type safety:
 
 1. **Spec types** - Rust ensures valid mappings at compile time
 2. **Generated types** - SDK types match your entity definitions
@@ -260,7 +260,7 @@ console.log(token.volume); // bigint
 ## Next Steps
 
 - [Quickstart](/using-stacks/quickstart) - Scaffold a working app in under 2 minutes
-- [Connect to a Stack](/using-stacks/connect/) - Add Hyperstack to your existing project
+- [Connect to a Stack](/using-stacks/connect/) - Add Arete to your existing project
 - [React SDK](/sdks/react/) - Build a complete React app
 - [TypeScript SDK](/sdks/typescript/) - Framework-agnostic SDK
 - [Rust SDK](/sdks/rust/) - Native Rust client

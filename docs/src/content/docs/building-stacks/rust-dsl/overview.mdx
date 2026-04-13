@@ -4,7 +4,7 @@ sidebar:
   order: 1
 ---
 
-The Hyperstack Rust DSL (Domain Specific Language) is a declarative syntax for defining streaming data pipelines. Using procedural macros, you describe **what** data you want from Solana, not **how** to fetch it.
+The Arete Rust DSL (Domain Specific Language) is a declarative syntax for defining streaming data pipelines. Using procedural macros, you describe **what** data you want from Solana, not **how** to fetch it.
 
 ---
 
@@ -18,14 +18,14 @@ Instead of writing complex ETL pipelines with manual account parsing and event h
 - **Resolvers** — External data (like token metadata) enriched automatically
 - **Strategies** — How incoming data merges with existing state
 
-The macros transform your Rust code into a JSON-based stack spec (`.stack.json`), which Hyperstack compiles into optimized bytecode for real-time execution.
+The macros transform your Rust code into a JSON-based stack spec (`.stack.json`), which Arete compiles into optimized bytecode for real-time execution.
 
 ---
 
 ## The DSL in Practice
 
 ```rust
-#[hyperstack(idl = "my_program.json")]
+#[arete(idl = "my_program.json")]
 pub mod my_stream {
     #[entity]
     pub struct Token {
@@ -60,7 +60,7 @@ Field paths use the `{name}_sdk::accounts::` and `{name}_sdk::instructions::` pr
 
 | Macro           | Purpose                                                                   |
 | --------------- | ------------------------------------------------------------------------- |
-| `#[hyperstack]` | Entry point — defines the stream and links to data sources (IDL/Protobuf) |
+| `#[arete]` | Entry point — defines the stream and links to data sources (IDL/Protobuf) |
 
 ### Entity-Level
 
