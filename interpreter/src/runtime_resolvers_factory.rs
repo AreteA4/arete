@@ -13,7 +13,12 @@ static FACTORY: OnceLock<ResolverFactory> = OnceLock::new();
 ///
 /// Only the first call takes effect; subsequent calls are ignored.
 pub fn set_resolver_factory(factory: ResolverFactory) {
-    let _ = FACTORY.set(factory);
+    if FACTORY.set(factory).is_err() {
+        tracing::warn!(
+            "set_resolver_factory called after a factory was already registered; \
+             subsequent registration ignored"
+        );
+    }
 }
 
 /// Build the runtime resolver. Uses the registered factory if set, otherwise
