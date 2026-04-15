@@ -38,6 +38,18 @@ class Game:
     events: Optional[Dict[str, Any]] = None
 
 
+class SettlementGame:
+    NAME = "SettlementGame"
+
+    @staticmethod
+    def state_view() -> str:
+        return "SettlementGame/state"
+
+    @staticmethod
+    def list_view() -> str:
+        return "SettlementGame/list"
+
+
 def parse_game(data: Dict[str, Any]) -> Game:
     id_data = data.get("id", {})
     status_data = data.get("status", {})
@@ -70,7 +82,7 @@ def parse_game(data: Dict[str, Any]) -> Game:
 
 async def main():
     async with HyperStackClient("ws://localhost:8080") as client:
-        game_store = client.subscribe(view="SettlementGame/list", parser=parse_game)
+        game_store = client.watch(SettlementGame, parser=parse_game)
 
         print(f"connected, watching {game_store.view}\n")
 

@@ -87,6 +87,7 @@ class Store(Generic[T]):
         self._lock = asyncio.Lock()
         self._callbacks: List[Callable[[Update[T]], None]] = []
         self._update_queue: asyncio.Queue[Update[T]] = asyncio.Queue()
+        self._ready_event = asyncio.Event()
 
         if mode in (Mode.LIST, Mode.STATE):
             self._data: Union[OrderedDict[str, T], List[T]] = OrderedDict()
@@ -298,6 +299,7 @@ class Store(Generic[T]):
         update = Update(key=key, data=data)
 
         await self._update_queue.put(update)
+        self._ready_event.set()
 
         # Call all registered callbacks
         for callback in self._callbacks:
@@ -305,3 +307,72 @@ class Store(Generic[T]):
                 callback(update)
             except Exception as e:
                 logger.error(f"Callback error: {e}")
+
+    async def wait_ready(self, timeout: Optional[float] = None) -> bool:
+        if self._ready_event.is_set():
+            return True
+        try:
+            if timeout is None:
+                await self._ready_event.wait()
+            else:
+                await asyncio.wait_for(self._ready_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+
+class SharedStore:
+    def __init__(self, max_entries_per_view: Optional[int] = DEFAULT_MAX_ENTRIES_PER_VIEW):
+        self._stores: Dict[str, Store[Any]] = {}
+        self._max_entries_per_view = max_entries_per_view
+
+    def get_store(
+        self,
+        view: str,
+        mode: Mode = Mode.LIST,
+        parser: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> Store[Any]:
+        if view in self._stores:
+            return self._stores[view]
+        store = Store(
+            mode=mode, parser=parser, view=view, max_entries=self._max_entries_per_view
+        )
+        self._stores[view] = store
+        return store
+
+    async def apply_frame(self, frame) -> None:
+        mode = Mode(frame.mode) if frame.mode in Mode._value2member_map_ else Mode.LIST
+        view = self._frame_view(frame)
+        store = self.get_store(view, mode=mode)
+        await store.handle_frame(frame)
+
+    @staticmethod
+    def _frame_view(frame) -> str:
+        entity = getattr(frame, "entity", "")
+        mode = getattr(frame, "mode", "")
+        if "/" in entity:
+            return entity
+        if mode:
+            return f"{entity}/{mode}"
+        return entity
+
+    async def wait_for_view_ready(self, view: str, timeout: Optional[float] = None) -> bool:
+        store = self._stores.get(view)
+        if not store:
+            return False
+        return await store.wait_ready(timeout)
+
+    async def get(self, view: str, key: Optional[str] = None) -> Optional[Any]:
+        store = self._stores.get(view)
+        if not store:
+            return None
+        return await store.get_async(key)
+
+    async def list(self, view: str) -> List[Any]:
+        store = self._stores.get(view)
+        if not store:
+            return []
+        async with store._lock:
+            if isinstance(store._data, OrderedDict):
+                return list(store._data.values())
+            return list(store._data)

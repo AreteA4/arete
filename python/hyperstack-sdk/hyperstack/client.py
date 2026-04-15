@@ -3,11 +3,19 @@
 import asyncio
 import json
 import logging
-from typing import Dict, List, Optional, Callable
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from hyperstack.websocket import WebSocketManager
-from hyperstack.store import Store, Mode
-from hyperstack.types import Subscription, Unsubscription, Frame
+from hyperstack.connection import ConnectionManager
+from hyperstack.store import Store, Mode, SharedStore
+from hyperstack.types import (
+    Subscription,
+    Unsubscription,
+    Frame,
+    Entity,
+    StackDefinition,
+    ConnectionState,
+)
+from hyperstack.views import create_typed_views, TypedViews
 from hyperstack.auth import AuthConfig
 
 logger = logging.getLogger(__name__)
@@ -55,10 +63,10 @@ class HyperStackClient:
         url: str,
         reconnect_intervals: Optional[List[int]] = None,
         ping_interval: int = 15,
-        on_connect: Optional[Callable] = None,
-        on_disconnect: Optional[Callable] = None,
-        on_error: Optional[Callable] = None,
-        on_socket_issue: Optional[Callable[[dict], None]] = None,
+        on_connect: Optional[Callable[[], Awaitable[None]]] = None,
+        on_disconnect: Optional[Callable[[], Awaitable[None]]] = None,
+        on_error: Optional[Callable[[Exception], Awaitable[None]]] = None,
+        on_socket_issue: Optional[Callable[[dict], Awaitable[None]]] = None,
         auth: Optional[AuthConfig] = None,
     ):
         """
@@ -76,11 +84,11 @@ class HyperStackClient:
             auth: Optional authentication configuration. Required for hosted Hyperstack URLs.
         """
         self.url = url
-        self._stores: Dict[str, Store] = {}
+        self._store = SharedStore()
         self._pending_subs: List[Subscription] = []
+        self._active_subs: Dict[str, Subscription] = {}
         self._user_on_connect = on_connect
-
-        self.ws_manager = WebSocketManager(
+        self.ws_manager = ConnectionManager(
             url=url,
             reconnect_intervals=reconnect_intervals,
             ping_interval=ping_interval,
@@ -100,15 +108,15 @@ class HyperStackClient:
         """Disconnect from server."""
         await self.ws_manager.disconnect()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "HyperStackClient":
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.disconnect()
 
     def subscribe(
-        self, view: str, key: Optional[str] = None, parser: Optional[Callable] = None
+        self, view: str, key: Optional[str] = None, parser: Optional[Callable[[Dict[str, Any]], Any]] = None
     ) -> Store:
         """
         Subscribe to updates for the specified view (and optional key) on the HyperStack server.
@@ -125,23 +133,58 @@ class HyperStackClient:
             raise ValueError(f"Invalid view '{view}'. Expected: Entity/mode")
 
         mode = parse_mode(view)
-        store = Store(mode=mode, parser=parser, view=view)
-
-        store_key = f"{view}:{key or '*'}"
-        self._stores[store_key] = store
+        store = self._store.get_store(view, mode=mode, parser=parser)
 
         sub = Subscription(view=view, key=key)
-        if self.ws_manager.is_running:
-            asyncio.create_task(self._send_sub(sub))
-        else:
-            self._pending_subs.append(sub)
+        sub_key = sub.sub_key()
+        if sub_key not in self._active_subs:
+            self._active_subs[sub_key] = sub
+            if self.ws_manager.is_running:
+                asyncio.create_task(self._send_sub(sub))
+            else:
+                self._pending_subs.append(sub)
 
         return store
 
+    async def get(
+        self,
+        entity: Entity,
+        key: str,
+        parser: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> Optional[Dict]:
+        view = entity.state_view()
+        self.subscribe(view, key=key, parser=parser)
+        await self._store.wait_for_view_ready(view, timeout=timeout)
+        return await self._store.get(entity.state_view(), key)
+
+    async def list(
+        self,
+        entity: Entity,
+        parser: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> List:
+        view = entity.list_view()
+        self.subscribe(view, parser=parser)
+        await self._store.wait_for_view_ready(view, timeout=timeout)
+        return await self._store.list(entity.list_view())
+
+    def watch(self, entity: Entity, parser: Optional[Callable[[Dict[str, Any]], Any]] = None) -> Store:
+        return self.subscribe(entity.list_view(), parser=parser)
+
+    def watch_key(
+        self, entity: Entity, key: str, parser: Optional[Callable[[Dict[str, Any]], Any]] = None
+    ) -> Store:
+        return self.subscribe(entity.list_view(), key=key, parser=parser)
+
+    def views(self, stack: StackDefinition) -> TypedViews:
+        return create_typed_views(stack, self)
+
     async def _on_connect(self) -> None:
         """Send queued subscriptions on connect."""
-        while self._pending_subs:
-            await self._send_sub(self._pending_subs.pop(0))
+        for sub in self._active_subs.values():
+            await self._send_sub(sub)
+        self._pending_subs.clear()
 
         if self._user_on_connect:
             await self._user_on_connect()
@@ -159,8 +202,10 @@ class HyperStackClient:
 
     async def unsubscribe(self, view: str, key: Optional[str] = None) -> None:
         """Unsubscribe from a view."""
-        store_key = f"{view}:{key or '*'}"
-        self._stores.pop(store_key, None)
+        sub = Subscription(view=view, key=key)
+        sub_key = sub.sub_key()
+        self._active_subs.pop(sub_key, None)
+        self._pending_subs = [s for s in self._pending_subs if s.sub_key() != sub_key]
 
         if not self.ws_manager.ws or not self.ws_manager.is_running:
             return
@@ -191,15 +236,13 @@ class HyperStackClient:
             logger.debug(
                 f"Frame: entity={frame.entity}, op={frame.op}, key={frame.key}"
             )
-
-            view = frame.entity
-            store_keys = [f"{view}:{frame.key}", f"{view}:*"]
-
-            for store_key in store_keys:
-                store = self._stores.get(store_key)
-                if store:
-                    logger.debug(f"Routing to: {store_key}")
-                    await store.handle_frame(frame)
+            await self._store.apply_frame(frame)
 
         except Exception as e:
             logger.error(f"Message error: {e}", exc_info=True)
+
+    def store(self) -> SharedStore:
+        return self._store
+
+    def connection_state(self) -> ConnectionState:
+        return self.ws_manager.state()

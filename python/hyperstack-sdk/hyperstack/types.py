@@ -1,7 +1,7 @@
 import gzip
 import json
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Protocol, TypeVar
 from dataclasses import dataclass, field
 
 
@@ -85,6 +85,47 @@ class ConnectionState(str, Enum):
     CONNECTED = "connected"
     ERROR = "error"
     RECONNECTING = "reconnecting"
+
+
+T = TypeVar("T")
+
+
+class Entity(Protocol[T]):
+    NAME: str
+
+    @staticmethod
+    def state_view() -> str:
+        ...
+
+    @staticmethod
+    def list_view() -> str:
+        ...
+
+
+@dataclass(frozen=True)
+class ViewDef:
+    mode: str
+    view: str
+
+
+@dataclass(frozen=True)
+class ViewGroup:
+    state: Optional[ViewDef] = None
+    list: Optional[ViewDef] = None
+
+
+@dataclass(frozen=True)
+class StackDefinition:
+    name: str
+    views: Dict[str, ViewGroup]
+
+
+def state_view(view: str) -> ViewDef:
+    return ViewDef(mode="state", view=view)
+
+
+def list_view(view: str) -> ViewDef:
+    return ViewDef(mode="list", view=view)
 
 
 def is_gzip(data: bytes) -> bool:
