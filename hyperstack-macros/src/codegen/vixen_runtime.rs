@@ -1245,15 +1245,13 @@ pub fn generate_spec_function(
             let x_token = std::env::var("YELLOWSTONE_X_TOKEN").ok();
 
             let runtime_resolver: hyperstack::runtime::hyperstack_interpreter::runtime_resolvers::SharedRuntimeResolver =
-                Arc::new(
-                    hyperstack::runtime::hyperstack_interpreter::runtime_resolvers::InProcessResolver::from_env()
-                        .map_err(|err| {
-                            hyperstack::runtime::anyhow::anyhow!(
-                                "Failed to configure in-process runtime resolver: {}",
-                                err
-                            )
-                        })?,
-                );
+                hyperstack::runtime::hyperstack_interpreter::runtime_resolvers_factory::build_resolver()
+                    .map_err(|err| {
+                        hyperstack::runtime::anyhow::anyhow!(
+                            "Failed to build runtime resolver: {}",
+                            err
+                        )
+                    })?;
 
             let slot_tracker = hyperstack::runtime::hyperstack_server::SlotTracker::new();
             let slot_scheduler = Arc::new(Mutex::new(hyperstack::runtime::hyperstack_interpreter::scheduler::SlotScheduler::new()));
@@ -2219,15 +2217,13 @@ pub fn generate_multi_pipeline_spec_function(
             let x_token = std::env::var("YELLOWSTONE_X_TOKEN").ok();
 
             let runtime_resolver: hyperstack::runtime::hyperstack_interpreter::runtime_resolvers::SharedRuntimeResolver =
-                Arc::new(
-                    hyperstack::runtime::hyperstack_interpreter::runtime_resolvers::InProcessResolver::from_env()
-                        .map_err(|err| {
-                            hyperstack::runtime::anyhow::anyhow!(
-                                "Failed to configure in-process runtime resolver: {}",
-                                err
-                            )
-                        })?,
-                );
+                hyperstack::runtime::hyperstack_interpreter::runtime_resolvers_factory::build_resolver()
+                    .map_err(|err| {
+                        hyperstack::runtime::anyhow::anyhow!(
+                            "Failed to build runtime resolver: {}",
+                            err
+                        )
+                    })?;
 
             let slot_tracker = hyperstack::runtime::hyperstack_server::SlotTracker::new();
             let slot_scheduler = Arc::new(Mutex::new(hyperstack::runtime::hyperstack_interpreter::scheduler::SlotScheduler::new()));

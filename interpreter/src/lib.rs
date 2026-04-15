@@ -32,6 +32,7 @@ pub mod metrics_context;
 pub mod proto_router;
 pub mod resolvers;
 pub mod runtime_resolvers;
+pub mod runtime_resolvers_factory;
 pub mod rust;
 pub mod scheduler;
 pub mod slot_hash_cache;
