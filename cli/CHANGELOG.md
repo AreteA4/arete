@@ -6,6 +6,23 @@
 
 * **hyperstack-cli:** Fix `hs stream` to Hyperstack Cloud (`*.stack.usehyperstack.com`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `hs auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.6.9](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.6.8...hyperstack-cli-v0.6.9) (2026-04-15)
+
+
+### Bug Fixes
+
+* **cli:** address stream PR review (timeout, hint scope, TUI URL redaction) ([de4e3f5](https://github.com/HyperTekOrg/hyperstack/commit/de4e3f5df377425fcd3683b16bcaf37fe4aa6395))
+* **cli:** hs stream hosted stacks — auto hs_token, native TLS roots, safer logging ([c477396](https://github.com/HyperTekOrg/hyperstack/commit/c477396504eb609b2d73e6f5ea5fbf47e928f8ca))
+* **cli:** stream to hosted stacks with ws token + native TLS ([e2a9b74](https://github.com/HyperTekOrg/hyperstack/commit/e2a9b74480af13b01867f2206d60bdcf2e16fa30))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * hyperstack-interpreter bumped from 0.6.8 to 0.6.9
+    * hyperstack-sdk bumped from 0.6.8 to 0.6.9
+
 ## [0.6.8](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.6.7...hyperstack-cli-v0.6.8) (2026-04-05)
 
 

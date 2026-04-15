@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "anyhow",
  "bs58",
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-cli"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-interpreter"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "bs58",
  "dashmap",
@@ -2099,7 +2099,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-macros"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "bs58",
  "hex",
@@ -2116,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dashmap",
@@ -2135,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-sdk"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -2157,7 +2157,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-server"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2197,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "hyperstack-stacks"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "hyperstack-sdk",
  "serde",
