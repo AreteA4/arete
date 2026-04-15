@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* **hyperstack-cli:** Fix `hs stream` to Hyperstack Cloud (`*.stack.usehyperstack.com`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `hs auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
+
 ## [0.6.8](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-cli-v0.6.7...hyperstack-cli-v0.6.8) (2026-04-05)
 
 

@@ -1,7 +1,7 @@
 mod app;
 mod ui;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
@@ -17,13 +17,21 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use self::app::{App, TuiAction, ViewMode};
+use super::token;
 use super::StreamArgs;
 
 pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     // Connect WebSocket
-    let (ws, _) = connect_async(&url)
-        .await
-        .with_context(|| format!("Failed to connect to {}", url))?;
+    let (ws, _) = connect_async(&url).await.map_err(|err| {
+        let redacted = token::redact_hs_token_for_display(&url);
+        let hint = if token::is_hosted_hyperstack_cloud_url(&url) {
+            "\nHint: hosted stacks need a valid `hs_token` (the CLI adds one after `hs auth login`). \
+             On some systems, TLS uses the OS trust store — if this persists, report the error above."
+        } else {
+            ""
+        };
+        anyhow::anyhow!("Failed to connect to {}: {}{}", redacted, err, hint)
+    })?;
 
     let (mut ws_tx, mut ws_rx) = ws.split();
 
@@ -134,7 +142,11 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
         }
     };
 
-    let mut app = App::new(view.to_string(), url.clone(), Arc::clone(&dropped_frames));
+    let mut app = App::new(
+        view.to_string(),
+        token::redact_hs_token_for_display(&url),
+        Arc::clone(&dropped_frames),
+    );
 
     // Main loop: poll terminal events + receive frames
     let tick_rate = std::time::Duration::from_millis(50);
