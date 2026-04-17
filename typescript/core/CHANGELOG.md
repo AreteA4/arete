@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.9](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-typescript-v0.6.8...hyperstack-typescript-v0.6.9) (2026-04-15)
+
+
+### Bug Fixes
+
+* **ts:** settle connect() promise on ws error and early close ([aa47833](https://github.com/HyperTekOrg/hyperstack/commit/aa47833e912ce9f2413c0e142cc24db08508509c))
+* **ts:** settle connect() promise on ws error and early close ([28e3297](https://github.com/HyperTekOrg/hyperstack/commit/28e329705565ac314217b1eb5f40501bb483e274))
+* **ts:** updateState on early-close connect rejection ([ddc12df](https://github.com/HyperTekOrg/hyperstack/commit/ddc12dfaa6919cb0631159ad1107147dff391fcc))
+
 ## [0.6.8](https://github.com/HyperTekOrg/hyperstack/compare/hyperstack-typescript-v0.6.7...hyperstack-typescript-v0.6.8) (2026-04-05)
 
 
