@@ -1,6 +1,6 @@
-//! # hyperstack-interpreter
+//! # arete-interpreter
 //!
-//! AST transformation runtime and VM for HyperStack streaming pipelines.
+//! AST transformation runtime and VM for Arete streaming pipelines.
 //!
 //! This crate provides the core components for processing Solana blockchain
 //! events into typed state projections:
@@ -13,7 +13,7 @@
 //! ## Example
 //!
 //! ```rust,ignore
-//! use hyperstack_interpreter::{TypeScriptCompiler, TypeScriptConfig};
+//! use arete_interpreter::{TypeScriptCompiler, TypeScriptConfig};
 //!
 //! let config = TypeScriptConfig::default();
 //! let compiler = TypeScriptCompiler::new(config);

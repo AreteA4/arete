@@ -3,14 +3,14 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-pub use hyperstack_idl::snapshot::*;
+pub use arete_idl::snapshot::*;
 
 /// Current AST version for SerializableStreamSpec and SerializableStackSpec
 ///
-/// ⚠️ IMPORTANT: This constant is duplicated in hyperstack-macros/src/ast/types.rs due to
+/// ⚠️ IMPORTANT: This constant is duplicated in arete-macros/src/ast/types.rs due to
 /// circular dependency between proc-macro crates and their output crates.
 /// When bumping this version, you MUST also update the constant in the
-/// hyperstack-macros crate. A test in versioned.rs verifies they stay in sync.
+/// arete-macros crate. A test in versioned.rs verifies they stay in sync.
 pub const CURRENT_AST_VERSION: &str = "0.0.1";
 
 fn default_ast_version() -> String {
@@ -1328,7 +1328,7 @@ pub struct InstructionDef {
 // ============================================================================
 
 /// A unified stack specification containing all entities.
-/// Written to `.hyperstack/{StackName}.stack.json`.
+/// Written to `.arete/{StackName}.stack.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableStackSpec {
     /// AST schema version for backward compatibility

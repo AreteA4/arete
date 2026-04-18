@@ -8,7 +8,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use hyperstack_interpreter::versioned::{load_stack_spec, load_stream_spec};
+//! use arete_interpreter::versioned::{load_stack_spec, load_stream_spec};
 //!
 //! let stack = load_stack_spec(&json_string)?;
 //! let stream = load_stream_spec(&json_string)?;
@@ -387,15 +387,15 @@ mod tests {
         assert_eq!(detect_ast_version(json_no_version).unwrap(), "0.0.1");
     }
 
-    /// Verifies that the AST version constant matches the hyperstack-macros crate.
+    /// Verifies that the AST version constant matches the arete-macros crate.
     /// This test ensures both crates stay in sync.
     #[test]
     fn test_ast_version_sync_with_macros() {
-        // Read the hyperstack-macros' types.rs file
+        // Read the arete-macros' types.rs file
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let macros_types_path = std::path::Path::new(&manifest_dir)
             .join("..") // Go up to workspace root
-            .join("hyperstack-macros")
+            .join("arete-macros")
             .join("src")
             .join("ast")
             .join("types.rs");
@@ -403,19 +403,19 @@ mod tests {
         // Verify the file exists before attempting to read
         assert!(
             macros_types_path.exists(),
-            "Cannot find hyperstack-macros source file at {:?}. \
+            "Cannot find arete-macros source file at {:?}. \
              This test requires the source tree to be available.",
             macros_types_path
         );
 
         let content = std::fs::read_to_string(&macros_types_path)
-            .expect("Failed to read hyperstack-macros/src/ast/types.rs");
+            .expect("Failed to read arete-macros/src/ast/types.rs");
 
         // Parse the CURRENT_AST_VERSION constant
         let version_line = content
             .lines()
             .find(|line| line.contains("pub const CURRENT_AST_VERSION"))
-            .expect("CURRENT_AST_VERSION not found in hyperstack-macros");
+            .expect("CURRENT_AST_VERSION not found in arete-macros");
 
         let version_str = version_line
             .split('=')
@@ -425,7 +425,7 @@ mod tests {
 
         assert_eq!(
             version_str, CURRENT_AST_VERSION,
-            "AST version mismatch! interpreter has '{}', hyperstack-macros has '{}'. \
+            "AST version mismatch! interpreter has '{}', arete-macros has '{}'. \
              Both crates must have the same CURRENT_AST_VERSION. \
              Update both files when bumping the version.",
             CURRENT_AST_VERSION, version_str

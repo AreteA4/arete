@@ -1,0 +1,38 @@
+# Arete Configuration File
+#
+# This file is OPTIONAL for single-stack projects.
+# The CLI can auto-discover AST files in .arete/ directories.
+#
+# Run `a4 init` to auto-generate this file.
+
+[project]
+name = "my-project"
+
+# SDK generation settings (optional)
+[sdk]
+output_dir = "./generated"              # Default for both languages
+# typescript_output_dir = "./frontend/src/generated"  # Override for TypeScript
+# rust_output_dir = "./crates/generated"              # Override for Rust
+# typescript_package = "@myorg/my-sdk"
+
+# Build preferences (optional)
+# [build]
+# watch_by_default = true
+
+# Stacks - only needed for multi-stack projects or custom naming
+# The CLI auto-discovers .arete/*.ast.json files if no stacks are defined.
+
+# Example stack:
+# [[stacks]]
+# name = "my-game"              # Custom name (optional - defaults to kebab-case of entity)
+# ast = "SettlementGame"        # Entity name from AST OR path to .ast.json file
+# description = "My game stack"  # Optional description
+# typescript_output_file = "./src/generated/my-game/index.ts"  # Override output file path
+# rust_output_crate = "./crates/my-game-stack"                 # Override output crate directory
+
+# Commands:
+#   a4 init                           # Initialize project (auto-detects ASTs)
+#   a4 up                             # Deploy all stacks
+#   a4 stack list                     # List all stacks
+#   a4 stack show <name>              # Show stack details
+#   a4 sdk create typescript <name>   # Generate TypeScript SDK

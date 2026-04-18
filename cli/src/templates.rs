@@ -1,7 +1,7 @@
-//! Template fetching, caching, and extraction for `hs create`.
+//! Template fetching, caching, and extraction for `a4 create`.
 //!
 //! Templates are downloaded from GitHub releases and cached locally
-//! in `~/.hyperstack/templates/{version}/`.
+//! in `~/.arete/templates/{version}/`.
 
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;
@@ -80,7 +80,7 @@ impl TemplateManager {
         let version = env!("CARGO_PKG_VERSION").to_string();
         let cache_dir = dirs::home_dir()
             .context("Could not determine home directory")?
-            .join(".hyperstack")
+            .join(".arete")
             .join("templates")
             .join(&version);
 
@@ -100,7 +100,7 @@ impl TemplateManager {
     /// Fetch templates from GitHub releases and cache them.
     pub fn fetch_templates(&self) -> Result<()> {
         let url = format!(
-            "https://github.com/HyperTekOrg/hyperstack/releases/download/hyperstack-cli-v{}/hyperstack-templates-v{}.tar.gz",
+            "https://github.com/AreteA4/arete/releases/download/a4-cli-v{}/arete-templates-v{}.tar.gz",
             self.version, self.version
         );
 
@@ -109,7 +109,7 @@ impl TemplateManager {
 
         let response = reqwest::blocking::Client::new()
             .get(&url)
-            .header("User-Agent", format!("hyperstack-cli/{}", self.version))
+            .header("User-Agent", format!("a4-cli/{}", self.version))
             .send()
             .with_context(|| format!("Failed to download templates from {}", url))?;
 

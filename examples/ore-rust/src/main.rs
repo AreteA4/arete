@@ -1,5 +1,5 @@
-use hyperstack_sdk::prelude::*;
-use hyperstack_stacks::ore::{OreRound, OreStreamStack, OreTreasury};
+use arete_sdk::prelude::*;
+use arete_stacks::ore::{OreRound, OreStreamStack, OreTreasury};
 
 // Use your own API key in production (can be secret or publishable)
 const API_KEY: &str = "hspk_alt8MN3BmJebxARE3IlOnnaAEibCrqqXfdG5VoGW";
@@ -27,15 +27,15 @@ fn print_treasury(treasury: &OreTreasury) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hs = HyperStack::<OreStreamStack>::builder()
+    let a4 = Arete::<OreStreamStack>::builder()
         .api_key(API_KEY)
         .connect()
         .await?;
 
     println!("--- Streaming OreRound and OreTreasury updates ---\n");
 
-    let round_view = hs.views.ore_round.latest();
-    let treasury_view = hs.views.ore_treasury.list();
+    let round_view = a4.views.ore_round.latest();
+    let treasury_view = a4.views.ore_treasury.list();
 
     let round_handle = tokio::spawn(async move {
         let mut stream = round_view.listen().take(1);

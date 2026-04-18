@@ -1,4 +1,4 @@
-use hyperstack_sdk::{parse_snapshot_entities, Frame, Operation};
+use arete_sdk::{parse_snapshot_entities, Frame, Operation};
 use ratatui::widgets::ListState;
 use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
@@ -508,7 +508,7 @@ impl App {
                     recorder.record_with_ts(frame, ts_ms);
                 }
                 let filename = format!(
-                    "hs-stream-{}.json",
+                    "a4-stream-{}.json",
                     chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f")
                 );
                 match recorder.save(&filename) {

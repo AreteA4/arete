@@ -1,4 +1,4 @@
-use hyperstack_sdk::deep_merge_with_append;
+use arete_sdk::deep_merge_with_append;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 

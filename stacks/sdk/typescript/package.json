@@ -1,7 +1,7 @@
 {
-  "name": "hyperstack-stacks",
-  "version": "0.6.9",
-  "description": "Protocol stacks for Hyperstack - ready-to-use Solana data streams",
+  "name": "@usearete/stacks",
+  "version": "0.0.1",
+  "description": "Protocol stacks for Arete - ready-to-use Solana data streams",
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -28,36 +28,36 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "hyperstack-react": ">=0.6.9",
-    "hyperstack-typescript": ">=0.6.9"
+    "@usearete/react": ">=0.0.1",
+    "@usearete/sdk": ">=0.0.1"
   },
   "dependencies": {
     "zod": "^3.24.1"
   },
   "peerDependenciesMeta": {
-    "hyperstack-react": {
+    "@usearete/react": {
       "optional": true
     },
-    "hyperstack-typescript": {
+    "@usearete/sdk": {
       "optional": true
     }
   },
   "devDependencies": {
-    "hyperstack-typescript": "file:../../../typescript/core",
+    "@usearete/sdk": "file:../../../typescript/core",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0"
   },
   "keywords": [
-    "hyperstack",
+    "arete",
     "solana",
     "blockchain",
     "streaming"
   ],
-  "author": "HyperTek",
+  "author": "Arete Team",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/HyperTekOrg/hyperstack.git",
+    "url": "https://github.com/AreteA4/arete.git",
     "directory": "stacks/sdk/typescript"
   },
   "publishConfig": {

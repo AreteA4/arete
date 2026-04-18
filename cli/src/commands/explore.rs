@@ -111,7 +111,7 @@ pub fn list(json: bool) -> Result<()> {
 
     println!(
         "{}",
-        "Tip: Run `hs explore <name>` for detailed entity info".dimmed()
+        "Tip: Run `a4 explore <name>` for detailed entity info".dimmed()
     );
 
     Ok(())
@@ -124,7 +124,7 @@ pub fn show(name: &str, entity: Option<&str>, json: bool) -> Result<()> {
         Err(_) => {
             let spec = client.get_spec_by_name(name)?.ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Stack '{}' not found. Run `hs explore` to see available stacks.",
+                    "Stack '{}' not found. Run `a4 explore` to see available stacks.",
                     name
                 )
             })?;
@@ -203,7 +203,7 @@ pub fn show(name: &str, entity: Option<&str>, json: bool) -> Result<()> {
     println!();
     println!(
         "{}",
-        format!("Tip: Run `hs explore {} <entity>` for field details", name).dimmed()
+        format!("Tip: Run `a4 explore {} <entity>` for field details", name).dimmed()
     );
 
     Ok(())

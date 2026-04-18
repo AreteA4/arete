@@ -111,7 +111,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hyperstack-sdk = "{}"
+arete-sdk = "{}"
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 "#,
@@ -130,7 +130,7 @@ mod types;
 pub use entity::{{{stack_name}Stack, {stack_name}StackViews, {entity_name}EntityViews}};
 pub use types::*;
 
-pub use hyperstack_sdk::{{ConnectionState, HyperStack, Stack, Update, Views}};
+pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
 "#,
             stack_name = stack_name,
             entity_name = entity_name
@@ -140,7 +140,7 @@ pub use hyperstack_sdk::{{ConnectionState, HyperStack, Stack, Update, Views}};
     fn generate_types_rs(&self) -> String {
         let mut output = String::new();
         output.push_str("use serde::{Deserialize, Serialize};\n");
-        output.push_str("use hyperstack_sdk::serde_utils;\n\n");
+        output.push_str("use arete_sdk::serde_utils;\n\n");
 
         let mut generated = HashSet::new();
 
@@ -336,7 +336,7 @@ impl<T: Default> Default for EventWrapper<T> {
                 url
             ),
             None => r#"fn url() -> &'static str {
-        "" // TODO: Set URL after first deployment in hyperstack.toml
+        "" // TODO: Set URL after first deployment in arete.toml
     }"#
             .to_string(),
         };
@@ -345,7 +345,7 @@ impl<T: Default> Default for EventWrapper<T> {
 
         format!(
             r#"use {types_import}::{entity_name};
-use hyperstack_sdk::{{Stack, StateView, ViewBuilder, ViewHandle, Views}};
+use arete_sdk::{{Stack, StateView, ViewBuilder, ViewHandle, Views}};
 
 pub struct {stack_name}Stack;
 
@@ -669,7 +669,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hyperstack-sdk = "{}"
+arete-sdk = "{}"
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 "#,
@@ -697,7 +697,7 @@ mod types;
 pub use entity::{{{all_exports}}};
 pub use types::*;
 
-pub use hyperstack_sdk::{{ConnectionState, HyperStack, Stack, Update, Views}};
+pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
 "#,
         all_exports = all_exports
     )
@@ -710,7 +710,7 @@ fn generate_stack_types_rs(
 ) -> String {
     let mut output = String::new();
     output.push_str("use serde::{Deserialize, Serialize};\n");
-    output.push_str("use hyperstack_sdk::serde_utils;\n\n");
+    output.push_str("use arete_sdk::serde_utils;\n\n");
 
     let mut generated = HashSet::new();
 
@@ -795,7 +795,7 @@ fn generate_stack_entity_rs(
             url
         ),
         None => r#"fn url() -> &'static str {
-        "" // TODO: Set URL after first deployment in hyperstack.toml
+        "" // TODO: Set URL after first deployment in arete.toml
     }"#
         .to_string(),
     };
@@ -896,7 +896,7 @@ impl {entity}EntityViews {{
 
     format!(
         r#"use {types_import}::{{{entity_imports}}};
-use hyperstack_sdk::{{Stack, StateView, ViewBuilder, ViewHandle, Views}};
+use arete_sdk::{{Stack, StateView, ViewBuilder, ViewHandle, Views}};
 
 pub struct {stack}Stack;
 

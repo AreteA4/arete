@@ -56,7 +56,7 @@ pub fn status(json: bool) -> Result<()> {
         .collect();
 
     println!();
-    println!("{}", "Hyperstack Status".bold());
+    println!("{}", "Arete Status".bold());
     println!("{}", "─".repeat(50).dimmed());
 
     println!();
@@ -192,9 +192,9 @@ pub fn status(json: bool) -> Result<()> {
     println!();
     println!("{}", "─".repeat(50).dimmed());
     println!("{}", "Quick commands:".dimmed());
-    println!("  {}  Deploy a stack", "hs up".cyan());
-    println!("  {}  List all stacks", "hs stack list".cyan());
-    println!("  {}  Show stack details", "hs stack show <name>".cyan());
+    println!("  {}  Deploy a stack", "a4 up".cyan());
+    println!("  {}  List all stacks", "a4 stack list".cyan());
+    println!("  {}  Show stack details", "a4 stack show <name>".cyan());
 
     println!();
 

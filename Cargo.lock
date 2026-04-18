@@ -13,6 +13,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "a4-cli"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arete-idl",
+ "arete-interpreter",
+ "arete-sdk",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "colored",
+ "console",
+ "crossterm",
+ "dialoguer",
+ "dirs",
+ "flate2",
+ "futures-util",
+ "indicatif",
+ "ratatui",
+ "regex",
+ "reqwest 0.11.27",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "tar",
+ "tokio",
+ "tokio-tungstenite 0.21.0",
+ "toml 0.8.23",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -182,6 +215,227 @@ name = "anyhow"
 version = "1.0.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
+
+[[package]]
+name = "arete"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arete-interpreter",
+ "arete-macros",
+ "arete-sdk",
+ "arete-server",
+ "bs58",
+ "bytemuck",
+ "dotenvy",
+ "futures",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "sha3",
+ "smallvec",
+ "tokio",
+ "tracing",
+ "yellowstone-grpc-client",
+ "yellowstone-grpc-proto",
+ "yellowstone-vixen",
+ "yellowstone-vixen-core",
+ "yellowstone-vixen-yellowstone-grpc-source",
+]
+
+[[package]]
+name = "arete-auth"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek 2.2.0",
+ "jsonwebtoken",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "arete-auth-server"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arete-auth",
+ "axum 0.8.8",
+ "base64 0.22.1",
+ "chrono",
+ "dotenvy",
+ "governor",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower 0.5.2",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "arete-idl"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "strsim",
+ "tracing",
+]
+
+[[package]]
+name = "arete-interpreter"
+version = "0.0.1"
+dependencies = [
+ "arete-idl",
+ "arete-macros",
+ "bs58",
+ "dashmap",
+ "futures",
+ "hex",
+ "lru",
+ "once_cell",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "percent-encoding",
+ "prost 0.13.5",
+ "prost-reflect",
+ "prost-types 0.13.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sha3",
+ "solana-pubkey",
+ "tokio",
+ "tonic 0.12.3",
+ "tracing",
+ "tracing-opentelemetry",
+]
+
+[[package]]
+name = "arete-macros"
+version = "0.0.1"
+dependencies = [
+ "arete-idl",
+ "bs58",
+ "hex",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "syn 2.0.113",
+ "tempfile",
+ "trybuild",
+]
+
+[[package]]
+name = "arete-mcp"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arete-sdk",
+ "dashmap",
+ "dirs",
+ "regex",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "arete-sdk"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "axum 0.7.9",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "futures-util",
+ "pin-project-lite",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite 0.21.0",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "arete-server"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arete-auth",
+ "arete-interpreter",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "dashmap",
+ "flate2",
+ "futures-util",
+ "hex",
+ "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
+ "lru",
+ "once_cell",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "tokio-util",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "uuid",
+ "yellowstone-vixen",
+ "yellowstone-vixen-core",
+ "yellowstone-vixen-proto",
+ "yellowstone-vixen-yellowstone-grpc-source",
+]
+
+[[package]]
+name = "arete-stacks"
+version = "0.0.1"
+dependencies = [
+ "arete-sdk",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "arrayref"
@@ -1948,260 +2202,6 @@ dependencies = [
  "tower-service",
  "tracing",
  "windows-registry",
-]
-
-[[package]]
-name = "hyperstack"
-version = "0.6.9"
-dependencies = [
- "anyhow",
- "bs58",
- "bytemuck",
- "dotenvy",
- "futures",
- "hyperstack-interpreter",
- "hyperstack-macros",
- "hyperstack-sdk",
- "hyperstack-server",
- "reqwest 0.11.27",
- "serde",
- "serde_json",
- "sha3",
- "smallvec",
- "tokio",
- "tracing",
- "yellowstone-grpc-client",
- "yellowstone-grpc-proto",
- "yellowstone-vixen",
- "yellowstone-vixen-core",
- "yellowstone-vixen-yellowstone-grpc-source",
-]
-
-[[package]]
-name = "hyperstack-auth"
-version = "0.2.2"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "ed25519-dalek 2.2.0",
- "jsonwebtoken",
- "rand 0.8.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "hyperstack-auth-server"
-version = "0.5.14"
-dependencies = [
- "anyhow",
- "axum 0.8.8",
- "base64 0.22.1",
- "chrono",
- "dotenvy",
- "governor",
- "hyperstack-auth",
- "rand 0.8.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror 1.0.69",
- "tokio",
- "tower 0.5.2",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
-name = "hyperstack-cli"
-version = "0.6.9"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "clap_complete",
- "colored",
- "console",
- "crossterm",
- "dialoguer",
- "dirs",
- "flate2",
- "futures-util",
- "hyperstack-idl",
- "hyperstack-interpreter",
- "hyperstack-sdk",
- "indicatif",
- "ratatui",
- "regex",
- "reqwest 0.11.27",
- "rpassword",
- "serde",
- "serde_json",
- "tar",
- "tokio",
- "tokio-tungstenite 0.21.0",
- "toml 0.8.23",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "hyperstack-idl"
-version = "0.1.6"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "strsim",
- "tracing",
-]
-
-[[package]]
-name = "hyperstack-interpreter"
-version = "0.6.9"
-dependencies = [
- "bs58",
- "dashmap",
- "futures",
- "hex",
- "hyperstack-idl",
- "hyperstack-macros",
- "lru",
- "once_cell",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "percent-encoding",
- "prost 0.13.5",
- "prost-reflect",
- "prost-types 0.13.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sha3",
- "solana-pubkey",
- "tokio",
- "tonic 0.12.3",
- "tracing",
- "tracing-opentelemetry",
-]
-
-[[package]]
-name = "hyperstack-macros"
-version = "0.6.9"
-dependencies = [
- "bs58",
- "hex",
- "hyperstack-idl",
- "proc-macro2",
- "quote",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "syn 2.0.113",
- "tempfile",
- "trybuild",
-]
-
-[[package]]
-name = "hyperstack-mcp"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "dashmap",
- "dirs",
- "hyperstack-sdk",
- "regex",
- "rmcp",
- "serde",
- "serde_json",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "hyperstack-sdk"
-version = "0.6.9"
-dependencies = [
- "anyhow",
- "axum 0.7.9",
- "base64 0.22.1",
- "chrono",
- "flate2",
- "futures-util",
- "pin-project-lite",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tokio-stream",
- "tokio-tungstenite 0.21.0",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "hyperstack-server"
-version = "0.6.9"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "dashmap",
- "flate2",
- "futures-util",
- "hex",
- "http-body-util",
- "hyper 1.8.1",
- "hyper-util",
- "hyperstack-auth",
- "hyperstack-interpreter",
- "lru",
- "once_cell",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "smallvec",
- "thiserror 1.0.69",
- "tokio",
- "tokio-tungstenite 0.28.0",
- "tokio-util",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "uuid",
- "yellowstone-vixen",
- "yellowstone-vixen-core",
- "yellowstone-vixen-proto",
- "yellowstone-vixen-yellowstone-grpc-source",
-]
-
-[[package]]
-name = "hyperstack-stacks"
-version = "0.6.9"
-dependencies = [
- "hyperstack-sdk",
- "serde",
- "serde_json",
 ]
 
 [[package]]

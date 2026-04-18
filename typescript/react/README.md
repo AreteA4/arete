@@ -1,23 +1,23 @@
-# Hyperstack React SDK
+# Arete React SDK
 
-React SDK for real-time Solana program data streaming from Hyperstack.
+React SDK for real-time Solana program data streaming from Arete.
 
-Built on top of [`hyperstack-typescript`](https://www.npmjs.com/package/hyperstack-typescript), the pure TypeScript core SDK.
+Built on top of [`@usearete/sdk`](https://www.npmjs.com/package/@usearete/sdk), the pure TypeScript core SDK.
 
 ## Installation
 
 ```bash
-npm install hyperstack-react
+npm install @usearete/react
 ```
 
-> **Not using React?** Use [`hyperstack-typescript`](../core/README.md) directly for Vue, Svelte, Node.js, or vanilla JavaScript.
+> **Not using React?** Use [`@usearete/sdk`](../core/README.md) directly for Vue, Svelte, Node.js, or vanilla JavaScript.
 
 ## Usage
 
 ### Basic Setup
 
 ```tsx
-import { HyperstackProvider, useHyperstack, defineStack } from 'hyperstack-react';
+import { AreteProvider, useArete, defineStack } from '@usearete/react';
 
 const myStack = defineStack({
   // Your stack configuration
@@ -25,14 +25,14 @@ const myStack = defineStack({
 
 function App() {
   return (
-    <HyperstackProvider config={{ /* your config */ }}>
+    <AreteProvider config={{ /* your config */ }}>
       <MyComponent />
-    </HyperstackProvider>
+    </AreteProvider>
   );
 }
 
 function MyComponent() {
-  const stack = useHyperstack(myStack);
+  const stack = useArete(myStack);
   // Use your stack
 }
 ```
@@ -51,12 +51,12 @@ function MyComponent() {
 
 #### Providers
 
-- `HyperstackProvider` - Root provider for Hyperstack configuration
+- `AreteProvider` - Root provider for Arete configuration
 
 #### Hooks
 
-- `useHyperstack` - Main hook for accessing stack functionality
-- `useHyperstackContext` - Access the runtime context directly
+- `useArete` - Main hook for accessing stack functionality
+- `useAreteContext` - Access the runtime context directly
 
 #### View Methods
 
@@ -75,28 +75,28 @@ function MyComponent() {
 
 - `ConnectionManager` - Manage WebSocket connections
 
-## Relationship with hyperstack-typescript
+## Relationship with @usearete/sdk
 
-This package depends on and re-exports the core `hyperstack-typescript` package. The core SDK provides:
+This package depends on and re-exports the core `@usearete/sdk` package. The core SDK provides:
 
-- `HyperStack` - Main client class
+- `Arete` - Main client class
 - `ConnectionManager` - WebSocket connection handling
 - `EntityStore` - State management
 - AsyncIterable-based streaming APIs
 
 The React SDK adds:
 
-- `HyperstackProvider` - React context provider
-- `useHyperstack` - Main hook for accessing stacks
+- `AreteProvider` - React context provider
+- `useArete` - Main hook for accessing stacks
 - `useConnectionState` - Connection monitoring hook
 - `defineStack`, `createStateView`, `createListView` - React-friendly factories
 
 If you need low-level access, you can import directly from the core:
 
 ```typescript
-import { HyperStack, ConnectionManager } from 'hyperstack-react';
+import { Arete, ConnectionManager } from '@usearete/react';
 // or
-import { HyperStack, ConnectionManager } from 'hyperstack-typescript';
+import { Arete, ConnectionManager } from '@usearete/sdk';
 ```
 
 ## License
@@ -105,4 +105,4 @@ MIT
 
 ## Author
 
-HyperTek
+Arete Team

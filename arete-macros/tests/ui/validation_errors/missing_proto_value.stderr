@@ -1,0 +1,7 @@
+error: expected `=`
+ --> tests/ui/validation_errors/missing_proto_value.rs:3:1
+  |
+3 | #[arete(proto)]
+  | ^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `arete` (in Nightly builds, run with -Z macro-backtrace for more info)

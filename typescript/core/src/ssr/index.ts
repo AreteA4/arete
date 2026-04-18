@@ -1,5 +1,5 @@
 /**
- * Hyperstack SSR - Drop-in Auth Endpoints
+ * Arete SSR - Drop-in Auth Endpoints
  *
  * These modules provide drop-in API route handlers for popular React frameworks.
  * Each handler can mint Ed25519-signed session tokens for WebSocket authentication.
@@ -10,15 +10,15 @@
  * node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
  *
  * # Add to .env
- * HYPERSTACK_SIGNING_KEY=your-base64-key-here
+ * ARETE_SIGNING_KEY=your-base64-key-here
  * ```
  *
  * Usage:
  *
  * **Next.js App Router:**
  * ```typescript
- * // app/api/hyperstack/sessions/route.ts
- * import { createNextJsSessionRoute, createNextJsJwksRoute } from 'hyperstack-typescript/ssr/nextjs-app';
+ * // app/api/arete/sessions/route.ts
+ * import { createNextJsSessionRoute, createNextJsJwksRoute } from '@usearete/sdk/ssr/nextjs-app';
  *
  * export const POST = createNextJsSessionRoute({
  *   resolveSession: async () => {
@@ -33,10 +33,10 @@
  * **Vite:**
  * ```typescript
  * // server.ts
- * import { createViteAuthMiddleware } from 'hyperstack-typescript/ssr/vite';
+ * import { createViteAuthMiddleware } from '@usearete/sdk/ssr/vite';
  *
- * app.use('/api/hyperstack', createViteAuthMiddleware({
- *   basePath: '/api/hyperstack',
+ * app.use('/api/arete', createViteAuthMiddleware({
+ *   basePath: '/api/arete',
  *   resolveSession: async (req) => {
  *     const user = await getAuthenticatedUser(req);
  *     if (!user) return null;
@@ -47,8 +47,8 @@
  *
  * **TanStack Start:**
  * ```typescript
- * // app/routes/api/hyperstack/sessions.ts
- * import { createTanStackSessionRoute } from 'hyperstack-typescript/ssr/tanstack-start';
+ * // app/routes/api/arete/sessions.ts
+ * import { createTanStackSessionRoute } from '@usearete/sdk/ssr/tanstack-start';
  *
  * export const APIRoute = createTanStackSessionRoute({
  *   resolveSession: async ({ request }) => {
@@ -61,7 +61,7 @@
  *
  * **Framework-agnostic:**
  * ```typescript
- * import { handleSessionRequest, handleJwksRequest } from 'hyperstack-typescript/ssr/handlers';
+ * import { handleSessionRequest, handleJwksRequest } from '@usearete/sdk/ssr/handlers';
  *
   * // Use with any framework
  * export async function POST(request: Request) {

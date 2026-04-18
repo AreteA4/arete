@@ -1,5 +1,5 @@
-export { HyperStack } from './client';
-export type { HyperStackOptionsWithStorage, InstructionExecutorOptions, InstructionExecutor } from './client';
+export { Arete } from './client';
+export type { AreteOptionsWithStorage, InstructionExecutorOptions, InstructionExecutor } from './client';
 
 export { ConnectionManager } from './connection';
 export { SubscriptionRegistry } from './subscription';
@@ -34,8 +34,8 @@ export type {
   Schema,
   SchemaResult,
   WatchOptions,
-  HyperStackOptions,
-  HyperStackConfig,
+  AreteOptions,
+  AreteConfig,
   AuthConfig,
   AuthTokenResult,
   WebSocketFactoryInit,
@@ -50,7 +50,7 @@ export type {
   SocketIssueCallback,
 } from './types';
 
-export { DEFAULT_CONFIG, DEFAULT_MAX_ENTRIES_PER_VIEW, HyperStackError } from './types';
+export { DEFAULT_CONFIG, DEFAULT_MAX_ENTRIES_PER_VIEW, AreteError } from './types';
 
 // Wallet types
 export type { WalletAdapter, WalletState, WalletConnectOptions } from './wallet/types';

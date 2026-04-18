@@ -22,7 +22,7 @@ export interface ViewSortConfig {
 }
 
 /**
- * Storage adapter interface for HyperStack entity storage.
+ * Storage adapter interface for Arete entity storage.
  * Implement this to integrate with Zustand, Pinia, Svelte stores, Redux, IndexedDB, etc.
  */
 export interface StorageAdapter {

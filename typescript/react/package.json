@@ -1,19 +1,19 @@
 {
-  "name": "hyperstack-react",
-  "version": "0.6.9",
+  "name": "@usearete/react",
+  "version": "0.0.1",
   "type": "module",
-  "description": "React SDK for the Hyperstack Solana developer platform",
+  "description": "React SDK for the Arete Solana developer platform",
   "main": "dist/index.js",
   "module": "dist/index.esm.js",
   "types": "dist/index.d.ts",
   "repository": {
     "type": "git",
-    "url": "https://github.com/HyperTekOrg/hyperstack.git",
+    "url": "https://github.com/AreteA4/arete.git",
     "directory": "typescript/react"
   },
-  "homepage": "https://github.com/HyperTekOrg/hyperstack.git#readme",
+  "homepage": "https://github.com/AreteA4/arete#readme",
   "bugs": {
-    "url": "https://github.com/HyperTekOrg/hyperstack.git/issues"
+    "url": "https://github.com/AreteA4/arete/issues"
   },
   "scripts": {
     "build": "rollup -c",
@@ -29,7 +29,7 @@
     "streaming",
     "websockets"
   ],
-  "author": "Hypertek",
+  "author": "Arete Team",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -42,7 +42,7 @@
     "zustand": "^4.0.0 || ^5.0.0"
   },
   "dependencies": {
-    "hyperstack-typescript": "^0.6.9"
+    "@usearete/sdk": "^0.0.1"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^16.0.3",

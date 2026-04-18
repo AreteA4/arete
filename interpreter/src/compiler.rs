@@ -1530,7 +1530,7 @@ impl<S> TypedCompiler<S> {
             // keyed on `mint`). This is intentionally one-way: bare `foo` does
             // not imply a `foo_address` lookup index. The macro crate mirrors
             // this convention via `lookup_index_leafs` in
-            // `hyperstack-macros/src/validation/mod.rs`.
+            // `arete-macros/src/validation/mod.rs`.
             let matches_address_alias = index_field_name
                 .strip_suffix("_address")
                 .map(|base| base == lookup_field_name)

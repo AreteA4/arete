@@ -3,11 +3,11 @@ use colored::Colorize;
 use std::fs;
 use std::path::Path;
 
-use crate::config::{discover_ast_files, find_ast_file, DiscoveredAst, HyperstackConfig};
+use crate::config::{discover_ast_files, find_ast_file, DiscoveredAst, AreteConfig};
 use crate::telemetry;
 
 pub fn list(config_path: &str) -> Result<()> {
-    let config = HyperstackConfig::load_optional(config_path)?;
+    let config = AreteConfig::load_optional(config_path)?;
 
     let discovered = discover_ast_files(None)?;
 
@@ -20,8 +20,8 @@ pub fn list(config_path: &str) -> Result<()> {
         println!("{}", "No stacks found.".yellow());
         println!();
         println!("To add stacks:");
-        println!("  1. Build your stack crate to generate .hyperstack/*.stack.json files");
-        println!("  2. Run {} to create a configuration", "hs init".cyan());
+        println!("  1. Build your stack crate to generate .arete/*.stack.json files");
+        println!("  2. Run {} to create a configuration", "a4 init".cyan());
         return Ok(());
     }
 
@@ -69,7 +69,7 @@ pub fn list(config_path: &str) -> Result<()> {
 
     println!(
         "Use {} to generate SDK",
-        "hs sdk create typescript <stack-name>".cyan()
+        "a4 sdk create typescript <stack-name>".cyan()
     );
 
     Ok(())
@@ -88,7 +88,7 @@ pub fn create_typescript(
         stack_name
     );
 
-    let config = HyperstackConfig::load_optional(config_path)?;
+    let config = AreteConfig::load_optional(config_path)?;
 
     // Get the config file's directory for resolving relative paths
     let config_dir = Path::new(config_path)
@@ -118,7 +118,7 @@ pub fn create_typescript(
 
             let pkg = package_name_override
                 .or_else(|| cfg.sdk.as_ref().and_then(|s| s.typescript_package.clone()))
-                .unwrap_or_else(|| "hyperstack-react".to_string());
+                .unwrap_or_else(|| "@usearete/react".to_string());
 
             // URL priority: override > config > None
             let url = url_override.or_else(|| stack_config.url.clone());
@@ -182,7 +182,7 @@ fn find_stack_by_name(
     let ast = find_ast_file(stack_name, None)?.ok_or_else(|| {
         anyhow::anyhow!(
             "Stack '{}' not found.\n\
-             Make sure you've built your stack crate to generate .hyperstack/*.stack.json files.",
+             Make sure you've built your stack crate to generate .arete/*.stack.json files.",
             stack_name
         )
     })?;
@@ -191,7 +191,7 @@ fn find_stack_by_name(
         std::path::PathBuf::from(format!("./generated/{}-stack.ts", ast.stack_name))
     });
 
-    let pkg = package_name_override.unwrap_or_else(|| "hyperstack-react".to_string());
+    let pkg = package_name_override.unwrap_or_else(|| "@usearete/react".to_string());
 
     Ok((ast, output, pkg))
 }
@@ -224,17 +224,17 @@ fn generate_typescript_sdk_from_ast(
 
     println!("{} Compiling TypeScript from stack...", "→".blue().bold());
 
-    let config = hyperstack_interpreter::typescript::TypeScriptStackConfig {
+    let config = arete_interpreter::typescript::TypeScriptStackConfig {
         package_name: package_name.to_string(),
         generate_helpers: true,
         export_const_name: "STACK".to_string(),
         url,
     };
 
-    let output = hyperstack_interpreter::typescript::compile_stack_spec(stack_spec, Some(config))
+    let output = arete_interpreter::typescript::compile_stack_spec(stack_spec, Some(config))
         .map_err(|e| anyhow::anyhow!("Failed to compile TypeScript: {}", e))?;
 
-    hyperstack_interpreter::typescript::write_stack_typescript_to_file(&output, output_path)
+    arete_interpreter::typescript::write_stack_typescript_to_file(&output, output_path)
         .with_context(|| format!("Failed to write TypeScript to {}", output_path.display()))?;
 
     Ok(())
@@ -242,12 +242,12 @@ fn generate_typescript_sdk_from_ast(
 
 fn load_stack_spec(
     ast: &DiscoveredAst,
-) -> Result<hyperstack_interpreter::ast::SerializableStackSpec> {
+) -> Result<arete_interpreter::ast::SerializableStackSpec> {
     let ast_json = fs::read_to_string(&ast.path)
         .with_context(|| format!("Failed to read stack file: {}", ast.path.display()))?;
 
     // Use versioned loader for automatic version detection and migration
-    let stack_spec = hyperstack_interpreter::versioned::load_stack_spec(&ast_json)
+    let stack_spec = arete_interpreter::versioned::load_stack_spec(&ast_json)
         .with_context(|| format!("Failed to load stack AST from {}", ast.path.display()))?;
 
     if stack_spec.entities.is_empty() {
@@ -274,7 +274,7 @@ pub fn create_rust(
         stack_name
     );
 
-    let config = HyperstackConfig::load_optional(config_path)?;
+    let config = AreteConfig::load_optional(config_path)?;
 
     let config_dir = Path::new(config_path)
         .parent()
@@ -340,18 +340,18 @@ pub fn create_rust(
         stack_spec.entities.len()
     );
 
-    let rust_config = hyperstack_interpreter::rust::RustStackConfig {
+    let rust_config = arete_interpreter::rust::RustStackConfig {
         crate_name: crate_name.clone(),
         sdk_version: "0.2".to_string(),
         module_mode: as_module,
         url: stack_url,
     };
 
-    let output = hyperstack_interpreter::rust::compile_stack_spec(stack_spec, Some(rust_config))
+    let output = arete_interpreter::rust::compile_stack_spec(stack_spec, Some(rust_config))
         .map_err(|e| anyhow::anyhow!("Failed to compile Rust: {}", e))?;
 
     if as_module {
-        hyperstack_interpreter::rust::write_rust_module(&output, &output_dir)
+        arete_interpreter::rust::write_rust_module(&output, &output_dir)
             .with_context(|| format!("Failed to write Rust module to {}", output_dir.display()))?;
 
         println!("{} Successfully generated Rust module!", "✓".green().bold());
@@ -363,7 +363,7 @@ pub fn create_rust(
             .unwrap_or("module");
         println!("    pub mod {};", module_name.cyan());
     } else {
-        hyperstack_interpreter::rust::write_rust_crate(&output, &output_dir)
+        arete_interpreter::rust::write_rust_crate(&output, &output_dir)
             .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))?;
 
         println!("{} Successfully generated Rust SDK!", "✓".green().bold());
@@ -383,7 +383,7 @@ pub fn create_rust(
 
 fn find_stack_for_rust(
     stack_name: &str,
-    config: Option<&HyperstackConfig>,
+    config: Option<&AreteConfig>,
     output_override: Option<String>,
     crate_name_override: Option<String>,
 ) -> Result<(DiscoveredAst, std::path::PathBuf, String)> {
@@ -400,7 +400,7 @@ fn find_stack_for_rust(
             let ast = find_ast_file(stack_name, None)?.ok_or_else(|| {
                 anyhow::anyhow!(
                     "Stack '{}' not found.\n\
-                     Make sure you've built your stack crate to generate .hyperstack/*.stack.json files.",
+                     Make sure you've built your stack crate to generate .arete/*.stack.json files.",
                     stack_name
                 )
             })?;
@@ -410,7 +410,7 @@ fn find_stack_for_rust(
         let ast = find_ast_file(stack_name, None)?.ok_or_else(|| {
             anyhow::anyhow!(
                 "Stack '{}' not found.\n\
-                 Make sure you've built your stack crate to generate .hyperstack/*.stack.json files.",
+                 Make sure you've built your stack crate to generate .arete/*.stack.json files.",
                 stack_name
             )
         })?;
