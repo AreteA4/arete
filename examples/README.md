@@ -1,6 +1,6 @@
 # Examples
 
-Usage examples for Hyperstack stacks.
+Usage examples for Arete stacks.
 
 ## React
 

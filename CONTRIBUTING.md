@@ -1,6 +1,6 @@
-# Contributing to Hyperstack
+# Contributing to Arete
 
-Hyperstack is building the real-time data layer for Solana applications.
+Arete is building the real-time data layer for Solana applications.
 
 **Why contribute?**
 
@@ -15,15 +15,15 @@ We welcome contributions of all kinds: code, documentation, bug reports, and ide
 Stuck? Have questions? Here's how to reach us:
 
 - **GitHub Discussions**: For longer-form questions and RFC-style proposals
-- **Twitter/X**: [@hyperstackHQ](https://twitter.com/hyperstackHQ) — announcements and updates
+- **Twitter/X**: [@areteHQ](https://twitter.com/areteHQ) — announcements and updates
 
 Don't be shy. We were all beginners once.
 
 ## Your First Contribution
 
-New to Hyperstack? Start here:
+New to Arete? Start here:
 
-1. **Find an issue**: Look for issues labeled [`good first issue`](https://github.com/HyperTekOrg/hyperstack/labels/good%20first%20issue) or [`help wanted`](https://github.com/HyperTekOrg/hyperstack/labels/help%20wanted)
+1. **Find an issue**: Look for issues labeled [`good first issue`](https://github.com/AreteA4/arete/labels/good%20first%20issue) or [`help wanted`](https://github.com/AreteA4/arete/labels/help%20wanted)
 2. **Claim it**: Comment on the issue to let us know you're working on it
 4. **Submit your PR**: We'll review it and work with you to get it merged
 
@@ -46,7 +46,7 @@ Not sure where to start? Here are some ideas:
 | **Code** | Bug fixes, features, optimizations | Developers comfortable with Rust/TS/Python |
 | **Documentation** | Tutorials, API docs, examples, typo fixes | Great first contribution |
 | **Testing** | Write tests, report bugs, verify fixes | Learning the codebase |
-| **Examples** | Build demo apps using Hyperstack | Showcasing what's possible |
+| **Examples** | Build demo apps using Arete | Showcasing what's possible |
 | **Community** | Answer questions, review PRs, share feedback | Experienced contributors |
 
 Documentation contributions are especially valuable — they help everyone and don't require deep codebase knowledge.
@@ -93,7 +93,7 @@ Understanding how the pieces fit together:
 
 | Component | What it does | Language |
 |-----------|--------------|----------|
-| `hyperstack-macros/` | Proc-macros for defining data streams declaratively | Rust |
+| `arete-macros/` | Proc-macros for defining data streams declaratively | Rust |
 | `interpreter/` | Executes bytecode, manages subscriptions and transforms | Rust |
 | `cli/` | Generates SDKs from compiled specs | Rust |
 | `typescript/` | Client SDKs for browser/Node.js apps | TypeScript |
@@ -126,11 +126,11 @@ Don't know Solana? No problem. Documentation, SDK, and CLI contributions don't r
 # 1. Fork the repository on GitHub
 
 # 2. Clone your fork
-git clone https://github.com/YOUR-USERNAME/hyperstack.git
-cd hyperstack
+git clone https://github.com/YOUR-USERNAME/arete.git
+cd arete
 
 # 3. Add upstream remote
-git remote add upstream https://github.com/HyperTekOrg/hyperstack.git
+git remote add upstream https://github.com/AreteA4/arete.git
 
 # 4. Keep your fork updated
 git fetch upstream
@@ -149,7 +149,7 @@ cd typescript/core && npm install && npm run build
 cd ../react && npm install && npm run build
 
 # Install Python SDK in development mode
-cd python/hyperstack-sdk && pip install -e .
+cd python/arete-sdk && pip install -e .
 ```
 
 ### Development Commands
@@ -176,7 +176,7 @@ Located in `typescript/core` and `typescript/react`:
 
 #### Python
 
-Located in `python/hyperstack-sdk`:
+Located in `python/arete-sdk`:
 
 | Action | Command |
 |--------|---------|
@@ -336,7 +336,7 @@ Please include:
 
 - **Steps to reproduce** — Minimal example if possible
 - **Expected vs actual behavior**
-- **Environment** — OS, Rust/Node/Python version, Hyperstack version
+- **Environment** — OS, Rust/Node/Python version, Arete version
 - **Error messages** — Full stack trace if available
 
 ### Feature Requests
@@ -351,17 +351,17 @@ Please include:
 ## Project Structure
 
 ```
-hyperstack/
-├── hyperstack/           # Main umbrella crate
+arete/
+├── arete/           # Main umbrella crate
 ├── interpreter/          # AST transformation runtime and VM
-├── hyperstack-macros/    # Proc-macros for stream definitions
+├── arete-macros/    # Proc-macros for stream definitions
 ├── rust/                 # Rust SDK and server components
 ├── cli/                  # CLI tool for SDK generation
 ├── typescript/
 │   ├── core/            # Core TypeScript SDK
 │   └── react/           # React hooks and components
 ├── python/
-│   └── hyperstack-sdk/  # Python client SDK
+│   └── arete-sdk/  # Python client SDK
 └── docs/                # Documentation source files
 ```
 
@@ -383,4 +383,4 @@ See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT) for details.
 
 ---
 
-**Thank you for contributing to Hyperstack!**
+**Thank you for contributing to Arete!**
