@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Updates all hyperstack-* package versions in examples/ to the specified version.
+# Updates all arete-* package versions in examples/ to the specified version.
 # Handles both package.json (npm) and Cargo.toml (rust) files.
 #
 # Usage:
@@ -43,7 +43,7 @@ update_package_json() {
     
     if [[ "$DRY_RUN" == "--dry-run" ]]; then
         # Show what would change
-        grep -E '"hyperstack-[^"]+":' "$file" || true
+        grep -E '"arete-[^"]+":' "$file" || true
         return
     fi
     
@@ -56,7 +56,7 @@ update_package_json() {
         for (const depType of ['dependencies', 'devDependencies', 'peerDependencies']) {
             if (pkg[depType]) {
                 for (const [name, version] of Object.entries(pkg[depType])) {
-                    if (name.startsWith('hyperstack-')) {
+                    if (name.startsWith('arete-')) {
                         pkg[depType][name] = '^$MAJOR_MINOR';
                         console.log('  Updated:', name, version, '->', '^$MAJOR_MINOR');
                         modified = true;
@@ -78,17 +78,17 @@ update_cargo_toml() {
     
     if [[ "$DRY_RUN" == "--dry-run" ]]; then
         # Show what would change
-        grep -E 'hyperstack-' "$file" || true
+        grep -E 'arete-' "$file" || true
         return
     fi
     
-    sed -i.bak -E "s/(hyperstack-[a-z-]+) = \"[0-9]+\.[0-9]+\"/\1 = \"$MAJOR_MINOR\"/g" "$file"
-    sed -i.bak -E "s/(hyperstack-[a-z-]+ = \{[^}]*version = \")[0-9]+\.[0-9]+(\".*)$/\1$MAJOR_MINOR\2/g" "$file"
+    sed -i.bak -E "s/(arete-[a-z-]+) = \"[0-9]+\.[0-9]+\"/\1 = \"$MAJOR_MINOR\"/g" "$file"
+    sed -i.bak -E "s/(arete-[a-z-]+ = \{[^}]*version = \")[0-9]+\.[0-9]+(\".*)$/\1$MAJOR_MINOR\2/g" "$file"
     
     # Clean up backup files
     rm -f "$file.bak"
     
-    echo "  Updated hyperstack-* dependencies to $MAJOR_MINOR"
+    echo "  Updated arete-* dependencies to $MAJOR_MINOR"
     UPDATED_FILES+=("$file")
 }
 
@@ -104,10 +104,10 @@ echo ""
 echo "=== Updating Cargo.toml files ==="
 while IFS= read -r -d '' file; do
     # Skip files that only use path dependencies (like ore-server)
-    if grep -q 'hyperstack-.*=.*"[0-9]' "$file" 2>/dev/null; then
+    if grep -q 'arete-.*=.*"[0-9]' "$file" 2>/dev/null; then
         update_cargo_toml "$file"
     else
-        echo "Skipping $file (no semver hyperstack deps)"
+        echo "Skipping $file (no semver arete deps)"
     fi
 done < <(find "$EXAMPLES_DIR" -name "Cargo.toml" -not -path "*/target/*" -print0)
 
