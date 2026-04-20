@@ -37,7 +37,7 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/HyperTekOrg/arete",
+          href: "https://github.com/AreteA4/arete",
         },
       ],
       customCss: ["./src/styles/custom.css"],
