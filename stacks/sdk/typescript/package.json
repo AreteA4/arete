@@ -1,6 +1,6 @@
 {
   "name": "hyperstack-stacks",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "description": "Protocol stacks for Hyperstack - ready-to-use Solana data streams",
   "type": "module",
   "main": "dist/index.cjs",
@@ -28,8 +28,8 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "hyperstack-react": ">=0.6.8",
-    "hyperstack-typescript": ">=0.6.8"
+    "hyperstack-react": ">=0.6.9",
+    "hyperstack-typescript": ">=0.6.9"
   },
   "dependencies": {
     "zod": "^3.24.1"

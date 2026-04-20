@@ -11,6 +11,7 @@ use super::filter::{self, Filter};
 use super::output::{self, OutputMode};
 use super::snapshot::{SnapshotPlayer, SnapshotRecorder};
 use super::store::EntityStore;
+use super::token;
 use super::StreamArgs;
 
 struct StreamState {
@@ -85,9 +86,16 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     // Validate args and build state before connecting (fails fast on bad --where regex etc.)
     let mut state = build_state(args, view, &url)?;
 
-    let (ws, _) = connect_async(&url)
-        .await
-        .with_context(|| format!("Failed to connect to {}", url))?;
+    let (ws, _) = connect_async(&url).await.map_err(|err| {
+        let redacted = token::redact_hs_token_for_display(&url);
+        let hint = if token::is_hosted_hyperstack_cloud_url(&url) {
+            "\nHint: hosted stacks need a valid `hs_token` (the CLI adds one after `hs auth login`). \
+             On some systems, TLS uses the OS trust store — if this persists, report the error above."
+        } else {
+            ""
+        };
+        anyhow::anyhow!("Failed to connect to {}: {}{}", redacted, err, hint)
+    })?;
 
     eprintln!("Connected.");
 
@@ -97,7 +105,7 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
             &mut state.out,
             "connected",
             view,
-            &serde_json::json!({"url": url}),
+            &serde_json::json!({"url": token::redact_hs_token_for_display(&url)}),
             0,
             0,
         )?;

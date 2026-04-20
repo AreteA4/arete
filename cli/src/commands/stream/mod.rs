@@ -3,6 +3,7 @@ mod filter;
 mod output;
 mod snapshot;
 mod store;
+mod token;
 #[cfg(feature = "tui")]
 mod tui;
 
@@ -128,6 +129,7 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
     };
 
     let url = resolve_url(&args, config_path, view)?;
+    let url = token::ensure_hosted_ws_token(url)?;
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
@@ -175,7 +177,10 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
         }
     }
 
-    eprintln!("Connecting to {} ...", url);
+    eprintln!(
+        "Connecting to {} ...",
+        token::redact_hs_token_for_display(&url)
+    );
 
     rt.block_on(client::stream(url, view, &args))
 }

@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
 
+use super::token;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SnapshotHeader {
     pub version: u32,
@@ -34,7 +36,7 @@ impl SnapshotRecorder {
         Self {
             frames: Vec::new(),
             view: view.to_string(),
-            url: url.to_string(),
+            url: token::redact_hs_token_for_display(url),
             start_time: std::time::Instant::now(),
             start_timestamp: chrono::Utc::now(),
             limit_warned: false,
