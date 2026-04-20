@@ -288,17 +288,12 @@ fn extract_field_references_recursive(
     while i < tokens.len() {
         match &tokens[i] {
             TokenTree::Ident(ident) if *ident == section_name => {
-                // Check if next token is a dot
-                if i + 1 < tokens.len() {
-                    if let TokenTree::Punct(punct) = &tokens[i + 1] {
-                        if punct.as_char() == '.' {
-                            // Check if there's another identifier after the dot
-                            if i + 2 < tokens.len() {
-                                if let TokenTree::Ident(field_ident) = &tokens[i + 2] {
-                                    fields.insert(field_ident.to_string());
-                                }
-                            }
-                        }
+                // Match: section_name "." field_name
+                if let (Some(TokenTree::Punct(punct)), Some(TokenTree::Ident(field_ident))) =
+                    (tokens.get(i + 1), tokens.get(i + 2))
+                {
+                    if punct.as_char() == '.' {
+                        fields.insert(field_ident.to_string());
                     }
                 }
             }
