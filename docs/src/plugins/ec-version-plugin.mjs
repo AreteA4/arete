@@ -2,11 +2,11 @@
  * Expressive Code plugin to replace {{VERSION}} placeholders in code blocks.
  *
  * Reads the version from .release-please-manifest.json (source of truth for all packages).
- * All packages are kept in sync, so we use the "hyperstack" version as the canonical one.
+ * All packages are kept in sync, so we use the "arete" version as the canonical one.
  *
  * Usage in code blocks:
- *   hyperstack = "{{VERSION}}"
- *   npm install hyperstack-react@{{VERSION}}
+ *   arete = "{{VERSION}}"
+ *   npm install @usearete/react@{{VERSION}}
  */
 
 import { definePlugin } from "@expressive-code/core";
@@ -21,8 +21,8 @@ function getVersion() {
   const manifestPath = resolve(__dirname, "../../../.release-please-manifest.json");
   try {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
-    // Use the main hyperstack package version (all packages are synchronized)
-    return manifest["hyperstack"] || manifest["packages/hyperstack"] || "0.0.0";
+    // Use the main arete package version (all packages are synchronized)
+    return manifest["arete"] || manifest["packages/arete"] || "0.0.0";
   } catch (error) {
     console.warn("Could not read .release-please-manifest.json:", error.message);
     return "0.0.0";
@@ -33,7 +33,7 @@ export function ecVersionPlugin() {
   const version = getVersion();
 
   return definePlugin({
-    name: "hyperstack-version",
+    name: "arete-version",
     hooks: {
       preprocessCode: ({ codeBlock }) => {
         // Replace {{VERSION}} in each line of the code block

@@ -2,7 +2,7 @@
 @import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap");
 
 /* ============================================
-   Hyperstack Docs - Modern Clean Design
+   Arete Docs - Modern Clean Design
    ============================================ */
 
 :root {
@@ -146,8 +146,8 @@ nav[aria-label="Main"] {
 }
 
 /* Sidebar group labels (cli, concepts, etc.) */
-nav[aria-label="Main"] ul > li > details > summary,
-nav[aria-label="Main"] ul > li > [role="group"] > span:first-child {
+nav[aria-label="Main"] ul>li>details>summary,
+nav[aria-label="Main"] ul>li>[role="group"]>span:first-child {
   font-size: var(--sl-text-xs);
   font-weight: 600;
   text-transform: uppercase;
@@ -323,7 +323,7 @@ main li {
 }
 
 /* Inline code */
-main :not(pre) > code {
+main :not(pre)>code {
   background: var(--sl-color-bg-inline-code);
   padding: 0.125rem 0.375rem;
   border-radius: var(--sl-border-radius-sm);

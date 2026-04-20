@@ -1157,7 +1157,6 @@ fn validate_aggregate_conditions(
         // aggregate targets. These conditions reference source instruction/account fields,
         // not entity fields. Validation would require threading `events_by_instruction` into
         // this function and cross-checking leaves against resolved IDL instruction args.
-        // See: https://github.com/hypertekorg/arete/issues/XXX
         if instruction_mappings.is_empty() && account_mappings.is_empty() {
             // Defensive: if any non-event mapping targets this bare field name but
             // wasn't captured above, that indicates a key-format mismatch.

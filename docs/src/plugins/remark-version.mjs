@@ -2,11 +2,11 @@
  * Remark plugin to replace {{VERSION}} placeholders with the current package version.
  *
  * Reads the version from .release-please-manifest.json (source of truth for all packages).
- * All packages are kept in sync, so we use the "hyperstack" version as the canonical one.
+ * All packages are kept in sync, so we use the "arete" version as the canonical one.
  *
  * Usage in MDX files:
- *   hyperstack = "{{VERSION}}"
- *   npm install hyperstack-react@{{VERSION}}
+ *   arete = "{{VERSION}}"
+ *   npm install @usearete/react@{{VERSION}}
  */
 
 import { visit } from "unist-util-visit";
@@ -21,8 +21,8 @@ function getVersion() {
   const manifestPath = resolve(__dirname, "../../../.release-please-manifest.json");
   try {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
-    // Use the main hyperstack package version (all packages are synchronized)
-    return manifest["hyperstack"] || manifest["packages/hyperstack"] || "0.0.0";
+    // Use the main arete package version (all packages are synchronized)
+    return manifest["arete"] || manifest["packages/arete"] || "0.0.0";
   } catch (error) {
     console.warn("Could not read .release-please-manifest.json:", error.message);
     return "0.0.0";

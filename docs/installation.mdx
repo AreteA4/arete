@@ -67,18 +67,18 @@ use my_stack::{Token, TokenEntity};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let a4 = Arete::connect("wss://ore.stack.arete.run").await?;
-    
+
     // List all entities
     let tokens = a4.list::<TokenEntity>().await;
-    
+
     // Watch for live updates (lazy - no await needed)
     let mut stream = a4.watch::<TokenEntity>()
         .filter(|u| u.data().map(|t| t.volume > 1000).unwrap_or(false));
-    
+
     while let Some(update) = stream.next().await {
         println!("Update: {}", update.key());
     }
-    
+
     Ok(())
 }
 ```
