@@ -6,87 +6,94 @@
     {
       "type": "json",
       "path": "examples/ore-react/package.json",
-      "jsonpath": "$.dependencies['hyperstack-react']"
+      "jsonpath": "$.dependencies['@usearete/react']"
     },
     {
       "type": "json",
       "path": "examples/ore-react/package.json",
-      "jsonpath": "$.dependencies['hyperstack-stacks']"
+      "jsonpath": "$.dependencies['@usearete/stacks']"
     },
     {
       "type": "json",
       "path": "examples/ore-typescript/package.json",
-      "jsonpath": "$.dependencies['hyperstack-typescript']"
+      "jsonpath": "$.dependencies['@usearete/sdk']"
     },
     {
       "type": "json",
       "path": "examples/ore-typescript/package.json",
-      "jsonpath": "$.dependencies['hyperstack-stacks']"
+      "jsonpath": "$.dependencies['@usearete/stacks']"
     },
     {
       "type": "toml",
       "path": "examples/ore-rust/Cargo.toml",
-      "jsonpath": "$.dependencies['hyperstack-sdk']"
+      "jsonpath": "$.dependencies['arete-sdk'].version"
     },
     {
       "type": "toml",
       "path": "examples/ore-rust/Cargo.toml",
-      "jsonpath": "$.dependencies['hyperstack-stacks'].version"
+      "jsonpath": "$.dependencies['arete-stacks'].version"
     }
   ],
   "packages": {
-    "hyperstack": {
+    "arete": {
       "release-type": "rust",
-      "component": "hyperstack"
+      "component": "arete"
     },
     "interpreter": {
       "release-type": "rust",
-      "component": "hyperstack-interpreter"
+      "component": "arete-interpreter"
     },
-    "hyperstack-macros": {
+    "arete-macros": {
       "release-type": "rust",
-      "component": "hyperstack-macros"
+      "component": "arete-macros"
     },
     "cli": {
       "release-type": "rust",
-      "component": "hyperstack-cli"
+      "component": "a4-cli"
     },
-    "rust/hyperstack-sdk": {
+    "rust/arete-sdk": {
       "release-type": "rust",
-      "component": "hyperstack-sdk"
+      "component": "arete-sdk"
     },
-    "rust/hyperstack-auth": {
+    "rust/arete-auth": {
       "release-type": "rust",
-      "component": "hyperstack-auth",
-      "initial-version": "0.1.1"
+      "component": "arete-auth"
     },
-    "rust/hyperstack-server": {
+    "rust/arete-auth-server": {
       "release-type": "rust",
-      "component": "hyperstack-server"
+      "component": "arete-auth-server"
+    },
+    "rust/arete-server": {
+      "release-type": "rust",
+      "component": "arete-server"
+    },
+    "rust/arete-mcp": {
+      "release-type": "rust",
+      "component": "arete-mcp"
     },
     "typescript/react": {
       "release-type": "node",
-      "component": "hyperstack-react"
+      "component": "arete-react"
     },
     "typescript/core": {
       "release-type": "node",
-      "component": "hyperstack-typescript"
+      "component": "arete-typescript"
     },
     "stacks/sdk/typescript": {
       "release-type": "node",
-      "component": "hyperstack-stacks"
+      "component": "arete-stacks"
     },
     "stacks/sdk/rust": {
       "release-type": "rust",
-      "component": "hyperstack-stacks"
+      "component": "arete-stacks"
     },
-    "packages/hyperstack": {
+    "packages/arete": {
       "release-type": "node",
-      "component": "hyperstack-npm"
+      "component": "a4-npm"
     },
-    "hyperstack-idl": {
+    "arete-idl": {
       "release-type": "rust",
-      "component": "hyperstack-idl"
+      "component": "arete-idl"
     }
   },
   "plugins": [
@@ -101,18 +108,18 @@
     },
     {
       "type": "linked-versions",
-      "groupName": "hyperstack",
+      "groupName": "arete",
       "components": [
-        "hyperstack",
-        "hyperstack-interpreter",
-        "hyperstack-sdk",
-        "hyperstack-macros",
-        "hyperstack-cli",
-        "hyperstack-server",
-        "hyperstack-react",
-        "hyperstack-typescript",
-        "hyperstack-stacks",
-        "hyperstack-npm"
+        "arete",
+        "arete-interpreter",
+        "arete-sdk",
+        "arete-macros",
+        "a4-cli",
+        "arete-server",
+        "arete-react",
+        "arete-typescript",
+        "arete-stacks",
+        "a4-npm"
       ]
     }
   ]

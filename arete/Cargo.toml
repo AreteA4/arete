@@ -1,0 +1,71 @@
+[package]
+name = "arete"
+version = "0.0.1"
+edition.workspace = true
+license-file = "LICENSE"
+repository.workspace = true
+authors.workspace = true
+description = "Real-time streaming data pipelines for Solana - transform on-chain events into typed state projections"
+keywords = ["arete", "solana", "streaming", "blockchain", "realtime"]
+categories = ["web-programming", "development-tools"]
+documentation = "https://docs.rs/arete"
+readme = "README.md"
+
+[dependencies]
+# Core interpreter - AST transformation runtime and VM
+arete-interpreter = { version = "0.0.1", path = "../interpreter", optional = true }
+
+# Macros - proc-macros for defining streams
+arete-macros = { version = "0.0.1", path = "../arete-macros", optional = true }
+
+# Server - WebSocket server and projection handlers
+arete-server = { version = "0.0.1", path = "../rust/arete-server", optional = true }
+
+# SDK - Rust client for connecting to Arete servers
+arete-sdk = { version = "0.0.1", path = "../rust/arete-sdk", optional = true }
+
+# Runtime dependencies for macro-generated code (re-exported via arete::runtime)
+tokio = { version = "1.0", features = ["full"], optional = true }
+anyhow = { version = "1.0", optional = true }
+dotenvy = { version = "0.15", optional = true }
+smallvec = { version = "1.15", optional = true }
+bs58 = { version = "0.5", optional = true }
+tracing = { version = "0.1", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+bytemuck = { version = "1.21", features = ["derive", "min_const_generics"], optional = true }
+yellowstone-vixen = { workspace = true, optional = true }
+yellowstone-vixen-core = { workspace = true, optional = true }
+yellowstone-vixen-yellowstone-grpc-source = { workspace = true, optional = true }
+yellowstone-grpc-client = { workspace = true, optional = true }
+yellowstone-grpc-proto = { workspace = true, optional = true }
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"], optional = true }
+futures = { version = "0.3", optional = true }
+sha3 = { version = "0.10", optional = true }
+
+[features]
+default = ["interpreter", "macros", "server"]
+full = ["interpreter", "macros", "server", "sdk"]
+interpreter = ["dep:arete-interpreter"]
+macros = ["dep:arete-macros", "runtime"]
+server = ["dep:arete-server"]
+sdk = ["dep:arete-sdk"]
+runtime = [
+    "dep:tokio",
+    "dep:anyhow",
+    "dep:dotenvy",
+    "dep:smallvec",
+    "dep:bs58",
+    "dep:tracing",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:bytemuck",
+    "dep:yellowstone-vixen",
+    "dep:yellowstone-vixen-core",
+    "dep:yellowstone-vixen-yellowstone-grpc-source",
+    "dep:yellowstone-grpc-client",
+    "dep:yellowstone-grpc-proto",
+    "dep:reqwest",
+    "dep:futures",
+    "dep:sha3",
+]

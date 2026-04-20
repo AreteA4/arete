@@ -1,14 +1,14 @@
 [package]
-name = "hyperstack-stacks"
-version = "0.6.9"
+name = "arete-stacks"
+version = "0.0.1"
 edition.workspace = true
 license = "MIT"
 repository.workspace = true
 authors.workspace = true
-description = "Protocol stacks for Hyperstack - ready-to-use Solana data streams"
+description = "Protocol stacks for Arete - ready-to-use Solana data streams"
 readme = "README.md"
-documentation = "https://docs.rs/hyperstack-stacks"
-keywords = ["hyperstack", "solana", "blockchain", "streaming"]
+documentation = "https://docs.rs/arete-stacks"
+keywords = ["arete", "solana", "blockchain", "streaming"]
 categories = ["api-bindings", "web-programming"]
 
 [features]
@@ -17,6 +17,6 @@ ore = []
 full = ["ore"]
 
 [dependencies]
-hyperstack-sdk = { version = "0.6.9", path = "../../../rust/hyperstack-sdk" }
+arete-sdk = { version = "0.0.1", path = "../../../rust/arete-sdk" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

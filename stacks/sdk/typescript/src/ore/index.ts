@@ -407,7 +407,7 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
 /** Stack definition for OreStream with 3 entities */
 export const ORE_STREAM_STACK = {
   name: 'ore-stream',
-  url: 'wss://ore.stack.usehyperstack.com',
+  url: 'wss://ore.stack.arete.run',
   views: {
     OreRound: {
       state: stateView<OreRound>('OreRound/state'),

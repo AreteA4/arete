@@ -9,15 +9,15 @@ use crate::api_client::{
     ApiClient, Build, BuildStatus, CreateBuildRequest, CreateSpecRequest, DeploymentResponse,
     DeploymentStatus, Spec as ApiSpec, DEFAULT_DOMAIN_SUFFIX,
 };
-use crate::config::{resolve_stacks_to_push, DiscoveredAst, HyperstackConfig};
+use crate::config::{resolve_stacks_to_push, DiscoveredAst, AreteConfig};
 use crate::telemetry;
 
 pub fn push(config_path: &str, stack_name: Option<&str>) -> Result<()> {
-    let config = HyperstackConfig::load_optional(config_path)?;
+    let config = AreteConfig::load_optional(config_path)?;
 
     if config.is_none() && stack_name.is_none() {
         println!(
-            "{} No hyperstack.toml found, auto-discovering stack files...",
+            "{} No arete.toml found, auto-discovering stack files...",
             "→".blue().bold()
         );
     } else if config.is_some() {
@@ -29,8 +29,8 @@ pub fn push(config_path: &str, stack_name: Option<&str>) -> Result<()> {
     if stacks_to_push.is_empty() {
         println!("{}", "No stacks found to push.".yellow());
         println!("\n{}", "To push stacks, either:".dimmed());
-        println!("  1. Build your stack crate to generate .hyperstack/*.stack.json files");
-        println!("  2. Create a hyperstack.toml with your stack configuration");
+        println!("  1. Build your stack crate to generate .arete/*.stack.json files");
+        println!("  2. Create a arete.toml with your stack configuration");
         return Ok(());
     }
 
@@ -198,7 +198,7 @@ pub fn list(json: bool) -> Result<()> {
 
     if specs.is_empty() {
         println!("{}", "No stacks found.".yellow());
-        println!("  Run {} to deploy your first stack.", "hs up".cyan());
+        println!("  Run {} to deploy your first stack.", "a4 up".cyan());
         return Ok(());
     }
 
@@ -243,7 +243,7 @@ pub fn list(json: bool) -> Result<()> {
 
     println!();
     println!("Total: {} stack(s)", specs.len());
-    println!("\nTip: Run {} for details", "hs stack show <name>".cyan());
+    println!("\nTip: Run {} for details", "a4 stack show <name>".cyan());
 
     Ok(())
 }
@@ -433,7 +433,7 @@ pub fn versions(stack_name: &str, limit: i64, json: bool) -> Result<()> {
         println!("\n{}", "No versions found for this stack.".yellow());
         println!(
             "Push a version with: {}",
-            format!("hs stack push {}", stack_name).cyan()
+            format!("a4 stack push {}", stack_name).cyan()
         );
         return Ok(());
     }
@@ -538,7 +538,7 @@ pub fn rollback(
 
     let spec = client.get_spec_by_name(stack_name)?.ok_or_else(|| {
         anyhow::anyhow!(
-            "Stack '{}' not found. Use 'hs stack list' to see available stacks.",
+            "Stack '{}' not found. Use 'a4 stack list' to see available stacks.",
             stack_name
         )
     })?;
@@ -681,7 +681,7 @@ pub fn rollback(
     println!("Track progress with:");
     println!(
         "  {}",
-        format!("hs build status {} --watch", response.build_id).cyan()
+        format!("a4 build status {} --watch", response.build_id).cyan()
     );
 
     telemetry::record_stack_rollback(true);
@@ -736,7 +736,7 @@ pub fn stop(stack_name: &str, branch: Option<&str>, force: bool) -> Result<()> {
         );
         println!();
         println!("  This will stop the running deployment.");
-        println!("  You can restart it later with 'hs up'.");
+        println!("  You can restart it later with 'a4 up'.");
         println!();
 
         print!("Continue? [y/N] ");
@@ -767,7 +767,7 @@ pub fn stop(stack_name: &str, branch: Option<&str>, force: bool) -> Result<()> {
 
     println!();
     println!("To restart, run:");
-    println!("  {}", format!("hs up {}", stack_name).cyan());
+    println!("  {}", format!("a4 up {}", stack_name).cyan());
 
     Ok(())
 }

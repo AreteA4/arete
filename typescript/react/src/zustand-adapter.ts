@@ -8,7 +8,7 @@ import type {
   Update,
   RichUpdate,
   ConnectionState,
-} from 'hyperstack-typescript';
+} from '@usearete/sdk';
 
 interface ZustandState {
   entities: Map<string, Map<string, unknown>>;
@@ -25,17 +25,17 @@ interface ZustandActions {
   _setViewConfig: (viewPath: string, config: ViewSortConfig) => void;
 }
 
-export type HyperStackStore = ZustandState & ZustandActions;
+export type AreteStore = ZustandState & ZustandActions;
 
 export class ZustandAdapter implements StorageAdapter {
   private updateCallbacks: Set<UpdateCallback> = new Set();
   private richUpdateCallbacks: Set<RichUpdateCallback> = new Set();
   private accessOrder: Map<string, string[]> = new Map();
 
-  public readonly store: UseBoundStore<StoreApi<HyperStackStore>>;
+  public readonly store: UseBoundStore<StoreApi<AreteStore>>;
 
   constructor(_config: StorageAdapterConfig = {}) {
-    this.store = create<HyperStackStore>((set) => ({
+    this.store = create<AreteStore>((set) => ({
       entities: new Map(),
       viewConfigs: new Map(),
       connectionState: 'disconnected',

@@ -1,12 +1,12 @@
 import { z } from 'zod';
-import { HyperStack } from 'hyperstack-typescript';
+import { Arete } from '@usearete/sdk';
 import {
   ORE_STREAM_STACK,
   OreRoundSchema,
   OreRoundIdSchema,
   OreTreasurySchema,
   OreTreasuryIdSchema,
-} from 'hyperstack-stacks/ore';
+} from '@usearete/stacks/ore';
 
 const OreRoundWithIdSchema = OreRoundSchema.extend({
   id: OreRoundIdSchema.partial(),
@@ -40,12 +40,12 @@ function printTreasury(treasury: OreTreasuryWithId) {
 }
 
 async function main() {
-  const hs = await HyperStack.connect(ORE_STREAM_STACK, { url: 'http://localhost:8878' });
+  const a4 = await Arete.connect(ORE_STREAM_STACK, { url: 'http://localhost:8878' });
 
   console.log('--- Streaming OreRound and OreTreasury updates ---\n');
 
   const streamRounds = async () => {
-    for await (const round of hs.views.OreRound.latest.use({
+    for await (const round of a4.views.OreRound.latest.use({
       take: 1,
       schema: OreRoundWithIdSchema,
     })) {
@@ -54,7 +54,7 @@ async function main() {
   };
 
   const streamTreasury = async () => {
-    for await (const treasury of hs.views.OreTreasury.list.use({
+    for await (const treasury of a4.views.OreTreasury.list.use({
       take: 1,
       schema: OreTreasuryWithIdSchema,
     })) {

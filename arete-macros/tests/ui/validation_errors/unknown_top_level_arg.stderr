@@ -1,0 +1,5 @@
+error: Unknown stream_spec attribute argument: unknown
+ --> tests/ui/validation_errors/unknown_top_level_arg.rs:3:9
+  |
+3 | #[arete(unknown = "value")]
+  |         ^^^^^^^

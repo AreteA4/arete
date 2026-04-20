@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "TypeScript CLI example for Ore Round Hyperstack",
+  "description": "TypeScript CLI example for Ore Round Arete",
   "main": "src/main.ts",
   "scripts": {
     "start": "npx tsx src/main.ts",
@@ -11,8 +11,9 @@
     "dev": "npx tsx --watch src/main.ts"
   },
   "dependencies": {
-    "hyperstack-typescript": "^0.6",
-    "hyperstack-stacks": "^0.6"
+    "@usearete/sdk": "^0.0.1",
+    "@usearete/stacks": "^0.0.1",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "typescript": "^5.0.0",

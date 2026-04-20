@@ -5,14 +5,14 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use serde::Serialize;
 
-use hyperstack_idl::analysis::{
+use arete_idl::analysis::{
     build_account_index, classify_accounts, extract_pda_graph, extract_type_graph,
     find_account_usage, find_connections, find_links, AccountCategory, SeedKind,
 };
-use hyperstack_idl::discriminator::compute_discriminator;
-use hyperstack_idl::parse::parse_idl_file;
-use hyperstack_idl::search::{search_idl, suggest_similar, IdlSection, MatchType, SearchResult};
-use hyperstack_idl::types::{
+use arete_idl::discriminator::compute_discriminator;
+use arete_idl::parse::parse_idl_file;
+use arete_idl::search::{search_idl, suggest_similar, IdlSection, MatchType, SearchResult};
+use arete_idl::types::{
     IdlAccount, IdlField, IdlInstruction, IdlSpec, IdlType, IdlTypeArrayElement, IdlTypeDef,
     IdlTypeDefKind, IdlTypeDefinedInner,
 };
@@ -571,7 +571,7 @@ pub enum IdlCommands {
         #[arg(long)]
         json: bool,
 
-        /// Suggest HyperStack integration points
+        /// Suggest Arete integration points
         #[arg(long)]
         suggest_hs: bool,
     },
@@ -1479,7 +1479,7 @@ pub fn run(args: IdlArgs) -> Result<()> {
                 aggregate.sort();
 
                 println!();
-                println!("{}", "HyperStack Suggestions".bold());
+                println!("{}", "Arete Suggestions".bold());
                 if register_from.is_empty() && aggregate.is_empty() {
                     println!("  {}", "(none)".dimmed());
                 } else {
@@ -1500,7 +1500,7 @@ pub fn run(args: IdlArgs) -> Result<()> {
                 }
                 println!(
                     "  {}",
-                    "These are HyperStack-specific integration suggestions. Use `--suggest-hs` to see them.".dimmed()
+                    "These are Arete-specific integration suggestions. Use `--suggest-a4` to see them.".dimmed()
                 );
             }
         }

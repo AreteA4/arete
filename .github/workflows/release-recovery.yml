@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       release_name:
-        description: "Release name/tag override (default: hyperstack-cli-v<version>)"
+        description: "Release name/tag override (default: a4-cli-v<version>)"
         required: false
         default: ""
         type: string
@@ -23,7 +23,7 @@ on:
         default: true
         type: boolean
       run_publish_npm_cli:
-        description: "Re-run npm publish for packages/hyperstack"
+        description: "Re-run npm publish for packages/arete"
         required: true
         default: true
         type: boolean
@@ -57,7 +57,7 @@ jobs:
           VERSION="${{ inputs.version }}"
           echo "Bundling templates for version ${VERSION}"
 
-          tar -czvf "hyperstack-templates-v${VERSION}.tar.gz" \
+          tar -czvf "arete-templates-v${VERSION}.tar.gz" \
             --exclude='node_modules' \
             --exclude='dist' \
             --exclude='.env' \
@@ -76,11 +76,11 @@ jobs:
           VERSION="${{ inputs.version }}"
           RELEASE_NAME="${{ inputs.release_name }}"
           if [ -z "$RELEASE_NAME" ]; then
-            RELEASE_NAME="hyperstack-cli-v${VERSION}"
+            RELEASE_NAME="a4-cli-v${VERSION}"
           fi
 
           gh release upload "$RELEASE_NAME" \
-            "hyperstack-templates-v${VERSION}.tar.gz" \
+            "arete-templates-v${VERSION}.tar.gz" \
             --clobber
 
   build-cli-binaries:
@@ -91,20 +91,20 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_name: hs-darwin-arm64
+            binary_name: a4-darwin-arm64
           - os: macos-15-large
             target: x86_64-apple-darwin
-            binary_name: hs-darwin-x64
+            binary_name: a4-darwin-x64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary_name: hs-linux-x64
+            binary_name: a4-linux-x64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            binary_name: hs-linux-arm64
+            binary_name: a4-linux-arm64
             cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary_name: hs-win32-x64.exe
+            binary_name: a4-win32-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -123,18 +123,18 @@ jobs:
       - name: Build binary
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} --package hyperstack-cli
+            cargo zigbuild --release --target ${{ matrix.target }} --package a4-cli
           else
-            cargo build --release --target ${{ matrix.target }} --package hyperstack-cli
+            cargo build --release --target ${{ matrix.target }} --package a4-cli
           fi
         shell: bash
 
       - name: Rename binary
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/${{ matrix.target }}/release/hs.exe ${{ matrix.binary_name }}
+            cp target/${{ matrix.target }}/release/a4.exe ${{ matrix.binary_name }}
           else
-            cp target/${{ matrix.target }}/release/hs ${{ matrix.binary_name }}
+            cp target/${{ matrix.target }}/release/a4 ${{ matrix.binary_name }}
           fi
         shell: bash
 
@@ -145,7 +145,7 @@ jobs:
           VERSION="${{ inputs.version }}"
           RELEASE_NAME="${{ inputs.release_name }}"
           if [ -z "$RELEASE_NAME" ]; then
-            RELEASE_NAME="hyperstack-cli-v${VERSION}"
+            RELEASE_NAME="a4-cli-v${VERSION}"
           fi
 
           gh release upload "$RELEASE_NAME" \
@@ -167,8 +167,8 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Publish hyperstack CLI wrapper
+      - name: Publish arete CLI wrapper
         run: npm publish --access public || echo "Package may already be published"
-        working-directory: packages/hyperstack
+        working-directory: packages/arete
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

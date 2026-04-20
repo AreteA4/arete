@@ -1,0 +1,74 @@
+[package]
+name = "arete-server"
+version = "0.0.1"
+edition.workspace = true
+license-file = "LICENSE"
+repository.workspace = true
+authors.workspace = true
+description = "WebSocket server and projection handlers for Arete streaming pipelines"
+readme = "README.md"
+documentation = "https://docs.rs/arete-server"
+keywords = ["arete", "streaming", "websocket", "server"]
+categories = ["web-programming::websocket"]
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tokio-tungstenite = "0.28"
+futures-util = "0.3"
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+bytes = "1.0"
+
+# Yellowstone Vixen dependencies
+yellowstone-vixen = { workspace = true }
+yellowstone-vixen-core = { workspace = true }
+yellowstone-vixen-proto = { workspace = true, features = ["stream"] }
+yellowstone-vixen-yellowstone-grpc-source = { workspace = true }
+
+# Interpreter library
+arete-interpreter = { version = "0.0.1", path = "../../interpreter" }
+
+# Auth library
+arete-auth = { version = "0.0.1", path = "../arete-auth" }
+
+# Async utilities
+tokio-util = "0.7"
+smallvec = "1.15"
+hex = "0.4"
+lru = "0.12"
+dashmap = "6.1"
+flate2 = "1.0"
+base64 = "0.22"
+once_cell = "1.20"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# HTTP server for health endpoint
+hyper = { version = "1.6", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+
+# Telemetry/tracing subscriber
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# OpenTelemetry for distributed tracing and metrics (optional, behind 'otel' feature)
+opentelemetry = { version = "0.22", features = ["otel_unstable"], optional = true }
+opentelemetry_sdk = { version = "0.22", features = ["rt-tokio", "metrics"], optional = true }
+opentelemetry-otlp = { version = "0.15", features = ["tonic", "metrics"], optional = true }
+tracing-opentelemetry = { version = "0.23", optional = true }
+
+[dev-dependencies]
+
+[features]
+default = []
+otel = [
+    "opentelemetry",
+    "opentelemetry_sdk",
+    "opentelemetry-otlp",
+    "tracing-opentelemetry",
+    "arete-interpreter/otel",
+]

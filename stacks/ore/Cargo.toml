@@ -10,7 +10,7 @@ path = "src/lib.rs"
 [workspace]
 
 [dependencies]
-hyperstack = { path = "../../hyperstack", features = ["full"] }
+arete = { path = "../../arete", features = ["full"] }
 
 # Required for user struct definitions and IDL-generated types
 serde = { version = "1.0", features = ["derive"] }

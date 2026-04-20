@@ -1,0 +1,5 @@
+error: expected `,`
+ --> tests/ui/validation_errors/invalid_skip_decoders_assignment.rs:3:23
+  |
+3 | #[arete(skip_decoders = true)]
+  |                       ^

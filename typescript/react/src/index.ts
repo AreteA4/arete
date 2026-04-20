@@ -1,7 +1,7 @@
-export { HyperstackProvider, useHyperstackContext, useConnectionState, useView, useEntity } from './provider';
-export { useHyperstack } from './stack';
+export { AreteProvider, useAreteContext, useConnectionState, useView, useEntity } from './provider';
+export { useArete } from './stack';
 export { ZustandAdapter } from './zustand-adapter';
-export type { HyperStackStore } from './zustand-adapter';
+export type { AreteStore } from './zustand-adapter';
 
 export { useInstructionMutation } from './hooks';
 export type { UseMutationOptions, UseMutationResult, MutationStatus } from './hooks';
@@ -10,13 +10,13 @@ export {
   ConnectionManager,
   FrameProcessor,
   MemoryAdapter,
-  HyperStack,
+  Arete,
   SubscriptionRegistry,
   parseFrame,
   parseFrameFromBlob,
   isValidFrame,
   isSnapshotFrame,
-  HyperStackError,
+  AreteError,
   DEFAULT_CONFIG,
   DEFAULT_MAX_ENTRIES_PER_VIEW,
   resolveAccounts,
@@ -30,7 +30,7 @@ export {
   formatProgramError,
   executeInstruction,
   createInstructionExecutor,
-} from 'hyperstack-typescript';
+} from '@usearete/sdk';
 
 export type {
   StorageAdapter,
@@ -38,7 +38,7 @@ export type {
   RichUpdateCallback,
   StorageAdapterConfig,
   FrameProcessorConfig,
-  HyperStackOptionsWithStorage,
+  AreteOptionsWithStorage,
   InstructionExecutorOptions,
   InstructionExecutor,
   EntityFrame,
@@ -51,8 +51,7 @@ export type {
   Update,
   RichUpdate,
   Subscription,
-  HyperStackOptions,
-  HyperStackConfig,
+  AreteOptions,
   WalletAdapter,
   WalletState,
   WalletConnectOptions,
@@ -74,13 +73,13 @@ export type {
   InstructionHandler,
   InstructionDefinition,
   BuiltInstruction,
-} from 'hyperstack-typescript';
+} from '@usearete/sdk';
 
 export type {
   TransactionDefinition,
   StackDefinition,
-  HyperstackConfig,
-  UseHyperstackOptions,
+  AreteConfig,
+  UseAreteOptions,
   ViewHookOptions,
   ViewHookResult,
   ListParams,

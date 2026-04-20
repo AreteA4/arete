@@ -1,13 +1,13 @@
 /**
- * Hyperstack Auth Server - Drop-in Endpoint Handlers
+ * Arete Auth Server - Drop-in Endpoint Handlers
  *
  * These are framework-agnostic API route handlers that users can mount however they like.
  * They handle token minting and JWKS serving directly using Ed25519 signing.
  *
  * @example
  * ```typescript
- * // app/api/hyperstack/sessions/route.ts (Next.js App Router)
- * import { handleSessionRequest, handleJwksRequest } from 'hyperstack-typescript/ssr/handlers';
+ * // app/api/arete/sessions/route.ts (Next.js App Router)
+ * import { handleSessionRequest, handleJwksRequest } from '@usearete/sdk/ssr/handlers';
  *
  * export async function POST(request: Request) {
  *   const user = await getAuthenticatedUser(request);
@@ -27,7 +27,7 @@ import { base64url } from './utils.js';
 export interface AuthHandlerConfig {
   /**
    * Ed25519 signing key seed (base64-encoded, 32 bytes).
-   * Set HYPERSTACK_SIGNING_KEY env var OR pass here.
+   * Set ARETE_SIGNING_KEY env var OR pass here.
    * Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
    */
   signingKey?: string;
@@ -39,12 +39,12 @@ export interface AuthHandlerConfig {
   publicKey?: string;
 
   /**
-   * Token issuer (defaults to HYPERSTACK_ISSUER env var or 'hyperstack')
+   * Token issuer (defaults to ARETE_ISSUER env var or 'arete')
    */
   issuer?: string;
 
   /**
-   * Token audience (defaults to HYPERSTACK_AUDIENCE env var)
+   * Token audience (defaults to ARETE_AUDIENCE env var)
    */
   audience?: string;
 
@@ -184,10 +184,10 @@ export async function mintSessionToken(
   scope: string = 'read',
   origin?: string
 ): Promise<TokenResponse> {
-  const signingKeyBase64 = config.signingKey || process.env.HYPERSTACK_SIGNING_KEY;
+  const signingKeyBase64 = config.signingKey || process.env.ARETE_SIGNING_KEY;
   if (!signingKeyBase64) {
     throw new Error(
-      'HYPERSTACK_SIGNING_KEY not set. Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"'
+      'ARETE_SIGNING_KEY not set. Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"'
     );
   }
 
@@ -203,8 +203,8 @@ export async function mintSessionToken(
   const publicKeyBytes = await ed25519.getPublicKeyAsync(privateKeyBytes);
   const keyId = config.keyId || deriveKeyId(publicKeyBytes);
 
-  const issuer = config.issuer || process.env.HYPERSTACK_ISSUER || 'hyperstack';
-  const audience = config.audience || process.env.HYPERSTACK_AUDIENCE || 'hyperstack';
+  const issuer = config.issuer || process.env.ARETE_ISSUER || 'arete';
+  const audience = config.audience || process.env.ARETE_AUDIENCE || 'arete';
   const ttlSeconds = config.ttlSeconds || 300;
 
   const now = Math.floor(Date.now() / 1000);
@@ -254,8 +254,8 @@ export async function mintSessionToken(
  * Generate JWKS response from signing key
  */
 export async function generateJwks(config: AuthHandlerConfig): Promise<JwksResponse> {
-  const signingKeyBase64 = config.signingKey || process.env.HYPERSTACK_SIGNING_KEY;
-  const publicKeyBase64 = config.publicKey || process.env.HYPERSTACK_PUBLIC_KEY;
+  const signingKeyBase64 = config.signingKey || process.env.ARETE_SIGNING_KEY;
+  const publicKeyBase64 = config.publicKey || process.env.ARETE_PUBLIC_KEY;
 
   if (!signingKeyBase64 && !publicKeyBase64) {
     return { keys: [] };

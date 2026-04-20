@@ -1,6 +1,6 @@
 # Ore Server Example
 
-This example demonstrates how to run a HyperStack server for the Ore protocol.
+This example demonstrates how to run a Arete server for the Ore protocol.
 
 ## Running
 

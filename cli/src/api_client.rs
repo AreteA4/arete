@@ -5,14 +5,14 @@ use std::path::PathBuf;
 
 /// Production API URL (used by default in release builds)
 #[cfg(not(feature = "local"))]
-const DEFAULT_API_URL: &str = "https://api.usehyperstack.com";
+const DEFAULT_API_URL: &str = "https://api.arete.run";
 
 /// Local development API URL (enabled with --features local)
 #[cfg(feature = "local")]
 const DEFAULT_API_URL: &str = "http://localhost:3000";
 
 /// Default domain suffix for WebSocket URLs
-pub const DEFAULT_DOMAIN_SUFFIX: &str = "stack.usehyperstack.com";
+pub const DEFAULT_DOMAIN_SUFFIX: &str = "stack.arete.run";
 
 #[derive(Debug, Clone)]
 pub struct ApiClient {
@@ -200,8 +200,8 @@ pub struct CreateBuildRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ast_payload: Option<serde_json::Value>,
     /// Branch name for branch deployments (e.g., "preview-abc123")
-    /// Branch deployments get URL: {spec-name}-{branch}.stack.usehyperstack.com
-    /// Production deployments (no branch) get: {spec-name}.stack.usehyperstack.com
+    /// Branch deployments get URL: {spec-name}-{branch}.stack.arete.run
+    /// Production deployments (no branch) get: {spec-name}.stack.arete.run
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
 }
@@ -358,7 +358,7 @@ pub struct ViewSchema {
 impl ApiClient {
     pub fn new() -> Result<Self> {
         let base_url =
-            std::env::var("HYPERSTACK_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
+            std::env::var("ARETE_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
 
         let api_key = Self::load_api_key_for_url(&base_url).ok();
 
@@ -773,7 +773,7 @@ impl ApiClient {
     fn require_api_key(&self) -> Result<&str> {
         self.api_key.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
-                "Not authenticated for {}. Run 'hs auth login' first.",
+                "Not authenticated for {}. Run 'a4 auth login' first.",
                 self.base_url
             )
         })
@@ -798,7 +798,7 @@ impl ApiClient {
     fn credentials_path() -> Result<PathBuf> {
         let home =
             dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-        Ok(home.join(".hyperstack").join("credentials.toml"))
+        Ok(home.join(".arete").join("credentials.toml"))
     }
 
     pub fn save_api_key(api_key: &str, api_url: Option<&str>) -> Result<()> {
@@ -811,7 +811,7 @@ impl ApiClient {
 
         let target_url = api_url
             .map(|s| s.to_string())
-            .or_else(|| std::env::var("HYPERSTACK_API_URL").ok())
+            .or_else(|| std::env::var("ARETE_API_URL").ok())
             .unwrap_or_else(|| DEFAULT_API_URL.to_string());
 
         // Read existing credentials or create new
@@ -889,7 +889,7 @@ impl ApiClient {
         }
 
         anyhow::bail!(
-            "No API key found for API URL: {}. Run 'hs auth login' first.",
+            "No API key found for API URL: {}. Run 'a4 auth login' first.",
             api_url
         )
     }
@@ -898,7 +898,7 @@ impl ApiClient {
     #[allow(dead_code)]
     pub fn load_api_key() -> Result<String> {
         let base_url =
-            std::env::var("HYPERSTACK_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
+            std::env::var("ARETE_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
         Self::load_api_key_for_url(&base_url)
     }
 

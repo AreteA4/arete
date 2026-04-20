@@ -31,8 +31,8 @@ describe('SSR framework adapters', () => {
     const response = await handler({
       headers: new Headers({
         origin: 'https://example.com',
-        'x-hyperstack-subject': 'attacker',
-        'x-hyperstack-scope': 'admin',
+        'x-arete-subject': 'attacker',
+        'x-arete-scope': 'admin',
       }),
     } as any);
 
@@ -62,7 +62,7 @@ describe('SSR framework adapters', () => {
 
     const response = await handler({
       request: {
-        url: '/api/hyperstack/sessions',
+        url: '/api/arete/sessions',
         headers: new Headers(),
       },
     });
@@ -74,7 +74,7 @@ describe('SSR framework adapters', () => {
   it('vite middleware derives subject and scope from resolveSession', async () => {
     const middleware = createViteAuthMiddleware({
       ...testConfig,
-      basePath: '/api/hyperstack',
+      basePath: '/api/arete',
       resolveSession: async () => ({
         subject: 'trusted-user',
         scope: 'write',
@@ -97,11 +97,11 @@ describe('SSR framework adapters', () => {
     await middleware(
       {
         method: 'POST',
-        path: '/api/hyperstack/sessions',
+        path: '/api/arete/sessions',
         headers: {
           origin: 'https://example.com',
-          'x-hyperstack-subject': 'attacker',
-          'x-hyperstack-scope': 'admin',
+          'x-arete-subject': 'attacker',
+          'x-arete-scope': 'admin',
         },
       } as any,
       res as any,
@@ -159,7 +159,7 @@ describe('SSR framework adapters', () => {
   it('vite plugin mounts middleware with an empty internal basePath', async () => {
     const plugin = createViteAuthPlugin({
       ...testConfig,
-      basePath: '/api/hyperstack',
+      basePath: '/api/arete',
       resolveSession: async () => ({
         subject: 'trusted-user',
       }),
@@ -177,7 +177,7 @@ describe('SSR framework adapters', () => {
       },
     });
 
-    expect(mountPath).toBe('/api/hyperstack');
+    expect(mountPath).toBe('/api/arete');
     expect(mountedMiddleware).toBeTypeOf('function');
 
     const sent: { status?: number; body?: unknown } = {};

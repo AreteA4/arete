@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[cfg(not(feature = "local"))]
-const DEFAULT_API_URL: &str = "https://api.usehyperstack.com";
+const DEFAULT_API_URL: &str = "https://api.arete.run";
 
 #[cfg(feature = "local")]
 const DEFAULT_API_URL: &str = "http://localhost:3000";
@@ -14,12 +14,12 @@ const DEFAULT_API_URL: &str = "http://localhost:3000";
 pub fn get_api_url(override_url: Option<&str>) -> String {
     override_url
         .map(|s| s.to_string())
-        .or_else(|| std::env::var("HYPERSTACK_API_URL").ok())
+        .or_else(|| std::env::var("ARETE_API_URL").ok())
         .unwrap_or_else(|| DEFAULT_API_URL.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HyperstackConfig {
+pub struct AreteConfig {
     pub project: ProjectConfig,
 
     #[serde(default)]
@@ -91,19 +91,19 @@ pub struct StackConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rust_module: Option<bool>,
 
-    /// WebSocket URL for the deployed stack (e.g., wss://ore-round-abc123.stack.usehyperstack.com)
+    /// WebSocket URL for the deployed stack (e.g., wss://ore-round-abc123.stack.arete.run)
     /// This is typically set after first deployment and used for SDK generation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
-impl HyperstackConfig {
+impl AreteConfig {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-        let config: HyperstackConfig = toml::from_str(&contents)
+        let config: AreteConfig = toml::from_str(&contents)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
         config.validate()?;
@@ -284,9 +284,9 @@ pub fn discover_ast_files(base_path: Option<&Path>) -> Result<Vec<DiscoveredAst>
     let base = base_path.unwrap_or_else(|| Path::new("."));
     let mut discovered = Vec::new();
 
-    let local_hyperstack = base.join(".hyperstack");
-    if local_hyperstack.is_dir() {
-        discover_in_dir(&local_hyperstack, &mut discovered)?;
+    let local_arete = base.join(".arete");
+    if local_arete.is_dir() {
+        discover_in_dir(&local_arete, &mut discovered)?;
     }
 
     discover_recursive(base, &mut discovered, 0, 3)?;
@@ -339,7 +339,7 @@ fn discover_recursive(
 
         if path.is_dir() {
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name == ".hyperstack" {
+                if name == ".arete" {
                     discover_in_dir(&path, discovered)?;
                 } else if !name.starts_with('.') && name != "node_modules" && name != "target" {
                     discover_recursive(&path, discovered, depth + 1, max_depth)?;
@@ -370,13 +370,13 @@ pub fn find_ast_file(name: &str, base_path: Option<&Path>) -> Result<Option<Disc
 }
 
 pub fn resolve_stacks_to_push(
-    config: Option<&HyperstackConfig>,
+    config: Option<&AreteConfig>,
     stack_name: Option<&str>,
 ) -> Result<Vec<DiscoveredAst>> {
     if let Some(name) = stack_name {
         let ast = find_ast_file(name, None)?.ok_or_else(|| {
             anyhow::anyhow!(
-                "Stack file not found for '{}'\n\nSearched in .hyperstack/ directories.\n\
+                "Stack file not found for '{}'\n\nSearched in .arete/ directories.\n\
                  Make sure your stack is compiled (cargo build) and the stack file exists.",
                 name
             )
@@ -413,8 +413,8 @@ pub fn resolve_stacks_to_push(
         anyhow::bail!(
             "No stack files found.\n\n\
              Make sure you have compiled your stack (cargo build) and have a\n\
-            .hyperstack/*.stack.json file in your project.\n\n\
-             Alternatively, create a hyperstack.toml to configure your stacks."
+            .arete/*.stack.json file in your project.\n\n\
+             Alternatively, create a arete.toml to configure your stacks."
         );
     }
 

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useSyncExternalStore, useRef } from 'react';
 import { ViewDef, ViewHookOptions, ViewHookResult, ListParams, ListParamsBase, Schema } from './types';
-import type { HyperStack } from 'hyperstack-typescript';
+import type { Arete } from '@usearete/sdk';
 
 function shallowArrayEqual<T>(a: T[] | undefined, b: T[] | undefined): boolean {
   if (a === b) return true;
@@ -14,7 +14,7 @@ function shallowArrayEqual<T>(a: T[] | undefined, b: T[] | undefined): boolean {
 
 export function useStateView<T>(
   viewDef: ViewDef<T, 'state'>,
-  client: HyperStack<any> | null,
+  client: Arete<any> | null,
   key?: Record<string, string>,
   options?: ViewHookOptions
 ): ViewHookResult<T> {
@@ -51,7 +51,7 @@ export function useStateView<T>(
         try {
           unsubscribe();
         } catch (err) {
-          console.error('[Hyperstack] Error unsubscribing from view:', err);
+          console.error('[Arete] Error unsubscribing from view:', err);
         }
       };
     } catch (err) {
@@ -82,7 +82,7 @@ export function useStateView<T>(
         try {
           unsubscribe();
         } catch (err) {
-          console.error('[Hyperstack] Error during refresh unsubscribe:', err);
+          console.error('[Arete] Error during refresh unsubscribe:', err);
         }
       }, 0);
     } catch (err) {
@@ -130,7 +130,7 @@ export function useStateView<T>(
 
 export function useListView<T>(
   viewDef: ViewDef<T, 'list'>,
-  client: HyperStack<any> | null,
+  client: Arete<any> | null,
   params?: ListParams,
   options?: ViewHookOptions
 ): ViewHookResult<T[]> {
@@ -175,7 +175,7 @@ export function useListView<T>(
         try {
           unsubscribe();
         } catch (err) {
-          console.error('[Hyperstack] Error unsubscribing from list view:', err);
+          console.error('[Arete] Error unsubscribing from list view:', err);
         }
       };
     } catch (err) {
@@ -209,7 +209,7 @@ export function useListView<T>(
         try {
           unsubscribe();
         } catch (err) {
-          console.error('[Hyperstack] Error during list refresh unsubscribe:', err);
+          console.error('[Arete] Error during list refresh unsubscribe:', err);
         }
       }, 0);
     } catch (err) {
@@ -288,7 +288,7 @@ export function useListView<T>(
 
 export function createStateViewHook<T>(
   viewDef: ViewDef<T, 'state'>,
-  client: HyperStack<any> | null
+  client: Arete<any> | null
 ) {
   return {
     use: (key?: Record<string, string>, options?: ViewHookOptions): ViewHookResult<T> => {
@@ -299,7 +299,7 @@ export function createStateViewHook<T>(
 
 export function createListViewHook<T>(
   viewDef: ViewDef<T, 'list'>,
-  client: HyperStack<any> | null
+  client: Arete<any> | null
 ) {
   function use(params?: ListParams, options?: ViewHookOptions): ViewHookResult<T[]> | ViewHookResult<T | undefined> {
     const result = useListView(viewDef, client, params, options);

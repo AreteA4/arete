@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use hyperstack_sdk::{
+use arete_sdk::{
     deep_merge_with_append, parse_frame, parse_snapshot_entities, try_parse_subscribed_frame,
     ClientMessage, Frame, Operation,
 };
@@ -88,8 +88,8 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
 
     let (ws, _) = connect_async(&url).await.map_err(|err| {
         let redacted = token::redact_hs_token_for_display(&url);
-        let hint = if token::is_hosted_hyperstack_cloud_url(&url) {
-            "\nHint: hosted stacks need a valid `hs_token` (the CLI adds one after `hs auth login`). \
+        let hint = if token::is_hosted_arete_cloud_url(&url) {
+            "\nHint: hosted stacks need a valid `hs_token` (the CLI adds one after `a4 auth login`). \
              On some systems, TLS uses the OS trust store — if this persists, report the error above."
         } else {
             ""

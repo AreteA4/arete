@@ -1,5 +1,5 @@
 /**
- * Next.js App Router integration for Hyperstack Auth
+ * Next.js App Router integration for Arete Auth
  *
  * Drop-in route handlers for Next.js App Router.
  * `resolveSession` must derive the subject from verified server-side auth.
@@ -7,8 +7,8 @@
  *
  * @example
  * ```typescript
- * // app/api/hyperstack/sessions/route.ts
- * import { createNextJsSessionRoute, createNextJsJwksRoute } from 'hyperstack-typescript/ssr/nextjs-app';
+ * // app/api/arete/sessions/route.ts
+ * import { createNextJsSessionRoute, createNextJsJwksRoute } from '@usearete/sdk/ssr/nextjs-app';
  *
  * async function getAuthenticatedUser() {
  *   // Return your verified server-side user/session here.
@@ -26,11 +26,11 @@
  *
  * @example
  * ```typescript
- * // app/api/hyperstack/sessions/route.ts (with custom config)
- * import { createNextJsSessionRoute, createNextJsJwksRoute } from 'hyperstack-typescript/ssr/nextjs-app';
+ * // app/api/arete/sessions/route.ts (with custom config)
+ * import { createNextJsSessionRoute, createNextJsJwksRoute } from '@usearete/sdk/ssr/nextjs-app';
  *
  * export const POST = createNextJsSessionRoute({
- *   signingKey: process.env.HYPERSTACK_SIGNING_KEY,
+ *   signingKey: process.env.ARETE_SIGNING_KEY,
  *   resolveSession: async () => {
  *     const user = await getAuthenticatedUser();
  *     if (!user) return null;
@@ -40,7 +40,7 @@
  * });
  *
  * export const GET = createNextJsJwksRoute({
- *   signingKey: process.env.HYPERSTACK_SIGNING_KEY,
+ *   signingKey: process.env.ARETE_SIGNING_KEY,
  * });
  * ```
  */
@@ -153,7 +153,7 @@ export function createNextJsJwksRoute(config: AuthHandlerConfig = {}) {
 
 /**
  * Create a combined route handler that supports both POST (sessions) and GET (JWKS)
- * Mount at a single route like /api/hyperstack/auth
+ * Mount at a single route like /api/arete/auth
  */
 export function createNextJsAuthRoute(config: NextJsSessionRouteConfig = {}) {
   return {

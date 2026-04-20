@@ -1,5 +1,5 @@
 /**
- * Vite SSR integration for Hyperstack Auth
+ * Vite SSR integration for Arete Auth
  *
  * Express/Connect middleware that mounts auth endpoints.
  * `resolveSession` must derive the subject from verified server-side auth.
@@ -9,12 +9,12 @@
  * ```typescript
  * // server.ts
  * import express from 'express';
- * import { createViteAuthMiddleware } from 'hyperstack-typescript/ssr/vite';
+ * import { createViteAuthMiddleware } from '@usearete/sdk/ssr/vite';
  *
  * const app = express();
  *
- * // Mount auth endpoints at /api/hyperstack
- * app.use('/api/hyperstack', createViteAuthMiddleware({
+ * // Mount auth endpoints at /api/arete
+ * app.use('/api/arete', createViteAuthMiddleware({
  *   resolveSession: async (req) => {
  *     const user = await getAuthenticatedUser(req);
  *     if (!user) return null;
@@ -60,7 +60,7 @@ export interface ViteAuthMiddlewareOptions extends AuthHandlerConfig {
 }
 
 /**
- * Create Express middleware that mounts Hyperstack auth endpoints
+ * Create Express middleware that mounts Arete auth endpoints
  */
 export function createViteAuthMiddleware(options: ViteAuthMiddlewareOptions = {}) {
   const { basePath = '', ...config } = options;
@@ -135,12 +135,12 @@ export function createViteAuthMiddleware(options: ViteAuthMiddlewareOptions = {}
  * ```typescript
  * // vite.config.ts
  * import { defineConfig } from 'vite';
- * import { createViteAuthPlugin } from 'hyperstack-typescript/ssr/vite';
+ * import { createViteAuthPlugin } from '@usearete/sdk/ssr/vite';
  *
  * export default defineConfig({
  *   plugins: [
  *     createViteAuthPlugin({
- *       basePath: '/api/hyperstack',
+ *       basePath: '/api/arete',
  *       resolveSession: async (req) => {
  *         const user = await getAuthenticatedUser(req);
  *         if (!user) return null;
@@ -153,10 +153,10 @@ export function createViteAuthMiddleware(options: ViteAuthMiddlewareOptions = {}
  */
 export function createViteAuthPlugin(options: ViteAuthMiddlewareOptions = {}) {
   return {
-    name: 'hyperstack-auth',
+    name: 'arete-auth',
     configureServer(server: { middlewares: { use: (path: string, middleware: unknown) => void } }) {
       server.middlewares.use(
-        options.basePath || '/api/hyperstack',
+        options.basePath || '/api/arete',
         createViteAuthMiddleware({ ...options, basePath: '' })
       );
     },
@@ -166,7 +166,7 @@ export function createViteAuthPlugin(options: ViteAuthMiddlewareOptions = {}) {
 /**
  * Helper to inject token into HTML for client-side hydration
  */
-export function injectHyperstackToken(
+export function injectAreteToken(
   html: string,
   token: string | undefined
 ): string {
@@ -174,7 +174,7 @@ export function injectHyperstackToken(
 
   const tokenScript = `
     <script>
-      window.__HYPERSTACK_TOKEN__ = ${JSON.stringify(token)};
+      window.__ARETE_TOKEN__ = ${JSON.stringify(token)};
     </script>
   `;
 

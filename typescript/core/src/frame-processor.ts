@@ -96,7 +96,7 @@ export class FrameProcessor {
     if (!schema) return true;
     const result = schema.safeParse(data);
     if (!result.success) {
-      console.warn('[Hyperstack] Frame validation failed:', {
+      console.warn('[Arete] Frame validation failed:', {
         view: viewPath,
         error: result.error,
       });

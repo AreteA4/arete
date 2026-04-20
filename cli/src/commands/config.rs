@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-use crate::config::{discover_ast_files, HyperstackConfig, ProjectConfig, SdkConfig, StackConfig};
+use crate::config::{discover_ast_files, AreteConfig, ProjectConfig, SdkConfig, StackConfig};
 
 pub fn init(config_path: &str) -> Result<()> {
     let path = Path::new(config_path);
@@ -16,14 +16,14 @@ pub fn init(config_path: &str) -> Result<()> {
         );
     }
 
-    println!("{} Initializing Hyperstack project...\n", "→".blue().bold());
+    println!("{} Initializing Arete project...\n", "→".blue().bold());
 
     println!("{} Scanning for stack files...", "→".blue().bold());
     let discovered = discover_ast_files(None)?;
 
     if discovered.is_empty() {
         println!("  {}", "No stack files found.".yellow());
-        println!("  Build your stack crate first to generate .hyperstack/*.stack.json files.\n");
+        println!("  Build your stack crate first to generate .arete/*.stack.json files.\n");
     } else {
         println!(
             "  {} Found {} stack file(s):",
@@ -56,7 +56,7 @@ pub fn init(config_path: &str) -> Result<()> {
         })
         .collect();
 
-    let config = HyperstackConfig {
+    let config = AreteConfig {
         project: ProjectConfig {
             name: project_name.clone(),
         },
@@ -82,16 +82,16 @@ pub fn init(config_path: &str) -> Result<()> {
     if config.stacks.is_empty() {
         println!("{}", "Next steps:".bold());
         println!("  1. Build your stack crate: {}", "cargo build".cyan());
-        println!("  2. Run init again or manually add stacks to hyperstack.toml");
-        println!("  3. Push your stack: {}", "hs stack push".cyan());
+        println!("  2. Run init again or manually add stacks to arete.toml");
+        println!("  3. Push your stack: {}", "a4 stack push".cyan());
     } else {
         println!("{}", "Next steps:".bold());
         println!(
             "  {} to verify your configuration",
-            "hs config validate".cyan()
+            "a4 config validate".cyan()
         );
-        println!("  {} to push your stacks to remote", "hs stack push".cyan());
-        println!("  {} to deploy (push + build)", "hs up".cyan());
+        println!("  {} to push your stacks to remote", "a4 stack push".cyan());
+        println!("  {} to deploy (push + build)", "a4 up".cyan());
     }
 
     Ok(())
@@ -120,8 +120,8 @@ fn prompt_project_name() -> Result<String> {
 pub fn validate(config_path: &str) -> Result<()> {
     println!("{} Validating configuration...", "→".blue().bold());
 
-    let config = HyperstackConfig::load(config_path)
-        .context("Failed to load configuration. Run `hs init` to create a configuration file.")?;
+    let config = AreteConfig::load(config_path)
+        .context("Failed to load configuration. Run `a4 init` to create a configuration file.")?;
 
     println!("{} Configuration is valid!", "✓".green().bold());
     println!();
@@ -139,8 +139,8 @@ pub fn validate(config_path: &str) -> Result<()> {
     if config.stacks.is_empty() {
         println!("  {} No stacks defined", "!".yellow());
         println!(
-            "  Add stacks to hyperstack.toml or run {} to auto-detect",
-            "hs init".cyan()
+            "  Add stacks to arete.toml or run {} to auto-detect",
+            "a4 init".cyan()
         );
     } else {
         println!("  {} Stacks ({}):", "•".dimmed(), config.stacks.len());

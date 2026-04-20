@@ -9,9 +9,9 @@ mod tui;
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
-use hyperstack_sdk::Subscription;
+use arete_sdk::Subscription;
 
-use crate::config::HyperstackConfig;
+use crate::config::AreteConfig;
 
 #[derive(Args)]
 pub struct StreamArgs {
@@ -26,7 +26,7 @@ pub struct StreamArgs {
     #[arg(long)]
     pub url: Option<String>,
 
-    /// Stack name (resolves URL from hyperstack.toml)
+    /// Stack name (resolves URL from arete.toml)
     #[arg(short, long)]
     pub stack: Option<String>,
 
@@ -172,7 +172,7 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
         {
             bail!(
                 "TUI mode requires the 'tui' feature.\n\
-                 Install with: cargo install hyperstack-cli --features tui"
+                 Install with: cargo install a4-cli --features tui"
             );
         }
     }
@@ -219,7 +219,7 @@ fn resolve_url(args: &StreamArgs, config_path: &str, view: &str) -> Result<Strin
         return Ok(url.clone());
     }
 
-    let config = HyperstackConfig::load_optional(config_path)?;
+    let config = AreteConfig::load_optional(config_path)?;
 
     // 2. Explicit --stack name
     if let Some(stack_name) = &args.stack {
@@ -231,7 +231,7 @@ fn resolve_url(args: &StreamArgs, config_path: &str, view: &str) -> Result<Strin
                 }
                 bail!(
                     "Stack '{}' found in config but has no url set.\n\
-                     Set it in hyperstack.toml or use --url to specify the WebSocket URL.",
+                     Set it in arete.toml or use --url to specify the WebSocket URL.",
                     stack_name
                 );
             }
@@ -269,14 +269,14 @@ fn resolve_url(args: &StreamArgs, config_path: &str, view: &str) -> Result<Strin
     bail!(
         "Could not determine WebSocket URL.\n\n\
          Specify one of:\n  \
-         --url wss://your-stack.stack.usehyperstack.com\n  \
-         --stack <name>  (resolves from hyperstack.toml)\n\n\
+         --url wss://your-stack.stack.arete.run\n  \
+         --stack <name>  (resolves from arete.toml)\n\n\
          Available stacks: {}",
         list_stacks(config.as_ref()),
     )
 }
 
-fn list_stacks(config: Option<&HyperstackConfig>) -> String {
+fn list_stacks(config: Option<&AreteConfig>) -> String {
     match config {
         Some(config) if !config.stacks.is_empty() => config
             .stacks
@@ -284,6 +284,6 @@ fn list_stacks(config: Option<&HyperstackConfig>) -> String {
             .map(|s| s.name.as_deref().unwrap_or(&s.stack).to_string())
             .collect::<Vec<_>>()
             .join(", "),
-        _ => "(none — create hyperstack.toml with [[stacks]] entries)".to_string(),
+        _ => "(none — create arete.toml with [[stacks]] entries)".to_string(),
     }
 }

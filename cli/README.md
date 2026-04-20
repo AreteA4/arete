@@ -1,22 +1,22 @@
-# hyperstack-cli
+# a4-cli
 
-[![crates.io](https://img.shields.io/crates/v/hyperstack-cli.svg)](https://crates.io/crates/hyperstack-cli)
-[![docs.rs](https://docs.rs/hyperstack-cli/badge.svg)](https://docs.rs/hyperstack-cli)
+[![crates.io](https://img.shields.io/crates/v/a4-cli.svg)](https://crates.io/crates/a4-cli)
+[![docs.rs](https://docs.rs/a4-cli/badge.svg)](https://docs.rs/a4-cli)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Command-line tool for building, deploying, and managing HyperStack stream stacks.
+Command-line tool for building, deploying, and managing Arete stream stacks.
 
 ## Installation
 
 ```bash
-cargo install hyperstack-cli
+cargo install a4-cli
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/HyperTekOrg/hyperstack.git
-cd hyperstack
+git clone https://github.com/AreteA4/arete.git
+cd arete
 cargo install --path cli
 ```
 
@@ -24,13 +24,13 @@ cargo install --path cli
 
 ```bash
 # Initialize project (auto-discovers AST files)
-hs init
+a4 init
 
 # Authenticate
-hs auth login
+a4 auth login
 
 # Deploy
-hs up
+a4 up
 ```
 
 That's it! Your stack is deployed and you'll see the WebSocket URL.
@@ -39,12 +39,12 @@ That's it! Your stack is deployed and you'll see the WebSocket URL.
 
 | Command | Description |
 |---------|-------------|
-| `hs init` | Initialize project |
-| `hs up [stack]` | Deploy (push + build + deploy) |
-| `hs status` | Show project overview |
-| `hs stack list` | List all stacks |
-| `hs stack show <name>` | Show stack details |
-| `hs stack rollback <name>` | Rollback to previous version |
+| `a4 init` | Initialize project |
+| `a4 up [stack]` | Deploy (push + build + deploy) |
+| `a4 status` | Show project overview |
+| `a4 stack list` | List all stacks |
+| `a4 stack show <name>` | Show stack details |
+| `a4 stack rollback <name>` | Rollback to previous version |
 
 ## Daily Workflow
 
@@ -53,103 +53,103 @@ That's it! Your stack is deployed and you'll see the WebSocket URL.
 cargo build
 
 # Deploy
-hs up
+a4 up
 
 # Check status
-hs status
+a4 status
 ```
 
 ## Stack Commands
 
-### `hs stack list`
+### `a4 stack list`
 
 List all stacks with deployment status:
 
 ```
 STACK              STATUS     VERSION  URL
-settlement-game    active     v3       wss://settlement-game.stack.usehyperstack.com
-token-tracker      active     v1       wss://token-tracker.stack.usehyperstack.com
+settlement-game    active     v3       wss://settlement-game.stack.arete.run
+token-tracker      active     v1       wss://token-tracker.stack.arete.run
 ```
 
-### `hs stack show <name>`
+### `a4 stack show <name>`
 
 Show detailed information:
 
 ```bash
-hs stack show settlement-game
+a4 stack show settlement-game
 ```
 
 Shows: entity info, deployment status, version history, recent builds.
 
-### `hs stack push [name]`
+### `a4 stack push [name]`
 
 Push local stacks to remote without deploying:
 
 ```bash
-hs stack push                  # Push all
-hs stack push settlement-game  # Push one
+a4 stack push                  # Push all
+a4 stack push settlement-game  # Push one
 ```
 
-### `hs stack versions <name>`
+### `a4 stack versions <name>`
 
 Show version history:
 
 ```bash
-hs stack versions settlement-game --limit 10
+a4 stack versions settlement-game --limit 10
 ```
 
-### `hs stack rollback <name>`
+### `a4 stack rollback <name>`
 
 Rollback to a previous version:
 
 ```bash
-hs stack rollback settlement-game          # Previous version
-hs stack rollback settlement-game --to 2   # Specific version
+a4 stack rollback settlement-game          # Previous version
+a4 stack rollback settlement-game --to 2   # Specific version
 ```
 
-### `hs stack delete <name>`
+### `a4 stack delete <name>`
 
 Delete a stack:
 
 ```bash
-hs stack delete settlement-game
+a4 stack delete settlement-game
 ```
 
 ## Deployment
 
-### `hs up [stack-name]`
+### `a4 up [stack-name]`
 
 The happy path - push, build, and deploy in one command:
 
 ```bash
-hs up                              # Deploy all
-hs up settlement-game              # Deploy one
-hs up settlement-game --branch staging  # Branch deploy
-hs up settlement-game --preview    # Preview deployment
+a4 up                              # Deploy all
+a4 up settlement-game              # Deploy one
+a4 up settlement-game --branch staging  # Branch deploy
+a4 up settlement-game --preview    # Preview deployment
 ```
 
 ## Authentication
 
 ```bash
-hs auth register    # Create new account
-hs auth login       # Login
-hs auth logout      # Logout
-hs auth whoami      # Verify with server
+a4 auth register    # Create new account
+a4 auth login       # Login
+a4 auth logout      # Logout
+a4 auth whoami      # Verify with server
 ```
 
-Credentials: `~/.hyperstack/credentials.toml`
+Credentials: `~/.arete/credentials.toml`
 
 ## SDK Generation
 
 ```bash
-hs sdk list                                   # List available stacks
-hs sdk create typescript settlement-game      # Generate TypeScript SDK
-hs sdk create rust settlement-game            # Generate Rust SDK
+a4 sdk list                                   # List available stacks
+a4 sdk create typescript settlement-game      # Generate TypeScript SDK
+a4 sdk create rust settlement-game            # Generate Rust SDK
 ```
 
 ## Configuration
 
-**File:** `hyperstack.toml`
+**File:** `arete.toml`
 
 ```toml
 [project]
@@ -158,7 +158,7 @@ name = "my-project"
 [sdk]
 output_dir = "./generated"
 
-# Stacks - auto-discovered from .hyperstack/*.ast.json
+# Stacks - auto-discovered from .arete/*.ast.json
 # Define explicitly for custom naming:
 [[stacks]]
 name = "my-game"
@@ -172,29 +172,29 @@ For most projects, you only need:
 name = "my-project"
 ```
 
-The CLI auto-discovers stacks from `.hyperstack/*.ast.json` files.
+The CLI auto-discovers stacks from `.arete/*.ast.json` files.
 
 ## WebSocket URLs
 
 | Type | Pattern |
 |------|---------|
-| Production | `wss://{stack-name}.stack.usehyperstack.com` |
-| Branch | `wss://{stack-name}-{branch}.stack.usehyperstack.com` |
+| Production | `wss://{stack-name}.stack.arete.run` |
+| Branch | `wss://{stack-name}-{branch}.stack.arete.run` |
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `HYPERSTACK_API_URL` | Override API endpoint |
+| `ARETE_API_URL` | Override API endpoint |
 
 ## Troubleshooting
 
 | Error | Solution |
 |-------|----------|
-| `Not authenticated` | Run `hs auth login` |
-| `Stack not found` | Check `hs stack list` |
+| `Not authenticated` | Run `a4 auth login` |
+| `Stack not found` | Check `a4 stack list` |
 | `AST file not found` | Run `cargo build` to generate AST |
-| `Build failed` | Check `hs status` for build details |
+| `Build failed` | Check `a4 status` for build details |
 
 ## License
 

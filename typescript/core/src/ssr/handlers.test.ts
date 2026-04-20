@@ -122,7 +122,7 @@ describe('SSR Auth Handlers', () => {
         signingKey: undefined,
       };
 
-      await expect(mintSessionToken(configWithoutKey)).rejects.toThrow('HYPERSTACK_SIGNING_KEY not set');
+      await expect(mintSessionToken(configWithoutKey)).rejects.toThrow('ARETE_SIGNING_KEY not set');
     });
 
     it('should throw error when signing key has wrong length', async () => {

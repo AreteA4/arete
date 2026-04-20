@@ -4,7 +4,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
 use crate::api_client::{ApiClient, BuildStatus, CreateBuildRequest, DEFAULT_DOMAIN_SUFFIX};
-use crate::config::{resolve_stacks_to_push, HyperstackConfig};
+use crate::config::{resolve_stacks_to_push, AreteConfig};
 use crate::telemetry;
 use crate::ui;
 
@@ -25,7 +25,7 @@ pub fn up(
     dry_run: bool,
 ) -> Result<()> {
     let start = std::time::Instant::now();
-    let config = HyperstackConfig::load_optional(config_path)?;
+    let config = AreteConfig::load_optional(config_path)?;
 
     let branch = if preview {
         Some(format!("preview-{}", generate_short_uuid()))
@@ -247,7 +247,7 @@ fn watch_build_progress(client: &ApiClient, build_id: i32) -> Result<()> {
         if start_time.elapsed() > timeout {
             progress_bar.finish_and_clear();
             anyhow::bail!(
-                "Build timed out after {} minutes. Check build status with: hs build status {}",
+                "Build timed out after {} minutes. Check build status with: a4 build status {}",
                 timeout.as_secs() / 60,
                 build_id
             );

@@ -104,19 +104,19 @@ impl CanonicalLog {
 
         match self.level {
             LogLevel::Trace => {
-                tracing::trace!(target: "hyperstack::canonical", canonical = %canonical, "canonical_event")
+                tracing::trace!(target: "arete::canonical", canonical = %canonical, "canonical_event")
             }
             LogLevel::Debug => {
-                tracing::debug!(target: "hyperstack::canonical", canonical = %canonical, "canonical_event")
+                tracing::debug!(target: "arete::canonical", canonical = %canonical, "canonical_event")
             }
             LogLevel::Info => {
-                tracing::info!(target: "hyperstack::canonical", canonical = %canonical, "canonical_event")
+                tracing::info!(target: "arete::canonical", canonical = %canonical, "canonical_event")
             }
             LogLevel::Warn => {
-                tracing::warn!(target: "hyperstack::canonical", canonical = %canonical, "canonical_event")
+                tracing::warn!(target: "arete::canonical", canonical = %canonical, "canonical_event")
             }
             LogLevel::Error => {
-                tracing::error!(target: "hyperstack::canonical", canonical = %canonical, "canonical_event")
+                tracing::error!(target: "arete::canonical", canonical = %canonical, "canonical_event")
             }
         }
     }

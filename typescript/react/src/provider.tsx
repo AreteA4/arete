@@ -1,33 +1,33 @@
 import React, { createContext, useContext, useEffect, useRef, ReactNode, useSyncExternalStore, useCallback } from 'react';
-import { HyperStack, type ConnectionState, type StackDefinition } from 'hyperstack-typescript';
-import type { HyperstackConfig } from './types';
+import { Arete, type ConnectionState, type StackDefinition } from '@usearete/sdk';
+import type { AreteConfig } from './types';
 import { DEFAULT_FLUSH_INTERVAL_MS } from './types';
 import { ZustandAdapter } from './zustand-adapter';
 
 interface ClientEntry {
-  client: HyperStack<any>;
+  client: Arete<any>;
   disconnect: () => void;
 }
 
-interface HyperstackContextValue {
-  getOrCreateClient: <TStack extends StackDefinition>(stack: TStack, urlOverride?: string) => Promise<HyperStack<TStack>>;
-  getClient: <TStack extends StackDefinition>(stack: TStack | undefined) => HyperStack<TStack> | null;
+interface AreteContextValue {
+  getOrCreateClient: <TStack extends StackDefinition>(stack: TStack, urlOverride?: string) => Promise<Arete<TStack>>;
+  getClient: <TStack extends StackDefinition>(stack: TStack | undefined) => Arete<TStack> | null;
   subscribeToClientChanges: (callback: () => void) => () => void;
-  config: HyperstackConfig;
+  config: AreteConfig;
 }
 
-const HyperstackContext = createContext<HyperstackContextValue | null>(null);
+const AreteContext = createContext<AreteContextValue | null>(null);
 
-export function HyperstackProvider({
+export function AreteProvider({
   children,
   fallback = null,
   ...config
-}: HyperstackConfig & {
+}: AreteConfig & {
   children: ReactNode;
   fallback?: ReactNode;
 }) {
   const clientsRef = useRef<Map<string, ClientEntry>>(new Map());
-  const connectingRef = useRef<Map<string, Promise<HyperStack<any>>>>(new Map());
+  const connectingRef = useRef<Map<string, Promise<Arete<any>>>>(new Map());
   const clientChangeListenersRef = useRef<Set<() => void>>(new Set());
   
   const notifyClientChange = useCallback(() => {
@@ -41,21 +41,21 @@ export function HyperstackProvider({
     };
   }, []);
 
-  const getOrCreateClient = useCallback(async <TStack extends StackDefinition>(stack: TStack, urlOverride?: string): Promise<HyperStack<TStack>> => {
+  const getOrCreateClient = useCallback(async <TStack extends StackDefinition>(stack: TStack, urlOverride?: string): Promise<Arete<TStack>> => {
     const cacheKey = urlOverride ? `${stack.name}:${urlOverride}` : stack.name;
     
     const existing = clientsRef.current.get(cacheKey);
     if (existing) {
-      return existing.client as HyperStack<TStack>;
+      return existing.client as Arete<TStack>;
     }
 
     const connecting = connectingRef.current.get(cacheKey);
     if (connecting) {
-      return connecting as Promise<HyperStack<TStack>>;
+      return connecting as Promise<Arete<TStack>>;
     }
 
     const adapter = new ZustandAdapter();
-    const connectionPromise = HyperStack.connect(stack, {
+    const connectionPromise = Arete.connect(stack, {
       url: urlOverride,
       storage: adapter,
       autoReconnect: config.autoConnect,
@@ -80,19 +80,19 @@ export function HyperstackProvider({
     });
 
     connectingRef.current.set(cacheKey, connectionPromise);
-    return connectionPromise as Promise<HyperStack<TStack>>;
+    return connectionPromise as Promise<Arete<TStack>>;
   }, [config.autoConnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.auth, notifyClientChange]);
 
-  const getClient = useCallback(<TStack extends StackDefinition>(stack: TStack | undefined): HyperStack<TStack> | null => {
+  const getClient = useCallback(<TStack extends StackDefinition>(stack: TStack | undefined): Arete<TStack> | null => {
     if (!stack) {
       if (clientsRef.current.size === 1) {
         const firstEntry = clientsRef.current.values().next().value;
-        return firstEntry ? (firstEntry.client as HyperStack<TStack>) : null;
+        return firstEntry ? (firstEntry.client as Arete<TStack>) : null;
       }
       return null;
     }
     const entry = clientsRef.current.get(stack.name);
-    return entry ? (entry.client as HyperStack<TStack>) : null;
+    return entry ? (entry.client as Arete<TStack>) : null;
   }, []);
 
   useEffect(() => {
@@ -105,7 +105,7 @@ export function HyperstackProvider({
     };
   }, []);
 
-  const value: HyperstackContextValue = {
+  const value: AreteContextValue = {
     getOrCreateClient,
     getClient,
     subscribeToClientChanges,
@@ -113,22 +113,22 @@ export function HyperstackProvider({
   };
 
   return (
-    <HyperstackContext.Provider value={value}>
+    <AreteContext.Provider value={value}>
       {children}
-    </HyperstackContext.Provider>
+    </AreteContext.Provider>
   );
 }
 
-export function useHyperstackContext() {
-  const context = useContext(HyperstackContext);
+export function useAreteContext() {
+  const context = useContext(AreteContext);
   if (!context) {
-    throw new Error('useHyperstackContext must be used within HyperstackProvider');
+    throw new Error('useAreteContext must be used within AreteProvider');
   }
   return context;
 }
 
 export function useConnectionState(stack?: StackDefinition): ConnectionState {
-  const { getClient, subscribeToClientChanges } = useHyperstackContext();
+  const { getClient, subscribeToClientChanges } = useAreteContext();
   const [state, setState] = React.useState<ConnectionState>(() => {
     const client = getClient(stack);
     return client?.connectionState ?? 'disconnected';
@@ -167,7 +167,7 @@ export function useConnectionState(stack?: StackDefinition): ConnectionState {
 }
 
 export function useView<T>(stack: StackDefinition, viewPath: string): T[] {
-  const { getClient } = useHyperstackContext();
+  const { getClient } = useAreteContext();
   const client = getClient(stack);
   
   return useSyncExternalStore(
@@ -184,7 +184,7 @@ export function useView<T>(stack: StackDefinition, viewPath: string): T[] {
 }
 
 export function useEntity<T>(stack: StackDefinition, viewPath: string, key: string): T | null {
-  const { getClient } = useHyperstackContext();
+  const { getClient } = useAreteContext();
   const client = getClient(stack);
   
   return useSyncExternalStore(

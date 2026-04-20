@@ -19,8 +19,8 @@ jobs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       cli_version: ${{ steps.release.outputs['cli--version'] }}
       cli_release_created: ${{ steps.release.outputs['cli--release_created'] }}
-      idl_release_created: ${{ steps.release.outputs['hyperstack-idl--release_created'] }}
-      auth_release_created: ${{ steps.release.outputs['rust/hyperstack-auth--release_created'] }}
+      idl_release_created: ${{ steps.release.outputs['arete-idl--release_created'] }}
+      auth_release_created: ${{ steps.release.outputs['rust/arete-auth--release_created'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -44,57 +44,57 @@ jobs:
         run: cargo login ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       # Publish in dependency order with waits for crates.io index propagation
-      - name: Publish hyperstack-idl
+      - name: Publish arete-idl
         if: needs.release-please.outputs.idl_release_created == 'true'
         run: |
-          cd hyperstack-idl
+          cd arete-idl
           cargo publish --allow-dirty || echo "Package may already be published"
           sleep 30
 
-      - name: Publish hyperstack-macros
+      - name: Publish arete-macros
         run: |
-          cd hyperstack-macros
+          cd arete-macros
           cargo publish --allow-dirty || echo "Package may already be published"
           sleep 30
 
-      - name: Publish hyperstack-interpreter
+      - name: Publish arete-interpreter
         run: |
           cd interpreter
           cargo publish --allow-dirty || echo "Package may already be published"
           sleep 30
 
-      - name: Publish hyperstack-auth
+      - name: Publish arete-auth
         if: needs.release-please.outputs.auth_release_created == 'true'
         run: |
-          cd rust/hyperstack-auth
+          cd rust/arete-auth
           cargo publish --allow-dirty || echo "Package may already be published"
           sleep 30
 
-      - name: Publish hyperstack-server
+      - name: Publish arete-server
         run: |
-          cd rust/hyperstack-server
+          cd rust/arete-server
           cargo publish --allow-dirty || echo "Package may already be published"
           sleep 30
 
-      - name: Publish hyperstack-sdk
+      - name: Publish arete-sdk
         run: |
-          cd rust/hyperstack-sdk
+          cd rust/arete-sdk
           cargo publish --allow-dirty || echo "Package may already be published"
           sleep 30
 
-      - name: Publish hyperstack (umbrella)
+      - name: Publish arete (umbrella)
         run: |
-          cd hyperstack
+          cd arete
           cargo publish --allow-dirty || echo "Package may already be published"
           sleep 30
 
-      - name: Publish hyperstack-cli
+      - name: Publish a4-cli
         run: |
           cd cli
           cargo publish --allow-dirty || echo "Package may already be published"
           sleep 30
 
-      - name: Publish hyperstack-stacks
+      - name: Publish arete-stacks
         run: |
           cd stacks/sdk/rust
           cargo publish --allow-dirty || echo "Package may already be published"
@@ -113,7 +113,7 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      # Publish hyperstack-typescript (core) first since react depends on it
+      # Publish @usearete/sdk (core) first since react depends on it
       - name: Install core dependencies
         run: npm install
         working-directory: typescript/core
@@ -132,9 +132,9 @@ jobs:
       - name: Wait for npm propagation
         run: sleep 30
 
-      # Publish hyperstack-react (after core is published)
+      # Publish @usearete/react (after core is published)
       - name: Update react lockfile and install
-        run: npm install
+        run: npm install ../core --no-save
         working-directory: typescript/react
 
       - name: Build react
@@ -151,7 +151,7 @@ jobs:
       - name: Wait for npm propagation
         run: sleep 30
 
-      # Publish hyperstack-stacks (after core is published since it depends on it)
+      # Publish arete-stacks (after core is published since it depends on it)
       - name: Install stacks dependencies
         run: npm install
         working-directory: stacks/sdk/typescript
@@ -190,7 +190,7 @@ jobs:
           echo "Bundling templates for version ${VERSION}"
           
           # Create tarball with only the template directories (excluding build artifacts)
-          tar -czvf "hyperstack-templates-v${VERSION}.tar.gz" \
+          tar -czvf "arete-templates-v${VERSION}.tar.gz" \
             --exclude='node_modules' \
             --exclude='dist' \
             --exclude='.env' \
@@ -207,8 +207,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release-please.outputs.cli_version }}"
-          gh release upload "hyperstack-cli-v${VERSION}" \
-            "hyperstack-templates-v${VERSION}.tar.gz" \
+          gh release upload "a4-cli-v${VERSION}" \
+            "arete-templates-v${VERSION}.tar.gz" \
             --clobber
 
   build-cli-binaries:
@@ -220,20 +220,20 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_name: hs-darwin-arm64
+            binary_name: a4-darwin-arm64
           - os: macos-15-large
             target: x86_64-apple-darwin
-            binary_name: hs-darwin-x64
+            binary_name: a4-darwin-x64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary_name: hs-linux-x64
+            binary_name: a4-linux-x64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            binary_name: hs-linux-arm64
+            binary_name: a4-linux-arm64
             cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary_name: hs-win32-x64.exe
+            binary_name: a4-win32-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -252,18 +252,18 @@ jobs:
       - name: Build binary
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} --package hyperstack-cli
+            cargo zigbuild --release --target ${{ matrix.target }} --package a4-cli
           else
-            cargo build --release --target ${{ matrix.target }} --package hyperstack-cli
+            cargo build --release --target ${{ matrix.target }} --package a4-cli
           fi
         shell: bash
 
       - name: Rename binary
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/${{ matrix.target }}/release/hs.exe ${{ matrix.binary_name }}
+            cp target/${{ matrix.target }}/release/a4.exe ${{ matrix.binary_name }}
           else
-            cp target/${{ matrix.target }}/release/hs ${{ matrix.binary_name }}
+            cp target/${{ matrix.target }}/release/a4 ${{ matrix.binary_name }}
           fi
         shell: bash
 
@@ -272,7 +272,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release-please.outputs.cli_version }}"
-          gh release upload "hyperstack-cli-v${VERSION}" \
+          gh release upload "a4-cli-v${VERSION}" \
             "${{ matrix.binary_name }}" \
             --clobber
         shell: bash
@@ -291,9 +291,9 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Publish hyperstack CLI wrapper
+      - name: Publish arete CLI wrapper
         run: npm publish --access public || echo "Package may already be published"
-        working-directory: packages/hyperstack
+        working-directory: packages/arete
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -305,7 +305,7 @@ jobs:
   #   if: needs.release-please.outputs.releases_created == 'true'
   #   defaults:
   #     run:
-  #       working-directory: python/hyperstack-sdk
+  #       working-directory: python/arete-sdk
   #   steps:
   #     - uses: actions/checkout@v6
   #

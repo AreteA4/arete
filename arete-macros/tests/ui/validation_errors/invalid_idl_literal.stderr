@@ -1,0 +1,5 @@
+error: Expected string literal or array of string literals for idl
+ --> tests/ui/validation_errors/invalid_idl_literal.rs:3:15
+  |
+3 | #[arete(idl = true)]
+  |               ^^^^

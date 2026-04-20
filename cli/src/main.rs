@@ -1,23 +1,23 @@
-//! # hyperstack-cli
+//! # a4-cli
 //!
-//! Command-line tool for building, deploying, and managing HyperStack
+//! Command-line tool for building, deploying, and managing Arete
 //! stream stacks.
 //!
 //! ## Installation
 //!
 //! ```bash
-//! cargo install hyperstack-cli
+//! cargo install a4-cli
 //! ```
 //!
 //! ## Commands
 //!
-//! - `hs init` - Initialize configuration
-//! - `hs up [stack]` - Deploy a stack (push + build + deploy)
-//! - `hs stack list` - List all stacks
-//! - `hs stack show` - Show stack details
-//! - `hs sdk create` - Generate TypeScript/Rust SDK
+//! - `a4 init` - Initialize configuration
+//! - `a4 up [stack]` - Deploy a stack (push + build + deploy)
+//! - `a4 stack list` - List all stacks
+//! - `a4 stack show` - Show stack details
+//! - `a4 sdk create` - Generate TypeScript/Rust SDK
 //!
-//! See `hs --help` for the full command reference.
+//! See `a4 --help` for the full command reference.
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
@@ -33,15 +33,15 @@ mod templates;
 mod ui;
 
 #[derive(Parser)]
-#[command(name = "hs")]
-#[command(about = "Hyperstack CLI - Build, deploy, and manage stream stacks", long_about = None)]
+#[command(name = "a4")]
+#[command(about = "Arete CLI - Build, deploy, and manage stream stacks", long_about = None)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Path to hyperstack.toml configuration file
-    #[arg(short, long, global = true, default_value = "hyperstack.toml")]
+    /// Path to arete.toml configuration file
+    #[arg(short, long, global = true, default_value = "arete.toml")]
     config: String,
 
     /// Output as JSON (machine-readable format)
@@ -52,8 +52,8 @@ struct Cli {
     #[arg(long, global = true)]
     verbose: bool,
 
-    /// API URL to use (overrides HYPERSTACK_API_URL env var)
-    #[arg(long, global = true, env = "HYPERSTACK_API_URL")]
+    /// API URL to use (overrides ARETE_API_URL env var)
+    #[arg(long, global = true, env = "ARETE_API_URL")]
     api_url: Option<String>,
 
     /// Generate shell completions
@@ -63,7 +63,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Create a new Hyperstack project from a template
+    /// Create a new Arete project from a template
     Create {
         /// Project name (creates directory)
         name: Option<String>,
@@ -85,7 +85,7 @@ enum Commands {
         skip_install: bool,
     },
 
-    /// Initialize a new Hyperstack project (auto-detects stack files)
+    /// Initialize a new Arete project (auto-detects stack files)
     Init,
 
     /// Deploy a stack: push, build, and watch until completion
@@ -93,7 +93,7 @@ enum Commands {
         /// Name of specific stack to deploy (deploys all if not specified)
         stack_name: Option<String>,
 
-        /// Deploy to a specific branch (creates {stack-name}-{branch}.stack.usehyperstack.com)
+        /// Deploy to a specific branch (creates {stack-name}-{branch}.stack.arete.run)
         #[arg(short, long)]
         branch: Option<String>,
 
@@ -161,7 +161,7 @@ enum SdkCommands {
     #[command(subcommand)]
     Create(CreateCommands),
 
-    /// List all available stacks from hyperstack.toml
+    /// List all available stacks from arete.toml
     List,
 }
 
@@ -357,7 +357,7 @@ enum TelemetryCommands {
 }
 
 /// Build commands - advanced low-level build management
-/// These are power-user commands; most users should use `hs up` instead.
+/// These are power-user commands; most users should use `a4 up` instead.
 #[derive(Subcommand)]
 enum BuildCommands {
     /// Create a new build from a stack (watches progress by default)
@@ -407,15 +407,15 @@ enum BuildCommands {
 fn main() {
     let cli = Cli::parse();
 
-    // Set HYPERSTACK_API_URL env var if --api-url flag is provided
+    // Set ARETE_API_URL env var if --api-url flag is provided
     // This ensures all ApiClient instances use the correct URL
     if let Some(ref api_url) = cli.api_url {
-        std::env::set_var("HYPERSTACK_API_URL", api_url);
+        std::env::set_var("ARETE_API_URL", api_url);
     }
 
     if let Some(shell) = cli.completions {
         let mut cmd = Cli::command();
-        generate(shell, &mut cmd, "hs", &mut io::stdout());
+        generate(shell, &mut cmd, "a4", &mut io::stdout());
         return;
     }
 

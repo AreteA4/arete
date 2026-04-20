@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use hyperstack_sdk::Frame;
+use arete_sdk::Frame;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};

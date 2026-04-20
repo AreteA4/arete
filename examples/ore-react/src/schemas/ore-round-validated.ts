@@ -3,7 +3,7 @@ import {
   OreRoundIdSchema,
   OreRoundStateSchema,
   OreRoundResultsSchema,
-} from 'hyperstack-stacks/ore';
+} from '@usearete/stacks/ore';
 
 const ValidatedOreRoundIdSchema = OreRoundIdSchema.extend({
   round_id: z.number(),

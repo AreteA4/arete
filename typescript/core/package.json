@@ -1,8 +1,8 @@
 {
-  "name": "hyperstack-typescript",
-  "version": "0.6.9",
+  "name": "@usearete/sdk",
+  "version": "0.0.1",
   "type": "module",
-  "description": "Pure TypeScript SDK for the Hyperstack Solana streaming platform",
+  "description": "Pure TypeScript SDK for the Arete Solana streaming platform",
   "main": "dist/index.js",
   "module": "dist/index.esm.js",
   "types": "dist/index.d.ts",
@@ -40,12 +40,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/HyperTekOrg/hyperstack.git",
+    "url": "https://github.com/AreteA4/arete.git",
     "directory": "typescript/core"
   },
-  "homepage": "https://github.com/HyperTekOrg/hyperstack.git#readme",
+  "homepage": "https://github.com/AreteA4/arete#readme",
   "bugs": {
-    "url": "https://github.com/HyperTekOrg/hyperstack.git/issues"
+    "url": "https://github.com/AreteA4/arete/issues"
   },
   "scripts": {
     "build": "rollup -c",
@@ -61,9 +61,9 @@
     "solana",
     "streaming",
     "websockets",
-    "hyperstack"
+    "arete"
   ],
-  "author": "Hypertek",
+  "author": "Arete Team",
   "license": "MIT",
   "publishConfig": {
     "access": "public"

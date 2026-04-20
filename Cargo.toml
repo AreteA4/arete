@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "hyperstack",
+    "arete",
     "interpreter",
-    "hyperstack-macros",
-    "hyperstack-idl",
+    "arete-macros",
+    "arete-idl",
     "cli",
-    "rust/hyperstack-server",
-    "rust/hyperstack-sdk",
-    "rust/hyperstack-auth",
-    "rust/hyperstack-auth-server",
-    "rust/hyperstack-mcp",
+    "rust/arete-server",
+    "rust/arete-sdk",
+    "rust/arete-auth",
+    "rust/arete-auth-server",
+    "rust/arete-mcp",
     "stacks/sdk/rust",
 ]
 exclude = [
@@ -23,8 +23,8 @@ exclude = [
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/HyperTekOrg/hyperstack.git"
-authors = ["Hypertek"]
+repository = "https://github.com/AreteA4/arete.git"
+authors = ["Arete Team"]
 
 [workspace.dependencies]
 # Yellowstone Vixen ecosystem

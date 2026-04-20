@@ -56,7 +56,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .load(std::sync::atomic::Ordering::Relaxed);
     let mut spans = vec![
         Span::styled(
-            "hs stream ",
+            "a4 stream ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
