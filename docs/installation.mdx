@@ -12,8 +12,8 @@ The Arete CLI (`a4`) manages stacks, deployments, and SDK generation.
 
 ```bash
 # Clone the repository
-git clone https://github.com/HyperTekOrg/arete
-cd arete-oss
+git clone https://github.com/AreteA4/arete
+cd arete
 
 # Install globally
 cargo install --path cli
@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-See the [Rust SDK README](https://github.com/HyperTekOrg/arete/tree/main/rust/a4-sdk) for full documentation.
+See the [Rust SDK README](https://github.com/AreteA4/arete/tree/main/rust/a4-sdk) for full documentation.
 
 ### Python
 
@@ -157,12 +157,12 @@ If you're writing stacks, add these dependencies:
 
 ```toml
 [dependencies]
-arete = { path = "../arete-oss/main/arete", features = ["full"] }
-a4-macros = { path = "../arete-oss/main/a4-macros" }
-a4-interpreter = { path = "../arete-oss/main/interpreter" }
+arete = { path = "../aretes/main/arete", features = ["full"] }
+a4-macros = { path = "../arete/main/a4-macros" }
+a4-interpreter = { path = "../arete/main/interpreter" }
 
 # For local server
-a4-server = { path = "../arete-oss/main/rust/a4-server" }
+a4-server = { path = "../arete/main/rust/a4-server" }
 
 # Required
 tokio = { version = "1.0", features = ["full"] }
