@@ -2,10 +2,10 @@
 title: Explore Stacks
 sidebar:
   order: 3
-description: How agents use hs explore to discover stacks and get live schema information.
+description: How agents use a4 explore to discover stacks and get live schema information.
 ---
 
-The `hs explore` command is how agents (and humans) discover available stacks and introspect their schemas. Agent skills instruct the AI to run this command before writing any Hyperstack code, so it always has accurate entity names, field paths, and types.
+The `a4 explore` command is how agents (and humans) discover available stacks and introspect their schemas. Agent skills instruct the AI to run this command before writing any Arete code, so it always has accurate entity names, field paths, and types.
 
 ---
 
@@ -13,21 +13,21 @@ The `hs explore` command is how agents (and humans) discover available stacks an
 
 ```bash
 # List all available stacks
-hs explore
+a4 explore
 
 # Show entities and views for a stack
-hs explore <stack-name>
+a4 explore <stack-name>
 
 # Show fields and types for a specific entity
-hs explore <stack-name> <EntityName>
+a4 explore <stack-name> <EntityName>
 ```
 
 Add `--json` to any command for machine-readable output (this is what agents use):
 
 ```bash
-hs explore --json
-hs explore ore --json
-hs explore ore OreRound --json
+a4 explore --json
+a4 explore ore --json
+a4 explore ore OreRound --json
 ```
 
 ---
@@ -35,29 +35,29 @@ hs explore ore OreRound --json
 ## Listing Stacks
 
 ```bash
-$ hs explore
+$ a4 explore
 
 Public Registry
 ────────────────────────────────────────────────────────
-  ore    wss://ore.stack.usehyperstack.com
+  ore    wss://ore.stack.arete.run
     Entities: OreRound, OreTreasury, OreMiner
 
 Your Stacks
 ────────────────────────────────────────────────────────
-  my-game    wss://my-game-abc123.stack.usehyperstack.com  [active]
+  my-game    wss://my-game-abc123.stack.arete.run  [active]
 ```
 
-Without authentication, you see public registry stacks only. When logged in (`hs auth login`), you also see your own stacks.
+Without authentication, you see public registry stacks only. When logged in (`a4 auth login`), you also see your own stacks.
 
 ---
 
 ## Exploring a Stack
 
 ```bash
-$ hs explore ore
+$ a4 explore ore
 
 Stack: ore (OreStream)
-  URL: wss://ore.stack.usehyperstack.com
+  URL: wss://ore.stack.arete.run
 
 Entities
 ────────────────────────────────────────────────────────
@@ -73,7 +73,7 @@ Entities
     Primary key: id.miner_address
     Fields: 12
 
-Tip: Run `hs explore ore OreRound` for field details
+Tip: Run `a4 explore ore OreRound` for field details
 ```
 
 ---
@@ -81,7 +81,7 @@ Tip: Run `hs explore ore OreRound` for field details
 ## Entity Fields
 
 ```bash
-$ hs explore ore OreRound
+$ a4 explore ore OreRound
 
 Entity: OreRound
   Primary key: id.round_id
@@ -122,7 +122,7 @@ Field types with `?` are nullable (wrapped in `Option` on the Rust side, optiona
 Agents use the `--json` flag to get structured output they can parse:
 
 ```bash
-$ hs explore ore OreRound --json
+$ a4 explore ore OreRound --json
 ```
 
 ```json
@@ -157,10 +157,10 @@ Public stacks like `ore` are always available to everyone. Global stacks are ava
 
 ```bash
 # Log in to see all stacks
-hs auth login
+a4 auth login
 
 # Now explore shows everything
-hs explore
+a4 explore
 ```
 
 ---
@@ -169,9 +169,9 @@ hs explore
 
 The core problem with AI coding tools is stale context. If an agent has outdated schema information, it writes code with wrong field names or missing types.
 
-`hs explore` solves this because:
+`a4 explore` solves this because:
 
-- It queries the live Hyperstack API, not static files
+- It queries the live Arete API, not static files
 - It reflects the exact schema of the deployed stack
 - The CLI version you have installed determines the API compatibility
 - Agent skills tell the AI to always run it before writing code

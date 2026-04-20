@@ -4,10 +4,10 @@ sidebar:
   order: 6
 ---
 
-Complete installation reference for all Hyperstack client SDKs.
+Complete installation reference for all Arete client SDKs.
 
-:::tip[New to Hyperstack?]
-Start with the [Quickstart](/using-stacks/quickstart) to scaffold a working app, or [Connect to a Stack](/using-stacks/connect/) to add Hyperstack to an existing project.
+:::tip[New to Arete?]
+Start with the [Quickstart](/using-stacks/quickstart) to scaffold a working app, or [Connect to a Stack](/using-stacks/connect/) to add Arete to an existing project.
 :::
 
 :::note[Building your own stack?]
@@ -21,7 +21,7 @@ If you're creating a custom data feed, see [Building Stacks → Environment Setu
 For Node.js, Vue, Svelte, or vanilla JS:
 
 ```bash
-npm install hyperstack-typescript
+npm install arete-typescript
 ```
 
 Framework-agnostic with AsyncIterable-based streaming. No peer dependencies.
@@ -33,7 +33,7 @@ Framework-agnostic with AsyncIterable-based streaming. No peer dependencies.
 For React applications:
 
 ```bash
-npm install hyperstack-react
+npm install arete-react
 ```
 
 **Peer dependencies:** `react` ^19.0.0, `zustand` ^4.0.0
@@ -44,8 +44,8 @@ npm install react zustand
 
 :::note[Which package?]
 
-- **React/Next.js** → `hyperstack-react`
-- **Everything else** → `hyperstack-typescript`
+- **React/Next.js** → `arete-react`
+- **Everything else** → `arete-typescript`
   :::
 
 ---
@@ -56,7 +56,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hyperstack-sdk = "{{VERSION}}"
+a4-sdk = "{{VERSION}}"
 ```
 
 ---
@@ -72,31 +72,31 @@ hyperstack-sdk = "{{VERSION}}"
 
 ## CLI
 
-The Hyperstack CLI (`hs`) handles project scaffolding, deployment, and SDK generation.
+The Arete CLI (`a4`) handles project scaffolding, deployment, and SDK generation.
 
 **Via npm (global):**
 
 ```bash
-npm install -g hyperstack-cli
+npm install -g arete-cli
 ```
 
 Or use without installing:
 
 ```bash
-npx hyperstack-cli --help
+npx arete-cli --help
 ```
 
 **Via Cargo:**
 
 ```bash
-cargo install hyperstack-cli
+cargo install a4-cli
 ```
 
 ---
 
 ## Troubleshooting
 
-| Issue                               | Solution                                   |
-| ----------------------------------- | ------------------------------------------ |
-| `Cannot find module 'hyperstack-*'` | Run `npm install` for the relevant package |
-| Peer dependency warnings            | Install `react` and `zustand` explicitly   |
+| Issue                          | Solution                                   |
+| ------------------------------ | ------------------------------------------ |
+| `Cannot find module 'arete-*'` | Run `npm install` for the relevant package |
+| Peer dependency warnings       | Install `react` and `zustand` explicitly   |

@@ -4,7 +4,7 @@ sidebar:
   order: 3
 ---
 
-Set up your development environment for building Hyperstack stacks.
+Set up your development environment for building Arete stacks.
 
 :::tip[Just want to use an existing stack?]
 If you're consuming data from a deployed stack, see [Using Stacks → Installation](/using-stacks/installation) instead.
@@ -21,16 +21,16 @@ If you're consuming data from a deployed stack, see [Using Stacks → Installati
 
 ## CLI
 
-The Hyperstack CLI (`hs`) handles project initialization, deployment, and SDK generation.
+The Arete CLI (`a4`) handles project initialization, deployment, and SDK generation.
 
 ```bash
-cargo install hyperstack-cli
+cargo install a4-cli
 ```
 
 Verify the installation:
 
 ```bash
-hs --version
+a4 --version
 ```
 
 :::note[PATH configuration]
@@ -41,17 +41,17 @@ Ensure `~/.cargo/bin` is in your PATH. Most Rust installations configure this au
 
 ## Rust Dependencies
 
-Add the Hyperstack crate to your stack project's `Cargo.toml`:
+Add the Arete crate to your stack project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-hyperstack = "{{VERSION}}"
+arete = "{{VERSION}}"
 serde = { version = "1.0", features = ["derive"] }
 ```
 
 This gives you access to:
 
-- `#[hyperstack]` — The main macro for defining stacks
+- `#[arete]` — The main macro for defining stacks
 - `#[entity]`, `#[map]`, `#[aggregate]` — Field-level attributes
 - `Stream` derive macro — Generates streaming infrastructure
 
@@ -66,15 +66,15 @@ cargo new my-stack --lib
 cd my-stack
 ```
 
-Initialize Hyperstack configuration:
+Initialize Arete configuration:
 
 ```bash
-hs init
+a4 init
 ```
 
-This creates `hyperstack.toml` and a `.hyperstack/` directory for generated stack files.
+This creates `arete.toml` and a `.arete/` directory for generated stack files.
 
-**hyperstack.toml:**
+**arete.toml:**
 
 ```toml
 [project]
@@ -87,16 +87,16 @@ output_dir = "./generated"
 Validate your setup:
 
 ```bash
-hs config validate
+a4 config validate
 ```
 
 ---
 
 ## Environment Variables
 
-| Variable             | Description           | Default        |
-| -------------------- | --------------------- | -------------- |
-| `HYPERSTACK_API_URL` | Override API endpoint | Production API |
+| Variable        | Description           | Default        |
+| --------------- | --------------------- | -------------- |
+| `ARETE_API_URL` | Override API endpoint | Production API |
 
 ---
 
@@ -110,8 +110,8 @@ hs config validate
 
 ## Troubleshooting
 
-| Issue                   | Solution                                             |
-| ----------------------- | ---------------------------------------------------- |
-| `hs: command not found` | Add `~/.cargo/bin` to your PATH                      |
-| `cargo build` fails     | Ensure `hyperstack = "{{VERSION}}"` is in Cargo.toml |
-| `hs init` fails         | Check you're in a valid Cargo project                |
+| Issue                   | Solution                                        |
+| ----------------------- | ----------------------------------------------- |
+| `a4: command not found` | Add `~/.cargo/bin` to your PATH                 |
+| `cargo build` fails     | Ensure `arete = "{{VERSION}}"` is in Cargo.toml |
+| `a4 init` fails         | Check you're in a valid Cargo project           |

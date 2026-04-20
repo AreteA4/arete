@@ -4,7 +4,7 @@ sidebar:
   order: 1
 ---
 
-The `hyperstack-react` SDK provides hooks and providers for building live Solana applications with React. It's built on top of `hyperstack-typescript` and adds React-specific features like automatic re-rendering, connection state management, and data transformation.
+The `arete-react` SDK provides hooks and providers for building live Solana applications with React. It's built on top of `arete-typescript` and adds React-specific features like automatic re-rendering, connection state management, and data transformation.
 
 :::tip[Not using React?]
 See the [TypeScript SDK](/sdks/typescript/) for the framework-agnostic core SDK.
@@ -15,19 +15,19 @@ See the [TypeScript SDK](/sdks/typescript/) for the framework-agnostic core SDK.
 ## Quick Start
 
 ```tsx
-import { HyperstackProvider, useHyperstack } from "hyperstack-react";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { AreteProvider, useArete } from "arete-react";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 function App() {
   return (
-    <HyperstackProvider>
+    <AreteProvider>
       <Dashboard />
-    </HyperstackProvider>
+    </AreteProvider>
   );
 }
 
 function Dashboard() {
-  const { views, isConnected } = useHyperstack(ORE_STREAM_STACK);
+  const { views, isConnected } = useArete(ORE_STREAM_STACK);
   const { data: rounds, isLoading } = views.OreRound.latest.use();
 
   if (isLoading) return <p>Loading...</p>;
@@ -50,7 +50,7 @@ function Dashboard() {
 ## Installation
 
 ```bash
-npm install hyperstack-react zustand
+npm install arete-react zustand
 ```
 
 ### Peer Dependencies
@@ -70,14 +70,14 @@ The SDK requires:
 // src/main.tsx
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { HyperstackProvider } from "hyperstack-react";
+import { AreteProvider } from "arete-react";
 import App from "./App";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <HyperstackProvider>
+    <AreteProvider>
       <App />
-    </HyperstackProvider>
+    </AreteProvider>
   </React.StrictMode>,
 );
 ```
@@ -98,48 +98,48 @@ The provider manages connections to stacks. Each stack definition includes its o
 
 You have two options for stack definitions:
 
-**Option A: Use curated Hyperstack feeds**
+**Option A: Use curated Arete feeds**
 
-Install the `hyperstack-stacks` package for pre-built, typed definitions of popular Solana programs:
+Install the `arete-stacks` package for pre-built, typed definitions of popular Solana programs:
 
 ```bash
-npm install hyperstack-stacks
+npm install arete-stacks
 ```
 
 ```typescript
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 ```
 
-Each stack includes its default URL (e.g., `wss://ore.stack.usehyperstack.com`).
+Each stack includes its default URL (e.g., `wss://ore.stack.arete.run`).
 
 **Option B: Generate from your own stack**
 
 If you've [built your own stack](/building-stacks/workflow/), generate a typed SDK using the CLI:
 
 ```bash
-hs sdk create typescript my-stack
+a4 sdk create typescript my-stack
 ```
 
 ```typescript
 import { MY_STACK } from "./stack";
 ```
 
-See [CLI Commands](/cli/commands/) for all `hs sdk create` options.
+See [CLI Commands](/cli/commands/) for all `a4 sdk create` options.
 
 ---
 
 ## Using Views
 
-### useHyperstack Hook
+### useArete Hook
 
 Access your stack's typed interface:
 
 ```tsx
-import { useHyperstack } from "hyperstack-react";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { useArete } from "arete-react";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 function RoundList() {
-  const { views } = useHyperstack(ORE_STREAM_STACK);
+  const { views } = useArete(ORE_STREAM_STACK);
   const { data: rounds, isLoading, error } = views.OreRound.list.use();
 
   if (isLoading) return <p>Loading...</p>;
@@ -161,7 +161,7 @@ function RoundList() {
 
 ```tsx
 function RoundList() {
-  const { views } = useHyperstack(ORE_STREAM_STACK);
+  const { views } = useArete(ORE_STREAM_STACK);
   const { data: rounds, isLoading, error } = views.OreRound.list.use();
 
   if (isLoading) return <div>Connecting...</div>;
@@ -183,7 +183,7 @@ function RoundList() {
 
 ```tsx
 function RoundDetail({ roundAddress }: { roundAddress: string }) {
-  const { views } = useHyperstack(ORE_STREAM_STACK);
+  const { views } = useArete(ORE_STREAM_STACK);
   const { data: round, isLoading } = views.OreRound.state.use({
     key: roundAddress,
   });
@@ -208,7 +208,7 @@ function RoundDetail({ roundAddress }: { roundAddress: string }) {
 ### Single Item Query
 
 ```tsx
-const { views } = useHyperstack(MY_STACK);
+const { views } = useArete(MY_STACK);
 
 // Get only one item with type-safe return (T | undefined instead of T[])
 const { data: latestToken } = views.tokens.list.use({ take: 1 });
@@ -231,7 +231,7 @@ The SDK supports both server-side and client-side filtering:
 **Server-side** options reduce data sent over the wire:
 
 ```tsx
-const { views } = useHyperstack(ORE_STREAM_STACK);
+const { views } = useArete(ORE_STREAM_STACK);
 const { data: rounds } = views.OreRound.list.use({
   take: 10,  // Limit to 10 entities from server
   skip: 20,  // Skip first 20 (for pagination)
@@ -243,7 +243,7 @@ For advanced server-side filtering, use [custom views](/using-stacks/filtering-f
 **Client-side** filtering happens after data is received. Use `where` with comparison operators:
 
 ```tsx
-const { views } = useHyperstack(ORE_STREAM_STACK);
+const { views } = useArete(ORE_STREAM_STACK);
 const { data: highValueRounds } = views.OreRound.list.use({
   where: {
     // Supported operators: gte, lte, gt, lt, or exact match
@@ -264,7 +264,7 @@ const { data: highValueRounds } = views.OreRound.list.use({
 
 ```tsx
 // Exact match example
-const { views } = useHyperstack(ORE_STREAM_STACK);
+const { views } = useArete(ORE_STREAM_STACK);
 const { data } = views.OreRound.list.use({
   where: { status: "active" },  // Exact equality
 });
@@ -273,7 +273,7 @@ const { data } = views.OreRound.list.use({
 ### Conditional Subscription
 
 ```tsx
-const { views } = useHyperstack(ORE_STREAM_STACK);
+const { views } = useArete(ORE_STREAM_STACK);
 // Only subscribe when we have a valid address
 const { data: round } = views.OreRound.state.use(
   { key: roundAddress },
@@ -284,7 +284,7 @@ const { data: round } = views.OreRound.state.use(
 ### Initial Data
 
 ```tsx
-const { views } = useHyperstack(ORE_STREAM_STACK);
+const { views } = useArete(ORE_STREAM_STACK);
 // Show placeholder while connecting
 const { data: rounds } = views.OreRound.list.use({}, { initialData: [] });
 ```
@@ -303,7 +303,7 @@ The `.use()` method accepts two arguments: params and options.
 | `limit` | `number` | Client | Max results to keep after filtering |
 
 ```typescript
-const { views } = useHyperstack(ORE_STREAM_STACK);
+const { views } = useArete(ORE_STREAM_STACK);
 const { data } = views.OreRound.list.use({
   take: 50,                                // Server sends max 50
   skip: 0,                                 // Start from beginning
@@ -315,7 +315,7 @@ const { data } = views.OreRound.list.use({
 #### View Hook Options
 
 ```typescript
-const { views } = useHyperstack(MY_STACK);
+const { views } = useArete(MY_STACK);
 const { data } = views.tokens.list.use(
   { limit: 10 }, // Params
   {
@@ -338,14 +338,14 @@ const { data } = views.tokens.list.use(
 
 ## Connection State
 
-The `useHyperstack` hook returns connection state directly:
+The `useArete` hook returns connection state directly:
 
 ```tsx
-import { useHyperstack } from "hyperstack-react";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { useArete } from "arete-react";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 function ConnectionStatus() {
-  const { connectionState, isConnected } = useHyperstack(ORE_STREAM_STACK);
+  const { connectionState, isConnected } = useArete(ORE_STREAM_STACK);
 
   const statusColors = {
     connected: "green",
@@ -363,7 +363,7 @@ function ConnectionStatus() {
 }
 ```
 
-### useHyperstack Return Values
+### useArete Return Values
 
 | Property          | Type              | Description                                      |
 | ----------------- | ----------------- | ------------------------------------------------ |
@@ -372,7 +372,7 @@ function ConnectionStatus() {
 | `isConnected`     | `boolean`         | Convenience: `true` when `state === 'connected'` |
 | `isLoading`       | `boolean`         | `true` until client is ready                     |
 | `error`           | `Error \| null`   | Connection error if any                          |
-| `client`          | `HyperStack`      | Low-level client instance                        |
+| `client`          | `Arete`           | Low-level client instance                        |
 
 ### Connection States
 
@@ -386,10 +386,10 @@ function ConnectionStatus() {
 
 ### Standalone useConnectionState Hook
 
-For cases where you need connection state outside of a component using `useHyperstack`, you can use the standalone hook:
+For cases where you need connection state outside of a component using `useArete`, you can use the standalone hook:
 
 ```tsx
-import { useConnectionState } from "hyperstack-react";
+import { useConnectionState } from "arete-react";
 
 function GlobalConnectionIndicator() {
   const state = useConnectionState();
@@ -405,12 +405,12 @@ function GlobalConnectionIndicator() {
 
 ## API Reference
 
-### `useHyperstack(stackDefinition, options?)`
+### `useArete(stackDefinition, options?)`
 
 Returns a typed interface to your stack's views, along with connection state.
 
 ```typescript
-const { views, connectionState, isConnected, isLoading, error, client } = useHyperstack(ORE_STREAM_STACK);
+const { views, connectionState, isConnected, isLoading, error, client } = useArete(ORE_STREAM_STACK);
 
 // Access views
 views.OreRound.list.use()
@@ -431,14 +431,14 @@ if (isConnected) {
 
 ```typescript
 // Connect to local development server
-const { views, isConnected } = useHyperstack(ORE_STREAM_STACK, {
+const { views, isConnected } = useArete(ORE_STREAM_STACK, {
   url: "ws://localhost:8878"
 });
 ```
 
 ### `useConnectionState(stack?)`
 
-Standalone hook for connection state. Prefer using `connectionState` from `useHyperstack` when possible.
+Standalone hook for connection state. Prefer using `connectionState` from `useArete` when possible.
 
 ```typescript
 // Without argument: returns state of single active client
@@ -450,25 +450,25 @@ const state = useConnectionState(ORE_STREAM_STACK);
 // Returns: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 ```
 
-### `HyperstackProvider`
+### `AreteProvider`
 
 Wrap your application to initialize the SDK:
 
 ```tsx
-<HyperstackProvider
+<AreteProvider
   autoConnect={true}
   maxEntriesPerView={10000}
 >
   <YourApp />
-</HyperstackProvider>
+</AreteProvider>
 ```
 
 To override the URL for all stacks (e.g., for local development):
 
 ```tsx
-<HyperstackProvider websocketUrl="ws://localhost:8878">
+<AreteProvider websocketUrl="ws://localhost:8878">
   <YourApp />
-</HyperstackProvider>
+</AreteProvider>
 ```
 
 ### View `.useOne()`
@@ -476,7 +476,7 @@ To override the URL for all stacks (e.g., for local development):
 A convenience method for fetching a single item from a list view with proper typing.
 
 ```typescript
-const { views } = useHyperstack(MY_STACK);
+const { views } = useArete(MY_STACK);
 const { data } = views.tokens.list.useOne();
 // data: Token | undefined (not Token[])
 ```
@@ -491,11 +491,11 @@ A full React component combining everything:
 
 ```tsx
 // src/App.tsx
-import { useHyperstack } from "hyperstack-react";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { useArete } from "arete-react";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 function OreDashboard() {
-  const { views, connectionState, isConnected } = useHyperstack(ORE_STREAM_STACK);
+  const { views, connectionState, isConnected } = useArete(ORE_STREAM_STACK);
 
   const {
     data: rounds,
@@ -553,14 +553,14 @@ Every stack ships with Zod schemas that you can use to filter entities at the ho
 Use the "Completed" schema variant to only render entities where all fields are present:
 
 ```tsx
-import { useHyperstack } from "hyperstack-react";
+import { useArete } from "arete-react";
 import {
   ORE_STREAM_STACK,
   OreRoundCompletedSchema,
-} from "hyperstack-stacks/ore";
+} from "arete-stacks/ore";
 
 function FullyLoadedRounds() {
-  const { views } = useHyperstack(ORE_STREAM_STACK);
+  const { views } = useArete(ORE_STREAM_STACK);
 
   const { data: rounds } = views.OreRound.latest.use({
     schema: OreRoundCompletedSchema,
@@ -584,8 +584,8 @@ Define your own Zod schema to validate only the fields your component needs:
 
 ```tsx
 import { z } from "zod";
-import { useHyperstack } from "hyperstack-react";
-import { PUMPFUN_STREAM_STACK } from "hyperstack-stacks/pumpfun";
+import { useArete } from "arete-react";
+import { PUMPFUN_STREAM_STACK } from "arete-stacks/pumpfun";
 
 const TradableTokenSchema = z.object({
   id: z.object({ mint: z.string() }),
@@ -594,7 +594,7 @@ const TradableTokenSchema = z.object({
 });
 
 function TokenList() {
-  const { views } = useHyperstack(PUMPFUN_STREAM_STACK);
+  const { views } = useArete(PUMPFUN_STREAM_STACK);
 
   // Only tokens with price and volume data
   const { data: tokens } = views.PumpfunToken.list.use({
@@ -623,7 +623,7 @@ Stacks can include data resolved server-side that doesn't live on-chain. For exa
 
 ```tsx
 function RoundWithMetadata() {
-  const { views } = useHyperstack(ORE_STREAM_STACK);
+  const { views } = useArete(ORE_STREAM_STACK);
   const { data: round } = views.OreRound.latest.useOne();
 
   return (
@@ -641,25 +641,25 @@ Resolved data arrives as part of the entity alongside on-chain fields. See [Reso
 
 ## Accessing Core SDK
 
-The React SDK re-exports everything from `hyperstack-typescript`. Access low-level APIs when needed:
+The React SDK re-exports everything from `arete-typescript`. Access low-level APIs when needed:
 
 ```typescript
 // Import core features from React SDK
-import { HyperStack, ConnectionManager } from "hyperstack-react";
+import { Arete, ConnectionManager } from "arete-react";
 ```
 
 ---
 
 ## Choosing Between SDKs
 
-| Use Case                 | Recommended SDK         |
-| ------------------------ | ----------------------- |
-| React/Next.js apps       | `hyperstack-react`      |
-| Vue, Svelte, Solid, etc. | `hyperstack-typescript` |
-| Node.js backend/scripts  | `hyperstack-typescript` |
-| Custom state management  | `hyperstack-typescript` |
-| Need React hooks         | `hyperstack-react`      |
-| Maximum control          | `hyperstack-typescript` |
+| Use Case                 | Recommended SDK    |
+| ------------------------ | ------------------ |
+| React/Next.js apps       | `arete-react`      |
+| Vue, Svelte, Solid, etc. | `arete-typescript` |
+| Node.js backend/scripts  | `arete-typescript` |
+| Custom state management  | `arete-typescript` |
+| Need React hooks         | `arete-react`      |
+| Maximum control          | `arete-typescript` |
 
 ---
 
@@ -667,7 +667,7 @@ import { HyperStack, ConnectionManager } from "hyperstack-react";
 
 | Issue                         | Solution                                                                   |
 | ----------------------------- | -------------------------------------------------------------------------- |
-| "WebSocket connection failed" | Check your connection to `wss://ore.stack.usehyperstack.com`               |
+| "WebSocket connection failed" | Check your connection to `wss://ore.stack.arete.run`                       |
 | Data not updating             | Verify the view path matches the stack entity name (e.g., `OreRound/list`) |
 | TypeScript errors             | Ensure your interface matches the stack's data shape                       |
 
@@ -676,6 +676,6 @@ import { HyperStack, ConnectionManager } from "hyperstack-react";
 ## Next Steps
 
 - [Schema Validation](/sdks/validation/) — Zod schemas for runtime validation and filtering
-- [TypeScript SDK](/sdks/typescript/) — Use Hyperstack without React
+- [TypeScript SDK](/sdks/typescript/) — Use Arete without React
 - [Resolvers](/building-stacks/rust-dsl/resolvers/) — Enrich entities with token metadata and computed fields
 - [Build Your Own Stack](/building-stacks/workflow) — Create custom data streams

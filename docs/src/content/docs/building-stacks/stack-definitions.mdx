@@ -2,38 +2,38 @@
 title: Stack Definitions
 sidebar:
   order: 2
-description: Introduction to the Hyperstack Rust DSL for defining streaming data specifications.
+description: Introduction to the Arete Rust DSL for defining streaming data specifications.
 ---
 
-Hyperstack uses a declarative Rust DSL (Domain Specific Language) to define how on-chain Solana data should be transformed, aggregated, and streamed to your application. Instead of writing complex ETL pipelines, you simply declare the final state you want, and Hyperstack handles the rest.
+Arete uses a declarative Rust DSL (Domain Specific Language) to define how on-chain Solana data should be transformed, aggregated, and streamed to your application. Instead of writing complex ETL pipelines, you simply declare the final state you want, and Arete handles the rest.
 
 ---
 
 ## Why Declarative?
 
-Building data pipelines for Solana typically involves manual account parsing, complex event handling, and managing state synchronization. Hyperstack replaces this imperative approach with a declarative model:
+Building data pipelines for Solana typically involves manual account parsing, complex event handling, and managing state synchronization. Arete replaces this imperative approach with a declarative model:
 
-| Imperative Approach (Traditional)             | Declarative Approach (Hyperstack)                 |
-| --------------------------------------------- | ------------------------------------------------- |
-| Write custom decoding logic for every account | Use `#[map]` to link IDL fields to your state     |
-| Manually track and sum event values           | Use `#[aggregate(strategy = Sum)]`                |
-| Manage WebSocket connections and state diffs  | Define entities and let Hyperstack stream updates |
-| Build custom backend services for data        | Deploy a stack and use generated SDKs             |
+| Imperative Approach (Traditional)             | Declarative Approach (Arete)                  |
+| --------------------------------------------- | --------------------------------------------- |
+| Write custom decoding logic for every account | Use `#[map]` to link IDL fields to your state |
+| Manually track and sum event values           | Use `#[aggregate(strategy = Sum)]`            |
+| Manage WebSocket connections and state diffs  | Define entities and let Arete stream updates  |
+| Build custom backend services for data        | Deploy a stack and use generated SDKs         |
 
 ---
 
 ## Anatomy of a Stack Definition
 
-A Hyperstack definition is a Rust module annotated with `#[hyperstack]`. Inside this module, you define **Entities** — the structured data objects your application will consume. A single module can contain multiple `#[entity]` structs, all packaged into one stack.
+A Arete definition is a Rust module annotated with `#[arete]`. Inside this module, you define **Entities** — the structured data objects your application will consume. A single module can contain multiple `#[entity]` structs, all packaged into one stack.
 
 The ORE stack is a real example. Here's a simplified version showing the core concepts with a single IDL:
 
 ```rust
-use hyperstack::prelude::*;
+use arete::prelude::*;
 
-#[hyperstack(idl = "idl/ore.json")]
+#[arete(idl = "idl/ore.json")]
 pub mod ore_stream {
-    use hyperstack::macros::Stream;
+    use arete::macros::Stream;
     use serde::{Deserialize, Serialize};
 
     // OreRound is the main entity -- one instance per mining round.
@@ -80,16 +80,16 @@ pub mod ore_stream {
 ```
 
 :::note[SDK Module Naming]
-Hyperstack derives the program name from the IDL metadata and generates a typed SDK module named `{name}_sdk`. The ORE IDL produces `ore_sdk::accounts::*` and `ore_sdk::instructions::*`. The Entropy IDL produces `entropy_sdk::*`. All `#[map]` and `#[aggregate]` paths use these prefixes.
+Arete derives the program name from the IDL metadata and generates a typed SDK module named `{name}_sdk`. The ORE IDL produces `ore_sdk::accounts::*` and `ore_sdk::instructions::*`. The Entropy IDL produces `entropy_sdk::*`. All `#[map]` and `#[aggregate]` paths use these prefixes.
 :::
 
 ### Key Components
 
-1. **`#[hyperstack]` Module** — The container for your definition. The `idl` argument accepts a single path or an array for multi-program stacks.
+1. **`#[arete]` Module** — The container for your definition. The `idl` argument accepts a single path or an array for multi-program stacks.
 2. **`#[entity]` Struct** — An entity is an individual definition of some part of your app's data. Each entity represents a distinct concept — a round, a miner, a treasury — and declares exactly which on-chain fields belong to it, across as many accounts or programs as needed. A stack can have many entities.
 3. **`#[view]`** — A view is a projection over an entity's data. It defines what slice of the stream a client subscribes to. Every entity gets `state` (one item by key) and `list` (all items) by default. `#[view]` adds custom sorted or filtered projections on top — like `OreRound/latest` which streams rounds sorted by `round_id` descending.
 4. **`#[derive(Stream)]` Structs** — Nested structs containing the actual field mappings. Must derive `Stream`, `Debug`, `Clone`, `Serialize`, and `Deserialize`.
-5. **Primary Key** — Every entity needs one (annotated `primary_key`). This is how Hyperstack tracks individual entity instances.
+5. **Primary Key** — Every entity needs one (annotated `primary_key`). This is how Arete tracks individual entity instances.
 6. **Field Mappings** — Attributes on struct fields defining where data comes from and how it's processed.
 7. **Resolvers** — Fetch off-chain data (e.g. token metadata) and make it available to transforms.
 
@@ -97,7 +97,7 @@ Hyperstack derives the program name from the IDL metadata and generates a typed 
 
 ## Mapping Types
 
-Hyperstack provides several mapping attributes to populate your entity fields:
+Arete provides several mapping attributes to populate your entity fields:
 
 | Attribute             | Source              | Description                                                                                                                                                   |
 | --------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -131,7 +131,7 @@ When data arrives, **Strategies** determine how the field value is updated. This
 A single stack can consume data from multiple Solana programs by passing an array of IDL files:
 
 ```rust
-#[hyperstack(idl = ["idl/ore.json", "idl/entropy.json"])]
+#[arete(idl = ["idl/ore.json", "idl/entropy.json"])]
 pub mod ore_stream {
     // ore_sdk::accounts::* and ore_sdk::instructions::* are available
     // entropy_sdk::accounts::* and entropy_sdk::instructions::* are available

@@ -1,10 +1,10 @@
 # Contributing to Documentation
 
-Thank you for your interest in improving the Hyperstack documentation!
+Thank you for your interest in improving the Arete documentation!
 
 ## Documentation Stack
 
-The Hyperstack documentation is built using:
+The Arete documentation is built using:
 
 - [Astro](https://astro.build/) - Web framework for content-driven websites
 - [Starlight](https://starlight.astro.build/) - Documentation theme for Astro
@@ -41,7 +41,7 @@ The documentation is organized into the following categories:
 | Stacks | `stacks/` | Documentation for specific stack components |
 | SDKs | `sdks/` | Language-specific SDK guides (Rust, TS, Python) |
 | CLI | `cli/` | Command-line interface reference |
-| hyperstack-server | `hyperstack-server/` | Running stacks with hyperstack-server |
+| a4-server | `a4-server/` | Running stacks with a4-server |
 
 ## Writing Guidelines
 

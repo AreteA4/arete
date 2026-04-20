@@ -8,7 +8,7 @@ Population strategies define how an entity's state is updated when new data arri
 
 ## What are Population Strategies?
 
-When a Hyperstack handler processes a transaction or account update, it maps data from the source (e.g., an Anchor instruction or a Protobuf event) into your entity's fields. A **Population Strategy** determines how that incoming value interacts with the existing value in that field.
+When a Arete handler processes a transaction or account update, it maps data from the source (e.g., an Anchor instruction or a Protobuf event) into your entity's fields. A **Population Strategy** determines how that incoming value interacts with the existing value in that field.
 
 For example, should a "Total Volume" field be overwritten by the latest trade amount, or should the latest amount be added to the current total? Strategies answer this question.
 

@@ -1,6 +1,6 @@
 # CLI Command Reference
 
-Complete reference for the Hyperstack CLI (`hs`).
+Complete reference for the Arete CLI (`a4`).
 
 ---
 
@@ -8,7 +8,7 @@ Complete reference for the Hyperstack CLI (`hs`).
 
 | Option | Description |
 |--------|-------------|
-| `--config, -c <path>` | Path to hyperstack.toml (default: `hyperstack.toml`) |
+| `--config, -c <path>` | Path to arete.toml (default: `arete.toml`) |
 | `--json` | Output as JSON |
 | `--verbose` | Enable verbose output |
 | `--completions <shell>` | Generate shell completions (bash, zsh, fish, powershell, elvish) |
@@ -21,102 +21,102 @@ Complete reference for the Hyperstack CLI (`hs`).
 
 | Command | Description |
 |---------|-------------|
-| `hs init` | Initialize project |
-| `hs up [stack]` | Deploy stack (push + build + deploy) |
-| `hs status` | Show project overview |
-| `hs auth login` | Authenticate |
+| `a4 init` | Initialize project |
+| `a4 up [stack]` | Deploy stack (push + build + deploy) |
+| `a4 status` | Show project overview |
+| `a4 auth login` | Authenticate |
 
 ---
 
 ## Project Setup
 
-### hs init
+### a4 init
 
-Initialize a new Hyperstack project.
+Initialize a new Arete project.
 
 ```bash
-hs init
+a4 init
 ```
 
-Creates `hyperstack.toml` with auto-discovered stacks from `.hyperstack/*.ast.json`.
+Creates `arete.toml` with auto-discovered stacks from `.arete/*.ast.json`.
 
-### hs config validate
+### a4 config validate
 
 Validate your configuration.
 
 ```bash
-hs config validate
+a4 config validate
 ```
 
 ---
 
 ## Authentication
 
-### hs auth register
+### a4 auth register
 
 Create a new account.
 
 ```bash
-hs auth register
+a4 auth register
 ```
 
 Prompts for username and password (min 8 characters).
 
-### hs auth login
+### a4 auth login
 
 Login to your account.
 
 ```bash
-hs auth login
+a4 auth login
 ```
 
-### hs auth logout
+### a4 auth logout
 
 Remove stored credentials.
 
 ```bash
-hs auth logout
+a4 auth logout
 ```
 
-### hs auth status
+### a4 auth status
 
 Check local authentication status.
 
 ```bash
-hs auth status
+a4 auth status
 ```
 
-### hs auth whoami
+### a4 auth whoami
 
 Verify authentication with server.
 
 ```bash
-hs auth whoami
+a4 auth whoami
 ```
 
-**Credentials location:** `~/.hyperstack/credentials.toml`
+**Credentials location:** `~/.arete/credentials.toml`
 
 ---
 
 ## Deployment
 
-### hs up [stack-name]
+### a4 up [stack-name]
 
 Deploy a stack: push, build, and deploy in one command.
 
 ```bash
 # Deploy all stacks
-hs up
+a4 up
 
 # Deploy specific stack
-hs up my-stack
+a4 up my-stack
 
 # Deploy to branch
-hs up my-stack --branch staging
-# Creates: my-stack-staging.stack.usehyperstack.com
+a4 up my-stack --branch staging
+# Creates: my-stack-staging.stack.arete.run
 
 # Preview deployment
-hs up my-stack --preview
+a4 up my-stack --preview
 ```
 
 **Options:**
@@ -127,83 +127,83 @@ hs up my-stack --preview
 | `--preview` | Create preview deployment |
 | `--dry-run` | Show what would be deployed without deploying |
 
-### hs status
+### a4 status
 
 Show overview of all stacks, builds, and deployments.
 
 ```bash
-hs status
-hs status --json
+a4 status
+a4 status --json
 ```
 
 ---
 
 ## Stack Management
 
-### hs stack list
+### a4 stack list
 
 List all stacks with deployment status.
 
 ```bash
-hs stack list
-hs stack list --json
+a4 stack list
+a4 stack list --json
 ```
 
-### hs stack push [stack-name]
+### a4 stack push [stack-name]
 
 Push local stacks to remote.
 
 ```bash
 # Push all stacks
-hs stack push
+a4 stack push
 
 # Push specific stack
-hs stack push my-stack
+a4 stack push my-stack
 ```
 
-### hs stack show <stack-name>
+### a4 stack show <stack-name>
 
 Show detailed stack information including deployment status and recent builds.
 
 ```bash
-hs stack show my-stack
-hs stack show my-stack --version 3
+a4 stack show my-stack
+a4 stack show my-stack --version 3
 ```
 
-### hs stack versions <stack-name>
+### a4 stack versions <stack-name>
 
 Show version history.
 
 ```bash
-hs stack versions my-stack
-hs stack versions my-stack --limit 10
+a4 stack versions my-stack
+a4 stack versions my-stack --limit 10
 ```
 
-### hs stack delete <stack-name>
+### a4 stack delete <stack-name>
 
 Delete a stack from remote.
 
 ```bash
-hs stack delete my-stack
-hs stack delete my-stack --force  # Skip confirmation
+a4 stack delete my-stack
+a4 stack delete my-stack --force  # Skip confirmation
 ```
 
-### hs stack rollback <stack-name>
+### a4 stack rollback <stack-name>
 
 Rollback to a previous deployment.
 
 ```bash
 # Rollback to previous version
-hs stack rollback my-stack
+a4 stack rollback my-stack
 
 # Rollback to specific version
-hs stack rollback my-stack --to 2
+a4 stack rollback my-stack --to 2
 
 # Rollback to specific build
-hs stack rollback my-stack --build 123
+a4 stack rollback my-stack --build 123
 
 # Rollback branch deployment
-hs stack rollback my-stack --branch staging
+a4 stack rollback my-stack --branch staging
 ```
 
 **Options:**
@@ -216,13 +216,13 @@ hs stack rollback my-stack --branch staging
 | `--rebuild, -r` | Force full rebuild |
 | `--no-wait, -n` | Don't watch progress |
 
-### hs stack stop <stack-name>
+### a4 stack stop <stack-name>
 
 Stop a running deployment.
 
 ```bash
-hs stack stop my-stack
-hs stack stop my-stack --branch staging
+a4 stack stop my-stack
+a4 stack stop my-stack --branch staging
 ```
 
 ---
@@ -231,15 +231,15 @@ hs stack stop my-stack --branch staging
 
 These commands are for advanced users who need fine-grained control over the build process.
 
-### hs build create <stack-name>
+### a4 build create <stack-name>
 
 Create a new build from a stack.
 
 ```bash
-hs build create my-stack
-hs build create my-stack --version 2
-hs build create my-stack --ast-file ./my-stack.ast.json
-hs build create my-stack --no-wait
+a4 build create my-stack
+a4 build create my-stack --version 2
+a4 build create my-stack --ast-file ./my-stack.ast.json
+a4 build create my-stack --no-wait
 ```
 
 **Options:**
@@ -250,53 +250,53 @@ hs build create my-stack --no-wait
 | `--ast-file <path>` | Use local AST file directly |
 | `--no-wait, -n` | Don't wait for completion |
 
-### hs build list
+### a4 build list
 
 List all builds.
 
 ```bash
-hs build list
-hs build list --status completed
-hs build list --limit 10
+a4 build list
+a4 build list --status completed
+a4 build list --limit 10
 ```
 
-### hs build status <build-id>
+### a4 build status <build-id>
 
 Get detailed build status.
 
 ```bash
-hs build status 123
-hs build status 123 --watch
-hs build status 123 --json
+a4 build status 123
+a4 build status 123 --watch
+a4 build status 123 --json
 ```
 
 ---
 
 ## SDK Generation
 
-### hs sdk list
+### a4 sdk list
 
 List stacks available for SDK generation.
 
 ```bash
-hs sdk list
+a4 sdk list
 ```
 
-### hs sdk create typescript <stack-name>
+### a4 sdk create typescript <stack-name>
 
 Generate TypeScript SDK.
 
 ```bash
-hs sdk create typescript my-stack
-hs sdk create typescript my-stack --output ./src/generated/
-hs sdk create typescript my-stack --package-name @myorg/my-sdk
+a4 sdk create typescript my-stack
+a4 sdk create typescript my-stack --output ./src/generated/
+a4 sdk create typescript my-stack --package-name @myorg/my-sdk
 ```
 
 ---
 
 ## Configuration File
 
-**File:** `hyperstack.toml`
+**File:** `arete.toml`
 
 ```toml
 [project]
@@ -312,7 +312,7 @@ typescript_package = "@myorg/my-sdk"
 watch_by_default = true
 
 # Stack definitions
-# Auto-discovered from .hyperstack/*.ast.json
+# Auto-discovered from .arete/*.ast.json
 # Define explicitly for custom naming:
 [[stacks]]
 name = "my-game"
@@ -321,7 +321,7 @@ description = "Settlement game tracking"
 
 [[stacks]]
 name = "token-tracker"
-ast = ".hyperstack/Token.ast.json"
+ast = ".arete/Token.ast.json"
 ```
 
 ---
@@ -357,13 +357,13 @@ pending → uploading → queued → building → pushing → deploying → comp
 
 ```bash
 # Initialize project
-hs init
+a4 init
 
 # Create account and login
-hs auth register
+a4 auth register
 
 # Validate configuration
-hs config validate
+a4 config validate
 ```
 
 ### Development Cycle
@@ -373,34 +373,34 @@ hs config validate
 cargo build
 
 # Deploy
-hs up my-stack
+a4 up my-stack
 
 # Check status
-hs status
+a4 status
 ```
 
 ### Branch Deploys
 
 ```bash
 # Deploy feature branch
-hs up my-stack --branch feature-x
-# URL: my-stack-feature-x.stack.usehyperstack.com
+a4 up my-stack --branch feature-x
+# URL: my-stack-feature-x.stack.arete.run
 
 # Check deployment
-hs stack list
+a4 stack list
 
 # Clean up when done
-hs stack stop my-stack --branch feature-x
+a4 stack stop my-stack --branch feature-x
 ```
 
 ### Rollback
 
 ```bash
 # Quick rollback to previous version
-hs stack rollback my-stack
+a4 stack rollback my-stack
 
 # Rollback to specific version
-hs stack rollback my-stack --to 2
+a4 stack rollback my-stack --to 2
 ```
 
 ---
@@ -409,7 +409,7 @@ hs stack rollback my-stack --to 2
 
 | Variable | Description |
 |----------|-------------|
-| `HYPERSTACK_API_URL` | Override API endpoint |
+| `ARETE_API_URL` | Override API endpoint |
 
 ---
 
@@ -417,11 +417,11 @@ hs stack rollback my-stack --to 2
 
 | Error | Solution |
 |-------|----------|
-| `Not authenticated` | Run `hs auth login` |
-| `Stack not found` | Check `hs stack list` for available stacks |
+| `Not authenticated` | Run `a4 auth login` |
+| `Stack not found` | Check `a4 stack list` for available stacks |
 | `AST file not found` | Run `cargo build` to generate AST |
-| `Build failed` | Check `hs build status <id>` for details |
-| `Config invalid` | Run `hs config validate` |
+| `Build failed` | Check `a4 build status <id>` for details |
+| `Config invalid` | Run `a4 config validate` |
 
 ---
 
@@ -431,11 +431,11 @@ After successful deployment:
 
 | Type | Pattern |
 |------|---------|
-| Production | `wss://{stack-name}.stack.usehyperstack.com` |
-| Branch | `wss://{stack-name}-{branch}.stack.usehyperstack.com` |
+| Production | `wss://{stack-name}.stack.arete.run` |
+| Branch | `wss://{stack-name}-{branch}.stack.arete.run` |
 
 Get the URL with:
 
 ```bash
-hs stack show <stack-name>
+a4 stack show <stack-name>
 ```

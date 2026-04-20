@@ -11,18 +11,18 @@ In this tutorial, you'll build an end-to-end streaming data pipeline in 15 minut
 A full-stack streaming application consisting of:
 
 1. **A Rust Definition**: Defines how to transform on-chain ORE mining data into a queryable "OreRound" entity.
-2. **A Cloud Deployment**: A managed Hyperstack instance that processes the stream.
+2. **A Cloud Deployment**: A managed Arete instance that processes the stream.
 3. **A React Frontend**: A live dashboard showing the latest ORE mining rounds that updates instantly as on-chain events occur.
 
 :::note[Demo Version]
-This tutorial uses a simplified version of the ORE stack. For the full production-ready version with all features (computed fields, snapshots, round results, etc.), run `hs create` and select the `ore` template.
+This tutorial uses a simplified version of the ORE stack. For the full production-ready version with all features (computed fields, snapshots, round results, etc.), run `a4 create` and select the `ore` template.
 :::
 
 ---
 
 ## Part 1: Create the Stack (Rust)
 
-The stack definition is the heart of your application. It tells Hyperstack which on-chain data to watch and how to project it into a useful state.
+The stack definition is the heart of your application. It tells Arete which on-chain data to watch and how to project it into a useful state.
 
 ### 1. Create a new Rust project
 
@@ -33,11 +33,11 @@ cd ore-stack
 
 ### 2. Add dependencies
 
-Add `hyperstack` to your `Cargo.toml`:
+Add `arete` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hyperstack = "{{VERSION}}"
+arete = "{{VERSION}}"
 serde = { version = "1.0", features = ["derive"] }
 ```
 
@@ -47,15 +47,15 @@ Download the ORE program IDL file and place it in an `idl/` directory:
 
 ```bash
 mkdir -p idl
-curl -o idl/ore.json https://docs.usehyperstack.com/ore.json
+curl -o idl/ore.json https://docs.arete.run/ore.json
 ```
 
 :::tip[What is an IDL?]
-The IDL (Interface Definition Language) describes the Solana program's account structures and instructions. Hyperstack uses it to generate type-safe code for accessing on-chain data.
+The IDL (Interface Definition Language) describes the Solana program's account structures and instructions. Arete uses it to generate type-safe code for accessing on-chain data.
 :::
 
 :::tip[Generated SDK Naming]
-When you point to an IDL (e.g., `ore.json`), Hyperstack reads the program name from the IDL metadata and generates a typed SDK module named `{name}_sdk` — so `ore.json` produces `ore_sdk::accounts::*` and `ore_sdk::instructions::*`. All `#[map]` and `#[aggregate]` paths use this prefix.
+When you point to an IDL (e.g., `ore.json`), Arete reads the program name from the IDL metadata and generates a typed SDK module named `{name}_sdk` — so `ore.json` produces `ore_sdk::accounts::*` and `ore_sdk::instructions::*`. All `#[map]` and `#[aggregate]` paths use this prefix.
 :::
 
 ### 4. Write your stack definition
@@ -64,11 +64,11 @@ Open `src/lib.rs` and define your projection. We'll create a simplified version 
 
 ```rust
 // src/lib.rs
-use hyperstack::prelude::*;
+use arete::prelude::*;
 
-#[hyperstack(idl = "idl/ore.json")]
+#[arete(idl = "idl/ore.json")]
 pub mod ore_stream {
-    use hyperstack::macros::Stream;
+    use arete::macros::Stream;
     use serde::{Deserialize, Serialize};
 
     // The main entity representing an ORE mining round
@@ -119,32 +119,32 @@ pub mod ore_stream {
 
 ### 5. Build to generate the stack file
 
-When you compile your code, Hyperstack macros automatically generate a `.hyperstack/OreStream.stack.json` file containing all entities in your stack.
+When you compile your code, Arete macros automatically generate a `.arete/OreStream.stack.json` file containing all entities in your stack.
 
 ```bash
 cargo build
 ```
 
 :::tip[Checkpoint]
-Verify that the file `.hyperstack/OreStream.stack.json` exists in your project root. This JSON file contains the compiled specification for your stack, including all entities and their field mappings.
+Verify that the file `.arete/OreStream.stack.json` exists in your project root. This JSON file contains the compiled specification for your stack, including all entities and their field mappings.
 :::
 
 ---
 
-## Part 2: Deploy to Hyperstack Cloud
+## Part 2: Deploy to Arete Cloud
 
-Now let's push your stack to the cloud. Hyperstack manages the infrastructure, so you don't need to worry about scaling or WebSocket servers.
+Now let's push your stack to the cloud. Arete manages the infrastructure, so you don't need to worry about scaling or WebSocket servers.
 
 :::caution[Closed Beta]
-Hyperstack is currently in closed beta. You'll need an API key to deploy. [Contact us on X](https://x.com/usehyperstack) to request access.
+Arete is currently in closed beta. You'll need an API key to deploy. [Contact us on X](https://x.com/usearete) to request access.
 :::
 
 ### 1. Initialize your project
 
-This creates a `hyperstack.toml` file that links your local stack to the cloud.
+This creates a `arete.toml` file that links your local stack to the cloud.
 
 ```bash
-hs init
+a4 init
 ```
 
 ### 2. Push and Deploy
@@ -152,7 +152,7 @@ hs init
 The `up` command is a shortcut that pushes your stack, builds the container, and deploys it to a global cluster.
 
 ```bash
-hs up
+a4 up
 ```
 
 **Expected Output:**
@@ -161,7 +161,7 @@ hs up
 ✔ Stack pushed (v1)
 ✔ Build created (id: bld_123...)
 ✔ Build completed
-🚀 Deployed to: wss://<your-stack-name>.stack.usehyperstack.com
+🚀 Deployed to: wss://<your-stack-name>.stack.arete.run
 ```
 
 :::tip[Checkpoint]
@@ -175,15 +175,15 @@ Copy the **WebSocket URL** from the output. You'll need it for the React app.
 Finally, let's build the frontend. First, generate a typed SDK from your deployed stack, then connect using React or TypeScript.
 
 :::tip[What is the SDK?]
-The generated SDK contains the typed interface to your stack — it tells the Hyperstack client what entities exist, what views are available, and the TypeScript types for each. You can share this SDK with your team or publish it.
+The generated SDK contains the typed interface to your stack — it tells the Arete client what entities exist, what views are available, and the TypeScript types for each. You can share this SDK with your team or publish it.
 :::
 
 ### 1. Generate the SDK
 
-From your stack project directory (where you ran `hs up`):
+From your stack project directory (where you ran `a4 up`):
 
 ```bash
-hs sdk create typescript ore-stack --output ./sdk
+a4 sdk create typescript ore-stack --output ./sdk
 ```
 
 This creates a typed SDK in `./sdk/` with full TypeScript support.
@@ -200,7 +200,7 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
 ```bash
 npx create-react-app my-ore-app --template typescript
 cd my-ore-app
-npm install hyperstack-react zustand
+npm install arete-react zustand
 ```
 
 Copy the generated SDK into your React app:
@@ -211,17 +211,17 @@ cp -r ../ore-stack/sdk ./src/ore-sdk
 
 ### 3. Configure the Provider
 
-Wrap your app in `HyperstackProvider` using the URL from `hs up`.
+Wrap your app in `AreteProvider` using the URL from `a4 up`.
 
 ```tsx
 // src/index.tsx
-import { HyperstackProvider } from "hyperstack-react";
+import { AreteProvider } from "arete-react";
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 root.render(
-  <HyperstackProvider websocketUrl="wss://<your-stack-name>.stack.usehyperstack.com">
+  <AreteProvider websocketUrl="wss://<your-stack-name>.stack.arete.run">
     <App />
-  </HyperstackProvider>,
+  </AreteProvider>,
 );
 ```
 
@@ -229,11 +229,11 @@ root.render(
 
 ```tsx
 // src/App.tsx
-import { useHyperstack } from "hyperstack-react";
+import { useArete } from "arete-react";
 import { OreStack } from "./ore-sdk";
 
 export default function App() {
-  const stack = useHyperstack(OreStack);
+  const stack = useArete(OreStack);
   const { data: rounds, isLoading } = stack.views.OreRound.latest.use({
     take: 5,
   });
@@ -282,7 +282,7 @@ export default function App() {
 ```bash
 mkdir my-ore-app && cd my-ore-app
 npm init -y
-npm install hyperstack-typescript typescript
+npm install arete-typescript typescript
 ```
 
 Copy the generated SDK:
@@ -295,20 +295,20 @@ cp -r ../ore-stack/sdk ./src/ore-sdk
 
 ```typescript
 // src/index.ts
-import { HyperStack } from "hyperstack-typescript";
+import { Arete } from "arete-typescript";
 import { OreStack, type OreRound } from "./ore-sdk";
 
 async function main() {
   // Connect to your deployed stack using the generated SDK
-  const hs = await HyperStack.connect(
-    "wss://<your-stack-name>.stack.usehyperstack.com",
+  const a4 = await Arete.connect(
+    "wss://<your-stack-name>.stack.arete.run",
     { stack: OreStack },
   );
 
   console.log("Connected! Streaming ORE rounds...\n");
 
   // Stream updates with full type safety
-  for await (const update of hs.views.OreRound.latest.watch()) {
+  for await (const update of a4.views.OreRound.latest.watch()) {
     if (update.type === "upsert") {
       const round = update.data;
       console.log(`Round #${round.id.round_id}:`);
@@ -343,12 +343,12 @@ npx tsx src/index.ts
 
 ### "Stack file not found"
 
-Ensure you ran `cargo build` in your Rust project. The `#[hyperstack]` macro generates the `.stack.json` file during compilation.
+Ensure you ran `cargo build` in your Rust project. The `#[arete]` macro generates the `.stack.json` file during compilation.
 
 ### WebSocket connection fails
 
-1. Check that the URL matches the output of `hs up`.
-2. Ensure your stack is successfully deployed by running `hs stack list`.
+1. Check that the URL matches the output of `a4 up`.
+2. Ensure your stack is successfully deployed by running `a4 stack list`.
 
 ### Data is not appearing
 

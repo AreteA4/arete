@@ -8,7 +8,7 @@ export default defineConfig({
   markdown: {
     remarkPlugins: [remarkVersion],
   },
-  site: "https://docs.usehyperstack.com",
+  site: "https://docs.arete.run",
   integrations: [
     starlight({
       expressiveCode: {
@@ -16,11 +16,11 @@ export default defineConfig({
       },
       plugins: [
         starlightLlmsTxt({
-          projectName: "Hyperstack",
+          projectName: "Arete",
           description:
-            "Hyperstack is a system for programmable real-time data feeds on Solana. Stream any on-chain data to your app via WebSocket. Define data shapes in a Rust DSL, deploy, and consume with typed TypeScript, React, or Rust SDKs.",
+            "Arete is a system for programmable real-time data feeds on Solana. Stream any on-chain data to your app via WebSocket. Define data shapes in a Rust DSL, deploy, and consume with typed TypeScript, React, or Rust SDKs.",
           promote: [
-            "getting-started/what-is-hyperstack",
+            "getting-started/what-is-arete",
             "agent-skills/setup-tools",
             "using-stacks/quickstart",
             "using-stacks/connect",
@@ -32,12 +32,12 @@ export default defineConfig({
           ],
         }),
       ],
-      title: "Hyperstack",
+      title: "Arete",
       social: [
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/HyperTekOrg/hyperstack",
+          href: "https://github.com/HyperTekOrg/arete",
         },
       ],
       customCss: ["./src/styles/custom.css"],
@@ -54,7 +54,7 @@ export default defineConfig({
       sidebar: [
         {
           label: "Getting Started",
-          items: [{ slug: "getting-started/what-is-hyperstack" }],
+          items: [{ slug: "getting-started/what-is-arete" }],
         },
         {
           label: "For Developers",
@@ -112,7 +112,7 @@ export default defineConfig({
         },
         {
           label: "Server",
-          autogenerate: { directory: "hyperstack-server" },
+          autogenerate: { directory: "a4-server" },
         },
       ],
       // Enable search when content is ready

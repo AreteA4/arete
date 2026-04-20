@@ -1,9 +1,9 @@
 ---
 title: Finding IDLs
-description: How to find IDL files for Solana programs when building custom Hyperstack stacks.
+description: How to find IDL files for Solana programs when building custom Arete stacks.
 ---
 
-Hyperstack uses IDL (Interface Definition Language) files to generate type-safe bindings for your data streams. An IDL is a JSON file that describes a Solana program's accounts, instructions, and custom types. Hyperstack supports Anchor and other framework IDL formats.
+Arete uses IDL (Interface Definition Language) files to generate type-safe bindings for your data streams. An IDL is a JSON file that describes a Solana program's accounts, instructions, and custom types. Arete supports Anchor and other framework IDL formats.
 
 To build a custom stack, you need the IDL for the program you want to track.
 
@@ -50,7 +50,7 @@ If an IDL isn't available, you can create one manually by examining the program'
 
 ## Where to Put IDLs
 
-In a Hyperstack project, store your IDL files in an `idl/` directory at the root of your stack. This keeps your project organized and makes it easy to reference them in your code.
+In a Arete project, store your IDL files in an `idl/` directory at the root of your stack. This keeps your project organized and makes it easy to reference them in your code.
 
 ```text
 my-stack/
@@ -58,14 +58,14 @@ my-stack/
 │   └── program_name.json    # IDL goes here
 ├── src/
 │   └── stack.rs              # References the IDL
-├── hyperstack.toml
+├── arete.toml
 └── Cargo.toml
 ```
 
-Reference the IDL in your `src/stack.rs` using the `#[hyperstack]` macro:
+Reference the IDL in your `src/stack.rs` using the `#[arete]` macro:
 
 ```rust
-#[hyperstack(idl = "idl/program_name.json")]
+#[arete(idl = "idl/program_name.json")]
 pub struct MyStack;
 ```
 
@@ -83,20 +83,20 @@ pub struct MyStack;
 
 ## Exploring IDLs with the CLI
 
-Once you have an IDL file, use `hs idl` to explore it before writing your stack:
+Once you have an IDL file, use `a4 idl` to explore it before writing your stack:
 
 ```bash
 # Get a quick overview
-hs idl summary idl/program.json
+a4 idl summary idl/program.json
 
 # Browse all instructions
-hs idl instructions idl/program.json
+a4 idl instructions idl/program.json
 
 # Find how accounts relate to each other
-hs idl relations idl/program.json
+a4 idl relations idl/program.json
 
 # Search for anything
-hs idl search idl/program.json <query>
+a4 idl search idl/program.json <query>
 ```
 
-See the [hs idl reference](/cli/idl/) for the full command list.
+See the [a4 idl reference](/cli/idl/) for the full command list.

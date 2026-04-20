@@ -217,7 +217,7 @@ impl EntityCache {
             views.push((view_id.clone(), count));
         }
 
-        views.sort_by(|a, b| b.1.cmp(&a.1));
+        views.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         CacheStats {
             view_count: caches.len(),

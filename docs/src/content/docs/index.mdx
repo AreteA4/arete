@@ -1,5 +1,5 @@
 ---
-title: Hyperstack
+title: Arete
 description: Build Solana apps with live blockchain data
 ---
 
@@ -9,7 +9,7 @@ import Workflow from "../../components/Workflow.astro";
 
 **Programmable data streams for Solana.** No indexers. No polling. No infrastructure to manage.
 
-Hyperstack streams real-time blockchain data directly to your app. Define what data you need and Hyperstack transforms on-chain events into typed, live feeds — consumed via React hooks, TypeScript streams, or Rust clients.
+Arete streams real-time blockchain data directly to your app. Define what data you need and Arete transforms on-chain events into typed, live feeds — consumed via React hooks, TypeScript streams, or Rust clients.
 
 ---
 
@@ -44,9 +44,9 @@ Hyperstack streams real-time blockchain data directly to your app. Define what d
 
 ---
 
-## What is Hyperstack?
+## What is Arete?
 
-Hyperstack connects your app to live Solana blockchain data. Instead of polling RPCs or building custom indexers, you define what data you want and Hyperstack streams it to you as it happens on-chain.
+Arete connects your app to live Solana blockchain data. Instead of polling RPCs or building custom indexers, you define what data you want and Arete streams it to you as it happens on-chain.
 
 <Workflow steps={[
   {
@@ -54,7 +54,7 @@ Hyperstack connects your app to live Solana blockchain data. Instead of polling 
     description: "On-chain data"
   },
   {
-    title: "Hyperstack",
+    title: "Arete",
     description: "Transforms + streams"
   },
   {
@@ -74,19 +74,19 @@ Connect to the public ORE mining stack — a live feed of blockchain mining acti
 <Tabs>
 <TabItem label="React">
 ```tsx
-import { HyperstackProvider, useHyperstack } from 'hyperstack-react';
-import { ORE_STREAM_STACK } from 'hyperstack-stacks/ore';
+import { AreteProvider, useArete } from 'arete-react';
+import { ORE_STREAM_STACK } from 'arete-stacks/ore';
 
 function App() {
   return (
-    <HyperstackProvider>
+    <AreteProvider>
       <LatestRounds />
-    </HyperstackProvider>
+    </AreteProvider>
   );
 }
 
 function LatestRounds() {
-  const { views, isConnected } = useHyperstack(ORE_STREAM_STACK);
+  const { views, isConnected } = useArete(ORE_STREAM_STACK);
   const { data: rounds, isLoading } = views.OreRound.latest.use({ take: 5 });
 
   if (isLoading) return <div>Connecting...</div>;
@@ -108,13 +108,13 @@ function LatestRounds() {
 </TabItem>
 <TabItem label="TypeScript">
 ```typescript
-import { HyperStack } from 'hyperstack-typescript';
-import { ORE_STREAM_STACK } from 'hyperstack-stacks/ore';
+import { Arete } from 'arete-typescript';
+import { ORE_STREAM_STACK } from 'arete-stacks/ore';
 
 // Connect using the stack (URL is embedded in the stack definition)
-const hs = await HyperStack.connect(ORE_STREAM_STACK);
+const a4 = await Arete.connect(ORE_STREAM_STACK);
 
-for await (const update of hs.views.OreRound.latest.watch({ take: 1 })) {
+for await (const update of a4.views.OreRound.latest.watch({ take: 1 })) {
   if (update.type === 'upsert') {
     console.log(`Round #${update.data.id?.round_id}`);
     console.log(`Motherlode: ${update.data.state?.motherlode}`);
@@ -124,14 +124,14 @@ for await (const update of hs.views.OreRound.latest.watch({ take: 1 })) {
 </TabItem>
 <TabItem label="Rust">
 ```rust
-use hyperstack_sdk::prelude::*;
-use hyperstack_stacks::ore::{OreStack, OreRound};
+use a4_sdk::prelude::*;
+use a4_stacks::ore::{OreStack, OreRound};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hs = HyperStack::<OreStack>::connect().await?;
+    let a4 = Arete::<OreStack>::connect().await?;
 
-    let mut stream = hs.views.ore_round.latest().listen().take(1);
+    let mut stream = a4.views.ore_round.latest().listen().take(1);
 
     while let Some(round) = stream.next().await {
         println!("Round # {:?}", round.id.round_id);
@@ -152,7 +152,7 @@ Paste the prompt below into your AI coding assistant — it handles everything.
 
 ## How It Works
 
-Hyperstack handles the full pipeline from chain to client:
+Arete handles the full pipeline from chain to client:
 
 <Workflow steps={[
   {
@@ -160,7 +160,7 @@ Hyperstack handles the full pipeline from chain to client:
     description: "On-chain data"
   },
   {
-    title: "Hyperstack",
+    title: "Arete",
     description: "Transform + stream"
   },
   {
@@ -170,7 +170,7 @@ Hyperstack handles the full pipeline from chain to client:
 ]} />
 
 1. **Define** the data shape you need using a declarative Rust DSL
-2. **Deploy** your definition — Hyperstack manages the infrastructure
+2. **Deploy** your definition — Arete manages the infrastructure
 3. **Stream** live updates to any client via WebSocket
 
 ---
@@ -216,10 +216,10 @@ Already comfortable with code? Here are the fastest paths:
 
 ## Build with AI
 
-Paste this into any AI coding assistant (Cursor, Claude Code, Windsurf, or any agent that can read URLs) and it will set up Hyperstack and build an ORE mining dashboard for you:
+Paste this into any AI coding assistant (Cursor, Claude Code, Windsurf, or any agent that can read URLs) and it will set up Arete and build an ORE mining dashboard for you:
 
 <CopyPrompt>
-Read https://docs.usehyperstack.com/agent.md and follow the instructions to set up Hyperstack in this project. Then build a React dashboard that shows live ORE mining round data with Tailwind CSS dark theme.
+Read https://docs.arete.run/agent.md and follow the instructions to set up Arete in this project. Then build a React dashboard that shows live ORE mining round data with Tailwind CSS dark theme.
 </CopyPrompt>
 
 Your AI will install the CLI, learn the SDK patterns, connect to live Solana data, and build the app — all from that one prompt.
@@ -249,13 +249,13 @@ Want to create your own data feeds? Build stacks that transform on-chain events 
   <Card title="Your First Stack" icon="seti:rust">
     **End-to-end tutorial** — Build, deploy, and connect to your own custom stack.
 
-    Define entities, write transformations, deploy to Hyperstack Cloud.
+    Define entities, write transformations, deploy to Arete Cloud.
 
     [Build now →](/building-stacks/your-first-stack/)
 
   </Card>
   <Card title="How It Works" icon="information">
-    **Architecture & concepts** — Understand the full Hyperstack system.
+    **Architecture & concepts** — Understand the full Arete system.
 
     Learn about entities, mappings, aggregations, and deployment.
 

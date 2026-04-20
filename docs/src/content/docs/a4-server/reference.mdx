@@ -1,18 +1,18 @@
 ---
 title: Configuration Reference
-description: Complete reference for hyperstack-server configuration options.
+description: Complete reference for a4-server configuration options.
 sidebar:
   order: 3
 ---
 
-This page documents all configuration options available in `hyperstack-server`.
+This page documents all configuration options available in `a4-server`.
 
 ## Server Builder API
 
 The server is configured using a fluent builder pattern:
 
 ```rust
-use hyperstack_server::Server;
+use a4_server::Server;
 
 Server::builder()
     .spec(my_spec())           // Required: your stack specification
@@ -30,11 +30,11 @@ Server::builder()
 
 These environment variables are read automatically by the generated parser code:
 
-| Variable               | Required | Default | Description                                                      |
-| ---------------------- | -------- | ------- | ---------------------------------------------------------------- |
-| `YELLOWSTONE_ENDPOINT` | Yes      | —       | Yellowstone gRPC endpoint URL                                    |
-| `YELLOWSTONE_X_TOKEN`  | Usually  | —       | Authentication token for the endpoint                            |
-| `RUST_LOG`             | No       | `info`  | Log level filter (e.g., `debug`, `info,hyperstack_server=debug`) |
+| Variable               | Required | Default | Description                                              |
+| ---------------------- | -------- | ------- | -------------------------------------------------------- |
+| `YELLOWSTONE_ENDPOINT` | Yes      | —       | Yellowstone gRPC endpoint URL                            |
+| `YELLOWSTONE_X_TOKEN`  | Usually  | —       | Authentication token for the endpoint                    |
+| `RUST_LOG`             | No       | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`) |
 
 ## WebSocket Configuration
 
@@ -60,7 +60,7 @@ Server::builder()
 For full control, use `websocket_config()`:
 
 ```rust
-use hyperstack_server::WebSocketConfig;
+use a4_server::WebSocketConfig;
 
 let ws_config = WebSocketConfig {
     bind_address: "[::]:8877".parse()?,
@@ -81,7 +81,7 @@ Server::builder()
 The Yellowstone gRPC connection is typically configured via environment variables. However, you can also configure it programmatically:
 
 ```rust
-use hyperstack_server::YellowstoneConfig;
+use a4_server::YellowstoneConfig;
 
 let yellowstone = YellowstoneConfig::new("https://your-endpoint.com")
     .with_token("your-secret-token");
@@ -123,7 +123,7 @@ Server::builder()
 ### HealthConfig
 
 ```rust
-use hyperstack_server::HealthConfig;
+use a4_server::HealthConfig;
 use std::time::Duration;
 
 let health = HealthConfig::new()
@@ -173,7 +173,7 @@ Server::builder()
 ### HttpHealthConfig
 
 ```rust
-use hyperstack_server::HttpHealthConfig;
+use a4_server::HttpHealthConfig;
 
 let http_health = HttpHealthConfig::new("0.0.0.0:9090".parse()?);
 
@@ -222,7 +222,7 @@ Server::builder()
 ### ReconnectionConfig
 
 ```rust
-use hyperstack_server::ReconnectionConfig;
+use a4_server::ReconnectionConfig;
 use std::time::Duration;
 
 let reconnect = ReconnectionConfig::new()
@@ -263,7 +263,7 @@ Enable optional features in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hyperstack-server = { version = "{{VERSION}}", features = ["otel"] }
+a4-server = { version = "{{VERSION}}", features = ["otel"] }
 ```
 
 | Feature | Default | Description                                                   |
@@ -275,7 +275,7 @@ hyperstack-server = { version = "{{VERSION}}", features = ["otel"] }
 When the `otel` feature is enabled:
 
 ```rust
-use hyperstack_server::Metrics;
+use a4_server::Metrics;
 
 let metrics = Metrics::new();
 
@@ -290,7 +290,7 @@ Server::builder()
 Here's a production-ready configuration combining all options:
 
 ```rust
-use hyperstack_server::{
+use a4_server::{
     Server, HealthConfig, HttpHealthConfig, ReconnectionConfig
 };
 use std::time::Duration;
@@ -309,7 +309,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,hyperstack_server=debug".into()),
+                .unwrap_or_else(|_| "info,a4_server=debug".into()),
         )
         .init();
 

@@ -2,26 +2,26 @@
 title: Configuration
 sidebar:
   order: 4
-description: Complete reference for hyperstack.toml configuration options.
+description: Complete reference for arete.toml configuration options.
 ---
 
-The `hyperstack.toml` file is the central configuration for your Hyperstack project. It defines your project metadata, SDK generation settings, build preferences, and stack definitions. The file is created automatically when you run `hs init`, but you can customize it for advanced use cases.
+The `arete.toml` file is the central configuration for your Arete project. It defines your project metadata, SDK generation settings, build preferences, and stack definitions. The file is created automatically when you run `a4 init`, but you can customize it for advanced use cases.
 
 ---
 
 ## Creating the Configuration File
 
-The easiest way to create `hyperstack.toml` is with the CLI:
+The easiest way to create `arete.toml` is with the CLI:
 
 ```bash
-hs init
+a4 init
 ```
 
 This command:
 
-- Creates `hyperstack.toml` with a project name based on your directory
-- Auto-discovers stacks from `.hyperstack/*.stack.json` files
-- Creates a `.hyperstack/` directory if it doesn't exist
+- Creates `arete.toml` with a project name based on your directory
+- Auto-discovers stacks from `.arete/*.stack.json` files
+- Creates a `.arete/` directory if it doesn't exist
 
 You can then customize the generated file for your needs.
 
@@ -29,10 +29,10 @@ You can then customize the generated file for your needs.
 
 ## File Location
 
-By default, the CLI looks for `hyperstack.toml` in the current directory. You can specify a different path with the `--config` flag:
+By default, the CLI looks for `arete.toml` in the current directory. You can specify a different path with the `--config` flag:
 
 ```bash
-hs --config ./config/hyperstack.toml up
+a4 --config ./config/arete.toml up
 ```
 
 ---
@@ -46,7 +46,7 @@ For most projects, you only need a project name:
 name = "my-stack"
 ```
 
-The CLI auto-discovers stacks from `.hyperstack/*.stack.json` files created during `cargo build`.
+The CLI auto-discovers stacks from `.arete/*.stack.json` files created during `cargo build`.
 
 ---
 
@@ -94,13 +94,13 @@ rust_module = true                                     # Per-stack: generate as 
 
 ### `[sdk]` — SDK Generation Settings
 
-| Option                  | Type    | Default                            | Description                                                           |
-| ----------------------- | ------- | ---------------------------------- | --------------------------------------------------------------------- |
-| `output_dir`            | string  | `"./generated"`                    | Default output directory for all SDKs                                 |
-| `typescript_output_dir` | string  | `output_dir`                       | TypeScript SDK output directory                                       |
-| `rust_output_dir`       | string  | `output_dir`                       | Rust SDK output directory                                             |
-| `typescript_package`    | string  | `"hyperstack-stacks/{stack_name}"` | NPM package name for TypeScript SDKs                                  |
-| `rust_module_mode`      | boolean | `false`                            | Generate Rust SDKs as modules (`mod.rs`) instead of standalone crates |
+| Option                  | Type    | Default                       | Description                                                           |
+| ----------------------- | ------- | ----------------------------- | --------------------------------------------------------------------- |
+| `output_dir`            | string  | `"./generated"`               | Default output directory for all SDKs                                 |
+| `typescript_output_dir` | string  | `output_dir`                  | TypeScript SDK output directory                                       |
+| `rust_output_dir`       | string  | `output_dir`                  | Rust SDK output directory                                             |
+| `typescript_package`    | string  | `"arete-stacks/{stack_name}"` | NPM package name for TypeScript SDKs                                  |
+| `rust_module_mode`      | boolean | `false`                       | Generate Rust SDKs as modules (`mod.rs`) instead of standalone crates |
 
 **Note:** When `rust_module_mode = true`, generated Rust SDKs are created as modules that can be embedded directly in your existing crate. When `false`, each SDK is generated as a standalone crate with its own `Cargo.toml`.
 
@@ -112,7 +112,7 @@ rust_module = true                                     # Per-stack: generate as 
 
 ### `[[stacks]]` — Stack Definitions
 
-Define stacks explicitly for custom naming or per-stack overrides. If not defined, stacks are auto-discovered from `.hyperstack/*.stack.json` files.
+Define stacks explicitly for custom naming or per-stack overrides. If not defined, stacks are auto-discovered from `.arete/*.stack.json` files.
 
 | Option                   | Type    | Required | Description                                                  |
 | ------------------------ | ------- | -------- | ------------------------------------------------------------ |
@@ -129,7 +129,7 @@ Define stacks explicitly for custom naming or per-stack overrides. If not define
 
 ### Multiple Stacks in One Project
 
-Each stack is a separate `#[hyperstack]` module that can contain multiple entities. Use multiple `[[stacks]]` entries when you have separate programs or data sources:
+Each stack is a separate `#[arete]` module that can contain multiple entities. Use multiple `[[stacks]]` entries when you have separate programs or data sources:
 
 ```toml
 [project]
@@ -164,7 +164,7 @@ rust_output_dir = "./crates/generated"
 name = "my-project"
 
 [sdk]
-typescript_package = "@myorg/hyperstack-sdk"
+typescript_package = "@myorg/arete-sdk"
 ```
 
 ### Rust SDK as Module (for Monorepos)
@@ -202,10 +202,10 @@ typescript_output_file = "./src/game.ts"
 
 Environment variables override configuration file values:
 
-| Variable             | Description                | Overrides          |
-| -------------------- | -------------------------- | ------------------ |
-| `HYPERSTACK_API_URL` | Override the API endpoint  | Default API URL    |
-| `HYPERSTACK_API_KEY` | API key for authentication | (no file override) |
+| Variable        | Description                | Overrides          |
+| --------------- | -------------------------- | ------------------ |
+| `ARETE_API_URL` | Override the API endpoint  | Default API URL    |
+| `ARETE_API_KEY` | API key for authentication | (no file override) |
 
 ---
 
@@ -214,10 +214,10 @@ Environment variables override configuration file values:
 Authentication credentials are stored separately from your project configuration in:
 
 ```
-~/.hyperstack/credentials.toml
+~/.arete/credentials.toml
 ```
 
-This file contains your API key for accessing Hyperstack Cloud:
+This file contains your API key for accessing Arete Cloud:
 
 ```toml
 api_key = "your-api-key-here"
@@ -226,7 +226,7 @@ api_key = "your-api-key-here"
 The credentials file is created automatically when you authenticate via the CLI. Since this file contains sensitive information, it is stored in your home directory and should never be committed to version control.
 
 :::tip[Closed Beta]
-During closed beta, you need an API key to deploy. [Contact us on X](https://x.com/usehyperstack) to request access.
+During closed beta, you need an API key to deploy. [Contact us on X](https://x.com/usearete) to request access.
 :::
 
 ---
@@ -236,7 +236,7 @@ During closed beta, you need an API key to deploy. [Contact us on X](https://x.c
 Validate your configuration:
 
 ```bash
-hs config validate
+a4 config validate
 ```
 
 This checks:

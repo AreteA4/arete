@@ -2,22 +2,22 @@
 title: Connect to a Stack
 sidebar:
   order: 2
-description: Add Hyperstack to an existing project and stream live Solana data.
+description: Add Arete to an existing project and stream live Solana data.
 ---
 
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 import Workflow from "../../../components/Workflow.astro";
 
-This page shows how to add Hyperstack to an existing project and connect to a deployed stack. It uses the public **ORE mining stack** as the example — no account or API key required.
+This page shows how to add Arete to an existing project and connect to a deployed stack. It uses the public **ORE mining stack** as the example — no account or API key required.
 
 :::note[Does a stack exist for your program?]
 This guide is for connecting to a stack that's already deployed. If you want to stream data from your **own on-chain program**, you'll need to build a stack for it first — see [Build Your Own Stack](/building-stacks/workflow/).
 
-Deploying custom stacks is currently in closed beta. [Get in touch](https://usehyperstack.com) if you'd like early access.
+Deploying custom stacks is currently in closed beta. [Get in touch](https://arete.run) if you'd like early access.
 :::
 
 :::tip[Starting from scratch?]
-If you're creating a new project and just want to see Hyperstack working with the ORE demo, the [Quickstart](/using-stacks/quickstart/) scaffolds everything automatically.
+If you're creating a new project and just want to see Arete working with the ORE demo, the [Quickstart](/using-stacks/quickstart/) scaffolds everything automatically.
 :::
 
 ---
@@ -30,18 +30,18 @@ If you're creating a new project and just want to see Hyperstack working with th
 ### 1. Install
 
 ```bash
-npm install hyperstack-react zustand
+npm install arete-react zustand
 ```
 
 ### 2. Add to your app
 
 ```tsx
 // App.tsx
-import { HyperstackProvider, useHyperstack } from "hyperstack-react";
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { AreteProvider, useArete } from "arete-react";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 function OreRounds() {
-  const { views, isConnected } = useHyperstack(ORE_STREAM_STACK);
+  const { views, isConnected } = useArete(ORE_STREAM_STACK);
   const { data: rounds, isLoading } = views.OreRound.latest.use({
     take: 5,
   });
@@ -62,9 +62,9 @@ function OreRounds() {
 
 export default function App() {
   return (
-    <HyperstackProvider websocketUrl="wss://ore.stack.usehyperstack.com">
+    <AreteProvider websocketUrl="wss://ore.stack.arete.run">
       <OreRounds />
-    </HyperstackProvider>
+    </AreteProvider>
   );
 }
 ```
@@ -81,22 +81,22 @@ npm run dev
 ### 1. Install
 
 ```bash
-npm install hyperstack-typescript
+npm install arete-typescript
 ```
 
 ### 2. Create a script
 
 ```typescript
 // stream.ts
-import { HyperStack } from "hyperstack-typescript";
-import { ORE_STREAM_STACK, type OreRound } from "hyperstack-stacks/ore";
+import { Arete } from "arete-typescript";
+import { ORE_STREAM_STACK, type OreRound } from "arete-stacks/ore";
 
 async function main() {
-  const hs = await HyperStack.connect("wss://ore.stack.usehyperstack.com", {
+  const a4 = await Arete.connect("wss://ore.stack.arete.run", {
     stack: ORE_STREAM_STACK,
   });
 
-  for await (const update of hs.views.OreRound.latest.watch()) {
+  for await (const update of a4.views.OreRound.latest.watch()) {
     if (update.type === "upsert") {
       const round = update.data;
       console.log(`Round #${round.id?.round_id}`);
@@ -121,22 +121,22 @@ npx tsx stream.ts
 
 ```toml
 [dependencies]
-hyperstack-sdk = "{{VERSION}}"
-hyperstack-stacks = "{{VERSION}}"
+a4-sdk = "{{VERSION}}"
+a4-stacks = "{{VERSION}}"
 ```
 
 ### 2. Write the code
 
 ```rust
 // src/main.rs
-use hyperstack_sdk::prelude::*;
-use hyperstack_stacks::ore::{OreStack, OreRound};
+use a4_sdk::prelude::*;
+use a4_stacks::ore::{OreStack, OreRound};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hs = HyperStack::<OreStack>::connect().await?;
+    let a4 = Arete::<OreStack>::connect().await?;
 
-    let mut stream = hs.views.ore_round.latest().listen();
+    let mut stream = a4.views.ore_round.latest().listen();
 
     while let Some(round) = stream.next().await {
         println!("Round #{:?}", round.id.round_id);
@@ -159,7 +159,7 @@ cargo run
 For quick inspection without any SDK, open your browser console and paste:
 
 ```javascript
-const ws = new WebSocket("wss://ore.stack.usehyperstack.com");
+const ws = new WebSocket("wss://ore.stack.arete.run");
 
 ws.onopen = () => {
   ws.send(JSON.stringify({ type: "subscribe", view: "OreRound/latest" }));
@@ -178,7 +178,7 @@ ws.onmessage = (event) => {
 
 ## How it Works
 
-You connected to a deployed Hyperstack stack. The ORE stack watches the Solana blockchain, extracts round data from on-chain transactions, and pushes typed updates to your app via WebSocket as they happen — no polling, no RPC calls, no indexer to run.
+You connected to a deployed Arete stack. The ORE stack watches the Solana blockchain, extracts round data from on-chain transactions, and pushes typed updates to your app via WebSocket as they happen — no polling, no RPC calls, no indexer to run.
 
 <Workflow steps={[
   {
@@ -186,7 +186,7 @@ You connected to a deployed Hyperstack stack. The ORE stack watches the Solana b
     description: "ORE program on-chain"
   },
   {
-    title: "Hyperstack",
+    title: "Arete",
     description: "ORE stack (deployed)"
   },
   {
@@ -201,45 +201,45 @@ The stack is public — just point your SDK at the WebSocket URL.
 
 ## About Stack SDKs
 
-A stack SDK tells the Hyperstack client what entities and views are available, and provides the types for each. There are two ways to get one:
+A stack SDK tells the Arete client what entities and views are available, and provides the types for each. There are two ways to get one:
 
 **Pre-built for publicly deployed stacks (like ORE)** — We publish ready-to-use SDKs for both TypeScript and Rust:
 
 ```bash
 # TypeScript / React
-npm install hyperstack-stacks
+npm install arete-stacks
 ```
 
 ```typescript
-import { ORE_STREAM_STACK } from "hyperstack-stacks/ore";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 ```
 
 ```toml
 # Rust — add to Cargo.toml
 [dependencies]
-hyperstack-stacks = "{{VERSION}}"
+a4-stacks = "{{VERSION}}"
 ```
 
 ```rust
-use hyperstack_stacks::ore::{OreStack, OreRound};
+use a4_stacks::ore::{OreStack, OreRound};
 ```
 
 **Generated from your own stack** — When you build a custom stack, use the CLI to generate an SDK for any language:
 
 ```bash
-hs sdk create typescript my-stack
-hs sdk create rust my-stack
+a4 sdk create typescript my-stack
+a4 sdk create rust my-stack
 ```
 
-Both approaches produce the same result: a typed SDK that works identically with the Hyperstack client.
+Both approaches produce the same result: a typed SDK that works identically with the Arete client.
 
 ---
 
 ## Available Public Stacks
 
-| Stack                 | WebSocket URL                       | Data                          |
-| --------------------- | ----------------------------------- | ----------------------------- |
-| **ORE Mining Rounds** | `wss://ore.stack.usehyperstack.com` | Live ORE mining round updates |
+| Stack                 | WebSocket URL               | Data                          |
+| --------------------- | --------------------------- | ----------------------------- |
+| **ORE Mining Rounds** | `wss://ore.stack.arete.run` | Live ORE mining round updates |
 
 ---
 
@@ -282,7 +282,7 @@ Each `OreRound` update has this structure:
 | `metrics` | Aggregated counts and sums from instructions                |
 
 :::tip[View the source]
-The full ORE stack definition is on GitHub: [stacks/ore/src/stack.rs](https://github.com/HyperTekOrg/hyperstack/blob/main/stacks/ore/src/stack.rs)
+The full ORE stack definition is on GitHub: [stacks/ore/src/stack.rs](https://github.com/HyperTekOrg/arete/blob/main/stacks/ore/src/stack.rs)
 :::
 
 ---
