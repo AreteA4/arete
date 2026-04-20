@@ -6,7 +6,6 @@
  * the raw markdown content directly from the content entry.
  * Works in both dev and production modes.
  */
-import type { Props } from "@astrojs/starlight/props";
 import Default from "@astrojs/starlight/components/PageTitle.astro";
 // Import the manifest directly - Vite handles this at build time
 import manifest from "../../../../.release-please-manifest.json";
@@ -17,7 +16,7 @@ const { title } = entry.data;
 // TODO: Rename when packages are changed over
 // Get version from the imported manifest (resolved at build time by Vite)
 const version =
-  manifest["hyperstack"] || manifest["packages/hyperstack"] || "0.0.0";
+  (manifest as Record<string, string>)["arete"] || "0.0.0";
 
 // Build clean markdown content with title, replacing {{VERSION}} placeholders
 const rawBody = entry.body || "";
