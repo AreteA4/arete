@@ -1,5 +1,0 @@
-error: expected `,`
- --> tests/ui/validation_errors/invalid_skip_decoders_assignment.rs:3:28
-  |
-3 | #[hyperstack(skip_decoders = true)]
-  |                            ^

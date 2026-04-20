@@ -1,13 +1,13 @@
 import type {
   ConnectionState,
   StackDefinition,
-  HyperStackOptions,
+  AreteOptions,
   TypedViews,
   ConnectionStateCallback,
   SocketIssueCallback,
   UnsubscribeFn,
 } from './types';
-import { HyperStackError } from './types';
+import { AreteError } from './types';
 import { ConnectionManager } from './connection';
 import { FrameProcessor } from './frame-processor';
 import { MemoryAdapter } from './storage/memory-adapter';
@@ -34,7 +34,7 @@ export interface ConnectOptions {
 }
 
 /** @deprecated Use ConnectOptions instead */
-export interface HyperStackOptionsWithStorage<TStack extends StackDefinition> extends HyperStackOptions<TStack> {
+export interface AreteOptionsWithStorage<TStack extends StackDefinition> extends AreteOptions<TStack> {
   storage?: StorageAdapter;
   maxEntriesPerView?: number | null;
   flushIntervalMs?: number;
@@ -55,7 +55,7 @@ export type InstructionsInterface<TInstructions extends Record<string, Instructi
     ? { [K in keyof TInstructions]: InstructionExecutor }
     : {};
 
-export class HyperStack<TStack extends StackDefinition> {
+export class Arete<TStack extends StackDefinition> {
   private readonly connection: ConnectionManager;
   private readonly storage: StorageAdapter;
   private readonly processor: FrameProcessor;
@@ -66,7 +66,7 @@ export class HyperStack<TStack extends StackDefinition> {
 
   private constructor(
     url: string,
-    options: HyperStackOptionsWithStorage<TStack>
+    options: AreteOptionsWithStorage<TStack>
   ) {
     this.stack = options.stack;
     this.storage = new SortedStorageDecorator(options.storage ?? new MemoryAdapter());
@@ -108,14 +108,14 @@ export class HyperStack<TStack extends StackDefinition> {
   static async connect<T extends StackDefinition>(
     stack: T,
     options?: ConnectOptions
-  ): Promise<HyperStack<T>> {
+  ): Promise<Arete<T>> {
     const url = options?.url ?? stack.url;
 
     if (!url) {
-      throw new HyperStackError('URL is required (provide url option or define url in stack)', 'INVALID_CONFIG');
+      throw new AreteError('URL is required (provide url option or define url in stack)', 'INVALID_CONFIG');
     }
 
-    const internalOptions: HyperStackOptionsWithStorage<T> = {
+    const internalOptions: AreteOptionsWithStorage<T> = {
       stack,
       storage: options?.storage,
       maxEntriesPerView: options?.maxEntriesPerView,
@@ -127,7 +127,7 @@ export class HyperStack<TStack extends StackDefinition> {
       auth: options?.auth,
     };
 
-    const client = new HyperStack(url, internalOptions);
+    const client = new Arete(url, internalOptions);
 
     if (options?.autoReconnect !== false) {
       await client.connection.connect();

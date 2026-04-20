@@ -33,7 +33,7 @@ pub struct TypeScriptConfig {
 impl Default for TypeScriptConfig {
     fn default() -> Self {
         Self {
-            package_name: "hyperstack-react".to_string(),
+            package_name: "@usearete/react".to_string(),
             generate_helpers: true,
             interface_prefix: "".to_string(),
             export_const_name: "STACK".to_string(),
@@ -1039,7 +1039,7 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
         // Generate URL line - either actual URL or placeholder comment
         let url_line = match &self.config.url {
             Some(url) => format!("  url: '{}',", url),
-            None => "  // url: 'wss://your-stack-url.stack.usehyperstack.com', // TODO: Set after first deployment".to_string(),
+            None => "  // url: 'wss://your-stack-url.stack.arete.run', // TODO: Set after first deployment".to_string(),
         };
 
         format!(
@@ -1917,7 +1917,7 @@ pub struct TypeScriptStackConfig {
 impl Default for TypeScriptStackConfig {
     fn default() -> Self {
         Self {
-            package_name: "hyperstack-react".to_string(),
+            package_name: "@usearete/react".to_string(),
             generate_helpers: true,
             export_const_name: "STACK".to_string(),
             url: None,
@@ -2027,7 +2027,7 @@ pub fn compile_stack_spec(
     );
 
     let imports = if stack_spec.pdas.values().any(|p| !p.is_empty()) {
-        "import { z } from 'zod';\nimport { pda, literal, account, arg, bytes } from 'hyperstack-typescript';".to_string()
+        "import { z } from 'zod';\nimport { pda, literal, account, arg, bytes } from '@usearete/sdk';".to_string()
     } else {
         "import { z } from 'zod';".to_string()
     };
@@ -2053,7 +2053,7 @@ pub fn write_stack_typescript_to_file(
 /// ```typescript
 /// export const ORE_STACK = {
 ///   name: 'ore',
-///   url: 'wss://ore.stack.usehyperstack.com',
+///   url: 'wss://ore.stack.arete.run',
 ///   views: {
 ///     OreRound: {
 ///       state: stateView<OreRound>('OreRound/state'),
@@ -2091,7 +2091,7 @@ fn generate_stack_definition_multi(
 
     let url_line = match &config.url {
         Some(url) => format!("  url: '{}',", url),
-        None => "  // url: 'wss://your-stack-url.stack.usehyperstack.com', // TODO: Set after first deployment".to_string(),
+        None => "  // url: 'wss://your-stack-url.stack.arete.run', // TODO: Set after first deployment".to_string(),
     };
 
     // Generate views block for each entity

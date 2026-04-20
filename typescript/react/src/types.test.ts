@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, HyperStackError } from 'hyperstack-typescript';
+import { DEFAULT_CONFIG, AreteError } from '@usearete/sdk';
 
 describe('types', () => {
   describe('DEFAULT_CONFIG', () => {
@@ -9,14 +9,14 @@ describe('types', () => {
     });
   });
 
-  describe('HyperStackError', () => {
+  describe('AreteError', () => {
     it('creates error with code and details', () => {
-      const error = new HyperStackError('test message', 'TEST_CODE', { foo: 'bar' });
+      const error = new AreteError('test message', 'TEST_CODE', { foo: 'bar' });
 
       expect(error.message).toBe('test message');
       expect(error.code).toBe('TEST_CODE');
       expect(error.details).toEqual({ foo: 'bar' });
-      expect(error.name).toBe('HyperStackError');
+      expect(error.name).toBe('AreteError');
     });
   });
 });

@@ -6,7 +6,7 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-hyperstack-sdk = { path = "../../rust/hyperstack-sdk" }
-hyperstack-stacks = { path = "../../stacks/sdk/rust", features = ["ore"] }
+arete-sdk = { path = "../../rust/arete-sdk", version = "0.0.1" }
+arete-stacks = { path = "../../stacks/sdk/rust", version = "0.0.1", features = ["ore"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

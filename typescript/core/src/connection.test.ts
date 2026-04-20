@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ConnectionManager } from './connection';
-import { HyperStackError } from './types';
+import { AreteError } from './types';
 
 function toBase64Url(value: string): string {
   return Buffer.from(value, 'utf-8')
@@ -95,10 +95,10 @@ describe('ConnectionManager auth', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const manager = new ConnectionManager({
-      websocketUrl: 'wss://demo.stack.usehyperstack.com',
+      websocketUrl: 'wss://demo.stack.arete.run',
     });
 
-    await expect(manager.connect()).rejects.toMatchObject<Partial<HyperStackError>>({
+    await expect(manager.connect()).rejects.toMatchObject<Partial<AreteError>>({
       code: 'AUTH_REQUIRED',
     });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -116,7 +116,7 @@ describe('ConnectionManager auth', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const manager = new ConnectionManager({
-      websocketUrl: 'wss://demo.stack.usehyperstack.com',
+      websocketUrl: 'wss://demo.stack.arete.run',
       auth: { publishableKey: 'hspk_test_123' },
     });
 
@@ -124,13 +124,13 @@ describe('ConnectionManager auth', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://api.usehyperstack.com/ws/sessions',
+      'https://api.arete.run/ws/sessions',
       expect.objectContaining({ method: 'POST' })
     );
 
     const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(requestInit.body))).toEqual({
-      websocket_url: 'wss://demo.stack.usehyperstack.com',
+      websocket_url: 'wss://demo.stack.arete.run',
     });
     expect(requestInit.headers).toMatchObject({
       Authorization: 'Bearer hspk_test_123',
@@ -150,7 +150,7 @@ describe('ConnectionManager auth', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const manager = new ConnectionManager({
-      websocketUrl: 'wss://global.stack.usehyperstack.com',
+      websocketUrl: 'wss://global.stack.arete.run',
       auth: { publishableKey: 'hspk_test_123' },
     });
 
@@ -172,11 +172,11 @@ describe('ConnectionManager auth', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const manager = new ConnectionManager({
-      websocketUrl: 'wss://global.stack.usehyperstack.com',
+      websocketUrl: 'wss://global.stack.arete.run',
       auth: { publishableKey: 'hspk_test_123' },
     });
 
-    await expect(manager.connect()).rejects.toMatchObject<Partial<HyperStackError>>({
+    await expect(manager.connect()).rejects.toMatchObject<Partial<AreteError>>({
       code: 'AUTH_REQUIRED',
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -196,11 +196,11 @@ describe('ConnectionManager auth', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const manager = new ConnectionManager({
-      websocketUrl: 'wss://global.stack.usehyperstack.com',
+      websocketUrl: 'wss://global.stack.arete.run',
       auth: { publishableKey: 'hspk_test_123' },
     });
 
-    await expect(manager.connect()).rejects.toMatchObject<Partial<HyperStackError>>({
+    await expect(manager.connect()).rejects.toMatchObject<Partial<AreteError>>({
       code: 'ORIGIN_REQUIRED',
       details: expect.objectContaining({ wireErrorCode: 'origin-required' }),
     });
@@ -220,11 +220,11 @@ describe('ConnectionManager auth', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const manager = new ConnectionManager({
-      websocketUrl: 'wss://global.stack.usehyperstack.com',
+      websocketUrl: 'wss://global.stack.arete.run',
       auth: { publishableKey: 'hspk_test_123' },
     });
 
-    await expect(manager.connect()).rejects.toMatchObject<Partial<HyperStackError>>({
+    await expect(manager.connect()).rejects.toMatchObject<Partial<AreteError>>({
       code: 'WEBSOCKET_SESSION_RATE_LIMIT_EXCEEDED',
       details: expect.objectContaining({
         wireErrorCode: 'websocket-session-rate-limit-exceeded',
@@ -244,7 +244,7 @@ describe('ConnectionManager auth', () => {
       .mockResolvedValueOnce({ token: newToken });
 
     const manager = new ConnectionManager({
-      websocketUrl: 'wss://refresh.stack.usehyperstack.com',
+      websocketUrl: 'wss://refresh.stack.arete.run',
       auth: { getToken },
     });
 
@@ -273,7 +273,7 @@ describe('ConnectionManager auth', () => {
   it('handles refresh_auth success responses as control messages', async () => {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const manager = new ConnectionManager({
-      websocketUrl: 'wss://refresh.stack.usehyperstack.com',
+      websocketUrl: 'wss://refresh.stack.arete.run',
       auth: {
         token: makeJwt(nowSeconds + 300),
       },
@@ -304,7 +304,7 @@ describe('ConnectionManager auth', () => {
   it('emits socket issues from server error control messages', async () => {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const manager = new ConnectionManager({
-      websocketUrl: 'wss://limits.stack.usehyperstack.com',
+      websocketUrl: 'wss://limits.stack.arete.run',
       auth: {
         token: makeJwt(nowSeconds + 300),
       },
@@ -349,7 +349,7 @@ describe('ConnectionManager auth', () => {
     });
 
     const manager = new ConnectionManager({
-      websocketUrl: 'wss://private.stack.usehyperstack.com',
+      websocketUrl: 'wss://private.stack.arete.run',
       auth: {
         token: 'server-side-token',
         tokenTransport: 'bearer',
@@ -359,11 +359,11 @@ describe('ConnectionManager auth', () => {
 
     await manager.connect();
 
-    expect(socketFactory).toHaveBeenCalledWith('wss://private.stack.usehyperstack.com', {
+    expect(socketFactory).toHaveBeenCalledWith('wss://private.stack.arete.run', {
       headers: {
         Authorization: 'Bearer server-side-token',
       },
     });
-    expect(MockWebSocket.instances[0]?.url).toBe('wss://private.stack.usehyperstack.com');
+    expect(MockWebSocket.instances[0]?.url).toBe('wss://private.stack.arete.run');
   });
 });

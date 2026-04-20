@@ -1,5 +1,5 @@
 /**
- * TanStack Start integration for Hyperstack Auth
+ * TanStack Start integration for Arete Auth
  *
  * Drop-in API route handlers for TanStack Start.
  * `resolveSession` must derive the subject from verified server-side auth.
@@ -7,8 +7,8 @@
  *
  * @example
  * ```typescript
- * // app/routes/api/hyperstack/sessions.ts
- * import { createTanStackSessionRoute, createTanStackJwksRoute } from 'hyperstack-typescript/ssr/tanstack-start';
+ * // app/routes/api/arete/sessions.ts
+ * import { createTanStackSessionRoute, createTanStackJwksRoute } from '@usearete/sdk/ssr/tanstack-start';
  * import { json } from '@tanstack/react-start';
  *
  * export const APIRoute = createTanStackSessionRoute({
@@ -148,8 +148,8 @@ export function createTanStackJwksRoute(config: AuthHandlerConfig = {}) {
  *
  * @example
  * ```typescript
- * // app/routes/api/hyperstack/auth.ts
- * import { createTanStackAuthRoute } from 'hyperstack-typescript/ssr/tanstack-start';
+ * // app/routes/api/arete/auth.ts
+ * import { createTanStackAuthRoute } from '@usearete/sdk/ssr/tanstack-start';
  *
  * export const APIRoute = createTanStackAuthRoute({
  *   resolveSession: async ({ request }) => {
@@ -169,24 +169,24 @@ export function createTanStackAuthRoute(config: TanStackSessionRouteConfig = {})
 }
 
 /**
- * Hook to access the Hyperstack token in TanStack Start loaders
+ * Hook to access the Arete token in TanStack Start loaders
  *
  * @example
  * ```typescript
  * // app/routes/dashboard.tsx
  * import { createFileRoute } from '@tanstack/react-start';
- * import { fetchHyperstackToken } from 'hyperstack-typescript/ssr/tanstack-start';
+ * import { fetchAreteToken } from '@usearete/sdk/ssr/tanstack-start';
  *
  * export const Route = createFileRoute('/dashboard')({
  *   loader: async () => {
- *     const token = await fetchHyperstackToken('/api/hyperstack/sessions');
+ *     const token = await fetchAreteToken('/api/arete/sessions');
  *     // Use token for data fetching...
  *   },
  * });
  * ```
  */
-export async function fetchHyperstackToken(
-  endpoint: string = '/api/hyperstack/sessions'
+export async function fetchAreteToken(
+  endpoint: string = '/api/arete/sessions'
 ): Promise<string> {
   const response = await fetch(endpoint, {
     method: 'POST',

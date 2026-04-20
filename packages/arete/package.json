@@ -1,0 +1,42 @@
+{
+  "name": "@usearete/a4",
+  "version": "0.0.1",
+  "description": "Arete CLI (a4) - Real-time Solana streaming pipelines",
+  "bin": {
+    "a4": "./bin/a4.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AreteA4/arete.git",
+    "directory": "packages/arete"
+  },
+  "homepage": "https://arete.run",
+  "bugs": {
+    "url": "https://github.com/AreteA4/arete/issues"
+  },
+  "keywords": [
+    "arete",
+    "solana",
+    "streaming",
+    "cli",
+    "blockchain",
+    "web3",
+    "a4"
+  ],
+  "author": "Arete Team",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "README.md"
+  ]
+}

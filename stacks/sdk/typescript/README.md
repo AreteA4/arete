@@ -1,27 +1,27 @@
-# hyperstack-stacks
+# arete-stacks
 
-[![npm](https://img.shields.io/npm/v/hyperstack-stacks.svg)](https://www.npmjs.com/package/hyperstack-stacks)
+[![npm](https://img.shields.io/npm/v/arete-stacks.svg)](https://www.npmjs.com/package/arete-stacks)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Protocol stacks for Hyperstack - ready-to-use Solana data streams.
+Protocol stacks for Arete - ready-to-use Solana data streams.
 
 ## Installation
 
 ```bash
-npm install hyperstack-stacks
+npm install @usearete/stacks
 ```
 
 ## Usage
 
-### With hyperstack-react
+### With @usearete/react
 
 ```tsx
-import { useHyperstack } from 'hyperstack-react';
-import { PUMPFUNTOKEN_STACK } from 'hyperstack-stacks/pumpfun';
+import { useArete } from '@usearete/react';
+import { PUMPFUNTOKEN_STACK } from '@usearete/stacks/pumpfun';
 
 function TokenList() {
-  const hs = useHyperstack(PUMPFUNTOKEN_STACK);
-  const tokens = hs.views.pumpfunToken.list.useWatch();
+  const a4 = useArete(PUMPFUNTOKEN_STACK);
+  const tokens = a4.views.pumpfunToken.list.useWatch();
 
   return (
     <ul>
@@ -35,18 +35,18 @@ function TokenList() {
 }
 ```
 
-### With hyperstack-typescript (framework-agnostic)
+### With @usearete/sdk (framework-agnostic)
 
 ```typescript
-import { HyperStack } from 'hyperstack-typescript';
-import { PUMPFUNTOKEN_STACK, PumpfunToken } from 'hyperstack-stacks/pumpfun';
+import { Arete } from '@usearete/sdk';
+import { PUMPFUNTOKEN_STACK, PumpfunToken } from '@usearete/stacks/pumpfun';
 
-const hs = await HyperStack.connect('wss://mainnet.hyperstack.xyz', {
+const a4 = await Arete.connect('wss://mainnet.arete.xyz', {
   stack: PUMPFUNTOKEN_STACK,
 });
 
 // Stream all token updates
-for await (const update of hs.views.pumpfunToken.list.watch()) {
+for await (const update of a4.views.pumpfunToken.list.watch()) {
   if (update.type === 'upsert') {
     console.log('Token updated:', update.data.info?.name);
   }
@@ -60,7 +60,7 @@ for await (const update of hs.views.pumpfunToken.list.watch()) {
 Real-time streaming data for PumpFun tokens on Solana.
 
 ```typescript
-import { PUMPFUNTOKEN_STACK, PumpfunToken } from 'hyperstack-stacks/pumpfun';
+import { PUMPFUNTOKEN_STACK, PumpfunToken } from '@usearete/stacks/pumpfun';
 ```
 
 **Entity: `PumpfunToken`**
@@ -77,15 +77,15 @@ import { PUMPFUNTOKEN_STACK, PumpfunToken } from 'hyperstack-stacks/pumpfun';
 
 This package requires one of:
 
-- `hyperstack-react` - For React applications
-- `hyperstack-typescript` - For framework-agnostic usage
+- `@usearete/react` - For React applications
+- `@usearete/sdk` - For framework-agnostic usage
 
 ```bash
 # For React
-npm install hyperstack-react hyperstack-stacks
+npm install @usearete/react arete-stacks
 
 # For vanilla TypeScript/JavaScript
-npm install hyperstack-typescript hyperstack-stacks
+npm install @usearete/sdk arete-stacks
 ```
 
 ## License

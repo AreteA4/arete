@@ -7,4 +7,4 @@ pub use entity::{
 };
 pub use types::*;
 
-pub use hyperstack_sdk::{ConnectionState, HyperStack, Stack, Update, Views};
+pub use arete_sdk::{ConnectionState, Arete, Stack, Update, Views};

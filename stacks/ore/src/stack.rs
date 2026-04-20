@@ -1,9 +1,9 @@
-use hyperstack::prelude::*;
+use arete::prelude::*;
 
-#[hyperstack(idl = ["idl/ore.json", "idl/entropy.json"])]
+#[arete(idl = ["idl/ore.json", "idl/entropy.json"])]
 pub mod ore_stream {
-    use hyperstack::macros::Stream;
-    use hyperstack::resolvers::TokenMetadata;
+    use arete::macros::Stream;
+    use arete::resolvers::TokenMetadata;
 
     use serde::{Deserialize, Serialize};
 

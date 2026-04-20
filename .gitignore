@@ -133,7 +133,7 @@ coverage/
 prisma/migrations/
 
 # AST Transform Library (will be symlinked)
-backend/tenant-runtime/node_modules/@hyperstack/ast-transform
+backend/tenant-runtime/node_modules/@arete/ast-transform
 
 # Target dirs
 **/target

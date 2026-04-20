@@ -9,12 +9,12 @@ use crate::ui;
 fn credentials_path() -> String {
     dirs::home_dir()
         .map(|home| {
-            home.join(".hyperstack")
+            home.join(".arete")
                 .join("credentials.toml")
                 .display()
                 .to_string()
         })
-        .unwrap_or_else(|| "~/.hyperstack/credentials.toml".to_string())
+        .unwrap_or_else(|| "~/.arete/credentials.toml".to_string())
 }
 
 pub fn login(api_key: Option<String>) -> Result<()> {
@@ -23,7 +23,7 @@ pub fn login(api_key: Option<String>) -> Result<()> {
     let api_key = if let Some(key) = api_key {
         key
     } else {
-        println!("{}", "Login to Hyperstack".bold());
+        println!("{}", "Login to Arete".bold());
         println!();
         println!("Target API: {}", api_url.yellow());
         println!();
@@ -53,7 +53,7 @@ pub fn login(api_key: Option<String>) -> Result<()> {
             println!();
             println!("  Credentials: {}", credentials_path().dimmed());
             println!();
-            println!("You are now ready to use Hyperstack!");
+            println!("You are now ready to use Arete!");
         }
         Err(e) => {
             spinner.finish_and_clear();
@@ -132,7 +132,7 @@ pub fn status() -> Result<()> {
             println!();
             println!(
                 "  Run {} to verify with the server.",
-                "hs auth whoami".cyan()
+                "a4 auth whoami".cyan()
             );
         }
         Err(_) => {
@@ -142,7 +142,7 @@ pub fn status() -> Result<()> {
                 "Not authenticated".red().bold()
             );
             println!();
-            println!("Run 'hs auth login' to authenticate.");
+            println!("Run 'a4 auth login' to authenticate.");
         }
     }
 
@@ -182,7 +182,7 @@ pub fn whoami() -> Result<()> {
         Err(_) => {
             ui::print_error("Not authenticated");
             println!();
-            println!("  Run {} to authenticate.", "hs auth login".cyan());
+            println!("  Run {} to authenticate.", "a4 auth login".cyan());
             return Ok(());
         }
     };
@@ -214,7 +214,7 @@ pub fn whoami() -> Result<()> {
             println!();
             println!("  Error: {}", e);
             println!();
-            println!("  Run {} to re-authenticate.", "hs auth login".cyan());
+            println!("  Run {} to re-authenticate.", "a4 auth login".cyan());
         }
     }
 
@@ -239,7 +239,7 @@ pub fn list_keys() -> Result<()> {
                 println!();
                 println!(
                     "  Run {} to create a publishable key for browser use.",
-                    "hs auth keys create-publishable".cyan()
+                    "a4 auth keys create-publishable".cyan()
                 );
                 return Ok(());
             }

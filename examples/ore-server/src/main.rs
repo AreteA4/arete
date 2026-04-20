@@ -1,4 +1,4 @@
-use hyperstack_server::Server;
+use arete_server::Server;
 use ore_stack as ore_stream;
 use std::net::SocketAddr;
 use std::path::PathBuf;

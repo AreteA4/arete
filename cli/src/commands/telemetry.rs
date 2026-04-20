@@ -35,11 +35,11 @@ pub fn status() -> Result<()> {
         );
     }
 
-    if std::env::var("HYPERSTACK_TELEMETRY_DISABLED").is_ok() {
+    if std::env::var("ARETE_TELEMETRY_DISABLED").is_ok() {
         println!(
             "  {} {}",
             ui::symbols::WARNING.yellow(),
-            "HYPERSTACK_TELEMETRY_DISABLED environment variable is set".yellow()
+            "ARETE_TELEMETRY_DISABLED environment variable is set".yellow()
         );
     }
 
@@ -54,7 +54,7 @@ pub fn enable() -> Result<()> {
 
     println!("{} Telemetry enabled", ui::symbols::SUCCESS.green().bold());
     println!();
-    println!("  Thank you for helping improve Hyperstack!");
+    println!("  Thank you for helping improve Arete!");
 
     Ok(())
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
-import type { ConnectionState } from 'hyperstack-typescript';
+import type { ConnectionState } from '@usearete/sdk';
 import type { StoreApi, UseBoundStore } from 'zustand';
-import { useHyperstackContext } from './provider';
+import { useAreteContext } from './provider';
 import { createStateViewHook, createListViewHook } from './view-hooks';
 import { useInstructionMutation, UseMutationResult } from './hooks';
 import type {
@@ -14,11 +14,11 @@ import type {
   ListParamsMultiple,
   ListParamsBase,
   ViewGroup,
-  UseHyperstackOptions
+  UseAreteOptions
 } from './types';
-import { ZustandAdapter, type HyperStackStore } from './zustand-adapter';
-import type { InstructionHandler, InstructionExecutor } from 'hyperstack-typescript';
-import type { HyperStack } from 'hyperstack-typescript';
+import { ZustandAdapter, type AreteStore } from './zustand-adapter';
+import type { InstructionHandler, InstructionExecutor } from '@usearete/sdk';
+import type { Arete } from '@usearete/sdk';
 
 type ViewHookForDef<TDef> = TDef extends ViewDef<infer T, 'state'>
   ? {
@@ -70,21 +70,21 @@ type BuildInstructionInterface<TInstructions extends Record<string, InstructionH
 type StackClient<TStack extends StackDefinition> = {
   views: BuildViewInterface<TStack['views']>;
   instructions: BuildInstructionInterface<TStack['instructions']>;
-  zustandStore: UseBoundStore<StoreApi<HyperStackStore>>;
-  client: HyperStack<TStack>;
+  zustandStore: UseBoundStore<StoreApi<AreteStore>>;
+  client: Arete<TStack>;
   connectionState: ConnectionState;
   isConnected: boolean;
   isLoading: boolean;
   error: Error | null;
 };
 
-export function useHyperstack<TStack extends StackDefinition>(
+export function useArete<TStack extends StackDefinition>(
   stack: TStack,
-  options?: UseHyperstackOptions
+  options?: UseAreteOptions
 ): StackClient<TStack> {
-  const { getOrCreateClient, getClient } = useHyperstackContext();
+  const { getOrCreateClient, getClient } = useAreteContext();
   const urlOverride = options?.url;
-  const [client, setClient] = useState<HyperStack<TStack> | null>(getClient(stack) as HyperStack<TStack> | null);
+  const [client, setClient] = useState<Arete<TStack> | null>(getClient(stack) as Arete<TStack> | null);
   const [isLoading, setIsLoading] = useState(!client);
   const [error, setError] = useState<Error | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>(() => 
@@ -94,7 +94,7 @@ export function useHyperstack<TStack extends StackDefinition>(
   useEffect(() => {
     const existingClient = getClient(stack);
     if (existingClient && !urlOverride) {
-      setClient(existingClient as HyperStack<TStack>);
+      setClient(existingClient as Arete<TStack>);
       setIsLoading(false);
       return;
     }
@@ -104,7 +104,7 @@ export function useHyperstack<TStack extends StackDefinition>(
 
     getOrCreateClient(stack, urlOverride)
       .then((newClient) => {
-        setClient(newClient as HyperStack<TStack>);
+        setClient(newClient as Arete<TStack>);
         setIsLoading(false);
       })
       .catch((err) => {
@@ -167,7 +167,7 @@ export function useHyperstack<TStack extends StackDefinition>(
   return {
     views: views as BuildViewInterface<TStack['views']>,
     instructions: instructions as BuildInstructionInterface<TStack['instructions']>,
-    zustandStore: (client?.store as ZustandAdapter | undefined)?.store as UseBoundStore<StoreApi<HyperStackStore>>,
+    zustandStore: (client?.store as ZustandAdapter | undefined)?.store as UseBoundStore<StoreApi<AreteStore>>,
     client: client!,
     connectionState,
     isConnected: connectionState === 'connected',

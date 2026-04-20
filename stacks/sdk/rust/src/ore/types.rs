@@ -1,4 +1,4 @@
-use hyperstack_sdk::serde_utils;
+use arete_sdk::serde_utils;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

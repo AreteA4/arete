@@ -70,7 +70,7 @@ export interface WatchOptions<TSchema = unknown> {
   snapshotLimit?: number;
 }
 
-export interface HyperStackOptions<TStack extends StackDefinition> {
+export interface AreteOptions<TStack extends StackDefinition> {
   stack: TStack;
   autoReconnect?: boolean;
   reconnectIntervals?: number[];
@@ -91,14 +91,14 @@ export interface WebSocketFactoryInit {
 }
 
 /**
- * Authentication configuration for Hyperstack connections
+ * Authentication configuration for Arete connections
  */
 export interface AuthConfig {
   /** Custom token provider function - called before each connection and during refresh */
   getToken?: () => Promise<string | AuthTokenResult>;
-  /** Hyperstack Cloud token endpoint URL */
+  /** Arete Cloud token endpoint URL */
   tokenEndpoint?: string;
-  /** Publishable key for Hyperstack Cloud */
+  /** Publishable key for Arete Cloud */
   publishableKey?: string;
   /** Pre-minted static token (for server-side use) */
   token?: string;
@@ -112,7 +112,7 @@ export interface AuthConfig {
   tokenEndpointCredentials?: RequestCredentials;
 }
 
-export interface HyperStackConfig {
+export interface AreteConfig {
   websocketUrl?: string;
   reconnectIntervals?: number[];
   maxReconnectAttempts?: number;
@@ -134,7 +134,7 @@ export interface SocketIssue {
 }
 
 export const DEFAULT_CONFIG: Required<
-  Pick<HyperStackConfig, 'reconnectIntervals' | 'maxReconnectAttempts' | 'maxEntriesPerView'>
+  Pick<AreteConfig, 'reconnectIntervals' | 'maxReconnectAttempts' | 'maxEntriesPerView'>
 > = {
   reconnectIntervals: [1000, 2000, 4000, 8000, 16000],
   maxReconnectAttempts: 5,
@@ -204,14 +204,14 @@ export function shouldRefreshToken(code: AuthErrorCode): boolean {
   ].includes(code);
 }
 
-export class HyperStackError extends Error {
+export class AreteError extends Error {
   constructor(
     message: string,
     public code: string | AuthErrorCode,
     public details?: unknown
   ) {
     super(message);
-    this.name = 'HyperStackError';
+    this.name = 'AreteError';
   }
 }
 

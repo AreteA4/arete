@@ -1,4 +1,4 @@
-//! Privacy-respecting telemetry for the Hyperstack CLI.
+//! Privacy-respecting telemetry for the Arete CLI.
 //!
 //! This module implements anonymous usage tracking to help improve the CLI.
 //! Key principles:
@@ -8,9 +8,9 @@
 //! - Minimal data: only what's needed to answer specific questions
 //!
 //! Users can disable telemetry via:
-//! - `hs telemetry disable`
+//! - `a4 telemetry disable`
 //! - `DO_NOT_TRACK=1` environment variable
-//! - `HYPERSTACK_TELEMETRY_DISABLED=1` environment variable
+//! - `ARETE_TELEMETRY_DISABLED=1` environment variable
 
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -44,13 +44,13 @@ const POSTHOG_API_KEY: &str = "phc_PUDsD0lYcsjoXfMRYhH9k91xDbuxzAyw6ZD0tg3OUHz";
 
 const POSTHOG_ENDPOINT: &str = "https://eu.i.posthog.com/capture/";
 
-pub const TELEMETRY_DOCS_URL: &str = "https://usehyperstack.com/telemetry";
+pub const TELEMETRY_DOCS_URL: &str = "https://arete.run/telemetry";
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
-/// Telemetry configuration stored in ~/.hyperstack/telemetry.json
+/// Telemetry configuration stored in ~/.arete/telemetry.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetryConfig {
     /// Whether telemetry is enabled (default: true)
@@ -129,7 +129,7 @@ impl TelemetryConfig {
 fn config_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".hyperstack")
+        .join(".arete")
         .join("telemetry.json")
 }
 
@@ -141,7 +141,7 @@ fn config_path() -> PathBuf {
 ///
 /// Returns false if:
 /// - `DO_NOT_TRACK=1` is set (standard)
-/// - `HYPERSTACK_TELEMETRY_DISABLED=1` is set
+/// - `ARETE_TELEMETRY_DISABLED=1` is set
 /// - Telemetry is disabled in config
 /// - CI environment is detected
 pub fn should_collect() -> bool {
@@ -153,8 +153,8 @@ pub fn should_collect() -> bool {
         return false;
     }
 
-    // Check Hyperstack-specific disable
-    if std::env::var("HYPERSTACK_TELEMETRY_DISABLED")
+    // Check Arete-specific disable
+    if std::env::var("ARETE_TELEMETRY_DISABLED")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false)
     {
@@ -216,11 +216,11 @@ pub fn show_consent_banner_if_needed() {
     let banner = r#"
 ┌─────────────────────────────────────────────────────────────┐
 │                                                             │
-│  Hyperstack collects anonymous usage data to improve the    │
+│  Arete collects anonymous usage data to improve the    │
 │  CLI. No personal information or project details are sent.  │
 │                                                             │
-│  Disable anytime:  hs telemetry disable                     │
-│  Learn more:       https://usehyperstack.com/telemetry      │
+│  Disable anytime:  a4 telemetry disable                     │
+│  Learn more:       https://arete.run/telemetry      │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 "#;
@@ -266,7 +266,7 @@ pub struct TelemetryEvent {
     /// Command duration in milliseconds
     pub duration_ms: u64,
 
-    /// Template name (for `hs create` only)
+    /// Template name (for `a4 create` only)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
 
@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_error_code_extraction() {
-        let auth_error = anyhow::anyhow!("Not authenticated. Run 'hs auth login' first.");
+        let auth_error = anyhow::anyhow!("Not authenticated. Run 'a4 auth login' first.");
         assert_eq!(
             extract_error_code(&auth_error),
             Some("auth_required".to_string())

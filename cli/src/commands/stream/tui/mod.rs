@@ -8,7 +8,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures_util::{SinkExt, StreamExt};
-use hyperstack_sdk::{parse_frame, try_parse_subscribed_frame, ClientMessage, Frame};
+use arete_sdk::{parse_frame, try_parse_subscribed_frame, ClientMessage, Frame};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,8 +24,8 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     // Connect WebSocket
     let (ws, _) = connect_async(&url).await.map_err(|err| {
         let redacted = token::redact_hs_token_for_display(&url);
-        let hint = if token::is_hosted_hyperstack_cloud_url(&url) {
-            "\nHint: hosted stacks need a valid `hs_token` (the CLI adds one after `hs auth login`). \
+        let hint = if token::is_hosted_arete_cloud_url(&url) {
+            "\nHint: hosted stacks need a valid `hs_token` (the CLI adds one after `a4 auth login`). \
              On some systems, TLS uses the OS trust store — if this persists, report the error above."
         } else {
             ""
@@ -76,7 +76,7 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                                     // Subscribed frames have a different shape (no `entity` field)
                                     if try_parse_subscribed_frame(&bytes).is_some() {
                                         let subscribed = Frame {
-                                            mode: hyperstack_sdk::Mode::List,
+                                            mode: arete_sdk::Mode::List,
                                             entity: String::new(),
                                             op: "subscribed".to_string(),
                                             key: String::new(),

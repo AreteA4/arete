@@ -50,7 +50,7 @@ pub fn create(
         println!();
         println!(
             "Track progress with: {}",
-            format!("hs build status {} --watch", response.build_id).cyan()
+            format!("a4 build status {} --watch", response.build_id).cyan()
         );
 
         return Ok(());
@@ -103,7 +103,7 @@ pub fn create(
                 .map(|v| v.id)
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "Stack '{}' has no versions. Push a version first with: hs stack push {}",
+                        "Stack '{}' has no versions. Push a version first with: a4 stack push {}",
                         stack_name,
                         stack_name
                     )
@@ -161,7 +161,7 @@ pub fn create(
                 println!();
                 println!(
                     "Track progress with: {}",
-                    format!("hs build status {} --watch", response.build_id).cyan()
+                    format!("a4 build status {} --watch", response.build_id).cyan()
                 );
 
                 return Ok(());
@@ -171,8 +171,8 @@ pub fn create(
                 "Stack '{}' not found remotely and no local stack file found.\n\n\
                  To fix this:\n\
                  1. Build your stack crate to generate the stack file: cargo build\n\
-                 2. Push your stack: hs stack push {}\n\
-                 3. Then create a build: hs build create {}",
+                 2. Push your stack: a4 stack push {}\n\
+                 3. Then create a build: a4 build create {}",
                 stack_name,
                 stack_name,
                 stack_name
@@ -204,7 +204,7 @@ pub fn create(
     println!();
     println!(
         "Track progress with: {}",
-        format!("hs build status {} --watch", response.build_id).cyan()
+        format!("a4 build status {} --watch", response.build_id).cyan()
     );
 
     Ok(())
@@ -245,7 +245,7 @@ pub fn list(limit: i64, status_filter: Option<&str>, json: bool) -> Result<()> {
             );
         } else {
             println!("{}", "No builds found.".yellow());
-            println!("Create a build with: {}", "hs up <stack-name>".cyan());
+            println!("Create a build with: {}", "a4 up <stack-name>".cyan());
         }
         return Ok(());
     }

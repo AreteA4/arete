@@ -48,107 +48,107 @@ pub struct VmMetrics {
 #[cfg(feature = "otel")]
 impl VmMetrics {
     fn new() -> Self {
-        let meter = global::meter("hyperstack-interpreter");
+        let meter = global::meter("arete-interpreter");
 
         Self {
             state_table_entries: meter
-                .i64_gauge("hyperstack.vm.state_table.entries")
+                .i64_gauge("arete.vm.state_table.entries")
                 .with_description("Current entries in the state table")
                 .init(),
             state_table_capacity: meter
-                .i64_gauge("hyperstack.vm.state_table.capacity")
+                .i64_gauge("arete.vm.state_table.capacity")
                 .with_description("Maximum capacity of the state table")
                 .init(),
             lookup_index_count: meter
-                .i64_gauge("hyperstack.vm.lookup_index.count")
+                .i64_gauge("arete.vm.lookup_index.count")
                 .with_description("Number of lookup indexes")
                 .init(),
             lookup_index_entries: meter
-                .i64_gauge("hyperstack.vm.lookup_index.entries")
+                .i64_gauge("arete.vm.lookup_index.entries")
                 .with_description("Total entries across lookup indexes")
                 .init(),
             temporal_index_count: meter
-                .i64_gauge("hyperstack.vm.temporal_index.count")
+                .i64_gauge("arete.vm.temporal_index.count")
                 .with_description("Number of temporal indexes")
                 .init(),
             temporal_index_entries: meter
-                .i64_gauge("hyperstack.vm.temporal_index.entries")
+                .i64_gauge("arete.vm.temporal_index.entries")
                 .with_description("Total entries across temporal indexes")
                 .init(),
             pda_reverse_lookup_count: meter
-                .i64_gauge("hyperstack.vm.pda_reverse_lookup.count")
+                .i64_gauge("arete.vm.pda_reverse_lookup.count")
                 .with_description("Number of PDA reverse lookup tables")
                 .init(),
             pda_reverse_lookup_entries: meter
-                .i64_gauge("hyperstack.vm.pda_reverse_lookup.entries")
+                .i64_gauge("arete.vm.pda_reverse_lookup.entries")
                 .with_description("Total entries across PDA reverse lookups")
                 .init(),
             version_tracker_entries: meter
-                .i64_gauge("hyperstack.vm.version_tracker.entries")
+                .i64_gauge("arete.vm.version_tracker.entries")
                 .with_description("Entries in the version tracker")
                 .init(),
             path_cache_size: meter
-                .i64_gauge("hyperstack.vm.path_cache.size")
+                .i64_gauge("arete.vm.path_cache.size")
                 .with_description("Size of the compiled path cache")
                 .init(),
             pending_queue_updates: meter
-                .i64_gauge("hyperstack.vm.pending_queue.updates")
+                .i64_gauge("arete.vm.pending_queue.updates")
                 .with_description("Total pending updates in queue")
                 .init(),
             pending_queue_unique_pdas: meter
-                .i64_gauge("hyperstack.vm.pending_queue.unique_pdas")
+                .i64_gauge("arete.vm.pending_queue.unique_pdas")
                 .with_description("Unique PDAs with pending updates")
                 .init(),
             pending_queue_memory_bytes: meter
-                .i64_gauge("hyperstack.vm.pending_queue.memory_bytes")
+                .i64_gauge("arete.vm.pending_queue.memory_bytes")
                 .with_description("Estimated memory usage of pending queue")
                 .init(),
             pending_queue_oldest_age: meter
-                .f64_histogram("hyperstack.vm.pending_queue.oldest_age_seconds")
+                .f64_histogram("arete.vm.pending_queue.oldest_age_seconds")
                 .with_description("Age of oldest pending update in seconds")
                 .init(),
             state_table_evictions: meter
-                .u64_counter("hyperstack.vm.state_table.evictions")
+                .u64_counter("arete.vm.state_table.evictions")
                 .with_description("State table LRU evictions")
                 .init(),
             state_table_at_capacity_events: meter
-                .u64_counter("hyperstack.vm.state_table.at_capacity_events")
+                .u64_counter("arete.vm.state_table.at_capacity_events")
                 .with_description("State table at capacity events")
                 .init(),
             cleanup_pending_removed: meter
-                .u64_counter("hyperstack.vm.cleanup.pending_removed")
+                .u64_counter("arete.vm.cleanup.pending_removed")
                 .with_description("Pending updates removed during cleanup")
                 .init(),
             cleanup_temporal_removed: meter
-                .u64_counter("hyperstack.vm.cleanup.temporal_removed")
+                .u64_counter("arete.vm.cleanup.temporal_removed")
                 .with_description("Temporal entries removed during cleanup")
                 .init(),
             path_cache_hits: meter
-                .u64_counter("hyperstack.vm.path_cache.hits")
+                .u64_counter("arete.vm.path_cache.hits")
                 .with_description("Path cache hits")
                 .init(),
             path_cache_misses: meter
-                .u64_counter("hyperstack.vm.path_cache.misses")
+                .u64_counter("arete.vm.path_cache.misses")
                 .with_description("Path cache misses")
                 .init(),
             lookup_index_hits: meter
-                .u64_counter("hyperstack.vm.lookup_index.hits")
+                .u64_counter("arete.vm.lookup_index.hits")
                 .with_description("Lookup index hits")
                 .init(),
             lookup_index_misses: meter
-                .u64_counter("hyperstack.vm.lookup_index.misses")
+                .u64_counter("arete.vm.lookup_index.misses")
                 .with_description("Lookup index misses")
                 .init(),
             pending_updates_queued: meter
-                .u64_counter("hyperstack.vm.pending_updates.queued")
+                .u64_counter("arete.vm.pending_updates.queued")
                 .with_description("Updates queued for later processing")
                 .init(),
             pending_updates_flushed: meter
-                .u64_counter("hyperstack.vm.pending_updates.flushed")
+                .u64_counter("arete.vm.pending_updates.flushed")
                 .with_description("Queued updates flushed after PDA resolution")
                 .init(),
             pending_updates_expired: meter
-                .u64_counter("hyperstack.vm.pending_updates.expired")
+                .u64_counter("arete.vm.pending_updates.expired")
                 .with_description("Queued updates that expired")
                 .init(),
         }

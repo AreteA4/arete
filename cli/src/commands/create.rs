@@ -26,7 +26,7 @@ pub fn create(
         Some(n) => n,
         None => Input::with_theme(&theme)
             .with_prompt("Project name")
-            .default("my-hyperstack-app".to_string())
+            .default("my-arete-app".to_string())
             .interact_text()
             .context("Failed to read project name")?,
     };

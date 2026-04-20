@@ -1,11 +1,11 @@
-# Hyperstack TypeScript SDK
+# Arete TypeScript SDK
 
-Pure TypeScript SDK for the Hyperstack Solana streaming platform. Framework-agnostic core with AsyncIterable-based streaming.
+Pure TypeScript SDK for the Arete Solana streaming platform. Framework-agnostic core with AsyncIterable-based streaming.
 
 ## Installation
 
 ```bash
-npm install hyperstack-typescript
+npm install @usearete/sdk
 ```
 
 ## Usage
@@ -13,10 +13,10 @@ npm install hyperstack-typescript
 ### Setup
 
 ```typescript
-import { HyperStack } from 'hyperstack-typescript';
+import { Arete } from '@usearete/sdk';
 import { SETTLEMENT_GAME_STACK } from './generated/settlement-game-stack';
 
-const hs = await HyperStack.connect('wss://mainnet.hyperstack.xyz', {
+const a4 = await Arete.connect('wss://mainnet.arete.xyz', {
   stack: SETTLEMENT_GAME_STACK,
 });
 ```
@@ -24,7 +24,7 @@ const hs = await HyperStack.connect('wss://mainnet.hyperstack.xyz', {
 ### Streaming with AsyncIterable
 
 ```typescript
-for await (const update of hs.views.settlementGame.list.watch()) {
+for await (const update of a4.views.settlementGame.list.watch()) {
   if (update.type === 'upsert') {
     console.log('Game updated:', update.key, update.data);
   } else if (update.type === 'delete') {
@@ -32,11 +32,11 @@ for await (const update of hs.views.settlementGame.list.watch()) {
   }
 }
 
-for await (const update of hs.views.settlementGame.state.watch('game-123')) {
+for await (const update of a4.views.settlementGame.state.watch('game-123')) {
   console.log('Game 123 updated:', update.data);
 }
 
-for await (const update of hs.views.settlementGame.list.watchRich()) {
+for await (const update of a4.views.settlementGame.list.watchRich()) {
   if (update.type === 'updated') {
     console.log('Changed from:', update.before);
     console.log('Changed to:', update.after);
@@ -47,30 +47,30 @@ for await (const update of hs.views.settlementGame.list.watchRich()) {
 ### One-Shot Queries
 
 ```typescript
-const games = await hs.views.settlementGame.list.get();
+const games = await a4.views.settlementGame.list.get();
 
-const game = await hs.views.settlementGame.state.get('game-123');
+const game = await a4.views.settlementGame.state.get('game-123');
 ```
 
 ### Connection Management
 
 ```typescript
-console.log(hs.connectionState);
+console.log(a4.connectionState);
 
-const unsubscribe = hs.onConnectionStateChange((state) => {
+const unsubscribe = a4.onConnectionStateChange((state) => {
   console.log('Connection state:', state);
 });
 
-await hs.disconnect();
+await a4.disconnect();
 ```
 
 ## API
 
-### HyperStack
+### Arete
 
 Main client class with typed view accessors.
 
-- `HyperStack.connect(url, options)` - Connect to a HyperStack server
+- `Arete.connect(url, options)` - Connect to a Arete server
 - `views` - Typed view accessors based on your stack definition
 - `connectionState` - Current connection state
 - `onConnectionStateChange(callback)` - Listen for connection changes

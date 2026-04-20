@@ -5,21 +5,21 @@ import type {
   AuthTokenResult,
   ConnectionState,
   ConnectionStateCallback,
-  HyperStackConfig,
+  AreteConfig,
   SocketIssue,
   SocketIssueCallback,
   Subscription,
   WebSocketFactoryInit,
 } from './types';
-import { DEFAULT_CONFIG, HyperStackError, parseErrorCode, shouldRefreshToken } from './types';
+import { DEFAULT_CONFIG, AreteError, parseErrorCode, shouldRefreshToken } from './types';
 
 export type FrameHandler = <T>(frame: Frame<T>) => void;
 
 const TOKEN_REFRESH_BUFFER_SECONDS = 60;
 const MIN_REFRESH_DELAY_MS = 1_000;
 const DEFAULT_QUERY_PARAMETER = 'hs_token';
-const DEFAULT_HOSTED_TOKEN_ENDPOINT = 'https://api.usehyperstack.com/ws/sessions';
-const HOSTED_WEBSOCKET_SUFFIX = '.stack.usehyperstack.com';
+const DEFAULT_HOSTED_TOKEN_ENDPOINT = 'https://api.arete.run/ws/sessions';
+const HOSTED_WEBSOCKET_SUFFIX = '.stack.arete.run';
 
 interface TokenEndpointResponse {
   token: string;
@@ -129,7 +129,7 @@ function isSocketIssueMessage(value: unknown): value is SocketIssueWireMessage {
     && typeof candidate['fatal'] === 'boolean';
 }
 
-function isHostedHyperstackWebsocketUrl(websocketUrl: string): boolean {
+function isHostedAreteWebsocketUrl(websocketUrl: string): boolean {
   try {
     return new URL(websocketUrl).hostname.toLowerCase().endsWith(HOSTED_WEBSOCKET_SUFFIX);
   } catch {
@@ -158,15 +158,15 @@ export class ConnectionManager {
   private authConfig?: AuthConfig;
   private currentToken?: string;
   private tokenExpiry?: number;
-  private readonly hostedHyperstackUrl: boolean;
+  private readonly hostedAreteUrl: boolean;
   private reconnectForTokenRefresh = false;
 
-  constructor(config: HyperStackConfig) {
+  constructor(config: AreteConfig) {
     if (!config.websocketUrl) {
-      throw new HyperStackError('websocketUrl is required', 'INVALID_CONFIG');
+      throw new AreteError('websocketUrl is required', 'INVALID_CONFIG');
     }
     this.websocketUrl = config.websocketUrl;
-    this.hostedHyperstackUrl = isHostedHyperstackWebsocketUrl(config.websocketUrl);
+    this.hostedAreteUrl = isHostedAreteWebsocketUrl(config.websocketUrl);
     this.reconnectIntervals = config.reconnectIntervals ?? DEFAULT_CONFIG.reconnectIntervals;
     this.maxReconnectAttempts =
       config.maxReconnectAttempts ?? DEFAULT_CONFIG.maxReconnectAttempts;
@@ -183,7 +183,7 @@ export class ConnectionManager {
     }
 
     // Require publishableKey for hosted token endpoint
-    if (this.hostedHyperstackUrl && this.authConfig?.publishableKey) {
+    if (this.hostedAreteUrl && this.authConfig?.publishableKey) {
       return DEFAULT_HOSTED_TOKEN_ENDPOINT;
     }
 
@@ -215,7 +215,7 @@ export class ConnectionManager {
   private updateTokenState(result: string | AuthTokenResult): string {
     const normalized = normalizeTokenResult(result);
     if (!normalized.token) {
-      throw new HyperStackError(
+      throw new AreteError(
         'Authentication provider returned an empty token',
         'TOKEN_INVALID'
       );
@@ -226,7 +226,7 @@ export class ConnectionManager {
       ?? parseJwtExpiry(normalized.token);
 
     if (this.isTokenExpired()) {
-      throw new HyperStackError('Authentication token is expired', 'TOKEN_EXPIRED');
+      throw new AreteError('Authentication token is expired', 'TOKEN_EXPIRED');
     }
 
     return normalized.token;
@@ -244,11 +244,11 @@ export class ConnectionManager {
 
     const strategy = this.getAuthStrategy();
 
-    // For hosted Hyperstack URLs, auth is required - fail early with clear message
-    if (strategy.kind === 'none' && this.hostedHyperstackUrl) {
-      throw new HyperStackError(
-        'Hyperstack authentication required. Please provide auth.publishableKey to HyperstackProvider. ' +
-        'Get your key from https://usehyperstack.com/dashboard',
+    // For hosted Arete URLs, auth is required - fail early with clear message
+    if (strategy.kind === 'none' && this.hostedAreteUrl) {
+      throw new AreteError(
+        'Arete authentication required. Please provide auth.publishableKey to AreteProvider. ' +
+        'Get your key from https://arete.run/dashboard',
         'AUTH_REQUIRED'
       );
     }
@@ -260,10 +260,10 @@ export class ConnectionManager {
         try {
           return this.updateTokenState(await strategy.getToken());
         } catch (error) {
-          if (error instanceof HyperStackError) {
+          if (error instanceof AreteError) {
             throw error;
           }
-          throw new HyperStackError(
+          throw new AreteError(
             'Failed to get authentication token',
             'AUTH_REQUIRED',
             error
@@ -275,10 +275,10 @@ export class ConnectionManager {
             await this.fetchTokenFromEndpoint(strategy.endpoint)
           );
         } catch (error) {
-          if (error instanceof HyperStackError) {
+          if (error instanceof AreteError) {
             throw error;
           }
-          throw new HyperStackError(
+          throw new AreteError(
             'Failed to fetch authentication token from endpoint',
             'AUTH_REQUIRED',
             error
@@ -334,7 +334,7 @@ export class ConnectionManager {
         ? parsedError.error
         : rawError || response.statusText || 'Authentication request failed';
 
-      throw new HyperStackError(
+      throw new AreteError(
         `Token endpoint returned ${response.status}: ${errorMessage}`,
         errorCode,
         {
@@ -347,7 +347,7 @@ export class ConnectionManager {
 
     const data = (await response.json()) as TokenEndpointResponse;
     if (!data.token) {
-      throw new HyperStackError(
+      throw new AreteError(
         'Token endpoint did not return a token',
         'TOKEN_INVALID'
       );
@@ -506,7 +506,7 @@ export class ConnectionManager {
         return this.authConfig.websocketFactory(url, init);
       }
 
-      throw new HyperStackError(
+      throw new AreteError(
         'auth.tokenTransport="bearer" requires auth.websocketFactory in this environment',
         'INVALID_CONFIG'
       );
@@ -630,7 +630,7 @@ export class ConnectionManager {
               }
               frame = parseFrame(JSON.stringify(parsed));
             } else {
-              throw new HyperStackError(
+              throw new AreteError(
                 `Unsupported message type: ${typeof event.data}`,
                 'PARSE_ERROR'
               );
@@ -643,7 +643,7 @@ export class ConnectionManager {
         };
 
         this.ws.onerror = () => {
-          const error = new HyperStackError('WebSocket connection error', 'CONNECTION_ERROR');
+          const error = new AreteError('WebSocket connection error', 'CONNECTION_ERROR');
           const wasConnecting = this.currentState === 'connecting';
           this.updateState('error', error.message);
           if (wasConnecting) {
@@ -663,7 +663,7 @@ export class ConnectionManager {
             const errorMessage = `WebSocket closed before open (${detail})`;
             this.updateState('error', errorMessage);
             finish(() =>
-              reject(new HyperStackError(errorMessage, 'CONNECTION_ERROR'))
+              reject(new AreteError(errorMessage, 'CONNECTION_ERROR'))
             );
             return;
           }
@@ -713,7 +713,7 @@ export class ConnectionManager {
           }
         };
       } catch (error) {
-        const hsError = new HyperStackError(
+        const hsError = new AreteError(
           'Failed to create WebSocket connection',
           'CONNECTION_ERROR',
           error

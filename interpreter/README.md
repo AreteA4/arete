@@ -1,10 +1,10 @@
-# hyperstack-interpreter
+# arete-interpreter
 
-[![crates.io](https://img.shields.io/crates/v/hyperstack-interpreter.svg)](https://crates.io/crates/hyperstack-interpreter)
-[![docs.rs](https://docs.rs/hyperstack-interpreter/badge.svg)](https://docs.rs/hyperstack-interpreter)
+[![crates.io](https://img.shields.io/crates/v/arete-interpreter.svg)](https://crates.io/crates/arete-interpreter)
+[![docs.rs](https://docs.rs/arete-interpreter/badge.svg)](https://docs.rs/arete-interpreter)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-AST transformation runtime and VM for HyperStack streaming pipelines.
+AST transformation runtime and VM for Arete streaming pipelines.
 
 ## Overview
 
@@ -19,7 +19,7 @@ This crate provides the core components for processing Solana blockchain events 
 
 ```toml
 [dependencies]
-hyperstack-interpreter = "0.2"
+arete-interpreter = "0.2"
 ```
 
 ## Usage
@@ -44,7 +44,7 @@ pub struct StateId {
 ### Compile and Generate TypeScript
 
 ```rust
-use hyperstack_interpreter::{TypeScriptCompiler, TypeScriptConfig};
+use arete_interpreter::{TypeScriptCompiler, TypeScriptConfig};
 
 let config = TypeScriptConfig::default();
 let compiler = TypeScriptCompiler::new(config);

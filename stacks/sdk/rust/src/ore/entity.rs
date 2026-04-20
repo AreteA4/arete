@@ -1,5 +1,5 @@
 use super::types::{OreMiner, OreRound, OreTreasury};
-use hyperstack_sdk::{Stack, StateView, ViewBuilder, ViewHandle, Views};
+use arete_sdk::{Stack, StateView, ViewBuilder, ViewHandle, Views};
 
 pub struct OreStreamStack;
 
@@ -11,7 +11,7 @@ impl Stack for OreStreamStack {
     }
 
     fn url() -> &'static str {
-        "wss://ore.stack.usehyperstack.com"
+        "wss://ore.stack.arete.run"
     }
 }
 

@@ -3,8 +3,8 @@ import type {
   InstructionExecutor,
   InstructionExecutorOptions, 
   ExecutionResult,
-} from 'hyperstack-typescript';
-import { parseInstructionError } from 'hyperstack-typescript';
+} from '@usearete/sdk';
+import { parseInstructionError } from '@usearete/sdk';
 
 export type MutationStatus = 'idle' | 'pending' | 'success' | 'error';
 

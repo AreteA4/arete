@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { parseFrame, isSnapshotFrame } from './frame';
 import { gzip } from 'pako';
 
-describe('HyperStack SDK', () => {
-  it('should export HyperStack class', async () => {
-    const { HyperStack } = await import('./index');
-    expect(HyperStack).toBeDefined();
-    expect(typeof HyperStack.connect).toBe('function');
+describe('Arete SDK', () => {
+  it('should export Arete class', async () => {
+    const { Arete } = await import('./index');
+    expect(Arete).toBeDefined();
+    expect(typeof Arete.connect).toBe('function');
   });
 
   it('should export ConnectionManager', async () => {

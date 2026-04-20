@@ -1,5 +1,5 @@
 use anyhow::Result;
-use hyperstack_sdk::Frame;
+use arete_sdk::Frame;
 use std::io::{self, BufWriter, Write};
 
 pub enum OutputMode {
@@ -93,7 +93,7 @@ pub fn emit_no_dna_event(
 ) -> Result<()> {
     let output = serde_json::json!({
         "schema": "no-dna/v1",
-        "tool": "hs-stream",
+        "tool": "a4-stream",
         "action": action,
         "status": if action == "disconnected" || action == "error" { "done" } else { "streaming" },
         "data": {

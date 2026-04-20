@@ -1,25 +1,25 @@
 [package]
-name = "hyperstack-cli"
-version = "0.6.9"
+name = "a4-cli"
+version = "0.0.1"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
 authors.workspace = true
-description = "CLI tool for generating TypeScript SDKs from HyperStack stream specifications"
+description = "CLI tool for generating TypeScript SDKs from Arete stream specifications"
 readme = "README.md"
-documentation = "https://docs.rs/hyperstack-cli"
-keywords = ["hyperstack", "cli", "codegen", "typescript"]
+documentation = "https://docs.rs/a4-cli"
+keywords = ["arete", "cli", "codegen", "typescript", "a4"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
-name = "hs"
+name = "a4"
 path = "src/main.rs"
 
 [features]
 default = []
 # Enable local development mode (uses http://localhost:3000 instead of production API)
 local = []
-# Enable interactive TUI for `hs stream --tui`
+# Enable interactive TUI for `a4 stream --tui`
 tui = ["ratatui", "crossterm"]
 
 [dependencies]
@@ -33,9 +33,9 @@ colored = "2.1"
 chrono = "0.4"
 indicatif = "0.17"
 console = "0.15"
-hyperstack-interpreter = { version = "0.6.9", path = "../interpreter" }
-hyperstack-idl = { path = "../hyperstack-idl", version = "0.1.6" }
-hyperstack-sdk = { path = "../rust/hyperstack-sdk", version = "0.6.9" }
+arete-interpreter = { version = "0.0.1", path = "../interpreter" }
+arete-idl = { path = "../arete-idl", version = "0.0.1" }
+arete-sdk = { path = "../rust/arete-sdk", version = "0.0.1" }
 reqwest = { version = "0.11", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 dirs = "5.0"
 rpassword = "7.3"
@@ -52,4 +52,3 @@ tokio-tungstenite = { version = "0.21", default-features = false, features = ["c
 ratatui = { version = "0.29", optional = true }
 crossterm = { version = "0.28", optional = true }
 url = "2"
-

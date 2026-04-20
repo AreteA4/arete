@@ -1,4 +1,4 @@
-import type { WalletAdapter, Schema } from 'hyperstack-typescript';
+import type { WalletAdapter, Schema } from '@usearete/sdk';
 
 export type {
   ConnectionState,
@@ -14,9 +14,9 @@ export type {
   ViewGroup,
   WalletAdapter,
   Schema,
-} from 'hyperstack-typescript';
+} from '@usearete/sdk';
 
-export { DEFAULT_MAX_ENTRIES_PER_VIEW } from 'hyperstack-typescript';
+export { DEFAULT_MAX_ENTRIES_PER_VIEW } from '@usearete/sdk';
 
 export type ViewMode = 'state' | 'list';
 
@@ -31,13 +31,13 @@ export interface TransactionDefinition<TParams = unknown> {
 export const DEFAULT_FLUSH_INTERVAL_MS = 16;
 
 /**
- * Global configuration for HyperstackProvider.
+ * Global configuration for AreteProvider.
  * 
  * Note: WebSocket URL is no longer configured here. The URL is:
  * 1. Embedded in the stack definition (stack.url)
- * 2. Optionally overridden per-hook via useHyperstack(stack, { url: '...' })
+ * 2. Optionally overridden per-hook via useArete(stack, { url: '...' })
  */
-export interface HyperstackConfig {
+export interface AreteConfig {
   autoConnect?: boolean;
   wallet?: WalletAdapter;
   reconnectIntervals?: number[];
@@ -45,13 +45,13 @@ export interface HyperstackConfig {
   maxEntriesPerView?: number | null;
   flushIntervalMs?: number;
   /** Authentication configuration */
-  auth?: import('hyperstack-typescript').AuthConfig;
+  auth?: import('@usearete/sdk').AuthConfig;
 }
 
 /**
- * Options for useHyperstack hook
+ * Options for useArete hook
  */
-export interface UseHyperstackOptions {
+export interface UseAreteOptions {
   /** Override the stack's embedded URL (useful for local development) */
   url?: string;
 }

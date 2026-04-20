@@ -202,7 +202,7 @@ const DEFAULT_RESOLVER_CACHE_TTL_SECS: u64 = 3600; // 1 hour
 
 static RESOLVER_CACHE_CAPACITY: Lazy<NonZeroUsize> = Lazy::new(|| {
     NonZeroUsize::new(
-        std::env::var("HYPERSTACK_RESOLVER_CACHE_CAPACITY")
+        std::env::var("ARETE_RESOLVER_CACHE_CAPACITY")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
@@ -212,12 +212,12 @@ static RESOLVER_CACHE_CAPACITY: Lazy<NonZeroUsize> = Lazy::new(|| {
 });
 
 static RESOLVER_CACHE_TTL: Lazy<Duration> = Lazy::new(|| {
-    let ttl_secs = match std::env::var("HYPERSTACK_RESOLVER_CACHE_TTL_SECS") {
+    let ttl_secs = match std::env::var("ARETE_RESOLVER_CACHE_TTL_SECS") {
         Ok(value) => match value.parse::<u64>() {
             Ok(0) => {
                 tracing::warn!(
                     default_ttl_secs = DEFAULT_RESOLVER_CACHE_TTL_SECS,
-                    "HYPERSTACK_RESOLVER_CACHE_TTL_SECS=0 is not supported; using default"
+                    "ARETE_RESOLVER_CACHE_TTL_SECS=0 is not supported; using default"
                 );
                 DEFAULT_RESOLVER_CACHE_TTL_SECS
             }

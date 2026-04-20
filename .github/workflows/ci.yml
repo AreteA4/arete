@@ -127,7 +127,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: typescript/react
-        run: npm ci
+        run: npm install ../core --no-save
 
       - name: Build
         working-directory: typescript/react
@@ -187,12 +187,12 @@ jobs:
         run: |
           cargo build --manifest-path stacks/ore/Cargo.toml
 
-      - name: Install hyperstack-cli
+      - name: Install a4-cli
         run: cargo install --path cli
 
       - name: Regenerate TypeScript SDKs
         run: |
-          hs sdk create typescript ore --config stacks/ore/hyperstack.toml
+          a4 sdk create typescript ore --config stacks/ore/arete.toml
 
       - name: Check for uncommitted changes
         run: |
@@ -202,13 +202,13 @@ jobs:
             echo "The TypeScript SDKs in stacks/sdk/typescript/src/ do not match the"
             echo "current stack definitions. This can happen when:"
             echo "  1. Stack spec files (stacks/*/src/*.rs) were modified"
-            echo "  2. The hyperstack-macros or interpreter crates were updated"
+            echo "  2. The arete-macros or interpreter crates were updated"
             echo "  3. SDKs were not regenerated after changes"
             echo ""
             echo "To fix this, run the following locally and commit the changes:"
             echo ""
             echo "  cargo build --manifest-path stacks/ore/Cargo.toml"
-            echo "  hs sdk create typescript ore --config stacks/ore/hyperstack.toml"
+            echo "  a4 sdk create typescript ore --config stacks/ore/arete.toml"
             echo ""
             echo "Files that differ:"
             git status --porcelain stacks/sdk/
@@ -224,7 +224,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: python/hyperstack-sdk
+        working-directory: python/arete-sdk
     steps:
       - uses: actions/checkout@v6
 

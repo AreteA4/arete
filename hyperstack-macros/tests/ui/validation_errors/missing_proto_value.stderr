@@ -1,7 +1,0 @@
-error: expected `=`
- --> tests/ui/validation_errors/missing_proto_value.rs:3:1
-  |
-3 | #[hyperstack(proto)]
-  | ^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `hyperstack` (in Nightly builds, run with -Z macro-backtrace for more info)
