@@ -62,10 +62,13 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Update example versions
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare example templates
         run: |
           VERSION="${{ inputs.version }}"
-          ./scripts/update-example-versions.sh "$VERSION"
+          ./scripts/prepare-example-templates.sh "$VERSION"
 
       - name: Create templates tarball
         run: |

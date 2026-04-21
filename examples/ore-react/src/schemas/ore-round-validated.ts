@@ -3,7 +3,7 @@ import {
   OreRoundIdSchema,
   OreRoundStateSchema,
   OreRoundResultsSchema,
-} from '@usearete/stacks/ore';
+} from '../generated/ore-stack';
 
 const ValidatedOreRoundIdSchema = OreRoundIdSchema.extend({
   round_id: z.number(),
@@ -25,4 +25,3 @@ export const ValidatedOreRoundSchema = z.object({
 });
 
 export type ValidatedOreRound = z.infer<typeof ValidatedOreRoundSchema>;
-

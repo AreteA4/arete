@@ -6,7 +6,7 @@ import {
   OreRoundIdSchema,
   OreTreasurySchema,
   OreTreasuryIdSchema,
-} from '@usearete/stacks/ore';
+} from './generated/ore-stack';
 
 const OreRoundWithIdSchema = OreRoundSchema.extend({
   id: OreRoundIdSchema.partial(),

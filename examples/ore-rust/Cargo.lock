@@ -15,6 +15,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
+name = "arete-sdk"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "base64",
+ "flate2",
+ "futures-util",
+ "pin-project-lite",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "arete-stacks"
+version = "0.0.1"
+dependencies = [
+ "arete-sdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -361,35 +390,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyperstack-sdk"
-version = "0.6.7"
-dependencies = [
- "anyhow",
- "base64",
- "flate2",
- "futures-util",
- "pin-project-lite",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tokio-stream",
- "tokio-tungstenite",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "hyperstack-stacks"
-version = "0.6.7"
-dependencies = [
- "hyperstack-sdk",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "icu_collections"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -596,8 +596,8 @@ name = "ore-rust-example"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "hyperstack-sdk",
- "hyperstack-stacks",
+ "arete-sdk",
+ "arete-stacks",
  "tokio",
 ]
 

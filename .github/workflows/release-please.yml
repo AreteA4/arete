@@ -160,21 +160,6 @@ jobs:
       - name: Wait for npm propagation
         run: sleep 30
 
-      # Publish arete-stacks (after core is published since it depends on it)
-      - name: Install stacks dependencies
-        run: npm install
-        working-directory: stacks/sdk/typescript
-
-      - name: Build stacks
-        run: npm run build
-        working-directory: stacks/sdk/typescript
-
-      - name: Publish stacks
-        run: npm publish --access public || echo "Package may already be published"
-        working-directory: stacks/sdk/typescript
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
   bundle-templates:
     name: Bundle CLI Templates
     needs: [release-please, publish-npm, publish-rust]
@@ -188,10 +173,13 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Update example versions
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare example templates
         run: |
           VERSION="${{ needs.release-please.outputs.cli_version }}"
-          ./scripts/update-example-versions.sh "$VERSION"
+          ./scripts/prepare-example-templates.sh "$VERSION"
 
       - name: Create templates tarball
         run: |
