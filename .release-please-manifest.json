@@ -3,7 +3,7 @@
   "interpreter": "0.1.0",
   "arete-macros": "0.1.0",
   "cli": "0.1.0",
-  "rust/arete-sdk": "0.1.0",
+  "rust/arete-a4-sdk": "0.1.0",
   "rust/arete-server": "0.1.0",
   "typescript/react": "0.1.0",
   "typescript/core": "0.1.0",
@@ -12,6 +12,5 @@
   "packages/mcp": "0.1.0",
   "arete-idl": "0.0.1",
   "rust/arete-auth": "0.0.1",
-  "rust/arete-auth-server": "0.0.1",
   "rust/arete-mcp": "0.1.0"
 }

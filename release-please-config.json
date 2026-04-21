@@ -41,17 +41,13 @@
       "release-type": "rust",
       "component": "a4-cli"
     },
-    "rust/arete-sdk": {
+    "rust/arete-a4-sdk": {
       "release-type": "rust",
       "component": "arete-sdk"
     },
     "rust/arete-auth": {
       "release-type": "rust",
       "component": "arete-auth"
-    },
-    "rust/arete-auth-server": {
-      "release-type": "rust",
-      "component": "arete-auth-server"
     },
     "rust/arete-server": {
       "release-type": "rust",

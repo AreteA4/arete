@@ -51,63 +51,63 @@ jobs:
         if: needs.release-please.outputs.idl_release_created == 'true'
         run: |
           cd arete-idl
-          cargo publish --allow-dirty || echo "Package may already be published"
+          cargo publish --allow-dirty
           sleep 30
 
       - name: Publish arete-macros
         run: |
           cd arete-macros
-          cargo publish --allow-dirty || echo "Package may already be published"
+          cargo publish --allow-dirty
           sleep 30
 
       - name: Publish arete-interpreter
         run: |
           cd interpreter
-          cargo publish --allow-dirty || echo "Package may already be published"
+          cargo publish --allow-dirty
           sleep 30
 
       - name: Publish arete-auth
         if: needs.release-please.outputs.auth_release_created == 'true'
         run: |
           cd rust/arete-auth
-          cargo publish --allow-dirty || echo "Package may already be published"
+          cargo publish --allow-dirty
           sleep 30
 
       - name: Publish arete-server
         run: |
           cd rust/arete-server
-          cargo publish --allow-dirty || echo "Package may already be published"
+          cargo publish --allow-dirty
           sleep 30
 
-      - name: Publish arete-sdk
+      - name: Publish arete-a4-sdk
         run: |
-          cd rust/arete-sdk
-          cargo publish --allow-dirty || echo "Package may already be published"
+          cd rust/arete-a4-sdk
+          cargo publish --allow-dirty
           sleep 30
 
       - name: Publish arete (umbrella)
         run: |
           cd arete
-          cargo publish --allow-dirty || echo "Package may already be published"
+          cargo publish --allow-dirty
           sleep 30
 
       - name: Publish a4-cli
         run: |
           cd cli
-          cargo publish --allow-dirty || echo "Package may already be published"
+          cargo publish --allow-dirty
           sleep 30
 
       - name: Publish arete-mcp
         if: needs.release-please.outputs.mcp_release_created == 'true'
         run: |
           cd rust/arete-mcp
-          cargo publish --allow-dirty || echo "Package may already be published"
+          cargo publish --allow-dirty
           sleep 30
 
       - name: Publish arete-stacks
         run: |
           cd stacks/sdk/rust
-          cargo publish --allow-dirty || echo "Package may already be published"
+          cargo publish --allow-dirty
 
   publish-npm:
     name: Publish to npm
