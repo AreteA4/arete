@@ -276,6 +276,18 @@ jobs:
           fi
         shell: bash
 
+      - name: Write checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "${{ matrix.binary_name }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.binary_name }}" | Out-File -FilePath "${{ matrix.binary_name }}.sha256" -Encoding ascii
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-sha256-${{ matrix.binary_name }}
+          path: ${{ matrix.binary_name }}.sha256
+
       - name: Upload binary to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -283,6 +295,32 @@ jobs:
           VERSION="${{ needs.release-please.outputs.cli_version }}"
           gh release upload "a4-cli-v${VERSION}" \
             "${{ matrix.binary_name }}" \
+            --clobber
+        shell: bash
+
+  publish-cli-checksums:
+    name: Publish CLI Checksums
+    needs: [release-please, build-cli-binaries]
+    runs-on: ubuntu-latest
+    if: needs.release-please.outputs.cli_release_created == 'true'
+    steps:
+      - name: Download checksum artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: cli-sha256-*
+          path: checksums
+          merge-multiple: true
+
+      - name: Combine checksums
+        run: sort checksums/*.sha256 > checksums.txt
+
+      - name: Upload checksums to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.release-please.outputs.cli_version }}"
+          gh release upload "a4-cli-v${VERSION}" \
+            "checksums.txt" \
             --clobber
         shell: bash
 
@@ -392,7 +430,7 @@ jobs:
 
   publish-npm-cli:
     name: Publish CLI to npm
-    needs: [release-please, build-cli-binaries]
+    needs: [release-please, build-cli-binaries, publish-cli-checksums]
     runs-on: ubuntu-latest
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:

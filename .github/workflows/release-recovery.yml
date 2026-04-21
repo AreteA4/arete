@@ -153,6 +153,18 @@ jobs:
           fi
         shell: bash
 
+      - name: Write checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "${{ matrix.binary_name }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.binary_name }}" | Out-File -FilePath "${{ matrix.binary_name }}.sha256" -Encoding ascii
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-sha256-${{ matrix.binary_name }}
+          path: ${{ matrix.binary_name }}.sha256
+
       - name: Upload binary to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -168,11 +180,42 @@ jobs:
             --clobber
         shell: bash
 
-  publish-npm-cli:
-    name: Publish CLI to npm
+  publish-cli-checksums:
+    name: Publish CLI Checksums
     needs: build-cli-binaries
     runs-on: ubuntu-latest
-    if: ${{ always() && inputs.run_publish_npm_cli && (needs.build-cli-binaries.result == 'success' || needs.build-cli-binaries.result == 'skipped') }}
+    if: ${{ inputs.run_build_binaries }}
+    steps:
+      - name: Download checksum artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: cli-sha256-*
+          path: checksums
+          merge-multiple: true
+
+      - name: Combine checksums
+        run: sort checksums/*.sha256 > checksums.txt
+
+      - name: Upload checksums to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          RELEASE_NAME="${{ inputs.release_name }}"
+          if [ -z "$RELEASE_NAME" ]; then
+            RELEASE_NAME="a4-cli-v${VERSION}"
+          fi
+
+          gh release upload "$RELEASE_NAME" \
+            "checksums.txt" \
+            --clobber
+        shell: bash
+
+  publish-npm-cli:
+    name: Publish CLI to npm
+    needs: [build-cli-binaries, publish-cli-checksums]
+    runs-on: ubuntu-latest
+    if: ${{ always() && inputs.run_publish_npm_cli && (needs.build-cli-binaries.result == 'success' || needs.build-cli-binaries.result == 'skipped') && (needs.publish-cli-checksums.result == 'success' || needs.publish-cli-checksums.result == 'skipped') }}
     steps:
       - uses: actions/checkout@v6
 
