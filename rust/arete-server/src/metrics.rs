@@ -555,11 +555,7 @@ impl Metrics {
     // ==================== Interpreter Cache Helpers ====================
 
     /// Record all gauge metrics from VmMemoryStats
-    pub fn record_vm_memory_stats(
-        &self,
-        stats: &arete_interpreter::VmMemoryStats,
-        entity: &str,
-    ) {
+    pub fn record_vm_memory_stats(&self, stats: &arete_interpreter::VmMemoryStats, entity: &str) {
         let attrs = &[KeyValue::new("entity", entity.to_string())];
 
         self.vm_state_table_entries

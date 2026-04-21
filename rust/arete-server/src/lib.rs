@@ -47,6 +47,7 @@ pub mod telemetry;
 pub mod view;
 pub mod websocket;
 
+pub use arete_auth::{AsyncVerifier, KeyLoader, Limits, TokenVerifier, VerifyingKey};
 pub use bus::{BusManager, BusMessage};
 pub use cache::{EntityCache, EntityCacheConfig};
 pub use config::{
@@ -55,7 +56,6 @@ pub use config::{
 };
 pub use health::{HealthMonitor, SlotTracker, StreamStatus};
 pub use http_health::HttpHealthServer;
-pub use arete_auth::{AsyncVerifier, KeyLoader, Limits, TokenVerifier, VerifyingKey};
 pub use materialized_view::{MaterializedView, MaterializedViewRegistry, ViewEffect};
 #[cfg(feature = "otel")]
 pub use metrics::Metrics;

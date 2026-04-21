@@ -9,7 +9,7 @@ use crate::api_client::{
     ApiClient, Build, BuildStatus, CreateBuildRequest, CreateSpecRequest, DeploymentResponse,
     DeploymentStatus, Spec as ApiSpec, DEFAULT_DOMAIN_SUFFIX,
 };
-use crate::config::{resolve_stacks_to_push, DiscoveredAst, AreteConfig};
+use crate::config::{resolve_stacks_to_push, AreteConfig, DiscoveredAst};
 use crate::telemetry;
 
 pub fn push(config_path: &str, stack_name: Option<&str>) -> Result<()> {

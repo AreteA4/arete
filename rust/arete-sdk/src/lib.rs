@@ -32,10 +32,10 @@ pub mod view;
 
 pub use auth::{AuthConfig, AuthToken, TokenTransport};
 pub use client::{Arete, AreteBuilder};
-pub use config::{ConnectionConfig, AreteConfig};
+pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState};
 pub use entity::Stack;
-pub use error::{AuthErrorCode, AreteError, SocketIssue};
+pub use error::{AreteError, AuthErrorCode, SocketIssue};
 pub use frame::{
     parse_frame, parse_snapshot_entities, try_parse_subscribed_frame, Frame, Mode, Operation,
     SnapshotEntity,

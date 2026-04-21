@@ -197,9 +197,7 @@ pub fn process_module(
         if let Some((_brace, items)) = &mut module.content {
             items.retain(|item| {
                 if let Item::Struct(s) = item {
-                    !s.attrs
-                        .iter()
-                        .any(|attr| attr.path().is_ident("arete"))
+                    !s.attrs.iter().any(|attr| attr.path().is_ident("arete"))
                 } else {
                     true
                 }

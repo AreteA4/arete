@@ -1,4 +1,4 @@
-use crate::error::{AuthErrorCode, AreteError};
+use crate::error::{AreteError, AuthErrorCode};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -46,8 +46,7 @@ impl From<&str> for AuthToken {
     }
 }
 
-pub type TokenProviderFuture =
-    Pin<Box<dyn Future<Output = Result<AuthToken, AreteError>> + Send>>;
+pub type TokenProviderFuture = Pin<Box<dyn Future<Output = Result<AuthToken, AreteError>> + Send>>;
 pub type TokenProvider = dyn Fn() -> TokenProviderFuture + Send + Sync;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

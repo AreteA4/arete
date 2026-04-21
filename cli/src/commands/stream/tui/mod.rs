@@ -2,13 +2,13 @@ mod app;
 mod ui;
 
 use anyhow::Result;
+use arete_sdk::{parse_frame, try_parse_subscribed_frame, ClientMessage, Frame};
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures_util::{SinkExt, StreamExt};
-use arete_sdk::{parse_frame, try_parse_subscribed_frame, ClientMessage, Frame};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};

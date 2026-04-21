@@ -1,6 +1,6 @@
+use arete_auth::{KeyClass, Limits, SessionClaims};
 use axum::{extract::State, Json};
 use chrono::Utc;
-use arete_auth::{KeyClass, Limits, SessionClaims};
 use std::sync::Arc;
 
 use crate::error::AuthServerError;

@@ -25,10 +25,10 @@
 
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use arete_sdk::{
-    AuthConfig, ConnectionConfig, ConnectionManager, ConnectionState, AreteError, SharedStore,
+    AreteError, AuthConfig, ConnectionConfig, ConnectionManager, ConnectionState, SharedStore,
 };
+use dashmap::DashMap;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;

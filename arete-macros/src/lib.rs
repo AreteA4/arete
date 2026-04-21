@@ -92,10 +92,7 @@ pub fn arete(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
-fn expand_arete(
-    attr: TokenStream,
-    item: TokenStream,
-) -> syn::Result<proc_macro2::TokenStream> {
+fn expand_arete(attr: TokenStream, item: TokenStream) -> syn::Result<proc_macro2::TokenStream> {
     let mod_err = match syn::parse::<ItemMod>(item.clone()) {
         Ok(module) => return process_module(module, attr),
         Err(e) => e,

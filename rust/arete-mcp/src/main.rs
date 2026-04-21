@@ -383,9 +383,11 @@ impl AreteMcp {
             ));
         }
 
-        let entry =
-            self.subscriptions
-                .insert(args.connection_id.clone(), args.view.clone(), args.key.clone());
+        let entry = self.subscriptions.insert(
+            args.connection_id.clone(),
+            args.view.clone(),
+            args.key.clone(),
+        );
 
         let mut sub = entry.to_sdk_subscription();
         if let Some(snap) = args.with_snapshot {
@@ -423,12 +425,15 @@ impl AreteMcp {
             })?;
 
         if let Some(conn) = self.connections.get(&entry.connection_id) {
-            conn.manager.unsubscribe(entry.to_sdk_unsubscription()).await;
+            conn.manager
+                .unsubscribe(entry.to_sdk_unsubscription())
+                .await;
         }
         Ok(CallToolResult::success(vec![Content::text("unsubscribed")]))
     }
 
-    #[tool(description = "Filter and project entities cached for a subscription. \
+    #[tool(
+        description = "Filter and project entities cached for a subscription. \
                           Accepts both a string-DSL `where` (CLI-compatible) and \
                           structured `filters` (LLM-friendly). Both are ANDed. \
                           `select` projects fields by dot-path. `limit` defaults \
@@ -436,7 +441,8 @@ impl AreteMcp {
                           If this returns 0 entities, the view may be empty on this \
                           deployment — consider resubscribing with a different mode \
                           suffix (e.g. /list instead of /state); see the `subscribe` \
-                          tool description for the mode reference.")]
+                          tool description for the mode reference."
+    )]
     async fn query_entities(
         &self,
         Parameters(args): Parameters<QueryEntitiesArgs>,
@@ -450,7 +456,10 @@ impl AreteMcp {
         compiled.extend(structured);
 
         let select_paths = args.select.as_deref().map(filter::parse_select);
-        let limit = args.limit.unwrap_or(QUERY_LIMIT_DEFAULT).min(QUERY_LIMIT_MAX);
+        let limit = args
+            .limit
+            .unwrap_or(QUERY_LIMIT_DEFAULT)
+            .min(QUERY_LIMIT_MAX);
 
         // Snapshot raw entries under the read lock, then filter/project outside
         // the lock to keep the critical section short.
@@ -651,10 +660,7 @@ impl AreteMcp {
         subscription_id: &str,
     ) -> Result<(std::sync::Arc<arete_sdk::SharedStore>, String), McpError> {
         let sub = self.subscriptions.get(subscription_id).ok_or_else(|| {
-            McpError::invalid_params(
-                format!("unknown subscription_id: {subscription_id}"),
-                None,
-            )
+            McpError::invalid_params(format!("unknown subscription_id: {subscription_id}"), None)
         })?;
         let conn = self.connections.get(&sub.connection_id).ok_or_else(|| {
             McpError::internal_error(

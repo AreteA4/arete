@@ -1,6 +1,6 @@
 mod support;
 
-use support::{cargo_toml, escape_path, arete_dir, macro_manifest_dir, TempCrate};
+use support::{arete_dir, cargo_toml, escape_path, macro_manifest_dir, TempCrate};
 
 fn run_binary_success(name: &str, source: &str) {
     let arete_dir = arete_dir();
@@ -11,10 +11,7 @@ fn run_binary_success(name: &str, source: &str) {
         cargo_toml(
             name,
             &[
-                format!(
-                    "arete = {{ path = \"{}\" }}",
-                    escape_path(&arete_dir)
-                ),
+                format!("arete = {{ path = \"{}\" }}", escape_path(&arete_dir)),
                 format!(
                     "arete-macros = {{ path = \"{}\" }}",
                     escape_path(&manifest_dir)

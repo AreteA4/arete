@@ -8,8 +8,8 @@ mod token;
 mod tui;
 
 use anyhow::{bail, Context, Result};
-use clap::Args;
 use arete_sdk::Subscription;
+use clap::Args;
 
 use crate::config::AreteConfig;
 

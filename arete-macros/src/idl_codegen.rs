@@ -1040,9 +1040,7 @@ mod tests {
             code
         );
         assert!(
-            code.contains(
-                "unsafe impl arete :: runtime :: bytemuck :: Zeroable for PaddedAccount"
-            ),
+            code.contains("unsafe impl arete :: runtime :: bytemuck :: Zeroable for PaddedAccount"),
             "bytemuckunsafe should emit unsafe impl Zeroable, got: {}",
             code
         );

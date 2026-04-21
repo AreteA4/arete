@@ -2091,7 +2091,10 @@ fn generate_stack_definition_multi(
 
     let url_line = match &config.url {
         Some(url) => format!("  url: '{}',", url),
-        None => "  // url: 'wss://your-stack-url.stack.arete.run', // TODO: Set after first deployment".to_string(),
+        None => {
+            "  // url: 'wss://your-stack-url.stack.arete.run', // TODO: Set after first deployment"
+                .to_string()
+        }
     };
 
     // Generate views block for each entity

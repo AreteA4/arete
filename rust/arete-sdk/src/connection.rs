@@ -233,10 +233,7 @@ impl RuntimeAuthState {
         Some(Box::pin(sleep(Duration::from_secs(delay))))
     }
 
-    async fn resolve_token(
-        &mut self,
-        force_refresh: bool,
-    ) -> Result<Option<String>, AreteError> {
+    async fn resolve_token(&mut self, force_refresh: bool) -> Result<Option<String>, AreteError> {
         if !force_refresh {
             if let Some(token) = self.current_token.clone() {
                 if !token_is_expiring(self.token_expiry, current_unix_timestamp()) {
@@ -329,9 +326,7 @@ impl RuntimeAuthState {
             .map(str::to_string);
         let fallback_message = status.canonical_reason().map(str::to_string);
         let body = response.bytes().await.map_err(|error| {
-            AreteError::ConnectionFailed(format!(
-                "Failed to read token endpoint response: {error}"
-            ))
+            AreteError::ConnectionFailed(format!("Failed to read token endpoint response: {error}"))
         })?;
 
         if !status.is_success() {
@@ -644,9 +639,13 @@ fn spawn_connection_loop(
 
             if reconnect_attempt >= config.max_reconnect_attempts {
                 *state.write().await = ConnectionState::Error;
-                let error = latest_error.as_deref().cloned().unwrap_or(
-                    AreteError::MaxReconnectAttempts(config.max_reconnect_attempts),
-                );
+                let error =
+                    latest_error
+                        .as_deref()
+                        .cloned()
+                        .unwrap_or(AreteError::MaxReconnectAttempts(
+                            config.max_reconnect_attempts,
+                        ));
                 set_last_error(&last_error, error.clone()).await;
                 report_initial_failure(&mut initial_connect_tx, error);
                 break;
@@ -695,10 +694,7 @@ fn spawn_connection_loop(
     });
 }
 
-async fn set_last_error(
-    last_error: &Arc<RwLock<Option<Arc<AreteError>>>>,
-    error: AreteError,
-) {
+async fn set_last_error(last_error: &Arc<RwLock<Option<Arc<AreteError>>>>, error: AreteError) {
     *last_error.write().await = Some(Arc::new(error));
 }
 
