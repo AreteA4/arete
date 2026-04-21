@@ -91,6 +91,10 @@
       "release-type": "node",
       "component": "a4-npm"
     },
+    "packages/mcp": {
+      "release-type": "node",
+      "component": "arete-mcp-npm"
+    },
     "arete-idl": {
       "release-type": "rust",
       "component": "arete-idl"
@@ -115,11 +119,13 @@
         "arete-sdk",
         "arete-macros",
         "a4-cli",
+        "arete-mcp",
         "arete-server",
         "arete-react",
         "arete-typescript",
         "arete-stacks",
-        "a4-npm"
+        "a4-npm",
+        "arete-mcp-npm"
       ]
     }
   ]

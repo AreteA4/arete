@@ -9,6 +9,22 @@ The binary is `a4-mcp` and speaks MCP over stdio.
 
 ## Install
 
+### npm wrapper
+
+Run once without a global install:
+
+```bash
+npx @usearete/mcp
+```
+
+Or install it globally to get the same `a4-mcp` command on your PATH:
+
+```bash
+npm install -g @usearete/mcp
+```
+
+### Cargo
+
 From a checkout of the workspace:
 
 ```bash
@@ -16,6 +32,8 @@ cargo install --path rust/arete-mcp
 ```
 
 This installs an `a4-mcp` binary into `~/.cargo/bin`.
+
+If you want to configure an MCP client without a global install, point it at `npx` with `@usearete/mcp` as the argument list instead of hard-coding `a4-mcp`.
 
 ## Use with an MCP client
 
