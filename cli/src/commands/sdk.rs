@@ -318,7 +318,7 @@ fn load_stack_spec_from_json(
     source_name: &str,
 ) -> Result<arete_interpreter::ast::SerializableStackSpec> {
     // Use versioned loader for automatic version detection and migration
-    let stack_spec = arete_interpreter::versioned::load_stack_spec(&ast_json)
+    let stack_spec = arete_interpreter::versioned::load_stack_spec(ast_json)
         .with_context(|| format!("Failed to load stack AST from {}", source_name))?;
 
     if stack_spec.entities.is_empty() {
