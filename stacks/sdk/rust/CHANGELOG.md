@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.0](https://github.com/AreteA4/arete/compare/arete-stacks-v0.0.1...arete-stacks-v0.1.0) (2026-04-21)
+
+
+### Features
+
+* add resolver-declared transforms to #[map] attribute ([8f35bff](https://github.com/AreteA4/arete/commit/8f35bff8c3fa811e4bfb50a1c431ecc09822e2d2))
+* extend OreRound with entropy and grid data fields ([4822f83](https://github.com/AreteA4/arete/commit/4822f836b6c20171ed2b828c59cfbabb8440b9ff))
+* **ore:** add TokenMetadata resolver and ui_amount computed fields ([57d704c](https://github.com/AreteA4/arete/commit/57d704c55d5f7ae791b8ff603d281bf430872ffb))
+
+
+### Bug Fixes
+
+* handle u64 integer precision loss across Rust-JS boundary ([e96e7fa](https://github.com/AreteA4/arete/commit/e96e7fa7172f520bd7ee88ed7582eda899c9f65b))
+* handle u64 integer precision loss across Rust-JS boundary ([c3a3c69](https://github.com/AreteA4/arete/commit/c3a3c69587d9e6215aa5dfe4102739eef0ba8662))
+* **ore:** source expires_at from entropy account via lookup index ([a6e953e](https://github.com/AreteA4/arete/commit/a6e953e90f0b92627a3747f3e6972ff534f4a58f))
+* Regen ore stack sdk ([ab25187](https://github.com/AreteA4/arete/commit/ab25187d577cb6a3c47476301f4afc3c06c43cb5))
+* Update generated Ore sdk ([4578e1b](https://github.com/AreteA4/arete/commit/4578e1be08c69d1d04e8825ee8455a18fdd398dd))
+* use field init shorthand in generated Rust SDK code ([ac7a5b1](https://github.com/AreteA4/arete/commit/ac7a5b1d963b5b133d5cc1486b77e73d1e4ac350))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-sdk bumped from 0.0.1 to 0.1.0
+
 ## [0.6.9](https://github.com/AreteA4/arete/compare/arete-stacks-v0.6.8...arete-stacks-v0.6.9) (2026-04-15)
 
 

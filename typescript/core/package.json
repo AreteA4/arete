@@ -1,6 +1,6 @@
 {
   "name": "@usearete/sdk",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "type": "module",
   "description": "Pure TypeScript SDK for the Arete Solana streaming platform",
   "main": "dist/index.js",

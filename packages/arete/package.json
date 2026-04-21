@@ -1,6 +1,6 @@
 {
   "name": "@usearete/a4",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Arete CLI (a4) - Real-time Solana streaming pipelines",
   "bin": {
     "a4": "./bin/a4.js"

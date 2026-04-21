@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.1.0](https://github.com/AreteA4/arete/compare/arete-react-v0.0.1...arete-react-v0.1.0) (2026-04-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* Authentication system with WebSocket integration, SSR support, and security enhancements
+* Merge pull request #75 from HyperTekOrg/auth
+
+### Features
+
+* Add authentication system with WebSocket integration ([bd7f8ad](https://github.com/AreteA4/arete/commit/bd7f8adca65e2c0222aab32146faa8d57d357735))
+* Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Merge pull request [#75](https://github.com/AreteA4/arete/issues/75) from HyperTekOrg/auth ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* **react:** add schema filtering support to view hooks ([790ad65](https://github.com/AreteA4/arete/commit/790ad6549be51084c2ba47e1c0001682485596ae))
+* **sdk:** Add builder methods and React hooks for new subscription options ([1f7f95b](https://github.com/AreteA4/arete/commit/1f7f95be29e70391c74cec425ee2badd1f87e0bc))
+* **typescript-sdk:** Support optional snapshots and cursor-based resume ([3f239e9](https://github.com/AreteA4/arete/commit/3f239e9d9fa2f992b7d8eaa1c467c541af9a8a9a))
+
+
+### Bug Fixes
+
+* add connectionState and isConnected to useHyperstack return value ([03b7fd8](https://github.com/AreteA4/arete/commit/03b7fd80342675b20374ac1e24258abd5c15d5a1))
+* guard refresh() isLoading behind withSnapshot check ([18ec45d](https://github.com/AreteA4/arete/commit/18ec45d17f7851e4dce85897a2bf90dff8f0c1da))
+* guard setIsLoading(true) when withSnapshot is false ([3808e59](https://github.com/AreteA4/arete/commit/3808e59d65ccaa1af24477cf29b64e38c718b340))
+* prevent isLoading stuck when withSnapshot is false in view hooks ([b8a3692](https://github.com/AreteA4/arete/commit/b8a369264feba1245a53c8b550fb09875382a03c))
+* Update package-lock for react sdk ([70c3b96](https://github.com/AreteA4/arete/commit/70c3b96ef7433c31dd175061a960a3b752641c01))
+* update stale lockfile dependency version ([1be27b5](https://github.com/AreteA4/arete/commit/1be27b5e07d7814a4a8930fef4899a7f45982624))
+* Version ([a33eaf1](https://github.com/AreteA4/arete/commit/a33eaf18bbd3e3e5eb21abb3e96c9c255f9c6bea))
+* Versions ([667c10b](https://github.com/AreteA4/arete/commit/667c10bdafd96b0de277fc1f8fcd0689b1161650))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @usearete/sdk bumped from ^0.0.1 to ^0.1.0
+
 ## [0.6.9](https://github.com/AreteA4/arete/compare/@usearete/react-v0.6.8...arete-react-v0.6.9) (2026-04-15)
 
 

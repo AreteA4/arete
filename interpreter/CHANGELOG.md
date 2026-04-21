@@ -1,5 +1,87 @@
 # Changelog
 
+## [0.1.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.0.1...arete-interpreter-v0.1.0) (2026-04-21)
+
+
+### Features
+
+* Add AST versioning system with automatic migration support ([997706b](https://github.com/AreteA4/arete/commit/997706b2854fc2e95427ef6b67b710db35ad86ac))
+* Add AST versioning system with automatic migration support ([b62d08d](https://github.com/AreteA4/arete/commit/b62d08d99a579f323ea3f4a052fa90b83b269942))
+* add CompletedSchema with required fields and TokenMetadata builtin type ([ba48532](https://github.com/AreteA4/arete/commit/ba485328e142a00bb2b01b9ae6ab838ab53cbd25))
+* add Keccak256 hashing and slot hash caching ([768c407](https://github.com/AreteA4/arete/commit/768c407adce786003c30c634432279456baa5102))
+* Add PDA and Instruction type definitions for SDK code generation ([6a74067](https://github.com/AreteA4/arete/commit/6a7406751d865b9e4caef3749779217e305636a5))
+* add PDA DSL imports to generated TypeScript SDK ([5f033b6](https://github.com/AreteA4/arete/commit/5f033b62c7335b423ebff6aafca937e8bde81942))
+* add resolver support with resolve attribute and computed field methods ([aed45c8](https://github.com/AreteA4/arete/commit/aed45c81477267cb6a005d439ee30400c1e24e5c))
+* add resolver-provided computed methods (ui_amount, raw_amount) ([3729710](https://github.com/AreteA4/arete/commit/372971072f597625905a1365da4ec2e5e8d9d978))
+* Add rt-multi-thread ([a426edb](https://github.com/AreteA4/arete/commit/a426edbd4fa8f32b031038aaf61d7f4e1b94c8f7))
+* add skip_resolvers mechanism for stale data reprocessing ([a11c669](https://github.com/AreteA4/arete/commit/a11c6695f66f8951e6aa5635649de0047536be00))
+* add stop attribute for conditional field population ([441cfef](https://github.com/AreteA4/arete/commit/441cfef39760af9b3af78b992d1269eaeecd2f99))
+* add token metadata resolver with DAS API integration ([ced55fe](https://github.com/AreteA4/arete/commit/ced55fe4981e0f36abbebe277438eb17ea01b519))
+* add URL resolver support with configurable HTTP methods and extraction paths ([9931447](https://github.com/AreteA4/arete/commit/99314479956c3b2ca80c899b3dbe3f129d7ca6f5))
+* **computed:** add __slot and __timestamp context access in computed fields ([b707f95](https://github.com/AreteA4/arete/commit/b707f95058f74ae52c6003bc2d68e948e657e70e))
+* **computed:** support resolver computed fields inside array .map() closures ([1f571c0](https://github.com/AreteA4/arete/commit/1f571c08caa2da41192c3b45399f1abe747dda10))
+* **interpreter:** various compiler and VM improvements ([23503ac](https://github.com/AreteA4/arete/commit/23503acaa69736d7487d5a9cdd01239d8f86776d))
+* misc compiler, VM, and IDL improvements ([2d6aea3](https://github.com/AreteA4/arete/commit/2d6aea373e43c84e3a07ecef7d9dab004a0b8c1c))
+* RuntimeResolver abstraction with enhanced caching ([9166434](https://github.com/AreteA4/arete/commit/9166434e52468f0d152781a4d81bb0db0fd9be21))
+
+
+### Bug Fixes
+
+* add hashMap IDL type variant to support Metaplex token metadata SDK generation ([21a81ad](https://github.com/AreteA4/arete/commit/21a81ada3b8325295428de6c0cb5eaaedcc4f215))
+* add missing return to AbortIfNullKey opcode ([8d98359](https://github.com/AreteA4/arete/commit/8d983597d021c0617f6b8efb27e010d5d03cd277))
+* Add version constraint to hyperstack-idl dependency ([917bf5a](https://github.com/AreteA4/arete/commit/917bf5abe6242048ba9f7af0055d999ccfcb8692))
+* Address code review feedback on AST versioning ([1791986](https://github.com/AreteA4/arete/commit/1791986fa0e37f5762a57c166ecbcf6be26bcb0b))
+* Address code review feedback on into_latest, test assertions, and parsing ([da49bf9](https://github.com/AreteA4/arete/commit/da49bf9358362d27c307c8cc958a60b872ae2a2f))
+* address code review issues in interpreter VM ([f8a5223](https://github.com/AreteA4/arete/commit/f8a5223807df4b5dec0fbf0456c06ab67bfeb852))
+* address resolver cache review issues ([900c08c](https://github.com/AreteA4/arete/commit/900c08c0244c9ae1fa7822a76dec15516e5faaf5))
+* align Steel discriminant size with get_discriminator return value ([4d283f2](https://github.com/AreteA4/arete/commit/4d283f2bd749690eb7b79e1c80e0447c79b35d8d))
+* **ci:** switch interpreter reqwest to rustls-tls for aarch64 cross-build ([ffe792d](https://github.com/AreteA4/arete/commit/ffe792d7d0b8eb6c09ea068afc0bc31965e5049e))
+* Clarify UnsupportedVersion error message to mention migration support ([51fde69](https://github.com/AreteA4/arete/commit/51fde6960103340b0fd18158f1e6d3a5a2b398ea))
+* Core interpreter and server improvements ([b05ae9b](https://github.com/AreteA4/arete/commit/b05ae9bd169f48c2cfd1222d8fa4adc882d96adc))
+* correct resolver output types and schema generation in TypeScript emitter ([b37ef43](https://github.com/AreteA4/arete/commit/b37ef43e93d5c20903b01831424d94f6bb86bd72))
+* correct SlotHashResolver TypeScript types to match actual return values ([358d9bd](https://github.com/AreteA4/arete/commit/358d9bdc5f53ae1e888df9630885f1baeaaa22d1))
+* derive state_id from bytecode routing for PDA cache ([927b364](https://github.com/AreteA4/arete/commit/927b364a996ce9047641a35a66d346485feac4d8))
+* generate correct deserializers for i32/u32 fields ([86438e2](https://github.com/AreteA4/arete/commit/86438e22d3b8bb228a5a9485079211f92b000087))
+* handle u64 integer precision loss across Rust-JS boundary ([e96e7fa](https://github.com/AreteA4/arete/commit/e96e7fa7172f520bd7ee88ed7582eda899c9f65b))
+* handle u64 integer precision loss across Rust-JS boundary ([c3a3c69](https://github.com/AreteA4/arete/commit/c3a3c69587d9e6215aa5dfe4102739eef0ba8662))
+* improve error handling in UrlResolverClient for out-of-bounds access ([540aeef](https://github.com/AreteA4/arete/commit/540aeefed35be873067f41fc14daa205c4e959d9))
+* **interpreter:** zero-variant enum dedup guard escape ([c9fb961](https://github.com/AreteA4/arete/commit/c9fb961f380002516ae845eaf743e15ea8e47c3c))
+* Make sync tests fail explicitly when source file not found ([c824e3d](https://github.com/AreteA4/arete/commit/c824e3dc74e102d57eb96485d9dad0c925d0bfc3))
+* prevent panic in SlotHash resolver when using current_thread runtime ([3525397](https://github.com/AreteA4/arete/commit/3525397a8adec127ac261b1c6e6cab2617f1217b))
+* prevent silent byte truncation in json_array_to_bytes ([10ff8aa](https://github.com/AreteA4/arete/commit/10ff8aa10cec3f31707ebb39fd5a0fd3b9e06737))
+* reduce MAX_CACHE_SIZE from 50k to 1k ([462230f](https://github.com/AreteA4/arete/commit/462230f814d08acd985fc13b3f17820ff6e1ac94))
+* Remove Serialize derive from Versioned*Spec enums to prevent duplicate keys ([73ad7b4](https://github.com/AreteA4/arete/commit/73ad7b4b8519a30b7dcfca66badd05daf1eee085))
+* resolve clippy warnings across workspace ([c19d1ec](https://github.com/AreteA4/arete/commit/c19d1ec5926ee9099c6ab4254bde30b2c794e27f))
+* resolve clippy warnings across workspace ([565d92b](https://github.com/AreteA4/arete/commit/565d92b91552d92262cfaeca9674d0ad4d3f6b5d))
+* resolve clippy warnings for Rust 1.91 ([10c1611](https://github.com/AreteA4/arete/commit/10c1611282babb70bbe70d19fb599c83654caa6c))
+* restore cross-account lookup resolution at round boundaries ([0af0835](https://github.com/AreteA4/arete/commit/0af0835ea6c7d35c5c1efd6f63899706dd85ab91))
+* serialize pre_reveal_rng as string to avoid JS precision loss ([9f07692](https://github.com/AreteA4/arete/commit/9f0769209f382291d3fd8119d8fc39549d0314d1))
+* serialize u64-from-bytes computed fields as strings to avoid JS precision loss ([1f67a7a](https://github.com/AreteA4/arete/commit/1f67a7a9589823262a972ea01c71ad4e04e24ffe))
+* tighten IDL lookup casing and derive_from diagnostics ([de5706d](https://github.com/AreteA4/arete/commit/de5706d59be3942a2f1612426f2b1ee5cb0ce817))
+* track only actually emitted enum types to prevent over-eager deduplication ([0bdd7d4](https://github.com/AreteA4/arete/commit/0bdd7d4d0ab2c1c3b31a50ada22205fe0e95f9f7))
+* track only actually emitted enum types to prevent over-eager deduplication ([a8a62cf](https://github.com/AreteA4/arete/commit/a8a62cfc4726b2be7c64b346a1d42f7307d977cb))
+* TypeScript generator now correctly types computed fields using resolver output types ([5d28937](https://github.com/AreteA4/arete/commit/5d28937796b8c7672cff02c1f648ac0f37f48c44))
+* use BTreeMap for slot hash cache to ensure oldest entries are evicted ([94249ba](https://github.com/AreteA4/arete/commit/94249badb4a1a1d0af860048c8ca1bc758818c7b))
+* use BTreeMap in ResolverRegistry to ensure deterministic SDK output ([0129f75](https://github.com/AreteA4/arete/commit/0129f75ad443b9340a38f8da256ab6f8c977d1e2))
+* Use CURRENT_AST_VERSION constant instead of hardcoded version ([5df9efe](https://github.com/AreteA4/arete/commit/5df9efe883d5880f6c440ae8e0577004041d53ca))
+* Use CURRENT_AST_VERSION in test assertions instead of hardcoded string ([6809f1a](https://github.com/AreteA4/arete/commit/6809f1a632f464e2c1c6b175458fd51a24712acd))
+* use field init shorthand in generated Rust SDK code ([ac7a5b1](https://github.com/AreteA4/arete/commit/ac7a5b1d963b5b133d5cc1486b77e73d1e4ac350))
+* validate handler key resolution paths during macro expansion ([a069d1a](https://github.com/AreteA4/arete/commit/a069d1a2a6d0888e44bc9a9e0fbd1f6ba850b11d))
+* validate join_on fields before IDL resolution ([6236f4b](https://github.com/AreteA4/arete/commit/6236f4b3e2c3fe438551a9bddc8613ddf5075f2c))
+* wrap slot hash bytes in object to match SlotHashBytes schema ([247ffa3](https://github.com/AreteA4/arete/commit/247ffa37b3656677e4ede419c22ab99c2b8bf077))
+
+
+### Performance Improvements
+
+* parallelize URL batch resolution using join_all ([e252a8e](https://github.com/AreteA4/arete/commit/e252a8ea2f91b7b7e0dc266586d670e98bae0cfb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.0.1 to 0.1.0
+
 ## [0.6.9](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.6.8...arete-interpreter-v0.6.9) (2026-04-15)
 
 
