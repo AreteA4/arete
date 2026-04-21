@@ -70,6 +70,19 @@ Add to `claude_desktop_config.json`, then restart the app.
 }
 ```
 
+Without a global install, use the npm wrapper instead:
+
+```json
+{
+  "mcpServers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
+
 ### Cursor
 
 Global config at `~/.cursor/mcp.json` or workspace-scoped at
@@ -84,6 +97,19 @@ shell — any `env` values must be literal.
     "arete": {
       "command": "a4-mcp",
       "args": []
+    }
+  }
+}
+```
+
+Without a global install:
+
+```json
+{
+  "mcpServers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
     }
   }
 }
@@ -108,6 +134,19 @@ start. Tools surface in Copilot Chat's agent mode.
 }
 ```
 
+Without a global install:
+
+```json
+{
+  "servers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
+
 ### Claude Code (Anthropic CLI)
 
 Use the `claude mcp add` subcommand. The `--` separator is required so Claude
@@ -117,6 +156,12 @@ shared), or `user` (all projects on your machine):
 
 ```bash
 claude mcp add --transport stdio arete --scope user -- a4-mcp
+```
+
+Without a global install:
+
+```bash
+claude mcp add --transport stdio arete --scope user -- npx -y @usearete/mcp
 ```
 
 ### Zed
@@ -131,6 +176,20 @@ visible in the Agent Panel (green dot = active).
     "arete": {
       "command": "a4-mcp",
       "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+Without a global install:
+
+```json
+{
+  "context_servers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"],
       "env": {}
     }
   }
@@ -155,6 +214,19 @@ budget accordingly.
 }
 ```
 
+Without a global install:
+
+```json
+{
+  "mcpServers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
+
 ### Continue.dev
 
 Continue uses YAML. Either inline in `config.yaml`:
@@ -165,6 +237,16 @@ mcpServers:
     type: stdio
     command: a4-mcp
     args: []
+```
+
+Without a global install:
+
+```yaml
+mcpServers:
+  - name: arete
+    type: stdio
+    command: npx
+    args: ["-y", "@usearete/mcp"]
 ```
 
 …or as a standalone file at `.continue/mcpServers/arete.yaml`:
@@ -178,6 +260,19 @@ mcpServers:
     type: stdio
     command: a4-mcp
     args: []
+```
+
+Without a global install:
+
+```yaml
+name: arete
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: arete
+    type: stdio
+    command: npx
+    args: ["-y", "@usearete/mcp"]
 ```
 
 MCP tools in Continue are only available in **agent mode**, not chat or edit.

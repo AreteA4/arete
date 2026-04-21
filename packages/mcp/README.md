@@ -26,7 +26,9 @@ cargo install arete-mcp
 
 ## Usage with MCP clients
 
-If your MCP client supports a command plus args, you can run the wrapper through `npx` without a global install:
+Use the npm wrapper through `npx` if you do not want a global install.
+
+### Claude Desktop
 
 ```json
 {
@@ -37,6 +39,38 @@ If your MCP client supports a command plus args, you can run the wrapper through
     }
   }
 }
+```
+
+### Cursor
+
+```json
+{
+  "mcpServers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
+
+### VS Code
+
+```json
+{
+  "servers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
+
+### Claude Code
+
+```bash
+claude mcp add --transport stdio arete --scope user -- npx -y @usearete/mcp
 ```
 
 If you install the package globally, it provides the same `a4-mcp` command as the Rust binary.
