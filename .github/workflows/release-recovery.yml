@@ -243,6 +243,18 @@ jobs:
           fi
         shell: bash
 
+      - name: Write checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "${{ matrix.binary_name }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.binary_name }}" | Out-File -FilePath "${{ matrix.binary_name }}.sha256" -Encoding ascii
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-sha256-${{ matrix.binary_name }}
+          path: ${{ matrix.binary_name }}.sha256
+
       - name: Upload binary to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -258,11 +270,42 @@ jobs:
             --clobber
         shell: bash
 
-  publish-npm-mcp:
-    name: Publish MCP to npm
+  publish-mcp-checksums:
+    name: Publish MCP Checksums
     needs: build-mcp-binaries
     runs-on: ubuntu-latest
-    if: ${{ always() && inputs.run_publish_npm_mcp && (needs.build-mcp-binaries.result == 'success' || needs.build-mcp-binaries.result == 'skipped') }}
+    if: ${{ inputs.run_build_mcp_binaries }}
+    steps:
+      - name: Download checksum artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: mcp-sha256-*
+          path: checksums
+          merge-multiple: true
+
+      - name: Combine checksums
+        run: sort checksums/*.sha256 > checksums.txt
+
+      - name: Upload checksums to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          RELEASE_NAME="${{ inputs.mcp_release_name }}"
+          if [ -z "$RELEASE_NAME" ]; then
+            RELEASE_NAME="arete-mcp-v${VERSION}"
+          fi
+
+          gh release upload "$RELEASE_NAME" \
+            "checksums.txt" \
+            --clobber
+        shell: bash
+
+  publish-npm-mcp:
+    name: Publish MCP to npm
+    needs: [build-mcp-binaries, publish-mcp-checksums]
+    runs-on: ubuntu-latest
+    if: ${{ always() && inputs.run_publish_npm_mcp && (needs.build-mcp-binaries.result == 'success' || needs.build-mcp-binaries.result == 'skipped') && (needs.publish-mcp-checksums.result == 'success' || needs.publish-mcp-checksums.result == 'skipped') }}
     steps:
       - uses: actions/checkout@v6
 

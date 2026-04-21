@@ -3,6 +3,7 @@
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const pkg = require("../package.json");
 const version = pkg.version;
@@ -35,57 +36,147 @@ if (fs.existsSync(binPath)) {
   process.exit(0);
 }
 
-const url = `https://github.com/AreteA4/arete/releases/download/arete-mcp-v${version}/${binaryName}`;
+const releaseUrl = `https://github.com/AreteA4/arete/releases/download/arete-mcp-v${version}`;
+const url = `${releaseUrl}/${binaryName}`;
+const checksumUrl = `${releaseUrl}/checksums.txt`;
+const MAX_REDIRECTS = 5;
 
 console.log(`Downloading Arete MCP v${version} for ${key}...`);
 
-function download(url, dest) {
+function removeIfExists(filePath) {
+  try {
+    fs.unlinkSync(filePath);
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      throw err;
+    }
+  }
+}
+
+function getResponse(url, depth = 0) {
+  if (depth > MAX_REDIRECTS) {
+    return Promise.reject(new Error("Too many redirects"));
+  }
+
   return new Promise((resolve, reject) => {
+    https
+      .get(url, (response) => {
+        if (response.statusCode === 302 || response.statusCode === 301) {
+          if (!response.headers.location) {
+            response.resume();
+            reject(new Error("Redirect missing location header"));
+            return;
+          }
+
+          response.resume();
+          resolve(
+            getResponse(
+              new URL(response.headers.location, url).toString(),
+              depth + 1
+            )
+          );
+          return;
+        }
+
+        resolve(response);
+      })
+      .on("error", reject);
+  });
+}
+
+async function download(url, dest) {
+  const response = await getResponse(url);
+
+  if (response.statusCode !== 200) {
+    response.resume();
+    removeIfExists(dest);
+    throw new Error(`Download failed: HTTP ${response.statusCode}`);
+  }
+
+  const total = parseInt(response.headers["content-length"], 10);
+  let downloaded = 0;
+
+  await new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest, { mode: 0o755 });
 
-    const request = (url) => {
-      https
-        .get(url, (response) => {
-          if (response.statusCode === 302 || response.statusCode === 301) {
-            request(response.headers.location);
-            return;
-          }
+    response.on("data", (chunk) => {
+      downloaded += chunk.length;
+      if (total && process.stdout.isTTY) {
+        const pct = Math.round((downloaded / total) * 100);
+        process.stdout.write(`\rDownloading... ${pct}%`);
+      }
+    });
 
-          if (response.statusCode !== 200) {
-            fs.unlinkSync(dest);
-            reject(new Error(`Download failed: HTTP ${response.statusCode}`));
-            return;
-          }
+    response.on("error", (err) => {
+      file.destroy();
+      removeIfExists(dest);
+      reject(err);
+    });
 
-          const total = parseInt(response.headers["content-length"], 10);
-          let downloaded = 0;
+    file.on("error", (err) => {
+      response.destroy();
+      removeIfExists(dest);
+      reject(err);
+    });
 
-          response.on("data", (chunk) => {
-            downloaded += chunk.length;
-            if (total && process.stdout.isTTY) {
-              const pct = Math.round((downloaded / total) * 100);
-              process.stdout.write(`\rDownloading... ${pct}%`);
-            }
-          });
+    file.on("finish", () => {
+      file.close(() => {
+        if (process.stdout.isTTY) {
+          process.stdout.write("\n");
+        }
+        resolve();
+      });
+    });
 
-          response.pipe(file);
-
-          file.on("finish", () => {
-            file.close();
-            if (process.stdout.isTTY) {
-              process.stdout.write("\n");
-            }
-            resolve();
-          });
-        })
-        .on("error", (err) => {
-          fs.unlinkSync(dest);
-          reject(err);
-        });
-    };
-
-    request(url);
+    response.pipe(file);
   });
+}
+
+async function fetchText(url) {
+  const response = await getResponse(url);
+
+  if (response.statusCode !== 200) {
+    response.resume();
+    throw new Error(`Checksum download failed: HTTP ${response.statusCode}`);
+  }
+
+  return new Promise((resolve, reject) => {
+    let body = "";
+    response.setEncoding("utf8");
+    response.on("data", (chunk) => {
+      body += chunk;
+    });
+    response.on("end", () => resolve(body));
+    response.on("error", reject);
+  });
+}
+
+function sha256File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+
+    stream.on("error", reject);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+async function verifyChecksum(checksumUrl, fileName, filePath) {
+  const checksums = await fetchText(checksumUrl);
+  const expected = checksums
+    .split(/\r?\n/)
+    .map((line) => line.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/))
+    .find((match) => match && match[2] === fileName);
+
+  if (!expected) {
+    throw new Error(`Missing checksum for ${fileName}`);
+  }
+
+  const actual = await sha256File(filePath);
+  if (actual !== expected[1].toLowerCase()) {
+    throw new Error(`Checksum mismatch for ${fileName}`);
+  }
 }
 
 async function main() {
@@ -95,6 +186,13 @@ async function main() {
     }
 
     await download(url, binPath);
+
+    try {
+      await verifyChecksum(checksumUrl, binaryName, binPath);
+    } catch (err) {
+      removeIfExists(binPath);
+      throw err;
+    }
 
     if (platform !== "win32") {
       fs.chmodSync(binPath, 0o755);
