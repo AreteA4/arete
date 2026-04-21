@@ -22,7 +22,7 @@ arete-macros = { version = "0.1.0", path = "../arete-macros", optional = true }
 arete-server = { version = "0.1.0", path = "../rust/arete-server", optional = true }
 
 # SDK - Rust client for connecting to Arete servers
-arete-sdk = { version = "0.1.0", path = "../rust/arete-sdk", optional = true }
+arete-sdk = { package = "arete-a4-sdk", version = "0.1.0", path = "../rust/arete-a4-sdk", optional = true }
 
 # Runtime dependencies for macro-generated code (re-exported via arete::runtime)
 tokio = { version = "1.0", features = ["full"], optional = true }

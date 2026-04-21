@@ -7,7 +7,7 @@ members = [
     "arete-idl",
     "cli",
     "rust/arete-server",
-    "rust/arete-sdk",
+    "rust/arete-a4-sdk",
     "rust/arete-auth",
     "rust/arete-auth-server",
     "rust/arete-mcp",
