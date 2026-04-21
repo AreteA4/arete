@@ -180,10 +180,7 @@ mod tests {
     fn test_validate_publishable_key() {
         let store = ApiKeyStore::new(vec![], vec!["pub123".to_string()]);
         let info = store.validate_key("pub123").unwrap();
-        assert!(matches!(
-            info.key_class,
-            arete_auth::KeyClass::Publishable
-        ));
+        assert!(matches!(info.key_class, arete_auth::KeyClass::Publishable));
     }
 
     #[test]

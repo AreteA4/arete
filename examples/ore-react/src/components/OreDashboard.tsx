@@ -1,5 +1,5 @@
 import { useArete } from '@usearete/react';
-import { ORE_STREAM_STACK } from '@usearete/stacks/ore';
+import { ORE_STREAM_STACK } from '../generated/ore-stack';
 import { ValidatedOreRoundSchema } from '../schemas/ore-round-validated';
 import { BlockGrid } from './BlockGrid';
 import { StatsPanel } from './StatsPanel';

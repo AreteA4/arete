@@ -1560,7 +1560,9 @@ async fn attach_client_to_bus(
                         }
                     }
                 }
-                .instrument(info_span!("ws.subscribe.list", %client_id, view = %view_id_span, mode = ?mode)),
+                .instrument(
+                    info_span!("ws.subscribe.list", %client_id, view = %view_id_span, mode = ?mode),
+                ),
             );
         }
     }

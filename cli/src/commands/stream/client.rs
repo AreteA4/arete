@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use futures_util::{SinkExt, StreamExt};
 use arete_sdk::{
     deep_merge_with_append, parse_frame, parse_snapshot_entities, try_parse_subscribed_frame,
     ClientMessage, Frame, Operation,
 };
+use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 

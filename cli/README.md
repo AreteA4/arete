@@ -145,6 +145,7 @@ Credentials: `~/.arete/credentials.toml`
 a4 sdk list                                   # List available stacks
 a4 sdk create typescript settlement-game      # Generate TypeScript SDK
 a4 sdk create rust settlement-game            # Generate Rust SDK
+a4 sdk create typescript ore-stack-abc123     # Generate from a hosted stack identifier
 ```
 
 ## Configuration
@@ -158,11 +159,11 @@ name = "my-project"
 [sdk]
 output_dir = "./generated"
 
-# Stacks - auto-discovered from .arete/*.ast.json
-# Define explicitly for custom naming:
+# Stacks - auto-discovered from .arete/*.stack.json
+# `stack` may be a local AST name/path or a hosted stack identifier.
 [[stacks]]
 name = "my-game"
-ast = "SettlementGame"
+stack = "SettlementGame"
 ```
 
 For most projects, you only need:
@@ -172,7 +173,7 @@ For most projects, you only need:
 name = "my-project"
 ```
 
-The CLI auto-discovers stacks from `.arete/*.ast.json` files.
+The CLI auto-discovers stacks from `.arete/*.stack.json` files.
 
 ## WebSocket URLs
 

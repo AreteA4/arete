@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use arete_sdk::{Subscription, Unsubscription};
+use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::connections::ConnectionId;

@@ -15,12 +15,6 @@ cd /Users/adrian/code/defi/hypertek/arete-oss/typescript/react
 npm install
 npm run build
 
-# Build stacks SDK
-echo "Building arete-stacks..."
-cd /Users/adrian/code/defi/hypertek/arete-oss/stacks/sdk/typescript
-npm install
-npm run build
-
 echo "All packages built successfully!"
 echo ""
 echo "Next steps:"

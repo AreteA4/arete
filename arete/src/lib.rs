@@ -60,12 +60,12 @@ pub use arete_sdk as sdk;
 #[doc(hidden)]
 pub mod runtime {
     pub use anyhow;
+    pub use arete_interpreter;
+    pub use arete_server;
     pub use bs58;
     pub use bytemuck;
     pub use dotenvy;
     pub use futures;
-    pub use arete_interpreter;
-    pub use arete_server;
     pub use reqwest;
     pub use serde;
     pub use serde_json;

@@ -42,8 +42,7 @@ impl Config {
                 .parse()
                 .unwrap_or(8080),
             issuer: env::var("ISSUER").unwrap_or_else(|_| "arete-auth".to_string()),
-            default_audience: env::var("DEFAULT_AUDIENCE")
-                .unwrap_or_else(|_| "arete".to_string()),
+            default_audience: env::var("DEFAULT_AUDIENCE").unwrap_or_else(|_| "arete".to_string()),
             default_ttl_seconds: env::var("DEFAULT_TTL_SECONDS")
                 .unwrap_or_else(|_| "300".to_string())
                 .parse()

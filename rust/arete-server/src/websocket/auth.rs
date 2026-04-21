@@ -741,11 +741,8 @@ mod tests {
         // Sign with one key, verify with another
         let signer = TokenSigner::new(signing_key, "test-issuer");
         let wrong_verifying_key = wrong_key.verifying_key();
-        let verifier = arete_auth::TokenVerifier::new(
-            wrong_verifying_key,
-            "test-issuer",
-            "test-audience",
-        );
+        let verifier =
+            arete_auth::TokenVerifier::new(wrong_verifying_key, "test-issuer", "test-audience");
         let plugin = SignedSessionAuthPlugin::new(verifier);
 
         let claims = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
@@ -976,7 +973,10 @@ mod tests {
 
         // Should succeed even without Origin header
         let decision = plugin.authorize(&auth_request).await;
-        assert!(decision.is_allowed(), "Expected Allow decision for non-browser client without Origin");
+        assert!(
+            decision.is_allowed(),
+            "Expected Allow decision for non-browser client without Origin"
+        );
 
         if let AuthDecision::Allow(ctx) = decision {
             assert_eq!(ctx.origin, Some("https://example.com".to_string()));
@@ -1506,11 +1506,8 @@ mod tests {
         // Sign with one key, verify with another
         let signer = TokenSigner::new(signing_key, "test-issuer");
         let wrong_verifying_key = wrong_key.verifying_key();
-        let verifier = arete_auth::TokenVerifier::new(
-            wrong_verifying_key,
-            "test-issuer",
-            "test-audience",
-        );
+        let verifier =
+            arete_auth::TokenVerifier::new(wrong_verifying_key, "test-issuer", "test-audience");
         let plugin = SignedSessionAuthPlugin::new(verifier);
 
         let claims = SessionClaims::builder("test-issuer", "test-subject", "test-audience")

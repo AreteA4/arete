@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Updates all arete-* package versions in examples/ to the specified version.
+# Updates all Arete package versions in examples/ to the specified version.
 # Handles both package.json (npm) and Cargo.toml (rust) files.
 #
 # Usage:
@@ -43,7 +43,7 @@ update_package_json() {
     
     if [[ "$DRY_RUN" == "--dry-run" ]]; then
         # Show what would change
-        grep -E '"arete-[^"]+":' "$file" || true
+        grep -E '"(@usearete/[^"]+|arete-[^"]+)":' "$file" || true
         return
     fi
     
@@ -56,7 +56,7 @@ update_package_json() {
         for (const depType of ['dependencies', 'devDependencies', 'peerDependencies']) {
             if (pkg[depType]) {
                 for (const [name, version] of Object.entries(pkg[depType])) {
-                    if (name.startsWith('arete-')) {
+                    if (name.startsWith('arete-') || name.startsWith('@usearete/')) {
                         pkg[depType][name] = '^$MAJOR_MINOR';
                         console.log('  Updated:', name, version, '->', '^$MAJOR_MINOR');
                         modified = true;
@@ -88,7 +88,7 @@ update_cargo_toml() {
     # Clean up backup files
     rm -f "$file.bak"
     
-    echo "  Updated arete-* dependencies to $MAJOR_MINOR"
+    echo "  Updated Arete Rust dependencies to $MAJOR_MINOR"
     UPDATED_FILES+=("$file")
 }
 

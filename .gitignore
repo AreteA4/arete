@@ -124,6 +124,10 @@ Thumbs.db
 # Generated files
 generated/
 proto-generated/
+!examples/ore-react/src/generated/
+!examples/ore-react/src/generated/ore-stack.ts
+!examples/ore-typescript/src/generated/
+!examples/ore-typescript/src/generated/ore-stack.ts
 
 # Testing
 coverage/

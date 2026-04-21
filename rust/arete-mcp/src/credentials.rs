@@ -117,7 +117,11 @@ pub fn resolve(explicit: Option<String>, url: &str) -> Result<ResolvedKey> {
 /// directly with a `TestEnv` to avoid touching process-global state.
 pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Result<ResolvedKey> {
     // 1. Explicit argument wins. Trim to protect against accidental whitespace.
-    if let Some(k) = explicit.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(k) = explicit
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         return Ok(ResolvedKey {
             key: Some(k.to_string()),
             source: KeySource::Explicit,
@@ -292,12 +296,7 @@ mod tests {
     #[test]
     fn whitespace_only_explicit_falls_through_to_env() {
         let env = TestEnv::default().with_var(ENV_VAR_API_KEY, "hsk_from_env");
-        let r = resolve_with(
-            &env,
-            Some("  ".into()),
-            "wss://foo.stack.arete.run",
-        )
-        .unwrap();
+        let r = resolve_with(&env, Some("  ".into()), "wss://foo.stack.arete.run").unwrap();
         assert_eq!(r.source, KeySource::EnvVar);
     }
 
@@ -406,15 +405,9 @@ mod tests {
     #[test]
     fn hosted_url_detection() {
         assert!(is_hosted_websocket_url("wss://foo.stack.arete.run"));
-        assert!(is_hosted_websocket_url(
-            "wss://a-b-c.stack.arete.run"
-        ));
-        assert!(is_hosted_websocket_url(
-            "wss://a.stack.arete.run/socket"
-        ));
-        assert!(is_hosted_websocket_url(
-            "wss://a.stack.arete.run:443"
-        ));
+        assert!(is_hosted_websocket_url("wss://a-b-c.stack.arete.run"));
+        assert!(is_hosted_websocket_url("wss://a.stack.arete.run/socket"));
+        assert!(is_hosted_websocket_url("wss://a.stack.arete.run:443"));
         assert!(!is_hosted_websocket_url("wss://example.com"));
         assert!(!is_hosted_websocket_url("ws://localhost:8878"));
         assert!(!is_hosted_websocket_url("not a url"));

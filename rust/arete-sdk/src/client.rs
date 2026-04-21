@@ -1,5 +1,5 @@
 use crate::auth::{AuthConfig, AuthToken, TokenTransport};
-use crate::config::{ConnectionConfig, AreteConfig};
+use crate::config::{AreteConfig, ConnectionConfig};
 use crate::connection::{ConnectionManager, ConnectionState};
 use crate::entity::Stack;
 use crate::error::{AreteError, SocketIssue};

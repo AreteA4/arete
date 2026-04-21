@@ -1,0 +1,41 @@
+{
+  "name": "@usearete/mcp",
+  "version": "0.0.1",
+  "description": "Arete MCP server (a4-mcp) - Model Context Protocol server for Arete streams",
+  "bin": {
+    "a4-mcp": "./bin/a4-mcp.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AreteA4/arete.git",
+    "directory": "packages/mcp"
+  },
+  "homepage": "https://arete.run",
+  "bugs": {
+    "url": "https://github.com/AreteA4/arete/issues"
+  },
+  "keywords": [
+    "arete",
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "cli",
+    "a4-mcp"
+  ],
+  "author": "Arete Team",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "README.md"
+  ]
+}

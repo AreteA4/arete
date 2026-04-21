@@ -10,18 +10,8 @@
     },
     {
       "type": "json",
-      "path": "examples/ore-react/package.json",
-      "jsonpath": "$.dependencies['@usearete/stacks']"
-    },
-    {
-      "type": "json",
       "path": "examples/ore-typescript/package.json",
       "jsonpath": "$.dependencies['@usearete/sdk']"
-    },
-    {
-      "type": "json",
-      "path": "examples/ore-typescript/package.json",
-      "jsonpath": "$.dependencies['@usearete/stacks']"
     },
     {
       "type": "toml",
@@ -79,10 +69,6 @@
       "release-type": "node",
       "component": "arete-typescript"
     },
-    "stacks/sdk/typescript": {
-      "release-type": "node",
-      "component": "arete-stacks"
-    },
     "stacks/sdk/rust": {
       "release-type": "rust",
       "component": "arete-stacks"
@@ -90,6 +76,10 @@
     "packages/arete": {
       "release-type": "node",
       "component": "a4-npm"
+    },
+    "packages/mcp": {
+      "release-type": "node",
+      "component": "arete-mcp-npm"
     },
     "arete-idl": {
       "release-type": "rust",
@@ -115,11 +105,13 @@
         "arete-sdk",
         "arete-macros",
         "a4-cli",
+        "arete-mcp",
         "arete-server",
         "arete-react",
         "arete-typescript",
         "arete-stacks",
-        "a4-npm"
+        "a4-npm",
+        "arete-mcp-npm"
       ]
     }
   ]

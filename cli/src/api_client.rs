@@ -327,6 +327,16 @@ pub struct RegistrySchemaResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryAstResponse {
+    pub name: String,
+    pub stack: String,
+    pub websocket_url: String,
+    pub description: Option<String>,
+    pub visibility: String,
+    pub ast_payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StackSchema {
     pub stack_name: String,
     pub entities: Vec<EntitySchema>,
@@ -542,39 +552,66 @@ impl ApiClient {
     }
 
     // ========================================================================
-    // Registry endpoints (public, no auth required)
+    // Registry endpoints (public, optional auth for global stacks)
     // ========================================================================
 
-    /// List all public stacks in the registry (no auth required)
+    fn with_optional_auth(
+        &self,
+        request: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
+        if let Some(api_key) = &self.api_key {
+            request.bearer_auth(api_key)
+        } else {
+            request
+        }
+    }
+
+    /// List all registry stacks. Auth expands results to global visibility.
     pub fn list_registry(&self) -> Result<Vec<RegistryStackItem>> {
         let response = self
-            .client
-            .get(format!("{}/api/registry", self.base_url))
+            .with_optional_auth(self.client.get(format!("{}/api/registry", self.base_url)))
             .send()
             .context("Failed to send registry list request")?;
 
         Self::handle_response(response)
     }
 
-    /// Get a public stack's info from the registry (no auth required)
+    /// Get a registry stack's info. Auth expands access to global visibility.
     #[allow(dead_code)]
     pub fn get_registry_stack(&self, name: &str) -> Result<RegistryStackItem> {
         let response = self
-            .client
-            .get(format!("{}/api/registry/{}", self.base_url, name))
+            .with_optional_auth(
+                self.client
+                    .get(format!("{}/api/registry/{}", self.base_url, name)),
+            )
             .send()
             .context("Failed to send registry get request")?;
 
         Self::handle_response(response)
     }
 
-    /// Get full schema for a public stack (no auth required)
+    /// Get full schema for a registry stack. Auth expands access to global visibility.
     pub fn get_registry_schema(&self, name: &str) -> Result<RegistrySchemaResponse> {
         let response = self
-            .client
-            .get(format!("{}/api/registry/{}/schema", self.base_url, name))
+            .with_optional_auth(
+                self.client
+                    .get(format!("{}/api/registry/{}/schema", self.base_url, name)),
+            )
             .send()
             .context("Failed to send registry schema request")?;
+
+        Self::handle_response(response)
+    }
+
+    /// Get raw AST for a deployed registry stack identifier.
+    pub fn get_registry_ast_by_stack(&self, stack: &str) -> Result<RegistryAstResponse> {
+        let response = self
+            .with_optional_auth(self.client.get(format!(
+                "{}/api/registry/stacks/{}/ast",
+                self.base_url, stack
+            )))
+            .send()
+            .context("Failed to send registry AST request")?;
 
         Self::handle_response(response)
     }

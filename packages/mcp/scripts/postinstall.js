@@ -9,11 +9,11 @@ const pkg = require("../package.json");
 const version = pkg.version;
 
 const PLATFORMS = {
-  "darwin-arm64": "a4-darwin-arm64",
-  "darwin-x64": "a4-darwin-x64",
-  "linux-x64": "a4-linux-x64",
-  "linux-arm64": "a4-linux-arm64",
-  "win32-x64": "a4-win32-x64.exe",
+  "darwin-arm64": "a4-mcp-darwin-arm64",
+  "darwin-x64": "a4-mcp-darwin-x64",
+  "linux-x64": "a4-mcp-linux-x64",
+  "linux-arm64": "a4-mcp-linux-arm64",
+  "win32-x64": "a4-mcp-win32-x64.exe",
 };
 
 const platform = process.platform;
@@ -23,25 +23,25 @@ const key = `${platform}-${arch}`;
 const binaryName = PLATFORMS[key];
 if (!binaryName) {
   console.warn(
-    `Arete CLI does not have a prebuilt binary for ${key}.\n` +
-    "You can build from source: cargo install a4-cli"
+    `Arete MCP does not have a prebuilt binary for ${key}.\n` +
+      "You can build from source: cargo install arete-mcp"
   );
   process.exit(0);
 }
 
 const binDir = path.join(__dirname, "..", "bin");
-const binPath = path.join(binDir, platform === "win32" ? "a4.exe" : "a4");
+const binPath = path.join(binDir, platform === "win32" ? "a4-mcp.exe" : "a4-mcp");
 
 if (fs.existsSync(binPath)) {
   process.exit(0);
 }
 
-const releaseUrl = `https://github.com/AreteA4/arete/releases/download/a4-cli-v${version}`;
+const releaseUrl = `https://github.com/AreteA4/arete/releases/download/arete-mcp-v${version}`;
 const url = `${releaseUrl}/${binaryName}`;
 const checksumUrl = `${releaseUrl}/checksums.txt`;
 const MAX_REDIRECTS = 5;
 
-console.log(`Downloading Arete CLI v${version} for ${key}...`);
+console.log(`Downloading Arete MCP v${version} for ${key}...`);
 
 function removeIfExists(filePath) {
   try {
@@ -184,7 +184,7 @@ async function main() {
     if (!fs.existsSync(binDir)) {
       fs.mkdirSync(binDir, { recursive: true });
     }
-    
+
     await download(url, binPath);
 
     try {
@@ -198,14 +198,14 @@ async function main() {
       fs.chmodSync(binPath, 0o755);
     }
 
-    console.log("Arete CLI installed successfully.");
+    console.log("Arete MCP installed successfully.");
   } catch (err) {
-    console.error(`\nFailed to download Arete CLI: ${err.message}`);
+    console.error(`\nFailed to download Arete MCP: ${err.message}`);
     console.error(
       "\nYou can install manually via Cargo:\n" +
-      "  cargo install a4-cli\n" +
-      "\nOr download directly from:\n" +
-      `  ${url}`
+        "  cargo install arete-mcp\n" +
+        "\nOr download directly from:\n" +
+        `  ${url}`
     );
     process.exit(0);
   }

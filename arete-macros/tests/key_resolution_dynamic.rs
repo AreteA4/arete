@@ -1,6 +1,6 @@
 mod support;
 
-use support::{cargo_toml, escape_path, arete_dir, macro_manifest_dir, TempCrate};
+use support::{arete_dir, cargo_toml, escape_path, macro_manifest_dir, TempCrate};
 
 fn compile_failure_stderr_with_files(
     name: &str,
@@ -41,10 +41,7 @@ fn compile_success_with_files(name: &str, source: &str, extra_files: &[(&str, &s
         cargo_toml(
             name,
             &[
-                format!(
-                    "arete = {{ path = \"{}\" }}",
-                    escape_path(&arete_dir)
-                ),
+                format!("arete = {{ path = \"{}\" }}", escape_path(&arete_dir)),
                 format!(
                     "arete-macros = {{ path = \"{}\" }}",
                     escape_path(&manifest_dir)
