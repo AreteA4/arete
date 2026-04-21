@@ -48,6 +48,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   bundle-templates:
