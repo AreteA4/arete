@@ -178,10 +178,9 @@ pub fn create_typescript(
                 .or_else(|| cfg.sdk.as_ref().and_then(|s| s.typescript_package.clone()))
                 .unwrap_or_else(|| "@usearete/react".to_string());
 
-            let url = url_override.or_else(|| match &source {
-                ResolvedStackSource::Local(_) => stack_config.url.clone(),
-                ResolvedStackSource::Remote(_) => source.default_url(),
-            });
+            let url = url_override
+                .or_else(|| stack_config.url.clone())
+                .or_else(|| source.default_url());
 
             (source, output, pkg, url)
         } else {
@@ -372,10 +371,9 @@ pub fn create_rust(
         crate_name_override,
     )?;
 
-    let stack_url = url_override.or_else(|| match &source {
-        ResolvedStackSource::Local(_) => stack_config.and_then(|s| s.url.clone()),
-        ResolvedStackSource::Remote(_) => source.default_url(),
-    });
+    let stack_url = url_override
+        .or_else(|| stack_config.and_then(|s| s.url.clone()))
+        .or_else(|| source.default_url());
 
     let output_dir = if raw_output_dir.is_relative() {
         config_dir.join(&raw_output_dir)
