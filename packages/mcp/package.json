@@ -1,6 +1,6 @@
 {
   "name": "@usearete/mcp",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Arete MCP server (a4-mcp) - Model Context Protocol server for Arete streams",
   "bin": {
     "a4-mcp": "./bin/a4-mcp.js"

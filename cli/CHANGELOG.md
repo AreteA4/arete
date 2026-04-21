@@ -6,6 +6,51 @@
 
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.1.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.0.1...a4-cli-v0.1.0) (2026-04-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* Authentication system with WebSocket integration, SSR support, and security enhancements
+* Merge pull request #75 from HyperTekOrg/auth
+
+### Features
+
+* Add AST versioning system with automatic migration support ([997706b](https://github.com/AreteA4/arete/commit/997706b2854fc2e95427ef6b67b710db35ad86ac))
+* Add AST versioning system with automatic migration support ([b62d08d](https://github.com/AreteA4/arete/commit/b62d08d99a579f323ea3f4a052fa90b83b269942))
+* Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* **cli:** add --api-url flag and URL-based credential routing ([cc777f1](https://github.com/AreteA4/arete/commit/cc777f1dd4ee9b49c6b3e260d9e1bbfc4f11f929))
+* **cli:** add explore command for stack and schema discovery ([17c3022](https://github.com/AreteA4/arete/commit/17c302249c0393200fc53a1eca79bd2cabc53ce2))
+* **cli:** add publishable key management commands ([5b99d43](https://github.com/AreteA4/arete/commit/5b99d431d73a1dd937bbb726648aa05cbeeb6d4e))
+* **cli:** implement hs idl connect command with hyperstack suggestions ([6579a84](https://github.com/AreteA4/arete/commit/6579a84b1bd6018255e707fc3fb7cf2d16a050ee))
+* **cli:** implement hs idl data commands (errors through discriminator) ([87267dd](https://github.com/AreteA4/arete/commit/87267ddb1df671c162ffdc0a3b2c539dadcb1660))
+* **cli:** implement hs idl data commands (summary through type) ([60e3efe](https://github.com/AreteA4/arete/commit/60e3efe8dfddba45ffb17b0cbbd550322ad19b76))
+* **cli:** implement hs idl relationship commands ([8fccdcb](https://github.com/AreteA4/arete/commit/8fccdcbdf6a198cbe1127182fc5efff3c47ccc3c))
+* **cli:** scaffold hs idl subcommand structure + ci publish order ([64f3f4c](https://github.com/AreteA4/arete/commit/64f3f4cffd286092886496e2da920d353204de6f))
+* generate SDKs from hosted stack identifiers ([a899e43](https://github.com/AreteA4/arete/commit/a899e43c70e41d6ffc2609c2e8db2f45f5409a38))
+* Merge pull request [#75](https://github.com/AreteA4/arete/issues/75) from HyperTekOrg/auth ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+
+
+### Bug Fixes
+
+* Add version constraint to hyperstack-idl dependency ([917bf5a](https://github.com/AreteA4/arete/commit/917bf5abe6242048ba9f7af0055d999ccfcb8692))
+* Address code review feedback on error messages and examples ([262be58](https://github.com/AreteA4/arete/commit/262be585c0af291dbcec6a41bed14f3184b5d2b8))
+* **cli:** address stream PR review (timeout, hint scope, TUI URL redaction) ([de4e3f5](https://github.com/AreteA4/arete/commit/de4e3f5df377425fcd3683b16bcaf37fe4aa6395))
+* **cli:** hs stream hosted stacks — auto hs_token, native TLS roots, safer logging ([c477396](https://github.com/AreteA4/arete/commit/c477396504eb609b2d73e6f5ea5fbf47e928f8ca))
+* **cli:** stream to hosted stacks with ws token + native TLS ([e2a9b74](https://github.com/AreteA4/arete/commit/e2a9b74480af13b01867f2206d60bdcf2e16fa30))
+* keep SDK loader clippy-clean ([156cbb4](https://github.com/AreteA4/arete/commit/156cbb4497ee6ca71cd6e1a1cfa3a91764949b18))
+* preserve configured stack URLs in sdk generation ([2ffa993](https://github.com/AreteA4/arete/commit/2ffa993e86cdfedc18c32e2d4e730003a71fcc30))
+* suppress dead_code warning for CreateApiKeyResponse ([32d68af](https://github.com/AreteA4/arete/commit/32d68af4ab1fc0fd7b369eec51cba646d4b4f6ee))
+* use next_back() instead of last() on DoubleEndedIterator ([a4aa568](https://github.com/AreteA4/arete/commit/a4aa5688959fb1eea5800b3764c0c9696a45e17e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.0.1 to 0.1.0
+    * arete-sdk bumped from 0.0.1 to 0.1.0
+
 ## [0.6.9](https://github.com/AreteA4/arete/compare/a4-cli-v0.6.8...arete-cli-v0.6.9) (2026-04-15)
 
 

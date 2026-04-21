@@ -1,6 +1,6 @@
 [package]
 name = "arete"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
@@ -13,16 +13,16 @@ readme = "README.md"
 
 [dependencies]
 # Core interpreter - AST transformation runtime and VM
-arete-interpreter = { version = "0.0.1", path = "../interpreter", optional = true }
+arete-interpreter = { version = "0.1.0", path = "../interpreter", optional = true }
 
 # Macros - proc-macros for defining streams
-arete-macros = { version = "0.0.1", path = "../arete-macros", optional = true }
+arete-macros = { version = "0.1.0", path = "../arete-macros", optional = true }
 
 # Server - WebSocket server and projection handlers
-arete-server = { version = "0.0.1", path = "../rust/arete-server", optional = true }
+arete-server = { version = "0.1.0", path = "../rust/arete-server", optional = true }
 
 # SDK - Rust client for connecting to Arete servers
-arete-sdk = { version = "0.0.1", path = "../rust/arete-sdk", optional = true }
+arete-sdk = { version = "0.1.0", path = "../rust/arete-sdk", optional = true }
 
 # Runtime dependencies for macro-generated code (re-exported via arete::runtime)
 tokio = { version = "1.0", features = ["full"], optional = true }

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0](https://github.com/AreteA4/arete/compare/a4-npm-v0.0.1...a4-npm-v0.1.0) (2026-04-21)
+
+
+### Bug Fixes
+
+* harden cli postinstall downloads ([7f8dbfb](https://github.com/AreteA4/arete/commit/7f8dbfb1e6aa866ad13956d2ec5cc28e9456495c))
+
 ## [0.6.9](https://github.com/AreteA4/arete/compare/arete-npm-v0.6.8...arete-npm-v0.6.9) (2026-04-15)
 
 

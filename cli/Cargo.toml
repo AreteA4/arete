@@ -1,6 +1,6 @@
 [package]
 name = "a4-cli"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
@@ -33,9 +33,9 @@ colored = "2.1"
 chrono = "0.4"
 indicatif = "0.17"
 console = "0.15"
-arete-interpreter = { version = "0.0.1", path = "../interpreter" }
+arete-interpreter = { version = "0.1.0", path = "../interpreter" }
 arete-idl = { path = "../arete-idl", version = "0.0.1" }
-arete-sdk = { path = "../rust/arete-sdk", version = "0.0.1" }
+arete-sdk = { path = "../rust/arete-sdk", version = "0.1.0" }
 reqwest = { version = "0.11", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 dirs = "5.0"
 rpassword = "7.3"

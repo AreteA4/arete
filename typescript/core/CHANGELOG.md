@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.1.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.0.1...arete-typescript-v0.1.0) (2026-04-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* Authentication system with WebSocket integration, SSR support, and security enhancements
+* Merge pull request #75 from HyperTekOrg/auth
+
+### Features
+
+* add InstructionHandler with build() for code-generated instruction builders ([d0efba1](https://github.com/AreteA4/arete/commit/d0efba157580f0443ac39bf5189d8b96160cf785))
+* Add license to typescript core ([22628a1](https://github.com/AreteA4/arete/commit/22628a19355144eba8e0014f098cd8b1c533c98e))
+* add runtime schema validation to TypeScript core SDK ([a277e2c](https://github.com/AreteA4/arete/commit/a277e2c72407bf0c415ed9985b0a9e55eaf37c9b))
+* Add SSR support for Next.js, TanStack Start, and Vite ([70cb1ac](https://github.com/AreteA4/arete/commit/70cb1acbf5b6eedb40947f0accdffd5f722e23d1))
+* Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* improve SDK auth recovery for websocket connections ([193e442](https://github.com/AreteA4/arete/commit/193e442666aa1cc992c8ee364bbd11175ef7128a))
+* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Merge pull request [#75](https://github.com/AreteA4/arete/issues/75) from HyperTekOrg/auth ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
+* **typescript-sdk:** Support optional snapshots and cursor-based resume ([3f239e9](https://github.com/AreteA4/arete/commit/3f239e9d9fa2f992b7d8eaa1c467c541af9a8a9a))
+
+
+### Bug Fixes
+
+* allow unauthenticated requests to /ws/sessions for hosted stacks ([cbb047b](https://github.com/AreteA4/arete/commit/cbb047b454c122ea46c8a5692275494a8955d13c))
+* correct Vite SSR auth route base path handling ([fee273a](https://github.com/AreteA4/arete/commit/fee273aae241b1ef6fc993b7b5beb97bfa747f9f))
+* harden SSR session token issuance ([bde6607](https://github.com/AreteA4/arete/commit/bde6607b6bfcc146e8e7667336860410e8eaefb4))
+* require authentication for hosted Hyperstack connections ([7b18719](https://github.com/AreteA4/arete/commit/7b187190a9b2e49e2fa4d694530c59f4d3a224cf))
+* resolve TypeScript errors in core SDK ([e912aad](https://github.com/AreteA4/arete/commit/e912aad5f138526e107943e613d5fecf8ae8f7d3))
+* **ts:** settle connect() promise on ws error and early close ([aa47833](https://github.com/AreteA4/arete/commit/aa47833e912ce9f2413c0e142cc24db08508509c))
+* **ts:** settle connect() promise on ws error and early close ([28e3297](https://github.com/AreteA4/arete/commit/28e329705565ac314217b1eb5f40501bb483e274))
+* **ts:** updateState on early-close connect rejection ([ddc12df](https://github.com/AreteA4/arete/commit/ddc12dfaa6919cb0631159ad1107147dff391fcc))
+
 ## [0.6.9](https://github.com/AreteA4/arete/compare/@usearete/sdk-v0.6.8...arete-typescript-v0.6.9) (2026-04-15)
 
 
