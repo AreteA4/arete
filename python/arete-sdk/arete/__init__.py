@@ -1,14 +1,17 @@
 """Arete Python SDK - Real-time data synchronization with authentication support."""
 
 from arete.client import AreteClient
-from arete.store import Store, Update
+from arete.store import Store, Update, RichUpdate
 from arete.types import (
     SortOrder,
     SortConfig,
     SubscribedFrame,
+    SnapshotFrame,
+    SnapshotEntity,
     try_parse_subscribed_frame,
     ConnectionState,
 )
+from arete.errors import SocketIssue
 from arete.auth import (
     AuthConfig,
     AuthToken,
@@ -32,12 +35,16 @@ __all__ = [
     "AreteClient",
     "Store",
     "Update",
+    "RichUpdate",
     # Types
     "SortOrder",
     "SortConfig",
     "SubscribedFrame",
+    "SnapshotFrame",
+    "SnapshotEntity",
     "try_parse_subscribed_frame",
     "ConnectionState",
+    "SocketIssue",
     # Auth
     "AuthConfig",
     "AuthToken",

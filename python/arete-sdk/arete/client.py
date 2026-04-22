@@ -7,8 +7,9 @@ from typing import Dict, List, Optional, Callable
 
 from arete.websocket import WebSocketManager
 from arete.store import Store, Mode
-from arete.types import Subscription, Unsubscription, Frame
+from arete.types import Subscription, Unsubscription, Frame, SnapshotFrame, SubscribedFrame
 from arete.auth import AuthConfig
+from arete.errors import SocketIssue
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ class AreteClient:
         on_connect: Optional[Callable] = None,
         on_disconnect: Optional[Callable] = None,
         on_error: Optional[Callable] = None,
-        on_socket_issue: Optional[Callable[[dict], None]] = None,
+        on_socket_issue: Optional[Callable[["SocketIssue"], None]] = None,
         auth: Optional[AuthConfig] = None,
     ):
         """
@@ -79,6 +80,7 @@ class AreteClient:
         self._stores: Dict[str, Store] = {}
         self._pending_subs: List[Subscription] = []
         self._user_on_connect = on_connect
+        self._last_error: Optional[Exception] = None
 
         self.ws_manager = WebSocketManager(
             url=url,
@@ -107,8 +109,30 @@ class AreteClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.disconnect()
 
+    def is_connected(self) -> bool:
+        return self.ws_manager.is_running and self.ws_manager.ws is not None
+
+    @property
+    def last_error(self) -> Optional[Exception]:
+        return self._last_error
+
+    def clear_store(self) -> None:
+        """Wipe all cached data. Use when switching user context."""
+        for store in self._stores.values():
+            store.clear()
+        self._stores.clear()
+        self._pending_subs.clear()
+
     def subscribe(
-        self, view: str, key: Optional[str] = None, parser: Optional[Callable] = None
+        self,
+        view: str,
+        key: Optional[str] = None,
+        parser: Optional[Callable] = None,
+        filters: Optional[Dict] = None,
+        take: Optional[int] = None,
+        skip: Optional[int] = None,
+        with_snapshot: Optional[bool] = None,
+        after: Optional[str] = None,
     ) -> Store:
         """
         Subscribe to updates for the specified view (and optional key) on the Arete server.
@@ -130,7 +154,10 @@ class AreteClient:
         store_key = f"{view}:{key or '*'}"
         self._stores[store_key] = store
 
-        sub = Subscription(view=view, key=key)
+        sub = Subscription(
+            view=view, key=key, filters=filters,
+            take=take, skip=skip, with_snapshot=with_snapshot, after=after,
+        )
         if self.ws_manager.is_running:
             asyncio.create_task(self._send_sub(sub))
         else:
@@ -173,33 +200,55 @@ class AreteClient:
             logger.error(f"Unsubscribe failed: {e}")
 
     async def _on_message(self, message) -> None:
-        """
-        Processes incoming WebSocket messages received from the Arete server.
-
-        Decodes the incoming message, parses it into a Frame object,
-        and dispatches it to the appropriate Store instance(s) based on the view and key.
-        It ensures that each relevant Store receives real-time updates and handles them accordingly.
-
-        Args:
-            message: The incoming WebSocket message, either as a string or bytes.
-
-        Returns:
-            None
-        """
         try:
-            frame = Frame.from_message(message)
-            logger.debug(
-                f"Frame: entity={frame.entity}, op={frame.op}, key={frame.key}"
-            )
+            from arete.types import parse_message
+            parsed = parse_message(message)
+            op = parsed.get("op", "")
 
+            # subscribed confirmation
+            if op == "subscribed":
+                sub_frame = SubscribedFrame.from_dict(parsed)
+                store = self._find_store_by_view(sub_frame.view)
+                if store:
+                    if sub_frame.sort:
+                        store.set_sort_config(sub_frame.sort)
+                    await store.handle_frame(
+                        Frame(mode=sub_frame.mode.value, entity="", op="subscribed", key="", data={})
+                    )
+                return
+
+            # batch snapshot
+            if SnapshotFrame.is_snapshot_frame(parsed):
+                snap = SnapshotFrame.from_dict(parsed)
+                store = self._find_store_by_view(snap.view)
+                if store:
+                    await store.apply_snapshot(snap.entities, snap.complete)
+                return
+
+            # socket issue from server
+            if op == "socket_issue":
+                issue = SocketIssue.from_dict(parsed)
+                logger.warning("Socket issue: %s — %s", issue.error, issue.message)
+                if self.ws_manager.on_socket_issue:
+                    self.ws_manager.on_socket_issue(issue)
+                return
+
+            # entity frame
+            frame = Frame.from_dict(parsed)
+            logger.debug("Frame: entity=%s op=%s key=%s", frame.entity, frame.op, frame.key)
             view = frame.entity
-            store_keys = [f"{view}:{frame.key}", f"{view}:*"]
-
-            for store_key in store_keys:
+            for store_key in (f"{view}:{frame.key}", f"{view}:*"):
                 store = self._stores.get(store_key)
                 if store:
-                    logger.debug(f"Routing to: {store_key}")
                     await store.handle_frame(frame)
 
         except Exception as e:
-            logger.error(f"Message error: {e}", exc_info=True)
+            self._last_error = e
+            logger.error("Message error: %s", e, exc_info=True)
+
+    def _find_store_by_view(self, view: str) -> Optional[Store]:
+        """Find first store whose view matches (ignores key suffix)."""
+        for store_key, store in self._stores.items():
+            if store_key.startswith(f"{view}:"):
+                return store
+        return None

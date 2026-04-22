@@ -1,3 +1,45 @@
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from arete.auth import AuthErrorCode
+
+
+@dataclass
+class SocketIssue:
+    """Structured error pushed by the server over the WebSocket."""
+    error: str
+    message: str
+    code: Optional[AuthErrorCode] = None
+    retryable: bool = False
+    retry_after: Optional[float] = None
+    suggested_action: Optional[str] = None
+    docs_url: Optional[str] = None
+    fatal: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SocketIssue":
+        from arete.auth import AuthErrorCode
+        raw_code = data.get("code", "")
+        normalized = raw_code.upper().replace("-", "_")
+        code = None
+        try:
+            code = AuthErrorCode(normalized)
+        except (ValueError, KeyError):
+            pass
+        return cls(
+            error=data.get("error", ""),
+            message=data.get("message", ""),
+            code=code,
+            retryable=data.get("retryable", False),
+            retry_after=data.get("retryAfter"),
+            suggested_action=data.get("suggestedAction"),
+            docs_url=data.get("docsUrl"),
+            fatal=data.get("fatal", False),
+        )
+
+
 class AreteError(Exception):
     """Base exception for all Arete errors"""
 

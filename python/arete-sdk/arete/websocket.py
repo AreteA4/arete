@@ -28,12 +28,12 @@ class WebSocketManager:
     def __init__(
         self,
         url: str,
-        reconnect_intervals: List[int] = None,
+        reconnect_intervals: Optional[List[int]] = None,
         ping_interval: int = 15,
         on_connect: Optional[Callable] = None,
         on_disconnect: Optional[Callable] = None,
         on_error: Optional[Callable] = None,
-        on_socket_issue: Optional[Callable[[dict], Any]] = None,
+        on_socket_issue: Optional[Callable] = None,
         auth: Optional[AuthConfig] = None,
     ):
         """

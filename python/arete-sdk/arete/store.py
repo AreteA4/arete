@@ -1,5 +1,6 @@
 import asyncio
 import bisect
+import copy
 import logging
 from collections import OrderedDict
 from typing import (
@@ -17,7 +18,7 @@ from typing import (
 from dataclasses import dataclass
 from enum import Enum
 
-from arete.types import SortConfig, SortOrder
+from arete.types import SortConfig, SortOrder, SnapshotEntity
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,16 @@ def _make_sort_key(value: Any, key: str, order: SortOrder) -> Tuple[Any, str]:
 class Update(Generic[T]):
     key: str
     data: T
+    op: str = "upsert"
+
+
+@dataclass
+class RichUpdate(Generic[T]):
+    type: str  # "created" | "updated" | "deleted"
+    key: str
+    before: Optional[T]
+    after: Optional[T]
+    patch: Optional[Dict[str, Any]] = None
 
 
 class Store(Generic[T]):
@@ -86,7 +97,10 @@ class Store(Generic[T]):
         self.sort_config = sort_config
         self._lock = asyncio.Lock()
         self._callbacks: List[Callable[[Update[T]], None]] = []
+        self._rich_callbacks: List[Callable[[RichUpdate[T]], None]] = []
         self._update_queue: asyncio.Queue[Update[T]] = asyncio.Queue()
+        self._ready = asyncio.Event()
+        self._last_seq: Optional[str] = None
 
         if mode in (Mode.LIST, Mode.STATE):
             self._data: Union[OrderedDict[str, T], List[T]] = OrderedDict()
@@ -200,6 +214,76 @@ class Store(Generic[T]):
         if callback in self._callbacks:
             self._callbacks.remove(callback)
 
+    def subscribe_rich(self, callback: Callable[[RichUpdate[T]], None]) -> Callable[[], None]:
+        self._rich_callbacks.append(callback)
+        def unsub() -> None:
+            try:
+                self._rich_callbacks.remove(callback)
+            except ValueError:
+                pass
+        return unsub
+
+    async def rich_updates(self) -> AsyncIterator[RichUpdate[T]]:
+        queue: asyncio.Queue[RichUpdate[T]] = asyncio.Queue()
+        unsub = self.subscribe_rich(queue.put_nowait)
+        try:
+            while True:
+                yield await queue.get()
+        finally:
+            unsub()
+
+    async def wait_until_ready(self, timeout: float = 5.0) -> bool:
+        """Block until initial snapshot completes. Returns False on timeout."""
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    @property
+    def last_seq(self) -> Optional[str]:
+        return self._last_seq
+
+    def clear(self) -> None:
+        if isinstance(self._data, OrderedDict):
+            self._data.clear()
+        else:
+            self._data.clear()
+        self._sorted_keys.clear()
+        self._key_to_sort_key.clear()
+        self._ready.clear()
+        self._last_seq = None
+
+    async def apply_snapshot(self, entities: List[SnapshotEntity], complete: bool) -> None:
+        async with self._lock:
+            if complete:
+                if isinstance(self._data, OrderedDict):
+                    self._data.clear()
+                else:
+                    self._data.clear()
+                self._sorted_keys.clear()
+                self._key_to_sort_key.clear()
+            for entity in entities:
+                parsed = self._parse_data(entity.data)
+                if isinstance(self._data, OrderedDict):
+                    self._data[entity.key] = parsed
+                    if self.sort_config is not None:
+                        self._insert_sorted(entity.key, entity.data)
+                else:
+                    self._data.append(parsed)
+        for entity in entities:
+            parsed = self._parse_data(entity.data)
+            update = Update(key=entity.key, data=parsed, op="snapshot")
+            await self._update_queue.put(update)
+            for cb in list(self._callbacks):
+                try:
+                    result = cb(update)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.error("Callback error: %s", e)
+        self._ready.set()
+
     def _parse_data(self, data: Any) -> T:
         """Parse raw data using the custom parser if provided."""
         if self.parser:
@@ -263,6 +347,7 @@ class Store(Generic[T]):
 
     async def apply_upsert(self, key: str, value: T) -> None:
         async with self._lock:
+            before = copy.deepcopy(self._data.get(key)) if isinstance(self._data, OrderedDict) else None
             parsed_data = self._parse_data(value)
             if isinstance(self._data, OrderedDict):
                 self._data[key] = parsed_data
@@ -273,18 +358,31 @@ class Store(Generic[T]):
                 self._enforce_max_entries()
             else:
                 self._data.append(parsed_data)
-
-            await self._notify_update(key, parsed_data)
+        await self._notify_update(key, parsed_data, op="upsert")
+        rich = RichUpdate(
+            type="created" if before is None else "updated",
+            key=key, before=before, after=parsed_data,
+        )
+        await self._notify_rich(rich)
 
     async def apply_delete(self, key: str) -> None:
+        before = None
         async with self._lock:
             if isinstance(self._data, OrderedDict) and key in self._data:
+                before = copy.deepcopy(self._data[key])
                 self._remove_sorted(key)
                 del self._data[key]
-                await self._notify_update(key, None)  # type: ignore[arg-type]
+        if before is not None:
+            await self._notify_update(key, None, op="delete")  # type: ignore[arg-type]
+            await self._notify_rich(RichUpdate(type="deleted", key=key, before=before, after=None))
 
     async def handle_frame(self, frame) -> None:
-        if frame.op == "upsert":
+        if frame.op == "subscribed":
+            self._ready.set()
+            return
+        if hasattr(frame, "seq") and frame.seq:
+            self._last_seq = frame.seq
+        if frame.op == "upsert" or frame.op == "create":
             await self.apply_upsert(frame.key, frame.data)
         elif frame.op == "patch":
             append_paths = getattr(frame, "append", []) or []
@@ -294,14 +392,22 @@ class Store(Generic[T]):
         else:
             await self.apply_upsert(frame.key, frame.data)
 
-    async def _notify_update(self, key: str, data: T) -> None:
-        update = Update(key=key, data=data)
-
-        await self._update_queue.put(update)
-
-        # Call all registered callbacks
-        for callback in self._callbacks:
+    async def _notify_rich(self, rich: RichUpdate[T]) -> None:
+        for cb in list(self._rich_callbacks):
             try:
-                callback(update)
+                result = cb(rich)
+                if asyncio.iscoroutine(result):
+                    await result
             except Exception as e:
-                logger.error(f"Callback error: {e}")
+                logger.error("Rich callback error: %s", e)
+
+    async def _notify_update(self, key: str, data: T, op: str = "upsert") -> None:
+        update = Update(key=key, data=data, op=op)
+        await self._update_queue.put(update)
+        for callback in list(self._callbacks):
+            try:
+                result = callback(update)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.error("Callback error: %s", e)
