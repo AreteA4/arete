@@ -109,6 +109,7 @@ class Frame:
     key: str
     data: Dict[str, Any]
     append: List[str] = field(default_factory=list)
+    seq: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Frame":
@@ -119,6 +120,7 @@ class Frame:
             key=data.get("key", ""),
             data=data.get("data", {}),
             append=data.get("append", []),
+            seq=data.get("seq"),
         )
 
     @classmethod
@@ -131,7 +133,39 @@ class Frame:
             key=parsed.get("key", ""),
             data=parsed.get("data", {}),
             append=parsed.get("append", []),
+            seq=parsed.get("seq"),
         )
+
+
+@dataclass
+class SnapshotEntity:
+    key: str
+    data: Dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "SnapshotEntity":
+        return cls(key=d["key"], data=d.get("data", {}))
+
+
+@dataclass
+class SnapshotFrame:
+    op: str
+    view: str
+    complete: bool
+    entities: List[SnapshotEntity]
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SnapshotFrame":
+        return cls(
+            op=data["op"],
+            view=data["view"],
+            complete=data.get("complete", False),
+            entities=[SnapshotEntity.from_dict(e) for e in data.get("entities", [])],
+        )
+
+    @staticmethod
+    def is_snapshot_frame(data: Dict[str, Any]) -> bool:
+        return data.get("op") == "snapshot"
 
 
 @dataclass
@@ -139,6 +173,12 @@ class Subscription:
     view: str
     key: Optional[str] = None
     partition: Optional[str] = None
+    filters: Optional[Dict[str, str]] = None
+    take: Optional[int] = None
+    skip: Optional[int] = None
+    with_snapshot: Optional[bool] = None
+    after: Optional[str] = None
+    snapshot_limit: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result: Dict[str, Any] = {"type": "subscribe", "view": self.view}
@@ -146,6 +186,18 @@ class Subscription:
             result["key"] = self.key
         if self.partition is not None:
             result["partition"] = self.partition
+        if self.filters is not None:
+            result["filters"] = self.filters
+        if self.take is not None:
+            result["take"] = self.take
+        if self.skip is not None:
+            result["skip"] = self.skip
+        if self.with_snapshot is not None:
+            result["withSnapshot"] = self.with_snapshot
+        if self.after is not None:
+            result["after"] = self.after
+        if self.snapshot_limit is not None:
+            result["snapshotLimit"] = self.snapshot_limit
         return result
 
     def sub_key(self) -> str:
