@@ -5,6 +5,5 @@ name = "ore"
 name = "ore"
 stack = "OreStream"
 url = "wss://ore.stack.arete.run"
-typescript_output_file = "../sdk/typescript/src/ore/index.ts"
-rust_output_crate = "../sdk/rust/src/ore"
+rust_output_crate = "../../examples/ore-rust/src/generated/ore"
 rust_module = true

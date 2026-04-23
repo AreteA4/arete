@@ -6,7 +6,8 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-arete-sdk = { package = "arete-a4-sdk", path = "../../rust/arete-a4-sdk", version = "0.0.1" }
-arete-stacks = { path = "../../stacks/sdk/rust", version = "0.0.1", features = ["ore"] }
+arete-sdk = { package = "arete-a4-sdk", path = "../../rust/arete-a4-sdk", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

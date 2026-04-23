@@ -82,9 +82,10 @@ update_cargo_toml() {
         return
     fi
     
-    sed -i.bak -E "s/(arete-[a-z-]+) = \"[0-9]+\.[0-9]+\"/\1 = \"$MAJOR_MINOR\"/g" "$file"
-    sed -i.bak -E "s/(arete-[a-z-]+ = \{[^}]*version = \")[0-9]+\.[0-9]+(\".*)$/\1$MAJOR_MINOR\2/g" "$file"
-    
+    sed -i.bak -E "s/(arete-[a-z-]+) = \"[0-9]+\.[0-9]+(\.[0-9]+)?\"/\1 = \"$MAJOR_MINOR\"/g" "$file"
+    sed -i.bak -E "s/(arete-[a-z-]+ = \{[^}]*version = \")[0-9]+\.[0-9]+(\.[0-9]+)?(\".*)$/\1$MAJOR_MINOR\3/g" "$file"
+    perl -i.bak -pe 'if (/^\s*arete-[^=]+\s*=\s*\{/) { s/path = "[^"]+",\s*//; s/,\s*path = "[^"]+"//; }' "$file"
+
     # Clean up backup files
     rm -f "$file.bak"
     

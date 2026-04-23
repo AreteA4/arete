@@ -128,6 +128,10 @@ proto-generated/
 !examples/ore-react/src/generated/ore-stack.ts
 !examples/ore-typescript/src/generated/
 !examples/ore-typescript/src/generated/ore-stack.ts
+!examples/ore-rust/src/generated/
+!examples/ore-rust/src/generated/mod.rs
+!examples/ore-rust/src/generated/ore/
+!examples/ore-rust/src/generated/ore/**
 
 # Testing
 coverage/
