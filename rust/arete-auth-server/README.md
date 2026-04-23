@@ -39,8 +39,8 @@ export SIGNING_KEY_PATH="./.arete-auth/signing.key"
 export VERIFYING_KEY_PATH="./.arete-auth/verifying.key"
 
 # Simple key store for the reference server
-export SECRET_KEYS="hsk_dev_secret"
-export PUBLISHABLE_KEYS="hspk_dev_public"
+export SECRET_KEYS="arete_dev_secret"
+export PUBLISHABLE_KEYS="aretepk_dev_public"
 
 # Session limits embedded in minted tokens
 export MAX_CONNECTIONS_PER_SUBJECT="10"
@@ -136,13 +136,13 @@ Health check endpoint.
 
 The auth server supports two types of API keys:
 
-### Secret Keys (hsk_...)
+### Secret Keys (arete_..., legacy hsk_...)
 - Long-lived, high-trust keys
 - For server-side use only
 - Can mint tokens for any deployment
 - Maximum TTL: 1 hour
 
-### Publishable Keys (hspk_...)
+### Publishable Keys (aretepk_..., legacy hspk_...)
 - Safe for browser/client use
 - Can be exposed in frontend code
 - Constrained by origin allowlist

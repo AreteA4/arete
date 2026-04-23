@@ -33,11 +33,11 @@ class AreteClient:
 
     Examples:
         # Server-side with any API key (secret or publishable)
-        auth = AuthConfig.from_api_key("hspk_...")  # or "hssk_..."
+        auth = AuthConfig.from_api_key("aretepk_...")  # or secret "arete_..."
         client = AreteClient("wss://demo.stack.arete.run", auth=auth)
 
         # Browser/client with publishable key only
-        auth = AuthConfig(publishable_key="hspk_...")
+        auth = AuthConfig(publishable_key="aretepk_...")
         client = AreteClient("wss://demo.stack.arete.run", auth=auth)
 
         # Using static token
