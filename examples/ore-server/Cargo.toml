@@ -13,7 +13,7 @@ resolver = "2"
 
 [dependencies]
 ore-stack = { path = "../../stacks/ore" }
-arete-server = { path = "../../rust/arete-server", version = "0.0.1" }
+arete-server = { path = "../../rust/arete-server", version = "0.1.0" }
 tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
