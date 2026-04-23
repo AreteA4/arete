@@ -17,11 +17,6 @@
       "type": "toml",
       "path": "examples/ore-rust/Cargo.toml",
       "jsonpath": "$.dependencies['arete-sdk'].version"
-    },
-    {
-      "type": "toml",
-      "path": "examples/ore-rust/Cargo.toml",
-      "jsonpath": "$.dependencies['arete-stacks'].version"
     }
   ],
   "packages": {
@@ -65,10 +60,6 @@
       "release-type": "node",
       "component": "arete-typescript"
     },
-    "stacks/sdk/rust": {
-      "release-type": "rust",
-      "component": "arete-stacks"
-    },
     "packages/arete": {
       "release-type": "node",
       "component": "a4-npm"
@@ -105,7 +96,6 @@
         "arete-server",
         "arete-react",
         "arete-typescript",
-        "arete-stacks",
         "a4-npm",
         "arete-mcp-npm"
       ]
