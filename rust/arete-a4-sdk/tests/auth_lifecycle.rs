@@ -1,4 +1,4 @@
-use arete_sdk::{Arete, SocketIssue, Stack, TokenTransport, ViewBuilder, Views};
+use arete_a4_sdk::{Arete, SocketIssue, Stack, TokenTransport, ViewBuilder, Views};
 use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
@@ -221,7 +221,7 @@ async fn exposes_socket_issues_via_public_api() {
         SocketIssue {
             error: "subscription-limit-exceeded".to_string(),
             message: "Subscription limit exceeded".to_string(),
-            code: Some(arete_sdk::AuthErrorCode::SubscriptionLimitExceeded),
+            code: Some(arete_a4_sdk::AuthErrorCode::SubscriptionLimitExceeded),
             retryable: false,
             retry_after: None,
             suggested_action: Some("unsubscribe first".to_string()),
