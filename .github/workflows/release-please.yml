@@ -104,11 +104,6 @@ jobs:
           cargo publish --allow-dirty
           sleep 30
 
-      - name: Publish arete-stacks
-        run: |
-          cd stacks/sdk/rust
-          cargo publish --allow-dirty
-
   publish-npm:
     name: Publish to npm
     needs: release-please

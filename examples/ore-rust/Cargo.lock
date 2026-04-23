@@ -15,8 +15,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
-name = "arete-sdk"
-version = "0.0.1"
+name = "arete-a4-sdk"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -32,15 +32,6 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "arete-stacks"
-version = "0.0.1"
-dependencies = [
- "arete-sdk",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -596,8 +587,9 @@ name = "ore-rust-example"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arete-sdk",
- "arete-stacks",
+ "arete-a4-sdk",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

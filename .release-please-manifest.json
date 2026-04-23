@@ -7,7 +7,6 @@
   "rust/arete-server": "0.1.0",
   "typescript/react": "0.1.0",
   "typescript/core": "0.1.0",
-  "stacks/sdk/rust": "0.1.0",
   "packages/arete": "0.1.0",
   "packages/mcp": "0.1.0",
   "arete-idl": "0.0.1",

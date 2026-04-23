@@ -54,12 +54,12 @@ pip install arete-sdk
 - `arete-macros/`: Proc-macros for stream definitions
 - `arete-idl/`: IDL parsing and type system
 - `rust/arete-server/`: WebSocket server and projection handlers
-- `rust/arete-sdk/`: Rust client SDK
+- `rust/arete-a4-sdk/`: Rust client SDK
 - `cli/`: CLI tool for SDK generation
 - `typescript/core/`: Pure TypeScript SDK
 - `typescript/react/`: React SDK with hooks
 - `python/arete-sdk/`: Python client SDK
-- `stacks/`: Stack implementations and SDKs
+- `stacks/`: Stack implementations and local SDK generation config
 - `packages/`: Additional packages
 - `examples/`: Example projects
 

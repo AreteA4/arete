@@ -11,7 +11,6 @@ members = [
     "rust/arete-auth",
     "rust/arete-auth-server",
     "rust/arete-mcp",
-    "stacks/sdk/rust",
 ]
 exclude = [
     "stacks/pumpfun",

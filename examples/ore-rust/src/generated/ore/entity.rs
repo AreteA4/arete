@@ -1,4 +1,4 @@
-use super::types::{OreMiner, OreRound, OreTreasury};
+use super::types::{OreRound, OreTreasury, OreMiner};
 use arete_sdk::{Stack, StateView, ViewBuilder, ViewHandle, Views};
 
 pub struct OreStreamStack;
@@ -24,12 +24,8 @@ pub struct OreStreamStackViews {
 impl Views for OreStreamStackViews {
     fn from_builder(builder: ViewBuilder) -> Self {
         Self {
-            ore_round: OreRoundEntityViews {
-                builder: builder.clone(),
-            },
-            ore_treasury: OreTreasuryEntityViews {
-                builder: builder.clone(),
-            },
+            ore_round: OreRoundEntityViews { builder: builder.clone() },
+            ore_treasury: OreTreasuryEntityViews { builder: builder.clone() },
             ore_miner: OreMinerEntityViews { builder },
         }
     }

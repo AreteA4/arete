@@ -85,6 +85,21 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
+  generated-example-sdks:
+    name: Generated Example SDKs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Regenerate example SDKs
+        run: bash ./scripts/generate-example-sdks.sh
+
+      - name: Check generated SDKs are committed
+        run: git diff --exit-code -- examples/ore-react/src/generated/ore-stack.ts examples/ore-typescript/src/generated/ore-stack.ts examples/ore-rust/src/generated
+
   typescript-core:
     name: TypeScript Core
     runs-on: ubuntu-latest

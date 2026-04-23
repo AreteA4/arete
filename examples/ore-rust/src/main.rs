@@ -1,5 +1,7 @@
+mod generated;
+
 use arete_sdk::prelude::*;
-use arete_stacks::ore::{OreRound, OreStreamStack, OreTreasury};
+use generated::ore::{OreRound, OreStreamStack, OreTreasury};
 
 // Use your own API key in production (can be secret or publishable)
 const API_KEY: &str = "hspk_alt8MN3BmJebxARE3IlOnnaAEibCrqqXfdG5VoGW";

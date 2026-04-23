@@ -148,8 +148,8 @@ Key rules:
 - ALWAYS run `a4 explore <stack> --json` before writing any Arete code. Never guess entity names, field paths, or types.
 - Use `a4 explore <stack> <Entity> --json` to get exact field names, types, and view definitions.
 - The primary public stack is `ore` (ORE mining data). Run `a4 explore ore --json` to see its entities.
-- For React apps: install `arete-react` and `arete-stacks`
-- For TypeScript apps: install `arete-typescript` and `arete-stacks`
+- For React apps: install `@usearete/react` and generate stack SDK files with `a4 sdk create typescript <stack>`
+- For TypeScript apps: install `@usearete/sdk` and generate stack SDK files with `a4 sdk create typescript <stack>`
 - To scaffold a new project quickly: `npx arete-cli create my-app`
 
 Full documentation: https://docs.arete.run
