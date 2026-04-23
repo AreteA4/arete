@@ -161,12 +161,12 @@ class AuthConfig:
     For server-side code, use `from_api_key()` or pass `publishable_key=`
     (which accepts any API key, not just publishable ones):
 
-        auth = AuthConfig.from_api_key("aretepk_...")  # or secret "arete_..."
-        auth = AuthConfig(publishable_key="aretepk_...")  # same thing
+        auth = AuthConfig.from_api_key("a4-pub_...")  # or secret "a4-sk_..."
+        auth = AuthConfig(publishable_key="a4-pub_...")  # same thing
 
     For browser/client code, use publishable_key directly:
 
-        auth = AuthConfig(publishable_key="aretepk_...")  # must be publishable
+        auth = AuthConfig(publishable_key="a4-pub_...")  # must be publishable
 
     Using static token:
 
@@ -200,8 +200,8 @@ class AuthConfig:
             **kwargs: Additional auth config options
 
         Example:
-            auth = AuthConfig.from_api_key("aretepk_...")
-            auth = AuthConfig.from_api_key("arete_...", token_transport=TokenTransport.BEARER)
+            auth = AuthConfig.from_api_key("a4-pub_...")
+            auth = AuthConfig.from_api_key("a4-sk_...", token_transport=TokenTransport.BEARER)
         """
         return cls(publishable_key=api_key, **kwargs)
 
