@@ -107,7 +107,7 @@ async fn fetches_token_from_endpoint_and_refreshes_in_band() {
 
     let client = Arete::<TestStack>::builder()
         .url(&ws_server.url)
-        .publishable_key("a4-pub_test_123")
+        .publishable_key("a4_pk_test_123")
         .token_endpoint(token_endpoint.url.clone())
         .connect()
         .await
@@ -135,7 +135,7 @@ async fn fetches_token_from_endpoint_and_refreshes_in_band() {
         .clone();
     assert_eq!(
         endpoint_headers,
-        vec![Some("Bearer a4-pub_test_123".to_string())],
+        vec![Some("Bearer a4_pk_test_123".to_string())],
         "publishable key should be forwarded to the token endpoint"
     );
 
@@ -166,7 +166,7 @@ async fn uses_bearer_transport_for_websocket_handshake() {
 
     let client = Arete::<TestStack>::builder()
         .url(&ws_server.url)
-        .publishable_key("a4-pub_test_123")
+        .publishable_key("a4_pk_test_123")
         .token_endpoint(token_endpoint.url.clone())
         .token_transport(TokenTransport::Bearer)
         .connect()

@@ -306,17 +306,17 @@ chat transcript, and the JSON-RPC stdio traffic between the client and
 2. **`ARETE_API_KEY` env var** set in the MCP server's process
    environment — the recommended pattern for headless/CI use. Set it in
    `.vscode/mcp.json`'s `env` block, or via
-   `claude mcp add -e ARETE_API_KEY=a4-sk_... arete -- a4-mcp` (legacy `hsk_...` keys still work).
+   `claude mcp add -e ARETE_API_KEY=a4_sk_... arete -- a4-mcp` (legacy `hsk_...` keys still work).
 3. **`~/.arete/credentials.toml`** — the file managed by the CLI's
    `a4 auth login` command. Both schemas the CLI writes are supported:
 
    ```toml
    # New format (URL-keyed, written by recent `a4 auth login`):
    [keys]
-   "https://api.arete.run" = "a4-sk_..."
+   "https://api.arete.run" = "a4_sk_..."
 
    # Legacy format (top-level key, still honored):
-   api_key = "a4-sk_..."  # older keys may use hsk_ / hspk_ prefixes
+   api_key = "a4_sk_..."  # older keys may use hsk_ / hspk_ prefixes
    ```
 
    The file lookup honors `ARETE_API_URL` if set; otherwise falls back
