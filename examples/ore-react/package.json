@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@usearete/react": "^0.0.1",
+    "@usearete/react": "^0.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zod": "^3.23.0",

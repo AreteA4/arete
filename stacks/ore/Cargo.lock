@@ -174,12 +174,12 @@ checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
 name = "arete"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arete-a4-sdk",
  "arete-interpreter",
  "arete-macros",
- "arete-sdk",
  "arete-server",
  "bs58",
  "bytemuck",
@@ -197,6 +197,26 @@ dependencies = [
  "yellowstone-vixen",
  "yellowstone-vixen-core",
  "yellowstone-vixen-yellowstone-grpc-source",
+]
+
+[[package]]
+name = "arete-a4-sdk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "flate2",
+ "futures-util",
+ "pin-project-lite",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite 0.21.0",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -231,7 +251,7 @@ dependencies = [
 
 [[package]]
 name = "arete-interpreter"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arete-idl",
  "arete-macros",
@@ -258,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "arete-macros"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arete-idl",
  "bs58",
@@ -272,28 +292,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "arete-sdk"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "flate2",
- "futures-util",
- "pin-project-lite",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tokio-stream",
- "tokio-tungstenite 0.21.0",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "arete-server"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "arete-auth",
