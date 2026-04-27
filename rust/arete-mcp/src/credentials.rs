@@ -158,7 +158,7 @@ pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Res
         Err(anyhow!(
             "no Arete api key found for hosted stack `{url}`. \
              Tried: explicit `api_key` argument, `{ENV_VAR_API_KEY}` env var, and {file}. \
-             Fix: run `a4 auth login`, or set `{ENV_VAR_API_KEY}=hsk_...` in your MCP \
+             Fix: run `a4 auth login`, or set `{ENV_VAR_API_KEY}=a4_sk_...` (or legacy `hsk_...`) in your MCP \
              server environment (e.g. `.vscode/mcp.json` `env` block), or pass \
              `api_key` explicitly on the connect call."
         ))
@@ -263,39 +263,39 @@ mod tests {
     #[test]
     fn explicit_argument_wins_over_env_and_file() {
         let env = TestEnv::default()
-            .with_var(ENV_VAR_API_KEY, "hsk_from_env")
-            .with_credentials("api_key = \"hsk_from_file\"");
+            .with_var(ENV_VAR_API_KEY, "a4_sk_from_env")
+            .with_credentials("api_key = \"a4_sk_from_file\"");
         let r = resolve_with(
             &env,
-            Some("hsk_explicit".into()),
+            Some("a4_sk_explicit".into()),
             "wss://foo.stack.arete.run",
         )
         .unwrap();
         assert_eq!(r.source, KeySource::Explicit);
-        assert_eq!(r.key.as_deref(), Some("hsk_explicit"));
+        assert_eq!(r.key.as_deref(), Some("a4_sk_explicit"));
     }
 
     #[test]
     fn env_var_wins_over_file() {
         let env = TestEnv::default()
-            .with_var(ENV_VAR_API_KEY, "hsk_from_env")
-            .with_credentials("api_key = \"hsk_from_file\"");
+            .with_var(ENV_VAR_API_KEY, "a4_sk_from_env")
+            .with_credentials("api_key = \"a4_sk_from_file\"");
         let r = resolve_with(&env, None, "wss://foo.stack.arete.run").unwrap();
         assert_eq!(r.source, KeySource::EnvVar);
-        assert_eq!(r.key.as_deref(), Some("hsk_from_env"));
+        assert_eq!(r.key.as_deref(), Some("a4_sk_from_env"));
     }
 
     #[test]
     fn file_used_when_nothing_else_available() {
-        let env = TestEnv::default().with_credentials("api_key = \"hsk_from_file\"");
+        let env = TestEnv::default().with_credentials("api_key = \"a4_sk_from_file\"");
         let r = resolve_with(&env, None, "wss://foo.stack.arete.run").unwrap();
         assert_eq!(r.source, KeySource::CredentialsFile);
-        assert_eq!(r.key.as_deref(), Some("hsk_from_file"));
+        assert_eq!(r.key.as_deref(), Some("a4_sk_from_file"));
     }
 
     #[test]
     fn whitespace_only_explicit_falls_through_to_env() {
-        let env = TestEnv::default().with_var(ENV_VAR_API_KEY, "hsk_from_env");
+        let env = TestEnv::default().with_var(ENV_VAR_API_KEY, "a4_sk_from_env");
         let r = resolve_with(&env, Some("  ".into()), "wss://foo.stack.arete.run").unwrap();
         assert_eq!(r.source, KeySource::EnvVar);
     }
@@ -304,7 +304,7 @@ mod tests {
     fn whitespace_only_env_falls_through_to_file() {
         let env = TestEnv::default()
             .with_var(ENV_VAR_API_KEY, "   ")
-            .with_credentials("api_key = \"hsk_from_file\"");
+            .with_credentials("api_key = \"a4_sk_from_file\"");
         let r = resolve_with(&env, None, "wss://foo.stack.arete.run").unwrap();
         assert_eq!(r.source, KeySource::CredentialsFile);
     }
@@ -314,36 +314,36 @@ mod tests {
     #[test]
     fn parses_legacy_top_level_api_key() {
         assert_eq!(
-            parse_credentials_content("api_key = \"hsk_legacy\"\n", DEFAULT_API_URL).as_deref(),
-            Some("hsk_legacy")
+            parse_credentials_content("api_key = \"a4_sk_legacy\"\n", DEFAULT_API_URL).as_deref(),
+            Some("a4_sk_legacy")
         );
     }
 
     #[test]
     fn parses_new_url_keyed_table() {
         let content = "[keys]\n\
-                       \"https://api.arete.run\" = \"hsk_new\"\n";
+                       \"https://api.arete.run\" = \"a4_sk_new\"\n";
         assert_eq!(
             parse_credentials_content(content, "https://api.arete.run").as_deref(),
-            Some("hsk_new")
+            Some("a4_sk_new")
         );
     }
 
     #[test]
     fn new_format_respects_api_url_selector() {
         let content = "[keys]\n\
-                       \"https://api.arete.run\" = \"hsk_prod\"\n\
-                       \"http://localhost:3000\" = \"hsk_local\"\n";
+                       \"https://api.arete.run\" = \"a4_sk_prod\"\n\
+                       \"http://localhost:3000\" = \"a4_sk_local\"\n";
         assert_eq!(
             parse_credentials_content(content, "http://localhost:3000").as_deref(),
-            Some("hsk_local")
+            Some("a4_sk_local")
         );
     }
 
     #[test]
     fn new_format_returns_none_when_url_not_listed() {
         let content = "[keys]\n\
-                       \"https://api.arete.run\" = \"hsk_prod\"\n";
+                       \"https://api.arete.run\" = \"a4_sk_prod\"\n";
         assert_eq!(
             parse_credentials_content(content, "https://not-listed.example"),
             None
@@ -355,12 +355,12 @@ mod tests {
         let env = TestEnv::default()
             .with_var(ENV_VAR_API_URL, "http://localhost:3000")
             .with_credentials(
-                "[keys]\n\"http://localhost:3000\" = \"hsk_local\"\n\
-                 \"https://api.arete.run\" = \"hsk_prod\"\n",
+                "[keys]\n\"http://localhost:3000\" = \"a4_sk_local\"\n\
+                 \"https://api.arete.run\" = \"a4_sk_prod\"\n",
             );
         let r = resolve_with(&env, None, "wss://foo.stack.arete.run").unwrap();
         assert_eq!(r.source, KeySource::CredentialsFile);
-        assert_eq!(r.key.as_deref(), Some("hsk_local"));
+        assert_eq!(r.key.as_deref(), Some("a4_sk_local"));
     }
 
     #[test]

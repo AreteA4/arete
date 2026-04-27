@@ -1,4 +1,4 @@
-use arete_sdk::{Arete, SocketIssue, Stack, TokenTransport, ViewBuilder, Views};
+use arete_a4_sdk::{Arete, SocketIssue, Stack, TokenTransport, ViewBuilder, Views};
 use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
@@ -107,7 +107,7 @@ async fn fetches_token_from_endpoint_and_refreshes_in_band() {
 
     let client = Arete::<TestStack>::builder()
         .url(&ws_server.url)
-        .publishable_key("hspk_test_123")
+        .publishable_key("a4_pk_test_123")
         .token_endpoint(token_endpoint.url.clone())
         .connect()
         .await
@@ -135,7 +135,7 @@ async fn fetches_token_from_endpoint_and_refreshes_in_band() {
         .clone();
     assert_eq!(
         endpoint_headers,
-        vec![Some("Bearer hspk_test_123".to_string())],
+        vec![Some("Bearer a4_pk_test_123".to_string())],
         "publishable key should be forwarded to the token endpoint"
     );
 
@@ -166,7 +166,7 @@ async fn uses_bearer_transport_for_websocket_handshake() {
 
     let client = Arete::<TestStack>::builder()
         .url(&ws_server.url)
-        .publishable_key("hspk_test_123")
+        .publishable_key("a4_pk_test_123")
         .token_endpoint(token_endpoint.url.clone())
         .token_transport(TokenTransport::Bearer)
         .connect()
@@ -221,7 +221,7 @@ async fn exposes_socket_issues_via_public_api() {
         SocketIssue {
             error: "subscription-limit-exceeded".to_string(),
             message: "Subscription limit exceeded".to_string(),
-            code: Some(arete_sdk::AuthErrorCode::SubscriptionLimitExceeded),
+            code: Some(arete_a4_sdk::AuthErrorCode::SubscriptionLimitExceeded),
             retryable: false,
             retry_after: None,
             suggested_action: Some("unsubscribe first".to_string()),
