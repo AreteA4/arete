@@ -3,6 +3,7 @@ use crate::ast::{
     ResolverExtractSpec, ResolverType, Transformation,
 };
 use crate::compiler::{MultiEntityBytecode, OpCode};
+use crate::debugger::{VmDebugEvent, VmDebugger, VmLookupHop};
 use crate::Mutation;
 use dashmap::DashMap;
 use lru::LruCache;
@@ -10,6 +11,7 @@ use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "otel")]
@@ -374,6 +376,7 @@ impl DirtyTracker {
 pub struct VmContext {
     registers: Vec<RegisterValue>,
     states: HashMap<u32, StateTable>,
+    debugger: Option<Arc<dyn VmDebugger>>,
     pub instructions_executed: u64,
     pub cache_hits: u64,
     path_cache: HashMap<String, CompiledPath>,
@@ -391,6 +394,7 @@ pub struct VmContext {
     last_lookup_index_miss: Option<String>,
     last_pda_registered: Option<String>,
     last_lookup_index_keys: Vec<String>,
+    pending_pda_reprocess_updates: Vec<PendingAccountUpdate>,
     scheduled_callbacks: Vec<(u64, ScheduledCallback)>,
 }
 
@@ -987,6 +991,7 @@ impl VmContext {
         let mut vm = VmContext {
             registers: vec![Value::Null; 256],
             states: HashMap::new(),
+            debugger: None,
             instructions_executed: 0,
             cache_hits: 0,
             path_cache: HashMap::new(),
@@ -1004,6 +1009,7 @@ impl VmContext {
             last_lookup_index_miss: None,
             last_pda_registered: None,
             last_lookup_index_keys: Vec::new(),
+            pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
         };
         vm.states.insert(
@@ -1033,11 +1039,37 @@ impl VmContext {
         vm
     }
 
+    pub fn set_debugger(&mut self, debugger: Arc<dyn VmDebugger>) {
+        self.debugger = Some(debugger);
+    }
+
+    pub fn clear_debugger(&mut self) {
+        self.debugger = None;
+    }
+
+    fn emit_debug<F>(&self, builder: F)
+    where
+        F: FnOnce() -> VmDebugEvent,
+    {
+        if let Some(debugger) = &self.debugger {
+            debugger.record(builder());
+        }
+    }
+
+    fn is_debug_enabled(&self) -> bool {
+        self.debugger.is_some()
+    }
+
+    fn take_pending_pda_reprocess_updates(&mut self) -> Vec<PendingAccountUpdate> {
+        std::mem::take(&mut self.pending_pda_reprocess_updates)
+    }
+
     /// Create a new VmContext specifically for multi-entity operation.
     pub fn new_multi_entity() -> Self {
         VmContext {
             registers: vec![Value::Null; 256],
             states: HashMap::new(),
+            debugger: None,
             instructions_executed: 0,
             cache_hits: 0,
             path_cache: HashMap::new(),
@@ -1055,6 +1087,7 @@ impl VmContext {
             last_lookup_index_miss: None,
             last_pda_registered: None,
             last_lookup_index_keys: Vec::new(),
+            pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
         }
     }
@@ -1063,6 +1096,7 @@ impl VmContext {
         let mut vm = VmContext {
             registers: vec![Value::Null; 256],
             states: HashMap::new(),
+            debugger: None,
             instructions_executed: 0,
             cache_hits: 0,
             path_cache: HashMap::new(),
@@ -1080,6 +1114,7 @@ impl VmContext {
             last_lookup_index_miss: None,
             last_pda_registered: None,
             last_lookup_index_keys: Vec::new(),
+            pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
         };
         vm.states.insert(
@@ -1118,6 +1153,19 @@ impl VmContext {
 
     pub fn get_entity_state(&self, state_id: u32, key: &Value) -> Option<Value> {
         self.states.get(&state_id)?.get_and_touch(key)
+    }
+
+    pub fn snapshot_state_table(&self, state_id: u32) -> Vec<(Value, Value)> {
+        self.states
+            .get(&state_id)
+            .map(|state| {
+                state
+                    .data
+                    .iter()
+                    .map(|entry| (entry.key().clone(), entry.value().clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn restore_resolver_requests(&mut self, requests: Vec<ResolverRequest>) {
@@ -1590,6 +1638,10 @@ impl VmContext {
         mut log: Option<&mut crate::canonical_log::CanonicalLog>,
     ) -> Result<Vec<Mutation>> {
         self.current_context = context.cloned();
+        self.emit_debug(|| VmDebugEvent::ProcessEventStart {
+            event_type: event_type.to_string(),
+            context: context.map(|ctx| ctx.to_value()),
+        });
 
         let mut event_value = event_value;
         if let Some(ctx) = context {
@@ -1658,6 +1710,12 @@ impl VmContext {
             for entity_name in entity_names {
                 if let Some(entity_bytecode) = bytecode.entities.get(entity_name) {
                     if let Some(handler) = entity_bytecode.handlers.get(event_type) {
+                        self.emit_debug(|| VmDebugEvent::HandlerStart {
+                            entity_name: entity_name.clone(),
+                            event_type: event_type.to_string(),
+                            state_id: entity_bytecode.state_id,
+                        });
+
                         if let Some(ref mut log) = log {
                             log.set("entity", entity_name.clone());
                             log.inc("handlers", 1);
@@ -1677,6 +1735,7 @@ impl VmContext {
                             entity_bytecode.computed_fields_evaluator.as_ref(),
                             Some(&entity_bytecode.non_emitted_fields),
                         )?;
+                        let direct_mutation_count = mutations.len();
 
                         if let Some(ref mut log) = log {
                             log.inc(
@@ -1705,13 +1764,19 @@ impl VmContext {
                                     let _ = self.queue_instruction_event(
                                         entity_bytecode.state_id,
                                         QueuedInstructionEvent {
-                                            pda_address: missed_pda,
+                                            pda_address: missed_pda.clone(),
                                             event_type: event_type.to_string(),
                                             event_data: event_value.clone(),
                                             slot,
                                             signature,
                                         },
                                     );
+                                    self.emit_debug(|| VmDebugEvent::QueueAction {
+                                        entity_name: entity_name.clone(),
+                                        event_type: event_type.to_string(),
+                                        queue_kind: "instruction_pda_lookup_miss".to_string(),
+                                        lookup_value: missed_pda,
+                                    });
                                 } else {
                                     // Queue account updates (e.g. BondingCurve) when PDA
                                     // reverse lookup fails. These will be flushed when an
@@ -1727,7 +1792,7 @@ impl VmContext {
                                         let _ = self.queue_account_update(
                                             entity_bytecode.state_id,
                                             QueuedAccountUpdate {
-                                                pda_address: missed_pda,
+                                                pda_address: missed_pda.clone(),
                                                 account_type: event_type.to_string(),
                                                 account_data: event_value.clone(),
                                                 slot,
@@ -1735,6 +1800,12 @@ impl VmContext {
                                                 signature,
                                             },
                                         );
+                                        self.emit_debug(|| VmDebugEvent::QueueAction {
+                                            entity_name: entity_name.clone(),
+                                            event_type: event_type.to_string(),
+                                            queue_kind: "account_pda_lookup_miss".to_string(),
+                                            lookup_value: missed_pda,
+                                        });
                                     } else {
                                         tracing::warn!(
                                             event_type = %event_type,
@@ -1755,7 +1826,7 @@ impl VmContext {
                                         let _ = self.queue_account_update(
                                             entity_bytecode.state_id,
                                             QueuedAccountUpdate {
-                                                pda_address: missed_lookup,
+                                                pda_address: missed_lookup.clone(),
                                                 account_type: event_type.to_string(),
                                                 account_data: event_value.clone(),
                                                 slot,
@@ -1763,6 +1834,12 @@ impl VmContext {
                                                 signature,
                                             },
                                         );
+                                        self.emit_debug(|| VmDebugEvent::QueueAction {
+                                            entity_name: entity_name.clone(),
+                                            event_type: event_type.to_string(),
+                                            queue_kind: "account_lookup_index_miss".to_string(),
+                                            lookup_value: missed_lookup,
+                                        });
                                     } else {
                                         tracing::trace!(
                                             event_type = %event_type,
@@ -1829,6 +1906,16 @@ impl VmContext {
                                 entity_bytecode.state_id,
                                 &registered_pda,
                             );
+                            let pending_count = pending_events.len();
+                            if pending_count > 0 {
+                                self.emit_debug(|| VmDebugEvent::FlushAction {
+                                    entity_name: entity_name.clone(),
+                                    event_type: event_type.to_string(),
+                                    flush_kind: "pending_instruction_events".to_string(),
+                                    trigger: registered_pda.clone(),
+                                    count: pending_count,
+                                });
+                            }
                             for pending in pending_events {
                                 if let Some(pending_handler) =
                                     entity_bytecode.handlers.get(&pending.event_type)
@@ -1848,6 +1935,45 @@ impl VmContext {
                             }
                         }
 
+                        for pending in self.take_pending_pda_reprocess_updates() {
+                            if let Some(pending_handler) =
+                                entity_bytecode.handlers.get(&pending.account_type)
+                            {
+                                self.current_context = Some(if pending.is_stale_reprocess {
+                                    UpdateContext::new_reprocessed(
+                                        pending.slot,
+                                        pending.write_version,
+                                    )
+                                } else {
+                                    UpdateContext::new_account(
+                                        pending.slot,
+                                        pending.signature.clone(),
+                                        pending.write_version,
+                                    )
+                                });
+                                match self.execute_handler(
+                                    pending_handler,
+                                    &pending.account_data,
+                                    &pending.account_type,
+                                    entity_bytecode.state_id,
+                                    entity_name,
+                                    entity_bytecode.computed_fields_evaluator.as_ref(),
+                                    Some(&entity_bytecode.non_emitted_fields),
+                                ) {
+                                    Ok(reprocessed) => {
+                                        all_mutations.extend(reprocessed);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            account_type = %pending.account_type,
+                                            "PDA remap reprocessing failed"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
                         let lookup_keys = self.take_last_lookup_index_keys();
                         if !lookup_keys.is_empty() {
                             tracing::info!(
@@ -1860,6 +1986,16 @@ impl VmContext {
                             if let Ok(pending_updates) =
                                 self.flush_pending_updates(entity_bytecode.state_id, &lookup_key)
                             {
+                                let pending_count = pending_updates.len();
+                                if pending_count > 0 {
+                                    self.emit_debug(|| VmDebugEvent::FlushAction {
+                                        entity_name: entity_name.clone(),
+                                        event_type: event_type.to_string(),
+                                        flush_kind: "pending_account_updates".to_string(),
+                                        trigger: lookup_key.clone(),
+                                        count: pending_count,
+                                    });
+                                }
                                 for pending in pending_updates {
                                     if let Some(pending_handler) =
                                         entity_bytecode.handlers.get(&pending.account_type)
@@ -1893,6 +2029,12 @@ impl VmContext {
                                 }
                             }
                         }
+
+                        self.emit_debug(|| VmDebugEvent::HandlerEnd {
+                            entity_name: entity_name.clone(),
+                            event_type: event_type.to_string(),
+                            mutations: direct_mutation_count,
+                        });
                     } else if let Some(ref mut log) = log {
                         log.set("skip_reason", "no_handler");
                     }
@@ -1903,6 +2045,8 @@ impl VmContext {
         } else if let Some(ref mut log) = log {
             log.set("skip_reason", "no_event_routing");
         }
+
+        let debug_warnings = self.warnings.clone();
 
         if let Some(log) = log {
             log.set("mutations", all_mutations.len() as i64);
@@ -1929,6 +2073,12 @@ impl VmContext {
         } else {
             self.warnings.clear();
         }
+
+        self.emit_debug(|| VmDebugEvent::ProcessEventEnd {
+            event_type: event_type.to_string(),
+            mutations: all_mutations.len(),
+            warnings: debug_warnings,
+        });
 
         if self.instructions_executed.is_multiple_of(1000) {
             let state_ids: Vec<u32> = self.states.keys().cloned().collect();
@@ -1998,6 +2148,14 @@ impl VmContext {
                     default,
                 } => {
                     let value = self.load_field(event_value, path, default.as_ref())?;
+                    if self.is_debug_enabled() {
+                        self.emit_debug(|| VmDebugEvent::LoadEventField {
+                            entity_name: entity_name.to_string(),
+                            event_type: event_type.to_string(),
+                            path: path.segments.clone(),
+                            value: value.clone(),
+                        });
+                    }
                     self.registers[*dest] = value;
                     pc += 1;
                 }
@@ -2028,17 +2186,49 @@ impl VmContext {
                     path,
                     value,
                 } => {
+                    let old_value = self
+                        .is_debug_enabled()
+                        .then(|| Self::get_value_at_path(&self.registers[*object], path))
+                        .flatten();
                     self.set_field_auto_vivify(*object, path, *value)?;
                     if should_emit(path) {
                         dirty_tracker.mark_replaced(path);
+                    }
+                    if self.is_debug_enabled() {
+                        self.emit_debug(|| VmDebugEvent::FieldWrite {
+                            entity_name: entity_name.to_string(),
+                            event_type: event_type.to_string(),
+                            op: "set_field".to_string(),
+                            path: path.clone(),
+                            old_value,
+                            new_value: Self::get_value_at_path(&self.registers[*object], path),
+                            applied: true,
+                            reason: None,
+                        });
                     }
                     pc += 1;
                 }
                 OpCode::SetFields { object, fields } => {
                     for (path, value_reg) in fields {
+                        let old_value = self
+                            .is_debug_enabled()
+                            .then(|| Self::get_value_at_path(&self.registers[*object], path))
+                            .flatten();
                         self.set_field_auto_vivify(*object, path, *value_reg)?;
                         if should_emit(path) {
                             dirty_tracker.mark_replaced(path);
+                        }
+                        if self.is_debug_enabled() {
+                            self.emit_debug(|| VmDebugEvent::FieldWrite {
+                                entity_name: entity_name.to_string(),
+                                event_type: event_type.to_string(),
+                                op: "set_fields".to_string(),
+                                path: path.clone(),
+                                old_value,
+                                new_value: Self::get_value_at_path(&self.registers[*object], path),
+                                applied: true,
+                                reason: None,
+                            });
                         }
                     }
                     pc += 1;
@@ -2054,6 +2244,14 @@ impl VmContext {
                 } => {
                     let key_value = &self.registers[*key];
                     if key_value.is_null() && *is_account_event {
+                        self.emit_debug(|| VmDebugEvent::ReadOrInitState {
+                            entity_name: entity_name.to_string(),
+                            event_type: event_type.to_string(),
+                            key: key_value.clone(),
+                            existing_state: None,
+                            loaded_state: Value::Null,
+                            skipped_reason: Some("null_primary_key".to_string()),
+                        });
                         tracing::debug!(
                             event_type = %event_type,
                             "AbortIfNullKey: key is null for account state event, \
@@ -2135,6 +2333,16 @@ impl VmContext {
                                         slot,
                                         write_version,
                                     ) {
+                                        self.emit_debug(|| VmDebugEvent::ReadOrInitState {
+                                            entity_name: entity_name.to_string(),
+                                            event_type: event_type.to_string(),
+                                            key: key_value.clone(),
+                                            existing_state: None,
+                                            loaded_state: Value::Null,
+                                            skipped_reason: Some(
+                                                "stale_account_update".to_string(),
+                                            ),
+                                        });
                                         self.add_warning(format!(
                                             "Stale account update skipped: slot={}, write_version={}, account={}",
                                             slot, write_version, account_address
@@ -2149,6 +2357,16 @@ impl VmContext {
                                     if state.is_duplicate_instruction(
                                         &key_value, event_type, slot, txn_index,
                                     ) {
+                                        self.emit_debug(|| VmDebugEvent::ReadOrInitState {
+                                            entity_name: entity_name.to_string(),
+                                            event_type: event_type.to_string(),
+                                            key: key_value.clone(),
+                                            existing_state: None,
+                                            loaded_state: Value::Null,
+                                            skipped_reason: Some(
+                                                "duplicate_instruction".to_string(),
+                                            ),
+                                        });
                                         self.add_warning(format!(
                                             "Duplicate instruction skipped: slot={}, txn_index={}",
                                             slot, txn_index
@@ -2159,9 +2377,17 @@ impl VmContext {
                             }
                         }
                     }
-                    let value = state
-                        .get_and_touch(&key_value)
-                        .unwrap_or_else(|| default.clone());
+                    let existing_state = state.get_and_touch(&key_value);
+                    let value = existing_state.clone().unwrap_or_else(|| default.clone());
+
+                    self.emit_debug(|| VmDebugEvent::ReadOrInitState {
+                        entity_name: entity_name.to_string(),
+                        event_type: event_type.to_string(),
+                        key: key_value,
+                        existing_state,
+                        loaded_state: value.clone(),
+                        skipped_reason: None,
+                    });
 
                     self.registers[*dest] = value;
                     pc += 1;
@@ -2295,6 +2521,8 @@ impl VmContext {
                     state,
                 } => {
                     let primary_key = self.registers[*key].clone();
+                    let dirty_fields: Vec<String> =
+                        dirty_tracker.dirty_paths().into_iter().collect();
 
                     if primary_key.is_null() || dirty_tracker.is_empty() {
                         let reason = if dirty_tracker.is_empty() {
@@ -2302,6 +2530,15 @@ impl VmContext {
                         } else {
                             "null_primary_key"
                         };
+                        self.emit_debug(|| VmDebugEvent::EmitMutation {
+                            entity_name: entity_name.clone(),
+                            event_type: event_type.to_string(),
+                            key: primary_key.clone(),
+                            emitted: false,
+                            reason: Some(reason.to_string()),
+                            patch: None,
+                            dirty_fields,
+                        });
                         self.add_warning(format!(
                             "Skipping mutation for entity '{}': {} (dirty_fields={})",
                             entity_name,
@@ -2319,6 +2556,15 @@ impl VmContext {
                             patch,
                             append,
                         };
+                        self.emit_debug(|| VmDebugEvent::EmitMutation {
+                            entity_name: entity_name.clone(),
+                            event_type: event_type.to_string(),
+                            key: mutation.key.clone(),
+                            emitted: true,
+                            reason: None,
+                            patch: Some(mutation.patch.clone()),
+                            dirty_fields,
+                        });
                         output.push(mutation);
                     }
                     pc += 1;
@@ -2328,9 +2574,25 @@ impl VmContext {
                     path,
                     value,
                 } => {
+                    let old_value = self
+                        .is_debug_enabled()
+                        .then(|| Self::get_value_at_path(&self.registers[*object], path))
+                        .flatten();
                     let was_set = self.set_field_if_null(*object, path, *value)?;
                     if was_set && should_emit(path) {
                         dirty_tracker.mark_replaced(path);
+                    }
+                    if self.is_debug_enabled() {
+                        self.emit_debug(|| VmDebugEvent::FieldWrite {
+                            entity_name: entity_name.to_string(),
+                            event_type: event_type.to_string(),
+                            op: "set_field_if_null".to_string(),
+                            path: path.clone(),
+                            old_value,
+                            new_value: Self::get_value_at_path(&self.registers[*object], path),
+                            applied: was_set,
+                            reason: (!was_set).then_some("already_set".to_string()),
+                        });
                     }
                     pc += 1;
                 }
@@ -2458,6 +2720,13 @@ impl VmContext {
                 } => {
                     let actual_state_id = override_state_id;
                     let mut current_value = self.registers[*lookup_value].clone();
+                    let original_lookup_value = current_value.clone();
+                    let mut hops = if self.is_debug_enabled() {
+                        Some(Vec::<VmLookupHop>::new())
+                    } else {
+                        None
+                    };
+                    let mut miss_kind: Option<String> = None;
 
                     const MAX_CHAIN_DEPTH: usize = 5;
                     let mut iterations = 0;
@@ -2492,11 +2761,22 @@ impl VmContext {
                                 })
                                 .unwrap_or(Value::Null);
 
+                            let lookup_result = resolved.clone();
+                            if let Some(hops) = hops.as_mut() {
+                                hops.push(VmLookupHop {
+                                    source: "lookup_index".to_string(),
+                                    input: current_value.clone(),
+                                    result: lookup_result.clone(),
+                                    chained: false,
+                                });
+                            }
+
                             let mut resolved_from_pda = false;
                             let resolved = if resolved.is_null() {
                                 if let Some(pda_str) = current_value.as_str() {
                                     resolved_from_pda = true;
-                                    self.states
+                                    let pda_result = self
+                                        .states
                                         .get_mut(&actual_state_id)
                                         .and_then(|state_mut| {
                                             state_mut
@@ -2505,7 +2785,16 @@ impl VmContext {
                                         })
                                         .and_then(|pda_lookup| pda_lookup.lookup(pda_str))
                                         .map(Value::String)
-                                        .unwrap_or(Value::Null)
+                                        .unwrap_or(Value::Null);
+                                    if let Some(hops) = hops.as_mut() {
+                                        hops.push(VmLookupHop {
+                                            source: "pda_reverse_lookup".to_string(),
+                                            input: current_value.clone(),
+                                            result: pda_result.clone(),
+                                            chained: false,
+                                        });
+                                    }
+                                    pda_result
                                 } else {
                                     Value::Null
                                 }
@@ -2517,6 +2806,9 @@ impl VmContext {
                                 if iterations == 1 {
                                     if let Some(pda_str) = current_value.as_str() {
                                         self.last_pda_lookup_miss = Some(pda_str.to_string());
+                                        miss_kind = Some("pda_lookup_miss".to_string());
+                                    } else {
+                                        miss_kind = Some("lookup_index_miss".to_string());
                                     }
                                 }
                                 break Value::Null;
@@ -2531,16 +2823,34 @@ impl VmContext {
                                         self.last_lookup_index_miss =
                                             Some(resolved_str.to_string());
                                     }
+                                    miss_kind = Some("lookup_chain_incomplete".to_string());
                                     break Value::Null;
                                 }
                                 break resolved;
                             }
 
+                            if let Some(hops) = hops.as_mut() {
+                                if let Some(last) = hops.last_mut() {
+                                    last.chained = true;
+                                }
+                            }
+
                             current_value = resolved;
                         }
                     } else {
+                        miss_kind = Some("state_not_initialized".to_string());
                         Value::Null
                     };
+
+                    self.emit_debug(|| VmDebugEvent::LookupIndex {
+                        entity_name: entity_name.to_string(),
+                        event_type: event_type.to_string(),
+                        index_name: index_name.clone(),
+                        lookup_value: original_lookup_value,
+                        hops: hops.unwrap_or_default(),
+                        final_result: final_result.clone(),
+                        miss_kind,
+                    });
 
                     self.registers[*dest] = final_result;
                     pc += 1;
@@ -2736,8 +3046,22 @@ impl VmContext {
                 } => {
                     let stop_value = self.get_field(*object, stop_field).unwrap_or(Value::Null);
                     let stopped = stop_value.as_bool().unwrap_or(false);
+                    let old_value = self
+                        .is_debug_enabled()
+                        .then(|| Self::get_value_at_path(&self.registers[*object], path))
+                        .flatten();
 
                     if stopped {
+                        self.emit_debug(|| VmDebugEvent::FieldWrite {
+                            entity_name: entity_name.clone(),
+                            event_type: event_type.to_string(),
+                            op: "set_field_unless_stopped".to_string(),
+                            path: path.clone(),
+                            old_value,
+                            new_value: Self::get_value_at_path(&self.registers[*object], path),
+                            applied: false,
+                            reason: Some(format!("stop_flag:{}", stop_instruction)),
+                        });
                         tracing::debug!(
                             entity = %entity_name,
                             field = %path,
@@ -2752,6 +3076,18 @@ impl VmContext {
                     self.set_field_auto_vivify(*object, path, *value)?;
                     if should_emit(path) {
                         dirty_tracker.mark_replaced(path);
+                    }
+                    if self.is_debug_enabled() {
+                        self.emit_debug(|| VmDebugEvent::FieldWrite {
+                            entity_name: entity_name.clone(),
+                            event_type: event_type.to_string(),
+                            op: "set_field_unless_stopped".to_string(),
+                            path: path.clone(),
+                            old_value,
+                            new_value: Self::get_value_at_path(&self.registers[*object], path),
+                            applied: true,
+                            reason: None,
+                        });
                     }
                     pc += 1;
                 }
@@ -2975,38 +3311,43 @@ impl VmContext {
                     primary_key,
                 } => {
                     let actual_state_id = override_state_id;
-                    let state = self
-                        .states
-                        .get_mut(&actual_state_id)
-                        .ok_or("State table not found")?;
-
                     let pda_val = self.registers[*pda_address].clone();
                     let pk_val = self.registers[*primary_key].clone();
 
                     if let (Some(pda_str), Some(pk_str)) = (pda_val.as_str(), pk_val.as_str()) {
-                        let pda_lookup = state
-                            .pda_reverse_lookups
-                            .entry(lookup_name.clone())
-                            .or_insert_with(|| {
-                                PdaReverseLookup::new(DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES)
-                            });
-
-                        pda_lookup.insert(pda_str.to_string(), pk_str.to_string());
+                        let pending = self.update_pda_reverse_lookup(
+                            actual_state_id,
+                            lookup_name,
+                            pda_str.to_string(),
+                            pk_str.to_string(),
+                        )?;
+                        self.pending_pda_reprocess_updates.extend(pending);
                         self.last_pda_registered = Some(pda_str.to_string());
+                        self.emit_debug(|| VmDebugEvent::PdaReverseLookupUpdate {
+                            entity_name: entity_name.to_string(),
+                            event_type: event_type.to_string(),
+                            lookup_name: lookup_name.clone(),
+                            pda_address: pda_str.to_string(),
+                            primary_key: pk_val.clone(),
+                        });
                     } else if !pk_val.is_null() {
                         if let Some(pk_num) = pk_val.as_u64() {
                             if let Some(pda_str) = pda_val.as_str() {
-                                let pda_lookup = state
-                                    .pda_reverse_lookups
-                                    .entry(lookup_name.clone())
-                                    .or_insert_with(|| {
-                                        PdaReverseLookup::new(
-                                            DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES,
-                                        )
-                                    });
-
-                                pda_lookup.insert(pda_str.to_string(), pk_num.to_string());
+                                let pending = self.update_pda_reverse_lookup(
+                                    actual_state_id,
+                                    lookup_name,
+                                    pda_str.to_string(),
+                                    pk_num.to_string(),
+                                )?;
+                                self.pending_pda_reprocess_updates.extend(pending);
                                 self.last_pda_registered = Some(pda_str.to_string());
+                                self.emit_debug(|| VmDebugEvent::PdaReverseLookupUpdate {
+                                    entity_name: entity_name.to_string(),
+                                    event_type: event_type.to_string(),
+                                    lookup_name: lookup_name.clone(),
+                                    pda_address: pda_str.to_string(),
+                                    primary_key: pk_val.clone(),
+                                });
                             }
                         }
                     }
