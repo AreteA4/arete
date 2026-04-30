@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/AreteA4/arete/compare/arete-sdk-v0.1.0...arete-sdk-v0.1.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* **arete-a4-sdk:** use renamed crate in auth_lifecycle test ([cc0789e](https://github.com/AreteA4/arete/commit/cc0789e50ebb1c8f03f2e693ccc94299b8c387a6))
+
 ## [0.1.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.0.1...arete-sdk-v0.1.0) (2026-04-21)
 
 

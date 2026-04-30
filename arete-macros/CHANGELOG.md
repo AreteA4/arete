@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1](https://github.com/AreteA4/arete/compare/arete-macros-v0.1.0...arete-macros-v0.1.1) (2026-04-30)
+
+
+### Features
+
+* Include slot updates in health recording ([a4fe006](https://github.com/AreteA4/arete/commit/a4fe006b878441a60173974ae8fe7fb9aa63d53a))
+
+
+### Bug Fixes
+
+* guard vixen mutation queue before VM state advances ([9acbee3](https://github.com/AreteA4/arete/commit/9acbee3f558a9c1852566b5c44da389cb12a1f30))
+
 ## [0.1.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.0.1...arete-macros-v0.1.0) (2026-04-21)
 
 
