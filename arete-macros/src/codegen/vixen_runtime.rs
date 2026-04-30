@@ -392,8 +392,14 @@ fn generate_slot_subscription_task() -> TokenStream {
                                     match update.update_oneof {
                                         Some(UpdateOneof::Slot(slot_update)) => {
                                             slot_tracker.record(slot_update.slot);
+                                            if let Some(ref health) = health_monitor {
+                                                health.record_event().await;
+                                            }
                                         }
                                         Some(UpdateOneof::Account(account_update)) => {
+                                            if let Some(ref health) = health_monitor {
+                                                health.record_event().await;
+                                            }
                                             // Process SlotHashes sysvar update
                                             if let Some(account) = account_update.account {
                                                 if arete::runtime::bs58::encode(&account.pubkey).into_string() == slot_hashes_sysvar {
