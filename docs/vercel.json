@@ -5,6 +5,10 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/mcp/sse",
+      "destination": "/api/mcp/sse"
+    },
+    {
       "source": "/ingest/static/:path*",
       "destination": "https://eu-assets.i.posthog.com/static/:path*"
     },
