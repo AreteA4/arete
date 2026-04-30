@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.1](https://github.com/AreteA4/arete/compare/arete-v0.1.0...arete-v0.1.1) (2026-04-30)
+
+
+### Miscellaneous Chores
+
+* **arete:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.1.0 to 0.1.1
+    * arete-macros bumped from 0.1.0 to 0.1.1
+    * arete-server bumped from 0.1.0 to 0.1.1
+
 ## [0.1.0](https://github.com/AreteA4/arete/compare/arete-v0.0.1...arete-v0.1.0) (2026-04-21)
 
 
