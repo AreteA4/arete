@@ -17,6 +17,13 @@
       "destination": "https://eu.i.posthog.com/:path*"
     },
     {
+      "source": "/",
+      "has": [
+        { "type": "header", "key": "accept", "value": ".*text/markdown.*" }
+      ],
+      "destination": "/index.md"
+    },
+    {
       "source": "/:path((?!.*\\.(?:css|js|svg|png|jpg|jpeg|gif|webp|json|xml|ico|md|txt|woff|woff2)$).*)",
       "has": [
         { "type": "header", "key": "accept", "value": ".*text/markdown.*" }

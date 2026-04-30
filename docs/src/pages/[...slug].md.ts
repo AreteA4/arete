@@ -8,7 +8,7 @@ import { getCollection } from "astro:content";
 export const getStaticPaths: GetStaticPaths = async () => {
   const docs = await getCollection("docs");
   return docs
-    .filter((entry) => entry.id !== "index" && entry.id !== "index.mdx")
+    .filter((entry) => !["index", "index.md", "index.mdx"].includes(entry.id))
     .map((entry) => {
       const slug = entry.id.replace(/\.(md|mdx)$/, "");
       return {

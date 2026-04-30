@@ -16,6 +16,29 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 
 const DOCS_BASE = "https://docs.arete.run";
+const FETCH_TIMEOUT_MS = 8000;
+const CORPUS_TTL_MS = 5 * 60 * 1000;
+
+// Cached corpus across warm invocations on the same Vercel function instance.
+// Stateless across cold starts (which is fine — origin response is cacheable
+// at the CDN anyway), but saves the extra hop on warm reuse.
+let corpusCache: { text: string; fetchedAt: number } | null = null;
+
+async function getCorpus(): Promise<string> {
+  const now = Date.now();
+  if (corpusCache && now - corpusCache.fetchedAt < CORPUS_TTL_MS) {
+    return corpusCache.text;
+  }
+  const res = await fetch(`${DOCS_BASE}/llms-full.txt`, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to load llms-full.txt: HTTP ${res.status}`);
+  }
+  const text = await res.text();
+  corpusCache = { text, fetchedAt: now };
+  return text;
+}
 
 function buildServer(): McpServer {
   const server = new McpServer({
@@ -37,16 +60,20 @@ function buildServer(): McpServer {
         .describe("Max number of results to return"),
     },
     async ({ query, limit }) => {
-      const res = await fetch(`${DOCS_BASE}/llms-full.txt`);
-      if (!res.ok) {
+      let fullText: string;
+      try {
+        fullText = await getCorpus();
+      } catch (err) {
         return {
           content: [
-            { type: "text", text: `Failed to load docs index: ${res.status}` },
+            {
+              type: "text",
+              text: `Failed to load docs index: ${(err as Error).message}`,
+            },
           ],
           isError: true,
         };
       }
-      const fullText = await res.text();
       // starlight-llms-txt separates pages with horizontal rules
       const pages = fullText.split(/^\* \* \*$|^---$/m);
       const q = query.toLowerCase();
@@ -98,20 +125,34 @@ function buildServer(): McpServer {
     async ({ slug }) => {
       const cleanSlug = slug.replace(/^\/+|\/+$/g, "").replace(/\.md$/, "");
       const url = `${DOCS_BASE}/${cleanSlug}.md`;
-      const res = await fetch(url);
-      if (!res.ok) {
+      try {
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        });
+        if (!res.ok) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Page not found: ${cleanSlug} (HTTP ${res.status}). Use search_docs to find valid slugs.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        const text = await res.text();
+        return { content: [{ type: "text", text }] };
+      } catch (err) {
         return {
           content: [
             {
               type: "text",
-              text: `Page not found: ${cleanSlug} (HTTP ${res.status}). Use search_docs to find valid slugs.`,
+              text: `Failed to fetch ${cleanSlug}: ${(err as Error).message}`,
             },
           ],
           isError: true,
         };
       }
-      const text = await res.text();
-      return { content: [{ type: "text", text }] };
     },
   );
 
