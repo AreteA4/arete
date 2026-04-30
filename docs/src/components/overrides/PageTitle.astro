@@ -23,6 +23,13 @@ const processedBody = rawBody.replaceAll("{{VERSION}}", version);
 const markdownContent = `# ${title}\n\n${processedBody}`;
 ---
 
+<div class="agent-directive sr-only">
+  <blockquote>
+    For the complete documentation index optimized for AI agents, see <a href="/llms.txt">llms.txt</a> or <a href="/llms-full.txt">llms-full.txt</a>.
+    A markdown version of this page is available by appending <code>.md</code> to the URL or sending <code>Accept: text/markdown</code>.
+  </blockquote>
+</div>
+
 <div class="page-title-wrapper">
   <Default {...Astro.props}><slot /></Default>
   <div class="page-actions">
@@ -69,6 +76,18 @@ const markdownContent = `# ${title}\n\n${processedBody}`;
 </div>
 
 <style>
+  .agent-directive.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   .page-title-wrapper {
     display: flex;
     flex-wrap: wrap;

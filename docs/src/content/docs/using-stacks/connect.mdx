@@ -27,13 +27,13 @@ If you're creating a new project and just want to see Arete working with the ORE
 <Tabs>
 <TabItem label="React">
 
-### 1. Install
+### React: Install
 
 ```bash
 npm install arete-react zustand
 ```
 
-### 2. Add to your app
+### React: Add to your app
 
 ```tsx
 // App.tsx
@@ -69,7 +69,7 @@ export default function App() {
 }
 ```
 
-### 3. Run it
+### React: Run it
 
 ```bash
 npm run dev
@@ -78,13 +78,13 @@ npm run dev
 </TabItem>
 <TabItem label="TypeScript / Node.js">
 
-### 1. Install
+### TypeScript: Install
 
 ```bash
 npm install arete-typescript
 ```
 
-### 2. Create a script
+### TypeScript: Create a script
 
 ```typescript
 // stream.ts
@@ -108,7 +108,7 @@ async function main() {
 main().catch(console.error);
 ```
 
-### 3. Run it
+### TypeScript: Run it
 
 ```bash
 npx tsx stream.ts
@@ -117,7 +117,7 @@ npx tsx stream.ts
 </TabItem>
 <TabItem label="Rust">
 
-### 1. Add to Cargo.toml
+### Rust: Add to Cargo.toml
 
 ```toml
 [dependencies]
@@ -125,7 +125,7 @@ a4-sdk = "{{VERSION}}"
 a4-stacks = "{{VERSION}}"
 ```
 
-### 2. Write the code
+### Rust: Write the code
 
 ```rust
 // src/main.rs
@@ -147,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-### 3. Run it
+### Rust: Run it
 
 ```bash
 cargo run

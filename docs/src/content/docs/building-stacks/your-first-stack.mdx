@@ -195,7 +195,7 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
 <Tabs>
 <TabItem label="React">
 
-### 2. Set up your React app
+### React: Set up your React app
 
 ```bash
 npx create-react-app my-ore-app --template typescript
@@ -209,7 +209,7 @@ Copy the generated SDK into your React app:
 cp -r ../ore-stack/sdk ./src/ore-sdk
 ```
 
-### 3. Configure the Provider
+### React: Configure the Provider
 
 Wrap your app in `AreteProvider` using the URL from `a4 up`.
 
@@ -225,7 +225,7 @@ root.render(
 );
 ```
 
-### 4. Use the Generated Stack
+### React: Use the Generated Stack
 
 ```tsx
 // src/App.tsx
@@ -277,7 +277,7 @@ export default function App() {
 </TabItem>
 <TabItem label="TypeScript (Non-React)">
 
-### 2. Set up your project
+### TypeScript: Set up your project
 
 ```bash
 mkdir my-ore-app && cd my-ore-app
@@ -291,7 +291,7 @@ Copy the generated SDK:
 cp -r ../ore-stack/sdk ./src/ore-sdk
 ```
 
-### 3. Connect and stream data
+### TypeScript: Connect and stream data
 
 ```typescript
 // src/index.ts
@@ -328,7 +328,7 @@ async function main() {
 main().catch(console.error);
 ```
 
-### 4. Run your app
+### TypeScript: Run your app
 
 ```bash
 npx tsx src/index.ts

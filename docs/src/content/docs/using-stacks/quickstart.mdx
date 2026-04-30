@@ -24,8 +24,8 @@ If you're using Cursor, Claude Code, or another AI coding tool, check out [Build
 
 Choose how you want to run the CLI:
 
-<Tabs>
-<TabItem label="Cargo (Rust)">
+<Tabs syncKey="installer">
+<TabItem label="Install via Cargo">
 
 Install the native binary via Cargo:
 
@@ -42,7 +42,7 @@ a4 create my-app
 This is the same CLI — Cargo installs it as `a4` while npm uses `arete-cli`.
 
 </TabItem>
-<TabItem label="npx (no install)">
+<TabItem label="Install via npx">
 
 No installation needed — just run:
 
@@ -53,7 +53,7 @@ npx arete-cli create my-app
 This downloads and runs the CLI without installing it globally.
 
 </TabItem>
-<TabItem label="npm (global)">
+<TabItem label="Install via npm">
 
 Install globally via npm:
 
@@ -74,22 +74,22 @@ arete-cli create my-app
 
 ## Create Your App
 
-<Tabs>
-<TabItem label="Cargo (Rust)">
+<Tabs syncKey="creator">
+<TabItem label="Create with Cargo">
 
 ```bash
 a4 create my-app
 ```
 
 </TabItem>
-<TabItem label="npx (no install)">
+<TabItem label="Create with npx">
 
 ```bash
 npx arete-cli create my-app
 ```
 
 </TabItem>
-<TabItem label="npm (global)">
+<TabItem label="Create with npm">
 
 ```bash
 arete-cli create my-app
@@ -112,22 +112,22 @@ All templates use the same example: **ORE mining rounds** — a real, live Solan
 
 Or specify the template directly:
 
-<Tabs>
-<TabItem label="Cargo (Rust)">
+<Tabs syncKey="template-flag">
+<TabItem label="Template flag (Cargo)">
 
 ```bash
 a4 create my-app --template rust-ore  # or react-ore, typescript-ore
 ```
 
 </TabItem>
-<TabItem label="npx (no install)">
+<TabItem label="Template flag (npx)">
 
 ```bash
 npx arete-cli create my-app --template react-ore  # or typescript-ore, rust-ore
 ```
 
 </TabItem>
-<TabItem label="npm (global)">
+<TabItem label="Template flag (npm)">
 
 ```bash
 arete-cli create my-app --template react-ore  # or typescript-ore, rust-ore

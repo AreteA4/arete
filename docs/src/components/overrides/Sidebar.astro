@@ -7,7 +7,12 @@ import Default from "@astrojs/starlight/components/Sidebar.astro";
 ---
 
 <div class="custom-sidebar-wrapper">
-  <nav class="custom-sidebar" aria-label="Main">
+  <nav
+    class="custom-sidebar"
+    aria-label="Main"
+    role="navigation"
+    data-pagefind-ignore
+  >
     <Default {...Astro.props}><slot /></Default>
   </nav>
 </div>
