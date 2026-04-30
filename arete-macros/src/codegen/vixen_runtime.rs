@@ -313,6 +313,7 @@ fn generate_slot_subscription_task() -> TokenStream {
             let slot_tracker = slot_tracker.clone();
             let endpoint = endpoint.clone();
             let x_token = x_token.clone();
+            let health_monitor = health_monitor.clone();
 
             arete::runtime::tokio::spawn(async move {
                 arete::runtime::tracing::info!("[SLOT_SUB] Starting dedicated gRPC slot subscription");
