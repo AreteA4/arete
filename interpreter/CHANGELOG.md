@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.1.0...arete-interpreter-v0.1.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* compile AST PDA remapping hooks and expose VM debug events ([afc805f](https://github.com/AreteA4/arete/commit/afc805fd84b934a5e4b71d609c33a8b5c50152cc))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.1.0 to 0.1.1
+
 ## [0.1.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.0.1...arete-interpreter-v0.1.0) (2026-04-21)
 
 
