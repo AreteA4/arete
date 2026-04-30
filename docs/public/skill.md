@@ -140,8 +140,8 @@ curl -X POST https://api.arete.run/api/agents/me/keys/publishable \
   -H "Content-Type: application/json" \
   -d '{"origin_allowlist": ["https://my-agent-ui.example"]}'
 
-# Revoke a key by id
-curl -X DELETE https://api.arete.run/api/agents/me/keys/<id> \
+# Revoke a key by id (substitute :id with the numeric key id from the list call)
+curl -X DELETE https://api.arete.run/api/agents/me/keys/:id \
   -H "Authorization: Bearer YOUR_KEY"
 ```
 
@@ -154,19 +154,25 @@ You are signed up as a free-tier headless agent. Here's what's allowed:
 | Action | Allowed |
 |---|---|
 | `GET /api/registry` — browse public stacks | Yes |
-| `GET /api/registry/{name}/schema` — read schemas | Yes |
-| `GET /api/registry/stacks/{stack}/ast` — read AST | Yes |
+| `GET /api/registry/:name/schema` — read schemas | Yes |
+| `GET /api/registry/stacks/:stack/ast` — read AST | Yes |
 | WebSocket against public free-tier endpoints (e.g. Ore RPC) | Yes |
 | `GET /api/agents/me` — read your own profile | Yes |
 | `GET /api/agents/me/keys` and key management on your own keys | Yes |
+| `GET /api/specs`, `/api/specs/:id`, `/api/specs/:id/{schema,versions}` — read specs | Yes (returns `200`; empty list if you own none) |
+| `GET /api/builds`, `/api/builds/:id` — read builds | Yes (returns `200`; empty list if you own none) |
+| `GET /api/deployments`, `/api/deployments/:id`, `/api/deployments/:id/events` — read deployments | Yes (returns `200`; empty list if you own none) |
+| `GET /api/automation/runs`, `/api/automation/runs/:id` — read workflow runs | Yes (returns `200`; empty list if you own none) |
+| `POST /ws/sessions` — mint a 5-minute WebSocket session token | Yes for public free-tier targets; `403 agent-account-forbidden` otherwise |
 | `POST /api/specs` — create a spec | No (`403 agent-account-forbidden`) |
-| `PUT/DELETE /api/specs/{id}` | No (`403`) |
-| `POST /api/specs/{id}/versions` — push a version | No (`403`) |
-| `POST /api/builds` — build a stack | No (`403`) |
-| `POST /api/deployments/{id}/{stop,restart,rollback}` — deployment ops | No (`403`) |
-| `DELETE /api/deployments/{id}` — legacy stop | No (`403`) |
-| `POST /api/automation/runs` — run workflows | No (`403`) |
-| `POST /api/automation/runs/{id}/{resume,retry,cancel}` — workflow ops | No (`403`) |
+| `PUT/DELETE /api/specs/:id` | No (`403 agent-account-forbidden`) |
+| `POST /api/specs/:id/versions` — push a version | No (`403 agent-account-forbidden`) |
+| `POST /api/builds` — build a stack | No (`403 agent-account-forbidden`) |
+| `POST /api/deployments/:id/{stop,restart,rollback}` — deployment ops | No (`403 agent-account-forbidden`) |
+| `DELETE /api/deployments/:id` — legacy stop | No (`403 agent-account-forbidden`) |
+| `POST /api/automation/runs` — run workflows | No (`403 agent-account-forbidden`) |
+| `POST /api/automation/runs/:id/{resume,retry,cancel}` — workflow ops | No (`403 agent-account-forbidden`) |
+| Anything under `/api/auth/keys/*` (human-only key management) | No (`403 agent-account-forbidden`) — use `/api/agents/me/keys` |
 
 If you got `403` with code `agent-account-forbidden`, that's a **hard policy**, not a transient error. **Don't retry.**
 
@@ -180,9 +186,9 @@ Base URL: `https://api.arete.run`
 |--------|----------|-------------|------------|
 | GET | `/health` | Platform health | none |
 | GET | `/api/registry` | List public stacks | platform default (configurable) |
-| GET | `/api/registry/{name}` | Stack details | platform default |
-| GET | `/api/registry/{name}/schema` | Schema | platform default |
-| GET | `/api/registry/stacks/{stack}/ast` | AST | platform default |
+| GET | `/api/registry/:name` | Stack details | platform default |
+| GET | `/api/registry/:name/schema` | Schema | platform default |
+| GET | `/api/registry/stacks/:stack/ast` | AST | platform default |
 | POST | `/api/agents/signup` | Register a new agent | 5/hour/IP |
 
 ### Authenticated endpoints (Bearer `a4_ak_*`)
@@ -196,16 +202,16 @@ Base URL: `https://api.arete.run`
 | DELETE | `/api/agents/me/keys/:id` | Revoke one of your keys |
 | POST | `/ws/sessions` | Mint a 5-minute WebSocket session token (where allowed) |
 | GET | `/api/specs` | List specs you can see |
-| GET | `/api/specs/{id}` | Get spec |
-| GET | `/api/specs/{id}/schema` | Get spec schema |
-| GET | `/api/specs/{id}/versions` | List spec versions |
+| GET | `/api/specs/:id` | Get spec |
+| GET | `/api/specs/:id/schema` | Get spec schema |
+| GET | `/api/specs/:id/versions` | List spec versions |
 | GET | `/api/builds` | List builds you can see |
-| GET | `/api/builds/{id}` | Get build |
+| GET | `/api/builds/:id` | Get build |
 | GET | `/api/deployments` | List deployments you can see |
-| GET | `/api/deployments/{id}` | Get deployment |
-| GET | `/api/deployments/{id}/events` | Deployment events |
+| GET | `/api/deployments/:id` | Get deployment |
+| GET | `/api/deployments/:id/events` | Deployment events |
 | GET | `/api/automation/runs` | List workflow runs |
-| GET | `/api/automation/runs/{id}` | Get workflow run |
+| GET | `/api/automation/runs/:id` | Get workflow run |
 
 ### Forbidden for agents (returns `403 agent-account-forbidden`)
 
@@ -213,13 +219,13 @@ Base URL: `https://api.arete.run`
 |--------|----------|
 | GET/POST/DELETE | `/api/auth/keys/*` (human-only — use `/api/agents/me/keys` instead) |
 | POST | `/api/specs` |
-| PUT/DELETE | `/api/specs/{id}` |
-| POST | `/api/specs/{id}/versions` |
+| PUT/DELETE | `/api/specs/:id` |
+| POST | `/api/specs/:id/versions` |
 | POST | `/api/builds` |
-| DELETE | `/api/deployments/{id}` |
-| POST | `/api/deployments/{id}/{stop,restart,rollback}` |
+| DELETE | `/api/deployments/:id` |
+| POST | `/api/deployments/:id/{stop,restart,rollback}` |
 | POST | `/api/automation/runs` |
-| POST | `/api/automation/runs/{id}/{resume,retry,cancel}` |
+| POST | `/api/automation/runs/:id/{resume,retry,cancel}` |
 
 ## Error codes
 
