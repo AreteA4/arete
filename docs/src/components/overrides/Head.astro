@@ -1,14 +1,10 @@
 ---
 /**
- * Custom Head Component with PostHog Analytics
- *
- * Extends Starlight's default Head component to inject PostHog analytics.
- * PostHog is loaded early in the head to capture all page interactions.
+ * Starlight head: meta and asset links only.
+ * Client analytics lives in Footer.astro (see DocsClientScripts.astro).
  *
  * @see https://starlight.astro.build/guides/overriding-components/
  */
-import PostHog from "../PostHog.astro";
-
 const { head } = Astro.locals.starlightRoute;
 ---
 
@@ -17,90 +13,3 @@ const { head } = Astro.locals.starlightRoute;
     <Tag {...attrs} set:html={content} />
   ))
 }
-<PostHog />
-
-<script>
-  /**
-   * Track an event with PostHog if available
-   */
-  function trackEvent(eventName: string, properties: Record<string, unknown>) {
-    if (typeof window !== "undefined" && (window as any).posthog) {
-      (window as any).posthog.capture(eventName, properties);
-    }
-  }
-
-  /**
-   * Set up tab click tracking for starlight-tabs components
-   */
-  function setupTabTracking() {
-    // Listen for clicks on tab elements
-    document.addEventListener("click", (e) => {
-      const tab = (e.target as HTMLElement).closest(
-        'starlight-tabs [role="tab"]',
-      );
-      if (!tab) return;
-
-      const tabLabel =
-        tab.getAttribute("aria-label") || tab.textContent?.trim() || "unknown";
-
-      trackEvent("docs_tab_clicked", {
-        tab_name: tabLabel,
-        page: window.location.pathname,
-      });
-    });
-  }
-
-  /**
-   * Set up code snippet copy tracking
-   * Tracks clicks on expressive-code copy buttons
-   */
-  function setupCodeCopyTracking() {
-    document.addEventListener("click", (e) => {
-      const target = e.target as HTMLElement;
-
-      // Check if clicked element is a copy button in a code block
-      // Expressive code uses a button with specific classes/attributes
-      const copyButton = target.closest(
-        '.ec-copy, .expressive-code .copy, button[data-code-copy], [class*="copy"]',
-      );
-
-      if (!copyButton) return;
-
-      // Try to find the associated code block
-      const codeBlock = copyButton.closest("figure, pre, .expressive-code");
-      const codeElement = codeBlock?.querySelector("code");
-
-      // Get language from the code element class (e.g., "language-typescript")
-      const languageClass = codeElement?.className || "";
-      const language = languageClass.match(/language-(\w+)/)?.[1] || "unknown";
-
-      // Get first line of code for context (truncated)
-      const codeContent = codeElement?.textContent || "";
-      const codePreview = codeContent.split("\n")[0].slice(0, 50);
-
-      trackEvent("docs_code_copied", {
-        language: language,
-        code_preview: codePreview,
-        page: window.location.pathname,
-      });
-    });
-  }
-
-  /**
-   * Initialize all tracking
-   */
-  function initTracking() {
-    setupTabTracking();
-    setupCodeCopyTracking();
-  }
-
-  // Run on initial load
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", initTracking);
-  } else {
-    initTracking();
-  }
-
-  // Re-run on Astro page transitions
-  document.addEventListener("astro:page-load", initTracking);
-</script>
