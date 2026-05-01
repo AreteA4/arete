@@ -9,6 +9,10 @@
 
 (function () {
   if (window.__posthog_initialized) return;
+  // Set the flag before any further work — including the missing-key path —
+  // so re-executions (Astro view transitions, devtools reloads) don't repeat
+  // the warning or re-run init. Matches the original inline script behavior.
+  window.__posthog_initialized = true;
 
   const scriptEl =
     document.currentScript ||
@@ -21,8 +25,6 @@
     );
     return;
   }
-
-  window.__posthog_initialized = true;
 
   // Standard PostHog snippet — keep verbatim, do not reformat.
   !(function (t, e) {
