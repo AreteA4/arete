@@ -5,12 +5,30 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/mcp/sse",
+      "destination": "/api/mcp/sse"
+    },
+    {
       "source": "/ingest/static/:path*",
       "destination": "https://eu-assets.i.posthog.com/static/:path*"
     },
     {
       "source": "/ingest/:path*",
       "destination": "https://eu.i.posthog.com/:path*"
+    },
+    {
+      "source": "/",
+      "has": [
+        { "type": "header", "key": "accept", "value": ".*text/markdown.*" }
+      ],
+      "destination": "/index.md"
+    },
+    {
+      "source": "/:path((?!.*\\.(?:css|js|svg|png|jpg|jpeg|gif|webp|json|xml|ico|md|txt|woff|woff2)$).*)",
+      "has": [
+        { "type": "header", "key": "accept", "value": ".*text/markdown.*" }
+      ],
+      "destination": "/:path.md"
     }
   ]
 }

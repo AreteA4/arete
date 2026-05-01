@@ -2,6 +2,8 @@
 
 You are setting up Arete, a real-time Solana data streaming platform. Follow these steps in order.
 
+> **Need an Arete API key?** This file installs the local toolkit. To **register your agent on the Arete platform** and get an `a4_ak_*` API key, read https://docs.arete.run/skill.md instead — that's the platform-onboarding manual.
+
 ## Step 0: Check What Is Already Installed
 
 Before installing anything, check what is already present.
@@ -153,5 +155,6 @@ Key rules:
 - To scaffold a new project quickly: `npx arete-cli create my-app`
 
 Full documentation: https://docs.arete.run
+Platform onboarding (register, API key, capabilities): https://docs.arete.run/skill.md
 Agent skills reference: https://docs.arete.run/agent-skills/overview/
 Prompt cookbook: https://docs.arete.run/agent-skills/prompts/

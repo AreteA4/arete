@@ -27,6 +27,7 @@
 pub mod ast;
 pub mod canonical_log;
 pub mod compiler;
+pub mod debugger;
 pub mod event_type_helpers;
 pub mod metrics_context;
 pub mod proto_router;
@@ -46,6 +47,7 @@ pub mod vm_metrics;
 pub use slot_hash_cache::{get_slot_hash, record_slot_hash};
 
 pub use canonical_log::{CanonicalLog, LogLevel};
+pub use debugger::{VmDebugEvent, VmDebugger, VmLookupHop};
 pub use metrics_context::{FieldAccessor, FieldRef, MetricsContext};
 pub use resolvers::{
     InstructionContext, KeyResolution, ResolveContext, ReverseLookupUpdater, TokenMetadata,

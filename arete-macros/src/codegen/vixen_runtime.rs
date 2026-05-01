@@ -216,6 +216,14 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                 vm_guard.take_resolver_requests()
                             };
 
+                            // Scheduled resolver application also mutates VM state, so reserve
+                            // projector capacity before applying it.
+                            let projector_permit = reserve_projector_batch_slot(
+                                mutations_tx.clone(),
+                                "scheduled resolver callback",
+                            )
+                            .await;
+
                             let url_mutations = runtime_resolver
                                 .resolve_and_apply(&vm, bytecode.as_ref(), requests)
                                 .await;
@@ -238,7 +246,7 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                     arete::runtime::smallvec::SmallVec::from_vec(url_mutations),
                                     slot_context,
                                 );
-                                let _ = mutations_tx.send(batch).await;
+                                projector_permit.send(batch);
                             }
                         }
                     });
@@ -305,6 +313,7 @@ fn generate_slot_subscription_task() -> TokenStream {
             let slot_tracker = slot_tracker.clone();
             let endpoint = endpoint.clone();
             let x_token = x_token.clone();
+            let health_monitor = health_monitor.clone();
 
             arete::runtime::tokio::spawn(async move {
                 arete::runtime::tracing::info!("[SLOT_SUB] Starting dedicated gRPC slot subscription");
@@ -384,8 +393,14 @@ fn generate_slot_subscription_task() -> TokenStream {
                                     match update.update_oneof {
                                         Some(UpdateOneof::Slot(slot_update)) => {
                                             slot_tracker.record(slot_update.slot);
+                                            if let Some(ref health) = health_monitor {
+                                                health.record_event().await;
+                                            }
                                         }
                                         Some(UpdateOneof::Account(account_update)) => {
+                                            if let Some(ref health) = health_monitor {
+                                                health.record_event().await;
+                                            }
                                             // Process SlotHashes sysvar update
                                             if let Some(account) = account_update.account {
                                                 if arete::runtime::bs58::encode(&account.pubkey).into_string() == slot_hashes_sysvar {
@@ -650,6 +665,32 @@ pub fn generate_vm_handler(
             }
         }
 
+        const PROJECTOR_ENQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+        async fn reserve_projector_batch_slot(
+            mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
+            operation: &str,
+        ) -> arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch> {
+            match arete::runtime::tokio::time::timeout(PROJECTOR_ENQUEUE_TIMEOUT, mutations_tx.reserve_owned()).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
+                    arete::runtime::tracing::error!(
+                        operation = %operation,
+                        "Projector queue closed while reserving mutation capacity; exiting to avoid inconsistent VM state"
+                    );
+                    std::process::exit(1);
+                }
+                Err(_) => {
+                    arete::runtime::tracing::error!(
+                        operation = %operation,
+                        timeout = ?PROJECTOR_ENQUEUE_TIMEOUT,
+                        "Timed out waiting for projector queue capacity; exiting to avoid inconsistent VM state"
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+
         #[derive(Clone)]
         pub struct VmHandler {
             vm: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::vm::VmContext>>,
@@ -698,6 +739,7 @@ pub fn generate_vm_handler(
                 slot: u64,
                 ordering: u64,
                 event_context: Option<arete::runtime::arete_server::EventContext>,
+                projector_permit: arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch>,
             ) {
                 if !mutations.is_empty() {
                     let slot_context = arete::runtime::arete_server::SlotContext::new(slot, ordering);
@@ -708,7 +750,7 @@ pub fn generate_vm_handler(
                     if let Some(ctx) = event_context {
                         batch = batch.with_event_context(ctx);
                     }
-                    let _ = self.mutations_tx.send(batch).await;
+                    projector_permit.send(batch);
                 }
             }
 
@@ -719,6 +761,13 @@ pub fn generate_vm_handler(
                 self.runtime_resolver
                     .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests)
                     .await
+            }
+
+            async fn reserve_mutation_batch_slot(
+                &self,
+                operation: &str,
+            ) -> arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch> {
+                reserve_projector_batch_slot(self.mutations_tx.clone(), operation).await
             }
         }
 
@@ -740,6 +789,10 @@ pub fn generate_vm_handler(
                 let account_address = arete::runtime::bs58::encode(&account.pubkey).into_string();
 
                 let event_type = value.event_type();
+                // Reserve downstream capacity before mutating VM state so a wedged
+                // projector cannot leave the parser ahead of published batches.
+                let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
+
                 let mut log = arete::runtime::arete_interpreter::CanonicalLog::new();
                 log.set("phase", "vixen")
                     .set("event_kind", "account")
@@ -888,7 +941,6 @@ pub fn generate_vm_handler(
 
                 match mutations_result {
                     Ok(mut mutations) => {
-                        self.slot_tracker.record(slot);
                         // Combine primary mutations with resolver mutations into a single batch
                         // to avoid duplicate frames for the same entity key
                         mutations.extend(resolver_mutations);
@@ -904,8 +956,10 @@ pub fn generate_vm_handler(
                             slot,
                             write_version,
                             Some(event_context),
+                            projector_permit,
                         )
                         .await;
+                        self.slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -934,6 +988,10 @@ pub fn generate_vm_handler(
 
                 let static_keys_vec = &raw_update.accounts;
                 let event_type = value.event_type();
+                // Reserve downstream capacity before mutating VM state so a wedged
+                // projector cannot leave the parser ahead of published batches.
+                let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
+
                 let account_keys: Vec<String> = static_keys_vec
                     .iter()
                     .map(|key| {
@@ -1119,7 +1177,6 @@ pub fn generate_vm_handler(
 
                 match mutations_result {
                     Ok(mut mutations) => {
-                        self.slot_tracker.record(slot);
                         // Combine primary mutations with resolver mutations into a single batch
                         // to avoid duplicate frames for the same entity key
                         mutations.extend(resolver_mutations);
@@ -1135,8 +1192,10 @@ pub fn generate_vm_handler(
                             slot,
                             txn_index as u64,
                             Some(event_context),
+                            projector_permit,
                         )
                         .await;
+                        self.slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -1566,6 +1625,32 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             }
         }
 
+        const PROJECTOR_ENQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+        async fn reserve_projector_batch_slot(
+            mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
+            operation: &str,
+        ) -> arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch> {
+            match arete::runtime::tokio::time::timeout(PROJECTOR_ENQUEUE_TIMEOUT, mutations_tx.reserve_owned()).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
+                    arete::runtime::tracing::error!(
+                        operation = %operation,
+                        "Projector queue closed while reserving mutation capacity; exiting to avoid inconsistent VM state"
+                    );
+                    std::process::exit(1);
+                }
+                Err(_) => {
+                    arete::runtime::tracing::error!(
+                        operation = %operation,
+                        timeout = ?PROJECTOR_ENQUEUE_TIMEOUT,
+                        "Timed out waiting for projector queue capacity; exiting to avoid inconsistent VM state"
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+
         #[derive(Clone)]
         pub struct VmHandler {
             vm: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::vm::VmContext>>,
@@ -1614,6 +1699,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 slot: u64,
                 ordering: u64,
                 event_context: Option<arete::runtime::arete_server::EventContext>,
+                projector_permit: arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch>,
             ) {
                 if !mutations.is_empty() {
                     let slot_context = arete::runtime::arete_server::SlotContext::new(slot, ordering);
@@ -1624,7 +1710,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                     if let Some(ctx) = event_context {
                         batch = batch.with_event_context(ctx);
                     }
-                    let _ = self.mutations_tx.send(batch).await;
+                    projector_permit.send(batch);
                 }
             }
 
@@ -1635,6 +1721,13 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 self.runtime_resolver
                     .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests)
                     .await
+            }
+
+            async fn reserve_mutation_batch_slot(
+                &self,
+                operation: &str,
+            ) -> arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch> {
+                reserve_projector_batch_slot(self.mutations_tx.clone(), operation).await
             }
         }
     }
@@ -1667,6 +1760,10 @@ pub fn generate_account_handler_impl(
                 let account_address = arete::runtime::bs58::encode(&account.pubkey).into_string();
 
                 let event_type = value.event_type();
+                // Reserve downstream capacity before mutating VM state so a wedged
+                // projector cannot leave the parser ahead of published batches.
+                let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
+
                 let mut log = arete::runtime::arete_interpreter::CanonicalLog::new();
                 log.set("phase", "vixen")
                     .set("event_kind", "account")
@@ -1803,7 +1900,6 @@ pub fn generate_account_handler_impl(
 
                 match mutations_result {
                     Ok(mut mutations) => {
-                        self.slot_tracker.record(slot);
                         // Combine primary mutations with resolver mutations into a single batch
                         // to avoid duplicate frames for the same entity key
                         mutations.extend(resolver_mutations);
@@ -1819,8 +1915,10 @@ pub fn generate_account_handler_impl(
                             slot,
                             write_version,
                             Some(event_context),
+                            projector_permit,
                         )
                         .await;
+                        self.slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -1861,6 +1959,10 @@ pub fn generate_instruction_handler_impl(
 
                 let static_keys_vec = &raw_update.accounts;
                 let event_type = value.event_type();
+                // Reserve downstream capacity before mutating VM state so a wedged
+                // projector cannot leave the parser ahead of published batches.
+                let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
+
                 let mut log = arete::runtime::arete_interpreter::CanonicalLog::new();
                 log.set("phase", "vixen")
                     .set("event_kind", "instruction")
@@ -2036,7 +2138,6 @@ pub fn generate_instruction_handler_impl(
 
                 match mutations_result {
                     Ok(mut mutations) => {
-                        self.slot_tracker.record(slot);
                         // Combine primary mutations with resolver mutations into a single batch
                         // to avoid duplicate frames for the same entity key
                         mutations.extend(resolver_mutations);
@@ -2052,8 +2153,10 @@ pub fn generate_instruction_handler_impl(
                             slot,
                             txn_index as u64,
                             Some(event_context),
+                            projector_permit,
                         )
                         .await;
+                        self.slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {

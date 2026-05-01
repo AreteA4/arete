@@ -1818,8 +1818,32 @@ impl<S> TypedCompiler<S> {
                     }
                 }
                 HookAction::RegisterPdaMapping { .. } => {
-                    // PDA registration is handled elsewhere (in resolvers)
-                    // Skip for now
+                    if let HookAction::RegisterPdaMapping {
+                        pda_field,
+                        seed_field,
+                        lookup_name,
+                    } = action
+                    {
+                        let pda_reg = 11;
+                        let seed_reg = 12;
+
+                        ops.push(OpCode::LoadEventField {
+                            path: pda_field.clone(),
+                            dest: pda_reg,
+                            default: None,
+                        });
+                        ops.push(OpCode::LoadEventField {
+                            path: seed_field.clone(),
+                            dest: seed_reg,
+                            default: None,
+                        });
+                        ops.push(OpCode::UpdatePdaReverseLookup {
+                            state_id: self.state_id,
+                            lookup_name: lookup_name.clone(),
+                            pda_address: pda_reg,
+                            primary_key: seed_reg,
+                        });
+                    }
                 }
             }
         }

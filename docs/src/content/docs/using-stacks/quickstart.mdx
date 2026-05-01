@@ -24,8 +24,10 @@ If you're using Cursor, Claude Code, or another AI coding tool, check out [Build
 
 Choose how you want to run the CLI:
 
-<Tabs>
-<TabItem label="Prerequisites — Cargo (Rust)">
+### Step 1: Install the CLI
+
+<Tabs syncKey="installer">
+<TabItem label="Cargo">
 
 Install the native binary via Cargo:
 
@@ -42,7 +44,7 @@ a4 create my-app
 This is the same CLI — Cargo installs it as `a4` while npm uses `arete-cli`.
 
 </TabItem>
-<TabItem label="Prerequisites — npx (no install)">
+<TabItem label="npx">
 
 No installation needed — just run:
 
@@ -53,7 +55,7 @@ npx arete-cli create my-app
 This downloads and runs the CLI without installing it globally.
 
 </TabItem>
-<TabItem label="Prerequisites — npm (global)">
+<TabItem label="npm">
 
 Install globally via npm:
 
@@ -74,22 +76,24 @@ arete-cli create my-app
 
 ## Create Your App
 
-<Tabs>
-<TabItem label="Create app — Cargo (Rust)">
+### Step 2: Scaffold the project
+
+<Tabs syncKey="installer">
+<TabItem label="Cargo">
 
 ```bash
 a4 create my-app
 ```
 
 </TabItem>
-<TabItem label="Create app — npx (no install)">
+<TabItem label="npx">
 
 ```bash
 npx arete-cli create my-app
 ```
 
 </TabItem>
-<TabItem label="Create app — npm (global)">
+<TabItem label="npm">
 
 ```bash
 arete-cli create my-app
@@ -110,24 +114,24 @@ You'll be prompted to select a template:
 All templates use the same example: **ORE mining rounds** — a real, live Solana program. The templates differ only in language/framework. Each connects to the same public ORE stack and streams identical data.
 :::
 
-Or specify the template directly:
+### Step 3: Or specify the template directly
 
-<Tabs>
-<TabItem label="Template flag — Cargo (Rust)">
+<Tabs syncKey="installer">
+<TabItem label="Cargo">
 
 ```bash
 a4 create my-app --template rust-ore  # or react-ore, typescript-ore
 ```
 
 </TabItem>
-<TabItem label="Template flag — npx (no install)">
+<TabItem label="npx">
 
 ```bash
 npx arete-cli create my-app --template react-ore  # or typescript-ore, rust-ore
 ```
 
 </TabItem>
-<TabItem label="Template flag — npm (global)">
+<TabItem label="npm">
 
 ```bash
 arete-cli create my-app --template react-ore  # or typescript-ore, rust-ore
