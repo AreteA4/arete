@@ -6,10 +6,12 @@
 // the rewrite in vercel.json).
 //
 // Tools exposed:
-//   - search_docs(query): keyword search across llms-full.txt
+//   - search_docs(query): keyword search across docs-index.json (per-page chunks)
 //   - fetch_page(slug):   returns raw markdown for a single doc page
 //
 // Discovery manifest lives at /.well-known/mcp.json.
+// docs-index.json is generated at build time by scripts/build-docs-index.mjs
+// from the per-page .md endpoints, so each entry has { slug, title, content }.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -17,27 +19,33 @@ import { z } from "zod";
 
 const DOCS_BASE = "https://docs.arete.run";
 const FETCH_TIMEOUT_MS = 8000;
-const CORPUS_TTL_MS = 5 * 60 * 1000;
+const INDEX_TTL_MS = 5 * 60 * 1000;
 
-// Cached corpus across warm invocations on the same Vercel function instance.
-// Stateless across cold starts (which is fine — origin response is cacheable
-// at the CDN anyway), but saves the extra hop on warm reuse.
-let corpusCache: { text: string; fetchedAt: number } | null = null;
+interface DocPage {
+  slug: string;
+  title: string;
+  content: string;
+}
 
-async function getCorpus(): Promise<string> {
+// Cached index across warm invocations on the same Vercel function instance.
+// Stateless across cold starts (the JSON is CDN-cacheable anyway), but saves
+// the extra hop on warm reuse.
+let indexCache: { pages: DocPage[]; fetchedAt: number } | null = null;
+
+async function getIndex(): Promise<DocPage[]> {
   const now = Date.now();
-  if (corpusCache && now - corpusCache.fetchedAt < CORPUS_TTL_MS) {
-    return corpusCache.text;
+  if (indexCache && now - indexCache.fetchedAt < INDEX_TTL_MS) {
+    return indexCache.pages;
   }
-  const res = await fetch(`${DOCS_BASE}/llms-full.txt`, {
+  const res = await fetch(`${DOCS_BASE}/docs-index.json`, {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
-    throw new Error(`Failed to load llms-full.txt: HTTP ${res.status}`);
+    throw new Error(`Failed to load docs-index.json: HTTP ${res.status}`);
   }
-  const text = await res.text();
-  corpusCache = { text, fetchedAt: now };
-  return text;
+  const pages = (await res.json()) as DocPage[];
+  indexCache = { pages, fetchedAt: now };
+  return pages;
 }
 
 function buildServer(): McpServer {
@@ -60,9 +68,9 @@ function buildServer(): McpServer {
         .describe("Max number of results to return"),
     },
     async ({ query, limit }) => {
-      let fullText: string;
+      let pages: DocPage[];
       try {
-        fullText = await getCorpus();
+        pages = await getIndex();
       } catch (err) {
         return {
           content: [
@@ -74,22 +82,27 @@ function buildServer(): McpServer {
           isError: true,
         };
       }
-      // starlight-llms-txt separates pages with horizontal rules
-      const pages = fullText.split(/^\* \* \*$|^---$/m);
       const q = query.toLowerCase();
+      const qRe = new RegExp(escapeRegex(q), "g");
       const scored = pages
         .map((page) => {
-          const lower = page.toLowerCase();
-          const hits = (lower.match(new RegExp(escapeRegex(q), "g")) ?? []).length;
-          const titleMatch = /^# (.+)/m.exec(page);
+          const titleHits = (
+            page.title.toLowerCase().match(qRe) ?? []
+          ).length;
+          const contentHits = (
+            page.content.toLowerCase().match(qRe) ?? []
+          ).length;
+          // Title hits weighted more heavily than body hits.
+          const score = titleHits * 5 + contentHits;
           return {
-            title: titleMatch?.[1]?.trim() ?? "(untitled)",
-            snippet: page.slice(0, 600).trim(),
-            hits,
+            slug: page.slug,
+            title: page.title,
+            snippet: extractSnippet(page.content, q),
+            score,
           };
         })
-        .filter((p) => p.hits > 0)
-        .sort((a, b) => b.hits - a.hits)
+        .filter((p) => p.score > 0)
+        .sort((a, b) => b.score - a.score)
         .slice(0, limit);
 
       if (scored.length === 0) {
@@ -105,7 +118,9 @@ function buildServer(): McpServer {
       const text = scored
         .map(
           (p, i) =>
-            `## Result ${i + 1}: ${p.title} (${p.hits} hits)\n\n${p.snippet}`,
+            `## Result ${i + 1}: ${p.title}\n` +
+            `slug: \`${p.slug}\`  (call \`fetch_page\` with this slug for full content)\n\n` +
+            `${p.snippet}`,
         )
         .join("\n\n---\n\n");
       return { content: [{ type: "text", text }] };
@@ -161,6 +176,19 @@ function buildServer(): McpServer {
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Returns ~600 chars of context around the first occurrence of `query` in
+// `content`, falling back to the document head if there's no hit (which
+// happens when the score came purely from a title match).
+function extractSnippet(content: string, query: string): string {
+  const idx = content.toLowerCase().indexOf(query);
+  if (idx < 0) return content.slice(0, 600).trim();
+  const start = Math.max(0, idx - 150);
+  const end = Math.min(content.length, idx + 450);
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < content.length ? "…" : "";
+  return prefix + content.slice(start, end).trim() + suffix;
 }
 
 // Vercel Node.js function handler. The MCP transport speaks JSON-RPC over a

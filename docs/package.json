@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build && node scripts/fix-llms-full.mjs",
+    "build": "astro build && node scripts/fix-llms-full.mjs && node scripts/build-docs-index.mjs",
     "preview": "astro preview",
     "check": "astro check",
     "lint": "prettier --check \"src/**/*.{astro,md,mdx,ts,js}\" \"*.{json,mjs}\"",

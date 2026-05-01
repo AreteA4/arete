@@ -1,5 +1,6 @@
 import type { APIRoute } from "astro";
 import { getEntry } from "astro:content";
+import { stripMdx } from "../lib/strip-mdx";
 
 // Serves the raw markdown source of the homepage at /index.md.
 // Same purpose as [...slug].md.ts but the catch-all can't match the empty slug.
@@ -12,7 +13,7 @@ export const GET: APIRoute = async () => {
   const fm = Object.entries(entry.data)
     .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
     .join("\n");
-  const body = `---\n${fm}\n---\n\n${entry.body ?? ""}`;
+  const body = `---\n${fm}\n---\n\n${stripMdx(entry.body ?? "")}\n`;
   return new Response(body, {
     headers: {
       "content-type": "text/markdown; charset=utf-8",
