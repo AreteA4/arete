@@ -1,0 +1,17 @@
+{
+  "name": "arete-docs",
+  "description": "MCP server for Arete documentation. Exposes search_docs and fetch_page tools backed by docs.arete.run content. Use for answering questions about Arete's Rust DSL, SDKs, CLI, and stack-building workflow.",
+  "version": "1.0.0",
+  "transport": "http",
+  "endpoint": "https://docs.arete.run/mcp/sse",
+  "tools": [
+    {
+      "name": "search_docs",
+      "description": "Keyword search across the Arete documentation."
+    },
+    {
+      "name": "fetch_page",
+      "description": "Fetch a documentation page as raw markdown."
+    }
+  ]
+}
