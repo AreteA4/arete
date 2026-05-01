@@ -9,11 +9,13 @@
 // contain a literal `>`. Upgrade to remark-mdx if that becomes a real case.
 
 export function stripMdx(source: string): string {
-  // Split on fenced code blocks so we can leave them untouched.
-  const parts = source.split(/(```[\s\S]*?```)/g);
+  // Split on fenced code blocks AND inline code spans so we can leave them
+  // untouched. Inline matters because prose like `Update<T>` looks like a
+  // JSX opening tag and would otherwise be stripped.
+  const parts = source.split(/(```[\s\S]*?```|`[^`\n]+`)/g);
   return parts
     .map((part, i) => {
-      if (i % 2 === 1) return part; // a code fence
+      if (i % 2 === 1) return part; // code fence or inline code span
       return (
         part
           // ESM import/export lines (single-line; multi-line imports are uncommon)
