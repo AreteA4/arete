@@ -138,7 +138,10 @@ function buildServer(): McpServer {
         ),
     },
     async ({ slug }) => {
-      const cleanSlug = slug.replace(/^\/+|\/+$/g, "").replace(/\.md$/, "");
+      // Empty/root slug maps to /index.md; the docs index stores the homepage
+      // with slug "" but it's only reachable at /index.md, not /.md.
+      const cleanSlug =
+        slug.replace(/^\/+|\/+$/g, "").replace(/\.md$/, "") || "index";
       const url = `${DOCS_BASE}/${cleanSlug}.md`;
       try {
         const res = await fetch(url, {
