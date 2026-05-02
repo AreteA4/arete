@@ -15,7 +15,9 @@ const markdownUrl = `${site}${markdownPath}`;
   <p class="agent-docs-discovery sr-only">
     For AI agents: the documentation index is at{" "}
     <a href={llmsUrl}>llms.txt</a> (full corpus:{" "}
-    <a href={llmsFullUrl}>llms-full.txt</a>). A markdown source for this page is{" "}
+    <a href={llmsFullUrl}>llms-full.txt</a>). A markdown source for this page is{
+      " "
+    }
     <a href={markdownUrl}>{markdownPath}</a>.
   </p>
   <slot />
