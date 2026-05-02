@@ -290,7 +290,7 @@ function sendJson(
 
 function sendCorsNoContent(res: import("node:http").ServerResponse) {
   res.statusCode = 204;
-  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.setHeader("Access-Control-Max-Age", "3600");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader(
@@ -322,6 +322,12 @@ export default async function handler(
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless: no session persistence between invocations
   });
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Accept, MCP-Protocol-Version",
+  );
   await server.connect(transport);
   await transport.handleRequest(req, res);
 }
