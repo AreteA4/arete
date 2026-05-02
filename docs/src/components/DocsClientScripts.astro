@@ -64,11 +64,5 @@ import PostHog from "./PostHog.astro";
     setupCodeCopyTracking();
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", initTracking);
-  } else {
-    initTracking();
-  }
-
   document.addEventListener("astro:page-load", initTracking);
 </script>
