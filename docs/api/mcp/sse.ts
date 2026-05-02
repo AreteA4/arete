@@ -2,8 +2,8 @@
 // Vercel auto-detects api/*.ts files and runs them as Node functions independently
 // of the static Astro build, so we don't need to switch Astro to hybrid/server mode.
 //
-// Endpoint: https://docs.arete.run/api/mcp/sse  (also reachable at /mcp/sse via
-// the rewrite in vercel.json).
+// Endpoint: https://docs.arete.run/mcp (canonical), also reachable at
+// /mcp/sse for older links via rewrites in vercel.json.
 //
 // Tools exposed:
 //   - search_docs(query): keyword search across docs-index.json (per-page chunks)
@@ -18,8 +18,62 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 
 const DOCS_BASE = "https://docs.arete.run";
+const MCP_ENDPOINT = `${DOCS_BASE}/mcp`;
 const FETCH_TIMEOUT_MS = 8000;
 const INDEX_TTL_MS = 5 * 60 * 1000;
+
+const TOOL_DEFINITIONS = {
+  search_docs: {
+    name: "search_docs",
+    description:
+      "Search the Arete documentation. Returns matching page snippets ranked by relevance. Use this when answering questions about Arete features, the Rust DSL, SDKs, or CLI.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Search query — keywords or a full question",
+        },
+        limit: {
+          type: "number",
+          minimum: 1,
+          maximum: 20,
+          default: 5,
+          description: "Max number of results to return",
+        },
+      },
+      required: ["query"],
+    },
+    operationId: "search_docs",
+  },
+  fetch_page: {
+    name: "fetch_page",
+    description:
+      "Fetch a documentation page as raw markdown. Use after search_docs to get the full content of a relevant page.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: {
+          type: "string",
+          description:
+            "Page slug, e.g. 'getting-started/what-is-arete' or 'sdks/typescript'. Omit leading slash and trailing .md.",
+        },
+      },
+      required: ["slug"],
+    },
+    operationId: "fetch_page",
+  },
+};
+
+const RESOURCE_DEFINITIONS = [
+  {
+    uri: "https://docs.arete.run/skill.md",
+    name: "arete-platform",
+    description:
+      "Official Arete agent skill for onboarding, API keys, registry access, CLI setup, SDK usage, and stack-building workflows.",
+    mimeType: "text/markdown",
+  },
+];
 
 interface DocPage {
   slug: string;
@@ -86,12 +140,9 @@ function buildServer(): McpServer {
       const qRe = new RegExp(escapeRegex(q), "g");
       const scored = pages
         .map((page) => {
-          const titleHits = (
-            page.title.toLowerCase().match(qRe) ?? []
-          ).length;
-          const contentHits = (
-            page.content.toLowerCase().match(qRe) ?? []
-          ).length;
+          const titleHits = (page.title.toLowerCase().match(qRe) ?? []).length;
+          const contentHits = (page.content.toLowerCase().match(qRe) ?? [])
+            .length;
           // Title hits weighted more heavily than body hits.
           const score = titleHits * 5 + contentHits;
           return {
@@ -177,6 +228,22 @@ function buildServer(): McpServer {
   return server;
 }
 
+function buildDescriptor() {
+  return {
+    server: {
+      name: "Arete Documentation",
+      version: "1.0.0",
+      transport: "http",
+      endpoint: MCP_ENDPOINT,
+    },
+    capabilities: {
+      tools: TOOL_DEFINITIONS,
+      resources: RESOURCE_DEFINITIONS,
+      prompts: [],
+    },
+  };
+}
+
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -194,6 +261,46 @@ function extractSnippet(content: string, query: string): string {
   return prefix + content.slice(start, end).trim() + suffix;
 }
 
+function acceptsEventStream(
+  acceptHeader: string | string[] | undefined,
+): boolean {
+  const accept = Array.isArray(acceptHeader)
+    ? acceptHeader.join(",")
+    : (acceptHeader ?? "");
+  return accept.toLowerCase().includes("text/event-stream");
+}
+
+function sendJson(
+  res: import("node:http").ServerResponse,
+  body: unknown,
+  statusCode = 200,
+) {
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Accept, MCP-Protocol-Version",
+  );
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.end(JSON.stringify(body, null, 2));
+}
+
+function sendCorsNoContent(res: import("node:http").ServerResponse) {
+  res.statusCode = 204;
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Accept, MCP-Protocol-Version",
+  );
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.end();
+}
+
 // Vercel Node.js function handler. The MCP transport speaks JSON-RPC over a
 // single HTTP endpoint (Streamable HTTP) — stateless mode, since each Vercel
 // invocation is a fresh process.
@@ -201,6 +308,16 @@ export default async function handler(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse,
 ) {
+  if (req.method === "OPTIONS") {
+    sendCorsNoContent(res);
+    return;
+  }
+
+  if (req.method === "GET" && !acceptsEventStream(req.headers.accept)) {
+    sendJson(res, buildDescriptor());
+    return;
+  }
+
   const server = buildServer();
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless: no session persistence between invocations
