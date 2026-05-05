@@ -178,6 +178,36 @@ function buildServer(): McpServer {
     },
   );
 
+  // Resource: the published Arete agent skill markdown. Registered here so
+  // the live server's resources/list + resources/read match the
+  // capabilities advertised in the GET descriptor and .well-known manifests.
+  server.resource(
+    "arete-platform",
+    "https://docs.arete.run/skill.md",
+    {
+      mimeType: "text/markdown",
+      description:
+        "Official Arete agent skill for onboarding, API keys, registry access, CLI setup, SDK usage, and stack-building workflows.",
+    },
+    async (uri) => {
+      const r = await fetch(uri.href, {
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      if (!r.ok) {
+        throw new Error(`Failed to fetch ${uri.href}: HTTP ${r.status}`);
+      }
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "text/markdown",
+            text: await r.text(),
+          },
+        ],
+      };
+    },
+  );
+
   server.tool(
     "fetch_page",
     "Fetch a documentation page as raw markdown. Use after search_docs to get the full content of a relevant page.",
