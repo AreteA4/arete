@@ -277,7 +277,11 @@ function sendJson(
 ) {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Cache-Control", "public, max-age=3600");
+  // The same /mcp URL serves SSE for `Accept: text/event-stream` and JSON
+  // otherwise; tell shared caches to key on Accept so SSE clients never get
+  // a stale JSON descriptor and vice versa.
+  res.setHeader("Vary", "Accept");
+  res.setHeader("Cache-Control", "public, max-age=300");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader(
