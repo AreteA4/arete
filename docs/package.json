@@ -15,7 +15,8 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "astro": "latest",
     "starlight-llms-txt": "^0.7.0",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.4",

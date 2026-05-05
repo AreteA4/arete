@@ -16,54 +16,67 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 
 const DOCS_BASE = "https://docs.arete.run";
 const MCP_ENDPOINT = `${DOCS_BASE}/mcp`;
 const FETCH_TIMEOUT_MS = 8000;
 const INDEX_TTL_MS = 5 * 60 * 1000;
 
+// Zod is the single source of truth for tool input schemas. The same objects
+// drive `server.tool(...)` (validation + handler typing) and the descriptor
+// JSON exposed at GET /mcp (via zodToJsonSchema below). Editing one place
+// stays in sync with the other.
+const SearchDocsInput = z.object({
+  query: z.string().describe("Search query — keywords or a full question"),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(20)
+    .default(5)
+    .describe("Max number of results to return"),
+});
+
+const FetchPageInput = z.object({
+  slug: z
+    .string()
+    .describe(
+      "Page slug, e.g. 'getting-started/what-is-arete' or 'sdks/typescript'. Omit leading slash and trailing .md.",
+    ),
+});
+
+const SEARCH_DOCS_DESCRIPTION =
+  "Search the Arete documentation. Returns matching page snippets ranked by relevance. Use this when answering questions about Arete features, the Rust DSL, SDKs, or CLI.";
+
+const FETCH_PAGE_DESCRIPTION =
+  "Fetch a documentation page as raw markdown. Use after search_docs to get the full content of a relevant page.";
+
+function jsonSchemaFor(schema: z.ZodType): Record<string, unknown> {
+  // `target: "openApi3"` keeps the output friendly for OpenAPI/MCP clients
+  // that don't accept `$schema` URIs.
+  const out = zodToJsonSchema(schema, { target: "openApi3" }) as Record<
+    string,
+    unknown
+  >;
+  delete out.$schema;
+  return out;
+}
+
 const TOOL_DEFINITIONS = {
   search_docs: {
     name: "search_docs",
-    description:
-      "Search the Arete documentation. Returns matching page snippets ranked by relevance. Use this when answering questions about Arete features, the Rust DSL, SDKs, or CLI.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description: "Search query — keywords or a full question",
-        },
-        limit: {
-          type: "number",
-          minimum: 1,
-          maximum: 20,
-          default: 5,
-          description: "Max number of results to return",
-        },
-      },
-      required: ["query"],
-    },
+    description: SEARCH_DOCS_DESCRIPTION,
+    inputSchema: jsonSchemaFor(SearchDocsInput),
     operationId: "search_docs",
   },
   fetch_page: {
     name: "fetch_page",
-    description:
-      "Fetch a documentation page as raw markdown. Use after search_docs to get the full content of a relevant page.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        slug: {
-          type: "string",
-          description:
-            "Page slug, e.g. 'getting-started/what-is-arete' or 'sdks/typescript'. Omit leading slash and trailing .md.",
-        },
-      },
-      required: ["slug"],
-    },
+    description: FETCH_PAGE_DESCRIPTION,
+    inputSchema: jsonSchemaFor(FetchPageInput),
     operationId: "fetch_page",
   },
-};
+} as const;
 
 const RESOURCE_DEFINITIONS = [
   {
@@ -110,17 +123,8 @@ function buildServer(): McpServer {
 
   server.tool(
     "search_docs",
-    "Search the Arete documentation. Returns matching page snippets ranked by relevance. Use this when answering questions about Arete features, the Rust DSL, SDKs, or CLI.",
-    {
-      query: z.string().describe("Search query — keywords or a full question"),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(20)
-        .default(5)
-        .describe("Max number of results to return"),
-    },
+    SEARCH_DOCS_DESCRIPTION,
+    SearchDocsInput.shape,
     async ({ query, limit }) => {
       let pages: DocPage[];
       try {
@@ -210,14 +214,8 @@ function buildServer(): McpServer {
 
   server.tool(
     "fetch_page",
-    "Fetch a documentation page as raw markdown. Use after search_docs to get the full content of a relevant page.",
-    {
-      slug: z
-        .string()
-        .describe(
-          "Page slug, e.g. 'getting-started/what-is-arete' or 'sdks/typescript'. Omit leading slash and trailing .md.",
-        ),
-    },
+    FETCH_PAGE_DESCRIPTION,
+    FetchPageInput.shape,
     async ({ slug }) => {
       // Empty/root slug maps to /index.md; the docs index stores the homepage
       // with slug "" but it's only reachable at /index.md, not /.md.
