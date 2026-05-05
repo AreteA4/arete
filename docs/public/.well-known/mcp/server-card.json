@@ -11,7 +11,7 @@
   "documentationUrl": "https://docs.arete.run/agent-skills/mcp/",
   "transport": {
     "type": "streamable-http",
-    "endpoint": "/mcp"
+    "endpoint": "https://docs.arete.run/mcp"
   },
   "capabilities": {
     "tools": true,
