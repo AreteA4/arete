@@ -79,20 +79,21 @@ function jsonSchemaFor(schema: z.ZodType): Record<string, unknown> {
   return out;
 }
 
-const TOOL_DEFINITIONS = {
-  search_docs: {
+// Array shape mirrors /.well-known/mcp.json so discovery clients hitting
+// either endpoint parse the same structure. inputSchema is included per tool
+// for clients that read the descriptor without doing JSON-RPC tools/list.
+const TOOL_DEFINITIONS = [
+  {
     name: "search_docs",
     description: SEARCH_DOCS_DESCRIPTION,
     inputSchema: jsonSchemaFor(SearchDocsInput),
-    operationId: "search_docs",
   },
-  fetch_page: {
+  {
     name: "fetch_page",
     description: FETCH_PAGE_DESCRIPTION,
     inputSchema: jsonSchemaFor(FetchPageInput),
-    operationId: "fetch_page",
   },
-} as const;
+] as const;
 
 const RESOURCE_DEFINITIONS = [
   {
@@ -272,19 +273,22 @@ function buildServer(): McpServer {
   return server;
 }
 
+// Descriptor served from GET /mcp. Shape intentionally mirrors
+// /.well-known/mcp.json (top-level name/endpoint/transport, tools as array)
+// so a single mental model covers both discovery surfaces.
 function buildDescriptor() {
   return {
-    server: {
-      name: "Arete Documentation",
-      version: "1.0.0",
-      transport: "http",
-      endpoint: MCP_ENDPOINT,
-    },
-    capabilities: {
-      tools: TOOL_DEFINITIONS,
-      resources: RESOURCE_DEFINITIONS,
-      prompts: [],
-    },
+    name: "arete-docs",
+    description:
+      "MCP server for Arete documentation. Exposes search_docs and fetch_page tools backed by docs.arete.run content. Use for answering questions about Arete's Rust DSL, SDKs, CLI, and stack-building workflow.",
+    version: "1.0.0",
+    protocolVersion: "2025-03-26",
+    transport: "streamable-http",
+    endpoint: MCP_ENDPOINT,
+    aliases: [`${PROD_DOCS_BASE}/mcp/sse`],
+    tools: TOOL_DEFINITIONS,
+    resources: RESOURCE_DEFINITIONS,
+    prompts: [],
   };
 }
 
