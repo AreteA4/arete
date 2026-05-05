@@ -18,8 +18,24 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
-const DOCS_BASE = "https://docs.arete.run";
-const MCP_ENDPOINT = `${DOCS_BASE}/mcp`;
+const PROD_DOCS_BASE = "https://docs.arete.run";
+
+// In production we always read from the canonical docs origin. On Vercel
+// preview deployments we point at the preview itself via VERCEL_URL so the
+// MCP server reflects the docs in the same deploy, not stale prod content.
+// Override locally or per-env with MCP_DOCS_BASE when needed.
+function resolveDocsBase(): string {
+  const explicit = process.env.MCP_DOCS_BASE;
+  if (explicit) return explicit.replace(/\/+$/, "");
+  if (process.env.VERCEL_ENV === "production") return PROD_DOCS_BASE;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return PROD_DOCS_BASE;
+}
+
+const DOCS_BASE = resolveDocsBase();
+// MCP_ENDPOINT is the canonical public endpoint advertised in the descriptor;
+// always pin to prod even on previews so client setup snippets stay correct.
+const MCP_ENDPOINT = `${PROD_DOCS_BASE}/mcp`;
 const FETCH_TIMEOUT_MS = 8000;
 const INDEX_TTL_MS = 5 * 60 * 1000;
 
