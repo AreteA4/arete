@@ -20,6 +20,14 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 
 const PROD_DOCS_BASE = "https://docs.arete.run";
 
+// Hand-pinned MCP spec revision. The SDK negotiates protocolVersion on
+// `initialize` independently; this constant is only used by the static GET
+// descriptor and must stay in sync with:
+//   - docs/public/.well-known/mcp.json
+//   - docs/public/.well-known/mcp/server-card.json
+// Bump together when @modelcontextprotocol/sdk supports a newer revision.
+const MCP_PROTOCOL_VERSION = "2025-03-26";
+
 // In production we always read from the canonical docs origin. On Vercel
 // preview deployments we point at the preview itself via VERCEL_URL so the
 // MCP server reflects the docs in the same deploy, not stale prod content.
@@ -282,7 +290,7 @@ function buildDescriptor() {
     description:
       "MCP server for Arete documentation. Exposes search_docs and fetch_page tools backed by docs.arete.run content. Use for answering questions about Arete's Rust DSL, SDKs, CLI, and stack-building workflow.",
     version: "1.0.0",
-    protocolVersion: "2025-03-26",
+    protocolVersion: MCP_PROTOCOL_VERSION,
     transport: "streamable-http",
     endpoint: MCP_ENDPOINT,
     aliases: [`${PROD_DOCS_BASE}/mcp/sse`],
