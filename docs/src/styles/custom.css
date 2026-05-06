@@ -146,8 +146,8 @@ nav[aria-label="Main"] {
 }
 
 /* Sidebar group labels (cli, concepts, etc.) */
-nav[aria-label="Main"] ul>li>details>summary,
-nav[aria-label="Main"] ul>li>[role="group"]>span:first-child {
+nav[aria-label="Main"] ul > li > details > summary,
+nav[aria-label="Main"] ul > li > [role="group"] > span:first-child {
   font-size: var(--sl-text-xs);
   font-weight: 600;
   text-transform: uppercase;
@@ -323,7 +323,7 @@ main li {
 }
 
 /* Inline code */
-main :not(pre)>code {
+main :not(pre) > code {
   background: var(--sl-color-bg-inline-code);
   padding: 0.125rem 0.375rem;
   border-radius: var(--sl-border-radius-sm);
@@ -450,4 +450,20 @@ starlight-tabs [role="tab"][aria-selected="true"] {
    ============================================ */
 .sl-markdown-content .sl-heading-wrapper {
   --sl-anchor-icon-gap: 0.75em;
+}
+
+/* Visually hidden; kept in DOM for agent doc crawlers (AFDocs / llms directive).
+   `clip` is deprecated in CSS Masking Level 1, kept for older browsers;
+   `clip-path: inset(50%)` is the modern equivalent. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border-width: 0;
 }

@@ -26,7 +26,7 @@ All Arete SDKs support these parameters when subscribing to feeds:
 Use `take` and `skip` to paginate through large datasets:
 
 <Tabs>
-<TabItem label="React">
+<TabItem label="Pagination — React">
 
 ```typescript
 import { useArete } from "arete-react";
@@ -53,7 +53,7 @@ function TokenList() {
 ```
 
 </TabItem>
-<TabItem label="TypeScript">
+<TabItem label="Pagination — TypeScript">
 
 ```typescript
 import { Arete } from "arete-typescript";
@@ -80,7 +80,7 @@ for await (const token of a4.views.Token.list.use({
 ```
 
 </TabItem>
-<TabItem label="Rust">
+<TabItem label="Pagination — Rust">
 
 ```rust
 use a4_sdk::prelude::*;
@@ -114,14 +114,14 @@ while let Some(token) = stream.next().await {
 For state views, pass the entity key to subscribe to a specific entity:
 
 <Tabs>
-<TabItem label="React">
+<TabItem label="State view — React">
 
 ```typescript
 const { data: token } = a4.views.Token.state.use(tokenAddress);
 ```
 
 </TabItem>
-<TabItem label="TypeScript">
+<TabItem label="State view — TypeScript">
 
 ```typescript
 const tokenAddress = "So11111111111111111111111111111111111111112";
@@ -136,7 +136,7 @@ for await (const token of a4.views.Token.state.use(tokenAddress)) {
 ```
 
 </TabItem>
-<TabItem label="Rust">
+<TabItem label="State view — Rust">
 
 ```rust
 let token_address = "So11111111111111111111111111111111111111112";
@@ -200,7 +200,7 @@ pub mod ore_stream {
 Custom views appear alongside the default views in your SDK:
 
 <Tabs>
-<TabItem label="React">
+<TabItem label="Custom views — React">
 
 ```typescript
 import { useArete } from "arete-react";
@@ -221,7 +221,7 @@ function LatestRounds() {
 ```
 
 </TabItem>
-<TabItem label="TypeScript">
+<TabItem label="Custom views — TypeScript">
 
 ```typescript
 import { Arete } from "arete-typescript";
@@ -242,7 +242,7 @@ for await (const round of a4.views.OreRound.latest.use()) {
 ```
 
 </TabItem>
-<TabItem label="Rust">
+<TabItem label="Custom views — Rust">
 
 ```rust
 use a4_sdk::prelude::*;
@@ -293,7 +293,7 @@ See [Stack Definitions](/building-stacks/stack-definitions/) for complete docume
 If you need dynamic filtering that changes at runtime, apply filters client-side after receiving data:
 
 <Tabs>
-<TabItem label="React">
+<TabItem label="Client-side filter — React">
 
 The React SDK provides a `where` clause for declarative client-side filtering:
 
@@ -328,7 +328,7 @@ function HighVolumeTokens() {
 | _(value)_ | Exact match           |
 
 </TabItem>
-<TabItem label="TypeScript">
+<TabItem label="Client-side filter — TypeScript">
 
 Filter data as it streams using standard JavaScript:
 
@@ -350,7 +350,7 @@ for await (const round of a4.views.OreRound.latest.use()) {
 ```
 
 </TabItem>
-<TabItem label="Rust">
+<TabItem label="Client-side filter — Rust">
 
 Use iterator adapters to filter streams:
 

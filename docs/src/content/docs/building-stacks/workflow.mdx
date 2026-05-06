@@ -120,14 +120,14 @@ On success, you'll receive a WebSocket URL:
 Once deployed, generate a typed SDK for your stack:
 
 <Tabs>
-<TabItem label="TypeScript">
+<TabItem label="Generate SDK — TypeScript">
 
 ```bash
 a4 sdk create typescript ore
 ```
 
 </TabItem>
-<TabItem label="Rust">
+<TabItem label="Generate SDK — Rust">
 
 ```bash
 a4 sdk create rust ore
@@ -139,7 +139,7 @@ a4 sdk create rust ore
 This creates a package containing the stack definition that tells the Arete client how to interact with your feed, including all entities and their views. Import it in your application:
 
 <Tabs>
-<TabItem label="React">
+<TabItem label="Connect from app — React">
 
 ```tsx
 import { AreteProvider, useArete } from "arete-react";
@@ -156,7 +156,7 @@ const { data: rounds } = stack.views.OreRound.list.use();
 ```
 
 </TabItem>
-<TabItem label="TypeScript">
+<TabItem label="Connect from app — TypeScript">
 
 ```typescript
 import { Arete } from "arete-typescript";
@@ -170,7 +170,7 @@ for await (const round of a4.views.OreRound.list.use()) {
 ```
 
 </TabItem>
-<TabItem label="Rust">
+<TabItem label="Connect from app — Rust">
 
 ```rust
 use a4_sdk::prelude::*;
