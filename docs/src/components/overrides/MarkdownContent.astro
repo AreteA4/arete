@@ -1,0 +1,24 @@
+---
+import Default from "@astrojs/starlight/components/MarkdownContent.astro";
+
+const site = Astro.site?.href?.replace(/\/$/, "") ?? "https://docs.arete.run";
+const llmsUrl = `${site}/llms.txt`;
+const llmsFullUrl = `${site}/llms-full.txt`;
+const markdownPath =
+  Astro.url.pathname === "/"
+    ? "/index.md"
+    : `${Astro.url.pathname.replace(/\/$/, "")}.md`;
+const markdownUrl = `${site}${markdownPath}`;
+---
+
+<Default>
+  <p class="agent-docs-discovery sr-only">
+    For AI agents: the documentation index is at{" "}
+    <a href={llmsUrl}>llms.txt</a> (full corpus:{" "}
+    <a href={llmsFullUrl}>llms-full.txt</a>). A markdown source for this page is{
+      " "
+    }
+    <a href={markdownUrl}>{markdownPath}</a>.
+  </p>
+  <slot />
+</Default>

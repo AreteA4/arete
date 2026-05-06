@@ -46,6 +46,8 @@ export default defineConfig({
         Sidebar: "./src/components/overrides/Sidebar.astro",
         EditLink: "./src/components/overrides/EditLink.astro",
         Head: "./src/components/overrides/Head.astro",
+        Footer: "./src/components/overrides/Footer.astro",
+        MarkdownContent: "./src/components/overrides/MarkdownContent.astro",
         Search: "./src/components/overrides/Search.astro",
         PageTitle: "./src/components/overrides/PageTitle.astro",
       },
