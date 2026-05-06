@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/mcp-server-card/v1.json",
+  "version": "1.0",
+  "protocolVersion": "2025-03-26",
+  "serverInfo": {
+    "name": "arete-docs",
+    "title": "Arete Documentation",
+    "version": "1.0.0"
+  },
+  "description": "Search and read Arete documentation for the Rust DSL, SDKs, CLI, MCP setup, and stack-building workflow.",
+  "documentationUrl": "https://docs.arete.run/agent-skills/mcp/",
+  "transport": {
+    "type": "streamable-http",
+    "endpoint": "https://docs.arete.run/mcp"
+  },
+  "capabilities": {
+    "tools": true,
+    "resources": true,
+    "prompts": false
+  },
+  "authentication": {
+    "required": false,
+    "schemes": []
+  },
+  "tools": ["search_docs", "fetch_page"],
+  "resources": ["https://docs.arete.run/skill.md"],
+  "prompts": []
+}

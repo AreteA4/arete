@@ -1,0 +1,78 @@
+---
+title: MCP Server
+sidebar:
+  order: 5
+description: Connect AI tools to the Arete documentation MCP server.
+---
+
+The Arete documentation MCP server gives AI tools first-class access to the docs instead of requiring them to scrape pages.
+
+## Endpoint
+
+Use the canonical HTTP endpoint:
+
+```text
+https://docs.arete.run/mcp
+```
+
+The legacy alias `https://docs.arete.run/mcp/sse` is still available for older configurations.
+
+## Tools
+
+| Tool          | Purpose                                                           |
+| ------------- | ----------------------------------------------------------------- |
+| `search_docs` | Search the Arete docs and return ranked snippets with page slugs. |
+| `fetch_page`  | Fetch a documentation page as raw markdown by slug.               |
+
+The server also exposes the Arete platform skill as a resource at `https://docs.arete.run/skill.md`.
+
+## Claude Code
+
+```bash
+claude mcp add --transport http Arete https://docs.arete.run/mcp
+```
+
+Verify the connection:
+
+```bash
+claude mcp list
+```
+
+## Cursor
+
+Open MCP settings and add:
+
+```json
+{
+  "mcpServers": {
+    "Arete": {
+      "url": "https://docs.arete.run/mcp"
+    }
+  }
+}
+```
+
+Then ask Cursor: "What tools do you have available?" It should list the Arete documentation tools.
+
+## VS Code
+
+Create or update `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "Arete": {
+      "type": "http",
+      "url": "https://docs.arete.run/mcp"
+    }
+  }
+}
+```
+
+## Discovery
+
+Discovery metadata is available at:
+
+- `https://docs.arete.run/.well-known/mcp`
+- `https://docs.arete.run/.well-known/mcp.json`
+- `https://docs.arete.run/.well-known/mcp/server-card.json`
