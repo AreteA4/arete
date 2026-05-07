@@ -23,9 +23,9 @@ You are onboarding to **Arete**, a system for programmable real-time data feeds 
 |------|-----|---------|
 | Skill (this file) | `https://docs.arete.run/skill.md` | Full agent onboarding + API reference |
 | `agent.md` | `https://docs.arete.run/agent.md` | Bootstraps the `a4` CLI + skill files locally on your machine |
-| `arete` skill | https://github.com/usearete/skills/blob/main/arete/SKILL.md | Router skill — detects intent, routes to the right sub-skill |
-| `arete-consume` skill | https://github.com/usearete/skills/blob/main/arete-consume/SKILL.md | TypeScript / React / Rust SDK patterns for consuming streams |
-| `arete-build` skill | https://github.com/usearete/skills/blob/main/arete-build/SKILL.md | Rust DSL syntax for authoring custom stacks |
+| `arete` skill | https://github.com/AreteA4/skills/blob/main/arete/SKILL.md | Router skill — detects intent, routes to the right sub-skill |
+| `arete-consume` skill | https://github.com/AreteA4/skills/blob/main/arete-consume/SKILL.md | TypeScript / React / Rust SDK patterns for consuming streams |
+| `arete-build` skill | https://github.com/AreteA4/skills/blob/main/arete-build/SKILL.md | Rust DSL syntax for authoring custom stacks |
 | Registry | https://arete.run/registry | Browseable catalog of public stacks |
 
 ## Security
