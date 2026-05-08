@@ -41,7 +41,7 @@ Then use the `a4` command:
 a4 create my-app
 ```
 
-This is the same CLI — Cargo installs it as `a4` while npm uses `arete-cli`.
+This is the same CLI — Cargo installs it as `a4`, and so does npm.
 
 </TabItem>
 <TabItem label="npx">
@@ -49,7 +49,7 @@ This is the same CLI — Cargo installs it as `a4` while npm uses `arete-cli`.
 No installation needed — just run:
 
 ```bash
-npx arete-cli create my-app
+npx @usearete/a4 create my-app
 ```
 
 This downloads and runs the CLI without installing it globally.
@@ -60,13 +60,13 @@ This downloads and runs the CLI without installing it globally.
 Install globally via npm:
 
 ```bash
-npm install -g arete-cli
+npm install -g @usearete/a4
 ```
 
-Then use the `arete-cli` command:
+Then use the `a4` command:
 
 ```bash
-arete-cli create my-app
+a4 create my-app
 ```
 
 </TabItem>
@@ -89,14 +89,14 @@ a4 create my-app
 <TabItem label="npx">
 
 ```bash
-npx arete-cli create my-app
+npx @usearete/a4 create my-app
 ```
 
 </TabItem>
 <TabItem label="npm">
 
 ```bash
-arete-cli create my-app
+a4 create my-app
 ```
 
 </TabItem>
@@ -127,14 +127,14 @@ a4 create my-app --template rust-ore  # or react-ore, typescript-ore
 <TabItem label="npx">
 
 ```bash
-npx arete-cli create my-app --template react-ore  # or typescript-ore, rust-ore
+npx @usearete/a4 create my-app --template react-ore  # or typescript-ore, rust-ore
 ```
 
 </TabItem>
 <TabItem label="npm">
 
 ```bash
-arete-cli create my-app --template react-ore  # or typescript-ore, rust-ore
+a4 create my-app --template react-ore  # or typescript-ore, rust-ore
 ```
 
 </TabItem>
@@ -173,18 +173,18 @@ No RPC calls. No polling. No custom indexer. Just streaming data.
 
 ## Available Templates
 
-| Template           | Command                       | What You Get                                          |
-| ------------------ | ----------------------------- | ----------------------------------------------------- |
-| **react-ore**      | `npx arete-cli create my-app` | React + Vite dashboard showing live ORE mining rounds |
-| **typescript-ore** | `npx arete-cli create my-app` | TypeScript CLI that streams ORE data to your terminal |
-| **rust-ore**       | `npx arete-cli create my-app` | Rust + Tokio client streaming ORE round updates       |
+| Template           | Command                           | What You Get                                          |
+| ------------------ | --------------------------------- | ----------------------------------------------------- |
+| **react-ore**      | `npx @usearete/a4 create my-app` | React + Vite dashboard showing live ORE mining rounds |
+| **typescript-ore** | `npx @usearete/a4 create my-app` | TypeScript CLI that streams ORE data to your terminal |
+| **rust-ore**       | `npx @usearete/a4 create my-app` | Rust + Tokio client streaming ORE round updates       |
 
 All templates connect to the public ORE stack at `wss://ore.stack.arete.run`.
 
 You can also specify the template directly:
 
 ```bash
-npx arete-cli create my-app --template react-ore
+npx @usearete/a4 create my-app --template react-ore
 ```
 
 ---

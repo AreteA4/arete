@@ -59,7 +59,7 @@ cargo install a4-cli
 
 If Cargo is not available, fall back to npm:
 ```
-npm install -g arete-cli
+npm install -g @usearete/a4
 ```
 
 Verify installation:
@@ -152,7 +152,7 @@ Key rules:
 - The primary public stack is `ore` (ORE mining data). Run `a4 explore ore --json` to see its entities.
 - For React apps: install `@usearete/react` and generate stack SDK files with `a4 sdk create typescript <stack>`
 - For TypeScript apps: install `@usearete/sdk` and generate stack SDK files with `a4 sdk create typescript <stack>`
-- To scaffold a new project quickly: `npx arete-cli create my-app`
+- To scaffold a new project quickly: `npx @usearete/a4 create my-app`
 
 Full documentation: https://docs.arete.run
 Platform onboarding (register, API key, capabilities): https://docs.arete.run/skill.md

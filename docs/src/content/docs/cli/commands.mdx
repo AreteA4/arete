@@ -25,7 +25,7 @@ Complete reference for the Arete CLI (`a4`).
 
 | Command                   | Description                          |
 | ------------------------- | ------------------------------------ |
-| `arete-cli create [name]` | Scaffold a new app from a template   |
+| `a4 create [name]`        | Scaffold a new app from a template   |
 | `a4 init`                 | Initialize a stack project           |
 | `a4 up [stack]`           | Deploy stack (push + build + deploy) |
 | `a4 push [stack]`         | Push stack to remote (alias)         |
@@ -36,26 +36,26 @@ Complete reference for the Arete CLI (`a4`).
 | `a4 explore`              | Discover stacks and schemas          |
 
 :::note[npm vs Cargo]
-When installed via npm (`npm install -g arete-cli`), the command is `arete-cli`. When installed via Cargo (`cargo install a4-cli`), the command is `a4`. Both are the same CLI.
+When installed via npm (`npm install -g @usearete/a4`), the command is `a4`. When installed via Cargo (`cargo install a4-cli`), the command is also `a4`. Both are the same CLI.
 :::
 
 ---
 
 ## Create a New App
 
-### arete-cli create [name]
+### a4 create [name]
 
 Scaffold a new Arete project from a template. This is the fastest way to get started.
 
 ```bash
 # Interactive — prompts for name and template
-npx arete-cli create
+npx @usearete/a4 create
 
 # With project name
-npx arete-cli create my-app
+npx @usearete/a4 create my-app
 
 # With specific template
-npx arete-cli create my-app --template react-ore
+npx @usearete/a4 create my-app --template react-ore
 ```
 
 **Available templates:**
