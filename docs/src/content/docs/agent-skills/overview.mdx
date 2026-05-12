@@ -25,7 +25,7 @@ The Arete CLI (`a4`) is the primary interface between your agent and Arete. It h
 cargo install a4-cli
 
 # Or via npm
-npm install -g arete-cli
+npm install -g @usearete/a4
 ```
 
 The key command for agents is `a4 explore`:
@@ -53,7 +53,7 @@ Three skills are installed:
 Install them manually with:
 
 ```bash
-npx skills add usearete/skills
+npx skills add AreteA4/skills
 ```
 
 Once installed, your agent knows the correct hook names, view patterns, subscription syntax, and CLI commands. Without the skills, an agent will hallucinate API shapes based on outdated training data.
@@ -109,12 +109,12 @@ The CLI gives the agent **live data**. The skills give the agent **correct patte
 
 ```bash
 cargo install a4-cli
-# Or: npm install -g arete-cli
+# Or: npm install -g @usearete/a4
 
-npx arete-cli create my-app --template react-ore
+npx @usearete/a4 create my-app --template react-ore
 cd my-app
 
-npx skills add usearete/skills
+npx skills add AreteA4/skills
 ```
 
 </TabItem>
@@ -122,9 +122,9 @@ npx skills add usearete/skills
 
 ```bash
 cargo install a4-cli
-# Or: npm install -g arete-cli
+# Or: npm install -g @usearete/a4
 
-npx skills add usearete/skills
+npx skills add AreteA4/skills
 ```
 
 </TabItem>

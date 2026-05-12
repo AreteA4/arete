@@ -13,7 +13,7 @@ Reference for installing Arete agent skills manually. For an overview of how ski
 The universal install command (auto-detects your editor):
 
 ```bash
-npx skills add usearete/skills
+npx skills add AreteA4/skills
 ```
 
 ---
@@ -24,7 +24,7 @@ npx skills add usearete/skills
 <TabItem label="Cursor">
 
 ```bash
-npx skills add usearete/skills --agent cursor
+npx skills add AreteA4/skills --agent cursor
 ```
 
 Files are created in `.agents/skills/`:
@@ -44,7 +44,7 @@ When Cursor asks to run `a4 explore`, approve it.
 <TabItem label="Claude Code">
 
 ```bash
-npx skills add usearete/skills --agent claude-code
+npx skills add AreteA4/skills --agent claude-code
 ```
 
 Files are created in `.claude/skills/`:
@@ -62,7 +62,7 @@ You can also set project-level context in `CLAUDE.md` at the project root.
 <TabItem label="Windsurf">
 
 ```bash
-npx skills add usearete/skills --agent windsurf
+npx skills add AreteA4/skills --agent windsurf
 ```
 
 Files are created in `.windsurf/skills/`:
@@ -78,7 +78,7 @@ Files are created in `.windsurf/skills/`:
 <TabItem label="OpenCode">
 
 ```bash
-npx skills add usearete/skills --agent opencode
+npx skills add AreteA4/skills --agent opencode
 ```
 
 Files are created in `.agents/skills/`. You can also load skills directly using the `/skill` command in OpenCode.
@@ -87,7 +87,7 @@ Files are created in `.agents/skills/`. You can also load skills directly using 
 <TabItem label="GitHub Copilot">
 
 ```bash
-npx skills add usearete/skills --agent github-copilot
+npx skills add AreteA4/skills --agent github-copilot
 ```
 
 Files are created in `.agents/skills/`.
@@ -96,7 +96,7 @@ Files are created in `.agents/skills/`.
 <TabItem label="Cline">
 
 ```bash
-npx skills add usearete/skills --agent cline
+npx skills add AreteA4/skills --agent cline
 ```
 
 Files are created in `.cline/skills/`.
@@ -114,7 +114,7 @@ Files are created in `.cline/skills/`.
 | Goose      | `--agent goose`      |
 | Continue   | `--agent continue`   |
 
-If your editor isn't listed, manually copy the SKILL.md files from the [skills repository](https://github.com/usearete/skills) into whatever directory your editor reads custom context from.
+If your editor isn't listed, manually copy the SKILL.md files from the [skills repository](https://github.com/AreteA4/skills) into whatever directory your editor reads custom context from.
 
 </TabItem>
 </Tabs>
@@ -136,7 +136,7 @@ The agent should run `a4 explore --json`, then `a4 explore ore --json`, and pres
 ## Updating Skills
 
 ```bash
-npx skills add usearete/skills
+npx skills add AreteA4/skills
 ```
 
 This overwrites existing skill files with the latest versions. The static patterns (SDK syntax, DSL macros) change rarely — dynamic data (entity schemas, field types) always comes from `a4 explore` at runtime, so it's always current regardless of skill version.

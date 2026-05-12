@@ -59,7 +59,7 @@ cargo install a4-cli
 
 If Cargo is not available, fall back to npm:
 ```
-npm install -g arete-cli
+npm install -g @usearete/a4
 ```
 
 Verify installation:
@@ -85,7 +85,7 @@ Before running the install, determine which agent harness you are running in. Th
 **If you know which agent you are**, install with the `--agent` flag for your specific harness. This ensures skills land in the correct directory:
 
 ```
-npx skills add usearete/skills --agent <your-agent>
+npx skills add AreteA4/skills --agent <your-agent>
 ```
 
 Common agent identifiers:
@@ -107,13 +107,13 @@ Common agent identifiers:
 **If you cannot determine which agent you are**, fall back to the general install which writes to `.agents/skills/` (readable by most agents):
 
 ```
-npx skills add usearete/skills
+npx skills add AreteA4/skills
 ```
 
 This auto-detects which agents are present and installs to the correct location for each. You can also explicitly install for all detected agents:
 
 ```
-npx skills add usearete/skills --all
+npx skills add AreteA4/skills --all
 ```
 
 This installs context files that teach you (the agent) how to use Arete's SDKs, CLI, and Rust DSL.
@@ -121,8 +121,8 @@ This installs context files that teach you (the agent) how to use Arete's SDKs, 
 For the full `npx skills` documentation: https://github.com/vercel-labs/skills
 
 Additional options:
-- `npx skills add usearete/skills -a cursor -a opencode` targets multiple specific agents
-- `npx skills add usearete/skills -g` installs globally (available across all projects)
+- `npx skills add AreteA4/skills -a cursor -a opencode` targets multiple specific agents
+- `npx skills add AreteA4/skills -g` installs globally (available across all projects)
 
 ## Step 3: Discover Available Data
 
@@ -152,7 +152,7 @@ Key rules:
 - The primary public stack is `ore` (ORE mining data). Run `a4 explore ore --json` to see its entities.
 - For React apps: install `@usearete/react` and generate stack SDK files with `a4 sdk create typescript <stack>`
 - For TypeScript apps: install `@usearete/sdk` and generate stack SDK files with `a4 sdk create typescript <stack>`
-- To scaffold a new project quickly: `npx arete-cli create my-app`
+- To scaffold a new project quickly: `npx @usearete/a4 create my-app`
 
 Full documentation: https://docs.arete.run
 Platform onboarding (register, API key, capabilities): https://docs.arete.run/skill.md
