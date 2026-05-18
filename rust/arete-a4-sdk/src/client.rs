@@ -186,6 +186,23 @@ impl<S: Stack> AreteBuilder<S> {
         self
     }
 
+    /// Set a header sent on the WebSocket upgrade request.
+    ///
+    /// Required for non-browser clients (Rust CLIs, server-side code) talking
+    /// to a hosted deployment with an origin-bound publishable key — the
+    /// server demands an `Origin` header that matches the token's bound
+    /// origin, and unlike browsers, tungstenite does not add one automatically.
+    pub fn handshake_header(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.config
+            .handshake_headers
+            .insert(key.into(), value.into());
+        self
+    }
+
     pub fn token_transport(mut self, transport: TokenTransport) -> Self {
         let auth = self
             .config
