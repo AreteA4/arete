@@ -370,14 +370,9 @@ impl RuntimeAuthState {
             .into_client_request()
             .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
 
-        if self.token_transport() == TokenTransport::Bearer {
-            if let Some(token) = token {
-                let header_value = HeaderValue::from_str(&format!("Bearer {token}"))
-                    .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
-                request.headers_mut().insert("Authorization", header_value);
-            }
-        }
-
+        // Apply user-supplied handshake headers first. The SDK-managed
+        // Authorization header (Bearer transport, below) overwrites any
+        // user-provided `authorization` to keep auth state consistent.
         for (key, value) in &self.handshake_headers {
             let header_name = HeaderName::from_bytes(key.as_bytes())
                 .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
@@ -386,16 +381,27 @@ impl RuntimeAuthState {
             request.headers_mut().insert(header_name, header_value);
         }
 
+        if self.token_transport() == TokenTransport::Bearer {
+            if let Some(token) = token {
+                let header_value = HeaderValue::from_str(&format!("Bearer {token}"))
+                    .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
+                request.headers_mut().insert("Authorization", header_value);
+            }
+        }
+
         // Auto-forward Origin from token_endpoint_headers when no explicit
         // handshake Origin was set. Browsers add Origin automatically; for
         // origin-bound publishable keys, Rust clients otherwise have to set
-        // the same Origin twice (mint + upgrade).
+        // the same Origin twice (mint + upgrade). HTTP header names are
+        // case-insensitive on the wire, so match the user's key regardless
+        // of its capitalisation.
         if !request.headers().contains_key("origin") {
-            if let Some(origin) = self
-                .config
-                .as_ref()
-                .and_then(|c| c.token_endpoint_headers.get("Origin"))
-            {
+            if let Some(origin) = self.config.as_ref().and_then(|c| {
+                c.token_endpoint_headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("origin"))
+                    .map(|(_, v)| v.as_str())
+            }) {
                 let header_value = HeaderValue::from_str(origin)
                     .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
                 request.headers_mut().insert("Origin", header_value);
@@ -891,5 +897,46 @@ mod tests {
             .expect("request should build without origin");
 
         assert!(request.headers().get("origin").is_none());
+    }
+
+    #[test]
+    fn origin_auto_forward_is_case_insensitive() {
+        // User supplied a lowercase `origin` key to `token_endpoint_header`.
+        // HTTP header names are case-insensitive on the wire, so the
+        // auto-forward must find this regardless of capitalisation.
+        let auth = AuthConfig::default()
+            .with_token_endpoint_header("origin", "https://lower.example");
+        let state = auth_state_with(Some(auth), HashMap::new());
+
+        let request = state
+            .build_request(None)
+            .expect("request should build with lowercase-origin auto-forward");
+
+        assert_eq!(
+            request.headers().get("origin").and_then(|v| v.to_str().ok()),
+            Some("https://lower.example")
+        );
+    }
+
+    #[test]
+    fn bearer_authorization_overrides_user_handshake_authorization() {
+        // The SDK manages the Bearer Authorization header. A user-provided
+        // `authorization` handshake header must not silently replace it.
+        let auth = AuthConfig::default().with_token_transport(TokenTransport::Bearer);
+        let mut handshake = HashMap::new();
+        handshake.insert("authorization".to_string(), "Bearer user-supplied".to_string());
+        let state = auth_state_with(Some(auth), handshake);
+
+        let request = state
+            .build_request(Some("sdk-managed-token"))
+            .expect("request should build with SDK-managed Bearer");
+
+        assert_eq!(
+            request
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer sdk-managed-token")
+        );
     }
 }
