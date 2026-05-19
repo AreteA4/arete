@@ -16,10 +16,11 @@
 //! - `a4 stack list` - List all stacks
 //! - `a4 stack show` - Show stack details
 //! - `a4 sdk create` - Generate TypeScript/Rust SDK
+//! - `a4 install` - Generate TypeScript/Rust SDK from a hosted stack
 //!
 //! See `a4 --help` for the full command reference.
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
 use colored::Colorize;
 use std::io;
@@ -124,6 +125,40 @@ enum Commands {
         stack_name: Option<String>,
     },
 
+    /// Generate a TypeScript or Rust SDK from a hosted stack
+    Install {
+        /// Hosted stack identifier to generate SDK for
+        stack_name: String,
+
+        /// Generate a TypeScript SDK
+        #[arg(long, conflicts_with = "rust")]
+        ts: bool,
+
+        /// Generate a Rust SDK
+        #[arg(long, conflicts_with = "ts")]
+        rust: bool,
+
+        /// Output path (file for TypeScript, directory for Rust)
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Package name for TypeScript
+        #[arg(short, long)]
+        package_name: Option<String>,
+
+        /// Crate name for generated Rust crate
+        #[arg(long)]
+        crate_name: Option<String>,
+
+        /// Generate Rust as a module (mod.rs) instead of a standalone crate
+        #[arg(long)]
+        module: bool,
+
+        /// WebSocket URL for the stack
+        #[arg(long)]
+        url: Option<String>,
+    },
+
     /// SDK generation commands
     #[command(subcommand)]
     Sdk(SdkCommands),
@@ -158,54 +193,44 @@ enum Commands {
 #[derive(Subcommand)]
 enum SdkCommands {
     /// Create SDK from a stack
-    #[command(subcommand)]
-    Create(CreateCommands),
+    Create(SdkCreateArgs),
 
     /// List all available stacks from arete.toml
     List,
 }
 
-#[derive(Subcommand)]
-enum CreateCommands {
-    /// Generate TypeScript SDK
-    Typescript {
-        /// Name of the stack to generate SDK for
-        stack_name: String,
+#[derive(Args)]
+struct SdkCreateArgs {
+    /// Name of the stack to generate SDK for
+    stack_name: String,
 
-        /// Output file path (overrides config)
-        #[arg(short, long)]
-        output: Option<String>,
+    /// Generate a TypeScript SDK
+    #[arg(long, conflicts_with = "rust")]
+    ts: bool,
 
-        /// Package name for TypeScript
-        #[arg(short, long)]
-        package_name: Option<String>,
+    /// Generate a Rust SDK
+    #[arg(long, conflicts_with = "ts")]
+    rust: bool,
 
-        /// WebSocket URL for the stack (overrides config)
-        #[arg(long)]
-        url: Option<String>,
-    },
+    /// Output path (file for TypeScript, directory for Rust)
+    #[arg(short, long)]
+    output: Option<String>,
 
-    /// Generate Rust SDK crate
-    Rust {
-        /// Name of the stack to generate SDK for
-        stack_name: String,
+    /// Package name for TypeScript
+    #[arg(short, long)]
+    package_name: Option<String>,
 
-        /// Output directory path (overrides config)
-        #[arg(short, long)]
-        output: Option<String>,
+    /// Crate name for generated Rust crate
+    #[arg(long)]
+    crate_name: Option<String>,
 
-        /// Crate name for generated Rust crate
-        #[arg(long)]
-        crate_name: Option<String>,
+    /// Generate Rust as a module (mod.rs) instead of a standalone crate
+    #[arg(long)]
+    module: bool,
 
-        /// Generate as a module (mod.rs) instead of a standalone crate
-        #[arg(long)]
-        module: bool,
-
-        /// WebSocket URL for the stack (overrides config)
-        #[arg(long)]
-        url: Option<String>,
-    },
+    /// WebSocket URL for the stack (overrides config)
+    #[arg(long)]
+    url: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -453,6 +478,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Status => "status",
         Commands::Explore { .. } => "explore",
         Commands::Push { .. } => "push",
+        Commands::Install { .. } => "install",
         Commands::Sdk(_) => "sdk",
         Commands::Config(_) => "config",
         Commands::Auth(_) => "auth",
@@ -491,35 +517,37 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             None => commands::explore::list(cli.json),
         },
         Commands::Push { stack_name } => commands::stack::push(&cli.config, stack_name.as_deref()),
+        Commands::Install {
+            stack_name,
+            ts,
+            rust,
+            output,
+            package_name,
+            crate_name,
+            module,
+            url,
+        } => commands::sdk::install(
+            &stack_name,
+            ts,
+            rust,
+            output,
+            package_name,
+            crate_name,
+            module,
+            url,
+        ),
         Commands::Sdk(sdk_cmd) => match sdk_cmd {
-            SdkCommands::Create(create_cmd) => match create_cmd {
-                CreateCommands::Typescript {
-                    stack_name,
-                    output,
-                    package_name,
-                    url,
-                } => commands::sdk::create_typescript(
-                    &cli.config,
-                    &stack_name,
-                    output,
-                    package_name,
-                    url,
-                ),
-                CreateCommands::Rust {
-                    stack_name,
-                    output,
-                    crate_name,
-                    module,
-                    url,
-                } => commands::sdk::create_rust(
-                    &cli.config,
-                    &stack_name,
-                    output,
-                    crate_name,
-                    module,
-                    url,
-                ),
-            },
+            SdkCommands::Create(create_args) => commands::sdk::create(
+                &cli.config,
+                &create_args.stack_name,
+                create_args.ts,
+                create_args.rust,
+                create_args.output,
+                create_args.package_name,
+                create_args.crate_name,
+                create_args.module,
+                create_args.url,
+            ),
             SdkCommands::List => commands::sdk::list(&cli.config),
         },
         Commands::Config(config_cmd) => match config_cmd {

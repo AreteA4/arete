@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use dialoguer::{theme::ColorfulTheme, Select};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,12 @@ struct RemoteStackAst {
 enum ResolvedStackSource {
     Local(DiscoveredAst),
     Remote(RemoteStackAst),
+}
+
+#[derive(Clone, Copy)]
+enum SdkTarget {
+    TypeScript,
+    Rust,
 }
 
 impl ResolvedStackSource {
@@ -131,10 +138,40 @@ pub fn list(config_path: &str) -> Result<()> {
 
     println!(
         "Use {} to generate SDK",
-        "a4 sdk create typescript <stack-name>".cyan()
+        "a4 sdk create <stack-name> --ts".cyan()
     );
 
     Ok(())
+}
+
+pub fn create(
+    config_path: &str,
+    stack_name: &str,
+    ts: bool,
+    rust: bool,
+    output_override: Option<String>,
+    package_name_override: Option<String>,
+    crate_name_override: Option<String>,
+    module_flag: bool,
+    url_override: Option<String>,
+) -> Result<()> {
+    match select_sdk_target(ts, rust, "Generate which SDK?")? {
+        SdkTarget::TypeScript => create_typescript(
+            config_path,
+            stack_name,
+            output_override,
+            package_name_override,
+            url_override,
+        ),
+        SdkTarget::Rust => create_rust(
+            config_path,
+            stack_name,
+            output_override,
+            crate_name_override,
+            module_flag,
+            url_override,
+        ),
+    }
 }
 
 pub fn create_typescript(
@@ -230,6 +267,206 @@ pub fn create_typescript(
     telemetry::record_sdk_generated("typescript");
 
     Ok(())
+}
+
+pub fn install(
+    stack_name: &str,
+    ts: bool,
+    rust: bool,
+    output_override: Option<String>,
+    package_name_override: Option<String>,
+    crate_name_override: Option<String>,
+    module_flag: bool,
+    url_override: Option<String>,
+) -> Result<()> {
+    match select_sdk_target(ts, rust, "Install which SDK?")? {
+        SdkTarget::TypeScript => install_typescript(
+            stack_name,
+            output_override,
+            package_name_override,
+            url_override,
+        ),
+        SdkTarget::Rust => install_rust(
+            stack_name,
+            output_override,
+            crate_name_override,
+            module_flag,
+            url_override,
+        ),
+    }
+}
+
+fn install_typescript(
+    stack_name: &str,
+    output_override: Option<String>,
+    package_name_override: Option<String>,
+    url_override: Option<String>,
+) -> Result<()> {
+    println!(
+        "{} Looking up hosted stack '{}'...",
+        "→".blue().bold(),
+        stack_name
+    );
+
+    let client = ApiClient::new()?;
+    let source = resolve_remote_stack_source(&client, stack_name)?;
+    let output_path = output_override
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-stack.ts", source.sdk_name())));
+    let package_name = package_name_override.unwrap_or_else(|| "@usearete/react".to_string());
+    let stack_url = url_override.or_else(|| source.default_url());
+
+    println!(
+        "{} Found hosted stack: {}",
+        "✓".green().bold(),
+        source.stack_id().bold()
+    );
+    source.print_source_details();
+    println!("  Output: {}", output_path.display());
+    if let Some(url) = &stack_url {
+        println!("  URL: {}", url.cyan());
+    } else {
+        println!(
+            "  URL: {}",
+            "(not provided by hosted stack - placeholder will be generated)".dimmed()
+        );
+    }
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create output directory: {}", parent.display()))?;
+    }
+
+    println!("\n{} Generating TypeScript SDK...", "→".blue().bold());
+
+    generate_typescript_sdk_from_source(&source, &output_path, &package_name, stack_url)?;
+
+    println!(
+        "{} Successfully generated TypeScript SDK!",
+        "✓".green().bold()
+    );
+    println!("  File: {}", output_path.display().to_string().bold());
+
+    telemetry::record_sdk_generated("typescript");
+
+    Ok(())
+}
+
+fn install_rust(
+    stack_name: &str,
+    output_override: Option<String>,
+    crate_name_override: Option<String>,
+    module_flag: bool,
+    url_override: Option<String>,
+) -> Result<()> {
+    println!(
+        "{} Looking up hosted stack '{}'...",
+        "→".blue().bold(),
+        stack_name
+    );
+
+    let client = ApiClient::new()?;
+    let source = resolve_remote_stack_source(&client, stack_name)?;
+    let crate_name = crate_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
+    let output_dir = output_override
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-stack", source.sdk_name())));
+    let stack_url = url_override.or_else(|| source.default_url());
+
+    println!(
+        "{} Found hosted stack: {}",
+        "✓".green().bold(),
+        source.stack_id().bold()
+    );
+    source.print_source_details();
+    println!("  Output: {}", output_dir.display());
+    if module_flag {
+        println!("  Mode: module (mod.rs)");
+    }
+    if let Some(url) = &stack_url {
+        println!("  URL: {}", url.cyan());
+    } else {
+        println!(
+            "  URL: {}",
+            "(not provided by hosted stack - placeholder will be generated)".dimmed()
+        );
+    }
+
+    println!("\n{} Generating Rust SDK...", "→".blue().bold());
+
+    let stack_spec = source.load_stack_spec()?;
+
+    println!(
+        "{} {} entities in stack",
+        "→".blue().bold(),
+        stack_spec.entities.len()
+    );
+
+    let rust_config = arete_interpreter::rust::RustStackConfig {
+        crate_name: crate_name.clone(),
+        sdk_version: "0.2".to_string(),
+        module_mode: module_flag,
+        url: stack_url,
+    };
+
+    let output = arete_interpreter::rust::compile_stack_spec(stack_spec, Some(rust_config))
+        .map_err(|e| anyhow::anyhow!("Failed to compile Rust: {}", e))?;
+
+    if module_flag {
+        arete_interpreter::rust::write_rust_module(&output, &output_dir)
+            .with_context(|| format!("Failed to write Rust module to {}", output_dir.display()))?;
+
+        println!("{} Successfully generated Rust module!", "✓".green().bold());
+        println!("  Module: {}", output_dir.display().to_string().bold());
+        println!("\n  Add to your lib.rs:");
+        let module_name = output_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("module");
+        println!("    pub mod {};", module_name.cyan());
+    } else {
+        arete_interpreter::rust::write_rust_crate(&output, &output_dir)
+            .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))?;
+
+        println!("{} Successfully generated Rust SDK!", "✓".green().bold());
+        println!("  Crate: {}", output_dir.display().to_string().bold());
+        println!("\n  Add to your Cargo.toml:");
+        println!(
+            "    {} = {{ path = \"{}\" }}",
+            crate_name.cyan(),
+            output_dir.display()
+        );
+    }
+
+    telemetry::record_sdk_generated("rust");
+
+    Ok(())
+}
+
+fn select_sdk_target(ts: bool, rust: bool, prompt: &str) -> Result<SdkTarget> {
+    match (ts, rust) {
+        (true, false) => Ok(SdkTarget::TypeScript),
+        (false, true) => Ok(SdkTarget::Rust),
+        (false, false) => {
+            let theme = ColorfulTheme::default();
+            let items = ["TypeScript", "Rust"];
+            let selection = Select::with_theme(&theme)
+                .with_prompt(prompt)
+                .items(&items)
+                .default(0)
+                .interact()
+                .context("Failed to select SDK language")?;
+
+            Ok(match selection {
+                0 => SdkTarget::TypeScript,
+                1 => SdkTarget::Rust,
+                _ => unreachable!(),
+            })
+        }
+        (true, true) => Err(anyhow::anyhow!(
+            "Cannot specify both --ts and --rust. Choose one."
+        )),
+    }
 }
 
 fn find_stack_by_name(
@@ -492,6 +729,17 @@ fn resolve_stack_source(client: &ApiClient, stack: &str) -> Result<ResolvedStack
     let remote = client.get_registry_ast_by_stack(stack).with_context(|| {
         format!(
             "Stack '{}' was not found locally and no accessible hosted stack with that identifier was found.",
+            stack
+        )
+    })?;
+
+    Ok(ResolvedStackSource::Remote(remote_stack_ast(remote)))
+}
+
+fn resolve_remote_stack_source(client: &ApiClient, stack: &str) -> Result<ResolvedStackSource> {
+    let remote = client.get_registry_ast_by_stack(stack).with_context(|| {
+        format!(
+            "No accessible hosted stack with identifier '{}' was found.",
             stack
         )
     })?;
