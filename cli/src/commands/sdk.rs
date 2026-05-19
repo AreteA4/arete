@@ -144,6 +144,7 @@ pub fn list(config_path: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     config_path: &str,
     stack_name: &str,
@@ -269,6 +270,7 @@ pub fn create_typescript(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn install(
     stack_name: &str,
     ts: bool,
