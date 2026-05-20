@@ -26,11 +26,15 @@ repository = "https://github.com/AreteA4/arete.git"
 authors = ["Arete Team"]
 
 [workspace.dependencies]
-# Yellowstone Vixen ecosystem
-yellowstone-vixen = "0.6.0-alpha.0"
-yellowstone-vixen-core = "0.6.0-alpha.0"
-yellowstone-vixen-proto = "0.6.0-alpha.0"
-yellowstone-vixen-yellowstone-grpc-source = "0.6.0-alpha.0"
+# Yellowstone Vixen ecosystem.
+# Pinned to exact versions: vixen-core 0.6.1 (the latest semver-compatible
+# release) was published against a newer `yellowstone-grpc-proto` and fails
+# to compile against the proto version selected here, breaking any fresh
+# resolution (notably the temp crates spawned by arete-macros dynamic tests).
+yellowstone-vixen = "=0.6.0-alpha.0"
+yellowstone-vixen-core = "=0.6.0-alpha.0"
+yellowstone-vixen-proto = "=0.6.0-alpha.0"
+yellowstone-vixen-yellowstone-grpc-source = "=0.6.0-alpha.0"
 # Yellowstone gRPC client (for standalone slot subscriptions)
 yellowstone-grpc-client = "9.1.0"
 yellowstone-grpc-proto = "9.1.0"

@@ -8,6 +8,7 @@ use crate::error::{AreteError, SocketIssue, SocketIssuePayload};
 use crate::frame::{parse_frame, Frame};
 use crate::subscription::{ClientMessage, Subscription, SubscriptionRegistry, Unsubscription};
 use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,7 +16,11 @@ use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use tokio::time::{sleep, Sleep};
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{client::IntoClientRequest, http::HeaderValue, Message},
+    tungstenite::{
+        client::IntoClientRequest,
+        http::{HeaderName, HeaderValue},
+        Message,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,16 +199,22 @@ impl ConnectionManager {
 struct RuntimeAuthState {
     websocket_url: String,
     config: Option<AuthConfig>,
+    handshake_headers: HashMap<String, String>,
     current_token: Option<String>,
     token_expiry: Option<u64>,
     http_client: reqwest::Client,
 }
 
 impl RuntimeAuthState {
-    fn new(websocket_url: String, config: Option<AuthConfig>) -> Self {
+    fn new(
+        websocket_url: String,
+        config: Option<AuthConfig>,
+        handshake_headers: HashMap<String, String>,
+    ) -> Self {
         Self {
             websocket_url,
             config,
+            handshake_headers,
             current_token: None,
             token_expiry: None,
             http_client: reqwest::Client::new(),
@@ -359,11 +370,41 @@ impl RuntimeAuthState {
             .into_client_request()
             .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
 
+        // Apply user-supplied handshake headers first. The SDK-managed
+        // Authorization header (Bearer transport, below) overwrites any
+        // user-provided `authorization` to keep auth state consistent.
+        for (key, value) in &self.handshake_headers {
+            let header_name = HeaderName::from_bytes(key.as_bytes())
+                .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
+            let header_value = HeaderValue::from_str(value)
+                .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
+            request.headers_mut().insert(header_name, header_value);
+        }
+
         if self.token_transport() == TokenTransport::Bearer {
             if let Some(token) = token {
                 let header_value = HeaderValue::from_str(&format!("Bearer {token}"))
                     .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
                 request.headers_mut().insert("Authorization", header_value);
+            }
+        }
+
+        // Auto-forward Origin from token_endpoint_headers when no explicit
+        // handshake Origin was set. Browsers add Origin automatically; for
+        // origin-bound publishable keys, Rust clients otherwise have to set
+        // the same Origin twice (mint + upgrade). HTTP header names are
+        // case-insensitive on the wire, so match the user's key regardless
+        // of its capitalisation.
+        if !request.headers().contains_key("origin") {
+            if let Some(origin) = self.config.as_ref().and_then(|c| {
+                c.token_endpoint_headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("origin"))
+                    .map(|(_, v)| v.as_str())
+            }) {
+                let header_value = HeaderValue::from_str(origin)
+                    .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
+                request.headers_mut().insert("Origin", header_value);
             }
         }
 
@@ -385,7 +426,11 @@ fn spawn_connection_loop(
     initial_connect_tx: oneshot::Sender<Result<(), AreteError>>,
 ) {
     tokio::spawn(async move {
-        let mut auth_state = RuntimeAuthState::new(url.clone(), config.auth.clone());
+        let mut auth_state = RuntimeAuthState::new(
+            url.clone(),
+            config.auth.clone(),
+            config.handshake_headers.clone(),
+        );
         let mut reconnect_attempt: u32 = 0;
         let mut should_run = true;
         let mut initial_connect_tx = Some(initial_connect_tx);
@@ -767,4 +812,131 @@ fn refresh_response_error(response: RefreshAuthResponseMessage) -> AreteError {
         .unwrap_or_else(|| "Authentication refresh failed".to_string());
 
     AreteError::WebSocket { message, code }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn auth_state_with(
+        config: Option<AuthConfig>,
+        handshake_headers: HashMap<String, String>,
+    ) -> RuntimeAuthState {
+        RuntimeAuthState::new(
+            "wss://demo.stack.arete.run/socket".to_string(),
+            config,
+            handshake_headers,
+        )
+    }
+
+    #[test]
+    fn handshake_header_is_applied_to_upgrade_request() {
+        let mut headers = HashMap::new();
+        headers.insert("Origin".to_string(), "https://example.gg".to_string());
+        headers.insert("X-Custom".to_string(), "value".to_string());
+        let state = auth_state_with(None, headers);
+
+        let request = state
+            .build_request(None)
+            .expect("request should build with handshake headers");
+
+        assert_eq!(
+            request.headers().get("origin").and_then(|v| v.to_str().ok()),
+            Some("https://example.gg")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-custom")
+                .and_then(|v| v.to_str().ok()),
+            Some("value")
+        );
+    }
+
+    #[test]
+    fn origin_is_auto_forwarded_from_token_endpoint_header() {
+        let auth = AuthConfig::default()
+            .with_publishable_key("hspk_test")
+            .with_token_endpoint_header("Origin", "https://example.gg");
+        let state = auth_state_with(Some(auth), HashMap::new());
+
+        let request = state
+            .build_request(None)
+            .expect("request should build with auto-forwarded origin");
+
+        assert_eq!(
+            request.headers().get("origin").and_then(|v| v.to_str().ok()),
+            Some("https://example.gg")
+        );
+    }
+
+    #[test]
+    fn explicit_handshake_origin_overrides_auto_forward() {
+        let auth = AuthConfig::default()
+            .with_token_endpoint_header("Origin", "https://from-token-endpoint.example");
+        let mut handshake = HashMap::new();
+        handshake.insert("Origin".to_string(), "https://explicit.example".to_string());
+        let state = auth_state_with(Some(auth), handshake);
+
+        let request = state
+            .build_request(None)
+            .expect("request should build with explicit origin");
+
+        assert_eq!(
+            request.headers().get("origin").and_then(|v| v.to_str().ok()),
+            Some("https://explicit.example")
+        );
+    }
+
+    #[test]
+    fn no_origin_set_when_neither_handshake_nor_token_endpoint_provides_one() {
+        let state = auth_state_with(Some(AuthConfig::default()), HashMap::new());
+
+        let request = state
+            .build_request(None)
+            .expect("request should build without origin");
+
+        assert!(request.headers().get("origin").is_none());
+    }
+
+    #[test]
+    fn origin_auto_forward_is_case_insensitive() {
+        // User supplied a lowercase `origin` key to `token_endpoint_header`.
+        // HTTP header names are case-insensitive on the wire, so the
+        // auto-forward must find this regardless of capitalisation.
+        let auth = AuthConfig::default()
+            .with_token_endpoint_header("origin", "https://lower.example");
+        let state = auth_state_with(Some(auth), HashMap::new());
+
+        let request = state
+            .build_request(None)
+            .expect("request should build with lowercase-origin auto-forward");
+
+        assert_eq!(
+            request.headers().get("origin").and_then(|v| v.to_str().ok()),
+            Some("https://lower.example")
+        );
+    }
+
+    #[test]
+    fn bearer_authorization_overrides_user_handshake_authorization() {
+        // The SDK manages the Bearer Authorization header. A user-provided
+        // `authorization` handshake header must not silently replace it.
+        let auth = AuthConfig::default().with_token_transport(TokenTransport::Bearer);
+        let mut handshake = HashMap::new();
+        handshake.insert("authorization".to_string(), "Bearer user-supplied".to_string());
+        let state = auth_state_with(Some(auth), handshake);
+
+        let request = state
+            .build_request(Some("sdk-managed-token"))
+            .expect("request should build with SDK-managed Bearer");
+
+        assert_eq!(
+            request
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer sdk-managed-token")
+        );
+    }
 }

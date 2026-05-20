@@ -1,5 +1,6 @@
 use crate::auth::AuthConfig;
 use crate::store::DEFAULT_MAX_ENTRIES_PER_VIEW;
+use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -11,6 +12,7 @@ pub struct AreteConfig {
     pub initial_data_timeout: Duration,
     pub max_entries_per_view: Option<usize>,
     pub auth: Option<AuthConfig>,
+    pub handshake_headers: HashMap<String, String>,
 }
 
 impl Default for AreteConfig {
@@ -29,6 +31,7 @@ impl Default for AreteConfig {
             initial_data_timeout: Duration::from_secs(5),
             max_entries_per_view: Some(DEFAULT_MAX_ENTRIES_PER_VIEW),
             auth: None,
+            handshake_headers: HashMap::new(),
         }
     }
 }
@@ -40,6 +43,7 @@ pub struct ConnectionConfig {
     pub max_reconnect_attempts: u32,
     pub ping_interval: Duration,
     pub auth: Option<AuthConfig>,
+    pub handshake_headers: HashMap<String, String>,
 }
 
 impl From<AreteConfig> for ConnectionConfig {
@@ -50,6 +54,7 @@ impl From<AreteConfig> for ConnectionConfig {
             max_reconnect_attempts: config.max_reconnect_attempts,
             ping_interval: config.ping_interval,
             auth: config.auth,
+            handshake_headers: config.handshake_headers,
         }
     }
 }

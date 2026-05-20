@@ -19,16 +19,16 @@ fi
 echo ""
 echo "Generating example SDKs from stack source: $STACK_ID"
 
-ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create typescript "$STACK_ID" \
+ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create "$STACK_ID" --ts \
     --output "$ROOT_DIR/examples/ore-react/src/generated/ore-stack.ts" \
     --package-name "@usearete/react"
 
-ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create typescript "$STACK_ID" \
+ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create "$STACK_ID" --ts \
     --output "$ROOT_DIR/examples/ore-typescript/src/generated/ore-stack.ts" \
     --package-name "@usearete/sdk"
 
 rm -rf "$ROOT_DIR/examples/ore-rust/src/generated/ore"
 
-ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create rust "$STACK_ID" \
+ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create "$STACK_ID" --rust \
     --output "$ROOT_DIR/examples/ore-rust/src/generated/ore" \
     --module
