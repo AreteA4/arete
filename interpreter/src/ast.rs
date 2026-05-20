@@ -423,6 +423,20 @@ pub struct SerializableStreamSpec {
     pub views: Vec<ViewDef>,
 }
 
+impl SerializableStreamSpec {
+    /// Normalize legacy event names emitted by older AST generators.
+    pub fn normalize_event_names(&mut self) {
+        for handler in &mut self.handlers {
+            handler.normalize_event_names();
+        }
+
+        for hook in &mut self.instruction_hooks {
+            hook.instruction_type =
+                crate::event_type_helpers::canonicalize_event_type_name(&hook.instruction_type);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TypedStreamSpec<S> {
     pub state_name: String,
@@ -526,7 +540,8 @@ impl<S> TypedStreamSpec<S> {
     }
 
     /// Create from serializable format
-    pub fn from_serializable(spec: SerializableStreamSpec) -> Self {
+    pub fn from_serializable(mut spec: SerializableStreamSpec) -> Self {
+        spec.normalize_event_names();
         TypedStreamSpec {
             state_name: spec.state_name,
             identity: spec.identity,
@@ -672,6 +687,22 @@ pub struct SerializableHandlerSpec {
     pub mappings: Vec<SerializableFieldMapping>,
     pub conditions: Vec<Condition>,
     pub emit: bool,
+}
+
+impl SerializableHandlerSpec {
+    pub fn normalize_event_names(&mut self) {
+        let SourceSpec::Source { type_name, .. } = &mut self.source;
+        *type_name = crate::event_type_helpers::canonicalize_event_type_name(type_name);
+
+        for mapping in &mut self.mappings {
+            if let Some(when) = &mut mapping.when {
+                *when = crate::event_type_helpers::canonicalize_event_type_name(when);
+            }
+            if let Some(stop) = &mut mapping.stop {
+                *stop = crate::event_type_helpers::canonicalize_event_type_name(stop);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1358,6 +1389,13 @@ pub struct SerializableStackSpec {
 }
 
 impl SerializableStackSpec {
+    /// Normalize legacy event names emitted by older AST generators.
+    pub fn normalize_event_names(&mut self) {
+        for entity in &mut self.entities {
+            entity.normalize_event_names();
+        }
+    }
+
     /// Compute deterministic content hash (SHA256 of canonical JSON).
     pub fn compute_content_hash(&self) -> String {
         use sha2::{Digest, Sha256};
@@ -1373,6 +1411,114 @@ impl SerializableStackSpec {
     pub fn with_content_hash(mut self) -> Self {
         self.content_hash = Some(self.compute_content_hash());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        HookAction, IdentitySpec, InstructionHook, MappingSource, PopulationStrategy,
+        SerializableFieldMapping, SerializableHandlerSpec, SerializableStackSpec,
+        SerializableStreamSpec, SourceSpec, TypedStreamSpec, CURRENT_AST_VERSION,
+    };
+    use serde_json::Value;
+
+    fn legacy_stream_spec() -> SerializableStreamSpec {
+        SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: "PumpfunToken".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.mint".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![SerializableHandlerSpec {
+                source: SourceSpec::Source {
+                    program_id: None,
+                    discriminator: None,
+                    type_name: "pump::buyIxState".to_string(),
+                    serialization: None,
+                    is_account: false,
+                },
+                key_resolution: super::KeyResolutionStrategy::Embedded {
+                    primary_field: super::FieldPath::new(&["accounts", "mint"]),
+                },
+                mappings: vec![SerializableFieldMapping {
+                    target_path: "info.last_buy_at".to_string(),
+                    source: MappingSource::Constant(Value::Null),
+                    transform: None,
+                    population: PopulationStrategy::SetOnce,
+                    condition: None,
+                    when: Some("pump::sellIxState".to_string()),
+                    stop: Some("pump::buy_exact_sol_inIxState".to_string()),
+                    emit: true,
+                }],
+                conditions: vec![],
+                emit: true,
+            }],
+            sections: vec![],
+            field_mappings: Default::default(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![InstructionHook {
+                instruction_type: "pump::buyIxState".to_string(),
+                actions: vec![HookAction::SetField {
+                    target_field: "info.last_buy_at".to_string(),
+                    source: MappingSource::Constant(Value::Null),
+                    condition: None,
+                }],
+                lookup_by: None,
+            }],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        }
+    }
+
+    #[test]
+    fn typed_stream_spec_from_serializable_normalizes_legacy_instruction_event_names() {
+        let typed = TypedStreamSpec::<Value>::from_serializable(legacy_stream_spec());
+
+        let handler = &typed.handlers[0];
+        let SourceSpec::Source { type_name, .. } = &handler.source;
+        assert_eq!(type_name, "pump::BuyIxState");
+        assert_eq!(
+            handler.mappings[0].when.as_deref(),
+            Some("pump::SellIxState")
+        );
+        assert_eq!(
+            handler.mappings[0].stop.as_deref(),
+            Some("pump::BuyExactSolInIxState")
+        );
+        assert_eq!(
+            typed.instruction_hooks[0].instruction_type,
+            "pump::BuyIxState"
+        );
+    }
+
+    #[test]
+    fn stack_spec_normalize_event_names_updates_all_entities() {
+        let mut stack = SerializableStackSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            stack_name: "PumpStack".to_string(),
+            program_ids: vec![],
+            idls: vec![],
+            entities: vec![legacy_stream_spec()],
+            pdas: Default::default(),
+            instructions: vec![],
+            content_hash: None,
+        };
+
+        stack.normalize_event_names();
+
+        let SourceSpec::Source { type_name, .. } = &stack.entities[0].handlers[0].source;
+        assert_eq!(type_name, "pump::BuyIxState");
+        assert_eq!(
+            stack.entities[0].instruction_hooks[0].instruction_type,
+            "pump::BuyIxState"
+        );
     }
 }
 

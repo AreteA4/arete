@@ -20,7 +20,10 @@ use crate::ast::{
     SerializableHandlerSpec, SerializableStreamSpec, SourceSpec,
 };
 use crate::diagnostic::{idl_error_to_syn, internal_codegen_error};
-use crate::event_type_helpers::{find_idl_for_type, program_name_for_type, IdlLookup};
+use crate::event_type_helpers::{
+    find_idl_for_type, program_name_for_type, scoped_instruction_event_type,
+    scoped_instruction_or_cpi_event_type, IdlLookup,
+};
 use crate::parse;
 use crate::parse::conditions as condition_parser;
 use crate::parse::idl as idl_parser;
@@ -581,22 +584,14 @@ fn build_source_handler(
             let instr_type = path_to_string(when_path);
             let instr_base = instr_type.split("::").last().unwrap_or(&instr_type);
             let program_name = program_name_for_type(&instr_type, idls);
-            if let Some(program_name) = program_name {
-                format!("{}::{}IxState", program_name, instr_base)
-            } else {
-                format!("{}IxState", instr_base)
-            }
+            scoped_instruction_event_type(program_name, instr_base)
         });
 
         let stop = mapping.stop.as_ref().map(|stop_path| {
             let instr_type = path_to_string(stop_path);
             let instr_base = instr_type.split("::").last().unwrap_or(&instr_type);
             let program_name = program_name_for_type(&instr_type, idls);
-            if let Some(program_name) = program_name {
-                format!("{}::{}IxState", program_name, instr_base)
-            } else {
-                format!("{}IxState", instr_base)
-            }
+            scoped_instruction_event_type(program_name, instr_base)
         });
 
         serializable_mappings.push(SerializableFieldMapping {
@@ -849,8 +844,6 @@ fn build_event_handler(
 
     let program_id = parts[0];
     let instruction_type = parts[1];
-    let instruction_type_pascal = idl_parser::to_pascal_case(instruction_type);
-
     let field_resolves_key = |field_name: &str| {
         primary_keys
             .iter()
@@ -1087,11 +1080,7 @@ fn build_event_handler(
         }
     };
 
-    let type_name = if let Some(program_name) = program_name {
-        format!("{}::{}IxState", program_name, instruction_type_pascal)
-    } else {
-        format!("{}IxState", instruction_type_pascal)
-    };
+    let type_name = scoped_instruction_event_type(program_name, instruction_type);
 
     Ok(Some(SerializableHandlerSpec {
         source: SourceSpec::Source {
@@ -1258,11 +1247,7 @@ fn build_instruction_hooks_ast(
         let instr_type = path_to_string(&registration.instruction_path);
         let instr_base = instr_type.split("::").last().unwrap();
         let program_name = program_name_for_type(&instr_type, idls);
-        let instr_type_state = if let Some(program_name) = program_name {
-            format!("{}::{}IxState", program_name, instr_base)
-        } else {
-            format!("{}IxState", instr_base)
-        };
+        let instr_type_state = scoped_instruction_event_type(program_name, instr_base);
 
         let action = HookAction::RegisterPdaMapping {
             pda_field: FieldPath::new(&["accounts", &registration.pda_field.ident.to_string()]),
@@ -1291,12 +1276,8 @@ fn build_instruction_hooks_ast(
         let program_name = program_name_for_type(instruction_type, idls);
         // CPI events (from `::events::` submodule) use "CpiEvent" suffix; instructions use "IxState"
         let is_cpi_event = instruction_type.contains("::events::");
-        let type_suffix = if is_cpi_event { "CpiEvent" } else { "IxState" };
-        let instr_type_state = if let Some(program_name) = program_name {
-            format!("{}::{}{}", program_name, instr_base, type_suffix)
-        } else {
-            format!("{}{}", instr_base, type_suffix)
-        };
+        let instr_type_state =
+            scoped_instruction_or_cpi_event_type(program_name, instr_base, is_cpi_event);
 
         for derive_attr in derive_attrs {
             let source = if derive_attr.field.ident.to_string().starts_with("__") {
@@ -1374,11 +1355,7 @@ fn build_instruction_hooks_ast(
             let stop_type = path_to_string(stop_path);
             let stop_base = stop_type.split("::").last().unwrap_or(&stop_type);
             let stop_program = program_name_for_type(&stop_type, idls);
-            let stop_type_state = if let Some(program_name) = stop_program {
-                format!("{}::{}IxState", program_name, stop_base)
-            } else {
-                format!("{}IxState", stop_base)
-            };
+            let stop_type_state = scoped_instruction_event_type(stop_program, stop_base);
 
             let stop_field = format!("__stop:{}", mapping.target_field_name);
 
@@ -1447,11 +1424,7 @@ fn build_instruction_hooks_ast(
                 {
                     let instr_base = source_type.split("::").last().unwrap();
                     let program_name = program_name_for_type(source_type, idls);
-                    let instr_type_state = if let Some(program_name) = program_name {
-                        format!("{}::{}IxState", program_name, instr_base)
-                    } else {
-                        format!("{}IxState", instr_base)
-                    };
+                    let instr_type_state = scoped_instruction_event_type(program_name, instr_base);
 
                     let condition = condition_expr.clone();
 

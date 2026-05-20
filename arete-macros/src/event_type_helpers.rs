@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use crate::utils::to_pascal_case;
+
 /// Extract the base name from a potentially scoped event type.
 /// "ore::RoundState" -> "RoundState"
 /// "RoundState" -> "RoundState"  (backwards compat)
@@ -32,6 +34,39 @@ pub fn strip_event_type_suffix(event_type: &str) -> &str {
 pub fn scoped_event_type(program_name: &str, type_name: &str, is_instruction: bool) -> String {
     let suffix = if is_instruction { "IxState" } else { "State" };
     format!("{}::{}{}", program_name, type_name, suffix)
+}
+
+/// Create a canonical instruction event type name.
+///
+/// Instruction names in the DSL often come from Rust SDK paths like
+/// `pump_sdk::instructions::buy_exact_sol_in`. Runtime parser event names are
+/// always PascalCase (`pump::BuyExactSolInIxState`), so AST generation must
+/// normalize the raw path segment before appending the suffix.
+pub fn scoped_instruction_event_type(program_name: Option<&str>, instruction_name: &str) -> String {
+    let canonical_name = to_pascal_case(instruction_name);
+    match program_name {
+        Some(program_name) => format!("{}::{}IxState", program_name, canonical_name),
+        None => format!("{}IxState", canonical_name),
+    }
+}
+
+/// Create a scoped event type name for either an instruction or a CPI event.
+///
+/// CPI event identifiers are already emitted in their canonical case by the
+/// parser, so only instruction names are normalized here.
+pub fn scoped_instruction_or_cpi_event_type(
+    program_name: Option<&str>,
+    event_name: &str,
+    is_cpi_event: bool,
+) -> String {
+    if is_cpi_event {
+        match program_name {
+            Some(program_name) => format!("{}::{}CpiEvent", program_name, event_name),
+            None => format!("{}CpiEvent", event_name),
+        }
+    } else {
+        scoped_instruction_event_type(program_name, event_name)
+    }
 }
 
 use crate::parse::idl::IdlSpec;
@@ -75,4 +110,37 @@ pub fn snake_to_lower_camel(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{scoped_instruction_event_type, scoped_instruction_or_cpi_event_type};
+
+    #[test]
+    fn scoped_instruction_event_type_normalizes_snake_case_names() {
+        assert_eq!(
+            scoped_instruction_event_type(Some("pump"), "buy_exact_sol_in"),
+            "pump::BuyExactSolInIxState"
+        );
+        assert_eq!(
+            scoped_instruction_event_type(Some("pump"), "buy"),
+            "pump::BuyIxState"
+        );
+    }
+
+    #[test]
+    fn scoped_instruction_event_type_preserves_pascal_case_names() {
+        assert_eq!(
+            scoped_instruction_event_type(Some("ore"), "Deploy"),
+            "ore::DeployIxState"
+        );
+    }
+
+    #[test]
+    fn scoped_instruction_or_cpi_event_type_keeps_cpi_names_verbatim() {
+        assert_eq!(
+            scoped_instruction_or_cpi_event_type(Some("pump"), "TradeExecuted", true),
+            "pump::TradeExecutedCpiEvent"
+        );
+    }
 }

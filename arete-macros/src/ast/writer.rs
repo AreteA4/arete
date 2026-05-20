@@ -11,6 +11,9 @@
 use std::collections::BTreeMap;
 
 use super::types::*;
+use crate::event_type_helpers::{
+    scoped_instruction_event_type, scoped_instruction_or_cpi_event_type,
+};
 use crate::parse;
 use crate::parse::idl as idl_parser;
 
@@ -472,21 +475,13 @@ pub fn build_handlers_from_sources(
             let when = mapping.when.as_ref().map(|when_path| {
                 let instr_type = path_to_string(when_path);
                 let instr_base = instr_type.split("::").last().unwrap_or(&instr_type);
-                if let Some(program_name) = program_name {
-                    format!("{}::{}IxState", program_name, instr_base)
-                } else {
-                    format!("{}IxState", instr_base)
-                }
+                scoped_instruction_event_type(program_name, instr_base)
             });
 
             let stop = mapping.stop.as_ref().map(|stop_path| {
                 let instr_type = path_to_string(stop_path);
                 let instr_base = instr_type.split("::").last().unwrap_or(&instr_type);
-                if let Some(program_name) = program_name {
-                    format!("{}::{}IxState", program_name, instr_base)
-                } else {
-                    format!("{}IxState", instr_base)
-                }
+                scoped_instruction_event_type(program_name, instr_base)
             });
 
             serializable_mappings.push(SerializableFieldMapping {
@@ -609,7 +604,9 @@ pub fn build_handlers_from_sources(
                     })
             })
         };
-        let type_name = if let Some(program_name) = program_name {
+        let type_name = if is_instruction || is_cpi_event {
+            scoped_instruction_or_cpi_event_type(program_name, account_type, is_cpi_event)
+        } else if let Some(program_name) = program_name {
             format!("{}::{}{}", program_name, account_type, type_suffix)
         } else {
             format!("{}{}", account_type, type_suffix)
@@ -702,11 +699,7 @@ pub fn build_instruction_hooks(
     for registration in pda_registrations {
         let instr_type = path_to_string(&registration.instruction_path);
         let instr_base = instr_type.split("::").last().unwrap();
-        let instr_type_state = if let Some(program_name) = program_name {
-            format!("{}::{}IxState", program_name, instr_base)
-        } else {
-            format!("{}IxState", instr_base)
-        };
+        let instr_type_state = scoped_instruction_event_type(program_name, instr_base);
 
         let action = HookAction::RegisterPdaMapping {
             pda_field: FieldPath::new(&["accounts", &registration.pda_field.ident.to_string()]),
@@ -733,11 +726,7 @@ pub fn build_instruction_hooks(
     sorted_derive_from.sort_by_key(|(k, _)| *k);
     for (instruction_type, derive_attrs) in sorted_derive_from {
         let instr_base = instruction_type.split("::").last().unwrap();
-        let instr_type_state = if let Some(program_name) = program_name {
-            format!("{}::{}IxState", program_name, instr_base)
-        } else {
-            format!("{}IxState", instr_base)
-        };
+        let instr_type_state = scoped_instruction_event_type(program_name, instr_base);
 
         for derive_attr in derive_attrs {
             let source = if derive_attr.field.ident.to_string().starts_with("__") {
@@ -814,11 +803,7 @@ pub fn build_instruction_hooks(
                     )
                 {
                     let instr_base = source_type.split("::").last().unwrap();
-                    let instr_type_state = if let Some(program_name) = program_name {
-                        format!("{}::{}IxState", program_name, instr_base)
-                    } else {
-                        format!("{}IxState", instr_base)
-                    };
+                    let instr_type_state = scoped_instruction_event_type(program_name, instr_base);
 
                     let condition = condition_expr.clone();
 
