@@ -455,7 +455,7 @@ pub fn process_idl_spec(
                 }
             }
 
-            let stack_spec = SerializableStackSpec {
+            let mut stack_spec = SerializableStackSpec {
                 ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
                 stack_name: stack_name.clone(),
                 program_ids: all_program_ids,
@@ -470,9 +470,10 @@ pub fn process_idl_spec(
                 pdas: all_pdas,
                 instructions: all_instructions,
                 content_hash: None,
-            }
-            .try_with_content_hash()
-            .map_err(|error| {
+            };
+            stack_spec.normalize_event_names();
+
+            let stack_spec = stack_spec.try_with_content_hash().map_err(|error| {
                 internal_codegen_error(
                     module.ident.span(),
                     format!("failed to serialize stack spec for hashing: {error}"),

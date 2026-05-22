@@ -453,6 +453,30 @@ impl<S> TypedCompiler<S> {
         }
     }
 
+    fn resolver_outputs_primary_key_directly(&self, primary_field: &FieldPath) -> bool {
+        if primary_field.segments.as_slice() != ["__account_address"] {
+            return false;
+        }
+
+        let primary_key_leafs: HashSet<&str> = self
+            .spec
+            .identity
+            .primary_keys
+            .iter()
+            .map(|path| path.rsplit('.').next().unwrap_or(path.as_str()))
+            .collect();
+
+        self.spec.instruction_hooks.iter().any(|hook| {
+            hook.actions.iter().any(|action| {
+                matches!(action, HookAction::RegisterPdaMapping { seed_field, .. }
+                    if seed_field
+                        .segments
+                        .last()
+                        .is_some_and(|segment| primary_key_leafs.contains(segment.as_str())))
+            })
+        })
+    }
+
     fn compile_entity(&self) -> EntityBytecode {
         let mut handlers: HashMap<String, Vec<OpCode>> = HashMap::new();
         let mut when_events: HashSet<String> = HashSet::new();
@@ -1254,34 +1278,24 @@ impl<S> TypedCompiler<S> {
                     lookup_value: lookup_reg,
                     dest: result_reg,
                 });
-                // CRITICAL: For Lookup resolution, we ONLY use the lookup result.
-                // If the lookup fails (result_reg is null), the mutation will be skipped.
-                // We do NOT fall back to __resolved_primary_key or the raw lookup value,
-                // because that would create a separate entity with the wrong key.
-                // The resolver-provided key (e.g., PDA address) is only used as the lookup input,
-                // NOT as the entity key. The entity key must come from the lookup index.
                 ops.push(OpCode::CopyRegister {
                     source: result_reg,
                     dest: key_reg,
                 });
-                // NOTE: We intentionally do NOT fall back to lookup_reg when LookupIndex returns null.
-                // If the lookup fails (because the RoundState account hasn't been processed yet),
-                // the result_reg will remain null, and the mutation will be skipped.
-                // Previously we had: CopyRegisterIfNull { source: lookup_reg, dest: result_reg }
-                // which caused the PDA address to be used as the key instead of the round_id.
-                // This resulted in mutations with key = PDA address instead of key = primary_key.
 
-                // Use LookupIndex result as the primary key. Do NOT fall back to
-                // resolved_key_reg (__resolved_primary_key) because for Lookup handlers
-                // it contains the PDA reverse-lookup result (e.g. round_address), which
-                // is an intermediate value, not the actual primary key (e.g. round_id).
-                // If the LookupIndex chain returns null (round not yet indexed), key
-                // stays null so the update is queued and reprocessed once the lookup
-                // index is populated—matching the pre-23503ac behaviour.
-                ops.push(OpCode::CopyRegister {
-                    source: result_reg,
-                    dest: key_reg,
-                });
+                // Most lookup-based account handlers expect resolver output to be an
+                // intermediate lookup value (for example, PDA -> round_address -> round_id),
+                // so a null LookupIndex result must leave the key null for queueing.
+                // Some stacks register the PDA directly to the entity primary key
+                // (for example, bonding_curve -> mint). In that case the resolver output
+                // is already the final key, so preserve it only when the instruction hook's
+                // seed field matches one of the entity primary key fields.
+                if self.resolver_outputs_primary_key_directly(primary_field) {
+                    ops.push(OpCode::CopyRegisterIfNull {
+                        source: resolved_key_reg,
+                        dest: key_reg,
+                    });
+                }
             }
             KeyResolutionStrategy::Computed {
                 primary_field,
@@ -1915,5 +1929,211 @@ impl<S> TypedCompiler<S> {
                 }]
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MultiEntityBytecode;
+    use crate::ast::{
+        FieldPath, HookAction, IdentitySpec, InstructionHook, KeyResolutionStrategy,
+        LookupIndexSpec, MappingSource, PopulationStrategy, SerializableFieldMapping,
+        SerializableHandlerSpec, SerializableStreamSpec, SourceSpec, TypedStreamSpec,
+    };
+    use crate::vm::VmContext;
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+
+    fn mapping(
+        target_path: &str,
+        source_path: &[&str],
+        population: PopulationStrategy,
+    ) -> SerializableFieldMapping {
+        SerializableFieldMapping {
+            target_path: target_path.to_string(),
+            source: MappingSource::FromSource {
+                path: FieldPath::new(source_path),
+                default: None,
+                transform: None,
+            },
+            transform: None,
+            population,
+            condition: None,
+            when: None,
+            stop: None,
+            emit: true,
+        }
+    }
+
+    fn direct_pda_to_primary_key_spec() -> TypedStreamSpec<Value> {
+        TypedStreamSpec::from_serializable(SerializableStreamSpec {
+            ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
+            state_name: "PumpfunToken".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.mint".to_string()],
+                lookup_indexes: vec![LookupIndexSpec {
+                    field_name: "id.bonding_curve".to_string(),
+                    temporal_field: None,
+                }],
+            },
+            handlers: vec![SerializableHandlerSpec {
+                source: SourceSpec::Source {
+                    program_id: None,
+                    discriminator: None,
+                    type_name: "pump::BondingCurveState".to_string(),
+                    serialization: None,
+                    is_account: true,
+                },
+                key_resolution: KeyResolutionStrategy::Lookup {
+                    primary_field: FieldPath::new(&["__account_address"]),
+                },
+                mappings: vec![
+                    mapping(
+                        "id.bonding_curve",
+                        &["__account_address"],
+                        PopulationStrategy::SetOnce,
+                    ),
+                    mapping(
+                        "reserves.virtual_token_reserves",
+                        &["virtual_token_reserves"],
+                        PopulationStrategy::LastWrite,
+                    ),
+                ],
+                conditions: vec![],
+                emit: true,
+            }],
+            sections: vec![],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![InstructionHook {
+                instruction_type: "pump::BuyIxState".to_string(),
+                actions: vec![HookAction::RegisterPdaMapping {
+                    pda_field: FieldPath::new(&["accounts", "bonding_curve"]),
+                    seed_field: FieldPath::new(&["accounts", "mint"]),
+                    lookup_name: "default_pda_lookup".to_string(),
+                }],
+                lookup_by: None,
+            }],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        })
+    }
+
+    fn pda_to_intermediate_lookup_spec() -> TypedStreamSpec<Value> {
+        TypedStreamSpec::from_serializable(SerializableStreamSpec {
+            ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
+            state_name: "OreRound".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.round_id".to_string()],
+                lookup_indexes: vec![LookupIndexSpec {
+                    field_name: "id.round_address".to_string(),
+                    temporal_field: None,
+                }],
+            },
+            handlers: vec![SerializableHandlerSpec {
+                source: SourceSpec::Source {
+                    program_id: None,
+                    discriminator: None,
+                    type_name: "entropy::VarState".to_string(),
+                    serialization: None,
+                    is_account: true,
+                },
+                key_resolution: KeyResolutionStrategy::Lookup {
+                    primary_field: FieldPath::new(&["__account_address"]),
+                },
+                mappings: vec![mapping(
+                    "state.expires_at",
+                    &["end_at"],
+                    PopulationStrategy::LastWrite,
+                )],
+                conditions: vec![],
+                emit: true,
+            }],
+            sections: vec![],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![InstructionHook {
+                instruction_type: "ore::DeployIxState".to_string(),
+                actions: vec![HookAction::RegisterPdaMapping {
+                    pda_field: FieldPath::new(&["accounts", "entropyVar"]),
+                    seed_field: FieldPath::new(&["accounts", "round"]),
+                    lookup_name: "default_pda_lookup".to_string(),
+                }],
+                lookup_by: None,
+            }],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        })
+    }
+
+    #[test]
+    fn lookup_account_handler_uses_resolved_primary_key_when_hook_seeds_primary_key() {
+        let bytecode = MultiEntityBytecode::from_single(
+            "PumpfunToken".to_string(),
+            direct_pda_to_primary_key_spec(),
+            0,
+        );
+        let mut vm = VmContext::new();
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({
+                    "__account_address": "bonding_curve_1",
+                    "__resolved_primary_key": "mint_1",
+                    "virtual_token_reserves": 42,
+                }),
+                "pump::BondingCurveState",
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].key, json!("mint_1"));
+        assert_eq!(
+            mutations[0].patch["id"]["bonding_curve"],
+            json!("bonding_curve_1")
+        );
+        assert_eq!(
+            mutations[0].patch["reserves"]["virtual_token_reserves"],
+            json!(42)
+        );
+    }
+
+    #[test]
+    fn lookup_account_handler_keeps_null_key_when_resolver_only_returns_intermediate_lookup() {
+        let bytecode = MultiEntityBytecode::from_single(
+            "OreRound".to_string(),
+            pda_to_intermediate_lookup_spec(),
+            0,
+        );
+        let mut vm = VmContext::new();
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({
+                    "__account_address": "entropy_var_1",
+                    "__resolved_primary_key": "round_address_1",
+                    "end_at": 123,
+                }),
+                "entropy::VarState",
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(mutations.is_empty());
     }
 }

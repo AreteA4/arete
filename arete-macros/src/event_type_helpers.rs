@@ -69,6 +69,30 @@ pub fn scoped_instruction_or_cpi_event_type(
     }
 }
 
+/// Canonicalize an instruction event type while preserving any program scope.
+pub fn canonicalize_instruction_event_type(event_type: &str) -> String {
+    let (program_name, base_name) = match event_type.rsplit_once("::") {
+        Some((program_name, base_name)) => (Some(program_name), base_name),
+        None => (None, event_type),
+    };
+
+    let instruction_name = base_name.strip_suffix("IxState").unwrap_or(base_name);
+    let canonical_name = to_pascal_case(instruction_name);
+
+    match program_name {
+        Some(program_name) => format!("{}::{}IxState", program_name, canonical_name),
+        None => format!("{}IxState", canonical_name),
+    }
+}
+
+pub fn canonicalize_event_type_name(event_type: &str) -> String {
+    if event_type.ends_with("IxState") {
+        canonicalize_instruction_event_type(event_type)
+    } else {
+        event_type.to_string()
+    }
+}
+
 use crate::parse::idl::IdlSpec;
 
 pub type IdlLookup<'a> = &'a [(String, &'a IdlSpec)];
@@ -114,7 +138,10 @@ pub fn snake_to_lower_camel(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{scoped_instruction_event_type, scoped_instruction_or_cpi_event_type};
+    use super::{
+        canonicalize_event_type_name, canonicalize_instruction_event_type,
+        scoped_instruction_event_type, scoped_instruction_or_cpi_event_type,
+    };
 
     #[test]
     fn scoped_instruction_event_type_normalizes_snake_case_names() {
@@ -141,6 +168,22 @@ mod tests {
         assert_eq!(
             scoped_instruction_or_cpi_event_type(Some("pump"), "TradeExecuted", true),
             "pump::TradeExecutedCpiEvent"
+        );
+    }
+
+    #[test]
+    fn canonicalize_instruction_event_type_normalizes_scoped_snake_case() {
+        assert_eq!(
+            canonicalize_instruction_event_type("pump::create_v2IxState"),
+            "pump::CreateV2IxState"
+        );
+    }
+
+    #[test]
+    fn canonicalize_event_type_name_leaves_accounts_unchanged() {
+        assert_eq!(
+            canonicalize_event_type_name("pump::BondingCurveState"),
+            "pump::BondingCurveState"
         );
     }
 }

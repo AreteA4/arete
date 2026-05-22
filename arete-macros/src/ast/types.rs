@@ -343,6 +343,19 @@ pub struct SerializableStreamSpec {
     pub views: Vec<ViewDef>,
 }
 
+impl SerializableStreamSpec {
+    pub fn normalize_event_names(&mut self) {
+        for handler in &mut self.handlers {
+            handler.normalize_event_names();
+        }
+
+        for hook in &mut self.instruction_hooks {
+            hook.instruction_type =
+                crate::event_type_helpers::canonicalize_event_type_name(&hook.instruction_type);
+        }
+    }
+}
+
 fn default_ast_version() -> String {
     CURRENT_AST_VERSION.to_string()
 }
@@ -366,6 +379,22 @@ pub struct SerializableHandlerSpec {
     pub mappings: Vec<SerializableFieldMapping>,
     pub conditions: Vec<Condition>,
     pub emit: bool,
+}
+
+impl SerializableHandlerSpec {
+    pub fn normalize_event_names(&mut self) {
+        let SourceSpec::Source { type_name, .. } = &mut self.source;
+        *type_name = crate::event_type_helpers::canonicalize_event_type_name(type_name);
+
+        for mapping in &mut self.mappings {
+            if let Some(when) = &mut mapping.when {
+                *when = crate::event_type_helpers::canonicalize_event_type_name(when);
+            }
+            if let Some(stop) = &mut mapping.stop {
+                *stop = crate::event_type_helpers::canonicalize_event_type_name(stop);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -951,6 +980,12 @@ pub struct SerializableStackSpec {
 }
 
 impl SerializableStackSpec {
+    pub fn normalize_event_names(&mut self) {
+        for entity in &mut self.entities {
+            entity.normalize_event_names();
+        }
+    }
+
     /// Compute deterministic content hash (SHA256 of canonical JSON).
     #[allow(dead_code)]
     pub fn try_compute_content_hash(&self) -> Result<String, serde_json::Error> {
