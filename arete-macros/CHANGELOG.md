@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/AreteA4/arete/compare/arete-macros-v0.1.1...arete-macros-v0.1.2) (2026-05-22)
+
+
+### Bug Fixes
+
+* canonicalize AST instruction event names ([74da6a5](https://github.com/AreteA4/arete/commit/74da6a564b613bda373ddde97a9c6feb94102577))
+* preserve resolver keys and canonicalize AST events ([c41c68c](https://github.com/AreteA4/arete/commit/c41c68c75f20af111b50620e63397364ca20b020))
+
 ## [0.1.1](https://github.com/AreteA4/arete/compare/arete-macros-v0.1.0...arete-macros-v0.1.1) (2026-04-30)
 
 

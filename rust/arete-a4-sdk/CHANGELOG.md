@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/AreteA4/arete/compare/arete-sdk-v0.1.1...arete-sdk-v0.1.2) (2026-05-22)
+
+
+### Features
+
+* **sdk:** add handshake_header builder for WS upgrade headers ([#107](https://github.com/AreteA4/arete/issues/107)) ([858cb90](https://github.com/AreteA4/arete/commit/858cb90a20de039ad54fd0a0aef86d7993c7574b))
+
 ## [0.1.1](https://github.com/AreteA4/arete/compare/arete-sdk-v0.1.0...arete-sdk-v0.1.1) (2026-04-30)
 
 
