@@ -27,14 +27,14 @@ authors = ["Arete Team"]
 
 [workspace.dependencies]
 # Yellowstone Vixen ecosystem.
-# Pinned to exact versions: vixen-core 0.6.1 (the latest semver-compatible
-# release) was published against a newer `yellowstone-grpc-proto` and fails
-# to compile against the proto version selected here, breaking any fresh
-# resolution (notably the temp crates spawned by arete-macros dynamic tests).
-yellowstone-vixen = "=0.6.0-alpha.0"
-yellowstone-vixen-core = "=0.6.0-alpha.0"
-yellowstone-vixen-proto = "=0.6.0-alpha.0"
-yellowstone-vixen-yellowstone-grpc-source = "=0.6.0-alpha.0"
+# Pinned to exact versions: vixen 0.6.1 relies on `yellowstone-grpc-proto`
+# 12.x, but proto 12.2.0 added required `cuckoo_*` fields that 0.6.1 does not
+# populate. Hold the grpc crates at 12.1.0, the latest proto/client line that
+# matches the published 0.6.1 Vixen API.
+yellowstone-vixen = "=0.6.1"
+yellowstone-vixen-core = "=0.6.1"
+yellowstone-vixen-proto = "=0.6.1"
+yellowstone-vixen-yellowstone-grpc-source = "=0.6.1"
 # Yellowstone gRPC client (for standalone slot subscriptions)
-yellowstone-grpc-client = "9.1.0"
-yellowstone-grpc-proto = "9.1.0"
+yellowstone-grpc-client = "=12.1.0"
+yellowstone-grpc-proto = "=12.1.0"
