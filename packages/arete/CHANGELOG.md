@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3](https://github.com/AreteA4/arete/compare/a4-npm-v0.1.2...a4-npm-v0.1.3) (2026-05-30)
+
+
+### Bug Fixes
+
+* Version bump ([8dde791](https://github.com/AreteA4/arete/commit/8dde7918b4a9e45efac51266ef6fe7c290c03c5e))
+* Version bump ([5c9ae22](https://github.com/AreteA4/arete/commit/5c9ae22baf2764b3223f0a3174b9b7738631932c))
+
 ## [0.1.2](https://github.com/AreteA4/arete/compare/a4-npm-v0.1.1...a4-npm-v0.1.2) (2026-05-22)
 
 

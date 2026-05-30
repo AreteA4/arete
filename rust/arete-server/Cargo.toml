@@ -31,7 +31,7 @@ yellowstone-vixen-proto = { workspace = true, features = ["stream"] }
 yellowstone-vixen-yellowstone-grpc-source = { workspace = true }
 
 # Interpreter library
-arete-interpreter = { version = "0.1.2", path = "../../interpreter" }
+arete-interpreter = { version = "0.1.3", path = "../../interpreter" }
 
 # Auth library
 arete-auth = { version = "0.0.1", path = "../arete-auth" }

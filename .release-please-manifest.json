@@ -1,15 +1,15 @@
 {
-  "arete": "0.1.2",
-  "interpreter": "0.1.2",
-  "arete-macros": "0.1.2",
-  "cli": "0.1.2",
-  "rust/arete-a4-sdk": "0.1.2",
-  "rust/arete-server": "0.1.2",
-  "typescript/react": "0.1.2",
-  "typescript/core": "0.1.2",
-  "packages/arete": "0.1.2",
-  "packages/mcp": "0.1.2",
+  "arete": "0.1.3",
+  "interpreter": "0.1.3",
+  "arete-macros": "0.1.3",
+  "cli": "0.1.3",
+  "rust/arete-a4-sdk": "0.1.3",
+  "rust/arete-server": "0.1.3",
+  "typescript/react": "0.1.3",
+  "typescript/core": "0.1.3",
+  "packages/arete": "0.1.3",
+  "packages/mcp": "0.1.3",
   "arete-idl": "0.0.1",
   "rust/arete-auth": "0.0.1",
-  "rust/arete-mcp": "0.1.2"
+  "rust/arete-mcp": "0.1.3"
 }
