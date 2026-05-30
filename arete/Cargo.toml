@@ -19,7 +19,7 @@ arete-interpreter = { version = "0.1.2", path = "../interpreter", optional = tru
 arete-macros = { version = "0.1.2", path = "../arete-macros", optional = true }
 
 # Server - WebSocket server and projection handlers
-arete-server = { version = "0.1.2", path = "../rust/arete-server", optional = true }
+arete-server = { version = "0.1.3", path = "../rust/arete-server", optional = true }
 
 # SDK - Rust client for connecting to Arete servers
 arete-sdk = { package = "arete-a4-sdk", version = "0.1.0", path = "../rust/arete-a4-sdk", optional = true }
