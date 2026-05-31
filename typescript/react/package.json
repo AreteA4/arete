@@ -8,7 +8,7 @@
   "types": "dist/index.d.ts",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AreteA4/arete.git",
+    "url": "git+https://github.com/AreteA4/arete.git",
     "directory": "typescript/react"
   },
   "homepage": "https://github.com/AreteA4/arete#readme",

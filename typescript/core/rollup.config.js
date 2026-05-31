@@ -1,18 +1,26 @@
 import typescript from '@rollup/plugin-typescript';
 import dts from 'rollup-plugin-dts';
 
+const externalPackages = ['@noble/ed25519', 'express', 'next/server', 'pako'];
+
+function isExternal(id) {
+  return externalPackages.some(pkg => id === pkg || id.startsWith(`${pkg}/`));
+}
+
 const baseConfig = {
   plugins: [
     typescript({
       tsconfig: './tsconfig.json',
       declaration: false,
+      declarationMap: false,
       declarationDir: undefined,
     }),
   ],
-  external: [],
+  external: isExternal,
 };
 
 const dtsConfig = {
+  external: isExternal,
   plugins: [dts()],
 };
 
