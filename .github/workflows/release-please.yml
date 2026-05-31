@@ -128,7 +128,18 @@ jobs:
         working-directory: typescript/core
 
       - name: Publish core
-        run: npm publish --access public || echo "Package may already be published"
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+          echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} as $(npm whoami)"
+
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published"
+            exit 0
+          fi
+
+          npm publish --access public
         working-directory: typescript/core
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -147,7 +158,18 @@ jobs:
         working-directory: typescript/react
 
       - name: Publish react
-        run: npm publish --access public || echo "Package may already be published"
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+          echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} as $(npm whoami)"
+
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published"
+            exit 0
+          fi
+
+          npm publish --access public
         working-directory: typescript/react
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -427,7 +449,18 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Publish arete CLI wrapper
-        run: npm publish --access public || echo "Package may already be published"
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+          echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} as $(npm whoami)"
+
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published"
+            exit 0
+          fi
+
+          npm publish --access public
         working-directory: packages/arete
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -447,7 +480,18 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Publish arete MCP wrapper
-        run: npm publish --access public || echo "Package may already be published"
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+          echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} as $(npm whoami)"
+
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published"
+            exit 0
+          fi
+
+          npm publish --access public
         working-directory: packages/mcp
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
