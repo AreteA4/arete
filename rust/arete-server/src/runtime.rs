@@ -227,7 +227,7 @@ impl Runtime {
                     .first()
                     .cloned()
                     .unwrap_or_else(|| "unknown".to_string());
-                info!("Starting Vixen parser runtime for program: {}", program_id);
+                info!("Starting parser runtime for program: {}", program_id);
                 let tx = mutations_tx.clone();
                 let health = health_monitor.clone();
                 let reconnection_config = self.config.reconnection.clone().unwrap_or_default();
@@ -240,7 +240,7 @@ impl Runtime {
                     .instrument(info_span!("vixen.parser", %program_id)),
                 ))
             } else {
-                info!("Spec provided but no parser_setup configured - skipping Vixen runtime");
+                info!("Spec provided but no parser_setup configured - skipping parser runtime");
                 None
             }
         } else {
