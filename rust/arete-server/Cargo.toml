@@ -24,12 +24,6 @@ serde_json = "1.0"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 bytes = "1.0"
 
-# Yellowstone Vixen dependencies
-yellowstone-vixen = { workspace = true }
-yellowstone-vixen-core = { workspace = true }
-yellowstone-vixen-proto = { workspace = true, features = ["stream"] }
-yellowstone-vixen-yellowstone-grpc-source = { workspace = true }
-
 # Interpreter library
 arete-interpreter = { version = "0.1.3", path = "../../interpreter" }
 
