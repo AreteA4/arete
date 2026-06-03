@@ -197,11 +197,7 @@ impl<S: Stack> AreteBuilder<S> {
     /// to lowercase on insertion. `Authorization` is reserved when using
     /// `TokenTransport::Bearer` — the SDK-managed Bearer token will overwrite
     /// any user-provided `Authorization` value to keep auth state consistent.
-    pub fn handshake_header(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
+    pub fn handshake_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.config
             .handshake_headers
             .insert(key.into().to_ascii_lowercase(), value.into());
