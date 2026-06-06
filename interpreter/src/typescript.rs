@@ -1,5 +1,5 @@
 use crate::ast::*;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Output structure for TypeScript generation
 #[derive(Debug, Clone)]
@@ -769,11 +769,13 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
     fn generate_resolved_type_schemas(&self) -> Vec<(String, String)> {
         let mut schemas = Vec::new();
         let mut generated_types = HashSet::new();
+        let resolved_name_map = self.build_resolved_type_name_map();
 
         for section in &self.spec.sections {
             for field_info in &section.fields {
                 if let Some(resolved) = &field_info.resolved_type {
-                    let type_name = to_pascal_case(&resolved.type_name);
+                    let type_name = self
+                        .resolved_type_to_interface_name_with_map(resolved, &resolved_name_map);
 
                     if !generated_types.insert(type_name.clone()) {
                         continue;
@@ -944,7 +946,8 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                 type_def.get("type").and_then(|v| v.as_object()),
             ) {
                 if type_obj.get("kind").and_then(|v| v.as_str()) == Some("enum") {
-                    if !generated_types.insert(type_name.to_string()) {
+                    let interface_name = to_pascal_case(type_name);
+                    if !generated_types.insert(interface_name.clone()) {
                         continue;
                     }
                     if let Some(variants) = type_obj.get("variants").and_then(|v| v.as_array()) {
@@ -954,7 +957,6 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                             .map(|s| format!("\"{}\"", to_pascal_case(s)))
                             .collect();
 
-                        let interface_name = to_pascal_case(type_name);
                         let schema = if variant_names.is_empty() {
                             format!("export const {}Schema = z.string();", interface_name)
                         } else {
@@ -1039,7 +1041,10 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
         // Generate URL line - either actual URL or placeholder comment
         let url_line = match &self.config.url {
             Some(url) => format!("  url: '{}',", url),
-            None => "  // url: 'wss://your-stack-url.stack.arete.run', // TODO: Set after first deployment".to_string(),
+            None => {
+                "  url: '', // TODO: Set after first deployment or pass useArete(..., { url })"
+                    .to_string()
+            }
         };
 
         format!(
@@ -1249,19 +1254,24 @@ export default {};"#,
 
     /// Generate TypeScript interface name from resolved type
     fn resolved_type_to_interface_name(&self, resolved: &ResolvedStructType) -> String {
-        to_pascal_case(&resolved.type_name)
+        self.build_resolved_type_name_map()
+            .get(&resolved.type_name)
+            .cloned()
+            .unwrap_or_else(|| to_pascal_case(&resolved.type_name))
     }
 
     /// Generate nested interfaces for all resolved types in the AST
     fn generate_nested_interfaces(&self) -> Vec<String> {
         let mut interfaces = Vec::new();
         let mut generated_types = self.already_emitted_types.clone();
+        let resolved_name_map = self.build_resolved_type_name_map();
 
         // Collect all resolved types from all sections
         for section in &self.spec.sections {
             for field_info in &section.fields {
                 if let Some(resolved) = &field_info.resolved_type {
-                    let type_name = resolved.type_name.clone();
+                    let type_name = self
+                        .resolved_type_to_interface_name_with_map(resolved, &resolved_name_map);
 
                     // Only generate each type once
                     if generated_types.insert(type_name) {
@@ -1285,7 +1295,8 @@ export default {};"#,
                     ) {
                         if type_obj.get("kind").and_then(|v| v.as_str()) == Some("enum") {
                             // Only generate if not already generated
-                            if generated_types.insert(type_name.to_string()) {
+                            let interface_name = to_pascal_case(type_name);
+                            if generated_types.insert(interface_name.clone()) {
                                 if let Some(variants) =
                                     type_obj.get("variants").and_then(|v| v.as_array())
                                 {
@@ -1299,7 +1310,6 @@ export default {};"#,
                                         .collect();
 
                                     if !variant_names.is_empty() {
-                                        let interface_name = to_pascal_case(type_name);
                                         let variant_strings: Vec<String> = variant_names
                                             .iter()
                                             .map(|v| format!("\"{}\"", to_pascal_case(v)))
@@ -1539,7 +1549,7 @@ export default {};"#,
 
     /// Generate a TypeScript interface from a resolved struct type
     fn generate_interface_for_resolved_type(&self, resolved: &ResolvedStructType) -> String {
-        let interface_name = to_pascal_case(&resolved.type_name);
+        let interface_name = self.resolved_type_to_interface_name(resolved);
 
         // Handle enums as TypeScript union types
         if resolved.is_enum {
@@ -1598,6 +1608,51 @@ export default {};"#,
             }
         }
         false
+    }
+
+    fn build_resolved_type_name_map(&self) -> HashMap<String, String> {
+        let mut reserved_names = self.already_emitted_types.clone();
+        reserved_names.insert(to_pascal_case(&self.entity_name));
+
+        for section in &self.spec.sections {
+            if !is_root_section(&section.name) && section.fields.iter().any(|field| field.emit) {
+                reserved_names.insert(self.section_interface_name(&section.name));
+            }
+        }
+
+        let mut resolved_name_map = HashMap::new();
+
+        for section in &self.spec.sections {
+            for field_info in &section.fields {
+                if !field_info.emit {
+                    continue;
+                }
+
+                let Some(resolved) = &field_info.resolved_type else {
+                    continue;
+                };
+
+                if resolved_name_map.contains_key(&resolved.type_name) {
+                    continue;
+                }
+
+                let emitted_name = unique_resolved_type_name_ts(resolved, &mut reserved_names);
+                resolved_name_map.insert(resolved.type_name.clone(), emitted_name);
+            }
+        }
+
+        resolved_name_map
+    }
+
+    fn resolved_type_to_interface_name_with_map(
+        &self,
+        resolved: &ResolvedStructType,
+        resolved_name_map: &HashMap<String, String>,
+    ) -> String {
+        resolved_name_map
+            .get(&resolved.type_name)
+            .cloned()
+            .unwrap_or_else(|| to_pascal_case(&resolved.type_name))
     }
 
     /// Generate the EventWrapper interface
@@ -1762,7 +1817,7 @@ fn extract_idl_enum_type_names(idl: &serde_json::Value) -> HashSet<String> {
                 type_def.get("type").and_then(|v| v.as_object()),
             ) {
                 if type_obj.get("kind").and_then(|v| v.as_str()) == Some("enum") {
-                    names.insert(type_name.to_string());
+                    names.insert(to_pascal_case(type_name));
                 }
             }
         }
@@ -1799,6 +1854,40 @@ fn extract_emitted_enum_type_names(interfaces: &str, idl: Option<&IdlSnapshot>) 
     }
 
     names
+}
+
+fn unique_resolved_type_name_ts(
+    resolved: &ResolvedStructType,
+    reserved_names: &mut HashSet<String>,
+) -> String {
+    let base_name = to_pascal_case(&resolved.type_name);
+    if reserved_names.insert(base_name.clone()) {
+        return base_name;
+    }
+
+    let suffix = if resolved.is_account {
+        "Account"
+    } else if resolved.is_event {
+        "Event"
+    } else if resolved.is_instruction {
+        "Instruction"
+    } else {
+        "Type"
+    };
+
+    let preferred = format!("{}{}", base_name, suffix);
+    if reserved_names.insert(preferred.clone()) {
+        return preferred;
+    }
+
+    let mut index = 2;
+    loop {
+        let candidate = format!("{}{}{}", base_name, suffix, index);
+        if reserved_names.insert(candidate.clone()) {
+            return candidate;
+        }
+        index += 1;
+    }
 }
 
 /// Convert snake_case to PascalCase
@@ -2091,10 +2180,8 @@ fn generate_stack_definition_multi(
 
     let url_line = match &config.url {
         Some(url) => format!("  url: '{}',", url),
-        None => {
-            "  // url: 'wss://your-stack-url.stack.arete.run', // TODO: Set after first deployment"
-                .to_string()
-        }
+        None => "  url: '', // TODO: Set after first deployment or pass useArete(..., { url })"
+            .to_string(),
     };
 
     // Generate views block for each entity
@@ -2409,6 +2496,153 @@ mod tests {
             stack_def.contains("function listView<T>(view: string): ViewDef<T, 'list'>"),
             "Expected listView helper function, got:\n{}",
             stack_def
+        );
+    }
+
+    #[test]
+    fn test_account_type_collision_uses_account_suffix() {
+        let plan_field = FieldTypeInfo {
+            field_name: "plan".to_string(),
+            rust_type_name: "Option<serde_json::Value>".to_string(),
+            base_type: BaseType::Object,
+            is_optional: false,
+            is_array: false,
+            inner_type: Some("Value".to_string()),
+            source_path: None,
+            resolved_type: Some(ResolvedStructType {
+                type_name: "plan".to_string(),
+                fields: vec![],
+                is_instruction: false,
+                is_account: true,
+                is_event: false,
+                is_enum: false,
+                enum_variants: vec![],
+            }),
+            emit: true,
+        };
+
+        let spec = SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: "Plan".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.address".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![],
+            sections: vec![
+                EntitySection {
+                    name: "id".to_string(),
+                    fields: vec![FieldTypeInfo::new("address".to_string(), "String".to_string())],
+                    is_nested_struct: false,
+                    parent_field: None,
+                },
+                EntitySection {
+                    name: "plan".to_string(),
+                    fields: vec![plan_field],
+                    is_nested_struct: false,
+                    parent_field: None,
+                },
+            ],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        };
+
+        let output = compile_serializable_spec(spec, "Plan".to_string(), None)
+            .expect("typescript sdk generation should succeed");
+
+        assert!(
+            output.interfaces.contains("export interface PlanPlan {"),
+            "expected PlanPlan section interface, got:\n{}",
+            output.interfaces
+        );
+        assert!(
+            output.interfaces.contains("plan?: PlanAccount;"),
+            "expected PlanAccount field reference, got:\n{}",
+            output.interfaces
+        );
+        assert!(
+            output.interfaces.contains("export interface PlanAccount {"),
+            "expected PlanAccount interface, got:\n{}",
+            output.interfaces
+        );
+    }
+
+    #[test]
+    fn test_multi_entity_enum_dedup_uses_pascal_case_name_matching() {
+        let shared_idl = serde_json::json!({
+            "name": "subscriptions",
+            "version": "0.1.0",
+            "accounts": [],
+            "instructions": [],
+            "types": [
+                {
+                    "name": "planStatus",
+                    "type": {
+                        "kind": "enum",
+                        "variants": [{ "name": "sunset" }, { "name": "active" }]
+                    }
+                }
+            ],
+            "events": [],
+            "errors": [],
+            "discriminant_size": 8
+        });
+
+        let idl_snapshot: IdlSnapshot =
+            serde_json::from_value(shared_idl).expect("idl snapshot should deserialize");
+
+        let make_entity = |name: &str| SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: name.to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.address".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![],
+            sections: vec![EntitySection {
+                name: "id".to_string(),
+                fields: vec![FieldTypeInfo::new("address".to_string(), "String".to_string())],
+                is_nested_struct: false,
+                parent_field: None,
+            }],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        };
+
+        let stack_spec = SerializableStackSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            stack_name: "Subscriptions".to_string(),
+            program_ids: vec![],
+            idls: vec![idl_snapshot],
+            entities: vec![make_entity("Plan"), make_entity("Subscription")],
+            pdas: BTreeMap::new(),
+            instructions: vec![],
+            content_hash: None,
+        };
+
+        let output = compile_stack_spec(stack_spec, None).expect("stack compilation should succeed");
+        let count = output.interfaces.matches("export type PlanStatus =").count();
+
+        assert_eq!(
+            count, 1,
+            "expected shared enum type to be emitted once, got:\n{}",
+            output.interfaces
         );
     }
 }
