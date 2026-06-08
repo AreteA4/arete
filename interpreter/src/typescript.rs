@@ -774,8 +774,8 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
         for section in &self.spec.sections {
             for field_info in &section.fields {
                 if let Some(resolved) = &field_info.resolved_type {
-                    let type_name = self
-                        .resolved_type_to_interface_name_with_map(resolved, &resolved_name_map);
+                    let type_name =
+                        self.resolved_type_to_interface_name_with_map(resolved, &resolved_name_map);
 
                     if !generated_types.insert(type_name.clone()) {
                         continue;
@@ -1041,10 +1041,8 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
         // Generate URL line - either actual URL or placeholder comment
         let url_line = match &self.config.url {
             Some(url) => format!("  url: '{}',", url),
-            None => {
-                "  url: '', // TODO: Set after first deployment or pass useArete(..., { url })"
-                    .to_string()
-            }
+            None => "  url: '', // TODO: Set after first deployment or pass useArete(..., { url })"
+                .to_string(),
         };
 
         format!(
@@ -1270,8 +1268,8 @@ export default {};"#,
         for section in &self.spec.sections {
             for field_info in &section.fields {
                 if let Some(resolved) = &field_info.resolved_type {
-                    let type_name = self
-                        .resolved_type_to_interface_name_with_map(resolved, &resolved_name_map);
+                    let type_name =
+                        self.resolved_type_to_interface_name_with_map(resolved, &resolved_name_map);
 
                     // Only generate each type once
                     if generated_types.insert(type_name) {
@@ -2534,7 +2532,10 @@ mod tests {
             sections: vec![
                 EntitySection {
                     name: "id".to_string(),
-                    fields: vec![FieldTypeInfo::new("address".to_string(), "String".to_string())],
+                    fields: vec![FieldTypeInfo::new(
+                        "address".to_string(),
+                        "String".to_string(),
+                    )],
                     is_nested_struct: false,
                     parent_field: None,
                 },
@@ -2611,7 +2612,10 @@ mod tests {
             handlers: vec![],
             sections: vec![EntitySection {
                 name: "id".to_string(),
-                fields: vec![FieldTypeInfo::new("address".to_string(), "String".to_string())],
+                fields: vec![FieldTypeInfo::new(
+                    "address".to_string(),
+                    "String".to_string(),
+                )],
                 is_nested_struct: false,
                 parent_field: None,
             }],
@@ -2636,8 +2640,12 @@ mod tests {
             content_hash: None,
         };
 
-        let output = compile_stack_spec(stack_spec, None).expect("stack compilation should succeed");
-        let count = output.interfaces.matches("export type PlanStatus =").count();
+        let output =
+            compile_stack_spec(stack_spec, None).expect("stack compilation should succeed");
+        let count = output
+            .interfaces
+            .matches("export type PlanStatus =")
+            .count();
 
         assert_eq!(
             count, 1,
