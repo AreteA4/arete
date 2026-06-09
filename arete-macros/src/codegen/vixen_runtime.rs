@@ -55,6 +55,7 @@ fn generate_slot_scheduler_task() -> TokenStream {
             let runtime_resolver = runtime_resolver.clone();
             let slot_tracker = slot_tracker.clone();
             let mutations_tx = mutations_tx.clone();
+            let async_resolver_order = async_resolver_order.clone();
 
             arete::runtime::tokio::spawn(async move {
                 arete::runtime::tracing::info!(
@@ -225,7 +226,16 @@ fn generate_slot_scheduler_task() -> TokenStream {
                             .await;
 
                             let url_mutations = runtime_resolver
-                                .resolve_and_apply(&vm, bytecode.as_ref(), requests)
+                                .resolve_and_apply(
+                                    &vm,
+                                    bytecode.as_ref(),
+                                    requests,
+                                    Some(arete::runtime::arete_interpreter::UpdateContext {
+                                        slot: Some(current_slot),
+                                        timestamp: Some(current_time_seconds()),
+                                        ..arete::runtime::arete_interpreter::UpdateContext::default()
+                                    }),
+                                )
                                 .await;
 
                             if url_mutations.is_empty() {
@@ -241,7 +251,10 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                     );
                                 }
                             } else {
-                                let slot_context = arete::runtime::arete_server::SlotContext::new(current_slot, 0);
+                                let slot_context = arete::runtime::arete_server::SlotContext::new(
+                                    current_slot,
+                                    next_async_resolver_slot_index(async_resolver_order.as_ref()),
+                                );
                                 let batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
                                     arete::runtime::smallvec::SmallVec::from_vec(url_mutations),
                                     slot_context,
@@ -929,6 +942,31 @@ pub fn generate_vm_handler(
         }
 
         const PROJECTOR_ENQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        const ASYNC_RESOLVER_SLOT_INDEX_BASE: u64 = 1_u64 << 63;
+
+        fn current_time_seconds() -> i64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64
+        }
+
+        fn async_resolver_max_concurrency() -> usize {
+            static MAX_CONCURRENCY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            *MAX_CONCURRENCY.get_or_init(|| {
+                std::env::var("ARETE_ASYNC_RESOLVER_MAX_CONCURRENCY")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(16)
+            })
+        }
+
+        fn next_async_resolver_slot_index(counter: &std::sync::atomic::AtomicU64) -> u64 {
+            ASYNC_RESOLVER_SLOT_INDEX_BASE
+                | (counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    & (ASYNC_RESOLVER_SLOT_INDEX_BASE - 1))
+        }
 
         async fn reserve_projector_batch_slot(
             mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
@@ -963,6 +1001,8 @@ pub fn generate_vm_handler(
             slot_tracker: arete::runtime::arete_server::SlotTracker,
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
+            resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
+            async_resolver_order: std::sync::Arc<std::sync::atomic::AtomicU64>,
         }
 
         impl std::fmt::Debug for VmHandler {
@@ -983,6 +1023,8 @@ pub fn generate_vm_handler(
                 slot_tracker: arete::runtime::arete_server::SlotTracker,
                 runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
                 slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
+                resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
+                async_resolver_order: std::sync::Arc<std::sync::atomic::AtomicU64>,
             ) -> Self {
                 Self {
                     vm,
@@ -992,6 +1034,8 @@ pub fn generate_vm_handler(
                     slot_tracker,
                     runtime_resolver,
                     slot_scheduler,
+                    resolver_apply_semaphore,
+                    async_resolver_order,
                 }
             }
 
@@ -1020,10 +1064,67 @@ pub fn generate_vm_handler(
             async fn resolve_and_apply_resolvers(
                 &self,
                 requests: Vec<arete::runtime::arete_interpreter::vm::ResolverRequest>,
+                apply_context: Option<arete::runtime::arete_interpreter::UpdateContext>,
             ) -> Vec<arete::runtime::arete_interpreter::Mutation> {
                 self.runtime_resolver
-                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests)
+                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests, apply_context)
                     .await
+            }
+
+            fn spawn_async_resolver_apply(
+                &self,
+                requests: Vec<arete::runtime::arete_interpreter::vm::ResolverRequest>,
+                minimum_slot: u64,
+            ) {
+                if requests.is_empty() {
+                    return;
+                }
+
+                let handler = self.clone();
+
+                arete::runtime::tokio::spawn(async move {
+                    let _resolver_permit = match handler
+                        .resolver_apply_semaphore
+                        .clone()
+                        .acquire_owned()
+                        .await
+                    {
+                        Ok(permit) => permit,
+                        Err(error) => {
+                            arete::runtime::tracing::warn!(error = %error, "Async resolver semaphore closed");
+                            return;
+                        }
+                    };
+
+                    let projector_permit = handler
+                        .reserve_mutation_batch_slot("async resolver apply")
+                        .await;
+
+                    let resolver_slot = handler.slot_tracker.get().max(minimum_slot);
+                    let resolver_ordering =
+                        next_async_resolver_slot_index(handler.async_resolver_order.as_ref());
+                    let apply_context = arete::runtime::arete_interpreter::UpdateContext {
+                        slot: Some(resolver_slot),
+                        timestamp: Some(current_time_seconds()),
+                        ..arete::runtime::arete_interpreter::UpdateContext::default()
+                    };
+
+                    let resolver_mutations = handler
+                        .resolve_and_apply_resolvers(requests, Some(apply_context))
+                        .await;
+
+                    if !resolver_mutations.is_empty() {
+                        let slot_context = arete::runtime::arete_server::SlotContext::new(
+                            resolver_slot,
+                            resolver_ordering,
+                        );
+                        let batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
+                            arete::runtime::smallvec::SmallVec::from_vec(resolver_mutations),
+                            slot_context,
+                        );
+                        projector_permit.send(batch);
+                    }
+                });
             }
 
             async fn reserve_mutation_batch_slot(
@@ -1196,17 +1297,14 @@ pub fn generate_vm_handler(
                     }
                 }
 
-                let resolver_mutations = if mutations_result.is_ok() {
-                    self.resolve_and_apply_resolvers(resolver_requests).await
-                } else {
-                    Vec::new()
-                };
+                let resolver_background =
+                    mutations_result.is_ok() && !resolver_requests.is_empty();
+                if resolver_background {
+                    self.spawn_async_resolver_apply(resolver_requests, slot);
+                }
 
                 match mutations_result {
-                    Ok(mut mutations) => {
-                        // Combine primary mutations with resolver mutations into a single batch
-                        // to avoid duplicate frames for the same entity key
-                        mutations.extend(resolver_mutations);
+                    Ok(mutations) => {
                         let event_context = arete::runtime::arete_server::EventContext {
                             program: #entity_name_lit.to_string(),
                             event_kind: "account".to_string(),
@@ -1432,17 +1530,14 @@ pub fn generate_vm_handler(
                     }
                 }
 
-                let resolver_mutations = if mutations_result.is_ok() {
-                    self.resolve_and_apply_resolvers(resolver_requests).await
-                } else {
-                    Vec::new()
-                };
+                let resolver_background =
+                    mutations_result.is_ok() && !resolver_requests.is_empty();
+                if resolver_background {
+                    self.spawn_async_resolver_apply(resolver_requests, slot);
+                }
 
                 match mutations_result {
-                    Ok(mut mutations) => {
-                        // Combine primary mutations with resolver mutations into a single batch
-                        // to avoid duplicate frames for the same entity key
-                        mutations.extend(resolver_mutations);
+                    Ok(mutations) => {
                         let event_context = arete::runtime::arete_server::EventContext {
                             program: #entity_name_lit.to_string(),
                             event_kind: "instruction".to_string(),
@@ -1576,6 +1671,10 @@ pub fn generate_spec_function(
                             err
                         )
                     })?;
+            let resolver_apply_semaphore = Arc::new(
+                arete::runtime::tokio::sync::Semaphore::new(async_resolver_max_concurrency()),
+            );
+            let async_resolver_order = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
             let slot_tracker = arete::runtime::arete_server::SlotTracker::new();
             let slot_scheduler = Arc::new(Mutex::new(arete::runtime::arete_interpreter::scheduler::SlotScheduler::new()));
@@ -1630,6 +1729,8 @@ pub fn generate_spec_function(
                     slot_tracker.clone(),
                     runtime_resolver.clone(),
                     slot_scheduler.clone(),
+                    resolver_apply_semaphore.clone(),
+                    async_resolver_order.clone(),
                 );
 
                 let account_parser = parsers::AccountParser;
@@ -1917,6 +2018,31 @@ pub fn generate_vm_handler_struct() -> TokenStream {
         }
 
         const PROJECTOR_ENQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        const ASYNC_RESOLVER_SLOT_INDEX_BASE: u64 = 1_u64 << 63;
+
+        fn current_time_seconds() -> i64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64
+        }
+
+        fn async_resolver_max_concurrency() -> usize {
+            static MAX_CONCURRENCY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            *MAX_CONCURRENCY.get_or_init(|| {
+                std::env::var("ARETE_ASYNC_RESOLVER_MAX_CONCURRENCY")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(16)
+            })
+        }
+
+        fn next_async_resolver_slot_index(counter: &std::sync::atomic::AtomicU64) -> u64 {
+            ASYNC_RESOLVER_SLOT_INDEX_BASE
+                | (counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    & (ASYNC_RESOLVER_SLOT_INDEX_BASE - 1))
+        }
 
         async fn reserve_projector_batch_slot(
             mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
@@ -1951,6 +2077,8 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             slot_tracker: arete::runtime::arete_server::SlotTracker,
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
+            resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
+            async_resolver_order: std::sync::Arc<std::sync::atomic::AtomicU64>,
         }
 
         impl std::fmt::Debug for VmHandler {
@@ -1971,6 +2099,8 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 slot_tracker: arete::runtime::arete_server::SlotTracker,
                 runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
                 slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
+                resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
+                async_resolver_order: std::sync::Arc<std::sync::atomic::AtomicU64>,
             ) -> Self {
                 Self {
                     vm,
@@ -1980,6 +2110,8 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                     slot_tracker,
                     runtime_resolver,
                     slot_scheduler,
+                    resolver_apply_semaphore,
+                    async_resolver_order,
                 }
             }
 
@@ -2008,10 +2140,67 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             async fn resolve_and_apply_resolvers(
                 &self,
                 requests: Vec<arete::runtime::arete_interpreter::vm::ResolverRequest>,
+                apply_context: Option<arete::runtime::arete_interpreter::UpdateContext>,
             ) -> Vec<arete::runtime::arete_interpreter::Mutation> {
                 self.runtime_resolver
-                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests)
+                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests, apply_context)
                     .await
+            }
+
+            fn spawn_async_resolver_apply(
+                &self,
+                requests: Vec<arete::runtime::arete_interpreter::vm::ResolverRequest>,
+                minimum_slot: u64,
+            ) {
+                if requests.is_empty() {
+                    return;
+                }
+
+                let handler = self.clone();
+
+                arete::runtime::tokio::spawn(async move {
+                    let _resolver_permit = match handler
+                        .resolver_apply_semaphore
+                        .clone()
+                        .acquire_owned()
+                        .await
+                    {
+                        Ok(permit) => permit,
+                        Err(error) => {
+                            arete::runtime::tracing::warn!(error = %error, "Async resolver semaphore closed");
+                            return;
+                        }
+                    };
+
+                    let projector_permit = handler
+                        .reserve_mutation_batch_slot("async resolver apply")
+                        .await;
+
+                    let resolver_slot = handler.slot_tracker.get().max(minimum_slot);
+                    let resolver_ordering =
+                        next_async_resolver_slot_index(handler.async_resolver_order.as_ref());
+                    let apply_context = arete::runtime::arete_interpreter::UpdateContext {
+                        slot: Some(resolver_slot),
+                        timestamp: Some(current_time_seconds()),
+                        ..arete::runtime::arete_interpreter::UpdateContext::default()
+                    };
+
+                    let resolver_mutations = handler
+                        .resolve_and_apply_resolvers(requests, Some(apply_context))
+                        .await;
+
+                    if !resolver_mutations.is_empty() {
+                        let slot_context = arete::runtime::arete_server::SlotContext::new(
+                            resolver_slot,
+                            resolver_ordering,
+                        );
+                        let batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
+                            arete::runtime::smallvec::SmallVec::from_vec(resolver_mutations),
+                            slot_context,
+                        );
+                        projector_permit.send(batch);
+                    }
+                });
             }
 
             async fn reserve_mutation_batch_slot(
@@ -2183,17 +2372,14 @@ pub fn generate_account_handler_impl(
                     }
                 }
 
-                let resolver_mutations = if mutations_result.is_ok() {
-                    self.resolve_and_apply_resolvers(resolver_requests).await
-                } else {
-                    Vec::new()
-                };
+                let resolver_background =
+                    mutations_result.is_ok() && !resolver_requests.is_empty();
+                if resolver_background {
+                    self.spawn_async_resolver_apply(resolver_requests, slot);
+                }
 
                 match mutations_result {
-                    Ok(mut mutations) => {
-                        // Combine primary mutations with resolver mutations into a single batch
-                        // to avoid duplicate frames for the same entity key
-                        mutations.extend(resolver_mutations);
+                    Ok(mutations) => {
                         let event_context = arete::runtime::arete_server::EventContext {
                             program: #program_name_lit.to_string(),
                             event_kind: "account".to_string(),
@@ -2421,17 +2607,14 @@ pub fn generate_instruction_handler_impl(
                     }
                 }
 
-                let resolver_mutations = if mutations_result.is_ok() {
-                    self.resolve_and_apply_resolvers(resolver_requests).await
-                } else {
-                    Vec::new()
-                };
+                let resolver_background =
+                    mutations_result.is_ok() && !resolver_requests.is_empty();
+                if resolver_background {
+                    self.spawn_async_resolver_apply(resolver_requests, slot);
+                }
 
                 match mutations_result {
-                    Ok(mut mutations) => {
-                        // Combine primary mutations with resolver mutations into a single batch
-                        // to avoid duplicate frames for the same entity key
-                        mutations.extend(resolver_mutations);
+                    Ok(mutations) => {
                         let event_context = arete::runtime::arete_server::EventContext {
                             program: #entity_name_lit.to_string(),
                             event_kind: "instruction".to_string(),
@@ -2620,6 +2803,10 @@ pub fn generate_multi_pipeline_spec_function(
                             err
                         )
                     })?;
+            let resolver_apply_semaphore = Arc::new(
+                arete::runtime::tokio::sync::Semaphore::new(async_resolver_max_concurrency()),
+            );
+            let async_resolver_order = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
             let slot_tracker = arete::runtime::arete_server::SlotTracker::new();
             let slot_scheduler = Arc::new(Mutex::new(arete::runtime::arete_interpreter::scheduler::SlotScheduler::new()));
@@ -2674,6 +2861,8 @@ pub fn generate_multi_pipeline_spec_function(
                     slot_tracker.clone(),
                     runtime_resolver.clone(),
                     slot_scheduler.clone(),
+                    resolver_apply_semaphore.clone(),
+                    async_resolver_order.clone(),
                 );
 
                 if attempt == 0 {

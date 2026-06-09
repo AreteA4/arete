@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::ast::{HttpMethod, ResolverType};
 use crate::compiler::MultiEntityBytecode;
 use crate::resolvers::{TokenMetadataResolverClient, UrlResolverClient};
-use crate::vm::{CachedResolverValue, ResolverRequest, TokenResolverMissAction, VmContext};
+use crate::vm::{CachedResolverValue, ResolverRequest, TokenResolverMissAction, UpdateContext, VmContext};
 use crate::Mutation;
 
 pub type ResolverBatchResult =
@@ -111,6 +111,7 @@ pub trait RuntimeResolver: Send + Sync {
         vm: &'a std::sync::Mutex<VmContext>,
         bytecode: &'a MultiEntityBytecode,
         requests: Vec<ResolverRequest>,
+        apply_context: Option<UpdateContext>,
     ) -> ResolverApplyFuture<'a> {
         Box::pin(async move {
             let total_started_at = Instant::now();
@@ -214,6 +215,13 @@ pub trait RuntimeResolver: Send + Sync {
 
             let apply_cached_started_at = Instant::now();
             let mut vm_guard = vm.lock().unwrap_or_else(|e| e.into_inner());
+            let previous_context = if apply_context.is_some() {
+                let previous = vm_guard.current_context().cloned();
+                vm_guard.set_current_context(apply_context.clone());
+                previous
+            } else {
+                None
+            };
 
             for (request, resolved_value) in cached {
                 match vm_guard.apply_resolver_result(bytecode, &request.cache_key, resolved_value) {
@@ -295,6 +303,9 @@ pub trait RuntimeResolver: Send + Sync {
                 vm_guard.restore_resolver_requests(failed);
             }
             let restore_failed_ms = elapsed_ms(restore_failed_started_at);
+            if apply_context.is_some() {
+                vm_guard.set_current_context(previous_context);
+            }
 
             let total_ms = elapsed_ms(total_started_at);
             if should_log_runtime_resolver_profile(total_ms) {

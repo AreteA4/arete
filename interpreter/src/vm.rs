@@ -765,6 +765,7 @@ pub struct PendingResolverEntry {
     pub next_retry_at: Instant,
     pub retry_count: u32,
     pub queued: bool,
+    pub in_flight: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -806,7 +807,7 @@ impl PendingResolverEntry {
     }
 
     fn ready_to_queue(&self) -> bool {
-        !self.queued && Instant::now() >= self.next_retry_at
+        !self.queued && !self.in_flight && Instant::now() >= self.next_retry_at
     }
 }
 
@@ -1225,6 +1226,7 @@ impl VmContext {
         for request in &requests {
             if let Some(entry) = self.resolver_pending.get_mut(&request.cache_key) {
                 entry.queued = false;
+                entry.in_flight = true;
             }
         }
         requests
@@ -1258,6 +1260,7 @@ impl VmContext {
 
         for request in &requests {
             if let Some(entry) = self.resolver_pending.get_mut(&request.cache_key) {
+                entry.in_flight = false;
                 entry.queued = true;
                 entry.next_retry_at = Instant::now();
             }
@@ -1323,6 +1326,7 @@ impl VmContext {
         if let Some(entry) = self.resolver_pending.get_mut(cache_key) {
             entry.retry_count = entry.retry_count.saturating_add(1);
             entry.next_retry_at = Instant::now() + resolver_retry_backoff();
+            entry.in_flight = false;
             entry.queued = false;
             return true;
         }
@@ -1496,6 +1500,7 @@ impl VmContext {
                 next_retry_at: Instant::now(),
                 retry_count: 0,
                 queued: true,
+                in_flight: false,
             },
         );
 
@@ -5671,6 +5676,48 @@ mod tests {
 
         assert!(vm.get_cached_resolver_value(&cache_key).is_none());
         assert!(vm.resolver_cache.get(&cache_key).is_none());
+    }
+
+    #[test]
+    fn test_in_flight_resolver_request_collects_targets_without_requeueing() {
+        let mut vm = VmContext::new();
+        let resolver = ResolverType::Token;
+        let input = json!("mint_123");
+
+        vm.enqueue_resolver_request(
+            "ignored".to_string(),
+            resolver.clone(),
+            input.clone(),
+            ResolverTarget {
+                state_id: 0,
+                entity_name: "TestEntity".to_string(),
+                primary_key: json!("entity_1"),
+                extracts: vec![],
+            },
+        );
+
+        let first_batch = vm.take_resolver_requests();
+        assert_eq!(first_batch.len(), 1);
+
+        let cache_key = resolver_cache_key(&resolver, &input);
+        assert!(vm.resolver_pending.get(&cache_key).unwrap().in_flight);
+
+        vm.enqueue_resolver_request(
+            "ignored-again".to_string(),
+            resolver,
+            input,
+            ResolverTarget {
+                state_id: 0,
+                entity_name: "TestEntity".to_string(),
+                primary_key: json!("entity_2"),
+                extracts: vec![],
+            },
+        );
+
+        assert!(vm.take_resolver_requests().is_empty());
+        let pending = vm.resolver_pending.get(&cache_key).unwrap();
+        assert!(pending.in_flight);
+        assert_eq!(pending.targets.len(), 2);
     }
 
     #[test]
