@@ -4313,6 +4313,50 @@
       ],
       "instruction_hooks": [
         {
+          "instruction_type": "ore::DeployIxState",
+          "actions": [
+            {
+              "RegisterPdaMapping": {
+                "pda_field": {
+                  "segments": [
+                    "accounts",
+                    "entropyVar"
+                  ],
+                  "offsets": null
+                },
+                "seed_field": {
+                  "segments": [
+                    "accounts",
+                    "round"
+                  ],
+                  "offsets": null
+                },
+                "lookup_name": "default_pda_lookup"
+              }
+            },
+            {
+              "RegisterPdaMapping": {
+                "pda_field": {
+                  "segments": [
+                    "accounts",
+                    "entropyVar"
+                  ],
+                  "offsets": null
+                },
+                "seed_field": {
+                  "segments": [
+                    "accounts",
+                    "round"
+                  ],
+                  "offsets": null
+                },
+                "lookup_name": "default_pda_lookup"
+              }
+            }
+          ],
+          "lookup_by": null
+        },
+        {
           "instruction_type": "ore::ResetIxState",
           "actions": [
             {
@@ -5226,7 +5270,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "19878988154c1337bf635e15e4b90ce0a04971d337855e5c598030d96a0f9a7f",
+      "content_hash": "035d43ead768f10318e1f0d37b1daed6110b07935c6ef53b7130cc06bd00d4d4",
       "views": [
         {
           "id": "OreRound/latest",
