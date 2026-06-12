@@ -1889,7 +1889,7 @@ fn unique_resolved_type_name_ts(
 }
 
 /// Convert snake_case to PascalCase
-fn to_pascal_case(s: &str) -> String {
+pub(crate) fn to_pascal_case(s: &str) -> String {
     s.split(['_', '-', '.'])
         .map(|word| {
             let mut chars = word.chars();
@@ -2017,6 +2017,9 @@ pub struct TypeScriptStackOutput {
     pub interfaces: String,
     pub stack_definition: String,
     pub imports: String,
+    /// Non-fatal codegen warnings (skipped instructions, PDAs degraded to
+    /// user-provided accounts). Callers should surface these to the user.
+    pub warnings: Vec<String>,
 }
 
 impl TypeScriptStackOutput {
@@ -2099,9 +2102,47 @@ pub fn compile_stack_spec(
         schema_names.extend(output.schema_names);
     }
 
-    let interfaces = all_interfaces.join("\n\n");
+    let mut interfaces = all_interfaces.join("\n\n");
 
-    // 2. Generate unified stack definition with all entity views
+    // 2. Generate instruction-construction handlers from the stack spec.
+    // Program errors live once at the stack level (in the IDL snapshots) and
+    // are scoped per program by the instruction codegen. Entity interface
+    // names are reserved so defined-type interfaces cannot collide with them.
+    let mut reserved_type_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for line in interfaces.lines() {
+        for prefix in ["export interface ", "export type "] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    reserved_type_names.insert(name);
+                }
+            }
+        }
+    }
+    let instructions_codegen = crate::typescript_instructions::generate_instructions_code(
+        stack_name,
+        &stack_spec.instructions,
+        &stack_spec.idls,
+        &stack_spec.pdas,
+        &stack_spec.program_ids,
+        &reserved_type_names,
+    );
+    if !instructions_codegen.code.is_empty() {
+        if interfaces.is_empty() {
+            interfaces = instructions_codegen.code.clone();
+        } else {
+            interfaces = format!("{}\n\n{}", interfaces, instructions_codegen.code);
+        }
+    }
+
+    // 3. Generate unified stack definition with all entity views and handlers.
+    let instructions_block = crate::typescript_instructions::render_instructions_stack_block(
+        &instructions_codegen.stack_entries,
+    );
     let stack_definition = generate_stack_definition_multi(
         stack_name,
         &stack_kebab,
@@ -2110,19 +2151,35 @@ pub fn compile_stack_spec(
         &stack_spec.pdas,
         &stack_spec.program_ids,
         &schema_names,
+        &instructions_block,
         &config,
     );
 
-    let imports = if stack_spec.pdas.values().any(|p| !p.is_empty()) {
-        "import { z } from 'zod';\nimport { pda, literal, account, arg, bytes } from '@usearete/sdk';".to_string()
-    } else {
+    // 4. Assemble `@usearete/sdk` imports based on what was actually emitted.
+    let mut sdk_named: Vec<String> = Vec::new();
+    if stack_spec.pdas.values().any(|p| !p.is_empty()) {
+        for helper in ["pda", "literal", "account", "arg", "bytes"] {
+            sdk_named.push(helper.to_string());
+        }
+    }
+    if instructions_codegen.needs_runtime_import {
+        sdk_named.push("createInstructionHandler".to_string());
+        sdk_named.push("type ErrorMetadata".to_string());
+    }
+    let imports = if sdk_named.is_empty() {
         "import { z } from 'zod';".to_string()
+    } else {
+        format!(
+            "import {{ z }} from 'zod';\nimport {{ {} }} from '@usearete/sdk';",
+            sdk_named.join(", ")
+        )
     };
 
     Ok(TypeScriptStackOutput {
         imports,
         interfaces,
         stack_definition,
+        warnings: instructions_codegen.warnings,
     })
 }
 
@@ -2166,6 +2223,7 @@ fn generate_stack_definition_multi(
     pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
     program_ids: &[String],
     schema_names: &[String],
+    instructions_block: &str,
     config: &TypeScriptStackConfig,
 ) -> String {
     let export_name = format!(
@@ -2262,7 +2320,7 @@ export const {export_name} = {{
 {url_line}
   views: {{
 {views_body}
-  }},{schemas_section}{pdas_section}
+  }},{schemas_section}{pdas_section}{instructions_section}
 }} as const;
 
 /** Type alias for the stack */
@@ -2282,6 +2340,7 @@ export default {export_name};"#,
         views_body = views_body,
         schemas_section = schemas_block,
         pdas_section = pdas_block,
+        instructions_section = instructions_block,
         entity_union = entity_types.join(" | "),
     )
 }
@@ -2375,7 +2434,7 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
 }
 
 /// Convert PascalCase to SCREAMING_SNAKE_CASE (e.g., "OreStream" -> "ORE_STREAM")
-fn to_screaming_snake_case(s: &str) -> String {
+pub(crate) fn to_screaming_snake_case(s: &str) -> String {
     let mut result = String::new();
     for (i, ch) in s.chars().enumerate() {
         if ch.is_uppercase() && i > 0 {

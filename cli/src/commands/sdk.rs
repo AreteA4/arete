@@ -526,6 +526,10 @@ fn generate_typescript_sdk_from_source(
     let output = arete_interpreter::typescript::compile_stack_spec(stack_spec, Some(config))
         .map_err(|e| anyhow::anyhow!("Failed to compile TypeScript: {}", e))?;
 
+    for warning in &output.warnings {
+        println!("{} {}", "⚠".yellow().bold(), warning);
+    }
+
     arete_interpreter::typescript::write_stack_typescript_to_file(&output, output_path)
         .with_context(|| format!("Failed to write TypeScript to {}", output_path.display()))?;
 

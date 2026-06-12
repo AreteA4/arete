@@ -695,6 +695,7 @@ fn normalized_integer_kind(rust_type_name: &str) -> &'static str {
     {
         "u64"
     } else {
+        // Signed small ints (i16/i8/isize) and anything unknown widen to i64.
         "i64"
     }
 }
