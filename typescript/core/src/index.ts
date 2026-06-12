@@ -1,5 +1,12 @@
 export { Arete } from './client';
-export type { AreteOptionsWithStorage, InstructionExecutorOptions, InstructionExecutor } from './client';
+export type {
+  ConnectOptions,
+  AreteOptionsWithStorage,
+  InstructionExecutorOptions,
+  InstructionExecutor,
+  TypedInstruction,
+  InstructionsInterface,
+} from './client';
 
 export { ConnectionManager } from './connection';
 export { SubscriptionRegistry } from './subscription';
@@ -29,6 +36,7 @@ export type {
   RichUpdate,
   ViewDef,
   StackDefinition,
+  StackInstructionEntry,
   ViewGroup,
   Subscription,
   Schema,
@@ -53,7 +61,16 @@ export type {
 export { DEFAULT_CONFIG, DEFAULT_MAX_ENTRIES_PER_VIEW, AreteError } from './types';
 
 // Wallet types
-export type { WalletAdapter, WalletState, WalletConnectOptions } from './wallet/types';
+export type {
+  WalletAdapter,
+  WalletState,
+  WalletConnectOptions,
+  BuiltInstruction,
+  BuiltAccountMeta,
+  ConfirmationLevel,
+  SendOptions,
+  SendResult,
+} from './wallet/types';
 
 // Instruction execution
 export type {
@@ -67,14 +84,13 @@ export type {
   AccountResolutionOptions,
   ArgSchema,
   ArgType,
-  ConfirmationLevel,
-  ExecuteOptions,
-  ExecutionResult,
   ProgramError,
   ErrorMetadata,
   InstructionHandler,
-  InstructionDefinition,
-  BuiltInstruction,
+  InstructionHandlerConfig,
+  BuildOptions,
+  ExecuteOptions,
+  ExecutionResult,
   SeedDef,
   PdaDeriveContext,
   PdaFactory,
@@ -92,10 +108,12 @@ export {
   decodeBase58,
   encodeBase58,
   serializeInstructionData,
-  waitForConfirmation,
   parseInstructionError,
   formatProgramError,
+  InstructionError,
+  buildInstruction,
   executeInstruction,
+  createInstructionHandler,
   createInstructionExecutor,
   literal,
   account,

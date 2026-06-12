@@ -26,8 +26,21 @@ export interface StackDefinition {
   readonly url: string;
   readonly views: Record<string, ViewGroup>;
   readonly schemas?: Record<string, Schema<unknown>>;
-  instructions?: Record<string, import('./instructions').InstructionHandler>;
+  // Handlers carry specific phantom param/error types; accept any of them
+  // here. Multi-program stacks nest handlers one level deep per program
+  // (e.g. instructions.ore.close); single-program stacks stay flat.
+  instructions?: Record<string, StackInstructionEntry>;
 }
+
+/**
+ * One entry in a stack definition's `instructions` block: either a handler
+ * (single-program stacks) or a per-program map of handlers (multi-program).
+ */
+export type StackInstructionEntry =
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  | import('./instructions').InstructionHandler<any, any>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  | Record<string, import('./instructions').InstructionHandler<any, any>>;
 
 export interface ViewGroup {
   state?: ViewDef<unknown, 'state'>;

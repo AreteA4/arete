@@ -3,7 +3,7 @@ import type { ConnectionState } from '@usearete/sdk';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import { useAreteContext } from './provider';
 import { createStateViewHook, createListViewHook } from './view-hooks';
-import { useInstructionMutation, UseMutationResult } from './hooks';
+import { useInstructionMutation, type UseMutationResult } from './hooks';
 import type {
   StackDefinition,
   ViewDef,
@@ -17,7 +17,7 @@ import type {
   UseAreteOptions
 } from './types';
 import { ZustandAdapter, type AreteStore } from './zustand-adapter';
-import type { InstructionHandler, InstructionExecutor } from '@usearete/sdk';
+import type { InstructionHandler, TypedInstruction, StackInstructionEntry } from '@usearete/sdk';
 import type { Arete } from '@usearete/sdk';
 
 type ViewHookForDef<TDef> = TDef extends ViewDef<infer T, 'state'>
@@ -57,15 +57,38 @@ type BuildViewInterface<TViews extends Record<string, ViewGroup>> = {
   };
 };
 
-type InstructionHook = {
-  useMutation: () => UseMutationResult;
-  execute: InstructionExecutor;
-};
+/**
+ * Per-instruction hook surface, with params/error types inferred from the
+ * generated handler's phantom types.
+ */
+type InstructionHookFor<THandler> = THandler extends InstructionHandler<infer P, infer E>
+  ? {
+      useMutation: () => UseMutationResult<P, E>;
+      execute: TypedInstruction<P, E>;
+    }
+  : {
+      useMutation: () => UseMutationResult;
+      execute: TypedInstruction<Record<string, unknown>, unknown>;
+    };
 
-type BuildInstructionInterface<TInstructions extends Record<string, InstructionHandler> | undefined> = 
-  TInstructions extends Record<string, InstructionHandler>
-    ? { [K in keyof TInstructions]: InstructionHook }
-    : {};
+/**
+ * Maps one stack-definition instruction entry to its hook surface. Handlers
+ * map directly; per-program maps (multi-program stacks) nest one level.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type InstructionEntryHooks<TEntry> = TEntry extends InstructionHandler<any, any>
+  ? InstructionHookFor<TEntry>
+  : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    TEntry extends Record<string, InstructionHandler<any, any>>
+    ? { [K in keyof TEntry]: InstructionHookFor<TEntry[K]> }
+    : InstructionHookFor<unknown>;
+
+type BuildInstructionInterface<
+  TInstructions extends Record<string, StackInstructionEntry> | undefined,
+> =
+  TInstructions extends Record<string, StackInstructionEntry>
+    ? { [K in keyof TInstructions]: InstructionEntryHooks<TInstructions[K]> }
+    : Record<string, never>;
 
 type StackClient<TStack extends StackDefinition> = {
   views: BuildViewInterface<TStack['views']>;
@@ -150,14 +173,34 @@ export function useArete<TStack extends StackDefinition>(
   }, [stack, client]);
 
   const instructions = useMemo(() => {
-    const result: Record<string, InstructionHook> = {};
+    type Hook = {
+      execute: TypedInstruction<Record<string, unknown>, unknown>;
+      useMutation: () => UseMutationResult;
+    };
+    const toHook = (executeFn: unknown): Hook => {
+      const execute = executeFn as TypedInstruction<Record<string, unknown>, unknown>;
+      return {
+        execute,
+        useMutation: () => useInstructionMutation(execute),
+      };
+    };
+
+    const result: Record<string, Hook | Record<string, Hook>> = {};
 
     if (client?.instructions) {
-      for (const [instructionName, executeFn] of Object.entries(client.instructions)) {
-        result[instructionName] = {
-          execute: executeFn as InstructionExecutor,
-          useMutation: () => useInstructionMutation(executeFn as InstructionExecutor)
-        };
+      for (const [name, entry] of Object.entries(client.instructions)) {
+        if (typeof entry === 'function') {
+          result[name] = toHook(entry);
+        } else {
+          // Multi-program stacks: one nested hook map per program.
+          const nested: Record<string, Hook> = {};
+          for (const [instructionName, executeFn] of Object.entries(
+            entry as Record<string, unknown>
+          )) {
+            nested[instructionName] = toHook(executeFn);
+          }
+          result[name] = nested;
+        }
       }
     }
 

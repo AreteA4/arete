@@ -93,3 +93,21 @@ function extractErrorCode(error: unknown): number | null {
 export function formatProgramError(error: ProgramError): string {
   return `${error.name} (${error.code}): ${error.message}`;
 }
+
+/**
+ * Error thrown when an instruction fails to send and the underlying failure
+ * could be parsed against the handler's IDL error definitions.
+ */
+export class InstructionError extends Error {
+  /** Parsed program error, if the failure matched a known error code. */
+  readonly programError: ProgramError | null;
+  /** The original underlying error from the wallet adapter / RPC. */
+  readonly cause: unknown;
+
+  constructor(message: string, programError: ProgramError | null, cause: unknown) {
+    super(message);
+    this.name = 'InstructionError';
+    this.programError = programError;
+    this.cause = cause;
+  }
+}

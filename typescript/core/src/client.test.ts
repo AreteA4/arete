@@ -87,3 +87,91 @@ describe('Frame parsing', () => {
   });
 
 });
+
+describe('Arete instructions (namespaced stacks)', () => {
+  const SIGNER = 'So11111111111111111111111111111111111111112';
+
+  async function makeClient(errors: { code: number; name: string; msg: string }[] = []) {
+    const { Arete, createInstructionHandler } = await import('./index');
+    const handler = (programId: string) =>
+      createInstructionHandler({
+        programId,
+        discriminator: [9],
+        args: [],
+        accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+        errors,
+      });
+
+    const stack = {
+      name: 'demo',
+      url: 'wss://example.invalid',
+      views: {},
+      instructions: {
+        ore: { close: handler('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv') },
+        entropy: { close: handler('3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X') },
+      },
+    } as const;
+
+    // autoReconnect: false keeps the client fully offline.
+    return Arete.connect(stack, { autoReconnect: false });
+  }
+
+  it('mirrors per-program nesting and builds through the nested path', async () => {
+    const client = await makeClient();
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend() {
+        throw new Error('not used');
+      },
+    };
+
+    const ix = client.instructions.ore.close.build({}, { wallet });
+    expect(ix.programId).toBe('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv');
+    expect(ix.keys[0]!.pubkey).toBe(SIGNER);
+
+    const ix2 = client.instructions.entropy.close.build({}, { wallet });
+    expect(ix2.programId).toBe('3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X');
+  });
+
+  it('parses program errors in transaction() from aggregated handler metadata', async () => {
+    const { InstructionError } = await import('./index');
+    const client = await makeClient([
+      { code: 6000, name: 'SlippageExceeded', msg: 'Slippage tolerance exceeded' },
+    ]);
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend(): Promise<{ signature: string }> {
+        throw { InstructionError: [0, { Custom: 6000 }] };
+      },
+    };
+
+    const ix = client.instructions.ore.close.build({}, { wallet });
+    await expect(client.transaction([ix], { wallet })).rejects.toMatchObject({
+      name: 'InstructionError',
+      programError: { code: 6000, name: 'SlippageExceeded' },
+    });
+    await expect(client.transaction([ix], { wallet })).rejects.toBeInstanceOf(InstructionError);
+  });
+
+  it('prefers explicit errors over aggregated metadata in transaction()', async () => {
+    const client = await makeClient([
+      { code: 6000, name: 'WrongName', msg: 'from aggregate' },
+    ]);
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend(): Promise<{ signature: string }> {
+        throw { InstructionError: [0, { Custom: 6000 }] };
+      },
+    };
+
+    const ix = client.instructions.ore.close.build({}, { wallet });
+    await expect(
+      client.transaction([ix], {
+        wallet,
+        errors: [{ code: 6000, name: 'RightName', msg: 'from override' }],
+      })
+    ).rejects.toMatchObject({
+      programError: { code: 6000, name: 'RightName' },
+    });
+  });
+});

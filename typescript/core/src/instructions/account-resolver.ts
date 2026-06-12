@@ -1,5 +1,6 @@
 import type { WalletAdapter } from '../wallet/types';
 import { findProgramAddressSync, decodeBase58, createSeed } from './pda';
+import { serializeSeedValue } from './seed-serializer';
 
 /**
  * Categories of accounts in an instruction.
@@ -45,7 +46,8 @@ export interface PdaConfig {
  */
 export type PdaSeed =
   | { type: 'literal'; value: string }
-  | { type: 'argRef'; argName: string }
+  | { type: 'bytes'; value: number[] }
+  | { type: 'argRef'; argName: string; argType?: string }
   | { type: 'accountRef'; accountName: string };
 
 /**
@@ -185,12 +187,36 @@ export function resolveAccounts(
     }
   }
 
-  // Return accounts in original order (as defined in accountMetas)
+  // Return accounts in original order (as defined in accountMetas).
+  //
+  // Omitted optional accounts that precede a resolved account cannot simply
+  // be dropped — that would shift every later account into the wrong slot.
+  // Anchor's convention is to pass the program ID as a placeholder; trailing
+  // omitted optionals are dropped as usual.
+  const lastResolvedIndex = accountMetas.reduce(
+    (last, meta, index) => (resolvedMap[meta.name] ? index : last),
+    -1
+  );
+
   const orderedAccounts: ResolvedAccount[] = [];
-  for (const meta of accountMetas) {
+  for (let i = 0; i < accountMetas.length; i++) {
+    const meta = accountMetas[i]!;
     const resolved = resolvedMap[meta.name];
     if (resolved) {
       orderedAccounts.push(resolved);
+    } else if (meta.isOptional && i < lastResolvedIndex) {
+      if (!options.programId) {
+        throw new Error(
+          'Omitted optional account "' + meta.name + '" precedes other accounts and needs ' +
+          'the program ID as a placeholder, but no programId was provided in options.'
+        );
+      }
+      orderedAccounts.push({
+        name: meta.name,
+        address: options.programId,
+        isSigner: false,
+        isWritable: false,
+      });
     }
   }
 
@@ -276,16 +302,20 @@ function resolvePdaAccount(
       case 'literal':
         seeds.push(createSeed(seed.value));
         break;
-        
+
+      case 'bytes':
+        seeds.push(Uint8Array.from(seed.value));
+        break;
+
       case 'argRef': {
         const argValue = args[seed.argName];
         if (argValue === undefined) {
           throw new Error(
-            'PDA seed references missing argument: ' + seed.argName + 
+            'PDA seed references missing argument: ' + seed.argName +
             ' (for account "' + meta.name + '")'
           );
         }
-        seeds.push(createSeed(argValue as string | bigint | number));
+        seeds.push(serializeSeedValue(argValue, seed.argType));
         break;
       }
       

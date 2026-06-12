@@ -25,10 +25,12 @@ export {
   createSeed,
   createPublicKeySeed,
   serializeInstructionData,
-  waitForConfirmation,
   parseInstructionError,
   formatProgramError,
+  InstructionError,
+  buildInstruction,
   executeInstruction,
+  createInstructionHandler,
   createInstructionExecutor,
 } from '@usearete/sdk';
 
@@ -66,13 +68,18 @@ export type {
   ArgSchema,
   ArgType,
   ConfirmationLevel,
+  SendOptions,
+  SendResult,
+  BuildOptions,
   ExecuteOptions,
   ExecutionResult,
   ProgramError,
   ErrorMetadata,
   InstructionHandler,
-  InstructionDefinition,
+  InstructionHandlerConfig,
+  TypedInstruction,
   BuiltInstruction,
+  BuiltAccountMeta,
 } from '@usearete/sdk';
 
 export type {

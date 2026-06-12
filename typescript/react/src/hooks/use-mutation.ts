@@ -1,10 +1,10 @@
 import { useState, useCallback } from 'react';
-import type { 
-  InstructionExecutor,
-  InstructionExecutorOptions, 
+import type {
+  TypedInstruction,
+  InstructionExecutorOptions,
   ExecutionResult,
 } from '@usearete/sdk';
-import { parseInstructionError } from '@usearete/sdk';
+import { InstructionError } from '@usearete/sdk';
 
 export type MutationStatus = 'idle' | 'pending' | 'success' | 'error';
 
@@ -13,8 +13,15 @@ export interface UseMutationOptions extends InstructionExecutorOptions {
   onError?: (error: Error) => void;
 }
 
-export interface UseMutationResult {
-  submit: (args: Record<string, unknown>, options?: Partial<UseMutationOptions>) => Promise<ExecutionResult>;
+/**
+ * Result of {@link useInstructionMutation}.
+ *
+ * `TParams` is the merged params object accepted by the instruction (IDL args
+ * plus any user-provided account addresses), inferred from the generated
+ * handler. `TError` is the handler's typed program-error union.
+ */
+export interface UseMutationResult<TParams = Record<string, unknown>, _TError = unknown> {
+  submit: (args: TParams, options?: Partial<UseMutationOptions>) => Promise<ExecutionResult>;
   status: MutationStatus;
   error: string | null;
   signature: string | null;
@@ -22,15 +29,15 @@ export interface UseMutationResult {
   reset: () => void;
 }
 
-export function useInstructionMutation(
-  execute: InstructionExecutor
-): UseMutationResult {
+export function useInstructionMutation<TParams = Record<string, unknown>, TError = unknown>(
+  execute: TypedInstruction<TParams, TError>
+): UseMutationResult<TParams, TError> {
   const [status, setStatus] = useState<MutationStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [signature, setSignature] = useState<string | null>(null);
 
   const submit = useCallback(async (
-    args: Record<string, unknown>,
+    args: TParams,
     options?: Partial<UseMutationOptions>
   ): Promise<ExecutionResult> => {
     setStatus('pending');
@@ -49,12 +56,14 @@ export function useInstructionMutation(
 
       return result;
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      
-      const programError = parseInstructionError(err, []);
-      const displayError = programError 
-        ? `${programError.name}: ${programError.message}`
-        : errorMessage;
+      // The core executor already parses program errors against the handler's
+      // IDL error definitions and throws an InstructionError.
+      const displayError =
+        err instanceof InstructionError && err.programError
+          ? `${err.programError.name}: ${err.programError.message}`
+          : err instanceof Error
+            ? err.message
+            : String(err);
 
       setStatus('error');
       setError(displayError);

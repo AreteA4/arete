@@ -64,6 +64,7 @@ export function AreteProvider({
       maxEntriesPerView: config.maxEntriesPerView,
       flushIntervalMs: config.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS,
       auth: config.auth,
+      wallet: config.wallet,
     }).then((client) => {
       client.onConnectionStateChange((state, error) => {
         adapter.setConnectionState(state, error);
@@ -81,7 +82,7 @@ export function AreteProvider({
 
     connectingRef.current.set(cacheKey, connectionPromise);
     return connectionPromise as Promise<Arete<TStack>>;
-  }, [config.autoConnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.auth, notifyClientChange]);
+  }, [config.autoConnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.auth, config.wallet, notifyClientChange]);
 
   const getClient = useCallback(<TStack extends StackDefinition>(stack: TStack | undefined): Arete<TStack> | null => {
     if (!stack) {
