@@ -219,6 +219,7 @@ dependencies = [
 name = "arete-idl"
 version = "0.0.2"
 dependencies = [
+ "bs58",
  "serde",
  "serde_json",
  "sha2",

@@ -317,6 +317,11 @@ pub fn process_idl_spec(
                         attr.path().is_ident("resolve_key") || attr.path().is_ident("register_pda")
                     });
                     !has_declarative_attr
+                } else if let Item::Macro(item_macro) = item {
+                    // `pdas! { ... }` is consumed during spec construction; it is
+                    // not a real macro, so it must not survive into the emitted
+                    // module or compilation fails with "cannot find macro `pdas`".
+                    !item_macro.mac.path.is_ident("pdas")
                 } else {
                     true
                 }
@@ -425,34 +430,46 @@ pub fn process_idl_spec(
                 })
                 .collect();
 
-            let mut all_pdas: BTreeMap<String, BTreeMap<String, crate::ast::PdaDefinition>> =
-                BTreeMap::new();
-            let mut all_instructions: Vec<crate::ast::InstructionDef> = Vec::new();
-            for info in &idl_infos {
-                let pdas = extract_pdas_from_idl(&info.idl);
-                let flat_pdas: BTreeMap<String, crate::ast::PdaDefinition> =
-                    pdas.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                let instructions = extract_instructions_from_idl(&info.idl, &flat_pdas);
-                all_pdas.insert(info.program_name.clone(), pdas);
-                all_instructions.extend(instructions);
-            }
-
             let idl_map: HashMap<String, idl_parser::IdlSpec> = idl_infos
                 .iter()
                 .map(|info| (info.program_name.clone(), info.idl.clone()))
                 .collect();
             validate_pda_blocks(&idl_map, &manual_pdas_blocks)?;
 
+            // Build per-program manual PDA definitions from `pdas!` blocks so they
+            // can participate in instruction-account resolution below. This matters
+            // for Steel-style IDLs whose accounts carry no embedded PDA metadata:
+            // the registry is matched against account names in `convert_account_to_def`.
+            let mut manual_pdas_by_program: HashMap<
+                String,
+                BTreeMap<String, crate::ast::PdaDefinition>,
+            > = HashMap::new();
             for manual_block in &manual_pdas_blocks {
                 for program_pdas in &manual_block.programs {
-                    let program_entry = all_pdas
+                    let entry = manual_pdas_by_program
                         .entry(program_pdas.program_name.clone())
                         .or_default();
-
                     for pda in &program_pdas.pdas {
-                        program_entry.insert(pda.name.clone(), pda.to_pda_definition());
+                        entry.insert(pda.name.clone(), pda.to_pda_definition());
                     }
                 }
+            }
+
+            let mut all_pdas: BTreeMap<String, BTreeMap<String, crate::ast::PdaDefinition>> =
+                BTreeMap::new();
+            let mut all_instructions: Vec<crate::ast::InstructionDef> = Vec::new();
+            for info in &idl_infos {
+                let mut pdas = extract_pdas_from_idl(&info.idl);
+                if let Some(manual) = manual_pdas_by_program.get(&info.program_name) {
+                    for (k, v) in manual {
+                        pdas.insert(k.clone(), v.clone());
+                    }
+                }
+                let flat_pdas: BTreeMap<String, crate::ast::PdaDefinition> =
+                    pdas.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let instructions = extract_instructions_from_idl(&info.idl, &flat_pdas);
+                all_pdas.insert(info.program_name.clone(), pdas);
+                all_instructions.extend(instructions);
             }
 
             let mut stack_spec = SerializableStackSpec {

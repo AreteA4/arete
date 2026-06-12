@@ -81,7 +81,10 @@ impl IdlInstruction {
             return vec![value];
         }
 
-        crate::discriminator::anchor_discriminator(&format!("global:{}", self.name))
+        crate::discriminator::anchor_discriminator(&format!(
+            "global:{}",
+            to_snake_case(&self.name)
+        ))
     }
 }
 
@@ -284,6 +287,20 @@ pub enum IdlTypeDefKind {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IdlEnumVariant {
     pub name: String,
+    /// Variant payload, when the variant carries data. Empty for fieldless
+    /// variants — and skipped during serialization so their wire format is
+    /// unchanged from before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<IdlEnumVariantField>,
+}
+
+/// One field of a data-carrying enum variant. Anchor IDLs encode struct
+/// variants as `{name, type}` objects and tuple variants as bare types.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum IdlEnumVariantField {
+    Named(IdlField),
+    Tuple(IdlType),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

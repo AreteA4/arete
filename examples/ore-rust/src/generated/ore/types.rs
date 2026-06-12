@@ -136,7 +136,7 @@ pub struct OreTreasury {
     #[serde(default)]
     pub state: OreTreasuryState,
     #[serde(default)]
-    pub treasury_snapshot: Option<Option<serde_json::Value>>,
+    pub treasury_snapshot: Option<Option<Treasury>>,
 }
 
 
@@ -232,9 +232,9 @@ pub struct OreMiner {
     #[serde(default)]
     pub automation: OreMinerAutomation,
     #[serde(default)]
-    pub miner_snapshot: Option<Option<serde_json::Value>>,
+    pub miner_snapshot: Option<Option<Miner>>,
     #[serde(default)]
-    pub automation_snapshot: Option<Option<serde_json::Value>>,
+    pub automation_snapshot: Option<Option<Automation>>,
 }
 
 

@@ -11,7 +11,13 @@ pub use arete_idl::snapshot::*;
 /// circular dependency between proc-macro crates and their output crates.
 /// When bumping this version, you MUST also update the constant in the
 /// arete-macros crate. A test in versioned.rs verifies they stay in sync.
-pub const CURRENT_AST_VERSION: &str = "0.0.1";
+// 0.0.2: enum variants may carry `fields` (data-carrying enum variants).
+// Additive over 0.0.1 — every 0.0.1 file deserializes unchanged.
+pub const CURRENT_AST_VERSION: &str = "0.0.2";
+
+/// Older versions this build can still deserialize directly (all changes
+/// since were additive with serde defaults).
+pub const COMPATIBLE_AST_VERSIONS: &[&str] = &["0.0.1"];
 
 fn default_ast_version() -> String {
     CURRENT_AST_VERSION.to_string()
