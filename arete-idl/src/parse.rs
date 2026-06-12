@@ -692,13 +692,14 @@ fn codama_account_pda(
     for seed in pda_seeds {
         match seed {
             CodamaPdaSeedNode::Constant { seed_type, value } => {
-                let bytes = codama_constant_seed_bytes(value, seed_type.as_ref()).or_else(|| {
-                    tracing::warn!(
-                        account = %account.name,
-                        "failed to encode constant PDA seed; degrading to user-provided"
-                    );
-                    None
-                })?;
+                let bytes =
+                    codama_constant_seed_bytes(value, seed_type.as_ref()).or_else(|| {
+                        tracing::warn!(
+                            account = %account.name,
+                            "failed to encode constant PDA seed; degrading to user-provided"
+                        );
+                        None
+                    })?;
                 idl_seeds.push(IdlPdaSeed::Const { value: bytes });
             }
             CodamaPdaSeedNode::Variable { name, seed_type } => {
