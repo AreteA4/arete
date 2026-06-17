@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.1.4](https://github.com/AreteA4/arete/compare/arete-macros-v0.1.3...arete-macros-v0.1.4) (2026-06-17)
+
+
+### Features
+
+* support Codama root-node IDLs and variable discriminators ([1ffcf84](https://github.com/AreteA4/arete/commit/1ffcf84e23363b06d83f07a22bf5b85e7d45b1f0))
+
+
+### Bug Fixes
+
+* batch resolver mutations with primary updates ([38cab89](https://github.com/AreteA4/arete/commit/38cab89253eb2eb38c4c31c159bf76f25f29ef35))
+* gRPC connection ([0586474](https://github.com/AreteA4/arete/commit/0586474b2bb118c8c2cf15985f1cf85ab75eda29))
+* handle variable and embedded account discriminators in macros ([e744bf7](https://github.com/AreteA4/arete/commit/e744bf7f084388135b1f7cf74cc68fd2781e83f9))
+* process resolver mutations asynchronously ([b7ace34](https://github.com/AreteA4/arete/commit/b7ace344adf1c16f38fdac5ddcd82f4d84a6be31))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.0.1 to 0.0.2
+
 ## [0.1.3](https://github.com/AreteA4/arete/compare/arete-macros-v0.1.2...arete-macros-v0.1.3) (2026-05-30)
 
 

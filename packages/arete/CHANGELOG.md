@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/AreteA4/arete/compare/a4-npm-v0.1.3...a4-npm-v0.1.4) (2026-06-17)
+
+
+### Bug Fixes
+
+* add manual npm publish recovery tooling ([1563f85](https://github.com/AreteA4/arete/commit/1563f858e9c5c75a54275bbe0a923273ddbbb9ef))
+
 ## [0.1.3](https://github.com/AreteA4/arete/compare/a4-npm-v0.1.2...a4-npm-v0.1.3) (2026-05-30)
 
 

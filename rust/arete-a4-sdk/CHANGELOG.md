@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/AreteA4/arete/compare/arete-sdk-v0.1.3...arete-sdk-v0.1.4) (2026-06-17)
+
+
+### Features
+
+* support Codama root-node IDLs and variable discriminators ([1ffcf84](https://github.com/AreteA4/arete/commit/1ffcf84e23363b06d83f07a22bf5b85e7d45b1f0))
+
 ## [0.1.3](https://github.com/AreteA4/arete/compare/arete-sdk-v0.1.2...arete-sdk-v0.1.3) (2026-05-30)
 
 
