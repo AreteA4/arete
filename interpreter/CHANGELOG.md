@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.4](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.1.3...arete-interpreter-v0.1.4) (2026-06-17)
+
+
+### Features
+
+* support Codama root-node IDLs and variable discriminators ([1ffcf84](https://github.com/AreteA4/arete/commit/1ffcf84e23363b06d83f07a22bf5b85e7d45b1f0))
+
+
+### Bug Fixes
+
+* avoid generated SDK type collisions ([3ebb266](https://github.com/AreteA4/arete/commit/3ebb266453ffc43111adde80529454f55f428a64))
+* preserve primitive rust field types ([1beb2ce](https://github.com/AreteA4/arete/commit/1beb2ce8237ea3620c7d429aa85e281575cb05b6))
+* process resolver mutations asynchronously ([b7ace34](https://github.com/AreteA4/arete/commit/b7ace344adf1c16f38fdac5ddcd82f4d84a6be31))
+* remove redundant integer normalization branch ([0cad96a](https://github.com/AreteA4/arete/commit/0cad96a49ad3c9f524f6fdca3eccb74fe270a921))
+* retry and profile runtime resolver misses ([dfbd8c9](https://github.com/AreteA4/arete/commit/dfbd8c9eccff39a364a2679376f9a82325e7722d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.1.3 to 0.1.4
+    * arete-idl bumped from 0.0.1 to 0.0.2
+
 ## [0.1.3](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.1.2...arete-interpreter-v0.1.3) (2026-05-30)
 
 

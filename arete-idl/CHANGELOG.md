@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.0.2](https://github.com/AreteA4/arete/compare/arete-idl-v0.0.1...arete-idl-v0.0.2) (2026-06-17)
+
+
+### Features
+
+* support Codama root-node IDLs and variable discriminators ([1ffcf84](https://github.com/AreteA4/arete/commit/1ffcf84e23363b06d83f07a22bf5b85e7d45b1f0))
+* support Codama root-node IDLs in arete-idl ([5317df4](https://github.com/AreteA4/arete/commit/5317df447064d1ed8a4d5cd71f1cd300403f2e61))
+
+
+### Bug Fixes
+
+* surface errors for unsupported Codama IDL features instead of silent fallbacks ([f6fd10c](https://github.com/AreteA4/arete/commit/f6fd10c28d08fe71cff3cb090aecaa5150cf3e24))
+* Update ore idls ([108a66f](https://github.com/AreteA4/arete/commit/108a66ffc40c39334a6a4d85ce6f1c82e3461bd0))
+
 ## [0.1.6](https://github.com/AreteA4/arete/compare/arete-idl-v0.1.5...arete-idl-v0.1.6) (2026-04-04)
 
 

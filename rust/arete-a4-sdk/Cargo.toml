@@ -1,6 +1,6 @@
 [package]
 name = "arete-a4-sdk"
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 license = "MIT"
 repository.workspace = true
