@@ -694,11 +694,6 @@ fn normalized_integer_kind(rust_type_name: &str) -> &'static str {
         || rust_type_name.contains("usize")
     {
         "u64"
-    } else if rust_type_name.contains("i16")
-        || rust_type_name.contains("i8")
-        || rust_type_name.contains("isize")
-    {
-        "i64"
     } else {
         "i64"
     }
