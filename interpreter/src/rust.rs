@@ -488,18 +488,9 @@ impl {entity_name}EntityViews {{
     fn field_type_to_rust(
         &self,
         field: &FieldTypeInfo,
-        resolved_name_map: &HashMap<String, String>,
+        _resolved_name_map: &HashMap<String, String>,
     ) -> String {
-        let base = if let Some(resolved) = &field.resolved_type {
-            let resolved_name = self.resolved_type_to_rust_name(resolved, resolved_name_map);
-            if resolved.is_event || (resolved.is_instruction && field.is_array) {
-                format!("EventWrapper<{}>", resolved_name)
-            } else {
-                resolved_name
-            }
-        } else {
-            self.base_type_to_rust(&field.base_type, &field.rust_type_name)
-        };
+        let base = self.base_type_to_rust(&field.base_type, &field.rust_type_name);
 
         let typed = if field.is_array && !matches!(field.base_type, BaseType::Array) {
             format!("Vec<{}>", base)
@@ -784,8 +775,11 @@ mod tests {
         let output = compile_serializable_spec(spec, "Plan".to_string(), None)
             .expect("rust sdk generation should succeed");
 
-        assert!(output.types_rs.contains("pub plan: Option<PlanAccount>"));
+        assert!(output
+            .types_rs
+            .contains("pub plan: Option<serde_json::Value>"));
         assert!(output.types_rs.contains("pub struct PlanAccount"));
+        assert!(!output.types_rs.contains("pub plan: Option<PlanAccount>"));
         assert!(
             !output.types_rs.contains("pub struct Plan {\n    #[serde(default, deserialize_with = \"serde_utils::deserialize_option_u64\")]\n    pub discriminator")
         );
