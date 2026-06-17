@@ -1,5 +1,5 @@
 use crate::ast::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct RustOutput {
@@ -142,6 +142,7 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         output.push_str("use serde::{Deserialize, Serialize};\n");
         output.push_str("use arete_sdk::serde_utils;\n\n");
 
+        let resolved_name_map = self.build_resolved_type_name_map();
         let mut generated = HashSet::new();
 
         for section in &self.spec.sections {
@@ -149,19 +150,23 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
                 && section.fields.iter().any(|field| field.emit)
                 && generated.insert(section.name.clone())
             {
-                output.push_str(&self.generate_struct_for_section(section));
+                output.push_str(&self.generate_struct_for_section(section, &resolved_name_map));
                 output.push_str("\n\n");
             }
         }
 
-        output.push_str(&self.generate_main_entity_struct());
-        output.push_str(&self.generate_resolved_types(&mut generated));
+        output.push_str(&self.generate_main_entity_struct(&resolved_name_map));
+        output.push_str(&self.generate_resolved_types(&resolved_name_map, &mut generated));
         output.push_str(&self.generate_event_wrapper());
 
         output
     }
 
-    pub(crate) fn generate_struct_for_section(&self, section: &EntitySection) -> String {
+    pub(crate) fn generate_struct_for_section(
+        &self,
+        section: &EntitySection,
+        resolved_name_map: &HashMap<String, String>,
+    ) -> String {
         let struct_name = format!("{}{}", self.entity_name, to_pascal_case(&section.name));
         let mut fields = Vec::new();
 
@@ -170,7 +175,7 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
                 continue;
             }
             let field_name = to_snake_case(&field.field_name);
-            let rust_type = self.field_type_to_rust(field);
+            let rust_type = self.field_type_to_rust(field, resolved_name_map);
             let serde_attr = self.serde_attr_for_field(field);
 
             fields.push(format!(
@@ -190,7 +195,10 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         name.eq_ignore_ascii_case("root")
     }
 
-    pub(crate) fn generate_main_entity_struct(&self) -> String {
+    pub(crate) fn generate_main_entity_struct(
+        &self,
+        resolved_name_map: &HashMap<String, String>,
+    ) -> String {
         let mut fields = Vec::new();
 
         for section in &self.spec.sections {
@@ -213,7 +221,7 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
                         continue;
                     }
                     let field_name = to_snake_case(&field.field_name);
-                    let rust_type = self.field_type_to_rust(field);
+                    let rust_type = self.field_type_to_rust(field, resolved_name_map);
                     let serde_attr = self.serde_attr_for_field(field);
                     fields.push(format!(
                         "    {}\n    pub {}: {},",
@@ -230,7 +238,11 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         )
     }
 
-    pub(crate) fn generate_resolved_types(&self, generated: &mut HashSet<String>) -> String {
+    pub(crate) fn generate_resolved_types(
+        &self,
+        resolved_name_map: &HashMap<String, String>,
+        generated: &mut HashSet<String>,
+    ) -> String {
         let mut output = String::new();
 
         for section in &self.spec.sections {
@@ -239,9 +251,10 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
                     continue;
                 }
                 if let Some(resolved) = &field.resolved_type {
-                    if generated.insert(resolved.type_name.clone()) {
+                    let emitted_name = self.resolved_type_to_rust_name(resolved, resolved_name_map);
+                    if generated.insert(emitted_name.clone()) {
                         output.push_str("\n\n");
-                        output.push_str(&self.generate_resolved_struct(resolved));
+                        output.push_str(&self.generate_resolved_struct(resolved, &emitted_name));
                     }
                 }
             }
@@ -250,7 +263,11 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         output
     }
 
-    fn generate_resolved_struct(&self, resolved: &ResolvedStructType) -> String {
+    fn generate_resolved_struct(
+        &self,
+        resolved: &ResolvedStructType,
+        emitted_name: &str,
+    ) -> String {
         if resolved.is_enum {
             let variants: Vec<String> = resolved
                 .enum_variants
@@ -260,7 +277,7 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
 
             format!(
                 "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]\npub enum {} {{\n{}\n}}",
-                to_pascal_case(&resolved.type_name),
+                emitted_name,
                 variants.join("\n")
             )
         } else {
@@ -281,7 +298,7 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
 
             format!(
                 "#[derive(Debug, Clone, Serialize, Deserialize, Default)]\npub struct {} {{\n{}\n}}",
-                to_pascal_case(&resolved.type_name),
+                emitted_name,
                 fields.join("\n")
             )
         }
@@ -468,7 +485,11 @@ impl {entity_name}EntityViews {{
     ///   - `None` = not yet received in any patch
     ///   - `Some(None)` = explicitly set to null
     ///   - `Some(Some(value))` = has value
-    fn field_type_to_rust(&self, field: &FieldTypeInfo) -> String {
+    fn field_type_to_rust(
+        &self,
+        field: &FieldTypeInfo,
+        _resolved_name_map: &HashMap<String, String>,
+    ) -> String {
         let base = self.base_type_to_rust(&field.base_type, &field.rust_type_name);
 
         let typed = if field.is_array && !matches!(field.base_type, BaseType::Array) {
@@ -488,19 +509,7 @@ impl {entity_name}EntityViews {{
 
     fn base_type_to_rust(&self, base_type: &BaseType, rust_type_name: &str) -> String {
         match base_type {
-            BaseType::Integer => {
-                if rust_type_name.contains("u64") {
-                    "u64".to_string()
-                } else if rust_type_name.contains("i64") {
-                    "i64".to_string()
-                } else if rust_type_name.contains("u32") {
-                    "u32".to_string()
-                } else if rust_type_name.contains("i32") {
-                    "i32".to_string()
-                } else {
-                    "i64".to_string()
-                }
-            }
+            BaseType::Integer => normalized_integer_kind(rust_type_name).to_string(),
             BaseType::Float => "f64".to_string(),
             BaseType::String => "String".to_string(),
             BaseType::Boolean => "bool".to_string(),
@@ -554,17 +563,7 @@ impl {entity_name}EntityViews {{
     ) -> Option<String> {
         // Only integer and timestamp types need the string-or-number treatment
         let int_kind = match base_type {
-            BaseType::Integer => {
-                if rust_type_name.contains("i64") {
-                    "i64"
-                } else if rust_type_name.contains("i32") {
-                    "i32"
-                } else if rust_type_name.contains("u32") {
-                    "u32"
-                } else {
-                    "u64"
-                }
-            }
+            BaseType::Integer => normalized_integer_kind(rust_type_name),
             BaseType::Timestamp => "i64",
             _ => return None,
         };
@@ -593,6 +592,241 @@ impl {entity_name}EntityViews {{
         } else {
             format!("Option<{}>", typed)
         }
+    }
+
+    fn build_resolved_type_name_map(&self) -> HashMap<String, String> {
+        let mut reserved_names =
+            HashSet::from([self.entity_name.clone(), "EventWrapper".to_string()]);
+
+        for section in &self.spec.sections {
+            if !Self::is_root_section(&section.name)
+                && section.fields.iter().any(|field| field.emit)
+            {
+                reserved_names.insert(format!(
+                    "{}{}",
+                    self.entity_name,
+                    to_pascal_case(&section.name)
+                ));
+            }
+        }
+
+        let mut resolved_name_map = HashMap::new();
+
+        for section in &self.spec.sections {
+            for field in &section.fields {
+                if !field.emit {
+                    continue;
+                }
+
+                let Some(resolved) = &field.resolved_type else {
+                    continue;
+                };
+
+                if resolved_name_map.contains_key(&resolved.type_name) {
+                    continue;
+                }
+
+                let emitted_name = unique_resolved_type_name(resolved, &mut reserved_names);
+                resolved_name_map.insert(resolved.type_name.clone(), emitted_name);
+            }
+        }
+
+        resolved_name_map
+    }
+
+    fn resolved_type_to_rust_name(
+        &self,
+        resolved: &ResolvedStructType,
+        resolved_name_map: &HashMap<String, String>,
+    ) -> String {
+        resolved_name_map
+            .get(&resolved.type_name)
+            .cloned()
+            .unwrap_or_else(|| to_pascal_case(&resolved.type_name))
+    }
+}
+
+fn unique_resolved_type_name(
+    resolved: &ResolvedStructType,
+    reserved_names: &mut HashSet<String>,
+) -> String {
+    let base_name = to_pascal_case(&resolved.type_name);
+    if reserved_names.insert(base_name.clone()) {
+        return base_name;
+    }
+
+    let suffix = if resolved.is_account {
+        "Account"
+    } else if resolved.is_event {
+        "Event"
+    } else if resolved.is_instruction {
+        "Instruction"
+    } else {
+        "Type"
+    };
+
+    let preferred = format!("{}{}", base_name, suffix);
+    if reserved_names.insert(preferred.clone()) {
+        return preferred;
+    }
+
+    let mut index = 2;
+    loop {
+        let candidate = format!("{}{}{}", base_name, suffix, index);
+        if reserved_names.insert(candidate.clone()) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn normalized_integer_kind(rust_type_name: &str) -> &'static str {
+    if rust_type_name.contains("u64") {
+        "u64"
+    } else if rust_type_name.contains("i64") {
+        "i64"
+    } else if rust_type_name.contains("u32") {
+        "u32"
+    } else if rust_type_name.contains("i32") {
+        "i32"
+    } else if rust_type_name.contains("u16")
+        || rust_type_name.contains("u8")
+        || rust_type_name.contains("usize")
+    {
+        "u64"
+    } else {
+        "i64"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn identity_spec() -> IdentitySpec {
+        IdentitySpec {
+            primary_keys: vec!["id.address".to_string()],
+            lookup_indexes: vec![],
+        }
+    }
+
+    #[test]
+    fn rust_generator_renames_account_types_on_collision() {
+        let plan_field = FieldTypeInfo {
+            field_name: "plan".to_string(),
+            rust_type_name: "Option<serde_json::Value>".to_string(),
+            base_type: BaseType::Object,
+            is_optional: false,
+            is_array: false,
+            inner_type: Some("Value".to_string()),
+            source_path: None,
+            resolved_type: Some(ResolvedStructType {
+                type_name: "plan".to_string(),
+                fields: vec![],
+                is_instruction: false,
+                is_account: true,
+                is_event: false,
+                is_enum: false,
+                enum_variants: vec![],
+            }),
+            emit: true,
+        };
+
+        let spec = SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: "Plan".to_string(),
+            program_id: None,
+            idl: None,
+            identity: identity_spec(),
+            handlers: vec![],
+            sections: vec![
+                EntitySection {
+                    name: "id".to_string(),
+                    fields: vec![FieldTypeInfo::new(
+                        "address".to_string(),
+                        "String".to_string(),
+                    )],
+                    is_nested_struct: false,
+                    parent_field: None,
+                },
+                EntitySection {
+                    name: "plan".to_string(),
+                    fields: vec![plan_field],
+                    is_nested_struct: false,
+                    parent_field: None,
+                },
+            ],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        };
+
+        let output = compile_serializable_spec(spec, "Plan".to_string(), None)
+            .expect("rust sdk generation should succeed");
+
+        assert!(output
+            .types_rs
+            .contains("pub plan: Option<serde_json::Value>"));
+        assert!(output.types_rs.contains("pub struct PlanAccount"));
+        assert!(!output.types_rs.contains("pub plan: Option<PlanAccount>"));
+        assert!(
+            !output.types_rs.contains("pub struct Plan {\n    #[serde(default, deserialize_with = \"serde_utils::deserialize_option_u64\")]\n    pub discriminator")
+        );
+    }
+
+    #[test]
+    fn rust_generator_keeps_unsigned_numeric_fields_unsigned() {
+        let spec = SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: "Plan".to_string(),
+            program_id: None,
+            idl: None,
+            identity: identity_spec(),
+            handlers: vec![],
+            sections: vec![
+                EntitySection {
+                    name: "id".to_string(),
+                    fields: vec![FieldTypeInfo::new(
+                        "address".to_string(),
+                        "String".to_string(),
+                    )],
+                    is_nested_struct: false,
+                    parent_field: None,
+                },
+                EntitySection {
+                    name: "state".to_string(),
+                    fields: vec![FieldTypeInfo::new(
+                        "status".to_string(),
+                        "Option<u8>".to_string(),
+                    )],
+                    is_nested_struct: false,
+                    parent_field: None,
+                },
+            ],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        };
+
+        let output = compile_serializable_spec(spec, "Plan".to_string(), None)
+            .expect("rust sdk generation should succeed");
+
+        assert!(
+            output.types_rs.contains("pub status: Option<Option<u64>>"),
+            "expected unsigned optional field, got:\n{}",
+            output.types_rs
+        );
     }
 }
 
@@ -717,23 +951,26 @@ fn generate_stack_types_rs(
     for (i, spec) in entity_specs.iter().enumerate() {
         let entity_name = &entity_names[i];
         let compiler = RustCompiler::new(spec.clone(), entity_name.clone(), RustConfig::default());
+        let resolved_name_map = compiler.build_resolved_type_name_map();
 
         // Generate section structs (e.g., OreRoundId, OreRoundState)
         for section in &spec.sections {
             if !RustCompiler::is_root_section(&section.name) {
                 let struct_name = format!("{}{}", entity_name, to_pascal_case(&section.name));
                 if generated.insert(struct_name) {
-                    output.push_str(&compiler.generate_struct_for_section(section));
+                    output.push_str(
+                        &compiler.generate_struct_for_section(section, &resolved_name_map),
+                    );
                     output.push_str("\n\n");
                 }
             }
         }
 
         // Generate main entity struct (e.g., OreRound, OreTreasury)
-        output.push_str(&compiler.generate_main_entity_struct());
+        output.push_str(&compiler.generate_main_entity_struct(&resolved_name_map));
         output.push_str("\n\n");
 
-        let resolved = compiler.generate_resolved_types(&mut generated);
+        let resolved = compiler.generate_resolved_types(&resolved_name_map, &mut generated);
         output.push_str(&resolved);
         while !output.ends_with("\n\n") {
             output.push('\n');

@@ -41,6 +41,96 @@ fn lookup_account_serialization<'a>(
         .unwrap_or(&None)
 }
 
+fn payload_includes_embedded_discriminator(fields: &[IdlField], types: &[IdlTypeDef]) -> bool {
+    fields
+        .first()
+        .is_some_and(|field| field_starts_with_discriminator(field, types, &mut HashSet::new()))
+}
+
+fn field_starts_with_discriminator(
+    field: &IdlField,
+    types: &[IdlTypeDef],
+    visited: &mut HashSet<String>,
+) -> bool {
+    if field.name == "discriminator" {
+        return type_is_u8(&field.type_, types, visited);
+    }
+
+    type_starts_with_discriminator(&field.type_, types, visited)
+}
+
+fn type_starts_with_discriminator(
+    idl_type: &IdlType,
+    types: &[IdlTypeDef],
+    visited: &mut HashSet<String>,
+) -> bool {
+    match idl_type {
+        IdlType::Defined(def) => {
+            let name = match &def.defined {
+                IdlTypeDefinedInner::Named { name } => name,
+                IdlTypeDefinedInner::Simple(name) => name,
+            };
+
+            if !visited.insert(name.clone()) {
+                return false;
+            }
+
+            let result = types
+                .iter()
+                .find(|type_def| type_def.name == *name)
+                .is_some_and(|type_def| match &type_def.type_def {
+                    IdlTypeDefKind::Struct { fields, .. } => fields.first().is_some_and(|field| {
+                        field_starts_with_discriminator(field, types, visited)
+                    }),
+                    _ => false,
+                });
+
+            visited.remove(name);
+            result
+        }
+        _ => false,
+    }
+}
+
+fn type_is_u8(idl_type: &IdlType, types: &[IdlTypeDef], visited: &mut HashSet<String>) -> bool {
+    match idl_type {
+        IdlType::Simple(name) => name == "u8",
+        IdlType::Defined(def) => {
+            let name = match &def.defined {
+                IdlTypeDefinedInner::Named { name } => name,
+                IdlTypeDefinedInner::Simple(name) => name,
+            };
+
+            if !visited.insert(name.clone()) {
+                return false;
+            }
+
+            let result = types
+                .iter()
+                .find(|type_def| type_def.name == *name)
+                .is_some_and(|type_def| match &type_def.type_def {
+                    IdlTypeDefKind::Struct { fields, .. } => {
+                        fields.len() == 1
+                            && fields
+                                .first()
+                                .is_some_and(|field| type_is_u8(&field.type_, types, visited))
+                    }
+                    IdlTypeDefKind::TupleStruct { fields, .. } => {
+                        fields.len() == 1
+                            && fields
+                                .first()
+                                .is_some_and(|field| type_is_u8(field, types, visited))
+                    }
+                    IdlTypeDefKind::Enum { .. } => false,
+                });
+
+            visited.remove(name);
+            result
+        }
+        _ => false,
+    }
+}
+
 fn resolve_type_string(
     idl_type: &IdlType,
     bytemuck: bool,
@@ -397,6 +487,11 @@ fn generate_account_type(
     } else {
         generate_struct_to_json_method(&idl_fields, use_bytemuck)
     };
+    let body_expr = if payload_includes_embedded_discriminator(&idl_fields, types) {
+        quote! { data }
+    } else {
+        quote! { &data[Self::DISCRIMINATOR.len()..] }
+    };
 
     let discriminator = account.get_discriminator();
     let disc_array = quote! { [#(#discriminator),*] };
@@ -410,7 +505,7 @@ fn generate_account_type(
                     if data.len() < Self::DISCRIMINATOR.len() {
                         return Err("Data too short for discriminator".into());
                     }
-                    let body = &data[Self::DISCRIMINATOR.len()..];
+                    let body = #body_expr;
                     let struct_size = std::mem::size_of::<Self>();
                     if body.len() < struct_size {
                         return Err(format!(
@@ -484,7 +579,7 @@ fn generate_account_type(
                     if data.len() < Self::DISCRIMINATOR.len() {
                         return Err("Data too short for discriminator".into());
                     }
-                    let mut reader = &data[Self::DISCRIMINATOR.len()..];
+                    let mut reader = #body_expr;
                     borsh::BorshDeserialize::deserialize_reader(&mut reader)
                         .map_err(|e| e.into())
                 }
@@ -1141,6 +1236,58 @@ mod tests {
             "errors": []
         }"#;
         parse_idl_content(json).expect("test IDL should parse")
+    }
+
+    fn embedded_discriminator_idl() -> IdlSpec {
+        let json = r#"{
+            "name": "embedded_disc",
+            "instructions": [],
+            "accounts": [
+                {
+                    "name": "EmbeddedAccount",
+                    "discriminator": [9]
+                }
+            ],
+            "types": [
+                {
+                    "name": "EmbeddedAccount",
+                    "type": {
+                        "kind": "struct",
+                        "fields": [
+                            { "name": "discriminator", "type": "u8" },
+                            { "name": "value", "type": "u64" }
+                        ]
+                    }
+                }
+            ],
+            "events": [],
+            "errors": []
+        }"#;
+
+        parse_idl_content(json).expect("embedded discriminator IDL should parse")
+    }
+
+    #[test]
+    fn embedded_discriminator_detection_matches_top_level_field() {
+        let idl = embedded_discriminator_idl();
+        let fields = match &idl.types[0].type_def {
+            IdlTypeDefKind::Struct { fields, .. } => fields,
+            _ => panic!("expected struct type"),
+        };
+
+        assert!(payload_includes_embedded_discriminator(fields, &idl.types));
+    }
+
+    #[test]
+    fn embedded_discriminator_accounts_decode_from_full_buffer() {
+        let idl = embedded_discriminator_idl();
+        let code = generate_sdk_types(&idl, "generated_sdk").to_string();
+
+        assert!(
+            code.contains("let mut reader = data ;"),
+            "embedded discriminator accounts should deserialize from the full buffer, got: {}",
+            code
+        );
     }
 
     #[test]

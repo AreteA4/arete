@@ -841,7 +841,10 @@ mod tests {
             .expect("request should build with handshake headers");
 
         assert_eq!(
-            request.headers().get("origin").and_then(|v| v.to_str().ok()),
+            request
+                .headers()
+                .get("origin")
+                .and_then(|v| v.to_str().ok()),
             Some("https://example.gg")
         );
         assert_eq!(
@@ -865,7 +868,10 @@ mod tests {
             .expect("request should build with auto-forwarded origin");
 
         assert_eq!(
-            request.headers().get("origin").and_then(|v| v.to_str().ok()),
+            request
+                .headers()
+                .get("origin")
+                .and_then(|v| v.to_str().ok()),
             Some("https://example.gg")
         );
     }
@@ -883,7 +889,10 @@ mod tests {
             .expect("request should build with explicit origin");
 
         assert_eq!(
-            request.headers().get("origin").and_then(|v| v.to_str().ok()),
+            request
+                .headers()
+                .get("origin")
+                .and_then(|v| v.to_str().ok()),
             Some("https://explicit.example")
         );
     }
@@ -904,8 +913,8 @@ mod tests {
         // User supplied a lowercase `origin` key to `token_endpoint_header`.
         // HTTP header names are case-insensitive on the wire, so the
         // auto-forward must find this regardless of capitalisation.
-        let auth = AuthConfig::default()
-            .with_token_endpoint_header("origin", "https://lower.example");
+        let auth =
+            AuthConfig::default().with_token_endpoint_header("origin", "https://lower.example");
         let state = auth_state_with(Some(auth), HashMap::new());
 
         let request = state
@@ -913,7 +922,10 @@ mod tests {
             .expect("request should build with lowercase-origin auto-forward");
 
         assert_eq!(
-            request.headers().get("origin").and_then(|v| v.to_str().ok()),
+            request
+                .headers()
+                .get("origin")
+                .and_then(|v| v.to_str().ok()),
             Some("https://lower.example")
         );
     }
@@ -924,7 +936,10 @@ mod tests {
         // `authorization` handshake header must not silently replace it.
         let auth = AuthConfig::default().with_token_transport(TokenTransport::Bearer);
         let mut handshake = HashMap::new();
-        handshake.insert("authorization".to_string(), "Bearer user-supplied".to_string());
+        handshake.insert(
+            "authorization".to_string(),
+            "Bearer user-supplied".to_string(),
+        );
         let state = auth_state_with(Some(auth), handshake);
 
         let request = state

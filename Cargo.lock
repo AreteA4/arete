@@ -327,10 +327,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
- "yellowstone-vixen",
- "yellowstone-vixen-core",
- "yellowstone-vixen-proto",
- "yellowstone-vixen-yellowstone-grpc-source",
 ]
 
 [[package]]
@@ -386,15 +382,6 @@ name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
-
-[[package]]
-name = "autotools"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef941527c41b0fc0dd48511a8154cd5fc7e29200a0ff8b7203c5d777dbc795cf"
-dependencies = [
- "cc",
-]
 
 [[package]]
 name = "axum"
@@ -2908,15 +2895,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "protobuf-src"
-version = "1.1.0+21.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7ac8852baeb3cc6fb83b93646fb93c0ffe5d14bf138c945ceb4b9948ee0e3c1"
-dependencies = [
- "autotools",
-]
-
-[[package]]
 name = "protoc-bin-vendored"
 version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4866,20 +4844,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonic-reflection"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aaf0685a51e6d02b502ba0764002e766b7f3042aed13d9234925b6ffbfa3fca7"
-dependencies = [
- "prost 0.14.1",
- "prost-types 0.14.1",
- "tokio",
- "tokio-stream",
- "tonic 0.14.2",
- "tonic-prost",
-]
-
-[[package]]
 name = "topograph"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5836,21 +5800,6 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "yellowstone-grpc-proto",
-]
-
-[[package]]
-name = "yellowstone-vixen-proto"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e24babaf744cf56e0f2213cc975a9089d13851fa8898ece17e5dfe7590a3e188"
-dependencies = [
- "prost 0.14.1",
- "prost-types 0.14.1",
- "protobuf-src",
- "tonic 0.14.2",
- "tonic-prost",
- "tonic-prost-build",
- "tonic-reflection",
 ]
 
 [[package]]

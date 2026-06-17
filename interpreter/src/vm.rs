@@ -201,6 +201,9 @@ const DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES: usize = 2_500;
 
 const DEFAULT_MAX_RESOLVER_CACHE_ENTRIES: usize = 20_000;
 const DEFAULT_RESOLVER_CACHE_TTL_SECS: u64 = 3600; // 1 hour
+const DEFAULT_NEGATIVE_RESOLVER_CACHE_TTL_SECS: u64 = 30;
+const DEFAULT_RESOLVER_RETRY_BACKOFF_SECS: u64 = 2;
+const DEFAULT_RESOLVER_MAX_RETRIES: u32 = 1;
 
 static RESOLVER_CACHE_CAPACITY: Lazy<NonZeroUsize> = Lazy::new(|| {
     NonZeroUsize::new(
@@ -232,10 +235,58 @@ static RESOLVER_CACHE_TTL: Lazy<Duration> = Lazy::new(|| {
     Duration::from_secs(ttl_secs)
 });
 
+static NEGATIVE_RESOLVER_CACHE_TTL: Lazy<Duration> = Lazy::new(|| {
+    let ttl_secs = match std::env::var("ARETE_NEGATIVE_RESOLVER_CACHE_TTL_SECS") {
+        Ok(value) => match value.parse::<u64>() {
+            Ok(0) => {
+                tracing::warn!(
+                    default_ttl_secs = DEFAULT_NEGATIVE_RESOLVER_CACHE_TTL_SECS,
+                    "ARETE_NEGATIVE_RESOLVER_CACHE_TTL_SECS=0 is not supported; using default"
+                );
+                DEFAULT_NEGATIVE_RESOLVER_CACHE_TTL_SECS
+            }
+            Ok(value) => value,
+            Err(_) => DEFAULT_NEGATIVE_RESOLVER_CACHE_TTL_SECS,
+        },
+        Err(_) => DEFAULT_NEGATIVE_RESOLVER_CACHE_TTL_SECS,
+    };
+
+    Duration::from_secs(ttl_secs)
+});
+
+static RESOLVER_RETRY_BACKOFF: Lazy<Duration> = Lazy::new(|| {
+    let secs = std::env::var("ARETE_RESOLVER_RETRY_BACKOFF_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_RESOLVER_RETRY_BACKOFF_SECS);
+    Duration::from_secs(secs)
+});
+
+static RESOLVER_MAX_RETRIES: Lazy<u32> = Lazy::new(|| {
+    std::env::var("ARETE_RESOLVER_MAX_RETRIES")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_RESOLVER_MAX_RETRIES)
+});
+
+#[derive(Debug, Clone)]
+pub(crate) enum CachedResolverValue {
+    Resolved(Value),
+    Negative,
+}
+
+#[derive(Debug, Clone)]
+enum ResolverCacheValue {
+    Resolved(Value),
+    Negative,
+}
+
 #[derive(Debug, Clone)]
 struct ResolverCacheEntry {
-    value: Value,
+    value: ResolverCacheValue,
     cached_at: Instant,
+    ttl: Duration,
 }
 
 fn resolver_cache_capacity() -> NonZeroUsize {
@@ -244,6 +295,25 @@ fn resolver_cache_capacity() -> NonZeroUsize {
 
 fn resolver_cache_ttl() -> Duration {
     *RESOLVER_CACHE_TTL
+}
+
+fn negative_resolver_cache_ttl() -> Duration {
+    *NEGATIVE_RESOLVER_CACHE_TTL
+}
+
+fn resolver_retry_backoff() -> Duration {
+    *RESOLVER_RETRY_BACKOFF
+}
+
+fn resolver_max_retries() -> u32 {
+    *RESOLVER_MAX_RETRIES
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TokenResolverMissAction {
+    RetryScheduled,
+    NegativeCached,
+    Dropped,
 }
 
 /// Estimate the size of a JSON value in bytes
@@ -692,6 +762,10 @@ pub struct PendingResolverEntry {
     pub input: Value,
     pub targets: Vec<ResolverTarget>,
     pub queued_at: i64,
+    pub next_retry_at: Instant,
+    pub retry_count: u32,
+    pub queued: bool,
+    pub in_flight: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -730,6 +804,10 @@ impl PendingResolverEntry {
         } else {
             self.targets.push(target);
         }
+    }
+
+    fn ready_to_queue(&self) -> bool {
+        !self.queued && !self.in_flight && Instant::now() >= self.next_retry_at
     }
 }
 
@@ -1144,7 +1222,14 @@ impl VmContext {
     }
 
     pub fn take_resolver_requests(&mut self) -> Vec<ResolverRequest> {
-        self.resolver_requests.drain(..).collect()
+        let requests: Vec<ResolverRequest> = self.resolver_requests.drain(..).collect();
+        for request in &requests {
+            if let Some(entry) = self.resolver_pending.get_mut(&request.cache_key) {
+                entry.queued = false;
+                entry.in_flight = true;
+            }
+        }
+        requests
     }
 
     pub fn take_scheduled_callbacks(&mut self) -> Vec<(u64, ScheduledCallback)> {
@@ -1173,16 +1258,30 @@ impl VmContext {
             return;
         }
 
+        for request in &requests {
+            if let Some(entry) = self.resolver_pending.get_mut(&request.cache_key) {
+                entry.in_flight = false;
+                entry.queued = true;
+                entry.next_retry_at = Instant::now();
+            }
+        }
+
         self.resolver_requests.extend(requests);
     }
 
-    pub(crate) fn get_cached_resolver_value(&mut self, cache_key: &str) -> Option<Value> {
+    pub(crate) fn get_cached_resolver_value(
+        &mut self,
+        cache_key: &str,
+    ) -> Option<CachedResolverValue> {
         let cached = self.resolver_cache.get(cache_key).cloned();
 
         match cached {
-            Some(entry) if entry.cached_at.elapsed() <= resolver_cache_ttl() => {
+            Some(entry) if entry.cached_at.elapsed() <= entry.ttl => {
                 self.resolver_cache_hits += 1;
-                Some(entry.value)
+                Some(match entry.value {
+                    ResolverCacheValue::Resolved(value) => CachedResolverValue::Resolved(value),
+                    ResolverCacheValue::Negative => CachedResolverValue::Negative,
+                })
             }
             Some(_) => {
                 self.resolver_cache.pop(cache_key);
@@ -1205,10 +1304,62 @@ impl VmContext {
         self.resolver_cache.put(
             resolver_cache_key(resolver, input),
             ResolverCacheEntry {
-                value: resolved_value.clone(),
+                value: ResolverCacheValue::Resolved(resolved_value.clone()),
                 cached_at: Instant::now(),
+                ttl: resolver_cache_ttl(),
             },
         );
+    }
+
+    pub(crate) fn cache_negative_resolver_value(&mut self, resolver: &ResolverType, input: &Value) {
+        self.resolver_cache.put(
+            resolver_cache_key(resolver, input),
+            ResolverCacheEntry {
+                value: ResolverCacheValue::Negative,
+                cached_at: Instant::now(),
+                ttl: negative_resolver_cache_ttl(),
+            },
+        );
+    }
+
+    pub(crate) fn schedule_resolver_retry(&mut self, cache_key: &str) -> bool {
+        if let Some(entry) = self.resolver_pending.get_mut(cache_key) {
+            entry.retry_count = entry.retry_count.saturating_add(1);
+            entry.next_retry_at = Instant::now() + resolver_retry_backoff();
+            entry.in_flight = false;
+            entry.queued = false;
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn handle_token_resolver_miss(
+        &mut self,
+        cache_key: &str,
+    ) -> TokenResolverMissAction {
+        let should_retry = self
+            .resolver_pending
+            .get(cache_key)
+            .map(|entry| entry.retry_count < resolver_max_retries())
+            .unwrap_or(false);
+
+        if should_retry && self.schedule_resolver_retry(cache_key) {
+            return TokenResolverMissAction::RetryScheduled;
+        }
+
+        if let Some(entry) = self.drop_pending_resolver_entry(cache_key) {
+            self.cache_negative_resolver_value(&entry.resolver, &entry.input);
+            return TokenResolverMissAction::NegativeCached;
+        }
+
+        TokenResolverMissAction::Dropped
+    }
+
+    pub(crate) fn drop_pending_resolver_entry(
+        &mut self,
+        cache_key: &str,
+    ) -> Option<PendingResolverEntry> {
+        self.resolver_pending.remove(cache_key)
     }
 
     pub fn apply_resolver_result(
@@ -1323,6 +1474,14 @@ impl VmContext {
 
         if let Some(entry) = self.resolver_pending.get_mut(&cache_key) {
             entry.add_target(target);
+            if entry.ready_to_queue() {
+                entry.queued = true;
+                self.resolver_requests.push_back(ResolverRequest {
+                    cache_key,
+                    resolver,
+                    input,
+                });
+            }
             return;
         }
 
@@ -1338,6 +1497,10 @@ impl VmContext {
                 input: input.clone(),
                 targets: vec![target],
                 queued_at,
+                next_retry_at: Instant::now(),
+                retry_count: 0,
+                queued: true,
+                in_flight: false,
             },
         );
 
@@ -3277,28 +3440,32 @@ impl VmContext {
 
                         let cache_key = resolver_cache_key(resolver, &input);
 
-                        if let Some(cached) = self.get_cached_resolver_value(&cache_key) {
-                            Self::apply_resolver_extractions_to_value(
-                                &mut self.registers[*state],
-                                &cached,
-                                extracts,
-                                &mut dirty_tracker,
-                                &should_emit,
-                            )?;
-                        } else {
-                            let target = ResolverTarget {
-                                state_id: actual_state_id,
-                                entity_name: entity_name.clone(),
-                                primary_key: self.registers[*key].clone(),
-                                extracts: extracts.clone(),
-                            };
+                        match self.get_cached_resolver_value(&cache_key) {
+                            Some(CachedResolverValue::Resolved(cached)) => {
+                                Self::apply_resolver_extractions_to_value(
+                                    &mut self.registers[*state],
+                                    &cached,
+                                    extracts,
+                                    &mut dirty_tracker,
+                                    &should_emit,
+                                )?;
+                            }
+                            Some(CachedResolverValue::Negative) => {}
+                            None => {
+                                let target = ResolverTarget {
+                                    state_id: actual_state_id,
+                                    entity_name: entity_name.clone(),
+                                    primary_key: self.registers[*key].clone(),
+                                    extracts: extracts.clone(),
+                                };
 
-                            self.enqueue_resolver_request(
-                                cache_key,
-                                resolver.clone(),
-                                input,
-                                target,
-                            );
+                                self.enqueue_resolver_request(
+                                    cache_key,
+                                    resolver.clone(),
+                                    input,
+                                    target,
+                                );
+                            }
                         }
                     }
 
@@ -5501,13 +5668,56 @@ mod tests {
         vm.resolver_cache.put(
             cache_key.clone(),
             ResolverCacheEntry {
-                value: json!({ "name": "Token" }),
+                value: ResolverCacheValue::Resolved(json!({ "name": "Token" })),
                 cached_at: Instant::now() - resolver_cache_ttl() - Duration::from_secs(1),
+                ttl: resolver_cache_ttl(),
             },
         );
 
         assert!(vm.get_cached_resolver_value(&cache_key).is_none());
         assert!(vm.resolver_cache.get(&cache_key).is_none());
+    }
+
+    #[test]
+    fn test_in_flight_resolver_request_collects_targets_without_requeueing() {
+        let mut vm = VmContext::new();
+        let resolver = ResolverType::Token;
+        let input = json!("mint_123");
+
+        vm.enqueue_resolver_request(
+            "ignored".to_string(),
+            resolver.clone(),
+            input.clone(),
+            ResolverTarget {
+                state_id: 0,
+                entity_name: "TestEntity".to_string(),
+                primary_key: json!("entity_1"),
+                extracts: vec![],
+            },
+        );
+
+        let first_batch = vm.take_resolver_requests();
+        assert_eq!(first_batch.len(), 1);
+
+        let cache_key = resolver_cache_key(&resolver, &input);
+        assert!(vm.resolver_pending.get(&cache_key).unwrap().in_flight);
+
+        vm.enqueue_resolver_request(
+            "ignored-again".to_string(),
+            resolver,
+            input,
+            ResolverTarget {
+                state_id: 0,
+                entity_name: "TestEntity".to_string(),
+                primary_key: json!("entity_2"),
+                extracts: vec![],
+            },
+        );
+
+        assert!(vm.take_resolver_requests().is_empty());
+        let pending = vm.resolver_pending.get(&cache_key).unwrap();
+        assert!(pending.in_flight);
+        assert_eq!(pending.targets.len(), 2);
     }
 
     #[test]

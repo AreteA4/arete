@@ -616,6 +616,14 @@
               "docs": []
             },
             {
+              "name": "board",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
               "name": "miner",
               "writable": true,
               "signer": false,
@@ -629,6 +637,14 @@
               "signer": false,
               "optional": false,
               "address": "11111111111111111111111111111111",
+              "docs": []
+            },
+            {
+              "name": "oreProgram",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
               "docs": []
             }
           ],
@@ -648,6 +664,14 @@
               "name": "signer",
               "writable": true,
               "signer": true,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "board",
+              "writable": true,
+              "signer": false,
               "optional": false,
               "address": null,
               "docs": []
@@ -714,6 +738,14 @@
               "signer": false,
               "optional": false,
               "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+              "docs": []
+            },
+            {
+              "name": "oreProgram",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
               "docs": []
             }
           ],
@@ -866,22 +898,6 @@
               "signer": false,
               "optional": false,
               "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-              "docs": []
-            },
-            {
-              "name": "entropyVar",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "entropyProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
               "docs": []
             }
           ],
@@ -1665,7 +1681,40 @@
           "docs": [
             "Reloads SOL into the automation account."
           ],
-          "accounts": [],
+          "accounts": [
+            {
+              "name": "signer",
+              "writable": true,
+              "signer": true,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "automation",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "miner",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "systemProgram",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": "11111111111111111111111111111111",
+              "docs": []
+            }
+          ],
           "args": []
         },
         {
@@ -4240,6 +4289,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -4251,62 +4309,9 @@
               ]
             }
           }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
         }
       ],
       "instruction_hooks": [
-        {
-          "instruction_type": "ore::DeployIxState",
-          "actions": [
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            },
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            }
-          ],
-          "lookup_by": null
-        },
         {
           "instruction_type": "ore::ResetIxState",
           "actions": [
@@ -5221,7 +5226,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "bda084f50f8854df24c0563c80136a3392d32da85d0f373225c50da6a9770172",
+      "content_hash": "19878988154c1337bf635e15e4b90ce0a04971d337855e5c598030d96a0f9a7f",
       "views": [
         {
           "id": "OreRound/latest",
@@ -5712,6 +5717,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -5721,15 +5735,6 @@
                   9
                 ]
               ]
-            }
-          }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
             }
           }
         }
@@ -5832,7 +5837,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "8b61718f12587815d1612d502f629bac7a0b329b1a5bf7823d8e560baec1ecfa",
+      "content_hash": "8af49fe56b1ba1bf13ae05421f2f43e557a01c9695a5bbf5ec3cc0ecb3998817",
       "views": []
     },
     {
@@ -7160,6 +7165,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -7171,22 +7185,13 @@
               ]
             }
           }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
         }
       ],
       "instruction_hooks": [],
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "3baa6071649b1f3eecb57301df88da9a77b3357de91abf7f3d98798fbc926c1f",
+      "content_hash": "c97234a54cfec692c7df03c9889a34ff7c3a1fbc1748b809e06822907ee77647",
       "views": []
     }
   ],
@@ -7393,6 +7398,15 @@
           "is_optional": false
         },
         {
+          "name": "board",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
           "name": "miner",
           "is_signer": false,
           "is_writable": true,
@@ -7408,6 +7422,16 @@
           "resolution": {
             "category": "known",
             "address": "11111111111111111111111111111111"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "oreProgram",
+          "is_signer": false,
+          "is_writable": false,
+          "resolution": {
+            "category": "known",
+            "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
           },
           "is_optional": false
         }
@@ -7443,6 +7467,15 @@
           "is_writable": true,
           "resolution": {
             "category": "signer"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "board",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
           },
           "is_optional": false
         },
@@ -7519,6 +7552,16 @@
           "resolution": {
             "category": "known",
             "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "oreProgram",
+          "is_signer": false,
+          "is_writable": false,
+          "resolution": {
+            "category": "known",
+            "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
           },
           "is_optional": false
         }
@@ -7711,25 +7754,6 @@
           "resolution": {
             "category": "known",
             "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "entropyVar",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "entropyProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
           },
           "is_optional": false
         }
@@ -8753,7 +8777,45 @@
         21
       ],
       "discriminator_size": 1,
-      "accounts": [],
+      "accounts": [
+        {
+          "name": "signer",
+          "is_signer": true,
+          "is_writable": true,
+          "resolution": {
+            "category": "signer"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "automation",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "miner",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "systemProgram",
+          "is_signer": false,
+          "is_writable": false,
+          "resolution": {
+            "category": "known",
+            "address": "11111111111111111111111111111111"
+          },
+          "is_optional": false
+        }
+      ],
       "args": [],
       "errors": [
         {
@@ -9126,5 +9188,5 @@
       ]
     }
   ],
-  "content_hash": "d4f5cd3bb0d5528a463d9ddbd1839926344eac8e6ce6519bbec71ecbecdfadd9"
+  "content_hash": "a8bc522847ad19b3a0c70a695dbdf9392f39d6c6ee0b785ffcae0da28e0e0ca5"
 }

@@ -35,19 +35,26 @@ fn generate_account_parser(idl: &IdlSpec, program_id: &str) -> TokenStream {
     let program_name = idl.get_name();
     let state_enum_name = format_ident!("{}State", to_pascal_case(program_name));
 
+    let mut sorted_accounts: Vec<&IdlAccount> = idl.accounts.iter().collect();
+    sorted_accounts.sort_by(|a, b| {
+        b.get_discriminator()
+            .len()
+            .cmp(&a.get_discriminator().len())
+    });
+
     let state_enum_variants = idl.accounts.iter().map(|acc| {
         let variant_name = format_ident!("{}", acc.name);
         quote! { #variant_name(accounts::#variant_name) }
     });
 
-    let unpack_arms = idl.accounts.iter().map(|acc| {
+    let unpack_checks = sorted_accounts.iter().map(|acc| {
         let variant_name = format_ident!("{}", acc.name);
 
         quote! {
-            d if d == accounts::#variant_name::DISCRIMINATOR => {
-                Ok(#state_enum_name::#variant_name(
+            if data.starts_with(accounts::#variant_name::DISCRIMINATOR) {
+                return Ok(#state_enum_name::#variant_name(
                     accounts::#variant_name::try_from_bytes(data)?
-                ))
+                ));
             }
         }
     });
@@ -108,15 +115,14 @@ fn generate_account_parser(idl: &IdlSpec, program_id: &str) -> TokenStream {
 
         impl #state_enum_name {
             pub fn try_unpack(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-                if data.len() < 8 {
+                if data.is_empty() {
                     return Err("Data too short for discriminator".into());
                 }
 
-                let discriminator = &data[0..8];
-                match discriminator {
-                    #(#unpack_arms),*
-                    _ => Err(format!("Unknown discriminator: {:?}", discriminator).into())
-                }
+                #(#unpack_checks)*
+
+                let disc_preview: Vec<u8> = data.iter().take(8).copied().collect();
+                Err(format!("Unknown discriminator: {:?}", disc_preview).into())
             }
 
             pub fn to_json(&self) -> arete::runtime::serde_json::Value {
@@ -541,5 +547,57 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
                 program_id()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_parser_uses_variable_length_discriminators() {
+        let json = r#"{
+            "name": "steelish",
+            "instructions": [],
+            "accounts": [
+                {
+                    "name": "Counter",
+                    "discriminator": [7]
+                }
+            ],
+            "types": [
+                {
+                    "name": "Counter",
+                    "type": {
+                        "kind": "struct",
+                        "fields": [
+                            { "name": "value", "type": "u64" }
+                        ]
+                    }
+                }
+            ],
+            "events": [],
+            "errors": []
+        }"#;
+
+        let idl = parse_idl_content(json).expect("test IDL should parse");
+        let code = generate_named_parsers(
+            &idl,
+            "11111111111111111111111111111111",
+            "generated_sdk",
+            "parsers",
+        )
+        .to_string();
+
+        assert!(
+            code.contains("starts_with"),
+            "account parser should use slice prefix matching, got: {}",
+            code
+        );
+        assert!(
+            !code.contains("let discriminator = & data [0 .. 8]"),
+            "account parser should not hard-code 8-byte discriminator slices, got: {}",
+            code
+        );
     }
 }

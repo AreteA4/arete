@@ -1,6 +1,8 @@
 //! IDL parsing utilities
 
-use crate::types::IdlSpec;
+use crate::types::*;
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -12,7 +14,432 @@ pub fn parse_idl_file<P: AsRef<Path>>(path: P) -> Result<IdlSpec, String> {
 }
 
 pub fn parse_idl_content(content: &str) -> Result<IdlSpec, String> {
-    serde_json::from_str(content).map_err(|e| format!("Failed to parse IDL JSON: {}", e))
+    match serde_json::from_str(content) {
+        Ok(idl) => Ok(idl),
+        Err(parse_error) => {
+            let codama_root: CodamaRoot = serde_json::from_str(content).map_err(|codama_error| {
+                format!(
+                    "Failed to parse IDL JSON as neither IdlSpec nor Codama root. \
+                     IdlSpec error: {}. Codama error: {}",
+                    parse_error, codama_error
+                )
+            })?;
+            codama_root_to_idl_spec(&codama_root)
+        }
+    }
+}
+
+fn codama_root_to_idl_spec(root: &CodamaRoot) -> Result<IdlSpec, String> {
+    if root.kind != "rootNode" {
+        return Err(format!(
+            "unsupported Codama root kind '{}': expected rootNode",
+            root.kind
+        ));
+    }
+
+    let account_discriminators = root
+        .program
+        .defined_types
+        .iter()
+        .find(|defined_type| defined_type.name == "accountDiscriminator")
+        .map(codama_account_discriminators)
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(IdlSpec {
+        version: root.program.version.clone(),
+        name: Some(root.program.name.clone()),
+        address: Some(root.program.public_key.clone()),
+        instructions: root
+            .program
+            .instructions
+            .iter()
+            .map(codama_instruction_to_idl)
+            .collect::<Result<Vec<_>, _>>()?,
+        accounts: root
+            .program
+            .accounts
+            .iter()
+            .map(|account| codama_account_to_idl(account, &account_discriminators))
+            .collect::<Result<Vec<_>, _>>()?,
+        types: root
+            .program
+            .defined_types
+            .iter()
+            .map(codama_defined_type_to_idl)
+            .collect::<Result<Vec<_>, _>>()?,
+        events: Vec::new(),
+        errors: root
+            .program
+            .errors
+            .iter()
+            .map(|error| IdlError {
+                code: error.code,
+                name: error.name.clone(),
+                msg: Some(error.message.clone()),
+            })
+            .collect(),
+        constants: Vec::new(),
+        metadata: Some(IdlMetadata {
+            name: Some(root.program.name.clone()),
+            version: root.program.version.clone(),
+            address: Some(root.program.public_key.clone()),
+            spec: Some("codama".to_string()),
+            description: None,
+            origin: Some("codama-rootNode".to_string()),
+        }),
+    })
+}
+
+fn codama_account_discriminators(
+    defined_type: &CodamaDefinedType,
+) -> Result<HashMap<String, u8>, String> {
+    let CodamaTypeNode::Enum { variants } = &defined_type.type_ else {
+        return Err(format!(
+            "Codama accountDiscriminator must be an enum, got {:?}",
+            defined_type.type_
+        ));
+    };
+
+    variants
+        .iter()
+        .map(|variant| {
+            let discriminator = variant.discriminator.ok_or_else(|| {
+                format!(
+                    "Codama accountDiscriminator variant '{}' is missing a discriminator",
+                    variant.name
+                )
+            })?;
+            let discriminator = u8::try_from(discriminator).map_err(|_| {
+                format!(
+                    "Codama accountDiscriminator variant '{}' uses unsupported discriminator {}",
+                    variant.name, discriminator
+                )
+            })?;
+            Ok((variant.name.clone(), discriminator))
+        })
+        .collect()
+}
+
+fn codama_account_to_idl(
+    account: &CodamaAccount,
+    discriminators: &HashMap<String, u8>,
+) -> Result<IdlAccount, String> {
+    let discriminator = match discriminators.get(&account.name).copied() {
+        Some(value) => vec![value],
+        None if !discriminators.is_empty() => {
+            return Err(format!(
+                "Codama account '{}' has no entry in accountDiscriminator; \
+                 add a variant or remove the account from the IDL",
+                account.name
+            ));
+        }
+        None => Vec::new(),
+    };
+
+    Ok(IdlAccount {
+        name: account.name.clone(),
+        discriminator,
+        docs: Vec::new(),
+        type_def: Some(codama_type_def_kind_to_idl(&account.data)?),
+    })
+}
+
+fn codama_defined_type_to_idl(defined_type: &CodamaDefinedType) -> Result<IdlTypeDef, String> {
+    Ok(IdlTypeDef {
+        name: defined_type.name.clone(),
+        docs: Vec::new(),
+        serialization: None,
+        repr: None,
+        type_def: codama_type_def_kind_to_idl(&defined_type.type_)?,
+    })
+}
+
+fn codama_instruction_to_idl(instruction: &CodamaInstruction) -> Result<IdlInstruction, String> {
+    let discriminant = instruction
+        .arguments
+        .iter()
+        .find(|argument| argument.name == "discriminator")
+        .map(|argument| match &argument.default_value {
+            Some(CodamaValueNode::Number { number }) => Ok(SteelDiscriminant {
+                type_: argument.number_format().unwrap_or("u8").to_string(),
+                value: *number,
+            }),
+            _ => Err(format!(
+                "Codama instruction '{}' has a 'discriminator' argument without a numeric \
+                 default_value; cannot determine its Steel discriminant",
+                instruction.name
+            )),
+        })
+        .transpose()?;
+
+    Ok(IdlInstruction {
+        name: instruction.name.clone(),
+        discriminator: Vec::new(),
+        discriminant,
+        docs: Vec::new(),
+        accounts: instruction
+            .accounts
+            .iter()
+            .map(|account| IdlAccountArg {
+                name: account.name.clone(),
+                is_mut: account.is_writable,
+                is_signer: account.is_signer,
+                address: account.default_public_key(),
+                optional: false,
+                docs: account.docs.clone(),
+                pda: None,
+            })
+            .collect(),
+        args: instruction
+            .arguments
+            .iter()
+            .filter(|argument| argument.name != "discriminator")
+            .map(codama_field_to_idl)
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn codama_type_def_kind_to_idl(type_node: &CodamaTypeNode) -> Result<IdlTypeDefKind, String> {
+    match type_node {
+        CodamaTypeNode::Struct { fields } => Ok(IdlTypeDefKind::Struct {
+            kind: "struct".to_string(),
+            fields: fields
+                .iter()
+                .map(codama_field_to_idl)
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        CodamaTypeNode::Enum { variants } => {
+            if let Some(variant) = variants.iter().find(|variant| !variant.fields.is_empty()) {
+                return Err(format!(
+                    "Codama enum variant '{}' carries fields, which are not supported by arete-idl enums",
+                    variant.name
+                ));
+            }
+
+            Ok(IdlTypeDefKind::Enum {
+                kind: "enum".to_string(),
+                variants: variants
+                    .iter()
+                    .map(|variant| IdlEnumVariant {
+                        name: variant.name.clone(),
+                    })
+                    .collect(),
+            })
+        }
+        other => Err(format!(
+            "Codama type node {:?} is not a type definition",
+            other
+        )),
+    }
+}
+
+fn codama_field_to_idl(field: &CodamaFieldNode) -> Result<IdlField, String> {
+    Ok(IdlField {
+        name: field.name.clone(),
+        type_: codama_type_to_idl(&field.type_)?,
+    })
+}
+
+fn codama_type_to_idl(type_node: &CodamaTypeNode) -> Result<IdlType, String> {
+    match type_node {
+        CodamaTypeNode::Number { format } => Ok(IdlType::Simple(format.clone())),
+        CodamaTypeNode::PublicKey {} => Ok(IdlType::Simple("publicKey".to_string())),
+        CodamaTypeNode::String {} => Ok(IdlType::Simple("string".to_string())),
+        CodamaTypeNode::DefinedTypeLink { name } => Ok(IdlType::Defined(IdlTypeDefined {
+            defined: IdlTypeDefinedInner::Simple(name.clone()),
+        })),
+        CodamaTypeNode::Array { item, count } => {
+            let size = match count {
+                CodamaCountNode::Fixed { value } => *value,
+                CodamaCountNode::Unknown => {
+                    return Err(
+                        "unsupported Codama array count kind (only fixedCountNode is supported)"
+                            .to_string(),
+                    );
+                }
+            };
+            Ok(IdlType::Array(IdlTypeArray {
+                array: vec![
+                    IdlTypeArrayElement::Nested(codama_type_to_idl(item)?),
+                    IdlTypeArrayElement::Size(size),
+                ],
+            }))
+        }
+        CodamaTypeNode::FixedSize { size, type_ } => {
+            let element_type = match type_.as_ref() {
+                CodamaTypeNode::String {} => IdlType::Simple("u8".to_string()),
+                other => codama_type_to_idl(other)?,
+            };
+            Ok(IdlType::Array(IdlTypeArray {
+                array: vec![
+                    IdlTypeArrayElement::Nested(element_type),
+                    IdlTypeArrayElement::Size(*size),
+                ],
+            }))
+        }
+        CodamaTypeNode::Unknown => Err(
+            "unsupported Codama type node kind (not modelled by arete-idl)".to_string(),
+        ),
+        other => Err(format!("unsupported Codama field type {:?}", other)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CodamaRoot {
+    kind: String,
+    program: CodamaProgram,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodamaProgram {
+    name: String,
+    public_key: String,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    accounts: Vec<CodamaAccount>,
+    #[serde(default)]
+    defined_types: Vec<CodamaDefinedType>,
+    #[serde(default)]
+    errors: Vec<CodamaError>,
+    #[serde(default)]
+    instructions: Vec<CodamaInstruction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodamaAccount {
+    name: String,
+    data: CodamaTypeNode,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodamaDefinedType {
+    name: String,
+    #[serde(rename = "type")]
+    type_: CodamaTypeNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodamaInstruction {
+    name: String,
+    #[serde(default)]
+    accounts: Vec<CodamaInstructionAccount>,
+    #[serde(default)]
+    arguments: Vec<CodamaFieldNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodamaInstructionAccount {
+    name: String,
+    #[serde(default)]
+    is_signer: bool,
+    #[serde(default)]
+    is_writable: bool,
+    #[serde(default)]
+    docs: Vec<String>,
+    #[serde(default)]
+    default_value: Option<CodamaValueNode>,
+}
+
+impl CodamaInstructionAccount {
+    fn default_public_key(&self) -> Option<String> {
+        match &self.default_value {
+            Some(CodamaValueNode::PublicKey { public_key }) => Some(public_key.clone()),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodamaFieldNode {
+    name: String,
+    #[serde(rename = "type")]
+    type_: CodamaTypeNode,
+    #[serde(default)]
+    default_value: Option<CodamaValueNode>,
+}
+
+impl CodamaFieldNode {
+    fn number_format(&self) -> Option<&str> {
+        match &self.type_ {
+            CodamaTypeNode::Number { format } => Some(format.as_str()),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind")]
+enum CodamaTypeNode {
+    #[serde(rename = "numberTypeNode")]
+    Number { format: String },
+    #[serde(rename = "publicKeyTypeNode")]
+    PublicKey {},
+    #[serde(rename = "stringTypeNode")]
+    String {},
+    #[serde(rename = "definedTypeLinkNode")]
+    DefinedTypeLink { name: String },
+    #[serde(rename = "arrayTypeNode")]
+    Array {
+        item: Box<CodamaTypeNode>,
+        count: CodamaCountNode,
+    },
+    #[serde(rename = "fixedSizeTypeNode")]
+    FixedSize {
+        size: u32,
+        #[serde(rename = "type")]
+        type_: Box<CodamaTypeNode>,
+    },
+    #[serde(rename = "structTypeNode")]
+    Struct { fields: Vec<CodamaFieldNode> },
+    #[serde(rename = "enumTypeNode")]
+    Enum { variants: Vec<CodamaEnumVariant> },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind")]
+enum CodamaCountNode {
+    #[serde(rename = "fixedCountNode")]
+    Fixed { value: u32 },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodamaEnumVariant {
+    name: String,
+    #[serde(default)]
+    discriminator: Option<u64>,
+    #[serde(default)]
+    fields: Vec<CodamaFieldNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind")]
+enum CodamaValueNode {
+    #[serde(rename = "numberValueNode")]
+    Number { number: u64 },
+    #[serde(rename = "publicKeyValueNode")]
+    PublicKey {
+        #[serde(rename = "publicKey")]
+        public_key: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodamaError {
+    code: u32,
+    name: String,
+    message: String,
 }
 
 #[cfg(test)]
@@ -263,5 +690,130 @@ mod tests {
         assert_eq!(idl.constants[0].value, "10000");
         assert_eq!(idl.constants[1].name, "MAX_BIN_PER_ARRAY");
         assert_eq!(idl.constants[1].value, "70");
+    }
+
+    #[test]
+    fn test_codama_root_node_parses() {
+        let json = r#"{
+            "kind": "rootNode",
+            "program": {
+                "kind": "programNode",
+                "name": "subscriptions",
+                "publicKey": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+                "version": "0.1.0",
+                "accounts": [
+                    {
+                        "kind": "accountNode",
+                        "name": "subscriptionAuthority",
+                        "data": {
+                            "kind": "structTypeNode",
+                            "fields": [
+                                {
+                                    "kind": "structFieldTypeNode",
+                                    "name": "owner",
+                                    "type": { "kind": "publicKeyTypeNode" }
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "definedTypes": [
+                    {
+                        "kind": "definedTypeNode",
+                        "name": "accountDiscriminator",
+                        "type": {
+                            "kind": "enumTypeNode",
+                            "variants": [
+                                {
+                                    "kind": "enumEmptyVariantTypeNode",
+                                    "name": "subscriptionAuthority",
+                                    "discriminator": 0
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "kind": "definedTypeNode",
+                        "name": "transferData",
+                        "type": {
+                            "kind": "structTypeNode",
+                            "fields": [
+                                {
+                                    "kind": "structFieldTypeNode",
+                                    "name": "amount",
+                                    "type": {
+                                        "kind": "numberTypeNode",
+                                        "format": "u64",
+                                        "endian": "le"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "errors": [
+                    {
+                        "kind": "errorNode",
+                        "code": 100,
+                        "name": "bad",
+                        "message": "Bad"
+                    }
+                ],
+                "instructions": [
+                    {
+                        "kind": "instructionNode",
+                        "name": "transfer",
+                        "accounts": [
+                            {
+                                "kind": "instructionAccountNode",
+                                "name": "owner",
+                                "isSigner": true,
+                                "isWritable": true
+                            }
+                        ],
+                        "arguments": [
+                            {
+                                "kind": "instructionArgumentNode",
+                                "name": "discriminator",
+                                "defaultValue": {
+                                    "kind": "numberValueNode",
+                                    "number": 4
+                                },
+                                "type": {
+                                    "kind": "numberTypeNode",
+                                    "format": "u8",
+                                    "endian": "le"
+                                }
+                            },
+                            {
+                                "kind": "instructionArgumentNode",
+                                "name": "transferData",
+                                "type": {
+                                    "kind": "definedTypeLinkNode",
+                                    "name": "transferData"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        }"#;
+
+        let idl = parse_idl_content(json).expect("Codama root-node IDL should parse");
+
+        assert_eq!(idl.get_name(), "subscriptions");
+        assert_eq!(
+            idl.address.as_deref(),
+            Some("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44")
+        );
+        assert_eq!(idl.instructions.len(), 1);
+        assert_eq!(idl.instructions[0].name, "transfer");
+        assert_eq!(idl.instructions[0].get_discriminator(), vec![4]);
+        assert_eq!(idl.instructions[0].args.len(), 1);
+        assert_eq!(idl.accounts.len(), 1);
+        assert_eq!(idl.accounts[0].name, "subscriptionAuthority");
+        assert_eq!(idl.accounts[0].get_discriminator(), vec![0]);
+        assert_eq!(idl.types.len(), 2);
+        assert_eq!(idl.errors.len(), 1);
     }
 }

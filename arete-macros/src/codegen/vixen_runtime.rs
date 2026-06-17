@@ -55,6 +55,7 @@ fn generate_slot_scheduler_task() -> TokenStream {
             let runtime_resolver = runtime_resolver.clone();
             let slot_tracker = slot_tracker.clone();
             let mutations_tx = mutations_tx.clone();
+            let async_resolver_order = async_resolver_order.clone();
 
             arete::runtime::tokio::spawn(async move {
                 arete::runtime::tracing::info!(
@@ -225,7 +226,16 @@ fn generate_slot_scheduler_task() -> TokenStream {
                             .await;
 
                             let url_mutations = runtime_resolver
-                                .resolve_and_apply(&vm, bytecode.as_ref(), requests)
+                                .resolve_and_apply(
+                                    &vm,
+                                    bytecode.as_ref(),
+                                    requests,
+                                    Some(arete::runtime::arete_interpreter::UpdateContext {
+                                        slot: Some(current_slot),
+                                        timestamp: Some(current_time_seconds()),
+                                        ..arete::runtime::arete_interpreter::UpdateContext::default()
+                                    }),
+                                )
                                 .await;
 
                             if url_mutations.is_empty() {
@@ -241,7 +251,10 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                     );
                                 }
                             } else {
-                                let slot_context = arete::runtime::arete_server::SlotContext::new(current_slot, 0);
+                                let slot_context = arete::runtime::arete_server::SlotContext::new(
+                                    current_slot,
+                                    next_async_resolver_slot_index(async_resolver_order.as_ref()),
+                                );
                                 let batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
                                     arete::runtime::smallvec::SmallVec::from_vec(url_mutations),
                                     slot_context,
@@ -314,11 +327,16 @@ fn generate_slot_subscription_task() -> TokenStream {
             let endpoint = endpoint.clone();
             let x_token = x_token.clone();
             let health_monitor = health_monitor.clone();
+            let reconnection_config = reconnection_config.clone();
 
             arete::runtime::tokio::spawn(async move {
                 arete::runtime::tracing::info!("[SLOT_SUB] Starting dedicated gRPC slot subscription");
 
+                let mut attempt = 0u32;
+                let mut backoff = reconnection_config.initial_delay;
+
                 loop {
+                    let stream_started_at = std::time::Instant::now();
                     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
                         use arete::runtime::yellowstone_grpc_proto::geyser::{
                             SubscribeRequest, SubscribeRequestFilterSlots, SubscribeRequestFilterAccounts,
@@ -335,6 +353,11 @@ fn generate_slot_subscription_task() -> TokenStream {
                             )
                             .connect_timeout(std::time::Duration::from_secs(30))
                             .timeout(std::time::Duration::from_secs(60));
+
+                        builder = apply_managed_keepalive(
+                            builder,
+                            reconnection_config.http2_keep_alive_interval,
+                        );
 
                         if endpoint.starts_with("https://") || endpoint.starts_with("grpcs://") {
                             builder = builder.tls_config(
@@ -426,28 +449,281 @@ fn generate_slot_subscription_task() -> TokenStream {
                                     }
                                 }
                                 Err(e) => {
-                                    arete::runtime::tracing::warn!(
-                                        error = %e,
-                                        "[SLOT_SUB] Stream error, will reconnect"
-                                    );
-                                    break;
+                                    return Err(Box::<dyn std::error::Error + Send + Sync>::from(e));
                                 }
                             }
                         }
 
-                        Ok(())
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "stream ended without an explicit gRPC error",
+                        )
+                        .into())
                     }.await;
 
-                    if let Err(e) = result {
-                        arete::runtime::tracing::warn!(
-                            error = %e,
-                            "[SLOT_SUB] Connection failed, reconnecting in 2s"
-                        );
+                    let stream_uptime = stream_started_at.elapsed();
+
+                    if stream_uptime >= RECONNECT_BACKOFF_RESET_AFTER {
+                        attempt = 0;
+                        backoff = reconnection_config.initial_delay;
                     }
 
-                    arete::runtime::tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    attempt = attempt.saturating_add(1);
+
+                    if let Some(max) = reconnection_config.max_attempts {
+                        if attempt >= max {
+                            arete::runtime::tracing::error!(
+                                attempt,
+                                max,
+                                uptime = ?stream_uptime,
+                                "[SLOT_SUB] Max reconnection attempts reached, giving up"
+                            );
+                            if let Some(ref health) = health_monitor {
+                                health
+                                    .record_error("[SLOT_SUB] Max reconnection attempts reached".into())
+                                    .await;
+                            }
+                            break;
+                        }
+                    }
+
+                    match result {
+                        Ok(()) => {
+                            arete::runtime::tracing::warn!(
+                                attempt,
+                                uptime = ?stream_uptime,
+                                reconnect_in = ?backoff,
+                                "[SLOT_SUB] Stream ended cleanly, reconnecting"
+                            );
+                        }
+                        Err(e) => {
+                            arete::runtime::tracing::warn!(
+                                attempt,
+                                uptime = ?stream_uptime,
+                                reconnect_in = ?backoff,
+                                error = %e,
+                                "[SLOT_SUB] Stream disconnected, reconnecting"
+                            );
+                        }
+                    }
+
+                    arete::runtime::tokio::time::sleep(backoff).await;
+                    backoff = reconnection_config.next_backoff(backoff);
                 }
             });
+        }
+    }
+}
+
+fn generate_managed_grpc_helpers() -> TokenStream {
+    quote! {
+        #[derive(Clone, Copy, Debug)]
+        struct ManagedYellowstoneGrpcSettings {
+            http2_keep_alive_interval: Option<std::time::Duration>,
+        }
+
+        static MANAGED_YELLOWSTONE_GRPC_SETTINGS: std::sync::OnceLock<ManagedYellowstoneGrpcSettings> =
+            std::sync::OnceLock::new();
+
+        const RECONNECT_BACKOFF_RESET_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+        const HTTP2_KEEPALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+        fn install_managed_yellowstone_grpc_settings(settings: ManagedYellowstoneGrpcSettings) {
+            let _ = MANAGED_YELLOWSTONE_GRPC_SETTINGS.set(settings);
+        }
+
+        fn managed_yellowstone_grpc_settings() -> ManagedYellowstoneGrpcSettings {
+            MANAGED_YELLOWSTONE_GRPC_SETTINGS
+                .get()
+                .copied()
+                .unwrap_or(ManagedYellowstoneGrpcSettings {
+                    http2_keep_alive_interval: None,
+                })
+        }
+
+        fn apply_managed_keepalive(
+            builder: arete::runtime::yellowstone_grpc_client::GeyserGrpcBuilder,
+            interval: Option<std::time::Duration>,
+        ) -> arete::runtime::yellowstone_grpc_client::GeyserGrpcBuilder {
+            if let Some(interval) = interval {
+                builder
+                    .http2_keep_alive_interval(interval)
+                    .keep_alive_timeout(HTTP2_KEEPALIVE_TIMEOUT)
+                    .keep_alive_while_idle(true)
+                    .tcp_keepalive(Some(interval))
+            } else {
+                builder
+            }
+        }
+
+        fn is_reconnectable_grpc_code(
+            code: arete::runtime::yellowstone_grpc_proto::tonic::Code,
+        ) -> bool {
+            matches!(
+                code,
+                arete::runtime::yellowstone_grpc_proto::tonic::Code::Cancelled
+                    | arete::runtime::yellowstone_grpc_proto::tonic::Code::DeadlineExceeded
+                    | arete::runtime::yellowstone_grpc_proto::tonic::Code::Internal
+                    | arete::runtime::yellowstone_grpc_proto::tonic::Code::Unavailable
+                    | arete::runtime::yellowstone_grpc_proto::tonic::Code::Unknown
+            )
+        }
+
+        fn is_reconnectable_vixen_error(
+            error: &arete::runtime::yellowstone_vixen::Error,
+        ) -> bool {
+            match error {
+                arete::runtime::yellowstone_vixen::Error::ServerHangup => true,
+                arete::runtime::yellowstone_vixen::Error::YellowstoneStatus(status) => {
+                    is_reconnectable_grpc_code(status.code())
+                }
+                _ => false,
+            }
+        }
+
+        #[derive(Debug)]
+        struct ManagedYellowstoneGrpcSource {
+            filters: arete::runtime::yellowstone_vixen_core::Filters,
+            config: arete::runtime::yellowstone_vixen_yellowstone_grpc_source::YellowstoneGrpcConfig,
+        }
+
+        impl arete::runtime::yellowstone_vixen::sources::SourceTrait for ManagedYellowstoneGrpcSource {
+            type Config = arete::runtime::yellowstone_vixen_yellowstone_grpc_source::YellowstoneGrpcConfig;
+
+            fn new(
+                config: Self::Config,
+                filters: arete::runtime::yellowstone_vixen_core::Filters,
+            ) -> Self {
+                Self { config, filters }
+            }
+
+            fn connect<'life0, 'async_trait>(
+                &'life0 self,
+                tx: arete::runtime::tokio::sync::mpsc::Sender<
+                    Result<
+                        arete::runtime::yellowstone_grpc_proto::geyser::SubscribeUpdate,
+                        arete::runtime::yellowstone_grpc_proto::tonic::Status,
+                    >,
+                >,
+                status_tx: arete::runtime::tokio::sync::oneshot::Sender<
+                    arete::runtime::yellowstone_vixen::sources::SourceExitStatus,
+                >,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<(), arete::runtime::yellowstone_vixen::Error>,
+                        > + Send
+                        + 'async_trait,
+                >,
+            >
+            where
+                Self: 'async_trait,
+                'life0: 'async_trait,
+            {
+                Box::pin(async move {
+                    use arete::runtime::futures::StreamExt;
+
+                    let filters = self.filters.clone();
+                    let config = self.config.clone();
+                    let timeout = std::time::Duration::from_secs(config.timeout);
+                    let settings = managed_yellowstone_grpc_settings();
+
+                    let mut builder = arete::runtime::yellowstone_grpc_client::GeyserGrpcClient
+                        ::build_from_shared(config.endpoint.clone())?
+                        .x_token(config.x_token.clone())?
+                        .max_decoding_message_size(
+                            config.max_decoding_message_size.unwrap_or(usize::MAX),
+                        )
+                        .accept_compressed(config.accept_compression.unwrap_or_default().into())
+                        .connect_timeout(timeout)
+                        .timeout(timeout);
+
+                    builder = apply_managed_keepalive(
+                        builder,
+                        settings.http2_keep_alive_interval,
+                    );
+
+                    if config.endpoint.starts_with("https://") || config.endpoint.starts_with("grpcs://") {
+                        builder = builder.tls_config(
+                            arete::runtime::yellowstone_grpc_proto::tonic::transport::ClientTlsConfig::new()
+                                .with_native_roots(),
+                        )?;
+                    }
+
+                    let mut client = builder.connect().await?;
+
+                    let mut subscribe_request: arete::runtime::yellowstone_grpc_proto::geyser::SubscribeRequest =
+                        filters.into();
+                    if let Some(from_slot) = config.from_slot {
+                        subscribe_request.from_slot = Some(from_slot);
+                    }
+                    if let Some(commitment_level) = config.commitment_level {
+                        subscribe_request.commitment = Some(commitment_level as i32);
+                    }
+
+                    arete::runtime::tracing::debug!(
+                        has_transactions = !subscribe_request.transactions.is_empty(),
+                        transaction_filters = ?subscribe_request.transactions.keys().collect::<Vec<_>>(),
+                        has_blocks_meta = !subscribe_request.blocks_meta.is_empty(),
+                        blocks_meta_filters = ?subscribe_request.blocks_meta.keys().collect::<Vec<_>>(),
+                        has_slots = !subscribe_request.slots.is_empty(),
+                        slots_filters = ?subscribe_request.slots.keys().collect::<Vec<_>>(),
+                        from_slot = ?subscribe_request.from_slot,
+                        commitment = ?subscribe_request.commitment,
+                        "Subscribing to gRPC stream"
+                    );
+
+                    let (_sub_tx, stream) = client
+                        .subscribe_with_request(Some(subscribe_request))
+                        .await?;
+                    let mut stream = std::pin::pin!(stream);
+
+                    arete::runtime::tracing::debug!("gRPC stream started");
+
+                    let exit_status = loop {
+                        match stream.next().await {
+                            Some(Ok(update)) => {
+                                if tx.send(Ok(update)).await.is_err() {
+                                    arete::runtime::tracing::info!(
+                                        "Receiver dropped, stopping source"
+                                    );
+                                    break arete::runtime::yellowstone_vixen::sources::SourceExitStatus::ReceiverDropped;
+                                }
+                            }
+                            Some(Err(status)) => {
+                                let code = status.code();
+                                let message = status.message().to_string();
+
+                                if is_reconnectable_grpc_code(code) {
+                                    arete::runtime::tracing::warn!(
+                                        code = ?code,
+                                        message = %message,
+                                        "Received reconnectable status from stream"
+                                    );
+                                    break arete::runtime::yellowstone_vixen::sources::SourceExitStatus::Completed;
+                                }
+
+                                arete::runtime::tracing::error!(
+                                    code = ?code,
+                                    message = %message,
+                                    "Received fatal status from stream"
+                                );
+                                let _ = tx.send(Err(status)).await;
+                                break arete::runtime::yellowstone_vixen::sources::SourceExitStatus::StreamError {
+                                    code,
+                                    message,
+                                };
+                            }
+                            None => {
+                                break arete::runtime::yellowstone_vixen::sources::SourceExitStatus::StreamEnded;
+                            }
+                        }
+                    };
+
+                    let _ = status_tx.send(exit_status);
+                    Ok(())
+                })
+            }
         }
     }
 }
@@ -666,6 +942,31 @@ pub fn generate_vm_handler(
         }
 
         const PROJECTOR_ENQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        const ASYNC_RESOLVER_SLOT_INDEX_BASE: u64 = 1_u64 << 63;
+
+        fn current_time_seconds() -> i64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64
+        }
+
+        fn async_resolver_max_concurrency() -> usize {
+            static MAX_CONCURRENCY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            *MAX_CONCURRENCY.get_or_init(|| {
+                std::env::var("ARETE_ASYNC_RESOLVER_MAX_CONCURRENCY")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(16)
+            })
+        }
+
+        fn next_async_resolver_slot_index(counter: &std::sync::atomic::AtomicU64) -> u64 {
+            ASYNC_RESOLVER_SLOT_INDEX_BASE
+                | (counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    & (ASYNC_RESOLVER_SLOT_INDEX_BASE - 1))
+        }
 
         async fn reserve_projector_batch_slot(
             mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
@@ -700,6 +1001,7 @@ pub fn generate_vm_handler(
             slot_tracker: arete::runtime::arete_server::SlotTracker,
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
+            resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
         }
 
         impl std::fmt::Debug for VmHandler {
@@ -720,6 +1022,7 @@ pub fn generate_vm_handler(
                 slot_tracker: arete::runtime::arete_server::SlotTracker,
                 runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
                 slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
+                resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
             ) -> Self {
                 Self {
                     vm,
@@ -729,6 +1032,7 @@ pub fn generate_vm_handler(
                     slot_tracker,
                     runtime_resolver,
                     slot_scheduler,
+                    resolver_apply_semaphore,
                 }
             }
 
@@ -757,9 +1061,27 @@ pub fn generate_vm_handler(
             async fn resolve_and_apply_resolvers(
                 &self,
                 requests: Vec<arete::runtime::arete_interpreter::vm::ResolverRequest>,
+                apply_context: Option<arete::runtime::arete_interpreter::UpdateContext>,
             ) -> Vec<arete::runtime::arete_interpreter::Mutation> {
+                if requests.is_empty() {
+                    return Vec::new();
+                }
+
+                let _resolver_permit = match self
+                    .resolver_apply_semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        arete::runtime::tracing::warn!(error = %error, "Resolver semaphore closed");
+                        return Vec::new();
+                    }
+                };
+
                 self.runtime_resolver
-                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests)
+                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests, apply_context)
                     .await
             }
 
@@ -934,7 +1256,15 @@ pub fn generate_vm_handler(
                 }
 
                 let resolver_mutations = if mutations_result.is_ok() {
-                    self.resolve_and_apply_resolvers(resolver_requests).await
+                    self.resolve_and_apply_resolvers(
+                        resolver_requests,
+                        Some(arete::runtime::arete_interpreter::UpdateContext::new_account(
+                            slot,
+                            signature.clone(),
+                            write_version,
+                        )),
+                    )
+                    .await
                 } else {
                     Vec::new()
                 };
@@ -942,7 +1272,7 @@ pub fn generate_vm_handler(
                 match mutations_result {
                     Ok(mut mutations) => {
                         // Combine primary mutations with resolver mutations into a single batch
-                        // to avoid duplicate frames for the same entity key
+                        // to avoid duplicate frames for the same entity key.
                         mutations.extend(resolver_mutations);
                         let event_context = arete::runtime::arete_server::EventContext {
                             program: #entity_name_lit.to_string(),
@@ -1170,7 +1500,15 @@ pub fn generate_vm_handler(
                 }
 
                 let resolver_mutations = if mutations_result.is_ok() {
-                    self.resolve_and_apply_resolvers(resolver_requests).await
+                    self.resolve_and_apply_resolvers(
+                        resolver_requests,
+                        Some(arete::runtime::arete_interpreter::UpdateContext::new_instruction(
+                            slot,
+                            signature.clone(),
+                            txn_index,
+                        )),
+                    )
+                    .await
                 } else {
                     Vec::new()
                 };
@@ -1178,7 +1516,7 @@ pub fn generate_vm_handler(
                 match mutations_result {
                     Ok(mut mutations) => {
                         // Combine primary mutations with resolver mutations into a single batch
-                        // to avoid duplicate frames for the same entity key
+                        // to avoid duplicate frames for the same entity key.
                         mutations.extend(resolver_mutations);
                         let event_context = arete::runtime::arete_server::EventContext {
                             program: #entity_name_lit.to_string(),
@@ -1253,10 +1591,13 @@ pub fn generate_spec_function(
         quote! {}
     };
 
+    let managed_grpc_helpers = generate_managed_grpc_helpers();
     let slot_scheduler_task = generate_slot_scheduler_task();
     let slot_subscription_task = generate_slot_subscription_task();
 
     quote! {
+        #managed_grpc_helpers
+
         pub fn spec() -> arete::runtime::arete_server::Spec {
             let bytecode = create_multi_entity_bytecode();
             let program_id = parsers::PROGRAM_ID_STR.to_string();
@@ -1283,7 +1624,6 @@ pub fn generate_spec_function(
         ) -> arete::runtime::anyhow::Result<()> {
             use arete::runtime::yellowstone_vixen::config::{BufferConfig, VixenConfig};
             use arete::runtime::yellowstone_vixen_yellowstone_grpc_source::YellowstoneGrpcConfig;
-            use arete::runtime::yellowstone_vixen_yellowstone_grpc_source::YellowstoneGrpcSource;
             use arete::runtime::yellowstone_vixen::Pipeline;
             use std::sync::{Arc, Mutex};
 
@@ -1311,11 +1651,19 @@ pub fn generate_spec_function(
                             err
                         )
                     })?;
+            let resolver_apply_semaphore = Arc::new(
+                arete::runtime::tokio::sync::Semaphore::new(async_resolver_max_concurrency()),
+            );
+            let async_resolver_order = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
             let slot_tracker = arete::runtime::arete_server::SlotTracker::new();
             let slot_scheduler = Arc::new(Mutex::new(arete::runtime::arete_interpreter::scheduler::SlotScheduler::new()));
             let mut attempt = 0u32;
             let mut backoff = reconnection_config.initial_delay;
+
+            install_managed_yellowstone_grpc_settings(ManagedYellowstoneGrpcSettings {
+                http2_keep_alive_interval: reconnection_config.http2_keep_alive_interval,
+            });
 
             let bytecode = create_multi_entity_bytecode();
 
@@ -1361,6 +1709,7 @@ pub fn generate_spec_function(
                     slot_tracker.clone(),
                     runtime_resolver.clone(),
                     slot_scheduler.clone(),
+                    resolver_apply_semaphore.clone(),
                 );
 
                 let account_parser = parsers::AccountParser;
@@ -1383,18 +1732,39 @@ pub fn generate_spec_function(
                     health.record_connection().await;
                 }
 
-                let result = arete::runtime::yellowstone_vixen::Runtime::<YellowstoneGrpcSource>::builder()
+                let started_at = std::time::Instant::now();
+
+                let result = arete::runtime::yellowstone_vixen::Runtime::<ManagedYellowstoneGrpcSource>::builder()
                     .account(account_pipeline)
                     .instruction(instruction_pipeline)
                     .build(vixen_config)
                     .try_run_async()
                     .await;
 
-                if let Err(e) = result {
-                    arete::runtime::tracing::error!("Vixen runtime error: {:?}", e);
+                let runtime_uptime = started_at.elapsed();
+
+                if runtime_uptime >= RECONNECT_BACKOFF_RESET_AFTER {
+                    attempt = 0;
+                    backoff = reconnection_config.initial_delay;
                 }
 
-                attempt += 1;
+                if let Err(ref e) = result {
+                    if is_reconnectable_vixen_error(e.as_ref()) {
+                        arete::runtime::tracing::warn!(
+                            uptime = ?runtime_uptime,
+                            error = ?e,
+                            "Vixen runtime disconnected with a reconnectable gRPC error"
+                        );
+                    } else {
+                        arete::runtime::tracing::error!(
+                            uptime = ?runtime_uptime,
+                            error = ?e,
+                            "Vixen runtime error"
+                        );
+                    }
+                }
+
+                attempt = attempt.saturating_add(1);
 
                 if let Some(max) = reconnection_config.max_attempts {
                     if attempt >= max {
@@ -1407,6 +1777,7 @@ pub fn generate_spec_function(
                 }
 
                 arete::runtime::tracing::warn!(
+                    uptime = ?runtime_uptime,
                     "gRPC stream disconnected. Reconnecting in {:?} (attempt {})",
                     backoff,
                     attempt
@@ -1626,6 +1997,31 @@ pub fn generate_vm_handler_struct() -> TokenStream {
         }
 
         const PROJECTOR_ENQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        const ASYNC_RESOLVER_SLOT_INDEX_BASE: u64 = 1_u64 << 63;
+
+        fn current_time_seconds() -> i64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64
+        }
+
+        fn async_resolver_max_concurrency() -> usize {
+            static MAX_CONCURRENCY: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            *MAX_CONCURRENCY.get_or_init(|| {
+                std::env::var("ARETE_ASYNC_RESOLVER_MAX_CONCURRENCY")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(16)
+            })
+        }
+
+        fn next_async_resolver_slot_index(counter: &std::sync::atomic::AtomicU64) -> u64 {
+            ASYNC_RESOLVER_SLOT_INDEX_BASE
+                | (counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    & (ASYNC_RESOLVER_SLOT_INDEX_BASE - 1))
+        }
 
         async fn reserve_projector_batch_slot(
             mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
@@ -1660,6 +2056,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             slot_tracker: arete::runtime::arete_server::SlotTracker,
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
+            resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
         }
 
         impl std::fmt::Debug for VmHandler {
@@ -1680,6 +2077,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 slot_tracker: arete::runtime::arete_server::SlotTracker,
                 runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
                 slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
+                resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
             ) -> Self {
                 Self {
                     vm,
@@ -1689,6 +2087,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                     slot_tracker,
                     runtime_resolver,
                     slot_scheduler,
+                    resolver_apply_semaphore,
                 }
             }
 
@@ -1717,9 +2116,27 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             async fn resolve_and_apply_resolvers(
                 &self,
                 requests: Vec<arete::runtime::arete_interpreter::vm::ResolverRequest>,
+                apply_context: Option<arete::runtime::arete_interpreter::UpdateContext>,
             ) -> Vec<arete::runtime::arete_interpreter::Mutation> {
+                if requests.is_empty() {
+                    return Vec::new();
+                }
+
+                let _resolver_permit = match self
+                    .resolver_apply_semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        arete::runtime::tracing::warn!(error = %error, "Resolver semaphore closed");
+                        return Vec::new();
+                    }
+                };
+
                 self.runtime_resolver
-                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests)
+                    .resolve_and_apply(&self.vm, self.bytecode.as_ref(), requests, apply_context)
                     .await
             }
 
@@ -1893,7 +2310,15 @@ pub fn generate_account_handler_impl(
                 }
 
                 let resolver_mutations = if mutations_result.is_ok() {
-                    self.resolve_and_apply_resolvers(resolver_requests).await
+                    self.resolve_and_apply_resolvers(
+                        resolver_requests,
+                        Some(arete::runtime::arete_interpreter::UpdateContext::new_account(
+                            slot,
+                            signature.clone(),
+                            write_version,
+                        )),
+                    )
+                    .await
                 } else {
                     Vec::new()
                 };
@@ -1901,7 +2326,7 @@ pub fn generate_account_handler_impl(
                 match mutations_result {
                     Ok(mut mutations) => {
                         // Combine primary mutations with resolver mutations into a single batch
-                        // to avoid duplicate frames for the same entity key
+                        // to avoid duplicate frames for the same entity key.
                         mutations.extend(resolver_mutations);
                         let event_context = arete::runtime::arete_server::EventContext {
                             program: #program_name_lit.to_string(),
@@ -2131,7 +2556,15 @@ pub fn generate_instruction_handler_impl(
                 }
 
                 let resolver_mutations = if mutations_result.is_ok() {
-                    self.resolve_and_apply_resolvers(resolver_requests).await
+                    self.resolve_and_apply_resolvers(
+                        resolver_requests,
+                        Some(arete::runtime::arete_interpreter::UpdateContext::new_instruction(
+                            slot,
+                            signature.clone(),
+                            txn_index,
+                        )),
+                    )
+                    .await
                 } else {
                     Vec::new()
                 };
@@ -2139,7 +2572,7 @@ pub fn generate_instruction_handler_impl(
                 match mutations_result {
                     Ok(mut mutations) => {
                         // Combine primary mutations with resolver mutations into a single batch
-                        // to avoid duplicate frames for the same entity key
+                        // to avoid duplicate frames for the same entity key.
                         mutations.extend(resolver_mutations);
                         let event_context = arete::runtime::arete_server::EventContext {
                             program: #entity_name_lit.to_string(),
@@ -2270,10 +2703,13 @@ pub fn generate_multi_pipeline_spec_function(
         }
     }).collect();
 
+    let managed_grpc_helpers = generate_managed_grpc_helpers();
     let slot_scheduler_task = generate_slot_scheduler_task();
     let slot_subscription_task = generate_slot_subscription_task();
 
     quote! {
+        #managed_grpc_helpers
+
         pub fn spec() -> arete::runtime::arete_server::Spec {
             let bytecode = create_multi_entity_bytecode();
             let program_id = #primary_parser_mod::PROGRAM_ID_STR.to_string();
@@ -2300,7 +2736,6 @@ pub fn generate_multi_pipeline_spec_function(
         ) -> arete::runtime::anyhow::Result<()> {
             use arete::runtime::yellowstone_vixen::config::{BufferConfig, VixenConfig};
             use arete::runtime::yellowstone_vixen_yellowstone_grpc_source::YellowstoneGrpcConfig;
-            use arete::runtime::yellowstone_vixen_yellowstone_grpc_source::YellowstoneGrpcSource;
             use arete::runtime::yellowstone_vixen::Pipeline;
             use std::sync::{Arc, Mutex};
 
@@ -2327,11 +2762,19 @@ pub fn generate_multi_pipeline_spec_function(
                             err
                         )
                     })?;
+            let resolver_apply_semaphore = Arc::new(
+                arete::runtime::tokio::sync::Semaphore::new(async_resolver_max_concurrency()),
+            );
+            let async_resolver_order = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
             let slot_tracker = arete::runtime::arete_server::SlotTracker::new();
             let slot_scheduler = Arc::new(Mutex::new(arete::runtime::arete_interpreter::scheduler::SlotScheduler::new()));
             let mut attempt = 0u32;
             let mut backoff = reconnection_config.initial_delay;
+
+            install_managed_yellowstone_grpc_settings(ManagedYellowstoneGrpcSettings {
+                http2_keep_alive_interval: reconnection_config.http2_keep_alive_interval,
+            });
 
             let bytecode = create_multi_entity_bytecode();
 
@@ -2377,6 +2820,7 @@ pub fn generate_multi_pipeline_spec_function(
                     slot_tracker.clone(),
                     runtime_resolver.clone(),
                     slot_scheduler.clone(),
+                    resolver_apply_semaphore.clone(),
                 );
 
                 if attempt == 0 {
@@ -2395,17 +2839,38 @@ pub fn generate_multi_pipeline_spec_function(
                     health.record_connection().await;
                 }
 
-                let result = arete::runtime::yellowstone_vixen::Runtime::<YellowstoneGrpcSource>::builder()
+                let started_at = std::time::Instant::now();
+
+                let result = arete::runtime::yellowstone_vixen::Runtime::<ManagedYellowstoneGrpcSource>::builder()
                     #(#pipeline_registrations)*
                     .build(vixen_config)
                     .try_run_async()
                     .await;
 
-                if let Err(e) = result {
-                    arete::runtime::tracing::error!("Vixen runtime error: {:?}", e);
+                let runtime_uptime = started_at.elapsed();
+
+                if runtime_uptime >= RECONNECT_BACKOFF_RESET_AFTER {
+                    attempt = 0;
+                    backoff = reconnection_config.initial_delay;
                 }
 
-                attempt += 1;
+                if let Err(ref e) = result {
+                    if is_reconnectable_vixen_error(e.as_ref()) {
+                        arete::runtime::tracing::warn!(
+                            uptime = ?runtime_uptime,
+                            error = ?e,
+                            "Vixen runtime disconnected with a reconnectable gRPC error"
+                        );
+                    } else {
+                        arete::runtime::tracing::error!(
+                            uptime = ?runtime_uptime,
+                            error = ?e,
+                            "Vixen runtime error"
+                        );
+                    }
+                }
+
+                attempt = attempt.saturating_add(1);
 
                 if let Some(max) = reconnection_config.max_attempts {
                     if attempt >= max {
@@ -2418,6 +2883,7 @@ pub fn generate_multi_pipeline_spec_function(
                 }
 
                 arete::runtime::tracing::warn!(
+                    uptime = ?runtime_uptime,
                     "gRPC stream disconnected. Reconnecting in {:?} (attempt {})",
                     backoff,
                     attempt
