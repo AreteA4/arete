@@ -17,8 +17,13 @@ pub fn parse_idl_content(content: &str) -> Result<IdlSpec, String> {
     match serde_json::from_str(content) {
         Ok(idl) => Ok(idl),
         Err(parse_error) => {
-            let codama_root: CodamaRoot = serde_json::from_str(content)
-                .map_err(|_| format!("Failed to parse IDL JSON: {}", parse_error))?;
+            let codama_root: CodamaRoot = serde_json::from_str(content).map_err(|codama_error| {
+                format!(
+                    "Failed to parse IDL JSON as neither IdlSpec nor Codama root. \
+                     IdlSpec error: {}. Codama error: {}",
+                    parse_error, codama_error
+                )
+            })?;
             codama_root_to_idl_spec(&codama_root)
         }
     }
@@ -120,13 +125,21 @@ fn codama_account_to_idl(
     account: &CodamaAccount,
     discriminators: &HashMap<String, u8>,
 ) -> Result<IdlAccount, String> {
+    let discriminator = match discriminators.get(&account.name).copied() {
+        Some(value) => vec![value],
+        None if !discriminators.is_empty() => {
+            return Err(format!(
+                "Codama account '{}' has no entry in accountDiscriminator; \
+                 add a variant or remove the account from the IDL",
+                account.name
+            ));
+        }
+        None => Vec::new(),
+    };
+
     Ok(IdlAccount {
         name: account.name.clone(),
-        discriminator: discriminators
-            .get(&account.name)
-            .copied()
-            .map(|value| vec![value])
-            .unwrap_or_default(),
+        discriminator,
         docs: Vec::new(),
         type_def: Some(codama_type_def_kind_to_idl(&account.data)?),
     })
@@ -147,13 +160,18 @@ fn codama_instruction_to_idl(instruction: &CodamaInstruction) -> Result<IdlInstr
         .arguments
         .iter()
         .find(|argument| argument.name == "discriminator")
-        .and_then(|argument| match &argument.default_value {
-            Some(CodamaValueNode::Number { number }) => Some(SteelDiscriminant {
+        .map(|argument| match &argument.default_value {
+            Some(CodamaValueNode::Number { number }) => Ok(SteelDiscriminant {
                 type_: argument.number_format().unwrap_or("u8").to_string(),
                 value: *number,
             }),
-            _ => None,
-        });
+            _ => Err(format!(
+                "Codama instruction '{}' has a 'discriminator' argument without a numeric \
+                 default_value; cannot determine its Steel discriminant",
+                instruction.name
+            )),
+        })
+        .transpose()?;
 
     Ok(IdlInstruction {
         name: instruction.name.clone(),
@@ -231,12 +249,23 @@ fn codama_type_to_idl(type_node: &CodamaTypeNode) -> Result<IdlType, String> {
         CodamaTypeNode::DefinedTypeLink { name } => Ok(IdlType::Defined(IdlTypeDefined {
             defined: IdlTypeDefinedInner::Simple(name.clone()),
         })),
-        CodamaTypeNode::Array { item, count } => Ok(IdlType::Array(IdlTypeArray {
-            array: vec![
-                IdlTypeArrayElement::Nested(codama_type_to_idl(item)?),
-                IdlTypeArrayElement::Size(count.value()),
-            ],
-        })),
+        CodamaTypeNode::Array { item, count } => {
+            let size = match count {
+                CodamaCountNode::Fixed { value } => *value,
+                CodamaCountNode::Unknown => {
+                    return Err(
+                        "unsupported Codama array count kind (only fixedCountNode is supported)"
+                            .to_string(),
+                    );
+                }
+            };
+            Ok(IdlType::Array(IdlTypeArray {
+                array: vec![
+                    IdlTypeArrayElement::Nested(codama_type_to_idl(item)?),
+                    IdlTypeArrayElement::Size(size),
+                ],
+            }))
+        }
         CodamaTypeNode::FixedSize { size, type_ } => {
             let element_type = match type_.as_ref() {
                 CodamaTypeNode::String {} => IdlType::Simple("u8".to_string()),
@@ -249,6 +278,9 @@ fn codama_type_to_idl(type_node: &CodamaTypeNode) -> Result<IdlType, String> {
                 ],
             }))
         }
+        CodamaTypeNode::Unknown => Err(
+            "unsupported Codama type node kind (not modelled by arete-idl)".to_string(),
+        ),
         other => Err(format!("unsupported Codama field type {:?}", other)),
     }
 }
@@ -367,6 +399,8 @@ enum CodamaTypeNode {
     Struct { fields: Vec<CodamaFieldNode> },
     #[serde(rename = "enumTypeNode")]
     Enum { variants: Vec<CodamaEnumVariant> },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Deserialize)]
@@ -374,14 +408,8 @@ enum CodamaTypeNode {
 enum CodamaCountNode {
     #[serde(rename = "fixedCountNode")]
     Fixed { value: u32 },
-}
-
-impl CodamaCountNode {
-    fn value(&self) -> u32 {
-        match self {
-            Self::Fixed { value } => *value,
-        }
-    }
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Deserialize)]
