@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.5](https://github.com/AreteA4/arete/compare/arete-sdk-v0.1.4...arete-sdk-v0.1.5) (2026-06-18)
+
+
+### Features
+
+* preserve richer IDL metadata in stack specs ([5c42827](https://github.com/AreteA4/arete/commit/5c42827bfcb19e32a1a99a19882c42e89733eaf0))
+
+
+### Bug Fixes
+
+* **arete-a4-sdk:** stabilize auth_lifecycle test against CI clock skew ([5de9ce7](https://github.com/AreteA4/arete/commit/5de9ce770670d9432ec73cd702bb0d7d3212fc5a))
+
 ## [0.1.4](https://github.com/AreteA4/arete/compare/arete-sdk-v0.1.3...arete-sdk-v0.1.4) (2026-06-17)
 
 

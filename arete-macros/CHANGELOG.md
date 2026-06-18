@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.5](https://github.com/AreteA4/arete/compare/arete-macros-v0.1.4...arete-macros-v0.1.5) (2026-06-18)
+
+
+### Features
+
+* preserve richer IDL metadata in stack specs ([5c42827](https://github.com/AreteA4/arete/commit/5c42827bfcb19e32a1a99a19882c42e89733eaf0))
+* preserve richer IDL metadata in stack specs ([b603a9e](https://github.com/AreteA4/arete/commit/b603a9e368ba828e64f8987cd5cd2cc343f1036d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.0.2 to 0.0.3
+
 ## [0.1.4](https://github.com/AreteA4/arete/compare/arete-macros-v0.1.3...arete-macros-v0.1.4) (2026-06-17)
 
 
