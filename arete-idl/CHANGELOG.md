@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.0.3](https://github.com/AreteA4/arete/compare/arete-idl-v0.0.2...arete-idl-v0.0.3) (2026-06-18)
+
+
+### Features
+
+* preserve richer IDL metadata in stack specs ([5c42827](https://github.com/AreteA4/arete/commit/5c42827bfcb19e32a1a99a19882c42e89733eaf0))
+* preserve richer IDL metadata in stack specs ([b603a9e](https://github.com/AreteA4/arete/commit/b603a9e368ba828e64f8987cd5cd2cc343f1036d))
+
+
+### Bug Fixes
+
+* handle signed numeric PDA seed values in Codama IDL ([9c2cfef](https://github.com/AreteA4/arete/commit/9c2cfefc0a722745f2483a3e70a1d19c3b517efb))
+* log silent PDA resolution failures for diagnosability ([60ecdfc](https://github.com/AreteA4/arete/commit/60ecdfc761b0e4426d86fda2e91b546ec20ebad7))
+* surface unrecognised isSigner tags in Codama account docs ([c4a0809](https://github.com/AreteA4/arete/commit/c4a0809811994a43a4cd8e2392d1c2cbb8c33a59))
+
 ## [0.0.2](https://github.com/AreteA4/arete/compare/arete-idl-v0.0.1...arete-idl-v0.0.2) (2026-06-17)
 
 
