@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { pda, literal, account, arg, bytes } from '@usearete/sdk';
 
 export interface OreRoundEntropy {
   entropy_end_at?: number | null;
@@ -446,6 +447,15 @@ export const ORE_STREAM_STACK = {
     OreTreasuryState: OreTreasuryStateSchema,
     TokenMetadata: TokenMetadataSchema,
     Treasury: TreasurySchema,
+  },
+  pdas: {
+    ore: {
+      automation: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('automation'), account('authority')),
+      board: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('board')),
+      config: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('config')),
+      miner: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('miner'), account('authority')),
+      treasury: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('treasury')),
+    },
   },
 } as const;
 
