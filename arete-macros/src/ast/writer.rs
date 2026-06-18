@@ -121,12 +121,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
                 idl_parser::IdlTypeDefKind::Enum { kind, variants } => {
                     IdlTypeDefKindSnapshot::Enum {
                         kind: kind.clone(),
-                        variants: variants
-                            .iter()
-                            .map(|v| IdlEnumVariantSnapshot {
-                                name: v.name.clone(),
-                            })
-                            .collect(),
+                        variants: variants.iter().map(convert_enum_variant).collect(),
                     }
                 }
             },
@@ -179,12 +174,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
                         serialization: None,
                         type_def: IdlTypeDefKindSnapshot::Enum {
                             kind: kind.clone(),
-                            variants: variants
-                                .iter()
-                                .map(|v| IdlEnumVariantSnapshot {
-                                    name: v.name.clone(),
-                                })
-                                .collect(),
+                            variants: variants.iter().map(convert_enum_variant).collect(),
                         },
                     });
                 }
@@ -344,6 +334,33 @@ pub fn convert_idl_type(idl_type: &idl_parser::IdlType) -> IdlTypeSnapshot {
                 Box::new(convert_idl_type(&hm.hash_map.1)),
             ),
         }),
+    }
+}
+
+fn convert_enum_variant(variant: &idl_parser::IdlEnumVariant) -> IdlEnumVariantSnapshot {
+    IdlEnumVariantSnapshot {
+        name: variant.name.clone(),
+        fields: variant
+            .fields
+            .iter()
+            .map(convert_enum_variant_field)
+            .collect(),
+    }
+}
+
+fn convert_enum_variant_field(
+    field: &idl_parser::IdlEnumVariantField,
+) -> IdlEnumVariantFieldSnapshot {
+    match field {
+        idl_parser::IdlEnumVariantField::Named(named) => {
+            IdlEnumVariantFieldSnapshot::Named(IdlFieldSnapshot {
+                name: named.name.clone(),
+                type_: convert_idl_type(&named.type_),
+            })
+        }
+        idl_parser::IdlEnumVariantField::Tuple(tuple) => {
+            IdlEnumVariantFieldSnapshot::Tuple(convert_idl_type(tuple))
+        }
     }
 }
 
@@ -935,23 +952,17 @@ pub fn extract_instructions_from_idl(
                 })
                 .collect();
 
-            let errors: Vec<IdlErrorSnapshot> = idl
-                .errors
-                .iter()
-                .map(|e| IdlErrorSnapshot {
-                    code: e.code,
-                    name: e.name.clone(),
-                    msg: e.msg.clone(),
-                })
-                .collect();
-
+            // Program errors are emitted once at the stack level (via the IDL
+            // snapshot's `errors`), so we do not duplicate the full list onto
+            // every instruction. Only genuinely instruction-specific errors
+            // would belong here, which IDLs do not currently express.
             InstructionDef {
                 name: ix.name.clone(),
                 discriminator: ix.get_discriminator(),
                 discriminator_size,
                 accounts,
                 args,
-                errors,
+                errors: Vec::new(),
                 program_id: program_id.clone(),
                 docs: ix.docs.clone(),
             }
@@ -984,6 +995,13 @@ fn convert_account_to_def(
         } else {
             AccountResolution::UserProvided
         }
+    } else if pdas.contains_key(&acc.name) {
+        // Steel-style IDLs carry no per-account PDA metadata, so fall back to
+        // matching the instruction account name against the stack's `pdas!`
+        // registry. Seeds are inlined by the consumer from the named entry.
+        AccountResolution::PdaRef {
+            pda_name: acc.name.clone(),
+        }
     } else {
         AccountResolution::UserProvided
     };
@@ -995,5 +1013,67 @@ fn convert_account_to_def(
         resolution,
         is_optional: acc.optional,
         docs: acc.docs.clone(),
+    }
+}
+
+#[cfg(test)]
+mod convert_account_tests {
+    use super::*;
+
+    fn registry() -> BTreeMap<String, PdaDefinition> {
+        let mut m = BTreeMap::new();
+        m.insert(
+            "treasury".to_string(),
+            PdaDefinition {
+                name: "treasury".to_string(),
+                seeds: vec![PdaSeedDef::Literal {
+                    value: "treasury".to_string(),
+                }],
+                program_id: None,
+            },
+        );
+        m
+    }
+
+    fn account(name: &str, is_signer: bool) -> idl_parser::IdlAccountArg {
+        idl_parser::IdlAccountArg {
+            name: name.to_string(),
+            is_signer,
+            is_mut: true,
+            optional: false,
+            address: None,
+            pda: None,
+            docs: vec![],
+        }
+    }
+
+    #[test]
+    fn steel_account_matches_registry_pda_by_name() {
+        let def = convert_account_to_def(&account("treasury", false), &registry());
+        assert!(matches!(
+            def.resolution,
+            AccountResolution::PdaRef { ref pda_name } if pda_name == "treasury"
+        ));
+    }
+
+    #[test]
+    fn signer_account_stays_signer_even_if_name_in_registry() {
+        let mut m = registry();
+        m.insert(
+            "signer".to_string(),
+            PdaDefinition {
+                name: "signer".to_string(),
+                seeds: vec![],
+                program_id: None,
+            },
+        );
+        let def = convert_account_to_def(&account("signer", true), &m);
+        assert!(matches!(def.resolution, AccountResolution::Signer));
+    }
+
+    #[test]
+    fn unknown_account_falls_back_to_user_provided() {
+        let def = convert_account_to_def(&account("randomThing", false), &registry());
+        assert!(matches!(def.resolution, AccountResolution::UserProvided));
     }
 }

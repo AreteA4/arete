@@ -18,7 +18,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::fmt;
 
-use crate::ast::{SerializableStackSpec, SerializableStreamSpec, CURRENT_AST_VERSION};
+use crate::ast::{
+    SerializableStackSpec, SerializableStreamSpec, COMPATIBLE_AST_VERSIONS, CURRENT_AST_VERSION,
+};
 
 /// Error type for versioned AST loading failures.
 #[derive(Debug, Clone)]
@@ -86,15 +88,20 @@ pub fn load_stack_spec(json: &str) -> Result<SerializableStackSpec, VersionedLoa
         .and_then(|v| v.as_str())
         .unwrap_or("0.0.1");
 
-    // Route to appropriate deserializer based on version
+    // Route to appropriate deserializer based on version. Compatible older
+    // versions deserialize directly: every change since them is additive with
+    // serde defaults, so no migration step is required.
     match version {
-        v if v == CURRENT_AST_VERSION => {
-            // Current version - deserialize directly
+        v if v == CURRENT_AST_VERSION || COMPATIBLE_AST_VERSIONS.contains(&v) => {
             serde_json::from_value::<SerializableStackSpec>(raw)
+                .map(|mut spec| {
+                    // Normalize so round-tripped specs carry the current version.
+                    spec.ast_version = CURRENT_AST_VERSION.to_string();
+                    spec
+                })
                 .map_err(|e| VersionedLoadError::InvalidStructure(e.to_string()))
         }
-        // Add migration arms for old versions here, e.g.:
-        // "0.0.1" => { migrate_v1_to_latest(raw) }
+        // Add migration arms for structurally-incompatible old versions here.
         _ => {
             // Unknown version
             Err(VersionedLoadError::UnsupportedVersion(version.to_string()))
@@ -124,15 +131,20 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
         .and_then(|v| v.as_str())
         .unwrap_or("0.0.1");
 
-    // Route to appropriate deserializer based on version
+    // Route to appropriate deserializer based on version. Compatible older
+    // versions deserialize directly: every change since them is additive with
+    // serde defaults, so no migration step is required.
     match version {
-        v if v == CURRENT_AST_VERSION => {
-            // Current version - deserialize directly
+        v if v == CURRENT_AST_VERSION || COMPATIBLE_AST_VERSIONS.contains(&v) => {
             serde_json::from_value::<SerializableStreamSpec>(raw)
+                .map(|mut spec| {
+                    // Normalize so round-tripped specs carry the current version.
+                    spec.ast_version = CURRENT_AST_VERSION.to_string();
+                    spec
+                })
                 .map_err(|e| VersionedLoadError::InvalidStructure(e.to_string()))
         }
-        // Add migration arms for old versions here, e.g.:
-        // "0.0.1" => { migrate_v1_to_latest(raw) }
+        // Add migration arms for structurally-incompatible old versions here.
         _ => {
             // Unknown version
             Err(VersionedLoadError::UnsupportedVersion(version.to_string()))
@@ -156,6 +168,8 @@ pub fn load_stream_spec(json: &str) -> Result<SerializableStreamSpec, VersionedL
 pub enum VersionedStackSpec {
     #[serde(rename = "0.0.1")]
     V1(SerializableStackSpec),
+    #[serde(rename = "0.0.2")]
+    V2(SerializableStackSpec),
 }
 
 impl VersionedStackSpec {
@@ -166,7 +180,7 @@ impl VersionedStackSpec {
     /// instead, which properly sets `ast_version` to `CURRENT_AST_VERSION`.
     pub fn into_latest(self) -> SerializableStackSpec {
         match self {
-            VersionedStackSpec::V1(spec) => spec,
+            VersionedStackSpec::V1(spec) | VersionedStackSpec::V2(spec) => spec,
         }
     }
 }
@@ -187,6 +201,8 @@ impl VersionedStackSpec {
 pub enum VersionedStreamSpec {
     #[serde(rename = "0.0.1")]
     V1(SerializableStreamSpec),
+    #[serde(rename = "0.0.2")]
+    V2(SerializableStreamSpec),
 }
 
 impl VersionedStreamSpec {
@@ -197,7 +213,7 @@ impl VersionedStreamSpec {
     /// instead, which properly sets `ast_version` to `CURRENT_AST_VERSION`.
     pub fn into_latest(self) -> SerializableStreamSpec {
         match self {
-            VersionedStreamSpec::V1(spec) => spec,
+            VersionedStreamSpec::V1(spec) | VersionedStreamSpec::V2(spec) => spec,
         }
     }
 }

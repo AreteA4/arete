@@ -103,7 +103,12 @@ async fn fetches_token_from_endpoint_and_refreshes_in_band() {
     let (refresh_tx, mut refresh_rx) = mpsc::channel(4);
 
     let ws_server = spawn_websocket_server(handshake_tx, refresh_tx).await;
-    let token_endpoint = spawn_token_endpoint(vec![61, 3600]).await;
+    // First expiry sits TOKEN_REFRESH_BUFFER_SECONDS (60s) + 15s ahead so the
+    // freshly-minted token survives the `set_token` "is expiring" check even
+    // when the CI runner introduces several seconds of skew between the token
+    // endpoint's clock and the SDK's. The 15s headroom also pins the in-band
+    // refresh ~15s after connect; the refresh wait below is sized to match.
+    let token_endpoint = spawn_token_endpoint(vec![75, 3600]).await;
 
     let client = Arete::<TestStack>::builder()
         .url(&ws_server.url)
@@ -142,7 +147,7 @@ async fn fetches_token_from_endpoint_and_refreshes_in_band() {
     let requested_urls = token_endpoint.state.websocket_urls.lock().await.clone();
     assert_eq!(requested_urls, vec![ws_server.url.clone()]);
 
-    let refreshed_token = timeout(Duration::from_secs(5), refresh_rx.recv())
+    let refreshed_token = timeout(Duration::from_secs(20), refresh_rx.recv())
         .await
         .expect("refresh_auth message should be sent before expiry")
         .expect("refresh channel should receive a token");

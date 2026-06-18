@@ -7,6 +7,24 @@ pub mod ore_stream {
 
     use serde::{Deserialize, Serialize};
 
+    // Program-derived address seeds for the ORE program. The Steel IDL does not
+    // embed per-account PDA metadata, so these are declared explicitly and matched
+    // against instruction account names by the compiler. Seeds are taken from the
+    // ORE instruction docs.
+    //
+    // Note: `round = ["round", round_id]` is intentionally omitted because some
+    // instructions derive it from a cross-account field (`board.round_id`), which
+    // is not yet expressible here (follow-up: per-instruction seed binding).
+    pdas! {
+        ore {
+            treasury = [literal("treasury")];
+            config = [literal("config")];
+            board = [literal("board")];
+            miner = [literal("miner"), account("authority")];
+            automation = [literal("automation"), account("authority")];
+        }
+    }
+
     #[entity(name = "OreRound")]
     #[view(name = "latest", sort_by = "id.round_id", order = "desc")]
     pub struct OreRound {

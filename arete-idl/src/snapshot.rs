@@ -212,7 +212,10 @@ impl IdlInstructionSnapshot {
             }
         }
 
-        crate::discriminator::anchor_discriminator(&format!("global:{}", self.name))
+        crate::discriminator::anchor_discriminator(&format!(
+            "global:{}",
+            crate::utils::to_snake_case(&self.name)
+        ))
     }
 }
 
@@ -348,6 +351,19 @@ pub enum IdlTypeDefKindSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdlEnumVariantSnapshot {
     pub name: String,
+    /// Variant payload, when the variant carries data. Skipped when empty so
+    /// fieldless variants serialize byte-identically to older snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<IdlEnumVariantFieldSnapshot>,
+}
+
+/// One field of a data-carrying enum variant (named struct field or bare
+/// tuple element).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum IdlEnumVariantFieldSnapshot {
+    Named(IdlFieldSnapshot),
+    Tuple(IdlTypeSnapshot),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -369,6 +385,59 @@ pub struct IdlErrorSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_fieldless_enum_variant_wire_format_unchanged() {
+        // Fieldless variants must serialize WITHOUT a `fields` key so existing
+        // stack.json files (and the CI regenerate-diff) are unaffected by the
+        // fielded-enum extension.
+        let fieldless = IdlEnumVariantSnapshot {
+            name: "Active".to_string(),
+            fields: vec![],
+        };
+        assert_eq!(
+            serde_json::to_string(&fieldless).unwrap(),
+            r#"{"name":"Active"}"#
+        );
+
+        // Old-format JSON (no `fields`) still deserializes.
+        let parsed: IdlEnumVariantSnapshot = serde_json::from_str(r#"{"name":"Active"}"#).unwrap();
+        assert!(parsed.fields.is_empty());
+
+        // Fielded variants round-trip through both named and tuple shapes,
+        // and the untagged IdlTypeDefKindSnapshot still classifies as Enum.
+        let fielded = IdlTypeDefKindSnapshot::Enum {
+            kind: "enum".to_string(),
+            variants: vec![IdlEnumVariantSnapshot {
+                name: "Sunset".to_string(),
+                fields: vec![
+                    IdlEnumVariantFieldSnapshot::Named(IdlFieldSnapshot {
+                        name: "endTs".to_string(),
+                        type_: IdlTypeSnapshot::Simple("i64".to_string()),
+                    }),
+                    IdlEnumVariantFieldSnapshot::Tuple(IdlTypeSnapshot::Simple(
+                        "u8".to_string(),
+                    )),
+                ],
+            }],
+        };
+        let json = serde_json::to_string(&fielded).unwrap();
+        let parsed: IdlTypeDefKindSnapshot = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IdlTypeDefKindSnapshot::Enum { variants, .. } => {
+                assert_eq!(variants[0].fields.len(), 2);
+                assert!(matches!(
+                    variants[0].fields[0],
+                    IdlEnumVariantFieldSnapshot::Named(_)
+                ));
+                assert!(matches!(
+                    variants[0].fields[1],
+                    IdlEnumVariantFieldSnapshot::Tuple(_)
+                ));
+            }
+            other => panic!("untagged round-trip misclassified enum as {:?}", other),
+        }
+    }
 
     #[test]
     fn test_snapshot_serde() {

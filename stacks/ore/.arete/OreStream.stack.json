@@ -7197,7 +7197,61 @@
   ],
   "pdas": {
     "entropy": {},
-    "ore": {}
+    "ore": {
+      "automation": {
+        "name": "automation",
+        "seeds": [
+          {
+            "type": "literal",
+            "value": "automation"
+          },
+          {
+            "type": "accountRef",
+            "account_name": "authority"
+          }
+        ]
+      },
+      "board": {
+        "name": "board",
+        "seeds": [
+          {
+            "type": "literal",
+            "value": "board"
+          }
+        ]
+      },
+      "config": {
+        "name": "config",
+        "seeds": [
+          {
+            "type": "literal",
+            "value": "config"
+          }
+        ]
+      },
+      "miner": {
+        "name": "miner",
+        "seeds": [
+          {
+            "type": "literal",
+            "value": "miner"
+          },
+          {
+            "type": "accountRef",
+            "account_name": "authority"
+          }
+        ]
+      },
+      "treasury": {
+        "name": "treasury",
+        "seeds": [
+          {
+            "type": "literal",
+            "value": "treasury"
+          }
+        ]
+      }
+    }
   },
   "instructions": [
     {
@@ -7221,7 +7275,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "automation"
           },
           "is_optional": false
         },
@@ -7239,7 +7294,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "miner"
           },
           "is_optional": false
         },
@@ -7280,18 +7336,6 @@
           "type": "u64"
         }
       ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Configures or closes a miner automation account.",
@@ -7320,7 +7364,8 @@
           "is_signer": false,
           "is_writable": false,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "board"
           },
           "is_optional": false
         },
@@ -7329,7 +7374,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "miner"
           },
           "is_optional": false
         },
@@ -7347,7 +7393,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "treasury"
           },
           "is_optional": false
         },
@@ -7363,18 +7410,6 @@
         }
       ],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Settles miner rewards for a completed round.",
@@ -7402,7 +7437,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "board"
           },
           "is_optional": false
         },
@@ -7411,7 +7447,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "miner"
           },
           "is_optional": false
         },
@@ -7437,18 +7474,6 @@
         }
       ],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Claims SOL rewards from the miner account."
@@ -7475,7 +7500,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "board"
           },
           "is_optional": false
         },
@@ -7484,7 +7510,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "miner"
           },
           "is_optional": false
         },
@@ -7512,7 +7539,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "treasury"
           },
           "is_optional": false
         },
@@ -7567,18 +7595,6 @@
         }
       ],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Claims ORE token rewards from the treasury vault."
@@ -7605,7 +7621,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "board"
           },
           "is_optional": false
         },
@@ -7632,7 +7649,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "treasury"
           },
           "is_optional": false
         },
@@ -7648,18 +7666,6 @@
         }
       ],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Closes an expired round account and returns rent to the payer.",
@@ -7697,7 +7703,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "automation"
           },
           "is_optional": false
         },
@@ -7706,7 +7713,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "board"
           },
           "is_optional": false
         },
@@ -7715,7 +7723,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "config"
           },
           "is_optional": false
         },
@@ -7724,7 +7733,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "miner"
           },
           "is_optional": false
         },
@@ -7768,18 +7778,6 @@
           "type": "u32"
         }
       ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Deploys SOL to selected squares for the current round.",
@@ -7807,18 +7805,6 @@
         }
       ],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Emits an arbitrary log message from the board PDA.",
@@ -7846,7 +7832,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "board"
           },
           "is_optional": false
         },
@@ -7855,7 +7842,8 @@
           "is_signer": false,
           "is_writable": false,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "config"
           },
           "is_optional": false
         },
@@ -7910,7 +7898,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "treasury"
           },
           "is_optional": false
         },
@@ -8003,18 +7992,6 @@
         }
       ],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Finalizes the current round, mints rewards, and opens the next round.",
@@ -8090,7 +8067,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "treasury"
           },
           "is_optional": false
         },
@@ -8133,18 +8111,6 @@
         {
           "name": "compound_fee",
           "type": "u64"
-        }
-      ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
         }
       ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
@@ -8211,7 +8177,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "treasury"
           },
           "is_optional": false
         },
@@ -8250,18 +8217,6 @@
         {
           "name": "amount",
           "type": "u64"
-        }
-      ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
         }
       ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
@@ -8319,7 +8274,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "treasury"
           },
           "is_optional": false
         },
@@ -8369,18 +8325,6 @@
           "type": "u64"
         }
       ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Claims accrued staking rewards.",
@@ -8396,18 +8340,6 @@
       "discriminator_size": 1,
       "accounts": [],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Buys back ORE from the market."
@@ -8434,7 +8366,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "board"
           },
           "is_optional": false
         },
@@ -8443,7 +8376,8 @@
           "is_signer": false,
           "is_writable": false,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "config"
           },
           "is_optional": false
         },
@@ -8462,7 +8396,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "treasury"
           },
           "is_optional": false
         },
@@ -8511,18 +8446,6 @@
           "type": "u64"
         }
       ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Swaps vaulted SOL for ORE via a CPI and burns the proceeds.",
@@ -8551,7 +8474,8 @@
           "is_signer": false,
           "is_writable": false,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "config"
           },
           "is_optional": false
         },
@@ -8560,7 +8484,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "treasury"
           },
           "is_optional": false
         },
@@ -8590,18 +8515,6 @@
           "type": "u64"
         }
       ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Wraps SOL held by the treasury into WSOL for swapping.",
@@ -8629,7 +8542,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "config"
           },
           "is_optional": false
         },
@@ -8648,18 +8562,6 @@
         {
           "name": "admin",
           "type": "solana_pubkey::Pubkey"
-        }
-      ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
         }
       ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
@@ -8688,7 +8590,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "board"
           },
           "is_optional": false
         },
@@ -8697,7 +8600,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "config"
           },
           "is_optional": false
         },
@@ -8754,18 +8658,6 @@
           "type": "u64"
         }
       ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Creates a new entropy var account through the entropy program."
@@ -8792,7 +8684,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "automation"
           },
           "is_optional": false
         },
@@ -8801,7 +8694,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "pdaRef",
+            "pda_name": "miner"
           },
           "is_optional": false
         },
@@ -8817,18 +8711,6 @@
         }
       ],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Reloads SOL into the automation account."
@@ -8842,18 +8724,6 @@
       "discriminator_size": 1,
       "accounts": [],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Compounds staking yield."
@@ -8867,18 +8737,6 @@
       "discriminator_size": 1,
       "accounts": [],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "AmountTooSmall",
-          "msg": "Amount too small"
-        },
-        {
-          "code": 1,
-          "name": "NotAuthorized",
-          "msg": "Not authorized"
-        }
-      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Liquidation instruction."
@@ -8960,18 +8818,6 @@
           "type": "u64"
         }
       ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "IncompleteDigest",
-          "msg": "Incomplete digest"
-        },
-        {
-          "code": 1,
-          "name": "InvalidSeed",
-          "msg": "Invalid seed"
-        }
-      ],
       "program_id": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
       "docs": [
         "Creates a new entropy var account.",
@@ -9015,18 +8861,6 @@
         }
       ],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "IncompleteDigest",
-          "msg": "Incomplete digest"
-        },
-        {
-          "code": 1,
-          "name": "InvalidSeed",
-          "msg": "Invalid seed"
-        }
-      ],
       "program_id": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
       "docs": [
         "Closes an entropy var account and returns rent to the authority."
@@ -9062,18 +8896,6 @@
         {
           "name": "endAt",
           "type": "u64"
-        }
-      ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "IncompleteDigest",
-          "msg": "Incomplete digest"
-        },
-        {
-          "code": 1,
-          "name": "InvalidSeed",
-          "msg": "Invalid seed"
         }
       ],
       "program_id": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
@@ -9112,18 +8934,6 @@
         {
           "name": "seed",
           "type": "[u8; 32]"
-        }
-      ],
-      "errors": [
-        {
-          "code": 0,
-          "name": "IncompleteDigest",
-          "msg": "Incomplete digest"
-        },
-        {
-          "code": 1,
-          "name": "InvalidSeed",
-          "msg": "Invalid seed"
         }
       ],
       "program_id": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
@@ -9169,18 +8979,6 @@
         }
       ],
       "args": [],
-      "errors": [
-        {
-          "code": 0,
-          "name": "IncompleteDigest",
-          "msg": "Incomplete digest"
-        },
-        {
-          "code": 1,
-          "name": "InvalidSeed",
-          "msg": "Invalid seed"
-        }
-      ],
       "program_id": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
       "docs": [
         "Samples the slot hash at the end_at slot.",
@@ -9188,5 +8986,5 @@
       ]
     }
   ],
-  "content_hash": "a8bc522847ad19b3a0c70a695dbdf9392f39d6c6ee0b785ffcae0da28e0e0ca5"
+  "content_hash": "c4ee37009abf94c16ee4658e70fe59cb764cb37dc4aa28a6752ec0d7ed0b865a"
 }
