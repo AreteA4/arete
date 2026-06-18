@@ -176,7 +176,13 @@ fn codama_instruction_to_idl(
         .map(|argument| match &argument.default_value {
             Some(CodamaValueNode::Number { number }) => Ok(SteelDiscriminant {
                 type_: argument.number_format().unwrap_or("u8").to_string(),
-                value: *number,
+                value: u64::try_from(*number).map_err(|_| {
+                    format!(
+                        "Codama instruction '{}' has a negative discriminator value {}; \
+                         discriminants must be non-negative",
+                        instruction.name, number
+                    )
+                })?,
             }),
             _ => Err(format!(
                 "Codama instruction '{}' has a 'discriminator' argument without a numeric \
@@ -540,7 +546,7 @@ struct CodamaEnumVariant {
 #[serde(tag = "kind")]
 enum CodamaValueNode {
     #[serde(rename = "numberValueNode")]
-    Number { number: u64 },
+    Number { number: i64 },
     #[serde(rename = "publicKeyValueNode")]
     PublicKey {
         #[serde(rename = "publicKey")]
@@ -723,25 +729,43 @@ fn codama_constant_seed_bytes(
             let Some(CodamaTypeNode::Number { format }) = seed_type else {
                 return None;
             };
-            let width = match format.as_str() {
-                "u8" | "i8" => 1,
-                "u16" | "i16" => 2,
-                "u32" | "i32" => 4,
-                "u64" | "i64" => 8,
-                "u128" | "i128" => 16,
+            let (width, signed) = match format.as_str() {
+                "u8" => (1usize, false),
+                "i8" => (1, true),
+                "u16" => (2, false),
+                "i16" => (2, true),
+                "u32" => (4, false),
+                "i32" => (4, true),
+                "u64" => (8, false),
+                "i64" => (8, true),
+                "u128" => (16, false),
+                "i128" => (16, true),
                 _ => return None,
             };
-            let mut bytes = number.to_le_bytes().to_vec();
-            if width < bytes.len() {
-                // Reject values that do not fit the declared width.
-                if bytes[width..].iter().any(|b| *b != 0) {
+            let bytes = number.to_le_bytes();
+            let sign_byte: u8 = if signed && *number < 0 { 0xFF } else { 0x00 };
+            if width <= bytes.len() {
+                // Reject values that do not fit the declared width. For signed
+                // widths the discarded high bytes must be a sign extension of
+                // the kept top byte, whose sign bit must agree with `number`;
+                // for unsigned widths they must simply be zero.
+                if signed {
+                    let top = bytes[width - 1];
+                    if ((top & 0x80) == 0) != (*number >= 0) {
+                        return None;
+                    }
+                }
+                if bytes[width..].iter().any(|b| *b != sign_byte) {
                     return None;
                 }
-                bytes.truncate(width);
+                Some(bytes[..width].to_vec())
             } else {
-                bytes.resize(width, 0);
+                // Widen (e.g. an i64 literal into an i128 slot): sign- or
+                // zero-extend rather than pad with zeros unconditionally.
+                let mut out = bytes.to_vec();
+                out.resize(width, sign_byte);
+                Some(out)
             }
-            Some(bytes)
         }
         CodamaValueNode::PublicKey { public_key } => {
             let decoded = bs58::decode(public_key).into_vec().ok()?;
