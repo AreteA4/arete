@@ -658,6 +658,10 @@ fn codama_account_pda(
     pda_defs: &HashMap<&str, &CodamaPdaNode>,
 ) -> Option<IdlPda> {
     let CodamaValueNode::Pda { pda, seeds } = account.default_value.as_ref()? else {
+        tracing::debug!(
+            account = %account.name,
+            "account has no PDA default value; degrading to user-provided"
+        );
         return None;
     };
 
@@ -666,7 +670,14 @@ fn codama_account_pda(
             seeds, program_id, ..
         } => (seeds.as_slice(), program_id.as_deref()),
         CodamaPdaSource::Link { name } => {
-            let def = pda_defs.get(name.as_str())?;
+            let def = pda_defs.get(name.as_str()).or_else(|| {
+                tracing::warn!(
+                    account = %account.name,
+                    pda = %name,
+                    "PDA link references an unknown pdaNode; degrading to user-provided"
+                );
+                None
+            })?;
             (def.seeds.as_slice(), def.program_id.as_deref())
         }
     };
@@ -681,12 +692,25 @@ fn codama_account_pda(
     for seed in pda_seeds {
         match seed {
             CodamaPdaSeedNode::Constant { seed_type, value } => {
-                idl_seeds.push(IdlPdaSeed::Const {
-                    value: codama_constant_seed_bytes(value, seed_type.as_ref())?,
-                });
+                let bytes = codama_constant_seed_bytes(value, seed_type.as_ref()).or_else(|| {
+                    tracing::warn!(
+                        account = %account.name,
+                        "failed to encode constant PDA seed; degrading to user-provided"
+                    );
+                    None
+                })?;
+                idl_seeds.push(IdlPdaSeed::Const { value: bytes });
             }
             CodamaPdaSeedNode::Variable { name, seed_type } => {
-                match bindings.get(name.as_str())? {
+                let value = bindings.get(name.as_str()).or_else(|| {
+                    tracing::warn!(
+                        account = %account.name,
+                        seed = %name,
+                        "variable PDA seed has no bound value; degrading to user-provided"
+                    );
+                    None
+                })?;
+                match value {
                     CodamaValueNode::Account { name } => idl_seeds.push(IdlPdaSeed::Account {
                         path: name.clone(),
                         account: None,
@@ -700,10 +724,26 @@ fn codama_account_pda(
                     value @ (CodamaValueNode::StringValue { .. }
                     | CodamaValueNode::BytesValue { .. }
                     | CodamaValueNode::Number { .. }
-                    | CodamaValueNode::PublicKey { .. }) => idl_seeds.push(IdlPdaSeed::Const {
-                        value: codama_constant_seed_bytes(value, seed_type.as_ref())?,
-                    }),
-                    _ => return None,
+                    | CodamaValueNode::PublicKey { .. }) => {
+                        let bytes =
+                            codama_constant_seed_bytes(value, seed_type.as_ref()).or_else(|| {
+                                tracing::warn!(
+                                    account = %account.name,
+                                    seed = %name,
+                                    "failed to encode bound PDA seed value; degrading to user-provided"
+                                );
+                                None
+                            })?;
+                        idl_seeds.push(IdlPdaSeed::Const { value: bytes });
+                    }
+                    _ => {
+                        tracing::warn!(
+                            account = %account.name,
+                            seed = %name,
+                            "unsupported PDA seed value kind; degrading to user-provided"
+                        );
+                        return None;
+                    }
                 }
             }
         }
