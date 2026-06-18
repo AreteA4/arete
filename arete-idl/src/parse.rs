@@ -213,6 +213,11 @@ fn codama_instruction_to_idl(
                             "signer: either (may or may not sign; treated as non-signer)"
                                 .to_string(),
                         );
+                    } else if let Some(tag) = account.is_signer.unknown_tag() {
+                        docs.push(format!(
+                            "signer: \"{}\" (unrecognised isSigner tag; treated as non-signer)",
+                            tag
+                        ));
                     }
                     docs
                 },
@@ -463,6 +468,16 @@ impl CodamaSignerFlag {
 
     fn is_either(&self) -> bool {
         matches!(self, CodamaSignerFlag::Tag(tag) if tag == "either")
+    }
+
+    /// Returns the tag string for an unrecognised signer flag — any tag other
+    /// than `"either"` — so callers can surface it rather than silently
+    /// treating the account as a non-signer.
+    fn unknown_tag(&self) -> Option<&str> {
+        match self {
+            CodamaSignerFlag::Tag(tag) if tag != "either" => Some(tag.as_str()),
+            _ => None,
+        }
     }
 }
 
