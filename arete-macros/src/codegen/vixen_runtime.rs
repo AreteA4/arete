@@ -2384,13 +2384,18 @@ pub fn generate_instruction_handler_impl(
 
                 let static_keys_vec = &raw_update.accounts;
                 let event_type = value.event_type();
+                let event_kind = if event_type.ends_with("CpiEvent") {
+                    "program_event"
+                } else {
+                    "instruction"
+                };
                 // Reserve downstream capacity before mutating VM state so a wedged
                 // projector cannot leave the parser ahead of published batches.
                 let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
 
                 let mut log = arete::runtime::arete_interpreter::CanonicalLog::new();
                 log.set("phase", "vixen")
-                    .set("event_kind", "instruction")
+                    .set("event_kind", event_kind)
                     .set("event_type", event_type)
                     .set("slot", slot)
                     .set("txn_index", txn_index)
@@ -2526,6 +2531,64 @@ pub fn generate_instruction_handler_impl(
                             }
                         }
 
+                        use arete::runtime::base64::Engine as _;
+                        for log_line in raw_update.log_messages() {
+                            let Some(encoded) = log_line
+                                .strip_prefix("Program data: ")
+                                .or_else(|| log_line.strip_prefix("Program log: ray_log: "))
+                            else {
+                                continue;
+                            };
+                            let Ok(bytes) = arete::runtime::base64::engine::general_purpose::STANDARD.decode(encoded) else {
+                                continue;
+                            };
+                            let Ok(program_event) = #parser_mod::#instruction_enum::try_unpack_log_event(&bytes) else {
+                                continue;
+                            };
+
+                            let program_event_type = program_event.event_type();
+                            let mut program_event_value = program_event.to_value_with_accounts(static_keys_vec);
+                            if let Some(obj) = program_event_value.as_object_mut() {
+                                obj.insert(
+                                    "__event_source".to_string(),
+                                    arete::runtime::serde_json::json!("emit"),
+                                );
+                                if let Some(accounts) = event_value.get("accounts") {
+                                    obj.insert("accounts".to_string(), accounts.clone());
+                                }
+                            }
+
+                            let mut program_log = arete::runtime::arete_interpreter::CanonicalLog::new();
+                            program_log.set("phase", "vixen")
+                                .set("event_kind", "program_event")
+                                .set("event_type", program_event_type)
+                                .set("slot", slot)
+                                .set("txn_index", txn_index)
+                                .set("program", #entity_name_lit)
+                                .set("accounts_count", static_keys_vec.len());
+
+                            match vm.process_event(
+                                &bytecode,
+                                program_event_value,
+                                program_event_type,
+                                Some(&context),
+                                Some(&mut program_log),
+                            ) {
+                                Ok(pending_mutations) => {
+                                    if let Ok(ref mut mutations) = result {
+                                        mutations.extend(pending_mutations);
+                                    }
+                                }
+                                Err(e) => {
+                                    arete::runtime::tracing::warn!(
+                                        event_type = %program_event_type,
+                                        error = %e,
+                                        "Failed to process emitted log event"
+                                    );
+                                }
+                            }
+                        }
+
                         if vm.instructions_executed % 1000 == 0 {
                             let _ = vm.cleanup_all_expired(0);
                             let stats = vm.get_memory_stats(0);
@@ -2576,7 +2639,7 @@ pub fn generate_instruction_handler_impl(
                         mutations.extend(resolver_mutations);
                         let event_context = arete::runtime::arete_server::EventContext {
                             program: #entity_name_lit.to_string(),
-                            event_kind: "instruction".to_string(),
+                            event_kind: event_kind.to_string(),
                             event_type: event_type.to_string(),
                             account: None,
                             accounts_count: Some(static_keys_vec.len()),
@@ -2915,5 +2978,19 @@ pub fn generate_runtime(
     quote! {
         #vm_handler
         #spec_fn
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generate_instruction_handler_impl;
+
+    #[test]
+    fn instruction_handler_accepts_raydium_ray_log_prefix() {
+        let code = generate_instruction_handler_impl("parser_mod", "InstructionEnum", "program");
+        let code_str = code.to_string();
+
+        assert!(code_str.contains("Program data: "));
+        assert!(code_str.contains("Program log: ray_log: "));
     }
 }
