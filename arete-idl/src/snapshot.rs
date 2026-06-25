@@ -372,6 +372,8 @@ pub struct IdlEventSnapshot {
     pub discriminator: Vec<u8>,
     #[serde(default)]
     pub docs: Vec<String>,
+    #[serde(default)]
+    pub fields: Vec<IdlFieldSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -415,9 +417,7 @@ mod tests {
                         name: "endTs".to_string(),
                         type_: IdlTypeSnapshot::Simple("i64".to_string()),
                     }),
-                    IdlEnumVariantFieldSnapshot::Tuple(IdlTypeSnapshot::Simple(
-                        "u8".to_string(),
-                    )),
+                    IdlEnumVariantFieldSnapshot::Tuple(IdlTypeSnapshot::Simple("u8".to_string())),
                 ],
             }],
         };
@@ -492,6 +492,7 @@ mod tests {
                 name: "ExampleEvent".to_string(),
                 discriminator: vec![0, 0, 0, 0, 0, 0, 0, 1],
                 docs: vec![],
+                fields: vec![],
             }],
             errors: vec![IdlErrorSnapshot {
                 code: 6000,

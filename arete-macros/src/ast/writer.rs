@@ -278,6 +278,14 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
                 name: event.name.clone(),
                 discriminator: event.get_discriminator(),
                 docs: event.docs.clone(),
+                fields: event
+                    .fields
+                    .iter()
+                    .map(|field| IdlFieldSnapshot {
+                        name: field.name.clone(),
+                        type_: convert_idl_type(&field.type_),
+                    })
+                    .collect(),
             })
             .collect(),
         errors: idl

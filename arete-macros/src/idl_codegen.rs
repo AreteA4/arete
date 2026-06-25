@@ -675,20 +675,25 @@ fn generate_event_type(
     let discriminator = event.get_discriminator();
     let disc_array = quote! { [#(#discriminator),*] };
 
-    // Event fields come from the matching type definition in `types`
-    let idl_fields: Vec<IdlField> = types
-        .iter()
-        .find(|t| t.name == event.name)
-        .and_then(|t| match &t.type_def {
-            IdlTypeDefKind::Struct { fields, .. } => Some(fields.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "Event '{}' has no matching type definition in the IDL `types` array",
-                event.name
-            )
-        });
+    // Event fields come either directly from the event entry (Anchor inline
+    // fields) or from a matching type definition in `types`.
+    let idl_fields: Vec<IdlField> = if !event.fields.is_empty() {
+        event.fields.clone()
+    } else {
+        types
+            .iter()
+            .find(|t| t.name == event.name)
+            .and_then(|t| match &t.type_def {
+                IdlTypeDefKind::Struct { fields, .. } => Some(fields.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "Event '{}' has neither inline fields nor a matching type definition in the IDL `types` array",
+                    event.name
+                )
+            })
+    };
 
     let fields = generate_struct_fields(&idl_fields, false, account_names, false);
     let to_json_method = generate_struct_to_json_method(&idl_fields, false);

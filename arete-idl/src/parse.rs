@@ -78,7 +78,12 @@ fn codama_root_to_idl_spec(root: &CodamaRoot) -> Result<IdlSpec, String> {
             .iter()
             .map(codama_defined_type_to_idl)
             .collect::<Result<Vec<_>, _>>()?,
-        events: Vec::new(),
+        events: root
+            .program
+            .events
+            .iter()
+            .map(codama_event_to_idl)
+            .collect(),
         errors: root
             .program
             .errors
@@ -153,6 +158,15 @@ fn codama_account_to_idl(
         docs: Vec::new(),
         type_def: Some(codama_type_def_kind_to_idl(&account.data)?),
     })
+}
+
+fn codama_event_to_idl(event: &CodamaEvent) -> IdlEvent {
+    IdlEvent {
+        name: event.name.clone(),
+        discriminator: event.discriminator.clone(),
+        docs: event.docs.clone(),
+        fields: Vec::new(),
+    }
 }
 
 fn codama_defined_type_to_idl(defined_type: &CodamaDefinedType) -> Result<IdlTypeDef, String> {
@@ -391,6 +405,8 @@ struct CodamaProgram {
     #[serde(default)]
     errors: Vec<CodamaError>,
     #[serde(default)]
+    events: Vec<CodamaEvent>,
+    #[serde(default)]
     instructions: Vec<CodamaInstruction>,
     #[serde(default)]
     pdas: Vec<CodamaPdaNode>,
@@ -407,6 +423,16 @@ struct CodamaDefinedType {
     name: String,
     #[serde(rename = "type")]
     type_: CodamaTypeNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodamaEvent {
+    name: String,
+    #[serde(default)]
+    discriminator: Vec<u8>,
+    #[serde(default)]
+    docs: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1332,6 +1358,60 @@ mod tests {
         assert_eq!(disc.len(), 8);
         let expected = anchor_discriminator("event:TransferEvent");
         assert_eq!(disc, expected);
+    }
+
+    #[test]
+    fn test_codama_events_are_preserved() {
+        let json = r#"{
+            "kind": "rootNode",
+            "program": {
+                "name": "test",
+                "publicKey": "11111111111111111111111111111111",
+                "version": "0.1.0",
+                "events": [
+                    {
+                        "kind": "eventNode",
+                        "name": "SubscriptionCreatedEvent",
+                        "discriminator": [0],
+                        "docs": ["created"]
+                    }
+                ]
+            }
+        }"#;
+        let idl = parse_idl_content(json).unwrap();
+
+        assert_eq!(idl.events.len(), 1);
+        assert_eq!(idl.events[0].name, "SubscriptionCreatedEvent");
+        assert_eq!(idl.events[0].get_discriminator(), vec![0]);
+        assert_eq!(idl.events[0].docs, vec!["created"]);
+    }
+
+    #[test]
+    fn test_anchor_events_preserve_inline_fields() {
+        let json = r#"{
+            "name": "test",
+            "instructions": [],
+            "accounts": [],
+            "types": [],
+            "events": [
+                {
+                    "name": "TradeEvent",
+                    "discriminator": [1,2,3,4,5,6,7,8],
+                    "fields": [
+                        {"name": "amount", "type": "u64", "index": false},
+                        {"name": "user", "type": "publicKey", "index": false}
+                    ]
+                }
+            ],
+            "errors": []
+        }"#;
+        let idl = parse_idl_content(json).unwrap();
+
+        assert_eq!(idl.events.len(), 1);
+        assert_eq!(idl.events[0].name, "TradeEvent");
+        assert_eq!(idl.events[0].fields.len(), 2);
+        assert_eq!(idl.events[0].fields[0].name, "amount");
+        assert_eq!(idl.events[0].fields[1].name, "user");
     }
 
     #[test]

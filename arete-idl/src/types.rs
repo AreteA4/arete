@@ -81,10 +81,7 @@ impl IdlInstruction {
             return vec![value];
         }
 
-        crate::discriminator::anchor_discriminator(&format!(
-            "global:{}",
-            to_snake_case(&self.name)
-        ))
+        crate::discriminator::anchor_discriminator(&format!("global:{}", to_snake_case(&self.name)))
     }
 }
 
@@ -310,6 +307,8 @@ pub struct IdlEvent {
     pub discriminator: Vec<u8>,
     #[serde(default)]
     pub docs: Vec<String>,
+    #[serde(default)]
+    pub fields: Vec<IdlField>,
 }
 
 impl IdlEvent {
