@@ -2542,7 +2542,37 @@ pub fn generate_instruction_handler_impl(
                             let Ok(bytes) = arete::runtime::base64::engine::general_purpose::STANDARD.decode(encoded) else {
                                 continue;
                             };
-                            let Ok(program_event) = #parser_mod::#instruction_enum::try_unpack_log_event(&bytes) else {
+
+                            let mut candidate_event_bytes = vec![bytes.clone()];
+
+                            if bytes.len() >= 6 && bytes[0] == 0 && bytes[1] == 0 {
+                                let payload_len = u32::from_le_bytes([
+                                    bytes[2], bytes[3], bytes[4], bytes[5]
+                                ]) as usize;
+                                if bytes.len() == 6 + payload_len {
+                                    let unwrapped = bytes[6..].to_vec();
+                                    let mut zero_prefixed_unwrapped = Vec::with_capacity(unwrapped.len() + 1);
+                                    zero_prefixed_unwrapped.push(0);
+                                    zero_prefixed_unwrapped.extend_from_slice(&unwrapped);
+                                    candidate_event_bytes.push(unwrapped);
+                                    candidate_event_bytes.push(zero_prefixed_unwrapped);
+                                }
+                            }
+
+                            let mut zero_prefixed = Vec::with_capacity(bytes.len() + 1);
+                            zero_prefixed.push(0);
+                            zero_prefixed.extend_from_slice(&bytes);
+                            candidate_event_bytes.push(zero_prefixed);
+
+                            let mut parsed_program_event = None;
+                            for event_bytes in candidate_event_bytes {
+                                if let Ok(program_event) = #parser_mod::#instruction_enum::try_unpack_log_event(&event_bytes) {
+                                    parsed_program_event = Some(program_event);
+                                    break;
+                                }
+                            }
+
+                            let Some(program_event) = parsed_program_event else {
                                 continue;
                             };
 
@@ -2992,5 +3022,7 @@ mod tests {
 
         assert!(code_str.contains("Program data: "));
         assert!(code_str.contains("Program log: ray_log: "));
+        assert!(code_str.contains("bytes . len () >= 6") || code_str.contains("bytes.len() >= 6"));
+        assert!(code_str.contains("zero_prefixed"));
     }
 }

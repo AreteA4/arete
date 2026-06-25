@@ -62,6 +62,7 @@ pub mod runtime {
     pub use anyhow;
     pub use arete_interpreter;
     pub use arete_server;
+    pub use base64;
     pub use bs58;
     pub use bytemuck;
     pub use dotenvy;

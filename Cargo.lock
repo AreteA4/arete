@@ -130,6 +130,7 @@ dependencies = [
  "arete-interpreter",
  "arete-macros",
  "arete-server",
+ "base64 0.22.1",
  "bs58",
  "bytemuck",
  "dotenvy",
