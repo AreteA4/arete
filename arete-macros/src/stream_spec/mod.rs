@@ -43,7 +43,7 @@ mod handlers;
 mod idl_spec;
 mod module;
 mod proto_struct;
-mod sections;
+pub(crate) mod sections;
 
 // Re-export module processing functions (used by lib.rs)
 pub use module::process_module;

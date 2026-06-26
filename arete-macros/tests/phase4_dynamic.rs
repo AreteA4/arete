@@ -6,8 +6,7 @@ use support::{cargo_toml, escape_path, macro_manifest_dir, TempCrate};
 
 fn compile_failure_stderr(name: &str, source: &str) -> String {
     let manifest_dir = macro_manifest_dir();
-    let temp_crate = TempCrate::new(
-        "phase4-dynamic",
+    compile_failure_stderr_with_cargo(
         name,
         cargo_toml(
             name,
@@ -17,8 +16,11 @@ fn compile_failure_stderr(name: &str, source: &str) -> String {
             )],
         ),
         source,
-        &[],
-    );
+    )
+}
+
+fn compile_failure_stderr_with_cargo(name: &str, cargo_toml: String, source: &str) -> String {
+    let temp_crate = TempCrate::new("phase4-dynamic", name, cargo_toml, source, &[]);
 
     let output = temp_crate.cargo_check();
 
@@ -30,12 +32,34 @@ fn compile_failure_stderr(name: &str, source: &str) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+fn assert_compile_success(name: &str, cargo_toml: String, source: &str) {
+    let temp_crate = TempCrate::new("phase4-dynamic", name, cargo_toml, source, &[]);
+    let output = temp_crate.cargo_check();
+
+    assert!(
+        output.status.success(),
+        "expected cargo check to succeed for {name}, stderr was:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn pump_idl_path() -> String {
     escape_path(
         &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("workspace root")
             .join("arete-idl/tests/fixtures/pump.json"),
+    )
+}
+
+fn meteora_presale_idl_path() -> String {
+    escape_path(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .parent()
+            .expect("hypertek root")
+            .join("arete-examples/idls/meteora-presale.idl.json"),
     )
 }
 
@@ -188,6 +212,149 @@ fn main() {}
 
     let stderr = compile_failure_stderr("computed_cycle_is_rejected", source);
     assert!(stderr.contains("computed fields contain a dependency cycle"));
+}
+
+#[test]
+fn nested_computed_reference_into_idl_struct_compiles() {
+    let manifest_dir = macro_manifest_dir();
+    let arete_dir = manifest_dir.parent().expect("workspace root").join("arete");
+    let source = format!(
+        r#"use arete::prelude::*;
+use arete_macros::arete;
+
+#[arete(idl = "{}")]
+mod good {{
+    #![allow(non_snake_case)]
+
+    use arete::macros::Stream;
+    use serde::{{Deserialize, Serialize}};
+
+    #[entity(name = "Thing")]
+    struct Thing {{
+        id: Id,
+        lifecycle: Lifecycle,
+        sale: Sale,
+    }}
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
+    struct Id {{
+        #[map(presale_sdk::instructions::initialize_presale::presale, primary_key, strategy = SetOnce)]
+        presale_address: String,
+    }}
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
+    struct Lifecycle {{
+        #[map(presale_sdk::instructions::initialize_presale::params, strategy = SetOnce, emit = false)]
+        initialize_params: Option<presale_sdk::types::InitializePresaleArgs>,
+    }}
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
+    struct Sale {{
+        #[computed(lifecycle.initialize_params.presale_params.disable_earlier_presale_end_once_cap_reached)]
+        disable_earlier_presale_end_once_cap_reached: Option<u8>,
+    }}
+}}
+
+fn main() {{}}
+"#,
+        meteora_presale_idl_path()
+    );
+
+    let cargo = cargo_toml(
+        "nested-computed-reference-into-idl-struct-compiles",
+        &[
+            format!(
+                "arete = {{ path = \"{}\", features = [\"full\"] }}",
+                escape_path(&arete_dir)
+            ),
+            format!(
+                "arete-macros = {{ path = \"{}\" }}",
+                escape_path(&manifest_dir)
+            ),
+            "serde = { version = \"1.0\", features = [\"derive\"] }".to_string(),
+            "borsh = { version = \"1.5\", features = [\"derive\"] }".to_string(),
+            "solana-pubkey = { version = \"2.2\", features = [\"serde\", \"borsh\"] }".to_string(),
+        ],
+    );
+
+    assert_compile_success(
+        "nested_computed_reference_into_idl_struct_compiles",
+        cargo,
+        &source,
+    );
+}
+
+#[test]
+fn invalid_nested_computed_reference_is_rejected() {
+    let manifest_dir = macro_manifest_dir();
+    let arete_dir = manifest_dir.parent().expect("workspace root").join("arete");
+    let source = format!(
+        r#"use arete::prelude::*;
+use arete_macros::arete;
+
+#[arete(idl = "{}")]
+mod broken {{
+    #![allow(non_snake_case)]
+
+    use arete::macros::Stream;
+    use serde::{{Deserialize, Serialize}};
+
+    #[entity(name = "Thing")]
+    struct Thing {{
+        id: Id,
+        lifecycle: Lifecycle,
+        sale: Sale,
+    }}
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
+    struct Id {{
+        #[map(presale_sdk::instructions::initialize_presale::presale, primary_key, strategy = SetOnce)]
+        presale_address: String,
+    }}
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
+    struct Lifecycle {{
+        #[map(presale_sdk::instructions::initialize_presale::params, strategy = SetOnce, emit = false)]
+        initialize_params: Option<presale_sdk::types::InitializePresaleArgs>,
+    }}
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
+    struct Sale {{
+        #[computed(lifecycle.initialize_params.presale_params.disable_earlier_presale_end_once_cap_reachd)]
+        disable_earlier_presale_end_once_cap_reached: Option<u8>,
+    }}
+}}
+
+fn main() {{}}
+"#,
+        meteora_presale_idl_path()
+    );
+
+    let cargo = cargo_toml(
+        "invalid-nested-computed-reference-is-rejected",
+        &[
+            format!(
+                "arete = {{ path = \"{}\", features = [\"full\"] }}",
+                escape_path(&arete_dir)
+            ),
+            format!(
+                "arete-macros = {{ path = \"{}\" }}",
+                escape_path(&manifest_dir)
+            ),
+            "serde = { version = \"1.0\", features = [\"derive\"] }".to_string(),
+            "borsh = { version = \"1.5\", features = [\"derive\"] }".to_string(),
+            "solana-pubkey = { version = \"2.2\", features = [\"serde\", \"borsh\"] }".to_string(),
+        ],
+    );
+
+    let stderr = compile_failure_stderr_with_cargo(
+        "invalid_nested_computed_reference_is_rejected",
+        cargo,
+        &source,
+    );
+    assert!(stderr.contains(
+        "unknown computed field reference 'lifecycle.initialize_params.presale_params.disable_earlier_presale_end_once_cap_reachd'"
+    ));
 }
 
 #[test]

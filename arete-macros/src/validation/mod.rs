@@ -2,7 +2,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{
-    ComputedExpr, EntitySection, FieldPath, Predicate, PredicateValue, ViewTransform,
+    BaseType, ComputedExpr, EntitySection, FieldPath, FieldTypeInfo, Predicate, PredicateValue,
+    ViewTransform,
 };
 use crate::diagnostic::{suggestion_or_available_suffix, ErrorCollector};
 use crate::event_type_helpers::{find_idl_for_type, IdlLookup};
@@ -10,6 +11,7 @@ use crate::parse;
 use crate::parse::idl as idl_parser;
 use crate::parse::pda_validation::PdaValidationContext;
 use crate::parse::pdas::PdasBlock;
+use crate::stream_spec::sections::analyze_field_type_with_idl;
 use crate::utils::path_to_string;
 use crate::validation::idl_refs::{
     resolve_instruction_lookup, resolve_source_lookup_from_path, validate_account_field,
@@ -77,7 +79,7 @@ enum ResolvedMappingSource<'a> {
 }
 
 pub fn validate_semantics(input: ValidationInput<'_>) -> syn::Result<()> {
-    let known_fields = collect_known_field_paths(input.section_specs, input.computed_fields);
+    let known_fields = collect_known_field_paths(input.section_specs, input.computed_fields, input.idls);
     let available_fields = sorted_field_paths(&known_fields);
 
     let mut errors = ErrorCollector::default();
@@ -199,16 +201,26 @@ pub fn validate_pda_blocks(
 fn collect_known_field_paths(
     section_specs: &[EntitySection],
     computed_fields: &[ComputedFieldValidation],
+    idls: IdlLookup,
 ) -> HashSet<String> {
     let mut known = HashSet::new();
 
     for section in section_specs {
         for field in &section.fields {
-            if section.name == "root" {
-                known.insert(field.field_name.clone());
+            let base_path = if section.name == "root" {
+                field.field_name.clone()
             } else {
-                known.insert(format!("{}.{}", section.name, field.field_name));
-            }
+                format!("{}.{}", section.name, field.field_name)
+            };
+
+            let mut type_stack = Vec::new();
+            collect_known_field_paths_recursive(
+                &base_path,
+                field,
+                idls,
+                &mut known,
+                &mut type_stack,
+            );
         }
     }
 
@@ -217,6 +229,52 @@ fn collect_known_field_paths(
     }
 
     known
+}
+
+fn collect_known_field_paths_recursive(
+    base_path: &str,
+    field: &FieldTypeInfo,
+    idls: IdlLookup,
+    known: &mut HashSet<String>,
+    type_stack: &mut Vec<String>,
+) {
+    known.insert(base_path.to_string());
+
+    if field.is_array {
+        return;
+    }
+
+    let Some(resolved_type) = field.resolved_type.as_ref() else {
+        return;
+    };
+
+    let type_key = resolved_type.type_name.clone();
+    if type_stack.contains(&type_key) {
+        return;
+    }
+
+    type_stack.push(type_key);
+
+    for nested_field in &resolved_type.fields {
+        let nested_path = format!("{}.{}", base_path, nested_field.field_name);
+        known.insert(nested_path.clone());
+
+        if nested_field.base_type != BaseType::Object || nested_field.is_array {
+            continue;
+        }
+
+        let nested_info = analyze_field_type_with_idl(
+            &nested_field.field_name,
+            &nested_field.field_type,
+            idls,
+        );
+
+        if nested_info.resolved_type.is_some() {
+            collect_known_field_paths_recursive(&nested_path, &nested_info, idls, known, type_stack);
+        }
+    }
+
+    type_stack.pop();
 }
 
 fn sorted_field_paths(known_fields: &HashSet<String>) -> Vec<String> {
