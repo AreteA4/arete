@@ -1369,16 +1369,11 @@ pub fn generate_vm_handler(
                                     .unwrap()
                                     .as_secs() as i64);
 
-                            // SAFETY: Carefully splitting mutable borrow into disjoint parts
-                            let vm_ptr: *mut arete::runtime::arete_interpreter::vm::VmContext = &mut *vm as *mut arete::runtime::arete_interpreter::vm::VmContext;
-
                             let mut ctx = arete::runtime::arete_interpreter::resolvers::InstructionContext::with_metrics(
                                 accounts,
                                 0,
                                 &mut *vm,
-                                unsafe { (*vm_ptr).registers_mut() },
                                 2,
-                                unsafe { (*vm_ptr).path_cache() },
                                 instruction_data,
                                 Some(context.slot.unwrap_or(0)),
                                 context.signature.clone(),
@@ -2433,15 +2428,11 @@ pub fn generate_instruction_handler_impl(
                                     .unwrap()
                                     .as_secs() as i64);
 
-                            let vm_ptr: *mut arete::runtime::arete_interpreter::vm::VmContext = &mut *vm as *mut arete::runtime::arete_interpreter::vm::VmContext;
-
                             let mut ctx = arete::runtime::arete_interpreter::resolvers::InstructionContext::with_metrics(
                                 accounts,
                                 0,
                                 &mut *vm,
-                                unsafe { (*vm_ptr).registers_mut() },
                                 2,
-                                unsafe { (*vm_ptr).path_cache() },
                                 instruction_data,
                                 Some(context.slot.unwrap_or(0)),
                                 context.signature.clone(),

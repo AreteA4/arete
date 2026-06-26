@@ -10,7 +10,9 @@ use serde_json::Value;
 use crate::ast::{HttpMethod, ResolverType};
 use crate::compiler::MultiEntityBytecode;
 use crate::resolvers::{TokenMetadataResolverClient, UrlResolverClient};
-use crate::vm::{CachedResolverValue, ResolverRequest, TokenResolverMissAction, UpdateContext, VmContext};
+use crate::vm::{
+    CachedResolverValue, ResolverRequest, TokenResolverMissAction, UpdateContext, VmContext,
+};
 use crate::Mutation;
 
 pub type ResolverBatchResult =
@@ -260,7 +262,9 @@ pub trait RuntimeResolver: Send + Sync {
                             },
                             None => match entry.backend_request {
                                 RuntimeResolverRequest::TokenMetadata { .. } => {
-                                    match vm_guard.handle_token_resolver_miss(&entry.request.cache_key) {
+                                    match vm_guard
+                                        .handle_token_resolver_miss(&entry.request.cache_key)
+                                    {
                                         TokenResolverMissAction::RetryScheduled => {
                                             retry_scheduled_count += 1;
                                         }
@@ -270,7 +274,9 @@ pub trait RuntimeResolver: Send + Sync {
                                         TokenResolverMissAction::Dropped => {}
                                     }
                                 }
-                                RuntimeResolverRequest::UrlJson { .. } => failed.push(entry.request),
+                                RuntimeResolverRequest::UrlJson { .. } => {
+                                    failed.push(entry.request)
+                                }
                             },
                         }
                     }
@@ -280,7 +286,8 @@ pub trait RuntimeResolver: Send + Sync {
                     for entry in pending {
                         match entry.backend_request {
                             RuntimeResolverRequest::TokenMetadata { .. } => {
-                                match vm_guard.handle_token_resolver_miss(&entry.request.cache_key) {
+                                match vm_guard.handle_token_resolver_miss(&entry.request.cache_key)
+                                {
                                     TokenResolverMissAction::RetryScheduled => {
                                         retry_scheduled_count += 1;
                                     }

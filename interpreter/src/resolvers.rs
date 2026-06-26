@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::marker::PhantomData;
 use std::sync::OnceLock;
 
 use futures::future::join_all;
@@ -68,17 +69,18 @@ pub struct InstructionContext<'a> {
     pub(crate) accounts: HashMap<String, String>,
     #[allow(dead_code)]
     pub(crate) state_id: u32,
-    pub(crate) reverse_lookup_tx: &'a mut dyn ReverseLookupUpdater,
+    pub(crate) reverse_lookup_tx: *mut (dyn ReverseLookupUpdater + 'a),
     pub(crate) pending_updates: Vec<crate::vm::PendingAccountUpdate>,
-    pub(crate) registers: Option<&'a mut Vec<crate::vm::RegisterValue>>,
+    pub(crate) registers: Option<*mut Vec<crate::vm::RegisterValue>>,
     pub(crate) state_reg: Option<crate::vm::Register>,
     #[allow(dead_code)]
-    pub(crate) compiled_paths: Option<&'a HashMap<String, crate::metrics_context::CompiledPath>>,
+    pub(crate) compiled_paths: Option<*const HashMap<String, crate::metrics_context::CompiledPath>>,
     pub(crate) instruction_data: Option<&'a serde_json::Value>,
     pub(crate) slot: Option<u64>,
     pub(crate) signature: Option<String>,
     pub(crate) timestamp: Option<i64>,
     pub(crate) dirty_tracker: crate::vm::DirtyTracker,
+    _borrow: PhantomData<&'a mut ()>,
 }
 
 pub trait ReverseLookupUpdater {
@@ -975,7 +977,7 @@ impl<'a> InstructionContext<'a> {
         Self {
             accounts,
             state_id,
-            reverse_lookup_tx,
+            reverse_lookup_tx: reverse_lookup_tx as *mut (dyn ReverseLookupUpdater + 'a),
             pending_updates: Vec::new(),
             registers: None,
             state_reg: None,
@@ -985,6 +987,7 @@ impl<'a> InstructionContext<'a> {
             signature: None,
             timestamp: None,
             dirty_tracker: crate::vm::DirtyTracker::new(),
+            _borrow: PhantomData,
         }
     }
 
@@ -992,15 +995,21 @@ impl<'a> InstructionContext<'a> {
     pub fn with_metrics(
         accounts: HashMap<String, String>,
         state_id: u32,
-        reverse_lookup_tx: &'a mut dyn ReverseLookupUpdater,
-        registers: &'a mut Vec<crate::vm::RegisterValue>,
+        vm: &'a mut crate::vm::VmContext,
         state_reg: crate::vm::Register,
-        compiled_paths: &'a HashMap<String, crate::metrics_context::CompiledPath>,
         instruction_data: &'a serde_json::Value,
         slot: Option<u64>,
         signature: Option<String>,
         timestamp: i64,
     ) -> Self {
+        // Store raw pointers so the hook context can access VM internals without
+        // holding overlapping Rust references to `vm` and `vm.registers`.
+        let reverse_lookup_tx =
+            vm as *mut crate::vm::VmContext as *mut (dyn ReverseLookupUpdater + 'a);
+        let registers = vm.registers_mut() as *mut Vec<crate::vm::RegisterValue>;
+        let compiled_paths =
+            vm.path_cache() as *const HashMap<String, crate::metrics_context::CompiledPath>;
+
         Self {
             accounts,
             state_id,
@@ -1014,7 +1023,16 @@ impl<'a> InstructionContext<'a> {
             signature,
             timestamp: Some(timestamp),
             dirty_tracker: crate::vm::DirtyTracker::new(),
+            _borrow: PhantomData,
         }
+    }
+
+    fn registers(&self) -> Option<&Vec<crate::vm::RegisterValue>> {
+        self.registers.map(|registers| unsafe { &*registers })
+    }
+
+    fn registers_mut(&mut self) -> Option<&mut Vec<crate::vm::RegisterValue>> {
+        self.registers.map(|registers| unsafe { &mut *registers })
     }
 
     /// Get an account address by its name from the instruction
@@ -1028,9 +1046,9 @@ impl<'a> InstructionContext<'a> {
     /// The pending account updates are accumulated internally and can be retrieved
     /// via `take_pending_updates()` after all hooks have executed.
     pub fn register_pda_reverse_lookup(&mut self, pda_address: &str, seed_value: &str) {
-        let pending = self
-            .reverse_lookup_tx
-            .update(pda_address.to_string(), seed_value.to_string());
+        let pending = unsafe {
+            (&mut *self.reverse_lookup_tx).update(pda_address.to_string(), seed_value.to_string())
+        };
         self.pending_updates.extend(pending);
     }
 
@@ -1052,27 +1070,29 @@ impl<'a> InstructionContext<'a> {
 
     /// Get the current state register value (for generating mutations)
     pub fn state_value(&self) -> Option<&serde_json::Value> {
-        if let (Some(registers), Some(state_reg)) = (self.registers.as_ref(), self.state_reg) {
-            Some(&registers[state_reg])
-        } else {
-            None
-        }
+        let state_reg = self.state_reg?;
+        let registers = self.registers()?;
+        Some(&registers[state_reg])
     }
 
     /// Get a field value from the entity state
     /// This allows reading aggregated values or other entity fields
     pub fn get<T: serde::de::DeserializeOwned>(&self, field_path: &str) -> Option<T> {
-        if let (Some(registers), Some(state_reg)) = (self.registers.as_ref(), self.state_reg) {
-            let state = &registers[state_reg];
-            self.get_nested_value(state, field_path)
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-        } else {
-            None
-        }
+        let state_reg = self.state_reg?;
+        let registers = self.registers()?;
+        let state = &registers[state_reg];
+        self.get_nested_value(state, field_path)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     pub fn set<T: serde::Serialize>(&mut self, field_path: &str, value: T) {
-        if let (Some(registers), Some(state_reg)) = (self.registers.as_mut(), self.state_reg) {
+        let Some(state_reg) = self.state_reg else {
+            println!("      ⚠️  Cannot set field '{}': metrics not configured (registers={}, state_reg={:?})", 
+                field_path, self.registers.is_some(), self.state_reg);
+            return;
+        };
+
+        if let Some(registers) = self.registers_mut() {
             let serialized = serde_json::to_value(value).ok();
             if let Some(val) = serialized {
                 Self::set_nested_value_static(&mut registers[state_reg], field_path, val);
@@ -1091,7 +1111,15 @@ impl<'a> InstructionContext<'a> {
     }
 
     pub fn append<T: serde::Serialize>(&mut self, field_path: &str, value: T) {
-        if let (Some(registers), Some(state_reg)) = (self.registers.as_mut(), self.state_reg) {
+        let Some(state_reg) = self.state_reg else {
+            println!(
+                "      ⚠️  Cannot append to '{}': metrics not configured",
+                field_path
+            );
+            return;
+        };
+
+        if let Some(registers) = self.registers_mut() {
             let serialized = serde_json::to_value(&value).ok();
             if let Some(val) = serialized {
                 Self::append_to_array_static(&mut registers[state_reg], field_path, val.clone());
