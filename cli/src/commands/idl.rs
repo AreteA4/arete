@@ -13,8 +13,8 @@ use arete_idl::discriminator::compute_discriminator;
 use arete_idl::parse::parse_idl_file;
 use arete_idl::search::{search_idl, suggest_similar, IdlSection, MatchType, SearchResult};
 use arete_idl::types::{
-    IdlAccount, IdlField, IdlInstruction, IdlSpec, IdlType, IdlTypeArrayElement, IdlTypeDef,
-    IdlTypeDefKind, IdlTypeDefinedInner,
+    IdlAccount, IdlEvent, IdlEventFieldSource, IdlField, IdlInstruction, IdlSpec, IdlType,
+    IdlTypeArrayElement, IdlTypeDef, IdlTypeDefKind, IdlTypeDefinedInner,
 };
 
 /// Load and parse an IDL file, returning a clear error on failure.
@@ -146,6 +146,12 @@ fn find_type<'a>(idl: &'a IdlSpec, name: &str) -> Option<&'a IdlTypeDef> {
         .find(|type_def| type_def.name.eq_ignore_ascii_case(name))
 }
 
+fn find_event<'a>(idl: &'a IdlSpec, name: &str) -> Option<&'a IdlEvent> {
+    idl.events
+        .iter()
+        .find(|event| event.name.eq_ignore_ascii_case(name))
+}
+
 fn not_found_error(section: &str, name: &str, candidates: &[String]) -> anyhow::Error {
     let candidate_refs = candidates.iter().map(String::as_str).collect::<Vec<_>>();
     if let Some(suggestion) = suggest_similar(name, &candidate_refs, 3).first() {
@@ -180,6 +186,26 @@ struct SearchResultJson {
     name: String,
     section: String,
     match_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct EventFieldJson {
+    name: String,
+    #[serde(rename = "type")]
+    type_: String,
+}
+
+#[derive(Serialize)]
+struct EventJson {
+    name: String,
+    discriminator: Vec<u8>,
+    docs: Vec<String>,
+    fields: Vec<EventFieldJson>,
+    field_source: IdlEventFieldSource,
 }
 
 #[derive(Serialize)]
@@ -260,6 +286,41 @@ struct TransitiveConnectionJson {
     to: String,
     hop1_instruction: String,
     hop2_instruction: String,
+}
+
+fn build_event_json(idl: &IdlSpec, event: &IdlEvent) -> EventJson {
+    let resolved = idl.resolve_event_fields_for(event);
+    EventJson {
+        name: event.name.clone(),
+        discriminator: event.get_discriminator(),
+        docs: event.docs.clone(),
+        fields: resolved
+            .fields
+            .into_iter()
+            .map(|field| EventFieldJson {
+                name: field.name.clone(),
+                type_: format_idl_type(&field.type_),
+            })
+            .collect(),
+        field_source: resolved.source,
+    }
+}
+
+fn format_event_field_source(source: &IdlEventFieldSource) -> String {
+    match source {
+        IdlEventFieldSource::Inline => "inline event fields".to_string(),
+        IdlEventFieldSource::EventDataType { type_name } => {
+            format!("event data type '{}'", type_name)
+        }
+        IdlEventFieldSource::MatchingType { type_name } => {
+            format!("matching type '{}'", type_name)
+        }
+        IdlEventFieldSource::Unavailable => "unavailable".to_string(),
+    }
+}
+
+fn search_result_label(result: &SearchResult) -> &str {
+    result.path.as_deref().unwrap_or(&result.name)
 }
 
 #[derive(Serialize)]
@@ -460,6 +521,19 @@ pub enum IdlCommands {
         json: bool,
     },
 
+    /// Show details for a single event
+    Event {
+        /// Path to the IDL JSON file
+        path: PathBuf,
+
+        /// Event name
+        name: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// List all constants
     Constants {
         /// Path to the IDL JSON file
@@ -572,8 +646,8 @@ pub enum IdlCommands {
         json: bool,
 
         /// Suggest Arete integration points
-        #[arg(long)]
-        suggest_hs: bool,
+        #[arg(long, alias = "suggest-hs")]
+        suggest_a4: bool,
     },
 }
 
@@ -869,10 +943,65 @@ pub fn run(args: IdlArgs) -> Result<()> {
                 }
             }
         }
+        IdlCommands::Event {
+            ref path,
+            ref name,
+            json,
+        } => {
+            let idl = load_idl(path)?;
+            let event = find_event(&idl, name).ok_or_else(|| {
+                let candidates = idl
+                    .events
+                    .iter()
+                    .map(|it| it.name.clone())
+                    .collect::<Vec<_>>();
+                not_found_error("event", name, &candidates)
+            })?;
+            let event_json = build_event_json(&idl, event);
+
+            if json {
+                return print_json(&event_json);
+            }
+
+            println!("{} {}", "Event:".bold(), event_json.name.green().bold());
+            println!(
+                "  {} {}",
+                "Discriminator:".bold(),
+                format_discriminator(&event_json.discriminator).yellow()
+            );
+            println!(
+                "  {} {}",
+                "Field Source:".bold(),
+                format_event_field_source(&event_json.field_source).cyan()
+            );
+
+            if !event_json.docs.is_empty() {
+                println!();
+                println!("{}", "Docs".bold());
+                for doc in &event_json.docs {
+                    println!("  {}", doc);
+                }
+            }
+
+            println!();
+            println!("{}", "Fields".bold());
+            if event_json.fields.is_empty() {
+                println!("  {}", "(none)".dimmed());
+            } else {
+                for field in &event_json.fields {
+                    println!("  {:<30} {}", field.name.green(), field.type_.cyan());
+                }
+            }
+        }
         IdlCommands::Events { ref path, json } => {
             let idl = load_idl(path)?;
             if json {
-                return print_json(&idl.events);
+                let events = idl
+                    .events
+                    .iter()
+                    .map(|event| build_event_json(&idl, event))
+                    .collect::<Vec<_>>();
+                return print_json(&events);
             }
 
             println!("{}", "Events".bold());
@@ -929,6 +1058,8 @@ pub fn run(args: IdlArgs) -> Result<()> {
                         name: r.name.clone(),
                         section: format_section(&r.section),
                         match_type: format_match_type(&r.match_type),
+                        path: r.path.clone(),
+                        parent_name: r.parent_name.clone(),
                     })
                     .collect();
                 return print_json(&json_results);
@@ -958,7 +1089,7 @@ pub fn run(args: IdlArgs) -> Result<()> {
                         for r in &section_results {
                             println!(
                                 "  {} {}",
-                                r.name.green(),
+                                search_result_label(r).green(),
                                 format!("({})", format_match_type(&r.match_type)).dimmed()
                             );
                         }
@@ -1289,7 +1420,7 @@ pub fn run(args: IdlArgs) -> Result<()> {
             ref new_account,
             ref existing,
             json,
-            suggest_hs,
+            suggest_a4,
         } => {
             let idl = load_idl(path)?;
             let candidates = collect_account_names(&idl);
@@ -1452,7 +1583,7 @@ pub fn run(args: IdlArgs) -> Result<()> {
                 }
             }
 
-            if suggest_hs {
+            if suggest_a4 {
                 let mut register_from = Vec::new();
                 let mut aggregate = Vec::new();
 
@@ -1500,11 +1631,75 @@ pub fn run(args: IdlArgs) -> Result<()> {
                 }
                 println!(
                     "  {}",
-                    "These are Arete-specific integration suggestions. Use `--suggest-a4` to see them.".dimmed()
+                    "These are Arete-specific integration suggestions for `register_from` and `aggregate`."
+                        .dimmed()
                 );
             }
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arete_idl::parse::parse_idl_content;
+
+    #[test]
+    fn build_event_json_uses_resolved_fields() {
+        let idl = parse_idl_content(
+            r#"{
+                "name": "fake",
+                "instructions": [],
+                "accounts": [],
+                "types": [
+                    {
+                        "name": "TradeExecuted",
+                        "type": {
+                            "kind": "struct",
+                            "fields": [
+                                { "name": "amount", "type": "u64" },
+                                { "name": "user", "type": "publicKey" }
+                            ]
+                        }
+                    }
+                ],
+                "events": [
+                    {
+                        "name": "TradeExecuted",
+                        "discriminator": [1],
+                        "data": { "name": "TradeExecuted" }
+                    }
+                ],
+                "errors": [],
+                "constants": []
+            }"#,
+        )
+        .expect("test IDL should parse");
+
+        let event = find_event(&idl, "TradeExecuted").expect("event should exist");
+        let event_json = build_event_json(&idl, event);
+
+        assert_eq!(event_json.name, "TradeExecuted");
+        assert_eq!(event_json.fields.len(), 2);
+        assert_eq!(event_json.fields[0].name, "amount");
+        assert!(matches!(
+            event_json.field_source,
+            IdlEventFieldSource::EventDataType { .. }
+        ));
+    }
+
+    #[test]
+    fn search_result_label_prefers_resolved_path() {
+        let result = SearchResult {
+            name: "periodStartTs".to_string(),
+            section: IdlSection::Event,
+            match_type: MatchType::Contains,
+            path: Some("TradeExecuted.periodStartTs".to_string()),
+            parent_name: Some("TradeExecuted".to_string()),
+        };
+
+        assert_eq!(search_result_label(&result), "TradeExecuted.periodStartTs");
+    }
 }

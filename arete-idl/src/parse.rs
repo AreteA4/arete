@@ -166,6 +166,13 @@ fn codama_event_to_idl(event: &CodamaEvent) -> IdlEvent {
         discriminator: event.discriminator.clone(),
         docs: event.docs.clone(),
         fields: Vec::new(),
+        data: event
+            .data
+            .as_ref()
+            .map(|data| crate::types::IdlEventDataRef {
+                kind: data.kind.clone(),
+                name: data.name.clone(),
+            }),
     }
 }
 
@@ -433,6 +440,15 @@ struct CodamaEvent {
     discriminator: Vec<u8>,
     #[serde(default)]
     docs: Vec<String>,
+    #[serde(default)]
+    data: Option<CodamaEventDataRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodamaEventDataRef {
+    #[serde(default)]
+    kind: Option<String>,
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1162,17 +1178,42 @@ mod tests {
 
     #[test]
     fn test_real_subscriptions_idl_resolves_pdas() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../stacks/subscriptions/idl/subscriptions.json"
-        );
-        let json = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            // The stack IDL is not part of this crate; skip if unavailable.
-            Err(_) => return,
+        use std::path::PathBuf;
+
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let candidates = [
+            manifest_dir.join("../../arete-examples/idls/subscriptions.idl.json"),
+            manifest_dir.join("../stacks/subscriptions/idl/subscriptions.json"),
+        ];
+
+        let mut parse_errors = Vec::new();
+        let mut spec = None;
+
+        for path in candidates {
+            let Ok(json) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+
+            match parse_idl_content(&json) {
+                Ok(parsed) => {
+                    spec = Some(parsed);
+                    break;
+                }
+                Err(error) => parse_errors.push(format!("{}: {}", path.display(), error)),
+            }
+        }
+
+        let Some(spec) = spec else {
+            if parse_errors.is_empty() {
+                // The subscriptions IDL is not part of this crate; skip if unavailable.
+                return;
+            }
+            panic!(
+                "subscriptions idl should parse from at least one candidate path:\n{}",
+                parse_errors.join("\n")
+            );
         };
 
-        let spec = parse_idl_content(&json).expect("subscriptions idl should parse");
         let ix = spec
             .instructions
             .iter()
@@ -1373,7 +1414,11 @@ mod tests {
                         "kind": "eventNode",
                         "name": "SubscriptionCreatedEvent",
                         "discriminator": [0],
-                        "docs": ["created"]
+                        "docs": ["created"],
+                        "data": {
+                            "kind": "definedTypeLinkNode",
+                            "name": "SubscriptionCreatedEventData"
+                        }
                     }
                 ]
             }
@@ -1384,6 +1429,10 @@ mod tests {
         assert_eq!(idl.events[0].name, "SubscriptionCreatedEvent");
         assert_eq!(idl.events[0].get_discriminator(), vec![0]);
         assert_eq!(idl.events[0].docs, vec!["created"]);
+        assert_eq!(
+            idl.events[0].data.as_ref().map(|data| data.name.as_str()),
+            Some("SubscriptionCreatedEventData")
+        );
     }
 
     #[test]

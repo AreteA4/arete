@@ -301,6 +301,28 @@ pub enum IdlEnumVariantField {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IdlEventDataRef {
+    #[serde(default)]
+    pub kind: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IdlEventFieldSource {
+    Inline,
+    EventDataType { type_name: String },
+    MatchingType { type_name: String },
+    Unavailable,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedEventFields<'a> {
+    pub source: IdlEventFieldSource,
+    pub fields: Vec<&'a IdlField>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IdlEvent {
     pub name: String,
     #[serde(default)]
@@ -309,6 +331,8 @@ pub struct IdlEvent {
     pub docs: Vec<String>,
     #[serde(default)]
     pub fields: Vec<IdlField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<IdlEventDataRef>,
 }
 
 impl IdlEvent {
@@ -345,6 +369,61 @@ impl IdlSpec {
             .as_deref()
             .or_else(|| self.metadata.as_ref().and_then(|m| m.version.as_deref()))
             .unwrap_or("0.1.0")
+    }
+
+    pub fn find_event(&self, event_name: &str) -> Option<&IdlEvent> {
+        self.events
+            .iter()
+            .find(|event| event.name.eq_ignore_ascii_case(event_name))
+    }
+
+    pub fn resolve_event_fields<'a>(&'a self, event_name: &str) -> Option<ResolvedEventFields<'a>> {
+        self.find_event(event_name)
+            .map(|event| self.resolve_event_fields_for(event))
+    }
+
+    pub fn resolve_event_fields_for<'a>(&'a self, event: &'a IdlEvent) -> ResolvedEventFields<'a> {
+        if !event.fields.is_empty() {
+            return ResolvedEventFields {
+                source: IdlEventFieldSource::Inline,
+                fields: event.fields.iter().collect(),
+            };
+        }
+
+        if let Some(data) = &event.data {
+            if let Some(fields) = self.lookup_struct_fields(&data.name) {
+                return ResolvedEventFields {
+                    source: IdlEventFieldSource::EventDataType {
+                        type_name: data.name.clone(),
+                    },
+                    fields,
+                };
+            }
+        }
+
+        if let Some(fields) = self.lookup_struct_fields(&event.name) {
+            return ResolvedEventFields {
+                source: IdlEventFieldSource::MatchingType {
+                    type_name: event.name.clone(),
+                },
+                fields,
+            };
+        }
+
+        ResolvedEventFields {
+            source: IdlEventFieldSource::Unavailable,
+            fields: Vec::new(),
+        }
+    }
+
+    fn lookup_struct_fields<'a>(&'a self, type_name: &str) -> Option<Vec<&'a IdlField>> {
+        self.types
+            .iter()
+            .find(|ty| ty.name.eq_ignore_ascii_case(type_name))
+            .and_then(|ty| match &ty.type_def {
+                IdlTypeDefKind::Struct { fields, .. } => Some(fields.iter().collect()),
+                _ => None,
+            })
     }
 
     /// Check if a field is an account (vs an arg/data field) for a given instruction

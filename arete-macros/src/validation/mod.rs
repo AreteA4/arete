@@ -12,8 +12,8 @@ use crate::parse::pda_validation::PdaValidationContext;
 use crate::parse::pdas::PdasBlock;
 use crate::utils::path_to_string;
 use crate::validation::idl_refs::{
-    resolve_instruction_lookup, resolve_instruction_lookup_from_path, validate_account_field,
-    validate_instruction_field_spec,
+    resolve_instruction_lookup, resolve_source_lookup_from_path, validate_account_field,
+    validate_event_field_spec, validate_instruction_field_spec,
 };
 
 use crate::diagnostic::idl_error_to_syn;
@@ -64,6 +64,10 @@ enum ResolvedMappingSource<'a> {
     Instruction {
         idl: &'a IdlSpec,
         instruction_name: String,
+    },
+    Event {
+        idl: &'a IdlSpec,
+        event_name: String,
     },
     Account {
         idl: &'a IdlSpec,
@@ -473,11 +477,20 @@ fn resolve_mapping_source_once<'a>(
             syn::parse_str::<syn::Path>(source_type).map_err(|_| IdlSearchError::InvalidPath {
                 path: source_type.to_string(),
             })?;
-        let (idl, instruction_name) = resolve_instruction_lookup_from_path(&path, idls)?;
-        Ok(ResolvedMappingSource::Instruction {
-            idl,
-            instruction_name,
-        })
+        match resolve_source_lookup_from_path(&path, idls)? {
+            idl_refs::ResolvedSourceLookup::Instruction { idl, source_name } => {
+                Ok(ResolvedMappingSource::Instruction {
+                    idl,
+                    instruction_name: source_name,
+                })
+            }
+            idl_refs::ResolvedSourceLookup::Event { idl, source_name } => {
+                Ok(ResolvedMappingSource::Event {
+                    idl,
+                    event_name: source_name,
+                })
+            }
+        }
     } else if is_account_source {
         let path =
             syn::parse_str::<syn::Path>(source_type).map_err(|_| IdlSearchError::InvalidPath {
@@ -947,6 +960,22 @@ fn validate_mapping_references(
                         }
                     }
                 }
+                ResolvedMappingSource::Event { idl, event_name } => {
+                    if !mapping.source_field_name.is_empty()
+                        && !mapping.source_field_name.starts_with("__")
+                    {
+                        if let Some(temp_field) = try_field_spec_from_leaf(
+                            &mapping.source_field_name,
+                            mapping.source_field_span,
+                        ) {
+                            if let Err(error) =
+                                validate_event_field_spec(idl, event_name, &temp_field)
+                            {
+                                errors.push(idl_error_to_syn(mapping.source_field_span, error));
+                            }
+                        }
+                    }
+                }
                 ResolvedMappingSource::Account { idl, account_name } => {
                     if !mapping.source_field_name.is_empty()
                         && !mapping.source_field_name.starts_with("__")
@@ -973,6 +1002,11 @@ fn validate_mapping_references(
                             errors.push(idl_error_to_syn(lookup_by.ident.span(), error));
                         }
                     }
+                    ResolvedMappingSource::Event { idl, event_name } => {
+                        if let Err(error) = validate_event_field_spec(idl, event_name, lookup_by) {
+                            errors.push(idl_error_to_syn(lookup_by.ident.span(), error));
+                        }
+                    }
                     ResolvedMappingSource::Account { idl, account_name } => {
                         if let Err(error) =
                             validate_account_field(idl, account_name, &lookup_by.ident.to_string())
@@ -992,6 +1026,13 @@ fn validate_mapping_references(
                     } => {
                         if let Err(error) =
                             validate_instruction_field_spec(idl, instruction_name, stop_lookup_by)
+                        {
+                            errors.push(idl_error_to_syn(stop_lookup_by.ident.span(), error));
+                        }
+                    }
+                    ResolvedMappingSource::Event { idl, event_name } => {
+                        if let Err(error) =
+                            validate_event_field_spec(idl, event_name, stop_lookup_by)
                         {
                             errors.push(idl_error_to_syn(stop_lookup_by.ident.span(), error));
                         }
@@ -1030,6 +1071,25 @@ fn validate_mapping_references(
                                         &temp_field,
                                     ) {
                                         let key = format!("{leaf}@{instruction_name}");
+                                        if reported_condition_leaves.insert(key) {
+                                            errors.push(idl_error_to_syn(mapping.attr_span, error));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        ResolvedMappingSource::Event { idl, event_name } => {
+                            for leaf in &field_leaves {
+                                if leaf.starts_with("__") {
+                                    continue;
+                                }
+                                if let Some(temp_field) =
+                                    try_field_spec_from_leaf(leaf, mapping.attr_span)
+                                {
+                                    if let Err(error) =
+                                        validate_event_field_spec(idl, event_name, &temp_field)
+                                    {
+                                        let key = format!("{leaf}@{event_name}");
                                         if reported_condition_leaves.insert(key) {
                                             errors.push(idl_error_to_syn(mapping.attr_span, error));
                                         }
@@ -1089,8 +1149,10 @@ fn validate_aggregate_conditions(
         let mut source_types: Vec<&String> = sources_by_type.keys().collect();
         source_types.sort();
 
-        // Collect all instruction-source mappings for this aggregate target,
-        // sorted by source type for deterministic validation order.
+        // Collect all instruction-like mappings for this aggregate target.
+        // This includes event sources, which are classified as instruction
+        // sources at parse time and resolved to either Instruction or Event
+        // below.
         let mut instruction_mappings: Vec<&parse::MapAttribute> = source_types
             .iter()
             .flat_map(|k| &sources_by_type[*k])
@@ -1101,25 +1163,46 @@ fn validate_aggregate_conditions(
         let mut reported: HashSet<(String, String)> = HashSet::new();
         for mapping in &instruction_mappings {
             let source_type = mapping.source_type_string();
-            if let Ok(ResolvedMappingSource::Instruction {
-                idl,
-                instruction_name,
-            }) = resolve_mapping_source_once(&source_type, std::slice::from_ref(mapping), idls)
-            {
-                for leaf in leaves {
-                    if leaf.starts_with("__") {
-                        continue;
-                    }
-                    if let Some(temp_field) = try_field_spec_from_leaf(leaf, mapping.attr_span) {
-                        if let Err(error) =
-                            validate_instruction_field_spec(idl, &instruction_name, &temp_field)
+            match resolve_mapping_source_once(&source_type, std::slice::from_ref(mapping), idls) {
+                Ok(ResolvedMappingSource::Instruction {
+                    idl,
+                    instruction_name,
+                }) => {
+                    for leaf in leaves {
+                        if leaf.starts_with("__") {
+                            continue;
+                        }
+                        if let Some(temp_field) = try_field_spec_from_leaf(leaf, mapping.attr_span)
                         {
-                            if reported.insert((leaf.clone(), instruction_name.clone())) {
-                                errors.push(idl_error_to_syn(mapping.attr_span, error));
+                            if let Err(error) =
+                                validate_instruction_field_spec(idl, &instruction_name, &temp_field)
+                            {
+                                if reported.insert((leaf.clone(), instruction_name.clone())) {
+                                    errors.push(idl_error_to_syn(mapping.attr_span, error));
+                                }
                             }
                         }
                     }
                 }
+                Ok(ResolvedMappingSource::Event { idl, event_name }) => {
+                    for leaf in leaves {
+                        if leaf.starts_with("__") {
+                            continue;
+                        }
+                        if let Some(temp_field) = try_field_spec_from_leaf(leaf, mapping.attr_span)
+                        {
+                            if let Err(error) =
+                                validate_event_field_spec(idl, &event_name, &temp_field)
+                            {
+                                if reported.insert((leaf.clone(), event_name.clone())) {
+                                    errors.push(idl_error_to_syn(mapping.attr_span, error));
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(ResolvedMappingSource::Account { .. } | ResolvedMappingSource::Other)
+                | Err(_) => {}
             }
         }
 
@@ -1150,23 +1233,15 @@ fn validate_aggregate_conditions(
             }
         }
 
-        // Fallback: no IDL source found (e.g. event-backed aggregate).
-        // Condition field validation for event sources is handled via
-        // validate_event_references; skip here to avoid false positives.
-        // TODO(event-aggregate-conditions): validate condition field paths for event-backed
-        // aggregate targets. These conditions reference source instruction/account fields,
-        // not entity fields. Validation would require threading `events_by_instruction` into
-        // this function and cross-checking leaves against resolved IDL instruction args.
+        // Fallback: no IDL-backed mappings were found for this target.
         if instruction_mappings.is_empty() && account_mappings.is_empty() {
-            // Defensive: if any non-event mapping targets this bare field name but
-            // wasn't captured above, that indicates a key-format mismatch.
             debug_assert!(
                 !sources_by_type
                     .values()
                     .flatten()
-                    .any(|m| m.target_field_name == bare_target && !m.is_event_source),
-                "aggregate condition '{}' has a matching non-event source mapping \
-                 that was not captured — possible target_field_name mismatch",
+                    .any(|m| m.target_field_name == bare_target),
+                "aggregate condition '{}' has a matching source mapping that was not captured \
+                 during condition validation",
                 target_field,
             );
             continue;
@@ -1256,8 +1331,12 @@ fn validate_event_references(
             continue;
         };
 
-        let (idl, instruction_name) =
-            match resolve_instruction_lookup(first_attr, instruction_key, idls) {
+        let first_source = if let Some(path) = first_attr
+            .from_instruction
+            .as_ref()
+            .or(first_attr.inferred_instruction.as_ref())
+        {
+            match resolve_source_lookup_from_path(path, idls) {
                 Ok(value) => value,
                 Err(error) => {
                     errors.push(idl_error_to_syn(
@@ -1266,13 +1345,30 @@ fn validate_event_references(
                     ));
                     continue;
                 }
-            };
+            }
+        } else {
+            match resolve_instruction_lookup(first_attr, instruction_key, idls) {
+                Ok((idl, instruction_name)) => idl_refs::ResolvedSourceLookup::Instruction {
+                    idl,
+                    source_name: instruction_name,
+                },
+                Err(error) => {
+                    errors.push(idl_error_to_syn(
+                        first_attr.instruction_span.unwrap_or(first_attr.attr_span),
+                        error,
+                    ));
+                    continue;
+                }
+            }
+        };
 
         for (_target_field, event_attr, _field_type) in &event_mappings {
-            let (event_idl, event_instruction_name) = if event_attr.from_instruction.is_some()
-                || event_attr.inferred_instruction.is_some()
+            let resolved_source = if let Some(path) = event_attr
+                .from_instruction
+                .as_ref()
+                .or(event_attr.inferred_instruction.as_ref())
             {
-                match resolve_instruction_lookup(event_attr, instruction_key, idls) {
+                match resolve_source_lookup_from_path(path, idls) {
                     Ok(value) => value,
                     Err(error) => {
                         errors.push(idl_error_to_syn(
@@ -1283,17 +1379,27 @@ fn validate_event_references(
                     }
                 }
             } else {
-                (idl, instruction_name.clone())
+                first_source.clone()
             };
 
             for field_spec in &event_attr.capture_fields {
                 let field_name = field_spec.ident.to_string();
-                if let Err(error) =
-                    validate_instruction_field_spec(event_idl, &event_instruction_name, field_spec)
-                {
-                    if reported_capture_fields
-                        .insert((field_name.clone(), event_instruction_name.clone()))
-                    {
+                let validation = match &resolved_source {
+                    idl_refs::ResolvedSourceLookup::Instruction { idl, source_name } => {
+                        validate_instruction_field_spec(idl, source_name, field_spec)
+                    }
+                    idl_refs::ResolvedSourceLookup::Event { idl, source_name } => {
+                        validate_event_field_spec(idl, source_name, field_spec)
+                    }
+                };
+                if let Err(error) = validation {
+                    let source_name = match &resolved_source {
+                        idl_refs::ResolvedSourceLookup::Instruction { source_name, .. }
+                        | idl_refs::ResolvedSourceLookup::Event { source_name, .. } => {
+                            source_name.clone()
+                        }
+                    };
+                    if reported_capture_fields.insert((field_name.clone(), source_name)) {
                         errors.push(idl_error_to_syn(field_spec.ident.span(), error));
                     }
                 }
@@ -1305,14 +1411,22 @@ fn validate_event_references(
                 }
                 if let Some(temp_field) = try_field_spec_from_leaf(field_name, event_attr.attr_span)
                 {
-                    if let Err(error) = validate_instruction_field_spec(
-                        event_idl,
-                        &event_instruction_name,
-                        &temp_field,
-                    ) {
-                        if reported_capture_fields
-                            .insert((field_name.clone(), event_instruction_name.clone()))
-                        {
+                    let validation = match &resolved_source {
+                        idl_refs::ResolvedSourceLookup::Instruction { idl, source_name } => {
+                            validate_instruction_field_spec(idl, source_name, &temp_field)
+                        }
+                        idl_refs::ResolvedSourceLookup::Event { idl, source_name } => {
+                            validate_event_field_spec(idl, source_name, &temp_field)
+                        }
+                    };
+                    if let Err(error) = validation {
+                        let source_name = match &resolved_source {
+                            idl_refs::ResolvedSourceLookup::Instruction { source_name, .. }
+                            | idl_refs::ResolvedSourceLookup::Event { source_name, .. } => {
+                                source_name.clone()
+                            }
+                        };
+                        if reported_capture_fields.insert((field_name.clone(), source_name)) {
                             errors.push(idl_error_to_syn(event_attr.attr_span, error));
                         }
                     }
@@ -1320,9 +1434,15 @@ fn validate_event_references(
             }
 
             if let Some(field_spec) = &event_attr.lookup_by {
-                if let Err(error) =
-                    validate_instruction_field_spec(event_idl, &event_instruction_name, field_spec)
-                {
+                let validation = match &resolved_source {
+                    idl_refs::ResolvedSourceLookup::Instruction { idl, source_name } => {
+                        validate_instruction_field_spec(idl, source_name, field_spec)
+                    }
+                    idl_refs::ResolvedSourceLookup::Event { idl, source_name } => {
+                        validate_event_field_spec(idl, source_name, field_spec)
+                    }
+                };
+                if let Err(error) = validation {
                     errors.push(idl_error_to_syn(field_spec.ident.span(), error));
                 }
             }
@@ -1357,8 +1477,8 @@ fn validate_derive_from_references(
             }
         };
 
-        let instruction_lookup = idl_refs::resolve_instruction_lookup_from_path(&path, idls);
-        let (idl, instruction_name) = match instruction_lookup {
+        let source_lookup = idl_refs::resolve_source_lookup_from_path(&path, idls);
+        let source_lookup = match source_lookup {
             Ok(value) => value,
             Err(error) => {
                 if let Some(first_attr) = derive_attrs.first() {
@@ -1370,17 +1490,29 @@ fn validate_derive_from_references(
 
         for derive_attr in derive_attrs {
             if !derive_attr.field.ident.to_string().starts_with("__") {
-                if let Err(error) =
-                    validate_instruction_field_spec(idl, &instruction_name, &derive_attr.field)
-                {
+                let validation = match &source_lookup {
+                    idl_refs::ResolvedSourceLookup::Instruction { idl, source_name } => {
+                        validate_instruction_field_spec(idl, source_name, &derive_attr.field)
+                    }
+                    idl_refs::ResolvedSourceLookup::Event { idl, source_name } => {
+                        validate_event_field_spec(idl, source_name, &derive_attr.field)
+                    }
+                };
+                if let Err(error) = validation {
                     errors.push(idl_error_to_syn(derive_attr.field.ident.span(), error));
                 }
             }
 
             if let Some(lookup_by) = &derive_attr.lookup_by {
-                if let Err(error) =
-                    validate_instruction_field_spec(idl, &instruction_name, lookup_by)
-                {
+                let validation = match &source_lookup {
+                    idl_refs::ResolvedSourceLookup::Instruction { idl, source_name } => {
+                        validate_instruction_field_spec(idl, source_name, lookup_by)
+                    }
+                    idl_refs::ResolvedSourceLookup::Event { idl, source_name } => {
+                        validate_event_field_spec(idl, source_name, lookup_by)
+                    }
+                };
+                if let Err(error) = validation {
                     errors.push(idl_error_to_syn(lookup_by.ident.span(), error));
                 }
             }

@@ -197,7 +197,7 @@ pub fn generate_sdk_types(idl: &IdlSpec, module_name: &str) -> TokenStream {
     let account_types = generate_account_types(&idl.accounts, &idl.types, &account_names);
     let instruction_types =
         generate_instruction_types(&idl.instructions, &idl.types, &account_names);
-    let event_types = generate_event_types(&idl.events, &idl.types, &account_names);
+    let event_types = generate_event_types(idl, &account_names);
     let custom_types = generate_custom_types(&idl.types, &account_names);
     let module_ident = format_ident!("{}", module_name);
 
@@ -651,14 +651,11 @@ fn generate_instruction_type(
     }
 }
 
-fn generate_event_types(
-    events: &[IdlEvent],
-    types: &[IdlTypeDef],
-    account_names: &HashSet<String>,
-) -> TokenStream {
-    let event_structs = events
+fn generate_event_types(idl: &IdlSpec, account_names: &HashSet<String>) -> TokenStream {
+    let event_structs = idl
+        .events
         .iter()
-        .map(|event| generate_event_type(event, types, account_names));
+        .map(|event| generate_event_type(idl, event, account_names));
 
     quote! {
         #(#event_structs)*
@@ -666,8 +663,8 @@ fn generate_event_types(
 }
 
 fn generate_event_type(
+    idl: &IdlSpec,
     event: &IdlEvent,
-    types: &[IdlTypeDef],
     account_names: &HashSet<String>,
 ) -> TokenStream {
     let name = format_ident!("{}", event.name);
@@ -675,25 +672,14 @@ fn generate_event_type(
     let discriminator = event.get_discriminator();
     let disc_array = quote! { [#(#discriminator),*] };
 
-    // Event fields come either directly from the event entry (Anchor inline
-    // fields) or from a matching type definition in `types`.
-    let idl_fields: Vec<IdlField> = if !event.fields.is_empty() {
-        event.fields.clone()
-    } else {
-        types
-            .iter()
-            .find(|t| t.name == event.name)
-            .and_then(|t| match &t.type_def {
-                IdlTypeDefKind::Struct { fields, .. } => Some(fields.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "Event '{}' has neither inline fields nor a matching type definition in the IDL `types` array",
-                    event.name
-                )
-            })
-    };
+    let resolved = idl.resolve_event_fields_for(event);
+    let idl_fields: Vec<IdlField> = resolved.fields.into_iter().cloned().collect();
+    if idl_fields.is_empty() {
+        panic!(
+            "Event '{}' has no resolved fields; expected inline fields, an explicit event data type, or a matching struct type in the IDL",
+            event.name
+        );
+    }
 
     let fields = generate_struct_fields(&idl_fields, false, account_names, false);
     let to_json_method = generate_struct_to_json_method(&idl_fields, false);

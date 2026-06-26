@@ -2,7 +2,7 @@
 
 use crate::error::IdlSearchError;
 use crate::types::IdlSpec;
-use crate::types::{IdlAccount, IdlInstruction, IdlTypeDef};
+use crate::types::{IdlAccount, IdlEvent, IdlInstruction, IdlTypeDef};
 use strsim::levenshtein;
 
 /// A fuzzy match suggestion with candidate name and edit distance.
@@ -38,6 +38,8 @@ pub struct SearchResult {
     pub name: String,
     pub section: IdlSection,
     pub match_type: MatchType,
+    pub path: Option<String>,
+    pub parent_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +106,50 @@ pub fn lookup_type<'a>(
         .iter()
         .find(|ty| ty.name.eq_ignore_ascii_case(type_name))
         .ok_or_else(|| build_not_found_error(type_name, "types".to_string(), available))
+}
+
+pub fn lookup_event<'a>(
+    idl: &'a IdlSpec,
+    event_name: &str,
+) -> Result<&'a IdlEvent, IdlSearchError> {
+    let available: Vec<String> = idl.events.iter().map(|event| event.name.clone()).collect();
+    idl.events
+        .iter()
+        .find(|event| event.name.eq_ignore_ascii_case(event_name))
+        .ok_or_else(|| build_not_found_error(event_name, "events".to_string(), available))
+}
+
+pub fn lookup_event_field<'a>(
+    idl: &'a IdlSpec,
+    event_name: &str,
+    field_name: &str,
+) -> Result<(), IdlSearchError> {
+    let _event = lookup_event(idl, event_name)?;
+    let fields = idl
+        .resolve_event_fields(event_name)
+        .map(|resolved| resolved.fields)
+        .unwrap_or_default();
+
+    // Some IDLs expose event names but omit field metadata in the `events`
+    // section. When there is also no matching struct type, keep validation
+    // permissive rather than rejecting otherwise valid event mappings.
+    if fields.is_empty() {
+        return Ok(());
+    }
+
+    if fields
+        .iter()
+        .any(|field| field.name.eq_ignore_ascii_case(field_name))
+    {
+        return Ok(());
+    }
+
+    let available: Vec<String> = fields.iter().map(|field| field.name.clone()).collect();
+    Err(build_not_found_error(
+        field_name,
+        format!("event fields for '{}'", event_name),
+        available,
+    ))
 }
 
 pub fn lookup_instruction_field<'a>(
@@ -208,6 +254,8 @@ pub fn search_idl(idl: &IdlSpec, query: &str) -> Vec<SearchResult> {
                 name: ix.name.clone(),
                 section: IdlSection::Instruction,
                 match_type: MatchType::Contains,
+                path: None,
+                parent_name: None,
             });
         }
     }
@@ -217,6 +265,8 @@ pub fn search_idl(idl: &IdlSpec, query: &str) -> Vec<SearchResult> {
                 name: acc.name.clone(),
                 section: IdlSection::Account,
                 match_type: MatchType::Contains,
+                path: None,
+                parent_name: None,
             });
         }
     }
@@ -226,6 +276,8 @@ pub fn search_idl(idl: &IdlSpec, query: &str) -> Vec<SearchResult> {
                 name: ty.name.clone(),
                 section: IdlSection::Type,
                 match_type: MatchType::Contains,
+                path: None,
+                parent_name: None,
             });
         }
     }
@@ -235,16 +287,35 @@ pub fn search_idl(idl: &IdlSpec, query: &str) -> Vec<SearchResult> {
                 name: err.name.clone(),
                 section: IdlSection::Error,
                 match_type: MatchType::Contains,
+                path: None,
+                parent_name: None,
             });
         }
     }
     for ev in &idl.events {
-        if ev.name.to_lowercase().contains(&q) {
+        let name_match = ev.name.to_lowercase().contains(&q);
+        let docs_match = ev.docs.iter().any(|doc| doc.to_lowercase().contains(&q));
+        if name_match || docs_match {
             results.push(SearchResult {
                 name: ev.name.clone(),
                 section: IdlSection::Event,
                 match_type: MatchType::Contains,
+                path: None,
+                parent_name: None,
             });
+        }
+
+        let resolved = idl.resolve_event_fields_for(ev);
+        for field in resolved.fields {
+            if field.name.to_lowercase().contains(&q) {
+                results.push(SearchResult {
+                    name: field.name.clone(),
+                    section: IdlSection::Event,
+                    match_type: MatchType::Contains,
+                    path: Some(format!("{}.{}", ev.name, field.name)),
+                    parent_name: Some(ev.name.clone()),
+                });
+            }
         }
     }
     for c in &idl.constants {
@@ -253,6 +324,8 @@ pub fn search_idl(idl: &IdlSpec, query: &str) -> Vec<SearchResult> {
                 name: c.name.clone(),
                 section: IdlSection::Constant,
                 match_type: MatchType::Contains,
+                path: None,
+                parent_name: None,
             });
         }
     }
@@ -307,6 +380,50 @@ mod tests {
     }
 
     #[test]
+    fn test_search_idl_finds_event_fields() {
+        use crate::parse::parse_idl_content;
+
+        let idl = parse_idl_content(
+            r#"{
+                "name": "fake",
+                "instructions": [],
+                "accounts": [],
+                "types": [
+                    {
+                        "name": "TradeExecuted",
+                        "type": {
+                            "kind": "struct",
+                            "fields": [
+                                { "name": "periodStartTs", "type": "i64" },
+                                { "name": "amount", "type": "u64" }
+                            ]
+                        }
+                    }
+                ],
+                "events": [
+                    {
+                        "name": "TradeExecuted",
+                        "discriminator": [1],
+                        "data": { "name": "TradeExecuted" }
+                    }
+                ],
+                "errors": [],
+                "constants": []
+            }"#,
+        )
+        .expect("test IDL should parse");
+
+        let results = search_idl(&idl, "periodStartTs");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "periodStartTs");
+        assert_eq!(results[0].parent_name.as_deref(), Some("TradeExecuted"));
+        assert_eq!(
+            results[0].path.as_deref(),
+            Some("TradeExecuted.periodStartTs")
+        );
+    }
+
+    #[test]
     fn test_lookup_instruction_with_suggestion() {
         use crate::parse::parse_idl_file;
         use std::path::PathBuf;
@@ -335,6 +452,86 @@ mod tests {
         match error {
             IdlSearchError::NotFound { suggestions, .. } => {
                 assert_eq!(suggestions[0].candidate, "user");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_lookup_event_field_uses_matching_type_definition() {
+        use crate::parse::parse_idl_content;
+
+        let idl = parse_idl_content(
+            r#"{
+                "name": "fake",
+                "instructions": [],
+                "accounts": [],
+                "types": [
+                    {
+                        "name": "TradeExecuted",
+                        "type": {
+                            "kind": "struct",
+                            "fields": [
+                                { "name": "user", "type": "string" },
+                                { "name": "amount", "type": "u64" }
+                            ]
+                        }
+                    }
+                ],
+                "events": [
+                    {
+                        "name": "TradeExecuted",
+                        "discriminator": [1]
+                    }
+                ],
+                "errors": [],
+                "constants": []
+            }"#,
+        )
+        .expect("test IDL should parse");
+
+        lookup_event_field(&idl, "TradeExecuted", "amount")
+            .expect("matching type definition should provide event fields");
+    }
+
+    #[test]
+    fn test_lookup_event_field_with_suggestion() {
+        use crate::parse::parse_idl_content;
+
+        let idl = parse_idl_content(
+            r#"{
+                "name": "fake",
+                "instructions": [],
+                "accounts": [],
+                "types": [
+                    {
+                        "name": "TradeExecuted",
+                        "type": {
+                            "kind": "struct",
+                            "fields": [
+                                { "name": "user", "type": "string" },
+                                { "name": "amount", "type": "u64" }
+                            ]
+                        }
+                    }
+                ],
+                "events": [
+                    {
+                        "name": "TradeExecuted",
+                        "discriminator": [1]
+                    }
+                ],
+                "errors": [],
+                "constants": []
+            }"#,
+        )
+        .expect("test IDL should parse");
+
+        let error =
+            lookup_event_field(&idl, "TradeExecuted", "ammount").expect_err("lookup should fail");
+        match error {
+            IdlSearchError::NotFound { suggestions, .. } => {
+                assert_eq!(suggestions[0].candidate, "amount");
             }
             other => panic!("expected NotFound, got {other:?}"),
         }

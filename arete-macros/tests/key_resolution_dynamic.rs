@@ -63,6 +63,35 @@ fn compile_success_with_files(name: &str, source: &str, extra_files: &[(&str, &s
     );
 }
 
+fn cargo_check_output_with_files(
+    name: &str,
+    source: &str,
+    extra_files: &[(&str, &str)],
+) -> std::process::Output {
+    let arete_dir = arete_dir();
+    let manifest_dir = macro_manifest_dir();
+    let temp_crate = TempCrate::new(
+        "key-resolution-dynamic",
+        name,
+        cargo_toml(
+            name,
+            &[
+                format!("arete = {{ path = \"{}\" }}", escape_path(&arete_dir)),
+                format!(
+                    "arete-macros = {{ path = \"{}\" }}",
+                    escape_path(&manifest_dir)
+                ),
+                "borsh = { version = \"1.5\", features = [\"derive\"] }".to_string(),
+                "serde = { version = \"1\", features = [\"derive\"] }".to_string(),
+            ],
+        ),
+        source,
+        extra_files,
+    );
+
+    temp_crate.cargo_check()
+}
+
 fn minimal_idl() -> &'static str {
     r#"{
   "name": "fake",
@@ -94,6 +123,43 @@ fn minimal_idl() -> &'static str {
   ],
   "types": [],
   "events": [],
+  "errors": [],
+  "constants": []
+}"#
+}
+
+fn minimal_event_idl() -> &'static str {
+    r#"{
+  "name": "fake",
+  "instructions": [],
+  "accounts": [
+    {
+      "name": "Thing",
+      "type": {
+        "kind": "struct",
+        "fields": [{ "name": "id", "type": "string" }]
+      }
+    }
+  ],
+  "types": [
+    {
+      "name": "TradeExecuted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "id", "type": "string" },
+          { "name": "user", "type": "string" },
+          { "name": "amount", "type": "u64" }
+        ]
+      }
+    }
+  ],
+  "events": [
+    {
+      "name": "TradeExecuted",
+      "discriminator": [1]
+    }
+  ],
   "errors": [],
   "constants": []
 }"#
@@ -346,4 +412,193 @@ fn main() {}
         source,
         &[("fixture/minimal.json", minimal_idl())],
     );
+}
+
+#[test]
+fn aggregate_from_cpi_event_validates_event_fields() {
+    let source = r#"use arete_macros::arete;
+
+#[arete(idl = "fixture/minimal_event.json")]
+mod valid {
+    #[entity(name = "Thing")]
+    struct Thing {
+        #[map(fake_sdk::accounts::Thing::id, primary_key, strategy = SetOnce)]
+        id: String,
+
+        #[aggregate(from = fake_sdk::events::TradeExecuted,
+                    field = amount, strategy = Sum, lookup_by = id)]
+        total_amount: u64,
+    }
+}
+
+fn main() {}
+"#;
+
+    let output = cargo_check_output_with_files(
+        "aggregate_from_cpi_event_validates_event_fields",
+        source,
+        &[("fixture/minimal_event.json", minimal_event_idl())],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Not found: 'TradeExecuted' in instructions"),
+        "stderr was:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Not found: 'amount' in instruction fields"),
+        "stderr was:\n{stderr}"
+    );
+}
+
+#[test]
+fn derive_from_cpi_event_validates_event_fields() {
+    let source = r#"use arete_macros::arete;
+
+#[arete(idl = "fixture/minimal_event.json")]
+mod valid {
+    #[entity(name = "Thing")]
+    struct Thing {
+        #[map(fake_sdk::accounts::Thing::id, primary_key, strategy = SetOnce)]
+        id: String,
+
+        #[derive_from(from = fake_sdk::events::TradeExecuted,
+                      field = amount, strategy = LastWrite, lookup_by = id)]
+        last_amount: u64,
+    }
+}
+
+fn main() {}
+"#;
+
+    let output = cargo_check_output_with_files(
+        "derive_from_cpi_event_validates_event_fields",
+        source,
+        &[("fixture/minimal_event.json", minimal_event_idl())],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Not found: 'TradeExecuted' in instructions"),
+        "stderr was:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Not found: 'amount' in instruction fields"),
+        "stderr was:\n{stderr}"
+    );
+}
+
+#[test]
+fn event_attribute_accepts_cpi_event_sources() {
+    let source = r#"use arete_macros::arete;
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct TradeCapture {
+    id: String,
+    amount: u64,
+}
+
+#[arete(idl = "fixture/minimal_event.json")]
+mod valid {
+    use super::TradeCapture;
+
+    #[entity(name = "Thing")]
+    struct Thing {
+        #[map(fake_sdk::accounts::Thing::id, primary_key, strategy = SetOnce)]
+        id: String,
+
+        #[event(from = fake_sdk::events::TradeExecuted, fields = [id, amount])]
+        trades: TradeCapture,
+    }
+}
+
+fn main() {}
+"#;
+
+    let output = cargo_check_output_with_files(
+        "event_attribute_accepts_cpi_event_sources",
+        source,
+        &[("fixture/minimal_event.json", minimal_event_idl())],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Not found: 'TradeExecuted' in instructions"),
+        "stderr was:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Not found: 'id' in instruction fields for 'TradeExecuted'"),
+        "stderr was:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Not found: 'amount' in instruction fields for 'TradeExecuted'"),
+        "stderr was:\n{stderr}"
+    );
+}
+
+#[test]
+fn aggregate_condition_from_cpi_event_accepts_event_fields() {
+    let source = r#"use arete_macros::arete;
+
+#[arete(idl = "fixture/minimal_event.json")]
+mod valid {
+    #[entity(name = "Thing")]
+    struct Thing {
+        #[map(fake_sdk::accounts::Thing::id, primary_key, strategy = SetOnce)]
+        id: String,
+
+        #[aggregate(from = fake_sdk::events::TradeExecuted,
+                    field = amount, strategy = Sum, condition = "amount > 0", lookup_by = id)]
+        total_amount: u64,
+    }
+}
+
+fn main() {}
+"#;
+
+    let output = cargo_check_output_with_files(
+        "aggregate_condition_from_cpi_event_accepts_event_fields",
+        source,
+        &[("fixture/minimal_event.json", minimal_event_idl())],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr was:\n{stderr}");
+    assert!(
+        !stderr.contains("Not found: 'amount' in event fields for 'TradeExecuted'"),
+        "stderr was:\n{stderr}"
+    );
+}
+
+#[test]
+fn aggregate_condition_from_cpi_event_rejects_unknown_event_fields() {
+    let source = r#"use arete_macros::arete;
+
+#[arete(idl = "fixture/minimal_event.json")]
+mod invalid {
+    #[entity(name = "Thing")]
+    struct Thing {
+        #[map(fake_sdk::accounts::Thing::id, primary_key, strategy = SetOnce)]
+        id: String,
+
+        #[aggregate(from = fake_sdk::events::TradeExecuted,
+                    field = amount, strategy = Sum, condition = "ammount > 0", lookup_by = id)]
+        total_amount: u64,
+    }
+}
+
+fn main() {}
+"#;
+
+    let output = cargo_check_output_with_files(
+        "aggregate_condition_from_cpi_event_rejects_unknown_event_fields",
+        source,
+        &[("fixture/minimal_event.json", minimal_event_idl())],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "cargo check unexpectedly succeeded"
+    );
+    assert!(
+        stderr.contains("Not found: 'ammount' in event fields for 'TradeExecuted'"),
+        "stderr was:\n{stderr}"
+    );
+    assert!(stderr.contains("amount"), "stderr was:\n{stderr}");
 }

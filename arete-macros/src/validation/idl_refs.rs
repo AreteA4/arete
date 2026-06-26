@@ -3,10 +3,22 @@ use crate::parse;
 use crate::utils::path_to_string;
 use arete_idl::error::IdlSearchError;
 use arete_idl::search::{
-    lookup_account, lookup_instruction, lookup_instruction_field, lookup_type, suggest_similar,
-    InstructionFieldKind,
+    lookup_account, lookup_event, lookup_event_field, lookup_instruction, lookup_instruction_field,
+    lookup_type, suggest_similar, InstructionFieldKind,
 };
 use arete_idl::types::{IdlSpec, IdlTypeDefKind};
+
+#[derive(Debug, Clone)]
+pub enum ResolvedSourceLookup<'a> {
+    Instruction {
+        idl: &'a IdlSpec,
+        source_name: String,
+    },
+    Event {
+        idl: &'a IdlSpec,
+        source_name: String,
+    },
+}
 
 fn not_found_with_suggestions(
     input: &str,
@@ -53,6 +65,65 @@ pub fn resolve_instruction_lookup<'a>(
     }
 
     resolve_instruction_lookup_from_string(fallback_instruction_key, idls)
+}
+
+pub fn path_is_event_source(path: &syn::Path) -> bool {
+    path.segments
+        .iter()
+        .any(|segment| segment.ident == "events")
+}
+
+pub fn resolve_source_lookup_from_path<'a>(
+    source_path: &syn::Path,
+    idls: IdlLookup<'a>,
+) -> Result<ResolvedSourceLookup<'a>, IdlSearchError> {
+    let type_str = path_to_string(source_path);
+    let idl = find_idl_for_type(&type_str, idls).ok_or_else(|| IdlSearchError::InvalidPath {
+        path: type_str.clone(),
+    })?;
+    let source_name = source_path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+        .ok_or_else(|| IdlSearchError::InvalidPath {
+            path: type_str.clone(),
+        })?;
+
+    if path_is_event_source(source_path) {
+        lookup_event(idl, &source_name)?;
+        Ok(ResolvedSourceLookup::Event { idl, source_name })
+    } else {
+        lookup_instruction(idl, &source_name)?;
+        Ok(ResolvedSourceLookup::Instruction { idl, source_name })
+    }
+}
+
+pub fn validate_event_field_spec(
+    idl: &IdlSpec,
+    event_name: &str,
+    field_spec: &parse::FieldSpec,
+) -> Result<(), IdlSearchError> {
+    if matches!(
+        field_spec.explicit_location,
+        Some(parse::FieldLocation::Account)
+    ) {
+        return Err(IdlSearchError::InvalidPath {
+            path: format!(
+                "accounts::{} is not valid for event '{}'",
+                field_spec.ident, event_name
+            ),
+        });
+    }
+
+    lookup_event_field(idl, event_name, &field_spec.ident.to_string())
+}
+
+pub fn validate_event_field_name(
+    idl: &IdlSpec,
+    event_name: &str,
+    field_name: &str,
+) -> Result<(), IdlSearchError> {
+    lookup_event_field(idl, event_name, field_name)
 }
 
 pub fn resolve_instruction_lookup_from_path<'a>(
