@@ -12,9 +12,11 @@ use syn::{Path, Type};
 
 use crate::ast::{ResolverHook, ResolverStrategy};
 use crate::diagnostic::idl_error_to_syn;
+use crate::event_type_helpers::program_name_from_sdk_prefix;
 use crate::parse;
 use crate::parse::idl as idl_parser;
 use crate::utils::{path_to_string, to_snake_case};
+use crate::validation::idl_refs::{path_is_event_source, validate_event_field_name};
 use arete_idl::error::IdlSearchError;
 use arete_idl::search::{lookup_instruction_field, InstructionFieldKind};
 
@@ -161,6 +163,12 @@ pub fn find_field_in_instruction(
         .ok_or_else(|| IdlSearchError::InvalidPath {
             path: path_to_string(instruction_path),
         })?;
+
+    if path_is_event_source(instruction_path) {
+        validate_event_field_name(idl, &instruction_name, field_name)?;
+        return Ok(parse::FieldLocation::InstructionArg);
+    }
+
     match lookup_instruction_field(idl, &instruction_name, field_name)?.kind {
         InstructionFieldKind::Account => Ok(parse::FieldLocation::Account),
         InstructionFieldKind::Arg => Ok(parse::FieldLocation::InstructionArg),
@@ -170,6 +178,25 @@ pub fn find_field_in_instruction(
 // ============================================================================
 // Event Instruction Determination
 // ============================================================================
+
+fn legacy_source_name_from_path(path: &Path) -> String {
+    let parts: Vec<String> = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+
+    let source_name = parts.last().cloned().unwrap_or_default();
+    let program_name = parts
+        .iter()
+        .rev()
+        .find(|segment| segment.ends_with("_sdk"))
+        .map(|segment| program_name_from_sdk_prefix(segment).to_string())
+        .or_else(|| parts.first().cloned())
+        .unwrap_or_default();
+
+    format!("{}::{}", program_name, source_name)
+}
 
 /// Determine the instruction path for an event attribute.
 ///
@@ -182,27 +209,30 @@ pub fn determine_event_instruction(
     // Priority 1: Explicit `from = ...`
     if let Some(ref path) = event_attr.from_instruction {
         let path_str = path_to_string(path);
-        // Convert to program::Instruction format
-        let parts: Vec<&str> = path_str.split("::").collect();
-        if parts.len() >= 2 {
-            let program = parts[parts.len() - 2];
-            let instruction = parts[parts.len() - 1];
-            return Some((path.clone(), format!("{}::{}", program, instruction)));
-        }
-        return Some((path.clone(), path_str));
+        let legacy_name = legacy_source_name_from_path(path);
+        return Some((
+            path.clone(),
+            if legacy_name == "::" {
+                path_str
+            } else {
+                legacy_name
+            },
+        ));
     }
 
     // Priority 2: Inferred from field type
     if let Some(inferred_path) = extract_instruction_type_from_field(field_type) {
         event_attr.inferred_instruction = Some(inferred_path.clone());
         let path_str = path_to_string(&inferred_path);
-        let parts: Vec<&str> = path_str.split("::").collect();
-        if parts.len() >= 2 {
-            let program = parts[parts.len() - 2];
-            let instruction = parts[parts.len() - 1];
-            return Some((inferred_path, format!("{}::{}", program, instruction)));
-        }
-        return Some((inferred_path, path_str));
+        let legacy_name = legacy_source_name_from_path(&inferred_path);
+        return Some((
+            inferred_path,
+            if legacy_name == "::" {
+                path_str
+            } else {
+                legacy_name
+            },
+        ));
     }
 
     // Priority 3: Legacy string-based instruction
