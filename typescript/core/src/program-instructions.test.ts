@@ -261,7 +261,9 @@ describe('operation helpers', () => {
       transaction: async () => ({
         signature: ['first-signature', 'second-signature'][transactionIndex++]!,
       }),
-    }, prepared);
+    }, prepared, {
+      availableSignerAddresses: ['signer-1', 'signer-2'],
+    });
 
     expect(receipt.signatures).toEqual(['first-signature', 'second-signature']);
     expect(receipt.transactions.map((transaction) => transaction.signature)).toEqual([

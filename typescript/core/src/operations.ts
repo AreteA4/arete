@@ -416,9 +416,6 @@ function validateTransactionSigners<
       available.add(address);
     }
   }
-  if (available.size === 0) {
-    return;
-  }
   const missing = transaction.requiredSignerAddresses.filter(
     (address) => !available.has(address)
   );
