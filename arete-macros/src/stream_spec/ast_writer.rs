@@ -13,10 +13,10 @@ use crate::ast::writer::{
     convert_idl_to_snapshot, parse_population_strategy, parse_transformation,
 };
 use crate::ast::{
-    ComputedFieldSpec, ConditionExpr, EntitySection, FieldPath, FieldTypeInfo, HookAction,
-    IdentitySpec, IdlSerializationSnapshot, InstructionHook, KeyResolutionStrategy,
-    LookupIndexSpec, MappingSource, ResolveStrategy, ResolverCondition, ResolverExtractSpec,
-    ResolverHook, ResolverSpec, ResolverStrategy, ResolverType, SerializableFieldMapping,
+    ComputedFieldSpec, ConditionExpr, EntitySection, FieldPath, HookAction, IdentitySpec,
+    IdlSerializationSnapshot, InstructionHook, KeyResolutionStrategy, LookupIndexSpec,
+    MappingSource, ResolveStrategy, ResolverCondition, ResolverExtractSpec, ResolverHook,
+    ResolverSpec, ResolverStrategy, ResolverType, SerializableFieldMapping,
     SerializableHandlerSpec, SerializableStreamSpec, SourceSpec,
 };
 use crate::diagnostic::{idl_error_to_syn, internal_codegen_error};
@@ -187,21 +187,18 @@ pub fn build_ast(
                 || result_type.contains("Vec<")
                 || result_type.contains("[");
 
-            let field_info = FieldTypeInfo {
-                field_name: computed_spec.target_path.clone(),
-                rust_type_name: computed_spec.result_type.clone(),
-                base_type: if is_array {
-                    crate::ast::BaseType::Array
-                } else {
-                    crate::ast::BaseType::Any
-                },
-                is_optional,
-                is_array,
-                inner_type: Some(resolver_type.to_string()),
-                source_path: None,
-                resolved_type: None,
-                emit: true,
+            let mut field_info = crate::stream_spec::sections::analyze_field_type(
+                &computed_spec.target_path,
+                result_type,
+            );
+            field_info.base_type = if is_array {
+                crate::ast::BaseType::Array
+            } else {
+                crate::ast::BaseType::Any
             };
+            field_info.is_optional = is_optional;
+            field_info.is_array = is_array;
+            field_info.inner_type = Some(resolver_type.to_string());
             field_mappings.insert(computed_spec.target_path.clone(), field_info);
         }
     }

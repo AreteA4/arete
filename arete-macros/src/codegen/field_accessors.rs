@@ -178,7 +178,7 @@ fn generate_nested_accessors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{BaseType, ResolvedStructType};
+    use crate::ast::{BaseType, IntegerKind, ResolvedStructType};
 
     #[test]
     fn test_generate_empty_sections() {
@@ -194,8 +194,11 @@ mod tests {
             fields: vec![
                 FieldTypeInfo {
                     field_name: "round_id".to_string(),
+                    raw_name: Some("round_id".to_string()),
+                    canonical_name: Some("roundId".to_string()),
                     rust_type_name: "u64".to_string(),
                     base_type: BaseType::Integer,
+                    integer_kind: Some(IntegerKind::U64),
                     is_optional: false,
                     is_array: false,
                     inner_type: None,
@@ -205,8 +208,11 @@ mod tests {
                 },
                 FieldTypeInfo {
                     field_name: "round_address".to_string(),
+                    raw_name: Some("round_address".to_string()),
+                    canonical_name: Some("roundAddress".to_string()),
                     rust_type_name: "Pubkey".to_string(),
                     base_type: BaseType::Pubkey,
+                    integer_kind: None,
                     is_optional: false,
                     is_array: false,
                     inner_type: None,
@@ -234,8 +240,11 @@ mod tests {
             name: "state".to_string(),
             fields: vec![FieldTypeInfo {
                 field_name: "identity".to_string(),
+                raw_name: Some("identity".to_string()),
+                canonical_name: Some("identity".to_string()),
                 rust_type_name: "MyIdentity".to_string(),
                 base_type: BaseType::Object,
+                integer_kind: None,
                 is_optional: false,
                 is_array: false,
                 inner_type: None,
@@ -245,15 +254,21 @@ mod tests {
                     fields: vec![
                         ResolvedField {
                             field_name: "owner".to_string(),
+                            raw_name: Some("owner".to_string()),
+                            canonical_name: Some("owner".to_string()),
                             field_type: "Pubkey".to_string(),
                             base_type: BaseType::Pubkey,
+                            integer_kind: None,
                             is_optional: false,
                             is_array: false,
                         },
                         ResolvedField {
                             field_name: "created_at".to_string(),
+                            raw_name: Some("created_at".to_string()),
+                            canonical_name: Some("createdAt".to_string()),
                             field_type: "i64".to_string(),
                             base_type: BaseType::Timestamp,
+                            integer_kind: Some(IntegerKind::I64),
                             is_optional: false,
                             is_array: false,
                         },
@@ -286,8 +301,11 @@ mod tests {
                 name: "root".to_string(),
                 fields: vec![FieldTypeInfo {
                     field_name: "some_root_field".to_string(),
+                    raw_name: Some("some_root_field".to_string()),
+                    canonical_name: Some("someRootField".to_string()),
                     rust_type_name: "u64".to_string(),
                     base_type: BaseType::Integer,
+                    integer_kind: Some(IntegerKind::U64),
                     is_optional: false,
                     is_array: false,
                     inner_type: None,
@@ -302,8 +320,11 @@ mod tests {
                 name: "id".to_string(),
                 fields: vec![FieldTypeInfo {
                     field_name: "key".to_string(),
+                    raw_name: Some("key".to_string()),
+                    canonical_name: Some("key".to_string()),
                     rust_type_name: "u64".to_string(),
                     base_type: BaseType::Integer,
+                    integer_kind: Some(IntegerKind::U64),
                     is_optional: false,
                     is_array: false,
                     inner_type: None,
@@ -334,8 +355,11 @@ mod tests {
             name: "state".to_string(),
             fields: vec![FieldTypeInfo {
                 field_name: "status".to_string(),
+                raw_name: Some("status".to_string()),
+                canonical_name: Some("status".to_string()),
                 rust_type_name: "MyStatus".to_string(),
                 base_type: BaseType::Object,
+                integer_kind: None,
                 is_optional: false,
                 is_array: false,
                 inner_type: None,

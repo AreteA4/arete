@@ -154,6 +154,10 @@ pub fn generate_spec_function_without_registries(idl: &IdlSpec, _program_id: &st
         &state_enum_name,
         &instruction_enum_name,
         program_name,
+        &idl.accounts
+            .iter()
+            .map(|account| account.name.clone())
+            .collect::<Vec<_>>(),
         &config,
     );
 
@@ -200,6 +204,11 @@ pub fn generate_multi_idl_spec_function(idls: &[(&IdlSpec, &str, &str)]) -> Toke
                 program_id: program_id.to_string(),
                 state_enum_name: format!("{}State", to_pascal_case(program_name)),
                 instruction_enum_name: format!("{}Instruction", to_pascal_case(program_name)),
+                account_names: idl
+                    .accounts
+                    .iter()
+                    .map(|account| account.name.clone())
+                    .collect(),
             }
         })
         .collect();

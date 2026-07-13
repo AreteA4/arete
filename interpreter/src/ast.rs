@@ -12,12 +12,14 @@ pub use arete_idl::snapshot::*;
 /// When bumping this version, you MUST also update the constant in the
 /// arete-macros crate. A test in versioned.rs verifies they stay in sync.
 // 0.0.2: enum variants may carry `fields` (data-carrying enum variants).
-// Additive over 0.0.1 — every 0.0.1 file deserializes unchanged.
-pub const CURRENT_AST_VERSION: &str = "0.0.2";
+// 0.0.3: field metadata may carry integer-kind and raw/canonical name hints.
+// 0.0.4: instruction args may carry amount-hint metadata.
+// Additive over 0.0.1 — every older file deserializes unchanged.
+pub const CURRENT_AST_VERSION: &str = "0.0.4";
 
 /// Older versions this build can still deserialize directly (all changes
 /// since were additive with serde defaults).
-pub const COMPATIBLE_AST_VERSIONS: &[&str] = &["0.0.1"];
+pub const COMPATIBLE_AST_VERSIONS: &[&str] = &["0.0.1", "0.0.2", "0.0.3"];
 
 fn default_ast_version() -> String {
     CURRENT_AST_VERSION.to_string()
@@ -991,11 +993,17 @@ pub enum ConditionOp {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldTypeInfo {
     pub field_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_name: Option<String>,
     pub rust_type_name: String, // Full Rust type: "Option<i64>", "Vec<Value>", etc.
     pub base_type: BaseType,    // Fundamental type classification
-    pub is_optional: bool,      // true for Option<T>
-    pub is_array: bool,         // true for Vec<T>
-    pub inner_type: Option<String>, // For Option<T> or Vec<T>, store the inner type
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integer_kind: Option<IntegerKind>,
+    pub is_optional: bool,           // true for Option<T>
+    pub is_array: bool,              // true for Vec<T>
+    pub inner_type: Option<String>,  // For Option<T> or Vec<T>, store the inner type
     pub source_path: Option<String>, // Path to source field if this is mapped
     /// Resolved type information for complex types (instructions, accounts, custom types)
     #[serde(default)]
@@ -1024,10 +1032,56 @@ pub struct ResolvedStructType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedField {
     pub field_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_name: Option<String>,
     pub field_type: String,
     pub base_type: BaseType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integer_kind: Option<IntegerKind>,
     pub is_optional: bool,
     pub is_array: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IntegerKind {
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    Usize,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    Isize,
+}
+
+impl IntegerKind {
+    pub fn from_rust_type(type_str: &str) -> Option<Self> {
+        match type_str.trim() {
+            "u8" => Some(Self::U8),
+            "u16" => Some(Self::U16),
+            "u32" => Some(Self::U32),
+            "u64" => Some(Self::U64),
+            "u128" => Some(Self::U128),
+            "usize" => Some(Self::Usize),
+            "i8" => Some(Self::I8),
+            "i16" => Some(Self::I16),
+            "i32" => Some(Self::I32),
+            "i64" => Some(Self::I64),
+            "i128" => Some(Self::I128),
+            "isize" => Some(Self::Isize),
+            _ => None,
+        }
+    }
+
+    pub fn is_bigint(self) -> bool {
+        matches!(self, Self::U64 | Self::U128 | Self::I64 | Self::I128)
+    }
 }
 
 /// Language-agnostic base type classification
@@ -1061,13 +1115,17 @@ pub struct EntitySection {
 
 impl FieldTypeInfo {
     pub fn new(field_name: String, rust_type_name: String) -> Self {
-        let (base_type, is_optional, is_array, inner_type) =
+        let (base_type, integer_kind, is_optional, is_array, inner_type) =
             Self::analyze_rust_type(&rust_type_name);
+        let canonical_name = to_camel_case_owned(&field_name);
 
         FieldTypeInfo {
             field_name: field_name.clone(),
+            raw_name: Some(field_name.clone()),
+            canonical_name: Some(canonical_name),
             rust_type_name,
             base_type: Self::infer_semantic_type(&field_name, base_type),
+            integer_kind,
             is_optional,
             is_array,
             inner_type,
@@ -1082,16 +1140,39 @@ impl FieldTypeInfo {
         self
     }
 
+    pub fn raw_field_name(&self) -> &str {
+        self.raw_name.as_deref().unwrap_or(self.field_name.as_str())
+    }
+
+    pub fn canonical_field_name(&self) -> String {
+        self.canonical_name
+            .clone()
+            .unwrap_or_else(|| to_camel_case_owned(self.raw_field_name()))
+    }
+
+    pub fn effective_integer_kind(&self) -> Option<IntegerKind> {
+        self.integer_kind.or_else(|| {
+            IntegerKind::from_rust_type(
+                self.inner_type
+                    .as_deref()
+                    .unwrap_or(self.rust_type_name.as_str()),
+            )
+        })
+    }
+
     /// Analyze a Rust type string and extract structural information
-    fn analyze_rust_type(rust_type: &str) -> (BaseType, bool, bool, Option<String>) {
+    fn analyze_rust_type(
+        rust_type: &str,
+    ) -> (BaseType, Option<IntegerKind>, bool, bool, Option<String>) {
         let type_str = rust_type.trim();
 
         // Handle Option<T>
         if let Some(inner) = Self::extract_generic_inner(type_str, "Option") {
-            let (inner_base_type, _, inner_is_array, inner_inner_type) =
+            let (inner_base_type, inner_integer_kind, _, inner_is_array, inner_inner_type) =
                 Self::analyze_rust_type(&inner);
             return (
                 inner_base_type,
+                inner_integer_kind,
                 true,
                 inner_is_array,
                 inner_inner_type.or(Some(inner)),
@@ -1100,10 +1181,11 @@ impl FieldTypeInfo {
 
         // Handle Vec<T>
         if let Some(inner) = Self::extract_generic_inner(type_str, "Vec") {
-            let (_inner_base_type, inner_is_optional, _, inner_inner_type) =
+            let (_inner_base_type, inner_integer_kind, inner_is_optional, _, inner_inner_type) =
                 Self::analyze_rust_type(&inner);
             return (
                 BaseType::Array,
+                inner_integer_kind,
                 inner_is_optional,
                 true,
                 inner_inner_type.or(Some(inner)),
@@ -1111,28 +1193,29 @@ impl FieldTypeInfo {
         }
 
         // Handle primitive types
-        let base_type = match type_str {
-            "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64" | "usize" => {
-                BaseType::Integer
-            }
-            "f32" | "f64" => BaseType::Float,
-            "bool" => BaseType::Boolean,
-            "String" | "&str" | "str" => BaseType::String,
-            "Value" | "serde_json::Value" => BaseType::Any,
-            "Pubkey" | "solana_pubkey::Pubkey" => BaseType::Pubkey,
-            _ => {
-                // Check for binary types
-                if type_str.contains("Bytes") || type_str.contains("bytes") {
-                    BaseType::Binary
-                } else if type_str.contains("Pubkey") {
-                    BaseType::Pubkey
-                } else {
-                    BaseType::Object
+        let integer_kind = IntegerKind::from_rust_type(type_str);
+        let base_type = match integer_kind {
+            Some(_) => BaseType::Integer,
+            None => match type_str {
+                "f32" | "f64" => BaseType::Float,
+                "bool" => BaseType::Boolean,
+                "String" | "&str" | "str" => BaseType::String,
+                "Value" | "serde_json::Value" => BaseType::Any,
+                "Pubkey" | "solana_pubkey::Pubkey" => BaseType::Pubkey,
+                _ => {
+                    // Check for binary types
+                    if type_str.contains("Bytes") || type_str.contains("bytes") {
+                        BaseType::Binary
+                    } else if type_str.contains("Pubkey") {
+                        BaseType::Pubkey
+                    } else {
+                        BaseType::Object
+                    }
                 }
-            }
+            },
         };
 
-        (base_type, false, false, None)
+        (base_type, integer_kind, false, false, None)
     }
 
     /// Extract inner type from generic like "Option<T>" -> "T"
@@ -1166,6 +1249,49 @@ impl FieldTypeInfo {
 
         base_type
     }
+}
+
+impl ResolvedField {
+    pub fn raw_field_name(&self) -> &str {
+        self.raw_name.as_deref().unwrap_or(self.field_name.as_str())
+    }
+
+    pub fn canonical_field_name(&self) -> String {
+        self.canonical_name
+            .clone()
+            .unwrap_or_else(|| to_camel_case_owned(self.raw_field_name()))
+    }
+
+    pub fn effective_integer_kind(&self) -> Option<IntegerKind> {
+        self.integer_kind
+            .or_else(|| IntegerKind::from_rust_type(self.field_type.as_str()))
+    }
+}
+
+fn to_camel_case_owned(s: &str) -> String {
+    let mut result = String::new();
+    let mut uppercase_next = false;
+
+    for ch in s.chars() {
+        if matches!(ch, '_' | '-' | '.') {
+            uppercase_next = true;
+            continue;
+        }
+
+        if result.is_empty() {
+            result.extend(ch.to_lowercase());
+            continue;
+        }
+
+        if uppercase_next {
+            result.extend(ch.to_uppercase());
+            uppercase_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
 }
 
 pub trait FieldAccessor<S> {
@@ -1314,6 +1440,26 @@ pub struct InstructionAccountDef {
 }
 
 /// Argument definition for an instruction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstructionAmountHint {
+    pub decimals_source: AmountDecimalsSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AmountDecimalsSource {
+    ArgMint { arg_name: String },
+    ArgDecimals { arg_name: String },
+    KnownAccount { account_name: String },
+    Constant { decimals: u8 },
+}
+
+/// Argument definition for an instruction.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstructionArgDef {
     /// Argument name
@@ -1326,6 +1472,10 @@ pub struct InstructionArgDef {
     /// Documentation from IDL
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub docs: Vec<String>,
+
+    /// Optional amount-resolution metadata for semantic SDK wrappers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_hint: Option<InstructionAmountHint>,
 }
 
 /// Full instruction definition in the AST.
@@ -1525,6 +1675,34 @@ mod tests {
             stack.entities[0].instruction_hooks[0].instruction_type,
             "pump::BuyIxState"
         );
+    }
+
+    #[test]
+    fn field_type_info_recognizes_128_bit_integers() {
+        let unsigned = super::FieldTypeInfo::new("amount".to_string(), "u128".to_string());
+        assert_eq!(unsigned.base_type, super::BaseType::Integer);
+        assert!(!unsigned.is_optional);
+        assert_eq!(unsigned.integer_kind, Some(super::IntegerKind::U128));
+        assert_eq!(unsigned.raw_field_name(), "amount");
+        assert_eq!(unsigned.canonical_field_name(), "amount");
+
+        let signed = super::FieldTypeInfo::new("delta".to_string(), "Option<i128>".to_string());
+        assert_eq!(signed.base_type, super::BaseType::Integer);
+        assert!(signed.is_optional);
+        assert_eq!(signed.integer_kind, Some(super::IntegerKind::I128));
+        assert_eq!(signed.inner_type.as_deref(), Some("i128"));
+    }
+
+    #[test]
+    fn field_type_info_preserves_timestamp_integer_kind_and_names() {
+        let timestamp =
+            super::FieldTypeInfo::new("last_updated_at".to_string(), "Option<i64>".to_string());
+
+        assert_eq!(timestamp.base_type, super::BaseType::Timestamp);
+        assert_eq!(timestamp.integer_kind, Some(super::IntegerKind::I64));
+        assert!(timestamp.is_optional);
+        assert_eq!(timestamp.raw_field_name(), "last_updated_at");
+        assert_eq!(timestamp.canonical_field_name(), "lastUpdatedAt");
     }
 }
 

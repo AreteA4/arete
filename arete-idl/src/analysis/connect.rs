@@ -57,24 +57,26 @@ const INFRASTRUCTURE_ACCOUNTS: &[&str] = &[
 ];
 
 pub fn find_connections(idl: &IdlSpec, new_account: &str, existing: &[&str]) -> ConnectionReport {
-    let all_account_names: Vec<&str> = idl
+    let all_account_names: Vec<String> = idl
         .instructions
         .iter()
-        .flat_map(|ix| ix.accounts.iter().map(|a| a.name.as_str()))
+        .flat_map(|ix| ix.flattened_accounts().into_iter().map(|a| a.name))
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
 
-    let new_account_exists = all_account_names.contains(&new_account);
+    let new_account_exists = all_account_names.iter().any(|name| name == new_account);
 
     let mut invalid_existing = Vec::new();
     let mut valid_existing = Vec::new();
 
     for &account in existing {
-        if all_account_names.contains(&account) {
+        if all_account_names.iter().any(|name| name == account) {
             valid_existing.push(account);
         } else {
-            let suggestions = suggest_similar(account, &all_account_names, 3);
+            let candidate_refs: Vec<&str> =
+                all_account_names.iter().map(|name| name.as_str()).collect();
+            let suggestions = suggest_similar(account, &candidate_refs, 3);
             let suggestion_names: Vec<String> =
                 suggestions.iter().map(|s| s.candidate.clone()).collect();
             invalid_existing.push((account.to_string(), suggestion_names));
@@ -95,19 +97,17 @@ pub fn find_connections(idl: &IdlSpec, new_account: &str, existing: &[&str]) -> 
         let mut instructions = Vec::new();
 
         for instruction in &idl.instructions {
-            let account_names: Vec<&str> = instruction
-                .accounts
+            let flat_accounts = instruction.flattened_accounts();
+            let account_names: Vec<&str> = flat_accounts
                 .iter()
                 .map(|account| account.name.as_str())
                 .collect();
 
             if account_names.contains(&new_account) && account_names.contains(&existing_account) {
-                let from_account = instruction
-                    .accounts
+                let from_account = flat_accounts
                     .iter()
                     .find(|account| account.name == new_account);
-                let to_account = instruction
-                    .accounts
+                let to_account = flat_accounts
                     .iter()
                     .find(|account| account.name == existing_account);
 

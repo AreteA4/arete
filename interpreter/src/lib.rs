@@ -30,6 +30,7 @@ pub mod compiler;
 pub mod debugger;
 pub mod event_type_helpers;
 pub mod metrics_context;
+pub mod program_sdk;
 pub mod proto_router;
 pub mod resolvers;
 pub mod runtime_resolvers;

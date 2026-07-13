@@ -2,7 +2,7 @@
 
 use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
 
-use crate::types::SteelDiscriminant;
+use crate::types::{IdlAmountHint, SteelDiscriminant};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IdlSnapshot {
@@ -239,6 +239,12 @@ pub struct IdlFieldSnapshot {
     pub name: String,
     #[serde(rename = "type")]
     pub type_: IdlTypeSnapshot,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "amountHint"
+    )]
+    pub amount_hint: Option<IdlAmountHint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -416,6 +422,7 @@ mod tests {
                     IdlEnumVariantFieldSnapshot::Named(IdlFieldSnapshot {
                         name: "endTs".to_string(),
                         type_: IdlTypeSnapshot::Simple("i64".to_string()),
+                        amount_hint: None,
                     }),
                     IdlEnumVariantFieldSnapshot::Tuple(IdlTypeSnapshot::Simple("u8".to_string())),
                 ],
@@ -474,6 +481,7 @@ mod tests {
                             Box::new(IdlTypeSnapshot::Simple("string".to_string())),
                         ),
                     }),
+                    amount_hint: None,
                 }],
             }],
             types: vec![IdlTypeDefSnapshot {
@@ -485,6 +493,7 @@ mod tests {
                     fields: vec![IdlFieldSnapshot {
                         name: "value".to_string(),
                         type_: IdlTypeSnapshot::Simple("u64".to_string()),
+                        amount_hint: None,
                     }],
                 },
             }],

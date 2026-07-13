@@ -11,7 +11,9 @@ use quote::quote;
 use syn::spanned::Spanned;
 use syn::{Fields, ItemStruct, Type};
 
-use crate::ast::{BaseType, EntitySection, FieldTypeInfo, ResolvedField, ResolvedStructType};
+use crate::ast::{
+    BaseType, EntitySection, FieldTypeInfo, IntegerKind, ResolvedField, ResolvedStructType,
+};
 use crate::event_type_helpers::{find_idl_for_type, IdlLookup};
 use crate::parse;
 use crate::parse::idl::{IdlSpec, IdlType, IdlTypeDefKind};
@@ -101,6 +103,7 @@ pub fn analyze_field_type_with_idl(
     idls: IdlLookup,
 ) -> FieldTypeInfo {
     let type_str = rust_type.trim();
+    let canonical_name = to_camel_case_owned(field_name);
 
     if let Some(inner) = extract_generic_inner_type(type_str, "Option") {
         let inner_info = analyze_inner_type(&inner);
@@ -112,10 +115,13 @@ pub fn analyze_field_type_with_idl(
 
         return FieldTypeInfo {
             field_name: field_name.to_string(),
+            raw_name: Some(field_name.to_string()),
+            canonical_name: Some(canonical_name),
             rust_type_name: rust_type.to_string(),
             base_type: infer_semantic_type(field_name, inner_info.0),
+            integer_kind: inner_info.1,
             is_optional: true,
-            is_array: inner_info.1,
+            is_array: inner_info.2,
             inner_type: Some(inner.clone()),
             source_path: None,
             resolved_type,
@@ -124,7 +130,7 @@ pub fn analyze_field_type_with_idl(
     }
 
     if let Some(inner) = extract_generic_inner_type(type_str, "Vec") {
-        let inner_base_type = analyze_simple_type(&inner);
+        let (inner_base_type, inner_integer_kind) = analyze_simple_type(&inner);
         let resolved_type = if inner_base_type == BaseType::Object {
             resolve_complex_type(&inner, idls)
         } else {
@@ -133,8 +139,11 @@ pub fn analyze_field_type_with_idl(
 
         return FieldTypeInfo {
             field_name: field_name.to_string(),
+            raw_name: Some(field_name.to_string()),
+            canonical_name: Some(canonical_name),
             rust_type_name: rust_type.to_string(),
             base_type: BaseType::Array,
+            integer_kind: inner_integer_kind,
             is_optional: false,
             is_array: true,
             inner_type: Some(inner.clone()),
@@ -144,7 +153,7 @@ pub fn analyze_field_type_with_idl(
         };
     }
 
-    let base_type = analyze_simple_type(type_str);
+    let (base_type, integer_kind) = analyze_simple_type(type_str);
     let resolved_type = if base_type == BaseType::Object {
         resolve_complex_type(type_str, idls)
     } else {
@@ -153,8 +162,11 @@ pub fn analyze_field_type_with_idl(
 
     FieldTypeInfo {
         field_name: field_name.to_string(),
+        raw_name: Some(field_name.to_string()),
+        canonical_name: Some(canonical_name),
         rust_type_name: rust_type.to_string(),
         base_type: infer_semantic_type(field_name, base_type),
+        integer_kind,
         is_optional: false,
         is_array: false,
         inner_type: None,
@@ -164,21 +176,28 @@ pub fn analyze_field_type_with_idl(
     }
 }
 
-/// Analyze inner type and return (BaseType, is_array).
-fn analyze_inner_type(type_str: &str) -> (BaseType, bool) {
-    if let Some(_vec_inner) = extract_generic_inner_type(type_str, "Vec") {
-        (BaseType::Array, true)
+/// Analyze inner type and return (BaseType, integer_kind, is_array).
+fn analyze_inner_type(type_str: &str) -> (BaseType, Option<IntegerKind>, bool) {
+    if let Some(vec_inner) = extract_generic_inner_type(type_str, "Vec") {
+        let (_base_type, integer_kind) = analyze_simple_type(&vec_inner);
+        (
+            BaseType::Array,
+            integer_kind.or(IntegerKind::from_rust_type(&vec_inner)),
+            true,
+        )
     } else {
-        (analyze_simple_type(type_str), false)
+        let (base_type, integer_kind) = analyze_simple_type(type_str);
+        (base_type, integer_kind, false)
     }
 }
 
 /// Analyze a simple (non-generic) type string.
-fn analyze_simple_type(type_str: &str) -> BaseType {
-    match type_str {
-        "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64" | "usize" => {
-            BaseType::Integer
-        }
+fn analyze_simple_type(type_str: &str) -> (BaseType, Option<IntegerKind>) {
+    if let Some(integer_kind) = IntegerKind::from_rust_type(type_str) {
+        return (BaseType::Integer, Some(integer_kind));
+    }
+
+    let base_type = match type_str {
         "f32" | "f64" => BaseType::Float,
         "bool" => BaseType::Boolean,
         "String" | "&str" | "str" => BaseType::String,
@@ -193,7 +212,9 @@ fn analyze_simple_type(type_str: &str) -> BaseType {
                 BaseType::Object
             }
         }
-    }
+    };
+
+    (base_type, None)
 }
 
 /// Extract inner type from generic like "Option<T>" -> "T".
@@ -698,8 +719,11 @@ fn resolve_instruction_type(
     for account in &instruction.accounts {
         fields.push(ResolvedField {
             field_name: account.name.clone(),
+            raw_name: Some(account.name.clone()),
+            canonical_name: Some(to_camel_case_owned(&account.name)),
             field_type: "Pubkey".to_string(),
             base_type: BaseType::Pubkey,
+            integer_kind: None,
             is_optional: account.optional,
             is_array: false,
         });
@@ -707,12 +731,15 @@ fn resolve_instruction_type(
 
     // Add data/arg fields
     for arg in &instruction.args {
-        let (field_type, base_type, is_optional, is_array, _) =
+        let (field_type, base_type, integer_kind, is_optional, is_array, _) =
             analyze_idl_type_with_resolution(&arg.type_, idl);
         fields.push(ResolvedField {
             field_name: arg.name.clone(),
+            raw_name: Some(arg.name.clone()),
+            canonical_name: Some(to_camel_case_owned(&arg.name)),
             field_type,
             base_type,
+            integer_kind,
             is_optional,
             is_array,
         });
@@ -744,12 +771,15 @@ fn resolve_account_type(
                 ..
             } => {
                 for field in struct_fields {
-                    let (field_type, base_type, is_optional, is_array, _) =
+                    let (field_type, base_type, integer_kind, is_optional, is_array, _) =
                         analyze_idl_type_with_resolution(&field.type_, idl);
                     fields.push(ResolvedField {
                         field_name: field.name.clone(),
+                        raw_name: Some(field.name.clone()),
+                        canonical_name: Some(to_camel_case_owned(&field.name)),
                         field_type,
                         base_type,
+                        integer_kind,
                         is_optional,
                         is_array,
                     });
@@ -760,12 +790,16 @@ fn resolve_account_type(
                 ..
             } => {
                 for (i, field_type) in tuple_fields.iter().enumerate() {
-                    let (field_type_str, base_type, is_optional, is_array, _) =
+                    let (field_type_str, base_type, integer_kind, is_optional, is_array, _) =
                         analyze_idl_type_with_resolution(field_type, idl);
+                    let field_name = format!("_{}", i);
                     fields.push(ResolvedField {
-                        field_name: format!("_{}", i),
+                        field_name: field_name.clone(),
+                        raw_name: Some(field_name.clone()),
+                        canonical_name: Some(to_camel_case_owned(&field_name)),
                         field_type: field_type_str,
                         base_type,
+                        integer_kind,
                         is_optional,
                         is_array,
                     });
@@ -811,12 +845,15 @@ fn resolve_custom_type(
             ..
         } => {
             for field in struct_fields {
-                let (field_type, base_type, is_optional, is_array, _) =
+                let (field_type, base_type, integer_kind, is_optional, is_array, _) =
                     analyze_idl_type_with_resolution(&field.type_, idl);
                 fields.push(ResolvedField {
                     field_name: field.name.clone(),
+                    raw_name: Some(field.name.clone()),
+                    canonical_name: Some(to_camel_case_owned(&field.name)),
                     field_type,
                     base_type,
+                    integer_kind,
                     is_optional,
                     is_array,
                 });
@@ -837,12 +874,16 @@ fn resolve_custom_type(
             ..
         } => {
             for (i, field_type) in tuple_fields.iter().enumerate() {
-                let (field_type_str, base_type, is_optional, is_array, _) =
+                let (field_type_str, base_type, integer_kind, is_optional, is_array, _) =
                     analyze_idl_type_with_resolution(field_type, idl);
+                let field_name = format!("_{}", i);
                 fields.push(ResolvedField {
-                    field_name: format!("_{}", i),
+                    field_name: field_name.clone(),
+                    raw_name: Some(field_name.clone()),
+                    canonical_name: Some(to_camel_case_owned(&field_name)),
                     field_type: field_type_str,
                     base_type,
+                    integer_kind,
                     is_optional,
                     is_array,
                 });
@@ -880,39 +921,49 @@ fn resolve_custom_type(
 fn analyze_idl_type_with_resolution(
     idl_type: &IdlType,
     idl: Option<&IdlSpec>,
-) -> (String, BaseType, bool, bool, Option<ResolvedStructType>) {
+) -> (
+    String,
+    BaseType,
+    Option<IntegerKind>,
+    bool,
+    bool,
+    Option<ResolvedStructType>,
+) {
     match idl_type {
         IdlType::Simple(s) => {
-            let base_type = match s.as_str() {
-                "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" => {
-                    BaseType::Integer
-                }
-                "f32" | "f64" => BaseType::Float,
-                "bool" => BaseType::Boolean,
-                "string" => BaseType::String,
-                "publicKey" | "pubkey" => BaseType::Pubkey,
-                "bytes" => BaseType::Binary,
-                _ => BaseType::Object,
+            let integer_kind = IntegerKind::from_rust_type(s);
+            let base_type = match integer_kind {
+                Some(_) => BaseType::Integer,
+                None => match s.as_str() {
+                    "f32" | "f64" => BaseType::Float,
+                    "bool" => BaseType::Boolean,
+                    "string" => BaseType::String,
+                    "publicKey" | "pubkey" => BaseType::Pubkey,
+                    "bytes" => BaseType::Binary,
+                    _ => BaseType::Object,
+                },
             };
-            (s.clone(), base_type, false, false, None)
+            (s.clone(), base_type, integer_kind, false, false, None)
         }
         IdlType::Option(opt) => {
-            let (inner_type, base_type, _, is_array, resolved_type) =
+            let (inner_type, base_type, integer_kind, _, is_array, resolved_type) =
                 analyze_idl_type_with_resolution(&opt.option, idl);
             (
                 format!("Option<{}>", inner_type),
                 base_type,
+                integer_kind,
                 true,
                 is_array,
                 resolved_type,
             )
         }
         IdlType::Vec(vec) => {
-            let (inner_type, base_type, is_optional, _, resolved_type) =
+            let (inner_type, base_type, integer_kind, is_optional, _, resolved_type) =
                 analyze_idl_type_with_resolution(&vec.vec, idl);
             (
                 format!("Vec<{}>", inner_type),
                 base_type,
+                integer_kind,
                 is_optional,
                 true,
                 resolved_type,
@@ -925,35 +976,59 @@ fn analyze_idl_type_with_resolution(
                 match &arr.array[0] {
                     crate::parse::idl::IdlTypeArrayElement::Type(ty) => {
                         // Map the element type to base type
-                        let element_base_type = match ty.as_str() {
-                            "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32"
-                            | "i64" | "i128" => BaseType::Integer,
-                            "f32" | "f64" => BaseType::Float,
-                            "bool" => BaseType::Boolean,
-                            "string" => BaseType::String,
-                            "publicKey" | "pubkey" => BaseType::Pubkey,
-                            "bytes" => BaseType::Binary,
-                            _ => BaseType::Object,
+                        let element_integer_kind = IntegerKind::from_rust_type(ty);
+                        let element_base_type = match element_integer_kind {
+                            Some(_) => BaseType::Integer,
+                            None => match ty.as_str() {
+                                "f32" | "f64" => BaseType::Float,
+                                "bool" => BaseType::Boolean,
+                                "string" => BaseType::String,
+                                "publicKey" | "pubkey" => BaseType::Pubkey,
+                                "bytes" => BaseType::Binary,
+                                _ => BaseType::Object,
+                            },
                         };
                         // Return as array with the element's base type
-                        (format!("[{}]", ty), element_base_type, false, true, None)
+                        (
+                            format!("[{}]", ty),
+                            element_base_type,
+                            element_integer_kind,
+                            false,
+                            true,
+                            None,
+                        )
                     }
                     crate::parse::idl::IdlTypeArrayElement::Nested(nested_type) => {
                         // Handle nested types in arrays
-                        let (inner_type, base_type, is_optional, _, resolved_type) =
+                        let (inner_type, base_type, integer_kind, is_optional, _, resolved_type) =
                             analyze_idl_type_with_resolution(nested_type, idl);
                         (
                             format!("[{}]", inner_type),
                             base_type,
+                            integer_kind,
                             is_optional,
                             true,
                             resolved_type,
                         )
                     }
-                    _ => ("Array".to_string(), BaseType::Array, false, true, None),
+                    _ => (
+                        "Array".to_string(),
+                        BaseType::Array,
+                        None,
+                        false,
+                        true,
+                        None,
+                    ),
                 }
             } else {
-                ("Array".to_string(), BaseType::Array, false, true, None)
+                (
+                    "Array".to_string(),
+                    BaseType::Array,
+                    None,
+                    false,
+                    true,
+                    None,
+                )
             }
         }
         IdlType::Defined(def) => {
@@ -966,14 +1041,22 @@ fn analyze_idl_type_with_resolution(
                 idl.into_iter().map(|i| (String::new(), i)).collect();
             let resolved_type = resolve_complex_type(&type_name, &temp_idl_lookup);
 
-            (type_name, BaseType::Object, false, false, resolved_type)
+            (
+                type_name,
+                BaseType::Object,
+                None,
+                false,
+                false,
+                resolved_type,
+            )
         }
         IdlType::HashMap(hm) => {
-            let (val_type, base_type, _, _, resolved_type) =
+            let (val_type, base_type, integer_kind, _, _, resolved_type) =
                 analyze_idl_type_with_resolution(&hm.hash_map.1, idl);
             (
                 format!("HashMap<{}>", val_type),
                 base_type,
+                integer_kind,
                 false,
                 false,
                 resolved_type,
@@ -984,7 +1067,66 @@ fn analyze_idl_type_with_resolution(
 
 #[allow(dead_code)]
 fn analyze_idl_type(idl_type: &IdlType) -> (String, BaseType, bool, bool) {
-    let (type_name, base_type, is_optional, is_array, _) =
+    let (type_name, base_type, _, is_optional, is_array, _) =
         analyze_idl_type_with_resolution(idl_type, None);
     (type_name, base_type, is_optional, is_array)
+}
+
+fn to_camel_case_owned(s: &str) -> String {
+    let mut result = String::new();
+    let mut uppercase_next = false;
+
+    for ch in s.chars() {
+        if matches!(ch, '_' | '-' | '.') {
+            uppercase_next = true;
+            continue;
+        }
+
+        if result.is_empty() {
+            result.extend(ch.to_lowercase());
+            continue;
+        }
+
+        if uppercase_next {
+            result.extend(ch.to_uppercase());
+            uppercase_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::idl::IdlTypeOption;
+
+    #[test]
+    fn analyze_field_type_populates_integer_kind_and_names() {
+        let field = analyze_field_type("last_updated_at", "Option<i64>");
+
+        assert_eq!(field.base_type, BaseType::Timestamp);
+        assert_eq!(field.integer_kind, Some(IntegerKind::I64));
+        assert!(field.is_optional);
+        assert_eq!(field.raw_name.as_deref(), Some("last_updated_at"));
+        assert_eq!(field.canonical_name.as_deref(), Some("lastUpdatedAt"));
+    }
+
+    #[test]
+    fn analyze_idl_type_with_resolution_preserves_integer_kind() {
+        let idl_type = IdlType::Option(IdlTypeOption {
+            option: Box::new(IdlType::Simple("u64".to_string())),
+        });
+
+        let (type_name, base_type, integer_kind, is_optional, is_array, _) =
+            analyze_idl_type_with_resolution(&idl_type, None);
+
+        assert_eq!(type_name, "Option<u64>");
+        assert_eq!(base_type, BaseType::Integer);
+        assert_eq!(integer_kind, Some(IntegerKind::U64));
+        assert!(is_optional);
+        assert!(!is_array);
+    }
 }

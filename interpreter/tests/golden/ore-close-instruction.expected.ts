@@ -1,6 +1,8 @@
 export interface OreCloseParams {
+  board?: string;
   rentPayer: string;
   round: string;
+  treasury?: string;
 }
 
 export type OreCloseError = OreStreamOreProgramError;

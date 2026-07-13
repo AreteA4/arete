@@ -949,7 +949,7 @@ impl ResolverDefinition for TokenMetadataResolver {
   name?: string | null;
   symbol?: string | null;
   decimals?: number | null;
-  logo_uri?: string | null;
+  logoUri?: string | null;
 }"#,
         )
     }
@@ -963,7 +963,27 @@ impl ResolverDefinition for TokenMetadataResolver {
   symbol: z.string().nullable().optional(),
   decimals: z.number().nullable().optional(),
   logo_uri: z.string().nullable().optional(),
-});"#,
+}).transform((value) => ({
+  mint: value.mint,
+  ...(value.name !== undefined ? { name: value.name } : {}),
+  ...(value.symbol !== undefined ? { symbol: value.symbol } : {}),
+  ...(value.decimals !== undefined ? { decimals: value.decimals } : {}),
+  ...(value.logo_uri !== undefined ? { logoUri: value.logo_uri } : {}),
+}));
+
+export const TokenMetadataPatchSchema = z.object({
+  mint: z.string().optional(),
+  name: z.string().nullable().optional(),
+  symbol: z.string().nullable().optional(),
+  decimals: z.number().nullable().optional(),
+  logo_uri: z.string().nullable().optional(),
+}).transform((value) => ({
+  ...(value.mint !== undefined ? { mint: value.mint } : {}),
+  ...(value.name !== undefined ? { name: value.name } : {}),
+  ...(value.symbol !== undefined ? { symbol: value.symbol } : {}),
+  ...(value.decimals !== undefined ? { decimals: value.decimals } : {}),
+  ...(value.logo_uri !== undefined ? { logoUri: value.logo_uri } : {}),
+}));"#,
         })
     }
 }

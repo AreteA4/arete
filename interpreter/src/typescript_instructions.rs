@@ -11,11 +11,13 @@
 //! golden fixture in `examples/subscriptions-instructions/src/handlers.ts`.
 
 use crate::ast::{
-    AccountResolution, IdlArrayElementSnapshot, IdlDefinedInnerSnapshot, IdlErrorSnapshot,
-    IdlSnapshot, IdlTypeDefKindSnapshot, IdlTypeDefSnapshot, IdlTypeSnapshot,
-    InstructionAccountDef, InstructionDef, PdaDefinition, PdaSeedDef,
+    AccountResolution, AmountDecimalsSource, IdlArrayElementSnapshot, IdlDefinedInnerSnapshot,
+    IdlErrorSnapshot, IdlInstructionSnapshot, IdlSnapshot, IdlTypeDefKindSnapshot,
+    IdlTypeDefSnapshot, IdlTypeSnapshot, InstructionAccountDef, InstructionDef, PdaDefinition,
+    PdaSeedDef,
 };
 use crate::typescript::{to_pascal_case, to_screaming_snake_case};
+use arete_idl::{IdlAmountDecimalsSource, IdlAmountHint};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// One entry in the stack definition's `instructions` block.
@@ -26,8 +28,53 @@ pub struct StackInstructionEntry {
     pub program_key: Option<String>,
     /// Key inside the (possibly nested) instructions block.
     pub instruction_name: String,
+    /// Program namespace key used at runtime on `client.programs.<key>`.
+    pub runtime_program_key: Option<String>,
     /// Name of the generated handler const.
     pub handler_const: String,
+    /// Name of the generated params interface for the handler.
+    pub params_type: String,
+    /// Name of the generated semantic params interface when amount hints are present.
+    pub semantic_params_type: Option<String>,
+    /// Extra params added only for semantic wrappers (for example decimals overrides).
+    pub semantic_extra_params: Vec<String>,
+    /// Root-arg conversions applied before delegating to the raw connected plan.
+    pub semantic_amount_args: Vec<SemanticAmountArgEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticAmountArgEntry {
+    pub arg_name: String,
+    pub binding_name: String,
+    pub raw_expression: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemanticFieldSpec {
+    root_arg_name: String,
+    relative_path: Vec<String>,
+    resolution: SemanticAmountResolution,
+    decimals_override_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticAmountResolution {
+    ArgMint {
+        arg_name: String,
+    },
+    ArgDecimals {
+        arg_name: String,
+    },
+    KnownAccount {
+        account_name: String,
+        optional: bool,
+    },
+    KnownAddress {
+        address: String,
+    },
+    Constant {
+        decimals: u8,
+    },
 }
 
 /// Result of generating instruction handler code for a stack.
@@ -41,8 +88,52 @@ pub struct InstructionsCodegen {
     /// Whether the generated code references the `@usearete/sdk` runtime
     /// (`createInstructionHandler` / `ErrorMetadata`).
     pub needs_runtime_import: bool,
+    /// Whether generated program definitions need runtime semantic wrappers.
+    pub needs_program_runtime_extensions: bool,
+    /// Whether generated semantic wrappers reference `AmountInput`.
+    pub needs_amount_input: bool,
+    /// Whether generated semantic wrappers reference `resolveAmountToRaw`.
+    pub needs_resolve_amount_to_raw: bool,
+    /// Whether generated semantic wrappers reference `toRawAmount`.
+    pub needs_to_raw_amount: bool,
     /// Human-readable warnings (skipped instructions, degraded PDAs).
     pub warnings: Vec<String>,
+    /// Structured PDA degradation metadata for CLI summaries.
+    pub pda_degradations: Vec<PdaDegradation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PdaDegradationSource {
+    Inline,
+    Registry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdaDegradation {
+    pub instruction_name: String,
+    pub account_name: String,
+    pub pda_name: Option<String>,
+    pub source: PdaDegradationSource,
+    pub reason: String,
+}
+
+impl PdaDegradation {
+    pub fn warning_message(&self) -> String {
+        match (&self.source, &self.pda_name) {
+            (PdaDegradationSource::Inline, _) => format!(
+                "instruction '{}': account '{}' inline PDA degraded to userProvided ({})",
+                self.instruction_name, self.account_name, self.reason
+            ),
+            (_, Some(pda_name)) => format!(
+                "instruction '{}': account '{}' PDA '{}' degraded to userProvided ({})",
+                self.instruction_name, self.account_name, pda_name, self.reason
+            ),
+            (_, None) => format!(
+                "instruction '{}': account '{}' degraded to userProvided ({})",
+                self.instruction_name, self.account_name, self.reason
+            ),
+        }
+    }
 }
 
 /// Per-program error const/type names plus the rendered declarations.
@@ -51,6 +142,52 @@ struct ProgramErrorScope {
     type_name: String,
     errors: Vec<IdlErrorSnapshot>,
     used: bool,
+}
+
+fn instruction_snapshot_matches(
+    instruction: &InstructionDef,
+    snapshot: &IdlInstructionSnapshot,
+) -> bool {
+    instruction.name == snapshot.name
+        && instruction.discriminator == snapshot.discriminator
+        && instruction.args.len() == snapshot.args.len()
+        && instruction
+            .args
+            .iter()
+            .zip(snapshot.args.iter())
+            .all(|(arg, snapshot_arg)| arg.name == snapshot_arg.name)
+}
+
+fn find_instruction_snapshot<'a>(
+    instruction: &InstructionDef,
+    idls: &'a [IdlSnapshot],
+    program_index: Option<usize>,
+) -> Option<&'a IdlInstructionSnapshot> {
+    if let Some(index) = program_index {
+        return idls.get(index).and_then(|idl| {
+            idl.instructions
+                .iter()
+                .find(|candidate| instruction_snapshot_matches(instruction, candidate))
+        });
+    }
+
+    let mut matches = idls
+        .iter()
+        .filter(|idl| {
+            instruction
+                .program_id
+                .as_deref()
+                .map_or(true, |program_id| {
+                    idl.program_id.as_deref() == Some(program_id)
+                })
+        })
+        .flat_map(|idl| idl.instructions.iter())
+        .filter(|candidate| instruction_snapshot_matches(instruction, candidate));
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first)
 }
 
 /// Generate instruction handler code for a stack.
@@ -78,6 +215,7 @@ pub fn generate_instructions_code(
     // expected to be unique across programs within a stack; conflicting
     // definitions keep the first and warn.
     let mut warnings: Vec<String> = Vec::new();
+    let mut pda_degradations: Vec<PdaDegradation> = Vec::new();
     let mut pda_lookup: BTreeMap<&str, &PdaDefinition> = BTreeMap::new();
     for program_pdas in pdas.values() {
         for (name, def) in program_pdas {
@@ -98,6 +236,10 @@ pub fn generate_instructions_code(
 
     let mut blocks: Vec<String> = Vec::new();
     let mut stack_entries: Vec<StackInstructionEntry> = Vec::new();
+    let mut needs_program_runtime_extensions = false;
+    let mut needs_amount_input = false;
+    let mut needs_resolve_amount_to_raw = false;
+    let mut needs_to_raw_amount = false;
 
     let stack_screaming = to_screaming_snake_case(stack_name);
     let stack_pascal = to_pascal_case(stack_name);
@@ -175,12 +317,18 @@ pub fn generate_instructions_code(
                     Some(to_camel_case(name)),
                 )
             }
+            Some(name) => (
+                to_pascal_case(&instr.name),
+                format!("{}Instruction", instr.name),
+                Some(to_camel_case(name)),
+            ),
             _ => (
                 to_pascal_case(&instr.name),
                 format!("{}Instruction", instr.name),
                 None,
             ),
         };
+        let runtime_program_key = program_name.map(to_camel_case);
         let (program_errors_const, program_error_type) = match program_index {
             Some(i) => {
                 program_scopes[i].used = true;
@@ -198,11 +346,16 @@ pub fn generate_instructions_code(
             }
         };
 
+        let instruction_snapshot = find_instruction_snapshot(instr, idls, program_index);
+
         // --- Parse args; skip the whole instruction on unsupported types. ---
         let mut parsed_args: Vec<(String, ParsedArgType)> = Vec::new();
         let mut unsupported_arg: Option<(String, String)> = None;
-        for arg in &instr.args {
-            let parsed = defined_types.parse_arg_type(&arg.arg_type);
+        for (index, arg) in instr.args.iter().enumerate() {
+            let parsed = instruction_snapshot
+                .and_then(|snapshot| snapshot.args.get(index))
+                .map(|snapshot_arg| defined_types.parse_snapshot_type(&snapshot_arg.type_))
+                .unwrap_or_else(|| defined_types.parse_arg_type(&arg.arg_type));
             if !parsed.supported {
                 unsupported_arg = Some((arg.name.clone(), arg.arg_type.clone()));
                 break;
@@ -233,6 +386,7 @@ pub fn generate_instructions_code(
 
         let mut account_literals: Vec<String> = Vec::new();
         let mut user_params: Vec<UserParam> = Vec::new();
+        let mut resolve_params: BTreeMap<String, String> = BTreeMap::new();
         for acc in &instr.accounts {
             let mapped = map_account(
                 acc,
@@ -241,10 +395,16 @@ pub fn generate_instructions_code(
                 &instr_arg_types,
                 &instr.name,
                 &mut warnings,
+                &mut pda_degradations,
             );
             account_literals.push(mapped.literal);
             if let Some(param) = mapped.param {
                 user_params.push(param);
+            }
+            for resolve_param in mapped.resolve_params {
+                resolve_params
+                    .entry(resolve_param.name)
+                    .or_insert(resolve_param.ts_type);
             }
         }
 
@@ -257,16 +417,169 @@ pub fn generate_instructions_code(
             let optional = if param.optional { "?" } else { "" };
             param_lines.push(format!("  {}{}: string;", param.name, optional));
         }
+        if !resolve_params.is_empty() {
+            let resolve_lines: Vec<String> = resolve_params
+                .iter()
+                .map(|(name, ts_type)| {
+                    format!("    {}?: {};", render_ts_property_name(name), ts_type)
+                })
+                .collect();
+            param_lines.push(format!(
+                "  resolve?: {{\n{}\n  }};",
+                resolve_lines.join("\n")
+            ));
+        }
         let params_body = if param_lines.is_empty() {
             "  // This instruction takes no arguments or user-provided accounts.".to_string()
         } else {
             param_lines.join("\n")
         };
         let params_type = format!("{}Params", pascal);
-        let params_interface = format!(
-            "export interface {} {{\n{}\n}}",
-            params_type, params_body
+        let params_interface = format!("export interface {} {{\n{}\n}}", params_type, params_body);
+
+        let mut semantic_specs = collect_semantic_amount_args(
+            instr,
+            instruction_snapshot,
+            &mut defined_types,
+            &mut warnings,
         );
+        semantic_specs.retain_mut(|spec| match spec.resolution.clone() {
+            SemanticAmountResolution::KnownAccount { account_name, .. } => {
+                let field_path = if spec.relative_path.is_empty() {
+                    spec.root_arg_name.clone()
+                } else {
+                    format!("{}.{}", spec.root_arg_name, spec.relative_path.join("."))
+                };
+                let Some(account) = instr
+                    .accounts
+                    .iter()
+                    .find(|account| account.name == account_name)
+                else {
+                    warnings.push(format!(
+                        "instruction '{}': skipped amount-aware semantic wrapper for field '{}' because account '{}' was not found",
+                        instr.name,
+                        field_path,
+                        account_name
+                    ));
+                    return false;
+                };
+                if let Some(param) = user_params.iter().find(|param| param.name == account_name) {
+                    spec.resolution = SemanticAmountResolution::KnownAccount {
+                        account_name,
+                        optional: param.optional,
+                    };
+                    return true;
+                }
+                let AccountResolution::Known { address: known } = &account.resolution else {
+                    warnings.push(format!(
+                        "instruction '{}': skipped amount-aware semantic wrapper for field '{}' because account '{}' is neither caller-provided nor a known address",
+                        instr.name,
+                        field_path,
+                        account_name
+                    ));
+                    return false;
+                };
+                spec.resolution = SemanticAmountResolution::KnownAddress {
+                    address: known.clone(),
+                };
+                true
+            }
+            _ => true,
+        });
+        if runtime_program_key.is_some() {
+            needs_program_runtime_extensions = true;
+        }
+        if !semantic_specs.is_empty() && runtime_program_key.is_none() {
+            warnings.push(format!(
+                "instruction '{}': skipped amount-aware semantic wrapper because the runtime program namespace could not be determined",
+                instr.name
+            ));
+            semantic_specs.clear();
+        }
+
+        let semantic_extra_params: Vec<String> = semantic_specs
+            .iter()
+            .filter_map(|spec| spec.decimals_override_name.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+        let semantic_amount_args = if semantic_specs.is_empty() {
+            Vec::new()
+        } else {
+            needs_amount_input = true;
+            if semantic_specs.iter().any(|spec| {
+                matches!(
+                    spec.resolution,
+                    SemanticAmountResolution::ArgMint { .. }
+                        | SemanticAmountResolution::KnownAccount { .. }
+                        | SemanticAmountResolution::KnownAddress { .. }
+                )
+            }) {
+                needs_resolve_amount_to_raw = true;
+            }
+            if semantic_specs.iter().any(|spec| {
+                matches!(
+                    spec.resolution,
+                    SemanticAmountResolution::ArgDecimals { .. }
+                        | SemanticAmountResolution::Constant { .. }
+                )
+            }) {
+                needs_to_raw_amount = true;
+            }
+
+            let mut conversions = Vec::new();
+            for (arg_name, _) in &parsed_args {
+                let arg_specs: Vec<&SemanticFieldSpec> = semantic_specs
+                    .iter()
+                    .filter(|spec| spec.root_arg_name == *arg_name)
+                    .collect();
+                if arg_specs.is_empty() {
+                    continue;
+                }
+
+                let arg_access = render_ts_property_access("params", arg_name);
+                let raw_expression = if let Some(snapshot_arg) = instruction_snapshot
+                    .and_then(|snapshot| snapshot.args.iter().find(|arg| arg.name == *arg_name))
+                {
+                    render_semantic_raw_expression(
+                        &snapshot_arg.type_,
+                        &arg_access,
+                        &mut defined_types,
+                        &arg_specs,
+                        0,
+                    )
+                    .unwrap_or_else(|| arg_access.clone())
+                } else {
+                    render_amount_resolution_expression(&arg_access, arg_specs[0])
+                };
+
+                conversions.push(SemanticAmountArgEntry {
+                    arg_name: arg_name.clone(),
+                    binding_name: semantic_raw_binding_name(arg_name),
+                    raw_expression,
+                });
+            }
+            conversions
+        };
+
+        let semantic_params = if runtime_program_key.is_none() {
+            None
+        } else if semantic_specs.is_empty() {
+            Some((params_type.clone(), None))
+        } else {
+            let type_name = format!("{}SemanticParams", pascal);
+            let interface = render_semantic_params_interface(
+                &type_name,
+                &parsed_args,
+                instruction_snapshot,
+                &user_params,
+                &resolve_params,
+                &semantic_specs,
+                &mut defined_types,
+            );
+            Some((type_name, Some(interface)))
+        };
 
         // --- Error type. Program errors are stack-wide (IDLs do not scope
         // errors to instructions), so each handler's typed error is an alias of
@@ -294,7 +607,10 @@ pub fn generate_instructions_code(
             format!("[\n{}\n  ]", account_literals.join("\n"))
         };
 
-        let program_id = instr.program_id.clone().unwrap_or_else(|| default_program_id.clone());
+        let program_id = instr
+            .program_id
+            .clone()
+            .unwrap_or_else(|| default_program_id.clone());
         let discriminator = format!(
             "[{}]",
             instr
@@ -319,10 +635,13 @@ pub fn generate_instructions_code(
             program_errors_const = program_errors_const,
         );
 
-        blocks.push(format!(
-            "{}\n\n{}\n\n{}",
-            params_interface, error_decl, handler
-        ));
+        let mut block_parts = vec![params_interface];
+        if let Some((_, Some(semantic_interface))) = &semantic_params {
+            block_parts.push(semantic_interface.clone());
+        }
+        block_parts.push(error_decl);
+        block_parts.push(handler);
+        blocks.push(block_parts.join("\n\n"));
         // Mark the error scope as referenced only when a handler is emitted,
         // so fully-skipped programs do not produce dangling consts.
         match program_index {
@@ -332,7 +651,12 @@ pub fn generate_instructions_code(
         stack_entries.push(StackInstructionEntry {
             program_key,
             instruction_name: instr.name.clone(),
+            runtime_program_key,
             handler_const,
+            params_type: params_type.clone(),
+            semantic_params_type: semantic_params.as_ref().map(|(name, _)| name.clone()),
+            semantic_extra_params,
+            semantic_amount_args,
         });
     }
 
@@ -344,14 +668,22 @@ pub fn generate_instructions_code(
             code: String::new(),
             stack_entries,
             needs_runtime_import: false,
+            needs_program_runtime_extensions,
+            needs_amount_input,
+            needs_resolve_amount_to_raw,
+            needs_to_raw_amount,
             warnings,
+            pda_degradations,
         };
     }
 
     // Program-level error metadata blocks, one per referenced scope. Errors
     // live on the stack's IDL snapshots (not duplicated onto instructions).
     let mut error_blocks: Vec<String> = Vec::new();
-    for scope in program_scopes.iter().chain(std::iter::once(&fallback_scope)) {
+    for scope in program_scopes
+        .iter()
+        .chain(std::iter::once(&fallback_scope))
+    {
         if scope.used {
             error_blocks.push(render_program_errors(
                 &scope.const_name,
@@ -391,11 +723,16 @@ pub fn generate_instructions_code(
         code,
         stack_entries,
         needs_runtime_import: true,
+        needs_program_runtime_extensions,
+        needs_amount_input,
+        needs_resolve_amount_to_raw,
+        needs_to_raw_amount,
         warnings,
+        pda_degradations,
     }
 }
 
-/// Render the `instructions: { ... }` block for the stack definition const.
+/// Render the `rawInstructions: { ... }` block for the stack definition const.
 ///
 /// Entries without a `program_key` render flat; entries with one are grouped
 /// under their program's key (multi-program stacks).
@@ -434,7 +771,7 @@ pub fn render_instructions_stack_block(entries: &[StackInstructionEntry]) -> Str
         ));
     }
 
-    format!("\n  instructions: {{\n{}\n  }},", lines.join("\n"))
+    format!("\n  rawInstructions: {{\n{}\n  }},", lines.join("\n"))
 }
 
 /// Convert a program name to camelCase for use as a namespace key / const
@@ -650,7 +987,19 @@ impl<'a> DefinedTypes<'a> {
                     _ => unsupported(),
                 }
             }
-            IdlTypeSnapshot::HashMap(_) => unsupported(),
+            IdlTypeSnapshot::HashMap(map) => {
+                let key = self.parse_snapshot_type(&map.hash_map.0);
+                let value = self.parse_snapshot_type(&map.hash_map.1);
+                if !key.supported || key.schema != "'string'" || !value.supported {
+                    unsupported()
+                } else {
+                    ParsedArgType {
+                        schema: format!("{{ hashMap: [{}, {}] }}", key.schema, value.schema),
+                        ts_type: format!("Record<string, {}>", value.ts_type),
+                        supported: true,
+                    }
+                }
+            }
             IdlTypeSnapshot::Defined(d) => {
                 let name = match &d.defined {
                     IdlDefinedInnerSnapshot::Named { name } => name.as_str(),
@@ -716,6 +1065,15 @@ impl<'a> DefinedTypes<'a> {
         result
     }
 
+    fn find_definition(&self, name: &str) -> Option<&'a IdlTypeDefSnapshot> {
+        if let Some(def) = self.defs.get(name) {
+            return Some(*def);
+        }
+        self.lower
+            .get(&name.to_lowercase())
+            .and_then(|canonical| self.defs.get(canonical).copied())
+    }
+
     fn resolve_struct(
         &mut self,
         name: &str,
@@ -732,7 +1090,10 @@ impl<'a> DefinedTypes<'a> {
                 ));
                 return None;
             }
-            schema_fields.push(format!("{{ name: '{}', type: {} }}", field.name, parsed.schema));
+            schema_fields.push(format!(
+                "{{ name: '{}', type: {} }}",
+                field.name, parsed.schema
+            ));
             ts_fields.push(format!("  {}: {};", field.name, parsed.ts_type));
         }
 
@@ -787,8 +1148,10 @@ impl<'a> DefinedTypes<'a> {
                         ));
                         return None;
                     }
-                    field_schemas
-                        .push(format!("{{ name: '{}', type: {} }}", field.name, parsed.schema));
+                    field_schemas.push(format!(
+                        "{{ name: '{}', type: {} }}",
+                        field.name, parsed.schema
+                    ));
                     field_ts.push(format!("{}: {}", field.name, parsed.ts_type));
                 }
                 schema_variants.push(format!(
@@ -914,12 +1277,21 @@ struct UserParam {
     optional: bool,
 }
 
+/// A helper-only PDA seed input exposed under `resolve`.
+#[derive(Debug, Clone)]
+struct ResolveParam {
+    name: String,
+    ts_type: String,
+}
+
 /// Result of mapping a single instruction account.
 struct MappedAccount {
     /// TypeScript `AccountMeta` object literal.
     literal: String,
     /// Set when the account is caller-supplied (`userProvided`).
     param: Option<UserParam>,
+    /// Helper-only PDA seed inputs needed for derivation.
+    resolve_params: Vec<ResolveParam>,
 }
 
 fn map_account(
@@ -929,6 +1301,7 @@ fn map_account(
     instr_arg_types: &BTreeMap<&str, &str>,
     instr_name: &str,
     warnings: &mut Vec<String>,
+    degradations: &mut Vec<PdaDegradation>,
 ) -> MappedAccount {
     let base = format!(
         "name: '{}', isSigner: {}, isWritable: {}",
@@ -940,16 +1313,22 @@ fn map_account(
         String::new()
     };
 
-    let user_provided = |warn: Option<String>, warnings: &mut Vec<String>| -> MappedAccount {
+    let user_provided = |degradation: Option<PdaDegradation>,
+                         warnings: &mut Vec<String>,
+                         degradations: &mut Vec<PdaDegradation>|
+     -> MappedAccount {
         // Degradations are surfaced both to the compiler caller (warnings) and
         // in the generated code, so SDK readers can see why an account that
         // looks derivable must be passed in manually.
-        let comment = match &warn {
-            Some(w) => format!("    // [arete codegen] {}\n", w),
+        let comment = match &degradation {
+            Some(degradation) => {
+                format!("    // [arete codegen] {}\n", degradation.warning_message())
+            }
             None => String::new(),
         };
-        if let Some(w) = warn {
-            warnings.push(w);
+        if let Some(degradation) = degradation {
+            warnings.push(degradation.warning_message());
+            degradations.push(degradation);
         }
         MappedAccount {
             literal: format!(
@@ -960,6 +1339,7 @@ fn map_account(
                 name: acc.name.clone(),
                 optional: acc.is_optional,
             }),
+            resolve_params: Vec::new(),
         }
     };
 
@@ -967,6 +1347,7 @@ fn map_account(
         AccountResolution::Signer => MappedAccount {
             literal: format!("    {{ {}, category: 'signer'{} }},", base, optional_suffix),
             param: None,
+            resolve_params: Vec::new(),
         },
         AccountResolution::Known { address } => MappedAccount {
             literal: format!(
@@ -974,12 +1355,17 @@ fn map_account(
                 base, address, optional_suffix
             ),
             param: None,
+            resolve_params: Vec::new(),
         },
-        AccountResolution::UserProvided => user_provided(None, warnings),
+        AccountResolution::UserProvided => user_provided(None, warnings, degradations),
         AccountResolution::PdaInline { seeds, program_id } => {
-            match build_pda_config(seeds, program_id.as_deref(), instr_account_names, instr_arg_types)
-            {
-                Ok((pda_config, seed_warnings)) => {
+            match build_pda_config(
+                seeds,
+                program_id.as_deref(),
+                instr_account_names,
+                instr_arg_types,
+            ) {
+                Ok((pda_config, seed_warnings, resolve_params)) => {
                     for w in seed_warnings {
                         warnings.push(format!(
                             "instruction '{}': account '{}': {}",
@@ -991,15 +1377,23 @@ fn map_account(
                             "    {{ {}, category: 'pda', pdaConfig: {}{} }},",
                             base, pda_config, optional_suffix
                         ),
-                        param: None,
+                        param: Some(UserParam {
+                            name: acc.name.clone(),
+                            optional: true,
+                        }),
+                        resolve_params,
                     }
                 }
                 Err(reason) => user_provided(
-                    Some(format!(
-                        "instruction '{}': account '{}' inline PDA degraded to userProvided ({})",
-                        instr_name, acc.name, reason
-                    )),
+                    Some(PdaDegradation {
+                        instruction_name: instr_name.to_string(),
+                        account_name: acc.name.clone(),
+                        pda_name: None,
+                        source: PdaDegradationSource::Inline,
+                        reason,
+                    }),
                     warnings,
+                    degradations,
                 ),
             }
         }
@@ -1010,7 +1404,7 @@ fn map_account(
                 instr_account_names,
                 instr_arg_types,
             ) {
-                Ok((pda_config, seed_warnings)) => {
+                Ok((pda_config, seed_warnings, resolve_params)) => {
                     for w in seed_warnings {
                         warnings.push(format!(
                             "instruction '{}': account '{}': {}",
@@ -1022,23 +1416,35 @@ fn map_account(
                             "    {{ {}, category: 'pda', pdaConfig: {}{} }},",
                             base, pda_config, optional_suffix
                         ),
-                        param: None,
+                        param: Some(UserParam {
+                            name: acc.name.clone(),
+                            optional: true,
+                        }),
+                        resolve_params,
                     }
                 }
                 Err(reason) => user_provided(
-                    Some(format!(
-                        "instruction '{}': account '{}' PDA '{}' degraded to userProvided ({})",
-                        instr_name, acc.name, pda_name, reason
-                    )),
+                    Some(PdaDegradation {
+                        instruction_name: instr_name.to_string(),
+                        account_name: acc.name.clone(),
+                        pda_name: Some(pda_name.clone()),
+                        source: PdaDegradationSource::Registry,
+                        reason,
+                    }),
                     warnings,
+                    degradations,
                 ),
             },
             None => user_provided(
-                Some(format!(
-                    "instruction '{}': account '{}' references unknown PDA '{}'; degraded to userProvided",
-                    instr_name, acc.name, pda_name
-                )),
+                Some(PdaDegradation {
+                    instruction_name: instr_name.to_string(),
+                    account_name: acc.name.clone(),
+                    pda_name: Some(pda_name.clone()),
+                    source: PdaDegradationSource::Registry,
+                    reason: format!("references unknown PDA '{}'", pda_name),
+                }),
                 warnings,
+                degradations,
             ),
         },
     }
@@ -1056,9 +1462,10 @@ fn build_pda_config(
     program_id: Option<&str>,
     instr_account_names: &HashSet<&str>,
     instr_arg_types: &BTreeMap<&str, &str>,
-) -> Result<(String, Vec<String>), String> {
+) -> Result<(String, Vec<String>, Vec<ResolveParam>), String> {
     let mut seed_literals: Vec<String> = Vec::new();
     let mut soft_warnings: Vec<String> = Vec::new();
+    let mut resolve_params: Vec<ResolveParam> = Vec::new();
     for seed in seeds {
         match seed {
             PdaSeedDef::Literal { value } => {
@@ -1068,6 +1475,12 @@ fn build_pda_config(
                 ));
             }
             PdaSeedDef::AccountRef { account_name } => {
+                if account_name.contains('.') {
+                    return Err(format!(
+                        "seed references account field '{}' which is not supported for low-level auto-resolution; encode it as a typed helper arg instead",
+                        account_name
+                    ));
+                }
                 if !instr_account_names.contains(account_name.as_str()) {
                     return Err(format!(
                         "seed references account '{}' not present in this instruction",
@@ -1080,17 +1493,38 @@ fn build_pda_config(
                 ));
             }
             PdaSeedDef::ArgRef { arg_name, arg_type } => {
-                if !instr_arg_types.contains_key(arg_name.as_str()) {
-                    return Err(format!(
-                        "seed references arg '{}' not present in this instruction",
-                        arg_name
-                    ));
-                }
+                let arg_root = arg_name.split('.').next().unwrap_or(arg_name.as_str());
+                let present_in_args = instr_arg_types.contains_key(arg_name.as_str())
+                    || instr_arg_types.contains_key(arg_root);
                 // Prefer the seed's declared type; fall back to the
                 // instruction arg's type (Anchor seeds carry no type info).
                 let raw_type = arg_type
                     .as_deref()
-                    .or_else(|| instr_arg_types.get(arg_name.as_str()).copied());
+                    .or_else(|| instr_arg_types.get(arg_name.as_str()).copied())
+                    .or_else(|| instr_arg_types.get(arg_root).copied());
+                if !present_in_args {
+                    let helper_type = match raw_type {
+                        Some(raw) => {
+                            let Some(ts_type) = seed_arg_ts_type(raw) else {
+                                return Err(format!(
+                                    "seed helper arg '{}' needs an explicit primitive type; found unsupported type '{}'",
+                                    arg_name, raw
+                                ));
+                            };
+                            ts_type
+                        }
+                        None => {
+                            return Err(format!(
+                                "seed helper arg '{}' is not present in this instruction and has no type information",
+                                arg_name
+                            ))
+                        }
+                    };
+                    resolve_params.push(ResolveParam {
+                        name: arg_name.clone(),
+                        ts_type: helper_type,
+                    });
+                }
                 match raw_type.and_then(normalize_seed_arg_type) {
                     Some(canonical) => seed_literals.push(format!(
                         "{{ type: 'argRef', argName: '{}', argType: '{}' }}",
@@ -1122,7 +1556,826 @@ fn build_pda_config(
         Some(pid) => format!("{{ programId: '{}', seeds: [{}] }}", pid, seeds_str),
         None => format!("{{ seeds: [{}] }}", seeds_str),
     };
-    Ok((config, soft_warnings))
+    Ok((config, soft_warnings, resolve_params))
+}
+
+fn render_ts_property_name(name: &str) -> String {
+    if name
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+        .unwrap_or(false)
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        name.to_string()
+    } else {
+        format!("'{}'", escape_single_quotes(name))
+    }
+}
+
+fn lower_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn semantic_path_identifier(path: &[String], suffix: &str) -> String {
+    let joined = path
+        .iter()
+        .map(|segment| to_pascal_case(segment))
+        .collect::<String>();
+    format!("{}{}", lower_first(&joined), suffix)
+}
+
+fn semantic_decimals_override_name(path: &[String]) -> String {
+    semantic_path_identifier(path, "Decimals")
+}
+
+fn semantic_raw_binding_name(arg_name: &str) -> String {
+    semantic_path_identifier(&[arg_name.to_string()], "Raw")
+}
+
+fn is_valid_ts_identifier(name: &str) -> bool {
+    name.chars()
+        .next()
+        .map(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+        .unwrap_or(false)
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+fn render_ts_property_access(target: &str, property: &str) -> String {
+    if is_valid_ts_identifier(property) {
+        format!("{}.{}", target, property)
+    } else {
+        format!("{}['{}']", target, escape_single_quotes(property))
+    }
+}
+
+fn render_ts_path_access(target: &str, path: &str) -> String {
+    path.split('.')
+        .filter(|segment| !segment.is_empty())
+        .fold(target.to_string(), |acc, segment| {
+            render_ts_property_access(&acc, segment)
+        })
+}
+
+fn semantic_resolution_from_amount_source(
+    source: &AmountDecimalsSource,
+) -> SemanticAmountResolution {
+    match source {
+        AmountDecimalsSource::ArgMint { arg_name } => SemanticAmountResolution::ArgMint {
+            arg_name: arg_name.clone(),
+        },
+        AmountDecimalsSource::ArgDecimals { arg_name } => SemanticAmountResolution::ArgDecimals {
+            arg_name: arg_name.clone(),
+        },
+        AmountDecimalsSource::KnownAccount { account_name } => {
+            SemanticAmountResolution::KnownAccount {
+                account_name: account_name.clone(),
+                optional: false,
+            }
+        }
+        AmountDecimalsSource::Constant { decimals } => SemanticAmountResolution::Constant {
+            decimals: *decimals,
+        },
+    }
+}
+
+fn semantic_resolution_from_idl_hint(hint: &IdlAmountHint) -> SemanticAmountResolution {
+    match &hint.decimals_source {
+        IdlAmountDecimalsSource::ArgMint { arg_name } => SemanticAmountResolution::ArgMint {
+            arg_name: arg_name.clone(),
+        },
+        IdlAmountDecimalsSource::ArgDecimals { arg_name } => {
+            SemanticAmountResolution::ArgDecimals {
+                arg_name: arg_name.clone(),
+            }
+        }
+        IdlAmountDecimalsSource::KnownAccount { account_name } => {
+            SemanticAmountResolution::KnownAccount {
+                account_name: account_name.clone(),
+                optional: false,
+            }
+        }
+        IdlAmountDecimalsSource::Constant { decimals } => SemanticAmountResolution::Constant {
+            decimals: *decimals,
+        },
+    }
+}
+
+fn semantic_needs_decimals_override(resolution: &SemanticAmountResolution) -> bool {
+    matches!(
+        resolution,
+        SemanticAmountResolution::ArgMint { .. }
+            | SemanticAmountResolution::KnownAccount { .. }
+            | SemanticAmountResolution::KnownAddress { .. }
+    )
+}
+
+fn collect_semantic_specs_from_type(
+    root_arg_name: &str,
+    relative_path: &[String],
+    ty: &IdlTypeSnapshot,
+    defined_types: &mut DefinedTypes<'_>,
+    warnings: &mut Vec<String>,
+    specs: &mut Vec<SemanticFieldSpec>,
+) {
+    match ty {
+        IdlTypeSnapshot::Vec(vec_type) => {
+            collect_semantic_specs_from_type(
+                root_arg_name,
+                relative_path,
+                &vec_type.vec,
+                defined_types,
+                warnings,
+                specs,
+            );
+            return;
+        }
+        IdlTypeSnapshot::Array(array_type) => {
+            for part in &array_type.array {
+                match part {
+                    IdlArrayElementSnapshot::Type(element) => collect_semantic_specs_from_type(
+                        root_arg_name,
+                        relative_path,
+                        element,
+                        defined_types,
+                        warnings,
+                        specs,
+                    ),
+                    IdlArrayElementSnapshot::TypeName(name) => {
+                        collect_semantic_specs_from_type(
+                            root_arg_name,
+                            relative_path,
+                            &IdlTypeSnapshot::Simple(name.clone()),
+                            defined_types,
+                            warnings,
+                            specs,
+                        );
+                    }
+                    IdlArrayElementSnapshot::Size(_) => {}
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    let IdlTypeSnapshot::Defined(defined) = ty else {
+        return;
+    };
+    let type_name = match &defined.defined {
+        IdlDefinedInnerSnapshot::Named { name } => name.as_str(),
+        IdlDefinedInnerSnapshot::Simple(simple) => simple.as_str(),
+    };
+    let Some(def) = defined_types.find_definition(type_name) else {
+        return;
+    };
+
+    match &def.type_def {
+        IdlTypeDefKindSnapshot::Struct { fields, .. } => {
+            let fields = fields.clone();
+            for field in &fields {
+                let mut child_path = relative_path.to_vec();
+                child_path.push(field.name.clone());
+                collect_semantic_specs_from_field(
+                    root_arg_name,
+                    &child_path,
+                    field,
+                    defined_types,
+                    warnings,
+                    specs,
+                );
+            }
+        }
+        IdlTypeDefKindSnapshot::Enum { variants, .. } => {
+            let variants = variants.clone();
+            for variant in &variants {
+                for field in &variant.fields {
+                    let crate::ast::IdlEnumVariantFieldSnapshot::Named(named) = field else {
+                        continue;
+                    };
+                    let mut child_path = relative_path.to_vec();
+                    child_path.push(variant.name.clone());
+                    child_path.push(named.name.clone());
+                    collect_semantic_specs_from_field(
+                        root_arg_name,
+                        &child_path,
+                        named,
+                        defined_types,
+                        warnings,
+                        specs,
+                    );
+                }
+            }
+        }
+        IdlTypeDefKindSnapshot::TupleStruct { .. } => {}
+    }
+}
+
+fn collect_semantic_specs_from_field(
+    root_arg_name: &str,
+    relative_path: &[String],
+    field: &crate::ast::IdlFieldSnapshot,
+    defined_types: &mut DefinedTypes<'_>,
+    warnings: &mut Vec<String>,
+    specs: &mut Vec<SemanticFieldSpec>,
+) {
+    if let Some(hint) = &field.amount_hint {
+        let parsed = defined_types.parse_snapshot_type(&field.type_);
+        if parsed.ts_type != "bigint" {
+            let full_path = std::iter::once(root_arg_name)
+                .chain(relative_path.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(".");
+            warnings.push(format!(
+                "instruction semantic wrapper: skipped amount-aware field '{}' because only bigint-backed raw fields are currently supported",
+                full_path
+            ));
+            return;
+        }
+
+        let resolution = semantic_resolution_from_idl_hint(hint);
+        let mut full_path = vec![root_arg_name.to_string()];
+        full_path.extend(relative_path.iter().cloned());
+        let decimals_override_name = if semantic_needs_decimals_override(&resolution) {
+            Some(semantic_decimals_override_name(&full_path))
+        } else {
+            None
+        };
+        specs.push(SemanticFieldSpec {
+            root_arg_name: root_arg_name.to_string(),
+            relative_path: relative_path.to_vec(),
+            resolution,
+            decimals_override_name,
+        });
+        return;
+    }
+
+    collect_semantic_specs_from_type(
+        root_arg_name,
+        relative_path,
+        &field.type_,
+        defined_types,
+        warnings,
+        specs,
+    );
+}
+
+fn collect_semantic_amount_args(
+    instr: &InstructionDef,
+    instruction_snapshot: Option<&IdlInstructionSnapshot>,
+    defined_types: &mut DefinedTypes<'_>,
+    warnings: &mut Vec<String>,
+) -> Vec<SemanticFieldSpec> {
+    if let Some(snapshot) = instruction_snapshot {
+        let mut specs = Vec::new();
+        for arg in &snapshot.args {
+            collect_semantic_specs_from_field(
+                &arg.name,
+                &[],
+                arg,
+                defined_types,
+                warnings,
+                &mut specs,
+            );
+        }
+        if !specs.is_empty() {
+            return specs;
+        }
+    }
+
+    let mut specs = Vec::new();
+    for arg in &instr.args {
+        let Some(hint) = &arg.amount_hint else {
+            continue;
+        };
+        let parsed = defined_types.parse_arg_type(&arg.arg_type);
+        if parsed.ts_type != "bigint" {
+            warnings.push(format!(
+                "instruction '{}': skipped amount-aware semantic wrapper for arg '{}' because only bigint-backed raw args are currently supported",
+                instr.name, arg.name
+            ));
+            continue;
+        }
+        let resolution = semantic_resolution_from_amount_source(&hint.decimals_source);
+        let path = vec![arg.name.clone()];
+        specs.push(SemanticFieldSpec {
+            root_arg_name: arg.name.clone(),
+            relative_path: Vec::new(),
+            decimals_override_name: semantic_needs_decimals_override(&resolution)
+                .then(|| semantic_decimals_override_name(&path)),
+            resolution,
+        });
+    }
+
+    specs
+}
+
+fn render_amount_resolution_expression(input_expr: &str, spec: &SemanticFieldSpec) -> String {
+    let render_source_path = |path: &str| {
+        if let Some((_, element_path)) = path.rsplit_once("[]") {
+            let element_path = element_path.trim_start_matches('.');
+            if element_path.is_empty() {
+                "entry".to_string()
+            } else {
+                render_ts_path_access("entry", element_path)
+            }
+        } else {
+            render_ts_path_access("params", path)
+        }
+    };
+    match &spec.resolution {
+        SemanticAmountResolution::ArgMint { arg_name } => format!(
+            "await resolveAmountToRaw(context.chain, {{ mint: {}, amount: {}, decimals: {} }})",
+            render_source_path(arg_name),
+            input_expr,
+            render_ts_property_access(
+                "params",
+                spec.decimals_override_name
+                    .as_deref()
+                    .expect("mint-based amount hints should declare an override field")
+            )
+        ),
+        SemanticAmountResolution::ArgDecimals { arg_name } => format!(
+            "toRawAmount({}, {})",
+            input_expr,
+            render_source_path(arg_name)
+        ),
+        SemanticAmountResolution::KnownAccount {
+            account_name,
+            optional,
+        } => format!(
+            "await resolveAmountToRaw(context.chain, {{ mint: {}, amount: {}, decimals: {} }})",
+            if *optional {
+                format!(
+                    "({} ?? '')",
+                    render_ts_property_access("params", account_name)
+                )
+            } else {
+                render_ts_property_access("params", account_name)
+            },
+            input_expr,
+            render_ts_property_access(
+                "params",
+                spec.decimals_override_name
+                    .as_deref()
+                    .expect("known-account amount hints should declare an override field")
+            )
+        ),
+        SemanticAmountResolution::KnownAddress { address } => format!(
+            "await resolveAmountToRaw(context.chain, {{ mint: '{}', amount: {}, decimals: {} }})",
+            escape_single_quotes(address),
+            input_expr,
+            render_ts_property_access(
+                "params",
+                spec.decimals_override_name
+                    .as_deref()
+                    .expect("known-account amount hints should declare an override field")
+            )
+        ),
+        SemanticAmountResolution::Constant { decimals } => {
+            format!("toRawAmount({}, {})", input_expr, decimals)
+        }
+    }
+}
+
+fn render_semantic_ts_type(
+    ty: &IdlTypeSnapshot,
+    defined_types: &mut DefinedTypes<'_>,
+    specs: &[&SemanticFieldSpec],
+    depth: usize,
+) -> Option<String> {
+    if specs.iter().any(|spec| spec.relative_path.len() == depth) {
+        return Some("AmountInput".to_string());
+    }
+    if !specs.iter().any(|spec| spec.relative_path.len() > depth) {
+        return Some(defined_types.parse_snapshot_type(ty).ts_type);
+    }
+
+    match ty {
+        IdlTypeSnapshot::Vec(vec_type) => {
+            let inner = render_semantic_ts_type(&vec_type.vec, defined_types, specs, depth)?;
+            return Some(format!("{}[]", maybe_paren(&inner)));
+        }
+        IdlTypeSnapshot::Array(array_type) => {
+            for part in &array_type.array {
+                let inner = match part {
+                    IdlArrayElementSnapshot::Type(element) => {
+                        render_semantic_ts_type(element, defined_types, specs, depth)?
+                    }
+                    IdlArrayElementSnapshot::TypeName(name) => render_semantic_ts_type(
+                        &IdlTypeSnapshot::Simple(name.clone()),
+                        defined_types,
+                        specs,
+                        depth,
+                    )?,
+                    IdlArrayElementSnapshot::Size(_) => continue,
+                };
+                return Some(format!("{}[]", maybe_paren(&inner)));
+            }
+            return Some(defined_types.parse_snapshot_type(ty).ts_type);
+        }
+        _ => {}
+    }
+
+    let IdlTypeSnapshot::Defined(defined) = ty else {
+        return Some(defined_types.parse_snapshot_type(ty).ts_type);
+    };
+    let type_name = match &defined.defined {
+        IdlDefinedInnerSnapshot::Named { name } => name.as_str(),
+        IdlDefinedInnerSnapshot::Simple(simple) => simple.as_str(),
+    };
+    let Some(def) = defined_types.find_definition(type_name) else {
+        return Some(defined_types.parse_snapshot_type(ty).ts_type);
+    };
+
+    match &def.type_def {
+        IdlTypeDefKindSnapshot::Struct { fields, .. } => {
+            render_semantic_struct_type(fields, defined_types, specs, depth)
+        }
+        IdlTypeDefKindSnapshot::Enum { variants, .. } => {
+            render_semantic_enum_type(variants, defined_types, specs, depth)
+        }
+        IdlTypeDefKindSnapshot::TupleStruct { .. } => {
+            Some(defined_types.parse_snapshot_type(ty).ts_type)
+        }
+    }
+}
+
+fn render_semantic_struct_type(
+    fields: &[crate::ast::IdlFieldSnapshot],
+    defined_types: &mut DefinedTypes<'_>,
+    specs: &[&SemanticFieldSpec],
+    depth: usize,
+) -> Option<String> {
+    let mut field_entries: Vec<String> = Vec::new();
+    for field in fields {
+        let child_specs: Vec<&SemanticFieldSpec> = specs
+            .iter()
+            .copied()
+            .filter(|spec| spec.relative_path.get(depth) == Some(&field.name))
+            .collect();
+        let field_ts = if child_specs.is_empty() {
+            defined_types.parse_snapshot_type(&field.type_).ts_type
+        } else {
+            render_semantic_ts_type(&field.type_, defined_types, &child_specs, depth + 1)?
+        };
+        field_entries.push(format!(
+            "{}: {};",
+            render_ts_property_name(&field.name),
+            field_ts
+        ));
+    }
+    Some(format!("{{ {} }}", field_entries.join(" ")))
+}
+
+fn render_semantic_enum_type(
+    variants: &[crate::ast::IdlEnumVariantSnapshot],
+    defined_types: &mut DefinedTypes<'_>,
+    specs: &[&SemanticFieldSpec],
+    depth: usize,
+) -> Option<String> {
+    use crate::ast::IdlEnumVariantFieldSnapshot;
+
+    let mut rendered_variants: Vec<String> = Vec::new();
+    for variant in variants {
+        if variant.fields.is_empty() {
+            rendered_variants.push(format!("'{}'", variant.name));
+            continue;
+        }
+
+        let named: Vec<_> = variant
+            .fields
+            .iter()
+            .filter_map(|field| match field {
+                IdlEnumVariantFieldSnapshot::Named(named) => Some(named),
+                IdlEnumVariantFieldSnapshot::Tuple(_) => None,
+            })
+            .collect();
+        if named.len() == variant.fields.len() {
+            let mut field_entries: Vec<String> = Vec::new();
+            for field in named {
+                let child_specs: Vec<&SemanticFieldSpec> = specs
+                    .iter()
+                    .copied()
+                    .filter(|spec| {
+                        spec.relative_path.get(depth) == Some(&variant.name)
+                            && spec.relative_path.get(depth + 1) == Some(&field.name)
+                    })
+                    .collect();
+                let field_ts = if child_specs.is_empty() {
+                    defined_types.parse_snapshot_type(&field.type_).ts_type
+                } else {
+                    render_semantic_ts_type(&field.type_, defined_types, &child_specs, depth + 2)?
+                };
+                field_entries.push(format!(
+                    "{}: {};",
+                    render_ts_property_name(&field.name),
+                    field_ts
+                ));
+            }
+            rendered_variants.push(format!(
+                "{{ {}: {{ {} }} }}",
+                render_ts_property_name(&variant.name),
+                field_entries.join(" ")
+            ));
+            continue;
+        }
+
+        let tuple: Vec<_> = variant
+            .fields
+            .iter()
+            .filter_map(|field| match field {
+                IdlEnumVariantFieldSnapshot::Tuple(ty) => {
+                    Some(defined_types.parse_snapshot_type(ty).ts_type)
+                }
+                IdlEnumVariantFieldSnapshot::Named(_) => None,
+            })
+            .collect();
+        rendered_variants.push(format!(
+            "{{ {}: [{}] }}",
+            render_ts_property_name(&variant.name),
+            tuple.join(", ")
+        ));
+    }
+    Some(rendered_variants.join(" | "))
+}
+
+fn render_semantic_raw_expression(
+    ty: &IdlTypeSnapshot,
+    value_expr: &str,
+    defined_types: &mut DefinedTypes<'_>,
+    specs: &[&SemanticFieldSpec],
+    depth: usize,
+) -> Option<String> {
+    if let Some(spec) = specs.iter().find(|spec| spec.relative_path.len() == depth) {
+        return Some(render_amount_resolution_expression(value_expr, spec));
+    }
+    if !specs.iter().any(|spec| spec.relative_path.len() > depth) {
+        return Some(value_expr.to_string());
+    }
+
+    match ty {
+        IdlTypeSnapshot::Vec(vec_type) => {
+            let element_expr = render_semantic_raw_expression(
+                &vec_type.vec,
+                "entry",
+                defined_types,
+                specs,
+                depth,
+            )?;
+            return Some(format!(
+                "await Promise.all({}.map(async (entry) => ({})))",
+                value_expr, element_expr
+            ));
+        }
+        IdlTypeSnapshot::Array(array_type) => {
+            for part in &array_type.array {
+                let element_expr = match part {
+                    IdlArrayElementSnapshot::Type(element) => render_semantic_raw_expression(
+                        element,
+                        "entry",
+                        defined_types,
+                        specs,
+                        depth,
+                    )?,
+                    IdlArrayElementSnapshot::TypeName(name) => render_semantic_raw_expression(
+                        &IdlTypeSnapshot::Simple(name.clone()),
+                        "entry",
+                        defined_types,
+                        specs,
+                        depth,
+                    )?,
+                    IdlArrayElementSnapshot::Size(_) => continue,
+                };
+                return Some(format!(
+                    "await Promise.all({}.map(async (entry) => ({})))",
+                    value_expr, element_expr
+                ));
+            }
+            return Some(value_expr.to_string());
+        }
+        _ => {}
+    }
+
+    let IdlTypeSnapshot::Defined(defined) = ty else {
+        return Some(value_expr.to_string());
+    };
+    let type_name = match &defined.defined {
+        IdlDefinedInnerSnapshot::Named { name } => name.as_str(),
+        IdlDefinedInnerSnapshot::Simple(simple) => simple.as_str(),
+    };
+    let Some(def) = defined_types.find_definition(type_name) else {
+        return Some(value_expr.to_string());
+    };
+
+    match &def.type_def {
+        IdlTypeDefKindSnapshot::Struct { fields, .. } => {
+            render_semantic_raw_struct_expression(fields, value_expr, defined_types, specs, depth)
+        }
+        IdlTypeDefKindSnapshot::Enum { variants, .. } => {
+            render_semantic_raw_enum_expression(variants, value_expr, defined_types, specs, depth)
+        }
+        IdlTypeDefKindSnapshot::TupleStruct { .. } => Some(value_expr.to_string()),
+    }
+}
+
+fn render_semantic_raw_struct_expression(
+    fields: &[crate::ast::IdlFieldSnapshot],
+    value_expr: &str,
+    defined_types: &mut DefinedTypes<'_>,
+    specs: &[&SemanticFieldSpec],
+    depth: usize,
+) -> Option<String> {
+    let mut overrides: Vec<String> = Vec::new();
+    for field in fields {
+        let child_specs: Vec<&SemanticFieldSpec> = specs
+            .iter()
+            .copied()
+            .filter(|spec| spec.relative_path.get(depth) == Some(&field.name))
+            .collect();
+        if child_specs.is_empty() {
+            continue;
+        }
+        let child_expr = render_semantic_raw_expression(
+            &field.type_,
+            &render_ts_property_access(value_expr, &field.name),
+            defined_types,
+            &child_specs,
+            depth + 1,
+        )?;
+        overrides.push(format!(
+            "{}: {}",
+            render_ts_property_name(&field.name),
+            child_expr
+        ));
+    }
+    if overrides.is_empty() {
+        Some(value_expr.to_string())
+    } else {
+        Some(format!("{{ ...{}, {} }}", value_expr, overrides.join(", ")))
+    }
+}
+
+fn render_semantic_raw_enum_expression(
+    variants: &[crate::ast::IdlEnumVariantSnapshot],
+    value_expr: &str,
+    defined_types: &mut DefinedTypes<'_>,
+    specs: &[&SemanticFieldSpec],
+    depth: usize,
+) -> Option<String> {
+    use crate::ast::IdlEnumVariantFieldSnapshot;
+
+    let mut branches: Vec<String> = Vec::new();
+    for variant in variants {
+        let variant_specs: Vec<&SemanticFieldSpec> = specs
+            .iter()
+            .copied()
+            .filter(|spec| spec.relative_path.get(depth) == Some(&variant.name))
+            .collect();
+        if variant_specs.is_empty() {
+            continue;
+        }
+
+        let named: Vec<_> = variant
+            .fields
+            .iter()
+            .filter_map(|field| match field {
+                IdlEnumVariantFieldSnapshot::Named(named) => Some(named),
+                IdlEnumVariantFieldSnapshot::Tuple(_) => None,
+            })
+            .collect();
+        if named.len() != variant.fields.len() {
+            return Some(value_expr.to_string());
+        }
+
+        let variant_value_expr = render_ts_property_access(value_expr, &variant.name);
+        let mut overrides: Vec<String> = Vec::new();
+        for field in named {
+            let child_specs: Vec<&SemanticFieldSpec> = variant_specs
+                .iter()
+                .copied()
+                .filter(|spec| spec.relative_path.get(depth + 1) == Some(&field.name))
+                .collect();
+            if child_specs.is_empty() {
+                continue;
+            }
+            let child_expr = render_semantic_raw_expression(
+                &field.type_,
+                &render_ts_property_access(&variant_value_expr, &field.name),
+                defined_types,
+                &child_specs,
+                depth + 2,
+            )?;
+            overrides.push(format!(
+                "{}: {}",
+                render_ts_property_name(&field.name),
+                child_expr
+            ));
+        }
+        let payload_expr = if overrides.is_empty() {
+            variant_value_expr.clone()
+        } else {
+            format!("{{ ...{}, {} }}", variant_value_expr, overrides.join(", "))
+        };
+        branches.push(format!(
+            "('{}' in {value_expr} ? {{ {}: {} }} : __ELSE__)",
+            escape_single_quotes(&variant.name),
+            render_ts_property_name(&variant.name),
+            payload_expr,
+            value_expr = value_expr,
+        ));
+    }
+
+    let mut rendered = value_expr.to_string();
+    for branch in branches.into_iter().rev() {
+        rendered = branch.replace("__ELSE__", &rendered);
+    }
+    Some(rendered)
+}
+
+fn render_semantic_params_interface(
+    name: &str,
+    parsed_args: &[(String, ParsedArgType)],
+    instruction_snapshot: Option<&IdlInstructionSnapshot>,
+    user_params: &[UserParam],
+    resolve_params: &BTreeMap<String, String>,
+    semantic_specs: &[SemanticFieldSpec],
+    defined_types: &mut DefinedTypes<'_>,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    for (arg_name, parsed) in parsed_args {
+        let arg_specs: Vec<&SemanticFieldSpec> = semantic_specs
+            .iter()
+            .filter(|spec| spec.root_arg_name == *arg_name)
+            .collect();
+        let ts_type = if arg_specs.is_empty() {
+            parsed.ts_type.clone()
+        } else if let Some(snapshot_arg) = instruction_snapshot
+            .and_then(|snapshot| snapshot.args.iter().find(|arg| arg.name == *arg_name))
+        {
+            render_semantic_ts_type(&snapshot_arg.type_, defined_types, &arg_specs, 0)
+                .unwrap_or_else(|| parsed.ts_type.clone())
+        } else {
+            "AmountInput".to_string()
+        };
+        lines.push(format!(
+            "  {}: {};",
+            render_ts_property_name(arg_name),
+            ts_type
+        ));
+    }
+
+    let mut extra_params: BTreeSet<String> = BTreeSet::new();
+    for spec in semantic_specs {
+        if let Some(extra) = &spec.decimals_override_name {
+            extra_params.insert(extra.clone());
+        }
+    }
+    for extra_param in extra_params {
+        lines.push(format!(
+            "  {}?: number;",
+            render_ts_property_name(&extra_param)
+        ));
+    }
+
+    for param in user_params {
+        let optional = if param.optional { "?" } else { "" };
+        lines.push(format!(
+            "  {}{}: string;",
+            render_ts_property_name(&param.name),
+            optional
+        ));
+    }
+
+    if !resolve_params.is_empty() {
+        let resolve_lines: Vec<String> = resolve_params
+            .iter()
+            .map(|(name, ts_type)| format!("    {}?: {};", render_ts_property_name(name), ts_type))
+            .collect();
+        lines.push(format!(
+            "  resolve?: {{\n{}\n  }};",
+            resolve_lines.join("\n")
+        ));
+    }
+
+    lines.push("  build?: BuildOptions;".to_string());
+
+    let body = if lines.is_empty() {
+        "  // This instruction takes no arguments or user-provided accounts.".to_string()
+    } else {
+        lines.join("\n")
+    };
+
+    format!("export interface {} {{\n{}\n}}", name, body)
 }
 
 /// Normalize a raw arg-type string (IDL or `pdas!` DSL spelling) to the
@@ -1143,6 +2396,18 @@ fn normalize_seed_arg_type(raw: &str) -> Option<String> {
     }
 }
 
+fn seed_arg_ts_type(raw: &str) -> Option<String> {
+    let canonical = normalize_seed_arg_type(raw)?;
+    let ts_type = match canonical.as_str() {
+        "u8" | "u16" | "u32" | "i8" | "i16" | "i32" => "number",
+        "u64" | "u128" | "i64" | "i128" => "bigint",
+        "pubkey" => "string",
+        "string" => "string",
+        _ => return None,
+    };
+    Some(ts_type.to_string())
+}
+
 // ============================================================================
 // Errors
 // ============================================================================
@@ -1159,11 +2424,7 @@ fn dedupe_errors_by_code(errors: &[IdlErrorSnapshot]) -> Vec<IdlErrorSnapshot> {
     by_code.into_values().collect()
 }
 
-fn render_program_errors(
-    const_name: &str,
-    type_name: &str,
-    errors: &[IdlErrorSnapshot],
-) -> String {
+fn render_program_errors(const_name: &str, type_name: &str, errors: &[IdlErrorSnapshot]) -> String {
     if errors.is_empty() {
         return format!(
             "/** Program errors for this stack (none declared in the IDL). */\nexport type {} = never;\n\nconst {}: ErrorMetadata[] = [];",
@@ -1235,12 +2496,39 @@ fn render_docs(docs: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{InstructionAccountDef, InstructionArgDef};
+    use crate::ast::{
+        AmountDecimalsSource, InstructionAccountDef, InstructionAmountHint, InstructionArgDef,
+    };
 
     fn arg(name: &str, ty: &str) -> InstructionArgDef {
         InstructionArgDef {
             name: name.to_string(),
             arg_type: ty.to_string(),
+            docs: vec![],
+            amount_hint: None,
+        }
+    }
+
+    fn amount_arg(
+        name: &str,
+        ty: &str,
+        decimals_source: AmountDecimalsSource,
+    ) -> InstructionArgDef {
+        InstructionArgDef {
+            name: name.to_string(),
+            arg_type: ty.to_string(),
+            docs: vec![],
+            amount_hint: Some(InstructionAmountHint { decimals_source }),
+        }
+    }
+
+    fn user_account(name: &str) -> InstructionAccountDef {
+        InstructionAccountDef {
+            name: name.to_string(),
+            is_signer: false,
+            is_writable: false,
+            resolution: AccountResolution::UserProvided,
+            is_optional: false,
             docs: vec![],
         }
     }
@@ -1304,6 +2592,7 @@ mod tests {
                     .map(|(n, t)| crate::ast::IdlFieldSnapshot {
                         name: n.to_string(),
                         type_: t,
+                        amount_hint: None,
                     })
                     .collect(),
             },
@@ -1320,6 +2609,103 @@ mod tests {
                 name: name.to_string(),
             },
         })
+    }
+
+    fn field(name: &str, type_: IdlTypeSnapshot) -> crate::ast::IdlFieldSnapshot {
+        crate::ast::IdlFieldSnapshot {
+            name: name.to_string(),
+            type_,
+            amount_hint: None,
+        }
+    }
+
+    fn hinted_field(
+        name: &str,
+        type_: IdlTypeSnapshot,
+        amount_hint: arete_idl::IdlAmountHint,
+    ) -> crate::ast::IdlFieldSnapshot {
+        crate::ast::IdlFieldSnapshot {
+            name: name.to_string(),
+            type_,
+            amount_hint: Some(amount_hint),
+        }
+    }
+
+    fn option(type_: IdlTypeSnapshot) -> IdlTypeSnapshot {
+        IdlTypeSnapshot::Option(crate::ast::IdlOptionTypeSnapshot {
+            option: Box::new(type_),
+        })
+    }
+
+    fn vec_type(type_: IdlTypeSnapshot) -> IdlTypeSnapshot {
+        IdlTypeSnapshot::Vec(crate::ast::IdlVecTypeSnapshot {
+            vec: Box::new(type_),
+        })
+    }
+
+    fn array_type(type_: IdlTypeSnapshot, size: u32) -> IdlTypeSnapshot {
+        IdlTypeSnapshot::Array(crate::ast::IdlArrayTypeSnapshot {
+            array: vec![
+                IdlArrayElementSnapshot::Type(type_),
+                IdlArrayElementSnapshot::Size(size),
+            ],
+        })
+    }
+
+    fn hash_map(key: IdlTypeSnapshot, value: IdlTypeSnapshot) -> IdlTypeSnapshot {
+        IdlTypeSnapshot::HashMap(crate::ast::IdlHashMapTypeSnapshot {
+            hash_map: (Box::new(key), Box::new(value)),
+        })
+    }
+
+    fn instruction_snapshot(
+        name: &str,
+        discriminator: Vec<u8>,
+        args: Vec<crate::ast::IdlFieldSnapshot>,
+    ) -> IdlInstructionSnapshot {
+        IdlInstructionSnapshot {
+            name: name.to_string(),
+            discriminator,
+            discriminant: None,
+            docs: vec![],
+            accounts: vec![],
+            args,
+        }
+    }
+
+    #[test]
+    fn parses_top_level_args_from_idl_snapshots_before_lossy_strings() {
+        let mut idl = idl("demo", "Prog111", vec![]);
+        idl.instructions = vec![instruction_snapshot(
+            "deposit",
+            vec![9],
+            vec![field("amount", simple("u64"))],
+        )];
+        let idls = vec![idl];
+
+        let instr = InstructionDef {
+            name: "deposit".to_string(),
+            discriminator: vec![9],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![arg("amount", "DefinitelyUnsupported")],
+            errors: vec![],
+            program_id: Some("Prog111".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Demo",
+            std::slice::from_ref(&instr),
+            &idls,
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert_eq!(out.stack_entries.len(), 1, "warnings: {:?}", out.warnings);
+        assert!(out.code.contains("amount: bigint;"));
+        assert!(out.code.contains("{ name: 'amount', type: 'u64' }"));
     }
 
     #[test]
@@ -1352,6 +2738,7 @@ mod tests {
                                 crate::ast::IdlFieldSnapshot {
                                     name: "endTs".to_string(),
                                     type_: simple("i64"),
+                                    amount_hint: None,
                                 },
                             )],
                         },
@@ -1396,6 +2783,191 @@ mod tests {
         ));
         // Params reference the generated interface type.
         assert!(code.contains("transferData: TransferData;"));
+    }
+
+    #[test]
+    fn resolves_string_key_maps_inside_instruction_arg_types() {
+        let mut idl = idl("demo", "Prog111", vec![]);
+        idl.types = vec![
+            struct_def("authorizationData", vec![("payload", defined("payload"))]),
+            struct_def(
+                "payload",
+                vec![("map", hash_map(simple("string"), defined("payloadType")))],
+            ),
+            IdlTypeDefSnapshot {
+                name: "payloadType".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Enum {
+                    kind: "enum".to_string(),
+                    variants: vec![
+                        crate::ast::IdlEnumVariantSnapshot {
+                            name: "Pubkey".to_string(),
+                            fields: vec![crate::ast::IdlEnumVariantFieldSnapshot::Tuple(simple(
+                                "publicKey",
+                            ))],
+                        },
+                        crate::ast::IdlEnumVariantSnapshot {
+                            name: "Number".to_string(),
+                            fields: vec![crate::ast::IdlEnumVariantFieldSnapshot::Tuple(simple(
+                                "u64",
+                            ))],
+                        },
+                    ],
+                },
+            },
+            IdlTypeDefSnapshot {
+                name: "mintArgs".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Enum {
+                    kind: "enum".to_string(),
+                    variants: vec![crate::ast::IdlEnumVariantSnapshot {
+                        name: "V1".to_string(),
+                        fields: vec![
+                            crate::ast::IdlEnumVariantFieldSnapshot::Named(field(
+                                "amount",
+                                simple("u64"),
+                            )),
+                            crate::ast::IdlEnumVariantFieldSnapshot::Named(field(
+                                "authorization_data",
+                                option(defined("authorizationData")),
+                            )),
+                        ],
+                    }],
+                },
+            },
+        ];
+        idl.instructions = vec![instruction_snapshot(
+            "Mint",
+            vec![4],
+            vec![field("mintArgs", defined("mintArgs"))],
+        )];
+        let idls = vec![idl];
+
+        let instr = InstructionDef {
+            name: "Mint".to_string(),
+            discriminator: vec![4],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![arg("mintArgs", "mintArgs")],
+            errors: vec![],
+            program_id: Some("Prog111".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Demo",
+            std::slice::from_ref(&instr),
+            &idls,
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert_eq!(out.stack_entries.len(), 1, "warnings: {:?}", out.warnings);
+        assert!(
+            out.warnings.is_empty(),
+            "map-backed args should emit cleanly: {:?}",
+            out.warnings
+        );
+        let code = &out.code;
+        assert!(code.contains("export interface AuthorizationData"));
+        assert!(code.contains("export interface Payload"));
+        assert!(code.contains("export type PayloadType"));
+        assert!(code.contains("map: Record<string, PayloadType>;"));
+        assert!(code.contains(
+            "{ name: 'map', type: { hashMap: ['string', { enum: [{ name: 'Pubkey', tuple: ['pubkey'] }, { name: 'Number', tuple: ['u64'] }] }] } }"
+        ));
+        assert!(code.contains("mintArgs: MintArgs;"));
+    }
+
+    #[test]
+    fn resolves_string_to_string_maps() {
+        let mut idl = idl("demo", "Prog111", vec![]);
+        idl.types = vec![struct_def(
+            "tokenMetadata",
+            vec![(
+                "additionalMetadata",
+                hash_map(simple("string"), simple("string")),
+            )],
+        )];
+        idl.instructions = vec![instruction_snapshot(
+            "updateTokenMetadata",
+            vec![5],
+            vec![field("metadata", defined("tokenMetadata"))],
+        )];
+        let idls = vec![idl];
+
+        let instr = InstructionDef {
+            name: "updateTokenMetadata".to_string(),
+            discriminator: vec![5],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![arg("metadata", "tokenMetadata")],
+            errors: vec![],
+            program_id: Some("Prog111".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Demo",
+            std::slice::from_ref(&instr),
+            &idls,
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert_eq!(out.stack_entries.len(), 1, "warnings: {:?}", out.warnings);
+        assert!(out
+            .code
+            .contains("additionalMetadata: Record<string, string>;"));
+        assert!(out.code.contains("{ hashMap: ['string', 'string'] }"));
+    }
+
+    #[test]
+    fn non_string_key_maps_remain_unsupported() {
+        let mut idl = idl("demo", "Prog111", vec![]);
+        idl.types = vec![struct_def(
+            "tokenMetadata",
+            vec![(
+                "additionalMetadata",
+                hash_map(simple("u64"), simple("string")),
+            )],
+        )];
+        idl.instructions = vec![instruction_snapshot(
+            "updateTokenMetadata",
+            vec![6],
+            vec![field("metadata", defined("tokenMetadata"))],
+        )];
+        let idls = vec![idl];
+
+        let instr = InstructionDef {
+            name: "updateTokenMetadata".to_string(),
+            discriminator: vec![6],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![arg("metadata", "tokenMetadata")],
+            errors: vec![],
+            program_id: Some("Prog111".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Demo",
+            std::slice::from_ref(&instr),
+            &idls,
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(out.stack_entries.is_empty());
+        assert!(out
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("unsupported type")));
     }
 
     #[test]
@@ -1533,9 +3105,14 @@ mod tests {
         assert_eq!(
             out.stack_entries,
             vec![StackInstructionEntry {
-                program_key: None,
+                program_key: Some("subscriptions".to_string()),
                 instruction_name: "closeSubscriptionAuthority".to_string(),
+                runtime_program_key: Some("subscriptions".to_string()),
                 handler_const: "closeSubscriptionAuthorityInstruction".to_string(),
+                params_type: "CloseSubscriptionAuthorityParams".to_string(),
+                semantic_params_type: Some("CloseSubscriptionAuthorityParams".to_string()),
+                semantic_extra_params: vec![],
+                semantic_amount_args: vec![],
             }]
         );
         assert!(out.needs_runtime_import);
@@ -1629,10 +3206,14 @@ mod tests {
         assert!(code.contains("{ type: 'literal', value: 'SubscriptionAuthority' }"));
         assert!(code.contains("{ type: 'bytes', value: [1, 2, 255] }"));
         assert!(code.contains("{ type: 'accountRef', accountName: 'owner' }"));
-        // PDA account is resolved internally, so it is NOT a param; tokenMint is.
+        // PDA accounts remain derivable, but callers can still pass explicit overrides.
         assert!(code.contains("tokenMint: string;"));
-        assert!(!code.contains("subscriptionAuthority: string;"));
-        assert!(out.warnings.is_empty(), "no degradation expected: {:?}", out.warnings);
+        assert!(code.contains("subscriptionAuthority?: string;"));
+        assert!(
+            out.warnings.is_empty(),
+            "no degradation expected: {:?}",
+            out.warnings
+        );
     }
 
     #[test]
@@ -1677,10 +3258,7 @@ mod tests {
                 is_optional: false,
                 docs: vec![],
             }],
-            args: vec![
-                arg("roundId", "u32"),
-                arg("owner", "solana_pubkey::Pubkey"),
-            ],
+            args: vec![arg("roundId", "u32"), arg("owner", "solana_pubkey::Pubkey")],
             errors: vec![],
             program_id: Some("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44".to_string()),
             docs: vec![],
@@ -1755,6 +3333,197 @@ mod tests {
                 .any(|w| w.contains("heuristic encoding")),
             "expected soft warning, got {:?}",
             out.warnings
+        );
+    }
+
+    #[test]
+    fn nested_arg_seed_uses_struct_root_without_degrading() {
+        let mut program_pdas: BTreeMap<String, PdaDefinition> = BTreeMap::new();
+        program_pdas.insert(
+            "proposal".to_string(),
+            PdaDefinition {
+                name: "proposal".to_string(),
+                seeds: vec![PdaSeedDef::ArgRef {
+                    arg_name: "args.transactionIndex".to_string(),
+                    arg_type: Some("u64".to_string()),
+                }],
+                program_id: None,
+            },
+        );
+        let mut pdas = BTreeMap::new();
+        pdas.insert("demo".to_string(), program_pdas);
+
+        let instr = InstructionDef {
+            name: "proposalCreate".to_string(),
+            discriminator: vec![3],
+            discriminator_size: 1,
+            accounts: vec![InstructionAccountDef {
+                name: "proposal".to_string(),
+                is_signer: false,
+                is_writable: true,
+                resolution: AccountResolution::PdaRef {
+                    pda_name: "proposal".to_string(),
+                },
+                is_optional: false,
+                docs: vec![],
+            }],
+            args: vec![arg("args", "u64")],
+            errors: vec![],
+            program_id: Some("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Demo",
+            std::slice::from_ref(&instr),
+            &[],
+            &pdas,
+            &["De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(out
+            .code
+            .contains("{ type: 'argRef', argName: 'args.transactionIndex', argType: 'u64' }"));
+        assert!(out.code.contains("proposal?: string;"));
+        assert!(
+            out.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn helper_only_arg_seed_emits_resolve_namespace() {
+        let mut program_pdas: BTreeMap<String, PdaDefinition> = BTreeMap::new();
+        program_pdas.insert(
+            "proposal".to_string(),
+            PdaDefinition {
+                name: "proposal".to_string(),
+                seeds: vec![PdaSeedDef::ArgRef {
+                    arg_name: "transactionIndex".to_string(),
+                    arg_type: Some("u64".to_string()),
+                }],
+                program_id: None,
+            },
+        );
+        let mut pdas = BTreeMap::new();
+        pdas.insert("demo".to_string(), program_pdas);
+
+        let instr = InstructionDef {
+            name: "proposalActivate".to_string(),
+            discriminator: vec![4],
+            discriminator_size: 1,
+            accounts: vec![InstructionAccountDef {
+                name: "proposal".to_string(),
+                is_signer: false,
+                is_writable: true,
+                resolution: AccountResolution::PdaRef {
+                    pda_name: "proposal".to_string(),
+                },
+                is_optional: false,
+                docs: vec![],
+            }],
+            args: vec![],
+            errors: vec![],
+            program_id: Some("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Demo",
+            std::slice::from_ref(&instr),
+            &[],
+            &pdas,
+            &["De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(
+            out.code.contains("resolve?: {"),
+            "code missing resolve namespace: {}",
+            out.code
+        );
+        assert!(
+            out.code.contains("transactionIndex?: bigint;"),
+            "code missing helper input: {}",
+            out.code
+        );
+        assert!(out.code.contains("proposal?: string;"));
+        assert!(
+            out.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn account_field_seed_still_degrades_with_actionable_warning() {
+        let mut program_pdas: BTreeMap<String, PdaDefinition> = BTreeMap::new();
+        program_pdas.insert(
+            "proposal".to_string(),
+            PdaDefinition {
+                name: "proposal".to_string(),
+                seeds: vec![PdaSeedDef::AccountRef {
+                    account_name: "transaction.index".to_string(),
+                }],
+                program_id: None,
+            },
+        );
+        let mut pdas = BTreeMap::new();
+        pdas.insert("demo".to_string(), program_pdas);
+
+        let instr = InstructionDef {
+            name: "configTransactionExecute".to_string(),
+            discriminator: vec![5],
+            discriminator_size: 1,
+            accounts: vec![
+                InstructionAccountDef {
+                    name: "transaction".to_string(),
+                    is_signer: false,
+                    is_writable: false,
+                    resolution: AccountResolution::UserProvided,
+                    is_optional: false,
+                    docs: vec![],
+                },
+                InstructionAccountDef {
+                    name: "proposal".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::PdaRef {
+                        pda_name: "proposal".to_string(),
+                    },
+                    is_optional: false,
+                    docs: vec![],
+                },
+            ],
+            args: vec![],
+            errors: vec![],
+            program_id: Some("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Demo",
+            std::slice::from_ref(&instr),
+            &[],
+            &pdas,
+            &["De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(out.code.contains("proposal: string;"));
+        assert!(out.warnings.iter().any(|w| w.contains("typed helper arg")));
+        assert_eq!(out.pda_degradations.len(), 1);
+        assert_eq!(
+            out.pda_degradations[0],
+            PdaDegradation {
+                instruction_name: "configTransactionExecute".to_string(),
+                account_name: "proposal".to_string(),
+                pda_name: Some("proposal".to_string()),
+                source: PdaDegradationSource::Registry,
+                reason: "seed references account field 'transaction.index' which is not supported for low-level auto-resolution; encode it as a typed helper arg instead".to_string(),
+            }
         );
     }
 
@@ -1838,9 +3607,7 @@ mod tests {
             .expect("OreCloseParams block present");
         let end_marker = "});";
         let end = code[start..]
-            .find(&format!(
-                "export const oreCloseInstruction"
-            ))
+            .find(&format!("export const oreCloseInstruction"))
             .and_then(|handler_offset| {
                 code[start + handler_offset..]
                     .find(end_marker)
@@ -1936,10 +3703,324 @@ mod tests {
     }
 
     #[test]
+    fn emits_amount_aware_semantic_params_without_changing_raw_params() {
+        let out = generate_instructions_code(
+            "Demo",
+            &[InstructionDef {
+                name: "deposit".to_string(),
+                discriminator: vec![9],
+                discriminator_size: 1,
+                accounts: vec![],
+                args: vec![
+                    amount_arg(
+                        "amount",
+                        "u64",
+                        AmountDecimalsSource::ArgMint {
+                            arg_name: "mint".to_string(),
+                        },
+                    ),
+                    arg("mint", "solana_pubkey::Pubkey"),
+                ],
+                errors: vec![],
+                program_id: Some("Prog111".to_string()),
+                docs: vec![],
+            }],
+            &[idl("demo", "Prog111", vec![])],
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(out.code.contains("export interface DepositParams"));
+        assert!(out.code.contains("amount: bigint;"));
+        assert!(out.code.contains("export interface DepositSemanticParams"));
+        assert!(out.code.contains("amount: AmountInput;"));
+        assert!(out.code.contains("amountDecimals?: number;"));
+        assert!(out.code.contains("build?: BuildOptions;"));
+        assert!(out.needs_amount_input);
+        assert!(out.needs_program_runtime_extensions);
+        assert!(out.needs_resolve_amount_to_raw);
+        assert_eq!(
+            out.stack_entries[0].semantic_params_type.as_deref(),
+            Some("DepositSemanticParams")
+        );
+        assert_eq!(
+            out.stack_entries[0].runtime_program_key.as_deref(),
+            Some("demo")
+        );
+    }
+
+    #[test]
+    fn emits_nested_amount_aware_semantic_params_and_root_conversions() {
+        let mut idl = idl("demo", "Prog111", vec![]);
+        idl.types = vec![IdlTypeDefSnapshot {
+            name: "depositParams".to_string(),
+            docs: vec![],
+            serialization: None,
+            type_def: IdlTypeDefKindSnapshot::Struct {
+                kind: "struct".to_string(),
+                fields: vec![
+                    hinted_field(
+                        "maxAmount",
+                        simple("u64"),
+                        arete_idl::IdlAmountHint {
+                            decimals_source: arete_idl::IdlAmountDecimalsSource::ArgMint {
+                                arg_name: "params.quoteMint".to_string(),
+                            },
+                        },
+                    ),
+                    field("quoteMint", simple("publicKey")),
+                    field("memo", simple("string")),
+                ],
+            },
+        }];
+        idl.instructions = vec![instruction_snapshot(
+            "deposit",
+            vec![9],
+            vec![field("params", defined("depositParams"))],
+        )];
+
+        let out = generate_instructions_code(
+            "Demo",
+            &[InstructionDef {
+                name: "deposit".to_string(),
+                discriminator: vec![9],
+                discriminator_size: 1,
+                accounts: vec![],
+                args: vec![arg("params", "depositParams")],
+                errors: vec![],
+                program_id: Some("Prog111".to_string()),
+                docs: vec![],
+            }],
+            &[idl],
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(out.code.contains("params: DepositParams;"));
+        assert!(out.code.contains("export interface DepositSemanticParams"));
+        assert!(out
+            .code
+            .contains("params: { maxAmount: AmountInput; quoteMint: string; memo: string; };"));
+        assert!(out.code.contains("paramsMaxAmountDecimals?: number;"));
+        assert!(out.code.contains("build?: BuildOptions;"));
+        assert_eq!(
+            out.stack_entries[0].semantic_params_type.as_deref(),
+            Some("DepositSemanticParams")
+        );
+        assert_eq!(
+            out.stack_entries[0].semantic_extra_params,
+            vec!["paramsMaxAmountDecimals".to_string()]
+        );
+        assert_eq!(out.stack_entries[0].semantic_amount_args.len(), 1);
+        assert_eq!(
+            out.stack_entries[0].semantic_amount_args[0].arg_name,
+            "params"
+        );
+        assert!(out.stack_entries[0].semantic_amount_args[0]
+            .raw_expression
+            .contains("params.params.maxAmount"));
+        assert!(out.stack_entries[0].semantic_amount_args[0]
+            .raw_expression
+            .contains("params.params.quoteMint"));
+    }
+
+    #[test]
+    fn emits_amount_aware_semantic_params_inside_vectors_and_arrays() {
+        for (raw_type, snapshot_type) in [
+            ("Vec<registry>", vec_type(defined("registry"))),
+            ("[registry; 2]", array_type(defined("registry"), 2)),
+        ] {
+            let mut idl = idl("demo", "Prog111", vec![]);
+            idl.types = vec![IdlTypeDefSnapshot {
+                name: "registry".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![
+                        hinted_field(
+                            "buyerCap",
+                            simple("u64"),
+                            arete_idl::IdlAmountHint {
+                                decimals_source: arete_idl::IdlAmountDecimalsSource::ArgMint {
+                                    arg_name: "registries[].quoteMint".to_string(),
+                                },
+                            },
+                        ),
+                        field("quoteMint", simple("publicKey")),
+                        hinted_field(
+                            "supply",
+                            simple("u64"),
+                            arete_idl::IdlAmountHint {
+                                decimals_source: arete_idl::IdlAmountDecimalsSource::ArgMint {
+                                    arg_name: "baseMint".to_string(),
+                                },
+                            },
+                        ),
+                        field("memo", simple("string")),
+                    ],
+                },
+            }];
+            idl.instructions = vec![instruction_snapshot(
+                "initialize",
+                vec![9],
+                vec![
+                    field("registries", snapshot_type),
+                    field("quoteMint", simple("publicKey")),
+                    field("baseMint", simple("publicKey")),
+                ],
+            )];
+
+            let out = generate_instructions_code(
+                "Demo",
+                &[InstructionDef {
+                    name: "initialize".to_string(),
+                    discriminator: vec![9],
+                    discriminator_size: 1,
+                    accounts: vec![],
+                    args: vec![
+                        arg("registries", raw_type),
+                        arg("quoteMint", "publicKey"),
+                        arg("baseMint", "publicKey"),
+                    ],
+                    errors: vec![],
+                    program_id: Some("Prog111".to_string()),
+                    docs: vec![],
+                }],
+                &[idl],
+                &BTreeMap::new(),
+                &["Prog111".to_string()],
+                &HashSet::new(),
+            );
+
+            assert!(out.code.contains(
+                "registries: { buyerCap: AmountInput; quoteMint: string; supply: AmountInput; memo: string; }[];"
+            ));
+            let raw_expression = &out.stack_entries[0].semantic_amount_args[0].raw_expression;
+            assert!(raw_expression
+                .contains("await Promise.all(params.registries.map(async (entry) => ("));
+            assert!(
+                raw_expression.contains("mint: entry.quoteMint"),
+                "unexpected raw expression: {raw_expression}"
+            );
+            assert!(raw_expression.contains("mint: params.baseMint"));
+            assert!(raw_expression.contains("...entry"));
+            assert!(raw_expression.contains("memo") == false);
+        }
+    }
+
+    #[test]
+    fn emits_known_account_semantic_params_for_user_provided_accounts() {
+        let out = generate_instructions_code(
+            "Demo",
+            &[InstructionDef {
+                name: "mintTo".to_string(),
+                discriminator: vec![7],
+                discriminator_size: 1,
+                accounts: vec![user_account("mint"), user_account("destination")],
+                args: vec![amount_arg(
+                    "amount",
+                    "u64",
+                    AmountDecimalsSource::KnownAccount {
+                        account_name: "mint".to_string(),
+                    },
+                )],
+                errors: vec![],
+                program_id: Some("Prog111".to_string()),
+                docs: vec![],
+            }],
+            &[idl("demo", "Prog111", vec![])],
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(out.code.contains("export interface MintToSemanticParams"));
+        assert!(out.code.contains("amount: AmountInput;"));
+        assert!(out.code.contains("amountDecimals?: number;"));
+        assert!(out.code.contains("build?: BuildOptions;"));
+        assert_eq!(out.stack_entries[0].semantic_amount_args.len(), 1);
+        assert!(out.stack_entries[0].semantic_amount_args[0]
+            .raw_expression
+            .contains("mint: params.mint"));
+        assert!(out.stack_entries[0].semantic_amount_args[0]
+            .raw_expression
+            .contains("amount: params.amount"));
+    }
+
+    #[test]
+    fn emits_nested_known_account_semantic_params_for_user_provided_accounts() {
+        let mut idl = idl("demo", "Prog111", vec![]);
+        idl.types = vec![IdlTypeDefSnapshot {
+            name: "depositParams".to_string(),
+            docs: vec![],
+            serialization: None,
+            type_def: IdlTypeDefKindSnapshot::Struct {
+                kind: "struct".to_string(),
+                fields: vec![
+                    hinted_field(
+                        "maxAmount",
+                        simple("u64"),
+                        arete_idl::IdlAmountHint {
+                            decimals_source: arete_idl::IdlAmountDecimalsSource::KnownAccount {
+                                account_name: "quoteMint".to_string(),
+                            },
+                        },
+                    ),
+                    field("memo", simple("string")),
+                ],
+            },
+        }];
+        idl.instructions = vec![instruction_snapshot(
+            "deposit",
+            vec![9],
+            vec![field("params", defined("depositParams"))],
+        )];
+
+        let out = generate_instructions_code(
+            "Demo",
+            &[InstructionDef {
+                name: "deposit".to_string(),
+                discriminator: vec![9],
+                discriminator_size: 1,
+                accounts: vec![user_account("quoteMint")],
+                args: vec![arg("params", "depositParams")],
+                errors: vec![],
+                program_id: Some("Prog111".to_string()),
+                docs: vec![],
+            }],
+            &[idl],
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(out.code.contains("export interface DepositSemanticParams"));
+        assert!(out
+            .code
+            .contains("params: { maxAmount: AmountInput; memo: string; };"));
+        assert!(out.code.contains("paramsMaxAmountDecimals?: number;"));
+        assert!(out.code.contains("build?: BuildOptions;"));
+        assert_eq!(out.stack_entries[0].semantic_amount_args.len(), 1);
+        assert!(out.stack_entries[0].semantic_amount_args[0]
+            .raw_expression
+            .contains("params.params.maxAmount"));
+        assert!(out.stack_entries[0].semantic_amount_args[0]
+            .raw_expression
+            .contains("mint: params.quoteMint"));
+    }
+
+    #[test]
     fn multi_program_unmatched_instruction_falls_back_with_warning() {
         let idls = vec![
             idl("ore", "Prog111111111111111111111111111111111111111", vec![]),
-            idl("entropy", "Prog222222222222222222222222222222222222222", vec![]),
+            idl(
+                "entropy",
+                "Prog222222222222222222222222222222222222222",
+                vec![],
+            ),
         ];
         let instr = InstructionDef {
             name: "mystery".to_string(),

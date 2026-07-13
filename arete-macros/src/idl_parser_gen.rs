@@ -114,7 +114,7 @@ fn generate_account_parser(idl: &IdlSpec, program_id: &str) -> TokenStream {
         }
 
         impl #state_enum_name {
-            pub fn try_unpack(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+            pub fn try_unpack(data: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
                 if data.is_empty() {
                     return Err("Data too short for discriminator".into());
                 }
@@ -452,7 +452,7 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         }
 
         impl #ix_enum_name {
-            pub fn try_unpack(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+            pub fn try_unpack(data: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
                 if data.is_empty() {
                     return Err("Empty instruction data".into());
                 }
@@ -495,7 +495,7 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
                 }
             }
 
-            pub fn try_unpack_log_event(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+            pub fn try_unpack_log_event(data: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
                 if data.is_empty() {
                     return Err("Empty event data".into());
                 }

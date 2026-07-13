@@ -1,6 +1,7 @@
 //! Core type definitions for IDL
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IdlSpec {
@@ -11,6 +12,7 @@ pub struct IdlSpec {
     #[serde(default)]
     pub address: Option<String>,
     pub instructions: Vec<IdlInstruction>,
+    #[serde(default)]
     pub accounts: Vec<IdlAccount>,
     #[serde(default)]
     pub types: Vec<IdlTypeDef>,
@@ -20,6 +22,8 @@ pub struct IdlSpec {
     pub errors: Vec<IdlError>,
     #[serde(default)]
     pub constants: Vec<IdlConstant>,
+    #[serde(default)]
+    pub pdas: Vec<IdlNamedPda>,
     pub metadata: Option<IdlMetadata>,
 }
 
@@ -83,11 +87,29 @@ impl IdlInstruction {
 
         crate::discriminator::anchor_discriminator(&format!("global:{}", to_snake_case(&self.name)))
     }
+
+    pub fn flattened_accounts(&self) -> Vec<IdlAccountArg> {
+        self.accounts
+            .iter()
+            .flat_map(|account| account.flattened(None))
+            .collect()
+    }
 }
 
 /// PDA definition in Anchor IDL format
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IdlPda {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub seeds: Vec<IdlPdaSeed>,
+    #[serde(default)]
+    pub program: Option<IdlPdaProgram>,
+}
+
+/// Named PDA definition at the program/IDL level.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IdlNamedPda {
+    pub name: String,
     pub seeds: Vec<IdlPdaSeed>,
     #[serde(default)]
     pub program: Option<IdlPdaProgram>,
@@ -140,6 +162,59 @@ pub struct IdlAccountArg {
     pub docs: Vec<String>,
     #[serde(default)]
     pub pda: Option<IdlPda>,
+    #[serde(default)]
+    pub accounts: Vec<IdlAccountArg>,
+}
+
+impl IdlAccountArg {
+    pub fn flattened(&self, prefix: Option<&str>) -> Vec<IdlAccountArg> {
+        self.flattened_with_siblings(prefix, None)
+    }
+
+    fn flattened_with_siblings(
+        &self,
+        prefix: Option<&str>,
+        sibling_names: Option<&HashSet<String>>,
+    ) -> Vec<IdlAccountArg> {
+        let flattened_name = match prefix {
+            Some(prefix) => format!("{}{}", prefix, to_pascal_case(&self.name)),
+            None => self.name.clone(),
+        };
+
+        if self.accounts.is_empty() {
+            let mut account = self.clone();
+            account.name = flattened_name;
+            account.accounts = Vec::new();
+            if let Some(pda) = account.pda.as_mut() {
+                if prefix.is_some() {
+                    pda.name = None;
+                }
+                for seed in &mut pda.seeds {
+                    if let IdlPdaSeed::Account { path, .. } = seed {
+                        if let (Some(prefix), Some(siblings)) = (prefix, sibling_names) {
+                            if siblings.contains(path.as_str()) {
+                                *path = format!("{}{}", prefix, to_pascal_case(path));
+                            }
+                        }
+                    }
+                }
+            }
+            return vec![account];
+        }
+
+        let sibling_names: HashSet<String> = self
+            .accounts
+            .iter()
+            .map(|account| account.name.clone())
+            .collect();
+
+        self.accounts
+            .iter()
+            .flat_map(|account| {
+                account.flattened_with_siblings(Some(&flattened_name), Some(&sibling_names))
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -175,6 +250,31 @@ pub struct IdlField {
     pub name: String,
     #[serde(rename = "type")]
     pub type_: IdlType,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "amountHint"
+    )]
+    pub amount_hint: Option<IdlAmountHint>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdlAmountHint {
+    pub decimals_source: IdlAmountDecimalsSource,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum IdlAmountDecimalsSource {
+    ArgMint { arg_name: String },
+    ArgDecimals { arg_name: String },
+    KnownAccount { account_name: String },
+    Constant { decimals: u8 },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -439,7 +539,7 @@ impl IdlSpec {
             if instruction.name == normalized_name
                 || instruction.name.eq_ignore_ascii_case(instruction_name)
             {
-                for account in &instruction.accounts {
+                for account in instruction.flattened_accounts() {
                     if account.name == field_name {
                         return Some("accounts");
                     }

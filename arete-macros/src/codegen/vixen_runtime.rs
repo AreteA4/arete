@@ -1551,6 +1551,7 @@ pub fn generate_spec_function(
     state_enum_name: &str,
     instruction_enum_name: &str,
     program_name: &str,
+    account_names: &[String],
     config: &RuntimeGenConfig,
 ) -> TokenStream {
     let _state_enum = format_ident!("{}", state_enum_name);
@@ -1589,16 +1590,27 @@ pub fn generate_spec_function(
     let managed_grpc_helpers = generate_managed_grpc_helpers();
     let slot_scheduler_task = generate_slot_scheduler_task();
     let slot_subscription_task = generate_slot_subscription_task();
+    let program_account_reader = generate_program_account_reader_fn(&[PipelineInfo {
+        parser_module_name: "parsers".to_string(),
+        program_name: program_name.to_string(),
+        program_id: String::new(),
+        state_enum_name: state_enum_name.to_string(),
+        instruction_enum_name: instruction_enum_name.to_string(),
+        account_names: account_names.to_vec(),
+    }]);
 
     quote! {
         #managed_grpc_helpers
+        #program_account_reader
 
         pub fn spec() -> arete::runtime::arete_server::Spec {
             let bytecode = create_multi_entity_bytecode();
             let program_id = parsers::PROGRAM_ID_STR.to_string();
 
             arete::runtime::arete_server::Spec::new(bytecode, program_id)
+                .with_entity_specs(get_entity_specs())
                 .with_parser_setup(create_parser_setup())
+                .with_program_account_reader(create_program_account_reader())
                 #views_call
         }
 
@@ -2695,6 +2707,80 @@ pub struct PipelineInfo {
     pub program_id: String,
     pub state_enum_name: String,
     pub instruction_enum_name: String,
+    pub account_names: Vec<String>,
+}
+
+fn to_camel_case(value: &str) -> String {
+    let mut result = String::new();
+    let mut uppercase_next = false;
+    for (index, ch) in value.chars().enumerate() {
+        if ch == '_' || ch == '-' {
+            uppercase_next = true;
+            continue;
+        }
+        if index == 0 {
+            result.push(ch.to_ascii_lowercase());
+        } else if uppercase_next {
+            result.push(ch.to_ascii_uppercase());
+            uppercase_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn generate_program_account_reader_fn(pipelines: &[PipelineInfo]) -> TokenStream {
+    let arms: Vec<TokenStream> = pipelines
+        .iter()
+        .flat_map(|pipeline| {
+            let parser_mod = format_ident!("{}", pipeline.parser_module_name);
+            let state_enum = format_ident!("{}", pipeline.state_enum_name);
+            let program_key = to_camel_case(&pipeline.program_name);
+
+            pipeline.account_names.iter().map(move |account_name| {
+                let variant = format_ident!("{}", account_name);
+                let account_name_lit = account_name.clone();
+                let program_key_lit = program_key.clone();
+                let program_name_lit = pipeline.program_name.clone();
+                quote! {
+                    (#program_key_lit, #account_name_lit) | (#program_name_lit, #account_name_lit) => {
+                        let decoded = #parser_mod::#state_enum::try_unpack(data).map_err(|error| {
+                            arete::runtime::anyhow::anyhow!(
+                                "Failed to decode {}.{} account bytes: {}",
+                                #program_key_lit,
+                                #account_name_lit,
+                                error
+                            )
+                        })?;
+                        match decoded {
+                            #parser_mod::#state_enum::#variant(value) => Ok(value.to_json_value()),
+                            _ => Err(arete::runtime::anyhow::anyhow!(
+                                "Account bytes did not decode as {}.{}",
+                                #program_key_lit,
+                                #account_name_lit
+                            )),
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+
+    quote! {
+        fn create_program_account_reader() -> arete::runtime::arete_server::ProgramAccountReaderFn {
+            use std::sync::Arc;
+
+            Arc::new(|program, account, data| match (program, account) {
+                #(#arms,)*
+                _ => Err(arete::runtime::anyhow::anyhow!(
+                    "program account reader not implemented for {}.{}",
+                    program,
+                    account
+                )),
+            })
+        }
+    }
 }
 
 pub fn generate_multi_pipeline_spec_function(
@@ -2790,16 +2876,20 @@ pub fn generate_multi_pipeline_spec_function(
     let managed_grpc_helpers = generate_managed_grpc_helpers();
     let slot_scheduler_task = generate_slot_scheduler_task();
     let slot_subscription_task = generate_slot_subscription_task();
+    let program_account_reader = generate_program_account_reader_fn(pipelines);
 
     quote! {
         #managed_grpc_helpers
+        #program_account_reader
 
         pub fn spec() -> arete::runtime::arete_server::Spec {
             let bytecode = create_multi_entity_bytecode();
             let program_id = #primary_parser_mod::PROGRAM_ID_STR.to_string();
 
             arete::runtime::arete_server::Spec::new(bytecode, program_id)
+                .with_entity_specs(get_entity_specs())
                 .with_parser_setup(create_parser_setup())
+                .with_program_account_reader(create_program_account_reader())
                 #views_call
         }
 
@@ -2993,8 +3083,13 @@ pub fn generate_runtime(
     config: &RuntimeGenConfig,
 ) -> TokenStream {
     let vm_handler = generate_vm_handler(state_enum_name, instruction_enum_name, entity_name);
-    let spec_fn =
-        generate_spec_function(state_enum_name, instruction_enum_name, entity_name, config);
+    let spec_fn = generate_spec_function(
+        state_enum_name,
+        instruction_enum_name,
+        entity_name,
+        &Vec::new(),
+        config,
+    );
 
     quote! {
         #vm_handler

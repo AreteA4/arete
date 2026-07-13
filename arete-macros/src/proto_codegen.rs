@@ -76,7 +76,7 @@ pub fn generate_proto_decoders(proto_analyses: &[(String, ProtoAnalysis)]) -> To
             let message_name_snake_ident = format_ident!("{}", message_name_snake);
 
             decoder_functions.push(quote! {
-                fn #decoder_fn_name(bytes: &[u8]) -> Result<(serde_json::Value, String), Box<dyn std::error::Error>> {
+                fn #decoder_fn_name(bytes: &[u8]) -> Result<(serde_json::Value, String), Box<dyn std::error::Error + Send + Sync>> {
                     use #module_name::{#message_name_ident, #message_name_snake_ident::#oneof_enum_ident};
                     use prost::Message;
 

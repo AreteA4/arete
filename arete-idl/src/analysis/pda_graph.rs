@@ -38,7 +38,7 @@ pub fn extract_pda_graph(idl: &IdlSpec) -> Vec<PdaNode> {
     let mut nodes = Vec::new();
 
     for ix in &idl.instructions {
-        for acc in &ix.accounts {
+        for acc in ix.flattened_accounts() {
             if let Some(pda) = &acc.pda {
                 let seeds = pda.seeds.iter().map(extract_seed_info).collect();
 

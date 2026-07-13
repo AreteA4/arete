@@ -108,6 +108,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
                             .map(|f| IdlFieldSnapshot {
                                 name: f.name.clone(),
                                 type_: convert_idl_type(&f.type_),
+                                amount_hint: f.amount_hint.clone(),
                             })
                             .collect(),
                     }
@@ -151,6 +152,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
                                 .map(|f| IdlFieldSnapshot {
                                     name: f.name.clone(),
                                     type_: convert_idl_type(&f.type_),
+                                    amount_hint: f.amount_hint.clone(),
                                 })
                                 .collect(),
                         },
@@ -231,6 +233,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
                                 .map(|f| IdlFieldSnapshot {
                                     name: f.name.clone(),
                                     type_: convert_idl_type(&f.type_),
+                                    amount_hint: f.amount_hint.clone(),
                                 })
                                 .collect(),
                             _ => Vec::new(),
@@ -249,7 +252,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
                 discriminant: None,
                 docs: instr.docs.clone(),
                 accounts: instr
-                    .accounts
+                    .flattened_accounts()
                     .iter()
                     .map(|acc| IdlInstructionAccountSnapshot {
                         name: acc.name.clone(),
@@ -266,6 +269,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
                     .map(|arg| IdlFieldSnapshot {
                         name: arg.name.clone(),
                         type_: convert_idl_type(&arg.type_),
+                        amount_hint: arg.amount_hint.clone(),
                     })
                     .collect(),
             })
@@ -284,6 +288,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
                     .map(|field| IdlFieldSnapshot {
                         name: field.name.clone(),
                         type_: convert_idl_type(&field.type_),
+                        amount_hint: field.amount_hint.clone(),
                     })
                     .collect(),
             })
@@ -364,6 +369,7 @@ fn convert_enum_variant_field(
             IdlEnumVariantFieldSnapshot::Named(IdlFieldSnapshot {
                 name: named.name.clone(),
                 type_: convert_idl_type(&named.type_),
+                amount_hint: named.amount_hint.clone(),
             })
         }
         idl_parser::IdlEnumVariantField::Tuple(tuple) => {
@@ -875,11 +881,18 @@ fn path_to_string(path: &syn::Path) -> String {
 pub fn extract_pdas_from_idl(idl: &idl_parser::IdlSpec) -> BTreeMap<String, PdaDefinition> {
     let mut pdas = BTreeMap::new();
 
+    for pda in &idl.pdas {
+        let pda_def = convert_idl_pda_to_def(&pda.name, &pda.seeds, pda.program.as_ref());
+        pdas.insert(pda.name.clone(), pda_def);
+    }
+
     for instruction in &idl.instructions {
-        for account in &instruction.accounts {
+        for account in instruction.flattened_accounts() {
             if let Some(pda_info) = &account.pda {
-                let pda_def = convert_anchor_pda_to_def(&account.name, pda_info);
-                pdas.entry(account.name.clone()).or_insert(pda_def);
+                let pda_name = pda_info.name.as_deref().unwrap_or(&account.name);
+                let pda_def =
+                    convert_idl_pda_to_def(pda_name, &pda_info.seeds, pda_info.program.as_ref());
+                pdas.entry(pda_name.to_string()).or_insert(pda_def);
             }
         }
     }
@@ -887,10 +900,13 @@ pub fn extract_pdas_from_idl(idl: &idl_parser::IdlSpec) -> BTreeMap<String, PdaD
     pdas
 }
 
-/// Convert Anchor IDL PDA info to our PdaDefinition type.
-fn convert_anchor_pda_to_def(name: &str, pda: &idl_parser::IdlPda) -> PdaDefinition {
-    let seeds = pda
-        .seeds
+/// Convert IDL PDA info to our PdaDefinition type.
+fn convert_idl_pda_to_def(
+    name: &str,
+    pda_seeds: &[idl_parser::IdlPdaSeed],
+    pda_program: Option<&idl_parser::IdlPdaProgram>,
+) -> PdaDefinition {
+    let seeds = pda_seeds
         .iter()
         .map(|seed| match seed {
             idl_parser::IdlPdaSeed::Const { value } => {
@@ -912,7 +928,7 @@ fn convert_anchor_pda_to_def(name: &str, pda: &idl_parser::IdlPda) -> PdaDefinit
         })
         .collect();
 
-    let program_id = pda.program.as_ref().and_then(|p| match p {
+    let program_id = pda_program.and_then(|p| match p {
         idl_parser::IdlPdaProgram::Literal { value, .. } => Some(value.clone()),
         idl_parser::IdlPdaProgram::Const { value, .. } => Some(bs58::encode(value).into_string()),
         idl_parser::IdlPdaProgram::Account { .. } => None,
@@ -945,7 +961,7 @@ pub fn extract_instructions_from_idl(
         .iter()
         .map(|ix| {
             let accounts = ix
-                .accounts
+                .flattened_accounts()
                 .iter()
                 .map(|acc| convert_account_to_def(acc, pdas))
                 .collect();
@@ -957,6 +973,7 @@ pub fn extract_instructions_from_idl(
                     name: arg.name.clone(),
                     arg_type: crate::parse::idl::to_rust_type_string(&arg.type_),
                     docs: vec![],
+                    amount_hint: arg.amount_hint.as_ref().map(convert_amount_hint),
                 })
                 .collect();
 
@@ -990,12 +1007,18 @@ fn convert_account_to_def(
             address: address.clone(),
         }
     } else if acc.pda.is_some() {
-        if pdas.contains_key(&acc.name) {
+        let pda_name = acc
+            .pda
+            .as_ref()
+            .and_then(|pda| pda.name.as_deref())
+            .unwrap_or(&acc.name);
+        if pdas.contains_key(pda_name) {
             AccountResolution::PdaRef {
-                pda_name: acc.name.clone(),
+                pda_name: pda_name.to_string(),
             }
         } else if let Some(pda_info) = &acc.pda {
-            let pda_def = convert_anchor_pda_to_def(&acc.name, pda_info);
+            let pda_def =
+                convert_idl_pda_to_def(pda_name, &pda_info.seeds, pda_info.program.as_ref());
             AccountResolution::PdaInline {
                 seeds: pda_def.seeds,
                 program_id: pda_def.program_id,
@@ -1021,6 +1044,33 @@ fn convert_account_to_def(
         resolution,
         is_optional: acc.optional,
         docs: acc.docs.clone(),
+    }
+}
+
+fn convert_amount_hint(hint: &idl_parser::IdlAmountHint) -> InstructionAmountHint {
+    InstructionAmountHint {
+        decimals_source: match &hint.decimals_source {
+            idl_parser::IdlAmountDecimalsSource::ArgMint { arg_name } => {
+                AmountDecimalsSource::ArgMint {
+                    arg_name: arg_name.clone(),
+                }
+            }
+            idl_parser::IdlAmountDecimalsSource::ArgDecimals { arg_name } => {
+                AmountDecimalsSource::ArgDecimals {
+                    arg_name: arg_name.clone(),
+                }
+            }
+            idl_parser::IdlAmountDecimalsSource::KnownAccount { account_name } => {
+                AmountDecimalsSource::KnownAccount {
+                    account_name: account_name.clone(),
+                }
+            }
+            idl_parser::IdlAmountDecimalsSource::Constant { decimals } => {
+                AmountDecimalsSource::Constant {
+                    decimals: *decimals,
+                }
+            }
+        },
     }
 }
 
@@ -1051,6 +1101,7 @@ mod convert_account_tests {
             optional: false,
             address: None,
             pda: None,
+            accounts: vec![],
             docs: vec![],
         }
     }
@@ -1083,5 +1134,45 @@ mod convert_account_tests {
     fn unknown_account_falls_back_to_user_provided() {
         let def = convert_account_to_def(&account("randomThing", false), &registry());
         assert!(matches!(def.resolution, AccountResolution::UserProvided));
+    }
+
+    #[test]
+    fn inline_pda_name_can_bind_to_different_named_registry_entry() {
+        let mut m = registry();
+        m.insert(
+            "batchTransaction".to_string(),
+            PdaDefinition {
+                name: "batchTransaction".to_string(),
+                seeds: vec![PdaSeedDef::Literal {
+                    value: "batch_transaction".to_string(),
+                }],
+                program_id: None,
+            },
+        );
+
+        let def = convert_account_to_def(
+            &idl_parser::IdlAccountArg {
+                name: "transaction".to_string(),
+                is_signer: false,
+                is_mut: true,
+                optional: false,
+                address: None,
+                pda: Some(idl_parser::IdlPda {
+                    name: Some("batchTransaction".to_string()),
+                    seeds: vec![idl_parser::IdlPdaSeed::Const {
+                        value: b"batch_transaction".to_vec(),
+                    }],
+                    program: None,
+                }),
+                accounts: vec![],
+                docs: vec![],
+            },
+            &m,
+        );
+
+        assert!(matches!(
+            def.resolution,
+            AccountResolution::PdaRef { ref pda_name } if pda_name == "batchTransaction"
+        ));
     }
 }

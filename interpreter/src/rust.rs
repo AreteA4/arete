@@ -716,8 +716,11 @@ mod tests {
     fn rust_generator_renames_account_types_on_collision() {
         let plan_field = FieldTypeInfo {
             field_name: "plan".to_string(),
+            raw_name: Some("plan".to_string()),
+            canonical_name: Some("plan".to_string()),
             rust_type_name: "Option<serde_json::Value>".to_string(),
             base_type: BaseType::Object,
+            integer_kind: None,
             is_optional: false,
             is_array: false,
             inner_type: Some("Value".to_string()),

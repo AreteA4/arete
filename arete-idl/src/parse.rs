@@ -95,6 +95,12 @@ fn codama_root_to_idl_spec(root: &CodamaRoot) -> Result<IdlSpec, String> {
             })
             .collect(),
         constants: Vec::new(),
+        pdas: root
+            .program
+            .pdas
+            .iter()
+            .map(codama_pda_to_idl_named)
+            .collect::<Result<Vec<_>, _>>()?,
         metadata: Some(IdlMetadata {
             name: Some(root.program.name.clone()),
             version: root.program.version.clone(),
@@ -103,6 +109,41 @@ fn codama_root_to_idl_spec(root: &CodamaRoot) -> Result<IdlSpec, String> {
             description: None,
             origin: Some("codama-rootNode".to_string()),
         }),
+    })
+}
+
+fn codama_pda_to_idl_named(pda: &CodamaPdaNode) -> Result<IdlNamedPda, String> {
+    let seeds = pda
+        .seeds
+        .iter()
+        .map(|seed| match seed {
+            CodamaPdaSeedNode::Constant { seed_type, value } => {
+                let bytes =
+                    codama_constant_seed_bytes(value, seed_type.as_ref()).ok_or_else(|| {
+                        format!(
+                            "Codama pda '{}' has a constant seed that could not be encoded",
+                            pda.name
+                        )
+                    })?;
+                Ok(IdlPdaSeed::Const { value: bytes })
+            }
+            CodamaPdaSeedNode::Variable { name, seed_type } => Ok(IdlPdaSeed::Arg {
+                path: name.clone(),
+                arg_type: seed_type.as_ref().and_then(codama_seed_type_name),
+            }),
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(IdlNamedPda {
+        name: pda.name.clone(),
+        seeds,
+        program: pda
+            .program_id
+            .as_ref()
+            .map(|program_id| IdlPdaProgram::Literal {
+                kind: "programId".to_string(),
+                value: program_id.clone(),
+            }),
     })
 }
 
@@ -243,6 +284,7 @@ fn codama_instruction_to_idl(
                     docs
                 },
                 pda: codama_account_pda(account, pda_defs),
+                accounts: Vec::new(),
             })
             .collect(),
         args: instruction
@@ -296,6 +338,7 @@ fn codama_field_to_idl(field: &CodamaFieldNode) -> Result<IdlField, String> {
     Ok(IdlField {
         name: field.name.clone(),
         type_: codama_type_to_idl(&field.type_)?,
+        amount_hint: None,
     })
 }
 
@@ -793,6 +836,10 @@ fn codama_account_pda(
     }
 
     Some(IdlPda {
+        name: match pda {
+            CodamaPdaSource::Link { name } => Some(name.clone()),
+            CodamaPdaSource::Inline { name, .. } => Some(name.clone()),
+        },
         seeds: idl_seeds,
         program: pda_program_id.map(|program_id| IdlPdaProgram::Literal {
             kind: "programId".to_string(),
@@ -975,6 +1022,7 @@ mod tests {
             .expect("subscriptionAuthority account present");
 
         let pda = pda_account.pda.as_ref().expect("PDA should be resolved");
+        assert_eq!(pda.name.as_deref(), Some("subscriptionAuthority"));
         assert_eq!(pda.seeds.len(), 3);
         match &pda.seeds[0] {
             IdlPdaSeed::Const { value } => assert_eq!(value, b"SubscriptionAuthority"),
@@ -992,6 +1040,39 @@ mod tests {
         // Non-PDA accounts stay unresolved.
         let owner = ix.accounts.iter().find(|a| a.name == "owner").unwrap();
         assert!(owner.pda.is_none());
+        assert_eq!(spec.pdas.len(), 1);
+        assert_eq!(spec.pdas[0].name, "subscriptionAuthority");
+    }
+
+    #[test]
+    fn test_legacy_idl_program_level_pdas_parse() {
+        let json = r#"{
+            "name": "test",
+            "instructions": [],
+            "accounts": [],
+            "types": [],
+            "errors": [],
+            "pdas": [
+                {
+                    "name": "proposal",
+                    "seeds": [
+                        { "kind": "const", "value": [112, 114, 111, 112, 111, 115, 97, 108] },
+                        { "kind": "arg", "path": "transactionIndex", "type": "u64" }
+                    ]
+                }
+            ]
+        }"#;
+
+        let spec = parse_idl_content(json).expect("legacy IDL with top-level pdas should parse");
+        assert_eq!(spec.pdas.len(), 1);
+        assert_eq!(spec.pdas[0].name, "proposal");
+        match &spec.pdas[0].seeds[1] {
+            IdlPdaSeed::Arg { path, arg_type } => {
+                assert_eq!(path, "transactionIndex");
+                assert_eq!(arg_type.as_deref(), Some("u64"));
+            }
+            other => panic!("expected arg seed, got {:?}", other),
+        }
     }
 
     #[test]

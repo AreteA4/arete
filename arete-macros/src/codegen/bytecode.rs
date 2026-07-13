@@ -39,5 +39,12 @@ pub fn generate_bytecode_from_spec(spec: &SerializableStreamSpec) -> TokenStream
                 .expect("Failed to parse embedded AST JSON");
             spec.views
         }
+
+        pub fn get_entity_specs() -> Vec<arete::runtime::arete_interpreter::ast::SerializableStreamSpec> {
+            let ast_json = #spec_json;
+            let spec: arete::runtime::arete_interpreter::ast::SerializableStreamSpec = arete::runtime::serde_json::from_str(ast_json)
+                .expect("Failed to parse embedded AST JSON");
+            vec![spec]
+        }
     }
 }
