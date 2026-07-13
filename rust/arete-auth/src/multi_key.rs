@@ -138,7 +138,7 @@ impl MultiKeyVerifier {
 
         // If adding a primary key, demote existing primary to secondary
         if key.is_primary {
-            for (_, existing) in keys.iter_mut() {
+            for existing in keys.values_mut() {
                 if existing.is_primary {
                     existing.is_primary = false;
                     // Set grace period for old primary
