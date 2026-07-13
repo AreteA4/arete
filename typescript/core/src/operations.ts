@@ -399,7 +399,6 @@ function validateTransactionSigners<
   options: OperationExecutionOptions<TSigner, TPrepared>
 ) {
   const signerAddresses = (options.signers ?? []).map(inferSignerAddress);
-  const hasOpaqueSigner = signerAddresses.some((address) => address === null);
   const available = new Set(options.availableSignerAddresses ?? []);
   for (const address of options.signerRegistry?.addresses() ?? []) {
     available.add(address);
@@ -423,9 +422,6 @@ function validateTransactionSigners<
   const missing = transaction.requiredSignerAddresses.filter(
     (address) => !available.has(address)
   );
-  if (missing.length > 0 && hasOpaqueSigner) {
-    return;
-  }
   if (missing.length > 0) {
     throw new Error(
       `Missing signer(s) for ${transaction.name}: ${missing.join(', ')}`
