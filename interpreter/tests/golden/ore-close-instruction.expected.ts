@@ -17,7 +17,7 @@ export const oreCloseInstruction = createInstructionHandler<OreCloseParams, OreC
   discriminator: [5],
   args: [],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: false, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     { name: 'rentPayer', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
