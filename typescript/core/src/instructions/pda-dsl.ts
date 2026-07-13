@@ -1,5 +1,6 @@
 import { findProgramAddress, findProgramAddressSync, decodeBase58 } from './pda';
 import { serializeSeedValue } from './seed-serializer';
+import { getValueByPath } from './path-utils';
 
 export type SeedDef =
   | { type: 'literal'; value: string }
@@ -10,6 +11,7 @@ export type SeedDef =
 export interface PdaDeriveContext {
   accounts?: Record<string, string>;
   args?: Record<string, unknown>;
+  resolve?: Record<string, unknown>;
   programId?: string;
 }
 
@@ -45,7 +47,7 @@ function resolveSeeds(seeds: readonly SeedDef[], context: PdaDeriveContext): Uin
       case 'bytes':
         return seed.value;
       case 'argRef': {
-        const value = context.args?.[seed.argName];
+        const value = getValueByPath(context.args, seed.argName) ?? getValueByPath(context.resolve, seed.argName);
         if (value === undefined) {
           throw new Error(`Missing arg for PDA seed: ${seed.argName}`);
         }

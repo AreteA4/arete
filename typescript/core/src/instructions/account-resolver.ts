@@ -1,6 +1,7 @@
 import type { WalletAdapter } from '../wallet/types';
 import { findProgramAddressSync, decodeBase58, createSeed } from './pda';
 import { serializeSeedValue } from './seed-serializer';
+import { getValueByPath } from './path-utils';
 
 /**
  * Categories of accounts in an instruction.
@@ -78,8 +79,10 @@ export interface AccountResolutionResult {
  * Options for account resolution.
  */
 export interface AccountResolutionOptions {
-  /** User-provided account addresses */
+  /** Explicit account-address overrides, including signer slots when needed */
   accounts?: Record<string, string>;
+  /** Helper-only PDA seed inputs */
+  resolve?: Record<string, unknown>;
   /** Wallet adapter for signer accounts */
   wallet?: WalletAdapter;
   /** Program ID for PDA derivation (required if any PDAs exist) */
@@ -234,11 +237,11 @@ function resolveSingleAccount(
 ): ResolvedAccount | null {
   switch (meta.category) {
     case 'signer':
-      return resolveSignerAccount(meta, options.wallet);
+      return resolveSignerAccount(meta, options.accounts, options.wallet);
     case 'known':
       return resolveKnownAccount(meta);
     case 'pda':
-      return resolvePdaAccount(meta, args, resolvedMap, options.programId);
+      return resolvePdaAccount(meta, args, resolvedMap, options.programId, options.resolve);
     case 'userProvided':
       return resolveUserProvidedAccount(meta, options.accounts);
     default:
@@ -248,15 +251,18 @@ function resolveSingleAccount(
 
 function resolveSignerAccount(
   meta: AccountMeta,
+  accounts?: Record<string, string>,
   wallet?: WalletAdapter
 ): ResolvedAccount | null {
-  if (!wallet) {
+  const address = accounts?.[meta.name] ?? wallet?.publicKey;
+
+  if (!address) {
     return null;
   }
 
   return {
     name: meta.name,
-    address: wallet.publicKey,
+    address,
     isSigner: true,
     isWritable: meta.isWritable,
   };
@@ -279,7 +285,8 @@ function resolvePdaAccount(
   meta: AccountMeta,
   args: Record<string, unknown>,
   resolvedMap: Record<string, ResolvedAccount>,
-  programId?: string
+  programId?: string,
+  resolve?: Record<string, unknown>
 ): ResolvedAccount | null {
   if (!meta.pdaConfig) {
     return null;
@@ -308,7 +315,7 @@ function resolvePdaAccount(
         break;
 
       case 'argRef': {
-        const argValue = args[seed.argName];
+        const argValue = getValueByPath(args, seed.argName) ?? getValueByPath(resolve, seed.argName);
         if (argValue === undefined) {
           throw new Error(
             'PDA seed references missing argument: ' + seed.argName +

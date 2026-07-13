@@ -277,6 +277,103 @@ describe('serializeInstructionData', () => {
       serializeInstructionData(new Uint8Array(0), { a: [1] }, arrSchema)
     ).toThrow(/length mismatch/);
   });
+
+  it('serializes string-key maps in deterministic key order', () => {
+    const schema: ArgSchema[] = [{ name: 'labels', type: { hashMap: ['string', 'u8'] } }];
+    const left = serializeInstructionData(new Uint8Array(0), { labels: { z: 1, a: 2 } }, schema);
+    const right = serializeInstructionData(new Uint8Array(0), { labels: { a: 2, z: 1 } }, schema);
+
+    expect([...left]).toEqual([...right]);
+    expect([...left]).toEqual([
+      2, 0, 0, 0,
+      1, 0, 0, 0, 0x61, 2,
+      1, 0, 0, 0, 0x7a, 1,
+    ]);
+  });
+
+  it('serializes string-key maps with string values', () => {
+    const schema: ArgSchema[] = [{ name: 'metadata', type: { hashMap: ['string', 'string'] } }];
+    const data = serializeInstructionData(
+      new Uint8Array(0),
+      { metadata: { b: 'two', a: 'one' } },
+      schema
+    );
+
+    expect([...data]).toEqual([
+      2, 0, 0, 0,
+      1, 0, 0, 0, 0x61,
+      3, 0, 0, 0, 0x6f, 0x6e, 0x65,
+      1, 0, 0, 0, 0x62,
+      3, 0, 0, 0, 0x74, 0x77, 0x6f,
+    ]);
+  });
+
+  it('serializes nested Metaplex-style authorization payload maps', () => {
+    const schema: ArgSchema[] = [
+      {
+        name: 'authorizationData',
+        type: {
+          struct: [
+            {
+              name: 'payload',
+              type: {
+                struct: [
+                  {
+                    name: 'map',
+                    type: {
+                      hashMap: [
+                        'string',
+                        {
+                          enum: [
+                            { name: 'Pubkey', tuple: ['pubkey'] },
+                            { name: 'Number', tuple: ['u64'] },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ];
+    const data = serializeInstructionData(
+      new Uint8Array(0),
+      {
+        authorizationData: {
+          payload: {
+            map: {
+              b: { Number: [7n] },
+              a: { Pubkey: [SYSTEM_PROGRAM] },
+            },
+          },
+        },
+      },
+      schema
+    );
+
+    expect([...data]).toEqual([
+      2, 0, 0, 0,
+      1, 0, 0, 0, 0x61,
+      0, ...new Array(32).fill(0),
+      1, 0, 0, 0, 0x62,
+      1, 7, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+  });
+
+  it('rejects invalid map inputs and unsupported map key schemas', () => {
+    const schema: ArgSchema[] = [{ name: 'labels', type: { hashMap: ['string', 'u8'] } }];
+    expect(() =>
+      serializeInstructionData(new Uint8Array(0), { labels: ['a'] }, schema)
+    ).toThrow(/HashMap value must be a plain object/);
+
+    const badKeySchema: ArgSchema[] = [{ name: 'labels', type: { hashMap: ['u64', 'u8'] } }];
+    expect(() =>
+      serializeInstructionData(new Uint8Array(0), { labels: { a: 1 } }, badKeySchema)
+    ).toThrow(/must use the 'string' schema/);
+  });
 });
 
 describe('resolveAccounts', () => {
@@ -303,6 +400,27 @@ describe('resolveAccounts', () => {
     expect(result.accounts[0]!.address).toBe(WSOL_MINT);
     expect(result.accounts[1]!.address).toBe(SYSTEM_PROGRAM);
     expect(result.accounts[2]!.address).toBe(TOKEN_PROGRAM);
+  });
+
+  it('prefers explicit signer overrides over the wallet public key', () => {
+    const alternateSigner = TOKEN_PROGRAM;
+    const metas: AccountMeta[] = [
+      { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+      { name: 'mint', isSigner: false, isWritable: false, category: 'userProvided' },
+    ];
+    const result = resolveAccounts(metas, {}, {
+      wallet,
+      accounts: {
+        authority: alternateSigner,
+        mint: WSOL_MINT,
+      },
+    });
+
+    validateAccountResolution(result);
+    expect(result.accounts.map((account) => account.address)).toEqual([
+      alternateSigner,
+      WSOL_MINT,
+    ]);
   });
 
   it('derives a PDA referencing a signer account and keeps original order', () => {
@@ -352,6 +470,52 @@ describe('resolveAccounts', () => {
     validateAccountResolution(result);
 
     const expected = findProgramAddressSync([Uint8Array.from(raw)], TOKEN_PROGRAM)[0];
+    expect(result.accounts[0]!.address).toBe(expected);
+  });
+
+  it('derives a PDA from a nested arg path', () => {
+    const metas: AccountMeta[] = [
+      {
+        name: 'proposal',
+        isSigner: false,
+        isWritable: true,
+        category: 'pda',
+        pdaConfig: {
+          programId: TOKEN_PROGRAM,
+          seeds: [
+            { type: 'literal', value: 'proposal' },
+            { type: 'argRef', argName: 'args.transactionIndex', argType: 'u64' },
+          ],
+        },
+      },
+    ];
+    const result = resolveAccounts(metas, { args: { transactionIndex: 7n } }, {});
+    validateAccountResolution(result);
+
+    const expected = findProgramAddressSync([createSeed('proposal'), createSeed(7n)], TOKEN_PROGRAM)[0];
+    expect(result.accounts[0]!.address).toBe(expected);
+  });
+
+  it('derives a PDA from helper-only resolve inputs when the arg is not on-chain', () => {
+    const metas: AccountMeta[] = [
+      {
+        name: 'proposal',
+        isSigner: false,
+        isWritable: true,
+        category: 'pda',
+        pdaConfig: {
+          programId: TOKEN_PROGRAM,
+          seeds: [
+            { type: 'literal', value: 'proposal' },
+            { type: 'argRef', argName: 'transactionIndex', argType: 'u64' },
+          ],
+        },
+      },
+    ];
+    const result = resolveAccounts(metas, {}, { resolve: { transactionIndex: 9n } });
+    validateAccountResolution(result);
+
+    const expected = findProgramAddressSync([createSeed('proposal'), createSeed(9n)], TOKEN_PROGRAM)[0];
     expect(result.accounts[0]!.address).toBe(expected);
   });
 
@@ -513,11 +677,72 @@ describe('createInstructionHandler + buildInstruction', () => {
     expect(built.keys[0]!.isSigner).toBe(true);
   });
 
+  it('lets merged params override a signer slot explicitly', () => {
+    const handler = makeHandler();
+    const alternateSigner = TOKEN_PROGRAM;
+    const built = buildInstruction(
+      handler,
+      { amount: 7n, authority: alternateSigner, mint: SYSTEM_PROGRAM },
+      { wallet }
+    );
+
+    expect(built.keys.map((key) => key.pubkey)).toEqual([
+      alternateSigner,
+      SYSTEM_PROGRAM,
+      findProgramAddressSync(
+        [createSeed('state'), decodeBase58(alternateSigner)],
+        TOKEN_PROGRAM
+      )[0],
+    ]);
+  });
+
   it('throws when a non-arg param is not a string address', () => {
     const handler = makeHandler();
     expect(() =>
       buildInstruction(handler, { amount: 1n, mint: 42 as unknown as string }, { wallet })
     ).toThrow(/not a known argument/);
+  });
+
+  it('accepts helper-only resolve inputs for PDA derivation', () => {
+    const handler = createInstructionHandler({
+      programId: TOKEN_PROGRAM,
+      discriminator: [2],
+      accounts: [
+        { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+        {
+          name: 'proposal',
+          isSigner: false,
+          isWritable: true,
+          category: 'pda',
+          pdaConfig: {
+            seeds: [
+              { type: 'literal', value: 'proposal' },
+              { type: 'argRef', argName: 'transactionIndex', argType: 'u64' },
+            ],
+          },
+        },
+      ],
+      args: [{ name: 'amount', type: 'u64' }],
+    });
+
+    const built = buildInstruction(
+      handler,
+      { amount: 5n, resolve: { transactionIndex: 11n } },
+      { wallet }
+    );
+
+    expect(built.keys.map((k) => k.pubkey)).toEqual([
+      WSOL_MINT,
+      findProgramAddressSync([createSeed('proposal'), createSeed(11n)], TOKEN_PROGRAM)[0],
+    ]);
+    expect([...built.data]).toEqual([2, 5, 0, 0, 0, 0, 0, 0, 0]);
+  });
+
+  it('rejects non-object resolve inputs', () => {
+    const handler = makeHandler();
+    expect(() =>
+      buildInstruction(handler, { amount: 1n, mint: SYSTEM_PROGRAM, resolve: 1 as unknown as Record<string, unknown> }, { wallet })
+    ).toThrow(/resolve/);
   });
 
   it('rejects unknown parameter names instead of silently dropping them', () => {

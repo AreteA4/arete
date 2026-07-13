@@ -169,6 +169,8 @@ The scaffolded app connects to a deployed **Arete Stack** — a streaming data p
 
 No RPC calls. No polling. No custom indexer. Just streaming data.
 
+In the TypeScript SDK mental model, the generated ORE stack is a **cartridge** and the Arete session is the **console**. The cartridge keeps its existing generated stack object and types; inserting it as `ore` makes it available at `session.stacks.ore`. The same console provides `session.programs.<name>` for standalone programs, `session.chain` for generic Solana reads, and `session.execute(...)` for prepared semantic operations.
+
 ---
 
 ## Available Templates
@@ -238,24 +240,28 @@ export function OreDashboard() {
 </TabItem>
 <TabItem label="TypeScript Template">
 
-The TypeScript template uses `arete-typescript` with typed views:
+The TypeScript template uses `@usearete/sdk` with a generated stack and typed views:
 
 ```typescript
 // main.ts
-import { Arete } from "arete-typescript";
-import { ORE_STREAM_STACK, type OreRound } from "arete-stacks/ore";
+import { createSession } from "@usearete/sdk";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
-const a4 = await Arete.connect("wss://ore.stack.arete.run", {
-  stack: ORE_STREAM_STACK,
+const session = await createSession({
+  stacks: { ore: ORE_STREAM_STACK },
 });
 
-for await (const update of a4.views.OreRound.latest.watch({ take: 1 })) {
+for await (const update of session.stacks.ore.views.OreRound.latest.watch({ take: 1 })) {
   if (update.type === "upsert" || update.type === "patch") {
     console.log(`Round #${update.data.id?.round_id}`);
     console.log(`Motherlode: ${update.data.state?.motherlode}`);
   }
 }
 ```
+
+Connected stacks expose stable `views`, `queries`, `programs`, `addresses`, `constants`, `defaults`, `math`, `read`, and `flows` namespaces when present. Each connected program exposes `programId`, `schemas`, `pdas`, `addresses`, `accounts`, `queries`, `raw`, `instructions`, `transactions`, `flows`, `constants`, `defaults`, and `math`.
+
+For write-enabled cartridges, semantic `.prepare(...)` methods take normal camelCase objects; pass the result to `session.execute(...)`. The `program.raw` namespace is the exact IDL escape hatch and preserves IDL names and nested shapes, including snake_case.
 
 </TabItem>
 <TabItem label="Rust Template">

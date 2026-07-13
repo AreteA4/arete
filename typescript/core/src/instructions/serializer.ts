@@ -33,14 +33,15 @@ export type ArgType =
   | 'bytes'
   | { vec: ArgType }
   | { option: ArgType }
-  | { array: [ArgType, number] }
-  | { struct: ArgStructField[] }
-  | { enum: EnumVariant[] };
+  | { array: readonly [ArgType, number] }
+  | { hashMap: readonly [ArgType, ArgType] }
+  | { struct: readonly ArgStructField[] }
+  | { enum: readonly EnumVariant[] };
 
 /** One field of a struct schema, in declaration (serialization) order. */
 export interface ArgStructField {
-  name: string;
-  type: ArgType;
+  readonly name: string;
+  readonly type: ArgType;
 }
 
 /**
@@ -53,8 +54,8 @@ export interface ArgStructField {
  */
 export type EnumVariant =
   | string
-  | { name: string; fields: ArgStructField[] }
-  | { name: string; tuple: ArgType[] };
+  | { readonly name: string; readonly fields: readonly ArgStructField[] }
+  | { readonly name: string; readonly tuple: readonly ArgType[] };
 
 /**
  * Serializes instruction arguments into a Buffer using Borsh encoding.
@@ -104,6 +105,10 @@ function serializeValue(value: unknown, type: ArgType): Buffer {
     return serializeArray(value as unknown[], type.array[0], type.array[1]);
   }
 
+  if ('hashMap' in type) {
+    return serializeHashMap(value, type.hashMap[0], type.hashMap[1]);
+  }
+
   if ('struct' in type) {
     return serializeStruct(value, type.struct);
   }
@@ -115,7 +120,7 @@ function serializeValue(value: unknown, type: ArgType): Buffer {
   throw new Error(`Unknown type: ${JSON.stringify(type)}`);
 }
 
-function serializeStruct(value: unknown, fields: ArgStructField[]): Buffer {
+function serializeStruct(value: unknown, fields: readonly ArgStructField[]): Buffer {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`Struct value must be a plain object, got ${typeof value}`);
   }
@@ -134,11 +139,36 @@ function serializeStruct(value: unknown, fields: ArgStructField[]): Buffer {
   return Buffer.concat(buffers);
 }
 
+function serializeHashMap(value: unknown, keyType: ArgType, valueType: ArgType): Buffer {
+  if (keyType !== 'string') {
+    throw new Error(
+      `Instruction hashMap keys must use the 'string' schema, got ${JSON.stringify(keyType)}`
+    );
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`HashMap value must be a plain object, got ${typeof value}`);
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+    // Rust/Borsh sorts String keys by their UTF-8 bytes before serializing.
+    Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'))
+  );
+  const len = Buffer.alloc(4);
+  len.writeUInt32LE(entries.length, 0);
+
+  const entryBuffers: Buffer[] = [];
+  for (const [key, entryValue] of entries) {
+    entryBuffers.push(serializePrimitive(key, 'string'));
+    entryBuffers.push(serializeValue(entryValue, valueType));
+  }
+  return Buffer.concat([len, ...entryBuffers]);
+}
+
 function variantName(variant: EnumVariant): string {
   return typeof variant === 'string' ? variant : variant.name;
 }
 
-function serializeEnum(value: unknown, variants: EnumVariant[]): Buffer {
+function serializeEnum(value: unknown, variants: readonly EnumVariant[]): Buffer {
   // Numeric value: a bare variant index (fieldless variants only).
   if (typeof value === 'number') {
     if (!Number.isInteger(value) || value < 0 || value >= variants.length) {

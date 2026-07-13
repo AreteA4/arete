@@ -55,6 +55,13 @@ export interface SendOptions {
   confirmationLevel?: ConfirmationLevel;
   /** Skip the RPC preflight simulation */
   skipPreflight?: boolean;
+  /**
+   * Optional extra local signers for this send.
+   *
+   * The concrete signer type depends on the wallet adapter implementation
+   * (for example `@solana/web3.js` Signers or `@solana/kit` TransactionSigners).
+   */
+  signers?: readonly unknown[];
   /** Adapter-specific passthrough options (priority fees, lookup tables, etc.) */
   [key: string]: unknown;
 }
@@ -80,6 +87,9 @@ export interface WalletAdapter {
   /** The wallet's public key as a base58-encoded string */
   publicKey: string;
 
+  /** Signer addresses the adapter can satisfy without per-send signers. */
+  readonly signerAddresses?: readonly string[];
+
   /**
    * Compile, sign, and broadcast one or more built instructions as a single
    * transaction.
@@ -91,7 +101,7 @@ export interface WalletAdapter {
    * @param options - Adapter-specific send/confirmation options
    * @returns The transaction signature (and slot, if known)
    */
-  signAndSend(instructions: BuiltInstruction[], options?: SendOptions): Promise<SendResult>;
+  signAndSend(instructions: readonly BuiltInstruction[], options?: SendOptions): Promise<SendResult>;
 }
 
 /**

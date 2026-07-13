@@ -4,7 +4,7 @@ sidebar:
   order: 2
 ---
 
-The `arete-typescript` SDK is a framework-agnostic client for consuming streaming data from Arete. It uses `AsyncIterable`-based streaming and works in any JavaScript environment — Node.js, browsers, Deno, or Bun.
+The `@usearete/sdk` package is a framework-agnostic client for consuming streaming data and preparing Solana operations with Arete. It uses `AsyncIterable`-based streaming and works in any JavaScript environment — Node.js, browsers, Deno, or Bun.
 
 :::tip[Using React?]
 If you're building a React application, use the [React SDK](/sdks/react/) instead. It provides hooks and providers built on top of this core SDK.
@@ -15,7 +15,7 @@ If you're building a React application, use the [React SDK](/sdks/react/) instea
 ## Installation
 
 ```bash
-npm install arete-typescript
+npm install @usearete/sdk
 ```
 
 No peer dependencies. Works anywhere JavaScript runs.
@@ -25,43 +25,129 @@ No peer dependencies. Works anywhere JavaScript runs.
 ## Quick Start
 
 ```typescript
-import { Arete } from "arete-typescript";
-import { ORE_STREAM_STACK, type OreRound } from "arete-stacks/ore";
+import { createSession } from "@usearete/sdk";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
-// Connect using the stack (URL is embedded in the stack definition)
-const a4 = await Arete.connect(ORE_STREAM_STACK);
+const session = await createSession({
+  stacks: { ore: ORE_STREAM_STACK },
+});
 
 // Stream entities with full type safety
-for await (const round of a4.views.OreRound.latest.use()) {
+for await (const round of session.stacks.ore.views.OreRound.latest.use()) {
   console.log("Round:", round.id.round_id);
 }
 ```
 
 ---
 
-## Connection
+## Cartridges and the Console
 
-### Connect with Stack Definition
+Think of a generated stack as a **cartridge**: it packages a domain's typed data and operations. Think of the Arete session as the **console** that connects those cartridges to shared chain reads and execution. These are mental models only—the API keeps the existing generated stack objects and types.
 
-Each stack definition includes its own URL, so connecting is simple:
+A connected stack at `session.stacks.<name>` has these stable namespaces:
+
+| Namespace | Purpose |
+| --- | --- |
+| `views` | Typed live and point-in-time entity views |
+| `queries` | Stack-level HTTP queries |
+| `programs` | Programs packaged with the stack |
+| `addresses` | Domain address derivations, when defined |
+| `constants` | Domain constants and enums, when defined |
+| `defaults` | Reusable domain defaults, when defined |
+| `math` | Pure domain calculations, when defined |
+| `read` | Connected domain reads, when defined |
+| `flows` | Stack-level multi-transaction operations, when defined |
+
+Programs at `session.stacks.<name>.programs.<program>` and `session.programs.<name>` have these stable namespaces: `programId`, `schemas`, `pdas`, `addresses`, `accounts`, `queries`, `raw`, `instructions`, `transactions`, `flows`, `constants`, `defaults`, and `math`.
+
+Use `session.chain` for generic Solana reads and `session.execute(prepared)` for any prepared semantic instruction, transaction, or flow.
+
+### Semantic Prepare vs. Raw IDL
+
+Prefer semantic operations for application code. They accept normal camelCase objects, derive routine addresses, normalize values such as UI token amounts, and describe their cardinality through the namespace:
 
 ```typescript
-import { Arete } from "arete-typescript";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+const prepared = await session.stacks.presale.programs.presale.flows.permissionlessDeposit.prepare({
+  presale,
+  owner,
+  quoteMint,
+  payerQuoteToken,
+  tokenProgram,
+  maxAmount: { ui: "10.5" },
+});
 
-// Stack includes its URL - just pass the stack
-const a4 = await Arete.connect(ORE_STREAM_STACK);
-
-// Now you have fully typed views
-const rounds = await a4.views.OreRound.latest.get();
+await session.execute(prepared);
 ```
 
-### Override Stack URL
-
-You can override the stack's default URL if needed:
+Use `program.raw` as an escape hatch when you need the exact generated IDL shape. Raw names and nested fields are not normalized; snake_case remains snake_case. Raw `.build(...)` returns one instruction for manual composition:
 
 ```typescript
-const a4 = await Arete.connect(ORE_STREAM_STACK, {
+const instruction = session.stacks.presale.programs.presale.raw.deposit.build({
+  max_amount: 10_500_000n,
+  remaining_account_info: { slices: [] },
+  presale,
+  quote_mint: quoteMint,
+  escrow,
+  payer_quote_token: payerQuoteToken,
+  token_program: tokenProgram,
+  program: session.stacks.presale.programs.presale.programId,
+});
+
+await session.transaction([instruction]);
+```
+
+---
+
+## Connection
+
+### Create a Session
+
+Each generated stack definition includes its endpoints, so inserting it into a session is simple:
+
+```typescript
+import { createSession } from "@usearete/sdk";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
+
+const session = await createSession({
+  stacks: { ore: ORE_STREAM_STACK },
+});
+
+// Now you have fully typed views
+const rounds = await session.stacks.ore.views.OreRound.latest.get();
+
+// Generic chain reads belong to the session console
+const balance = await session.chain.balance({ owner, mint });
+```
+
+### Multiple Stacks and Programs
+
+Name each inserted stack or standalone program. Stack names become properties under `session.stacks`; programs packaged by those stacks and explicitly attached programs are available under `session.programs`:
+
+```typescript
+const session = await createSession({
+  stacks: {
+    ore: ORE_STREAM_STACK,
+    presale: METEORA_PRESALE_STREAM_STACK,
+  },
+  programs: {
+    splToken: SPL_TOKEN_PROGRAM,
+  },
+});
+
+session.programs.presale;
+session.programs.splToken;
+```
+
+Promotion reuses the stack's connected program object and endpoint. If multiple stacks package the same key, the first stack owns the promoted alias and a warning is emitted; use `session.stacks.<name>.programs.<program>` to disambiguate. An explicit standalone program wins its top-level key.
+
+### Direct Single-Stack Connection
+
+`Arete.connect(...)` remains available for direct single-stack clients and advanced per-connection configuration:
+
+```typescript
+import { Arete } from "@usearete/sdk";
+
+const ore = await Arete.connect(ORE_STREAM_STACK, {
   url: "wss://custom.endpoint.com",
 });
 ```
@@ -69,7 +155,7 @@ const a4 = await Arete.connect(ORE_STREAM_STACK, {
 ### Connection Options
 
 ```typescript
-const a4 = await Arete.connect(ORE_STREAM_STACK, {
+const ore = await Arete.connect(ORE_STREAM_STACK, {
   maxEntriesPerView: 5000, // Limit entries per view (default: 10000)
 });
 ```
@@ -84,11 +170,11 @@ const a4 = await Arete.connect(ORE_STREAM_STACK, {
 
 ```typescript
 // Check current state
-console.log(a4.connectionState);
+console.log(session.stacks.ore.connectionState);
 // 'connected' | 'connecting' | 'disconnected' | 'reconnecting' | 'error'
 
 // Listen for changes
-const unsubscribe = a4.onConnectionStateChange((state) => {
+const unsubscribe = session.stacks.ore.onConnectionStateChange((state) => {
   console.log("Connection state:", state);
 });
 
@@ -99,7 +185,7 @@ unsubscribe();
 ### Disconnect
 
 ```typescript
-await a4.disconnect();
+session.close();
 ```
 
 ---
@@ -126,10 +212,10 @@ By default, each entity in a stack exposes two views:
 
 ```typescript
 // State view — get a specific round by address
-const round = await a4.views.OreRound.state.get(roundAddress);
+const round = await session.stacks.ore.views.OreRound.state.get(roundAddress);
 
 // List view — get all rounds
-const rounds = await a4.views.OreRound.list.get();
+const rounds = await session.stacks.ore.views.OreRound.list.get();
 ```
 
 ### Custom Views
@@ -140,7 +226,7 @@ Custom views are accessed the same way as default views:
 
 ```typescript
 // Custom list view defined in the ORE stack
-for await (const round of a4.views.OreRound.latest.use()) {
+for await (const round of session.stacks.ore.views.OreRound.latest.use()) {
   console.log("Recent round:", round.id.round_id);
 }
 ```
@@ -165,14 +251,14 @@ The simplest streaming method. Emits the full merged entity after each change:
 
 ```typescript
 // List view — no key required
-for await (const round of a4.views.OreRound.latest.use()) {
+for await (const round of session.stacks.ore.views.OreRound.latest.use()) {
   console.log("Round:", round.id.round_id);
   console.log("Motherlode:", round.state.motherlode);
 }
 
 // State view — key required
 const roundAddress = "So11111111111111111111111111111111111111112";
-for await (const round of a4.views.OreRound.state.use(roundAddress)) {
+for await (const round of session.stacks.ore.views.OreRound.state.use(roundAddress)) {
   console.log("Round updated:", round.state.motherlode);
 }
 ```
@@ -187,12 +273,12 @@ use(key: string, options?: WatchOptions): AsyncIterable<T>
 use(options?: WatchOptions): AsyncIterable<T>
 ```
 
-### `.watch()` — Stream Raw Updates
+### `.watch()` — Stream Canonical Updates
 
-Use when you need to know what operation occurred:
+Use when you need to know what operation occurred. These updates use the same canonical SDK-facing shape as `.use()` and `.get()`, including camelCase field names and `bigint` values for large integer families:
 
 ```typescript
-for await (const update of a4.views.OreRound.latest.watch()) {
+for await (const update of session.stacks.ore.views.OreRound.latest.watch()) {
   switch (update.type) {
     case "upsert":
       console.log("Created or replaced:", update.data);
@@ -228,10 +314,10 @@ type Update<T> =
 
 ### `.watchRich()` — Stream with Before/After Diffs
 
-Use when you need to compare the previous and new state:
+Use when you need to compare the previous and new canonical state:
 
 ```typescript
-for await (const update of a4.views.OreRound.latest.watchRich()) {
+for await (const update of session.stacks.ore.views.OreRound.latest.watchRich()) {
   switch (update.type) {
     case "created":
       console.log("New entity:", update.data);
@@ -282,11 +368,11 @@ Fetches the current state. Returns a promise that resolves when data is availabl
 
 ```typescript
 // List view — returns all entities
-const rounds = await a4.views.OreRound.latest.get();
+const rounds = await session.stacks.ore.views.OreRound.latest.get();
 console.log(`Found ${rounds.length} rounds`);
 
 // State view — returns single entity or null
-const round = await a4.views.OreRound.state.get(roundAddress);
+const round = await session.stacks.ore.views.OreRound.state.get(roundAddress);
 if (round) {
   console.log("Round:", round.id.round_id);
 }
@@ -308,7 +394,7 @@ Returns immediately with cached data. Returns `undefined` if data hasn't been lo
 
 ```typescript
 // List view
-const rounds = a4.views.OreRound.latest.getSync();
+const rounds = session.stacks.ore.views.OreRound.latest.getSync();
 if (rounds) {
   console.log(`Cached: ${rounds.length} rounds`);
 } else {
@@ -316,7 +402,7 @@ if (rounds) {
 }
 
 // State view
-const round = a4.views.OreRound.state.getSync(roundAddress);
+const round = session.stacks.ore.views.OreRound.state.getSync(roundAddress);
 ```
 
 **Signatures:**
@@ -340,7 +426,7 @@ Use `getSync()` in synchronous contexts like React render functions where you ca
 Each view maintains an in-memory store of entities. By default, stores are limited to 10,000 entries to prevent memory issues on long-running clients. When the limit is reached, oldest entries are evicted (LRU).
 
 ```typescript
-const a4 = await Arete.connect(ORE_STREAM_STACK, {
+const ore = await Arete.connect(ORE_STREAM_STACK, {
   maxEntriesPerView: 5000, // Custom limit
 });
 ```
@@ -348,7 +434,7 @@ const a4 = await Arete.connect(ORE_STREAM_STACK, {
 To disable limiting (not recommended for production):
 
 ```typescript
-const a4 = await Arete.connect(ORE_STREAM_STACK, {
+const ore = await Arete.connect(ORE_STREAM_STACK, {
   maxEntriesPerView: null, // Unlimited
 });
 ```
@@ -371,7 +457,7 @@ interface WatchOptions {
 
 ```typescript
 // Only receive the first 10 entities
-for await (const round of a4.views.OreRound.latest.use({ take: 10 })) {
+for await (const round of session.stacks.ore.views.OreRound.latest.use({ take: 10 })) {
   console.log("Round:", round.id.round_id);
 }
 ```
@@ -380,7 +466,7 @@ for await (const round of a4.views.OreRound.latest.use({ take: 10 })) {
 
 ```typescript
 // Skip first 20, take next 10
-for await (const round of a4.views.OreRound.latest.use({ skip: 20, take: 10 })) {
+for await (const round of session.stacks.ore.views.OreRound.latest.use({ skip: 20, take: 10 })) {
   console.log("Round:", round.id.round_id);
 }
 ```
@@ -400,7 +486,7 @@ Use standard `AsyncIterable` patterns to control streams client-side.
 ### Stop on Condition
 
 ```typescript
-for await (const update of a4.views.OreRound.latest.watch()) {
+for await (const update of session.stacks.ore.views.OreRound.latest.watch()) {
   if (update.type === "upsert") {
     const round = update.data;
     if (round.state.motherlode && round.state.motherlode > 1_000_000_000) {
@@ -420,7 +506,7 @@ const controller = new AbortController();
 setTimeout(() => controller.abort(), 30_000); // Cancel after 30s
 
 try {
-  for await (const update of a4.views.OreRound.latest.watch()) {
+  for await (const update of session.stacks.ore.views.OreRound.latest.watch()) {
     if (controller.signal.aborted) break;
     console.log("Update:", update.data);
   }
@@ -432,7 +518,7 @@ try {
 ### Client-Side Filtering
 
 ```typescript
-for await (const update of a4.views.OreRound.latest.watch()) {
+for await (const update of session.stacks.ore.views.OreRound.latest.watch()) {
   if (update.type !== "upsert") continue;
   if ((update.data.metrics.deploy_count ?? 0) < 100) continue;
 
@@ -451,7 +537,7 @@ Every stack ships with [Zod](https://zod.dev) schemas alongside its TypeScript i
 Enable `validateFrames` on connect to automatically drop malformed data before it enters your local store:
 
 ```typescript
-const a4 = await Arete.connect(ORE_STREAM_STACK, {
+const ore = await Arete.connect(ORE_STREAM_STACK, {
   validateFrames: true,
 });
 ```
@@ -464,7 +550,7 @@ Pass a `schema` to `.use()` to filter out entities that don't match:
 import { OreRoundCompletedSchema } from "arete-stacks/ore";
 
 // Only emit rounds where every field is present
-for await (const round of a4.views.OreRound.latest.use({
+for await (const round of session.stacks.ore.views.OreRound.latest.use({
   schema: OreRoundCompletedSchema,
 })) {
   console.log(round.id.round_id, round.state.motherlode);
@@ -480,7 +566,7 @@ See [Schema Validation](/sdks/validation/) for the full guide on generated schem
 Arete can automatically enrich your entities with data that doesn't live on-chain. For example, the ORE stack includes token metadata (name, symbol, decimals, logo) resolved server-side from the DAS API:
 
 ```typescript
-for await (const round of a4.views.OreRound.latest.use()) {
+for await (const round of session.stacks.ore.views.OreRound.latest.use()) {
   // Token metadata is resolved automatically — no extra API calls
   console.log(round.ore_metadata?.name);     // "Ore"
   console.log(round.ore_metadata?.symbol);   // "ORE"
@@ -497,11 +583,11 @@ See [Resolvers](/building-stacks/rust-dsl/resolvers/) for how to add resolved da
 ## Error Handling
 
 ```typescript
-import { Arete, AreteError } from "arete-typescript";
+import { AreteError, createSession } from "@usearete/sdk";
 import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 try {
-  const a4 = await Arete.connect(ORE_STREAM_STACK);
+  const session = await createSession({ stacks: { ore: ORE_STREAM_STACK } });
 } catch (error) {
   if (error instanceof AreteError) {
     console.error("Arete error:", error.message);
@@ -516,29 +602,53 @@ try {
 
 ## API Reference
 
-### `Arete.connect(stack, options?)`
+### `createSession(definition, options?)`
 
-Establishes a WebSocket connection to a Arete stack.
+Creates the console that connects generated stacks and standalone programs. Programs packaged by stacks are automatically promoted to `session.programs` by reference.
 
 **Parameters:**
 
-- `stack` — Stack definition (includes URL and typed views)
-- `options.url` — Override the stack's default URL (optional)
-- `options.maxEntriesPerView` — Max entries per view before LRU eviction (optional)
-- `options.validateFrames` — Validate incoming frames against Zod schemas (optional)
+- `definition.stacks` — Named generated stack definitions (optional)
+- `definition.programs` — Named standalone program definitions (optional)
+- `options.wallet` — Shared wallet for execution (optional)
+- `options.signerRegistry` — Shared additional signers (optional)
+- `options.endpoints` — Shared HTTP and WebSocket fallback endpoints (optional)
+- `options.stacks` — Per-stack connection overrides (optional)
 
-**Returns:** `Promise<Arete>`
+At least one stack or program is required.
 
-### `a4.views`
+**Returns:** `Promise<Session>`
+
+### `session.stacks.<name>`
+
+Returns the connected generated stack inserted under that name. Use its `views`, `queries`, `programs`, `addresses`, `constants`, `defaults`, `math`, `read`, and `flows` namespaces when present.
+
+### `session.programs.<name>`
+
+Returns a connected program packaged by a stack, attached to a stack, or declared standalone. Program namespaces are `programId`, `schemas`, `pdas`, `addresses`, `accounts`, `queries`, `raw`, `instructions`, `transactions`, `flows`, `constants`, `defaults`, and `math`.
+
+### `session.chain`
+
+The session-wide generic Solana read surface.
+
+### `session.execute(prepared, options?)`
+
+Executes a value returned by a semantic instruction, transaction, or flow's `.prepare(...)` method.
+
+### `Arete.connect(stack, options?)`
+
+Creates a direct single-stack client. This existing API remains useful for advanced per-connection options such as `url`, `maxEntriesPerView`, and `validateFrames`.
+
+### `session.stacks.<name>.views`
 
 Typed views interface based on your stack definition. Access pattern:
 
 ```typescript
-a4.views.<entity>.<viewName>.<method>()
+session.stacks.<name>.views.<entity>.<viewName>.<method>()
 
 // Examples with default views:
-a4.views.OreRound.state.get(key)     // State mode — requires key
-a4.views.OreRound.list.get()         // List mode — no key
+session.stacks.ore.views.OreRound.state.get(key) // State mode — requires key
+session.stacks.ore.views.OreRound.list.get()     // List mode — no key
 ```
 
 #### State Mode Methods
@@ -579,7 +689,7 @@ interface WatchOptions {
 
 See [Schema Validation](/sdks/validation/) for details on using schemas to filter and validate streamed data.
 
-### `a4.connectionState`
+### `session.stacks.<name>.connectionState`
 
 Current connection state:
 
@@ -589,13 +699,13 @@ Current connection state:
 - `reconnecting` — Auto-reconnecting after failure
 - `error` — Connection failed
 
-### `a4.onConnectionStateChange(callback)`
+### `session.stacks.<name>.onConnectionStateChange(callback)`
 
 Subscribe to connection state changes. Returns unsubscribe function.
 
-### `a4.disconnect()`
+### `session.close()`
 
-Close the WebSocket connection gracefully.
+Closes every connection owned by the session.
 
 ---
 

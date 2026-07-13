@@ -21,26 +21,61 @@ export interface ViewDef<T, TMode extends 'state' | 'list'> {
   readonly _entity?: T;
 }
 
-export interface StackDefinition {
-  readonly name: string;
-  readonly url: string;
-  readonly views: Record<string, ViewGroup>;
-  readonly schemas?: Record<string, Schema<unknown>>;
-  // Handlers carry specific phantom param/error types; accept any of them
-  // here. Multi-program stacks nest handlers one level deep per program
-  // (e.g. instructions.ore.close); single-program stacks stay flat.
-  instructions?: Record<string, StackInstructionEntry>;
+export interface StackEndpoints {
+  readonly ws: string;
+  readonly http?: string;
 }
 
-/**
- * One entry in a stack definition's `instructions` block: either a handler
- * (single-program stacks) or a per-program map of handlers (multi-program).
- */
-export type StackInstructionEntry =
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  | import('./instructions').InstructionHandler<any, any>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  | Record<string, import('./instructions').InstructionHandler<any, any>>;
+export type ReadTransportMethod = 'GET' | 'POST';
+
+export interface ProgramAccountReadDefinition<T> {
+  readonly account: string;
+  readonly path: string;
+  readonly schema?: Schema<T>;
+  readonly _result?: T;
+}
+
+export interface ProgramQueryDefinition<TParams = unknown, TResult = unknown> {
+  readonly name: string;
+  readonly path: string;
+  readonly method?: ReadTransportMethod;
+  readonly schema?: Schema<TResult>;
+  readonly _params?: TParams;
+  readonly _result?: TResult;
+}
+
+export interface StackQueryDefinition<TParams = unknown, TResult = unknown> {
+  readonly name: string;
+  readonly path: string;
+  readonly method?: ReadTransportMethod;
+  readonly schema?: Schema<TResult>;
+  readonly _params?: TParams;
+  readonly _result?: TResult;
+}
+
+export interface ProgramSdkDefinition {
+  readonly name: string;
+  readonly programId?: string;
+  readonly schemas?: Record<string, Schema<unknown>>;
+  readonly pdas?: Record<string, unknown>;
+  readonly accounts?: Record<string, ProgramAccountReadDefinition<unknown>>;
+  readonly queries?: Record<string, ProgramQueryDefinition<unknown, unknown>>;
+  readonly rawInstructions?: Record<string, import('./instructions').InstructionHandler<any, any>>;
+  readonly addresses?: Record<string, unknown>;
+  readonly constants?: unknown;
+  readonly defaults?: unknown;
+  readonly math?: unknown;
+}
+
+export interface StackDefinition {
+  readonly name: string;
+  readonly endpoints: StackEndpoints;
+  readonly views: Record<string, ViewGroup>;
+  readonly schemas?: Record<string, Schema<unknown>>;
+  readonly patchSchemas?: Record<string, Schema<unknown>>;
+  readonly queries?: Record<string, StackQueryDefinition<unknown, unknown>>;
+  readonly programs?: Record<string, ProgramSdkDefinition>;
+}
 
 export interface ViewGroup {
   state?: ViewDef<unknown, 'state'>;
@@ -126,7 +161,8 @@ export interface AuthConfig {
 }
 
 export interface AreteConfig {
-  websocketUrl?: string;
+  /** WebSocket endpoint. `null`/omitted disables the WebSocket transport (HTTP-only mode). */
+  websocketUrl?: string | null;
   reconnectIntervals?: number[];
   maxReconnectAttempts?: number;
   initialSubscriptions?: Subscription[];

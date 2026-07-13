@@ -127,7 +127,7 @@ export function createInstructionHandler<
 export interface BuildOptions {
   /** Wallet, used only for `publicKey` to resolve signer accounts. */
   wallet?: WalletAdapter;
-  /** Extra/override user-provided account addresses. */
+  /** Explicit account-address overrides, including signer slots when needed. */
   accounts?: Record<string, string>;
   /**
    * Extra account metas appended after the instruction's declared accounts
@@ -163,23 +163,37 @@ export interface ExecutionResult {
  * Splits a merged params object into serialized args and account overrides.
  *
  * Keys matching a declared argument name are args; keys matching a declared
- * account name (with a string value) are account address overrides. Anything
- * else throws — a typo'd key silently dropped here would otherwise change the
- * built instruction. `options.accounts` on {@link BuildOptions} remains an
- * unvalidated escape hatch for advanced callers.
+ * account name (with a string value) are account address overrides. This
+ * applies to signer slots too, allowing explicit signer addresses to override
+ * the wallet fallback. Anything else throws — a typo'd key silently dropped
+ * here would otherwise change the built instruction. `options.accounts` on
+ * {@link BuildOptions} remains an unvalidated escape hatch for advanced callers.
  */
 function splitParams(
-  handler: InstructionHandler,
+  handler: InstructionHandler<any, any>,
   params: Record<string, unknown>
-): { args: Record<string, unknown>; accountOverrides: Record<string, string> } {
+): {
+  args: Record<string, unknown>;
+  accountOverrides: Record<string, string>;
+  resolve?: Record<string, unknown>;
+} {
   const argNameSet = new Set(handler.argNames);
   const accountNameSet = new Set(handler.accounts.map((a) => a.name));
   const args: Record<string, unknown> = {};
   const accountOverrides: Record<string, string> = {};
+  let resolve: Record<string, unknown> | undefined;
 
   for (const [key, value] of Object.entries(params)) {
     if (argNameSet.has(key)) {
       args[key] = value;
+    } else if (key === 'resolve' && !accountNameSet.has(key)) {
+      if (value === undefined) {
+        continue;
+      }
+      if (value === null || Array.isArray(value) || typeof value !== 'object') {
+        throw new Error('Parameter "resolve" must be an object when provided');
+      }
+      resolve = value as Record<string, unknown>;
     } else if (accountNameSet.has(key)) {
       if (typeof value !== 'string') {
         // Non-string values are not valid account addresses.
@@ -196,7 +210,7 @@ function splitParams(
     }
   }
 
-  return { args, accountOverrides };
+  return { args, accountOverrides, resolve };
 }
 
 /**
@@ -206,14 +220,15 @@ function splitParams(
  * composition for batching (`wallet.signAndSend([a, b, c])`).
  */
 export function buildInstruction(
-  handler: InstructionHandler,
+  handler: InstructionHandler<any, any>,
   params: Record<string, unknown>,
   options: BuildOptions = {}
 ): BuiltInstruction {
-  const { args, accountOverrides } = splitParams(handler, params);
+  const { args, accountOverrides, resolve } = splitParams(handler, params);
 
   const resolutionOptions: AccountResolutionOptions = {
     accounts: { ...accountOverrides, ...options.accounts },
+    resolve,
     wallet: options.wallet,
     programId: handler.programId,
   };
@@ -237,7 +252,7 @@ export function buildInstruction(
  * {@link InstructionError}.
  */
 export async function executeInstruction(
-  handler: InstructionHandler,
+  handler: InstructionHandler<any, any>,
   params: Record<string, unknown>,
   options: ExecuteOptions = {}
 ): Promise<ExecutionResult> {
