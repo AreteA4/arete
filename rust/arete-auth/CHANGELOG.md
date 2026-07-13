@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.0.1...arete-auth-v0.1.0) (2026-07-13)
+
+
+### Features
+
+* add generated program SDKs, sessions, HTTP reads, and typed execution ([f1437f1](https://github.com/AreteA4/arete/commit/f1437f1cbb615e8451d4f381c8e497c227f40c04))
+* serve authenticated HTTP stack reads ([829dead](https://github.com/AreteA4/arete/commit/829dead9baa6ec9f8331a975a6597d333ea862d9))
+
 ## [0.2.2](https://github.com/AreteA4/arete/compare/arete-auth-v0.2.1...arete-auth-v0.2.2) (2026-04-05)
 
 

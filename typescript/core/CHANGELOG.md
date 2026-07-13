@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.1.5...arete-typescript-v0.2.0) (2026-07-13)
+
+
+### Features
+
+* add generated program SDKs, sessions, HTTP reads, and typed execution ([f1437f1](https://github.com/AreteA4/arete/commit/f1437f1cbb615e8451d4f381c8e497c227f40c04))
+* add session-oriented program operations ([a01c3e1](https://github.com/AreteA4/arete/commit/a01c3e167ea35935a90d20ae2bc899536385f0ba))
+* add typed instruction runtime to the TypeScript SDK ([5ac4202](https://github.com/AreteA4/arete/commit/5ac420230432c49e8e2ba927c0ae66a6fd0e5072))
+
+
+### Bug Fixes
+
+* fail closed when required signers are unavailable ([2b9406a](https://github.com/AreteA4/arete/commit/2b9406a506549c3754f03a1f438027193ee68857))
+* normalize generated stream data shapes ([094c5ab](https://github.com/AreteA4/arete/commit/094c5abab496e62b87f1f64ccdbedd98d98e0437))
+* reject operations with missing concrete signers ([912b1d2](https://github.com/AreteA4/arete/commit/912b1d23b30471dcedee33ccfbaec37c0bb60909))
+
 ## [0.1.5](https://github.com/AreteA4/arete/compare/arete-typescript-v0.1.4...arete-typescript-v0.1.5) (2026-06-18)
 
 

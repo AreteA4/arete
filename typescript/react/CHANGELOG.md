@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.0](https://github.com/AreteA4/arete/compare/arete-react-v0.1.5...arete-react-v0.2.0) (2026-07-13)
+
+
+### Features
+
+* add generated program SDKs, sessions, HTTP reads, and typed execution ([f1437f1](https://github.com/AreteA4/arete/commit/f1437f1cbb615e8451d4f381c8e497c227f40c04))
+* add typed instruction runtime to the TypeScript SDK ([5ac4202](https://github.com/AreteA4/arete/commit/5ac420230432c49e8e2ba927c0ae66a6fd0e5072))
+* expose program operations through React hooks ([f29d406](https://github.com/AreteA4/arete/commit/f29d406231375a74a165c5489779da5707456248))
+
+
+### Bug Fixes
+
+* preserve program math in React hooks ([1eeed01](https://github.com/AreteA4/arete/commit/1eeed013f1f37a8484fae4768e1422617c38201a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @usearete/sdk bumped from ^0.1.5 to ^0.2.0
+
 ## [0.1.5](https://github.com/AreteA4/arete/compare/arete-react-v0.1.4...arete-react-v0.1.5) (2026-06-18)
 
 

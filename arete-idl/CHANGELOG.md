@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.0.3...arete-idl-v0.1.0) (2026-07-13)
+
+
+### Features
+
+* add generated program SDKs, sessions, HTTP reads, and typed execution ([f1437f1](https://github.com/AreteA4/arete/commit/f1437f1cbb615e8451d4f381c8e497c227f40c04))
+* improve idl event discovery and validation ([970aed3](https://github.com/AreteA4/arete/commit/970aed3eeb8efe7ce0a4cb76f0310b58fb957d8a))
+* preserve event fields in parsed IDLs ([f7fc0c6](https://github.com/AreteA4/arete/commit/f7fc0c60ebec9040d67e2f15b57bc5d777dcdc36))
+* preserve richer IDL metadata in stack specs ([ba5a16b](https://github.com/AreteA4/arete/commit/ba5a16b8ab2dab2b6e493cf6950798dfd98b2dd6))
+* remove external IDL fixture dependency ([284d263](https://github.com/AreteA4/arete/commit/284d263751f26b5bef1f7479c62ec33f64ed5f18))
+
+
+### Bug Fixes
+
+* normalize generated stream data shapes ([094c5ab](https://github.com/AreteA4/arete/commit/094c5abab496e62b87f1f64ccdbedd98d98e0437))
+* remove external IDL fixture dependency ([9a054a2](https://github.com/AreteA4/arete/commit/9a054a2f1c25cf376463c97db096b9a82727c75b))
+
 ## [0.0.3](https://github.com/AreteA4/arete/compare/arete-idl-v0.0.2...arete-idl-v0.0.3) (2026-06-18)
 
 

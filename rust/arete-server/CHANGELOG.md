@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.0](https://github.com/AreteA4/arete/compare/arete-server-v0.1.5...arete-server-v0.2.0) (2026-07-13)
+
+
+### Features
+
+* add generated program SDKs, sessions, HTTP reads, and typed execution ([f1437f1](https://github.com/AreteA4/arete/commit/f1437f1cbb615e8451d4f381c8e497c227f40c04))
+* serve authenticated HTTP stack reads ([829dead](https://github.com/AreteA4/arete/commit/829dead9baa6ec9f8331a975a6597d333ea862d9))
+
+
+### Bug Fixes
+
+* inherit websocket auth for HTTP reads ([ce1b66f](https://github.com/AreteA4/arete/commit/ce1b66f50d4deefa278837fe6eacd6990ad74498))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.1.5 to 0.2.0
+    * arete-auth bumped from 0.0.1 to 0.1.0
+
 ## [0.1.5](https://github.com/AreteA4/arete/compare/arete-server-v0.1.4...arete-server-v0.1.5) (2026-06-18)
 
 
