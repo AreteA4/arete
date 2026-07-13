@@ -12,6 +12,7 @@
 import {
   address,
   pipe,
+  addSignersToTransactionMessage,
   createTransactionMessage,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
@@ -45,8 +46,17 @@ export interface KitAdapterConfig {
   rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
   /** The fee-payer / signer for transactions. */
   signer: TransactionSigner;
+  /** Optional local signers that can satisfy additional required signatures. */
+  additionalSigners?: readonly TransactionSigner[];
   /** Default commitment used when the caller does not specify one. */
   defaultCommitment?: Commitment;
+}
+
+export interface KitSendOptions extends SendOptions {
+  /** Extra local signers for this send only. */
+  additionalSigners?: readonly TransactionSigner[];
+  /** Override the fee payer for this send. */
+  feePayer?: TransactionSigner;
 }
 
 function toCommitment(
@@ -56,16 +66,55 @@ function toCommitment(
   return (level as Commitment | undefined) ?? fallback;
 }
 
+function collectRequiredSignerAddresses(
+  instructions: readonly BuiltInstruction[],
+  feePayerAddress: string
+): Set<string> {
+  const required = new Set<string>([feePayerAddress]);
+
+  for (const instruction of instructions) {
+    for (const key of instruction.keys) {
+      if (key.isSigner) {
+        required.add(key.pubkey);
+      }
+    }
+  }
+
+  return required;
+}
+
+function indexLocalSigners(signers: readonly TransactionSigner[]): Map<string, TransactionSigner> {
+  const indexed = new Map<string, TransactionSigner>();
+  for (const signer of signers) {
+    indexed.set(signer.address, signer);
+  }
+  return indexed;
+}
+
 /** Map an Arete account meta to a kit AccountRole. */
-function toAccountRole(meta: BuiltAccountMeta): AccountRole {
+export function toAccountRole(meta: BuiltAccountMeta): AccountRole {
   if (meta.isSigner && meta.isWritable) return AccountRole.WRITABLE_SIGNER;
   if (meta.isSigner && !meta.isWritable) return AccountRole.READONLY_SIGNER;
   if (!meta.isSigner && meta.isWritable) return AccountRole.WRITABLE;
   return AccountRole.READONLY;
 }
 
+/** Map a kit AccountRole back to Arete signer/writable flags. */
+export function fromAccountRole(role: AccountRole): { isSigner: boolean; isWritable: boolean } {
+  switch (role) {
+    case AccountRole.WRITABLE_SIGNER:
+      return { isSigner: true, isWritable: true };
+    case AccountRole.READONLY_SIGNER:
+      return { isSigner: true, isWritable: false };
+    case AccountRole.WRITABLE:
+      return { isSigner: false, isWritable: true };
+    default:
+      return { isSigner: false, isWritable: false };
+  }
+}
+
 /** Convert an Arete BuiltInstruction to a kit IInstruction. */
-function toKitInstruction(ix: BuiltInstruction): IInstruction {
+export function toKitInstruction(ix: BuiltInstruction): IInstruction {
   const accounts: IAccountMeta[] = ix.keys.map((k) => ({
     address: address(k.pubkey),
     role: toAccountRole(k),
@@ -77,11 +126,24 @@ function toKitInstruction(ix: BuiltInstruction): IInstruction {
   };
 }
 
+/** Convert a kit IInstruction to an Arete BuiltInstruction. */
+export function fromKitInstruction(ix: IInstruction): BuiltInstruction {
+  return {
+    programId: ix.programAddress,
+    keys: (ix.accounts ?? []).map((account) => ({
+      pubkey: account.address,
+      ...fromAccountRole(account.role),
+    })),
+    data: ix.data ? new Uint8Array(ix.data) : new Uint8Array(0),
+  };
+}
+
 /**
  * Create a {@link WalletAdapter} from a kit RPC pair and a signer.
  */
 export function createWalletAdapter(config: KitAdapterConfig): WalletAdapter {
   const { rpc, rpcSubscriptions, signer } = config;
+  const configuredLocalSigners = config.additionalSigners ?? [];
   const fallbackCommitment = config.defaultCommitment ?? 'confirmed';
   const sendAndConfirm = sendAndConfirmTransactionFactory({ rpc, rpcSubscriptions });
 
@@ -89,24 +151,54 @@ export function createWalletAdapter(config: KitAdapterConfig): WalletAdapter {
     publicKey: signer.address,
 
     async signAndSend(
-      instructions: BuiltInstruction[],
+      instructions: readonly BuiltInstruction[],
       options?: SendOptions
     ): Promise<SendResult> {
       if (instructions.length === 0) {
         throw new Error('signAndSend requires at least one instruction');
       }
 
+      const sendOptions = options as KitSendOptions | undefined;
+      const feePayer = sendOptions?.feePayer ?? signer;
+      const requiredSignerAddresses = collectRequiredSignerAddresses(
+        instructions,
+        feePayer.address
+      );
+      const primarySignerAddress = signer.address;
+      const localSignerMap = indexLocalSigners([
+        ...configuredLocalSigners,
+        ...((sendOptions?.signers ?? []) as readonly TransactionSigner[]),
+        ...(sendOptions?.additionalSigners ?? []),
+        ...(sendOptions?.feePayer ? [sendOptions.feePayer] : []),
+      ]);
+
+      const missingSignerAddresses = [...requiredSignerAddresses].filter(
+        (address) => address !== primarySignerAddress && !localSignerMap.has(address)
+      );
+      if (missingSignerAddresses.length > 0) {
+        throw new Error(
+          `Missing signer(s) for transaction: ${missingSignerAddresses.join(', ')}`
+        );
+      }
+
+      const localSigners = [...requiredSignerAddresses]
+        .filter((address) => address !== primarySignerAddress)
+        .map((address) => localSignerMap.get(address)!)
+        .filter((candidate, index, all) => all.indexOf(candidate) === index);
+
       const commitment = toCommitment(options?.confirmationLevel, fallbackCommitment);
       const { value: latestBlockhash } = await rpc
         .getLatestBlockhash({ commitment })
         .send();
 
-      const message = pipe(
+      const messageWithFeePayer = pipe(
         createTransactionMessage({ version: 0 }),
-        (m) => setTransactionMessageFeePayerSigner(signer, m),
+        (m) => setTransactionMessageFeePayerSigner(feePayer, m),
         (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
         (m) => appendTransactionMessageInstructions(instructions.map(toKitInstruction), m)
       );
+
+      const message = addSignersToTransactionMessage(localSigners, messageWithFeePayer);
 
       const signedTransaction = await signTransactionMessageWithSigners(message);
 

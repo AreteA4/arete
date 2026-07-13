@@ -23,7 +23,8 @@
     "dev": "rollup -c -w",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test": "vitest run"
   },
   "keywords": [
     "solana",
@@ -51,7 +52,8 @@
     "rollup": "^3.0.0",
     "rollup-plugin-dts": "^6.0.0",
     "tslib": "^2.8.1",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
   },
   "files": [
     "dist",
