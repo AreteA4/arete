@@ -1,17 +1,12 @@
 import { useState, useCallback } from 'react';
-import type {
-  TypedInstruction,
-  InstructionExecutorOptions,
-  ExecutionResult,
-} from '@usearete/sdk';
 import { InstructionError } from '@usearete/sdk';
 
 export type MutationStatus = 'idle' | 'pending' | 'success' | 'error';
 
-export interface UseMutationOptions extends InstructionExecutorOptions {
-  onSuccess?: (result: ExecutionResult) => void;
+export type UseMutationOptions<TOptions extends object = Record<string, never>, TResult = unknown> = TOptions & {
+  onSuccess?: (result: TResult) => void;
   onError?: (error: Error) => void;
-}
+};
 
 /**
  * Result of {@link useInstructionMutation}.
@@ -20,38 +15,67 @@ export interface UseMutationOptions extends InstructionExecutorOptions {
  * plus any user-provided account addresses), inferred from the generated
  * handler. `TError` is the handler's typed program-error union.
  */
-export interface UseMutationResult<TParams = Record<string, unknown>, _TError = unknown> {
-  submit: (args: TParams, options?: Partial<UseMutationOptions>) => Promise<ExecutionResult>;
+export interface UseMutationResult<
+  TParams = Record<string, unknown>,
+  TResult = unknown,
+  TOptions extends object = Record<string, never>,
+> {
+  submit: (args: TParams, options?: Partial<UseMutationOptions<TOptions, TResult>>) => Promise<TResult>;
   status: MutationStatus;
   error: string | null;
+  signatures: string[];
   signature: string | null;
   isLoading: boolean;
   reset: () => void;
 }
 
-export function useInstructionMutation<TParams = Record<string, unknown>, TError = unknown>(
-  execute: TypedInstruction<TParams, TError>
-): UseMutationResult<TParams, TError> {
+export type MutationExecutor<
+  TParams = Record<string, unknown>,
+  TResult = unknown,
+  TOptions extends object = Record<string, never>,
+> = {
+  (args: TParams, options?: TOptions): Promise<TResult>;
+};
+
+export function useInstructionMutation<
+  TParams = Record<string, unknown>,
+  TResult = unknown,
+  TOptions extends object = Record<string, never>,
+>(
+  execute: MutationExecutor<TParams, TResult, TOptions>
+): UseMutationResult<TParams, TResult, TOptions> {
   const [status, setStatus] = useState<MutationStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [signatures, setSignatures] = useState<string[]>([]);
   const [signature, setSignature] = useState<string | null>(null);
 
-  const submit = useCallback(async (
+  const submit: UseMutationResult<TParams, TResult, TOptions>['submit'] = useCallback(async (
     args: TParams,
-    options?: Partial<UseMutationOptions>
-  ): Promise<ExecutionResult> => {
+    options?: Partial<UseMutationOptions<TOptions, TResult>>
+  ): Promise<TResult> => {
     setStatus('pending');
     setError(null);
+    setSignatures([]);
     setSignature(null);
 
+    const { onSuccess, onError, ...executionOptions } = options ?? {};
+
     try {
-      const result = await execute(args, options as InstructionExecutorOptions);
+      const result = await execute(args, executionOptions as TOptions);
+      const resultSignatures =
+        typeof result === 'object' && result !== null && 'signatures' in result
+          && Array.isArray((result as { signatures: unknown }).signatures)
+          ? (result as { signatures: unknown[] }).signatures.map(String)
+          : typeof result === 'object' && result !== null && 'signature' in result
+            ? [String((result as { signature: unknown }).signature)]
+            : [];
 
       setStatus('success');
-      setSignature(result.signature);
+      setSignatures(resultSignatures);
+      setSignature(resultSignatures.length === 1 ? resultSignatures[0]! : null);
 
-      if (options?.onSuccess) {
-        options.onSuccess(result);
+      if (onSuccess) {
+        onSuccess(result);
       }
 
       return result;
@@ -68,8 +92,8 @@ export function useInstructionMutation<TParams = Record<string, unknown>, TError
       setStatus('error');
       setError(displayError);
 
-      if (options?.onError && err instanceof Error) {
-        options.onError(err);
+      if (onError && err instanceof Error) {
+        onError(err);
       }
 
       throw err;
@@ -79,6 +103,7 @@ export function useInstructionMutation<TParams = Record<string, unknown>, TError
   const reset = useCallback(() => {
     setStatus('idle');
     setError(null);
+    setSignatures([]);
     setSignature(null);
   }, []);
 
@@ -86,6 +111,7 @@ export function useInstructionMutation<TParams = Record<string, unknown>, TError
     submit,
     status,
     error,
+    signatures,
     signature,
     isLoading: status === 'pending',
     reset,

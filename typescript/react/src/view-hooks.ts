@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useSyncExternalStore, useRef } from 'react';
 import { ViewDef, ViewHookOptions, ViewHookResult, ListParams, ListParamsBase, Schema } from './types';
-import type { Arete } from '@usearete/sdk';
+import type { ConnectedArete, StackDefinition } from '@usearete/sdk';
+
+type AnyClient = ConnectedArete<StackDefinition>;
 
 function shallowArrayEqual<T>(a: T[] | undefined, b: T[] | undefined): boolean {
   if (a === b) return true;
@@ -12,9 +14,39 @@ function shallowArrayEqual<T>(a: T[] | undefined, b: T[] | undefined): boolean {
   return true;
 }
 
+function compareNumericValues(value: unknown, condition: unknown, op: 'gte' | 'lte' | 'gt' | 'lt'): boolean {
+  if (typeof value === 'bigint' || typeof condition === 'bigint') {
+    const left = typeof value === 'bigint' ? value : BigInt(value as number);
+    const right = typeof condition === 'bigint' ? condition : BigInt(condition as number);
+    switch (op) {
+      case 'gte':
+        return left >= right;
+      case 'lte':
+        return left <= right;
+      case 'gt':
+        return left > right;
+      case 'lt':
+        return left < right;
+    }
+  }
+
+  const left = value as number;
+  const right = condition as number;
+  switch (op) {
+    case 'gte':
+      return left >= right;
+    case 'lte':
+      return left <= right;
+    case 'gt':
+      return left > right;
+    case 'lt':
+      return left < right;
+  }
+}
+
 export function useStateView<T>(
   viewDef: ViewDef<T, 'state'>,
-  client: Arete<any> | null,
+  client: AnyClient | null,
   key?: Record<string, string>,
   options?: ViewHookOptions
 ): ViewHookResult<T> {
@@ -102,8 +134,11 @@ export function useStateView<T>(
       ? clientRef.current.store.get(viewDef.view, keyString)
       : clientRef.current.store.getAll(viewDef.view)[0];
     
-    const validated = entity && schema 
-      ? (schema.safeParse(entity).success ? entity : undefined)
+    const validated = entity && schema
+      ? (() => {
+          const parsed = schema.safeParse(entity);
+          return parsed.success ? parsed.data : undefined;
+        })()
       : entity;
     
     if (validated !== cachedSnapshotRef.current) {
@@ -130,7 +165,7 @@ export function useStateView<T>(
 
 export function useListView<T>(
   viewDef: ViewDef<T, 'list'>,
-  client: Arete<any> | null,
+  client: AnyClient | null,
   params?: ListParams,
   options?: ViewHookOptions
 ): ViewHookResult<T[]> {
@@ -237,16 +272,16 @@ export function useListView<T>(
     let items = viewData;
     
     if (params?.where) {
-      items = items.filter((item) => {
+      items = items.filter((item: unknown) => {
         return Object.entries(params.where!).every(([fieldKey, condition]) => {
           const value = (item as Record<string, unknown>)[fieldKey];
 
           if (typeof condition === 'object' && condition !== null) {
             const cond = condition as Record<string, unknown>;
-            if ('gte' in cond) return (value as number) >= (cond.gte as number);
-            if ('lte' in cond) return (value as number) <= (cond.lte as number);
-            if ('gt' in cond) return (value as number) > (cond.gt as number);
-            if ('lt' in cond) return (value as number) < (cond.lt as number);
+            if ('gte' in cond) return compareNumericValues(value, cond.gte, 'gte');
+            if ('lte' in cond) return compareNumericValues(value, cond.lte, 'lte');
+            if ('gt' in cond) return compareNumericValues(value, cond.gt, 'gt');
+            if ('lt' in cond) return compareNumericValues(value, cond.lt, 'lt');
           }
 
           return value === condition;
@@ -255,7 +290,10 @@ export function useListView<T>(
     }
 
     if (schema) {
-      items = items.filter((item) => schema.safeParse(item).success);
+      items = items.flatMap((item: unknown) => {
+        const parsed = schema.safeParse(item);
+        return parsed.success ? [parsed.data as T] : [];
+      });
     }
 
     if (limit) {
@@ -288,7 +326,7 @@ export function useListView<T>(
 
 export function createStateViewHook<T>(
   viewDef: ViewDef<T, 'state'>,
-  client: Arete<any> | null
+  client: AnyClient | null
 ) {
   return {
     use: (key?: Record<string, string>, options?: ViewHookOptions): ViewHookResult<T> => {
@@ -299,7 +337,7 @@ export function createStateViewHook<T>(
 
 export function createListViewHook<T>(
   viewDef: ViewDef<T, 'list'>,
-  client: Arete<any> | null
+  client: AnyClient | null
 ) {
   function use(params?: ListParams, options?: ViewHookOptions): ViewHookResult<T[]> | ViewHookResult<T | undefined> {
     const result = useListView(viewDef, client, params, options);

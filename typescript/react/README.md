@@ -1,108 +1,162 @@
 # Arete React SDK
 
-React SDK for real-time Solana program data streaming from Arete.
+React hooks and provider for consuming Arete stacks in React applications.
 
-Built on top of [`@usearete/sdk`](https://www.npmjs.com/package/@usearete/sdk), the pure TypeScript core SDK.
+Built on top of [`@usearete/sdk`](https://www.npmjs.com/package/@usearete/sdk), the framework-agnostic TypeScript core SDK.
 
 ## Installation
 
 ```bash
-npm install @usearete/react
+npm install @usearete/react react zustand
 ```
 
-> **Not using React?** Use [`@usearete/sdk`](../core/README.md) directly for Vue, Svelte, Node.js, or vanilla JavaScript.
+> Not using React? Use [`@usearete/sdk`](../core/README.md) directly.
 
-## Usage
-
-### Basic Setup
+## Quick Start
 
 ```tsx
-import { AreteProvider, useArete, defineStack } from '@usearete/react';
+import { AreteProvider, useArete } from '@usearete/react';
+import { ORE_STREAM_STACK } from './generated/ore-stack';
 
-const myStack = defineStack({
-  // Your stack configuration
-});
+function Dashboard() {
+  const { views, isLoading, error } = useArete(ORE_STREAM_STACK, {
+    url: 'ws://localhost:8877',
+    httpUrl: 'http://localhost:8877',
+  });
 
-function App() {
+  const { data: latestRound } = views.OreRound.latest.useOne();
+
+  if (isLoading) {
+    return <div>Connecting...</div>;
+  }
+
+  if (error) {
+    return <div>{error.message}</div>;
+  }
+
+  return <pre>{JSON.stringify(latestRound, null, 2)}</pre>;
+}
+
+export default function App() {
   return (
-    <AreteProvider config={{ /* your config */ }}>
-      <MyComponent />
+    <AreteProvider
+      autoConnect={true}
+      auth={{
+        // publishableKey: 'hspk_...',
+      }}
+    >
+      <Dashboard />
     </AreteProvider>
   );
 }
-
-function MyComponent() {
-  const stack = useArete(myStack);
-  // Use your stack
-}
 ```
 
-### Core Features
+## Provider
 
-- **Real-time Data Streaming**: Subscribe to Solana program state changes
-- **React Integration**: Hooks-based API for easy integration with React applications
-- **State Management**: Built-in state management with Zustand
-- **Type Safety**: Full TypeScript support with comprehensive type definitions
-- **View Definitions**: Create state and list views for your data
-- **Transaction Handling**: Define and execute transactions with hooks
-- **Single Item Queries**: Type-safe single item fetching with `take: 1` or `useOne()`
+`AreteProvider` manages connected clients for descendant hooks.
 
-### API
+Supported props:
 
-#### Providers
+- `autoConnect`
+- `wallet`
+- `auth`
+- `fetch`
+- `validateFrames`
+- `reconnectIntervals`
+- `maxReconnectAttempts`
+- `maxEntriesPerView`
+- `flushIntervalMs`
 
-- `AreteProvider` - Root provider for Arete configuration
+These are provider-wide defaults. Endpoint overrides stay on the hook call.
 
-#### Hooks
+## `useArete(stack, options?)`
 
-- `useArete` - Main hook for accessing stack functionality
-- `useAreteContext` - Access the runtime context directly
+`useArete` returns the connected React surface for a stack:
 
-#### View Methods
+- `views`
+- `programs`
+- `queries`
+- `chain`
+- `client`
+- `connectionState`
+- `isConnected`
+- `isLoading`
+- `error`
 
-- `.use()` - Subscribe to view data (returns `T[]` for lists, `T` for state)
-- `.use({ take: 1 })` - Subscribe to single item with type narrowing (returns `T | undefined`)
-- `.useOne()` - Convenience method for single item queries (returns `T | undefined`)
+Supported hook options:
 
-#### Factory Functions
+- `url`
+- `httpUrl`
+- `transport`
+- `programs`
 
-- `defineStack` - Define a new stack configuration
-- `createStateView` - Create a state view
-- `createListView` - Create a list view
-- `createRuntime` - Create a runtime instance
+Notes:
 
-#### Utilities
+- `transport: 'http'` disables streaming view subscriptions, but HTTP-backed surfaces like `queries`, `chain`, and program reads still work.
+- If you pass attached `programs`, keep that object stable with a module constant or `useMemo` so React does not create a fresh client on every render.
 
-- `ConnectionManager` - Manage WebSocket connections
+## Views
 
-## Relationship with @usearete/sdk
+View hooks return a `ViewHookResult<T>` object:
 
-This package depends on and re-exports the core `@usearete/sdk` package. The core SDK provides:
-
-- `Arete` - Main client class
-- `ConnectionManager` - WebSocket connection handling
-- `EntityStore` - State management
-- AsyncIterable-based streaming APIs
-
-The React SDK adds:
-
-- `AreteProvider` - React context provider
-- `useArete` - Main hook for accessing stacks
-- `useConnectionState` - Connection monitoring hook
-- `defineStack`, `createStateView`, `createListView` - React-friendly factories
-
-If you need low-level access, you can import directly from the core:
-
-```typescript
-import { Arete, ConnectionManager } from '@usearete/react';
-// or
-import { Arete, ConnectionManager } from '@usearete/sdk';
+```ts
+type ViewHookResult<T> = {
+  data: T | undefined;
+  isLoading: boolean;
+  error?: Error;
+  refresh: () => void;
+};
 ```
+
+List views support:
+
+- `.use()`
+- `.use({ take: 1 })`
+- `.useOne()`
+
+State views support:
+
+- `.use(key)`
+
+## Programs, Queries, and Chain
+
+`useArete` mirrors the connected core client surface:
+
+- `programs.<program>.raw.<instruction>` for raw typed instructions
+- `programs.<program>.plan` / `programs.<program>.instructions` for semantic instructions
+- `programs.<program>.accounts` and `programs.<program>.queries` for HTTP reads
+- `queries` for stack-level HTTP queries
+- `chain` for chain helpers
+
+Raw instruction hooks preserve `.execute`, `.build`, and `.useMutation()`.
+
+Semantic instruction hooks preserve:
+
+- `.execute`
+- `.send`
+- `.resolve`
+- `.plan`
+- `.build`
+- `.stage`
+- `.useMutation()`
+
+## Low-Level Hooks
+
+The React SDK also exports:
+
+- `useConnectionState`
+- `useView`
+- `useEntity`
+- `useAreteContext`
+
+These accept the same client lookup overrides when you need to target a non-default client.
+
+## Relationship with `@usearete/sdk`
+
+`@usearete/react` re-exports selected core APIs and types for convenience, but it is not a complete mirror of the core package.
+
+If you need the full low-level surface, import directly from `@usearete/sdk`.
 
 ## License
 
 MIT
-
-## Author
-
-Arete Team
