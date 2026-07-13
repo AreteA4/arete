@@ -2,7 +2,7 @@ use crate::bus::{BusManager, BusMessage};
 use crate::cache::EntityCache;
 use crate::mutation_batch::{MutationBatch, SlotContext};
 use crate::view::{ViewIndex, ViewSpec};
-use crate::websocket::frame::{transform_large_u64_to_strings, Frame, Mode};
+use crate::websocket::frame::{apply_wire_format, Frame, Mode};
 use arete_interpreter::CanonicalLog;
 use bytes::Bytes;
 use serde_json::Value;
@@ -165,8 +165,9 @@ impl Projector {
                 patch.clone()
             };
 
-            let mut projected = spec.projection.apply(patch_data);
-            transform_large_u64_to_strings(&mut projected);
+            let projected = spec.projection.apply(patch_data);
+            let mut wire_data = projected.clone();
+            apply_wire_format(&mut wire_data, &spec.wire_format);
 
             // Extract _seq from the patch data to include in the frame
             let seq = slot_context.map(|ctx| ctx.to_seq_string());
@@ -176,7 +177,7 @@ impl Projector {
                 export: spec.id.clone(),
                 op: "patch",
                 key: key.clone(),
-                data: projected,
+                data: wire_data,
                 append: append.clone(),
                 seq,
             };
@@ -186,7 +187,7 @@ impl Projector {
             let payload = Arc::new(Bytes::copy_from_slice(json_buffer));
 
             self.entity_cache
-                .upsert_with_append(&spec.id, &key, frame.data.clone(), &frame.append)
+                .upsert_with_append(&spec.id, &key, projected, &frame.append)
                 .await;
 
             if spec.mode == Mode::List {

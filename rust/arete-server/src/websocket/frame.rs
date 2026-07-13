@@ -29,6 +29,11 @@ pub struct SortConfig {
     pub order: SortOrder,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WireFormat {
+    pub wide_int_paths: Vec<Vec<String>>,
+}
+
 /// Subscription acknowledgment frame sent when a client subscribes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscribedFrame {
@@ -96,33 +101,45 @@ fn default_complete() -> bool {
     true
 }
 
-/// Transform large u64 values to strings for JavaScript compatibility.
-/// JavaScript's Number.MAX_SAFE_INTEGER is 2^53 - 1 (9007199254740991).
-/// Values larger than this will lose precision in JavaScript.
-pub fn transform_large_u64_to_strings(value: &mut serde_json::Value) {
-    const MAX_SAFE_INTEGER: u64 = 9007199254740991; // 2^53 - 1
+pub fn apply_wire_format(value: &mut serde_json::Value, wire_format: &WireFormat) {
+    for path in &wire_format.wide_int_paths {
+        stringify_value_at_path(value, path);
+    }
+}
+
+fn stringify_value_at_path(value: &mut serde_json::Value, path: &[String]) {
+    if path.is_empty() {
+        stringify_wide_int_value(value);
+        return;
+    }
 
     match value {
         serde_json::Value::Object(map) => {
-            for (_, v) in map.iter_mut() {
-                transform_large_u64_to_strings(v);
+            if let Some(child) = map.get_mut(&path[0]) {
+                stringify_value_at_path(child, &path[1..]);
             }
         }
-        serde_json::Value::Array(arr) => {
-            for v in arr.iter_mut() {
-                transform_large_u64_to_strings(v);
+        serde_json::Value::Array(values) => {
+            for child in values {
+                stringify_value_at_path(child, path);
             }
         }
-        serde_json::Value::Number(n) => {
-            if let Some(n_u64) = n.as_u64() {
-                if n_u64 > MAX_SAFE_INTEGER {
-                    *value = serde_json::Value::String(n_u64.to_string());
-                }
-            } else if let Some(n_i64) = n.as_i64() {
-                const MIN_SAFE_INTEGER: i64 = -(MAX_SAFE_INTEGER as i64);
-                if n_i64 < MIN_SAFE_INTEGER {
-                    *value = serde_json::Value::String(n_i64.to_string());
-                }
+        _ => {}
+    }
+}
+
+fn stringify_wide_int_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Number(number) => {
+            if let Some(unsigned) = number.as_u64() {
+                *value = serde_json::Value::String(unsigned.to_string());
+            } else if let Some(signed) = number.as_i64() {
+                *value = serde_json::Value::String(signed.to_string());
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                stringify_wide_int_value(child);
             }
         }
         _ => {}
@@ -277,5 +294,45 @@ mod tests {
 
         assert!(!first_batch.complete);
         assert!(final_batch.complete);
+    }
+
+    #[test]
+    fn wire_format_stringifies_marked_wide_int_paths() {
+        let wire_format = WireFormat {
+            wide_int_paths: vec![
+                vec!["amount".to_string()],
+                vec!["nested".to_string(), "timestamp".to_string()],
+                vec!["values".to_string()],
+                vec!["positions".to_string(), "liquidity".to_string()],
+            ],
+        };
+
+        let mut value = serde_json::json!({
+            "amount": 42,
+            "nested": { "timestamp": -7 },
+            "values": [1, 2, 3],
+            "positions": [
+                { "liquidity": 9, "label": "a" },
+                { "liquidity": 11, "label": "b" }
+            ],
+            "small": 5,
+        });
+
+        apply_wire_format(&mut value, &wire_format);
+
+        assert_eq!(value["amount"], serde_json::Value::String("42".to_string()));
+        assert_eq!(
+            value["nested"]["timestamp"],
+            serde_json::Value::String("-7".to_string())
+        );
+        assert_eq!(
+            value["values"][0],
+            serde_json::Value::String("1".to_string())
+        );
+        assert_eq!(
+            value["positions"][1]["liquidity"],
+            serde_json::Value::String("11".to_string())
+        );
+        assert_eq!(value["small"], serde_json::json!(5));
     }
 }

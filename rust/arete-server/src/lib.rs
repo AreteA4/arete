@@ -36,6 +36,7 @@ pub mod compression;
 pub mod config;
 pub mod health;
 pub mod http_health;
+pub mod http_server;
 pub mod materialized_view;
 #[cfg(feature = "otel")]
 pub mod metrics;
@@ -51,11 +52,12 @@ pub use arete_auth::{AsyncVerifier, KeyLoader, Limits, TokenVerifier, VerifyingK
 pub use bus::{BusManager, BusMessage};
 pub use cache::{EntityCache, EntityCacheConfig};
 pub use config::{
-    HealthConfig, HttpHealthConfig, ReconnectionConfig, ServerConfig, WebSocketConfig,
-    YellowstoneConfig,
+    HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, ServerConfig,
+    WebSocketConfig, YellowstoneConfig,
 };
 pub use health::{HealthMonitor, SlotTracker, StreamStatus};
 pub use http_health::HttpHealthServer;
+pub use http_server::HttpServer;
 pub use materialized_view::{MaterializedView, MaterializedViewRegistry, ViewEffect};
 #[cfg(feature = "otel")]
 pub use metrics::Metrics;
@@ -91,12 +93,17 @@ pub type ParserSetupFn = Arc<
         + Sync,
 >;
 
+pub type ProgramAccountReaderFn =
+    Arc<dyn Fn(&str, &str, &[u8]) -> Result<serde_json::Value> + Send + Sync>;
+
 /// Specification for a Arete server
 /// Contains bytecode, parsers, and program information
 pub struct Spec {
     pub bytecode: arete_interpreter::compiler::MultiEntityBytecode,
     pub program_ids: Vec<String>,
     pub parser_setup: Option<ParserSetupFn>,
+    pub program_account_reader: Option<ProgramAccountReaderFn>,
+    pub entity_specs: Vec<arete_interpreter::ast::SerializableStreamSpec>,
     pub views: Vec<ViewDef>,
 }
 
@@ -109,12 +116,27 @@ impl Spec {
             bytecode,
             program_ids: vec![program_id.into()],
             parser_setup: None,
+            program_account_reader: None,
+            entity_specs: Vec::new(),
             views: Vec::new(),
         }
     }
 
     pub fn with_parser_setup(mut self, setup_fn: ParserSetupFn) -> Self {
         self.parser_setup = Some(setup_fn);
+        self
+    }
+
+    pub fn with_program_account_reader(mut self, reader: ProgramAccountReaderFn) -> Self {
+        self.program_account_reader = Some(reader);
+        self
+    }
+
+    pub fn with_entity_specs(
+        mut self,
+        entity_specs: Vec<arete_interpreter::ast::SerializableStreamSpec>,
+    ) -> Self {
+        self.entity_specs = entity_specs;
         self
     }
 
@@ -141,6 +163,7 @@ pub struct ServerBuilder {
     materialized_views: Option<MaterializedViewRegistry>,
     config: ServerConfig,
     websocket_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
+    http_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     websocket_max_clients: Option<usize>,
     websocket_rate_limit_config: Option<crate::websocket::client_manager::RateLimitConfig>,
@@ -156,6 +179,7 @@ impl ServerBuilder {
             materialized_views: None,
             config: ServerConfig::new(),
             websocket_auth_plugin: None,
+            http_auth_plugin: None,
             websocket_usage_emitter: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
@@ -198,6 +222,12 @@ impl ServerBuilder {
     /// Set a WebSocket auth plugin used to authorize inbound connections.
     pub fn websocket_auth_plugin(mut self, plugin: Arc<dyn WebSocketAuthPlugin>) -> Self {
         self.websocket_auth_plugin = Some(plugin);
+        self
+    }
+
+    /// Set an HTTP auth plugin used to authorize inbound read requests.
+    pub fn http_auth_plugin(mut self, plugin: Arc<dyn WebSocketAuthPlugin>) -> Self {
+        self.http_auth_plugin = Some(plugin);
         self
     }
 
@@ -266,26 +296,43 @@ impl ServerBuilder {
         self
     }
 
-    /// Enable HTTP health server with default configuration (port 8081)
-    pub fn http_health(mut self) -> Self {
+    /// Enable the HTTP server with default configuration (port 8081).
+    ///
+    /// This serves health endpoints plus stack-scoped HTTP reads.
+    pub fn http(mut self) -> Self {
         self.config.http_health = Some(HttpHealthConfig::default());
         self
     }
 
-    /// Configure HTTP health server
-    pub fn http_health_config(mut self, config: HttpHealthConfig) -> Self {
+    /// Configure the HTTP server.
+    pub fn http_config(mut self, config: crate::http_server::HttpServerConfig) -> Self {
         self.config.http_health = Some(config);
         self
     }
 
-    /// Set the bind address for HTTP health server
-    pub fn health_bind(mut self, addr: impl Into<SocketAddr>) -> Self {
+    /// Set the bind address for the HTTP server.
+    pub fn http_bind(mut self, addr: impl Into<SocketAddr>) -> Self {
         if let Some(http_config) = &mut self.config.http_health {
             http_config.bind_address = addr.into();
         } else {
             self.config.http_health = Some(HttpHealthConfig::new(addr.into()));
         }
         self
+    }
+
+    /// Enable HTTP health server with default configuration (port 8081)
+    pub fn http_health(self) -> Self {
+        self.http()
+    }
+
+    /// Configure HTTP health server
+    pub fn http_health_config(self, config: HttpHealthConfig) -> Self {
+        self.http_config(config)
+    }
+
+    /// Set the bind address for HTTP health server
+    pub fn health_bind(self, addr: impl Into<SocketAddr>) -> Self {
+        self.http_bind(addr)
     }
 
     pub async fn start(self) -> Result<()> {
@@ -299,6 +346,10 @@ impl ServerBuilder {
 
         if let Some(plugin) = self.websocket_auth_plugin {
             runtime = runtime.with_websocket_auth_plugin(plugin);
+        }
+
+        if let Some(plugin) = self.http_auth_plugin {
+            runtime = runtime.with_http_auth_plugin(plugin);
         }
 
         if let Some(emitter) = self.websocket_usage_emitter {
@@ -333,11 +384,27 @@ impl ServerBuilder {
         let mut registry = materialized_views;
 
         if let Some(ref spec) = spec {
+            let entity_wire_formats = spec
+                .entity_specs
+                .iter()
+                .map(|entity_spec| {
+                    (
+                        entity_spec.state_name.clone(),
+                        ViewSpec::wire_format_from_entity_spec(entity_spec),
+                    )
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+
             for entity_name in spec.bytecode.entities.keys() {
+                let wire_format = entity_wire_formats
+                    .get(entity_name)
+                    .cloned()
+                    .unwrap_or_default();
                 index.add_spec(ViewSpec {
                     id: format!("{}/list", entity_name),
                     export: entity_name.clone(),
                     mode: Mode::List,
+                    wire_format: wire_format.clone(),
                     projection: Projection::all(),
                     filters: Filters::all(),
                     delivery: Delivery::default(),
@@ -349,6 +416,7 @@ impl ServerBuilder {
                     id: format!("{}/state", entity_name),
                     export: entity_name.clone(),
                     mode: Mode::State,
+                    wire_format: wire_format.clone(),
                     projection: Projection::all(),
                     filters: Filters::all(),
                     delivery: Delivery::default(),
@@ -360,6 +428,7 @@ impl ServerBuilder {
                     id: format!("{}/append", entity_name),
                     export: entity_name.clone(),
                     mode: Mode::Append,
+                    wire_format,
                     projection: Projection::all(),
                     filters: Filters::all(),
                     delivery: Delivery::default(),
@@ -379,7 +448,11 @@ impl ServerBuilder {
                         }
                     };
 
-                    let view_spec = ViewSpec::from_view_def(view_def, &export);
+                    let wire_format = entity_wire_formats
+                        .get(&export)
+                        .cloned()
+                        .unwrap_or_default();
+                    let view_spec = ViewSpec::from_view_def(view_def, &export, wire_format);
                     let pipeline = view_spec.pipeline.clone().unwrap_or_default();
                     let source_id = view_spec.source_view.clone().unwrap_or_default();
                     tracing::debug!(
@@ -411,6 +484,10 @@ impl ServerBuilder {
 
         if let Some(plugin) = self.websocket_auth_plugin {
             runtime = runtime.with_websocket_auth_plugin(plugin);
+        }
+
+        if let Some(plugin) = self.http_auth_plugin {
+            runtime = runtime.with_http_auth_plugin(plugin);
         }
 
         if let Some(max_clients) = self.websocket_max_clients {

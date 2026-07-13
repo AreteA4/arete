@@ -3,6 +3,7 @@ use std::time::Duration;
 
 pub use crate::health::HealthConfig;
 pub use crate::http_health::HttpHealthConfig;
+pub use crate::http_server::HttpServerConfig;
 
 /// Configuration for gRPC stream reconnection with exponential backoff
 #[derive(Clone, Debug)]

@@ -1,5 +1,7 @@
 use crate::materialized_view::{CompareOp, FilterConfig, SortConfig, SortOrder, ViewPipeline};
-use crate::websocket::frame::Mode;
+use crate::websocket::frame::{Mode, WireFormat};
+use arete_interpreter::ast::{FieldTypeInfo, ResolvedField, SerializableStreamSpec};
+use std::collections::BTreeSet;
 
 // # View System Architecture
 //
@@ -28,6 +30,7 @@ pub struct ViewSpec {
     pub id: String,
     pub export: String,
     pub mode: Mode,
+    pub wire_format: WireFormat,
     pub projection: Projection,
     pub filters: Filters,
     pub delivery: Delivery,
@@ -85,7 +88,11 @@ impl ViewSpec {
         self.pipeline.is_some()
     }
 
-    pub fn from_view_def(view_def: &arete_interpreter::ast::ViewDef, export: &str) -> Self {
+    pub fn from_view_def(
+        view_def: &arete_interpreter::ast::ViewDef,
+        export: &str,
+        wire_format: WireFormat,
+    ) -> Self {
         use arete_interpreter::ast::{ViewOutput, ViewSource};
 
         let mode = match &view_def.output {
@@ -105,11 +112,51 @@ impl ViewSpec {
             id: view_def.id.clone(),
             export: export.to_string(),
             mode,
+            wire_format,
             projection: Projection::all(),
             filters: Filters::all(),
             delivery: Delivery::default(),
             pipeline: Some(pipeline),
             source_view,
+        }
+    }
+
+    pub fn wire_format_from_entity_spec(spec: &SerializableStreamSpec) -> WireFormat {
+        let mut wide_int_paths = BTreeSet::new();
+
+        for section in &spec.sections {
+            let prefix = if section.name.eq_ignore_ascii_case("root") {
+                Vec::new()
+            } else {
+                vec![section.name.clone()]
+            };
+
+            for field in &section.fields {
+                if !field.emit {
+                    continue;
+                }
+
+                let mut field_path = prefix.clone();
+                field_path.push(field.field_name.clone());
+                collect_wide_int_paths_from_field_info(&mut wide_int_paths, field_path, field);
+            }
+        }
+
+        for (target_path, field) in &spec.field_mappings {
+            if !field.emit {
+                continue;
+            }
+
+            let field_path = target_path
+                .split('.')
+                .filter(|segment| !segment.is_empty())
+                .map(|segment| segment.to_string())
+                .collect::<Vec<_>>();
+            collect_wide_int_paths_from_field_info(&mut wide_int_paths, field_path, field);
+        }
+
+        WireFormat {
+            wide_int_paths: wide_int_paths.into_iter().collect(),
         }
     }
 
@@ -175,4 +222,42 @@ impl ViewSpec {
 
         pipeline
     }
+}
+
+fn collect_wide_int_paths_from_field_info(
+    output: &mut BTreeSet<Vec<String>>,
+    field_path: Vec<String>,
+    field: &FieldTypeInfo,
+) {
+    if is_wide_int_type(&field.rust_type_name)
+        || field.inner_type.as_deref().is_some_and(is_wide_int_type)
+    {
+        output.insert(field_path.clone());
+    }
+
+    if let Some(resolved_type) = &field.resolved_type {
+        for resolved_field in &resolved_type.fields {
+            let mut nested_path = field_path.clone();
+            nested_path.push(resolved_field.field_name.clone());
+            collect_wide_int_paths_from_resolved_field(output, nested_path, resolved_field);
+        }
+    }
+}
+
+fn collect_wide_int_paths_from_resolved_field(
+    output: &mut BTreeSet<Vec<String>>,
+    field_path: Vec<String>,
+    field: &ResolvedField,
+) {
+    if is_wide_int_type(&field.field_type) {
+        output.insert(field_path);
+    }
+}
+
+fn is_wide_int_type(type_name: &str) -> bool {
+    let trimmed = type_name.trim();
+    trimmed.contains("u64")
+        || trimmed.contains("i64")
+        || trimmed.contains("u128")
+        || trimmed.contains("i128")
 }

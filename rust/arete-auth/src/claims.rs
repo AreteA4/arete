@@ -28,6 +28,12 @@ pub struct Limits {
     /// Maximum egress bytes per minute
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_bytes_per_minute: Option<u64>,
+    /// Maximum HTTP read requests per minute
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_http_requests_per_minute: Option<u32>,
+    /// Maximum account addresses accepted in one HTTP batch read
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_http_batch_addresses: Option<u32>,
 }
 
 /// Session token claims
