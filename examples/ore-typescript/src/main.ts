@@ -22,10 +22,8 @@ function printRound(round: OreRoundWithId) {
 function printTreasury(treasury: OreTreasuryWithId) {
   console.log(`\n=== Treasury ===`);
   console.log(`Address: ${treasury.id?.address ?? 'N/A'}`);
-  console.log(`Balance: ${treasury.state?.balance?.toString() ?? 'N/A'}`);
   console.log(`Motherlode: ${treasury.state?.motherlode ?? 'N/A'}`);
   console.log(`Total Refined: ${treasury.state?.totalRefined ?? 'N/A'}`);
-  console.log(`Total Staked: ${treasury.state?.totalStaked ?? 'N/A'}`);
   console.log(`Total Unclaimed: ${treasury.state?.totalUnclaimed ?? 'N/A'}`);
   console.log();
 }
