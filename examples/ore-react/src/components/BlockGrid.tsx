@@ -7,11 +7,13 @@ interface BlockGridProps {
 
 export function BlockGrid({ round }: BlockGridProps) {
   const blocks = round
-    ? (round.state?.deployed_per_square_ui || []).map((deployedUi, i) => ({
+    ? (round.state?.deployedPerSquareUi || []).map((deployedUi, i) => ({
       id: i + 1,
-      minerCount: round.state?.count_per_square?.[i],
+      minerCount: Number(round.state?.countPerSquare?.[i] ?? 0),
       deployedUi,
-      isWinner: (round.results?.winning_square === i) || (round.results?.pre_reveal_winning_square === i),
+      isWinner:
+        round.results?.winningSquare === BigInt(i)
+        || round.results?.preRevealWinningSquare === BigInt(i),
     }))
     : Array.from({ length: 25 }, (_, i) => ({
       id: i + 1,

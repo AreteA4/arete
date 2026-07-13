@@ -56,13 +56,26 @@ pub mod my_stream {
 
 | Attribute | Description |
 |-----------|-------------|
-| `#[map(...)]` | Map from account fields |
+| `#[map(...)]` | Map from account, instruction, or IDL event fields |
 | `#[from_instruction(...)]` | Map from instruction fields |
-| `#[event(...)]` | Capture instruction events |
+| `#[event(...)]` | Capture structured payloads from instructions or IDL events |
 | `#[snapshot(...)]` | Capture entire source data |
 | `#[aggregate(...)]` | Aggregate field values |
 | `#[computed(...)]` | Computed fields from other fields |
-| `#[derive_from(...)]` | Derive values from instructions |
+| `#[derive_from(...)]` | Derive values from instructions or IDL events |
+
+## Event-backed authoring
+
+IDL events are valid mapping sources anywhere you can reference a generated SDK path. Use `..._sdk::events::EventName` as the `from =` source and `..._sdk::events::EventName::field_name` for field paths.
+
+Typical patterns:
+
+- `#[map(my_program_sdk::events::TradeExecuted::amount, strategy = LastWrite)]`
+- `#[aggregate(from = my_program_sdk::events::TradeExecuted, field = amount, strategy = Sum)]`
+- `#[derive_from(from = my_program_sdk::events::TradeExecuted, field = amount, strategy = LastWrite)]`
+- `#[event(from = my_program_sdk::events::TradeExecuted, fields = [id, amount])]`
+
+When an IDL omits inline event fields, the macro resolves them from the event's backing type or a same-name struct in `types[]`. Event sources expose payload fields only; `accounts::...` is not valid on an event source.
 
 ## Generated Output
 
@@ -77,7 +90,7 @@ The macro generates:
 
 The macro now validates most authoring mistakes before code generation. Common failures include:
 
-- unknown account, instruction, or field references in `#[map]`, `#[event]`, and `#[derive_from]`
+- unknown account, instruction, event, or field references in `#[map]`, `#[event]`, and `#[derive_from]`
 - invalid resolver inputs, unsupported resolver-backed field types, and malformed URL templates
 - invalid view `sort_by` fields and computed-field dependency cycles
 - invalid `pdas!` programs, seed accounts, and seed argument types
@@ -87,7 +100,7 @@ Most diagnostics include either a `Did you mean: ...?` suggestion or a short lis
 ## Troubleshooting
 
 - `unknown ... on entity ...`: check the field path against the generated state shape; nested fields must use `section.field`
-- `unknown ... in instructions/accounts/...`: the IDL lookup failed; verify the SDK path or instruction/account spelling
+- `unknown ... in instructions/accounts/events/...`: the IDL lookup failed; verify the SDK path or source spelling
 - `invalid strategy ...`: use one of the listed strategy values exactly as shown in the error
 - `unknown resolver ...` or `unknown resolver-backed type ...`: use a supported resolver name or change the target field type to a supported resolver-backed type
 - `computed fields contain a dependency cycle ...`: break the cycle by making one field depend only on stored state, not another computed field in the loop

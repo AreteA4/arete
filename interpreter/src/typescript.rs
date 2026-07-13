@@ -1,4 +1,5 @@
 use crate::ast::*;
+use arete_idl::utils::to_snake_case as idl_to_snake_case;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Output structure for TypeScript generation
@@ -243,24 +244,22 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                 let section_name = parts[0];
                 let field_name = parts[1];
 
-                let ts_field = TypeScriptField {
-                    name: field_name.to_string(),
-                    ts_type: self.mapping_to_typescript_type(mapping),
-                    optional: self.is_field_optional(mapping),
-                    description: None,
-                };
+                let ts_field = TypeScriptField::patch(
+                    field_name.to_string(),
+                    self.mapping_to_typescript_type(mapping),
+                    self.is_field_nullable(mapping),
+                );
 
                 sections
                     .entry(section_name.to_string())
                     .or_default()
                     .push(ts_field);
             } else {
-                let ts_field = TypeScriptField {
-                    name: mapping.target_path.clone(),
-                    ts_type: self.mapping_to_typescript_type(mapping),
-                    optional: self.is_field_optional(mapping),
-                    description: None,
-                };
+                let ts_field = TypeScriptField::patch(
+                    mapping.target_path.clone(),
+                    self.mapping_to_typescript_type(mapping),
+                    self.is_field_nullable(mapping),
+                );
 
                 sections
                     .entry("Root".to_string())
@@ -306,13 +305,18 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                             } else {
                                 field_info
                             };
+                        let (raw_name, canonical_name) = localize_section_field_names(
+                            section.name.as_str(),
+                            effective_field_info,
+                        );
 
-                        section_fields.push(TypeScriptField {
-                            name: field_info.field_name.clone(),
-                            ts_type: self.field_type_info_to_typescript(effective_field_info),
-                            optional: field_info.is_optional,
-                            description: None,
-                        });
+                        section_fields.push(TypeScriptField::from_names(
+                            raw_name,
+                            canonical_name,
+                            self.field_type_info_to_typescript(effective_field_info),
+                            effective_field_info.is_optional,
+                            FieldPresence::Patch,
+                        ));
                     }
                 }
             }
@@ -332,15 +336,17 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                     let already_exists = section_fields.iter().any(|f| f.name == field_name);
 
                     if !already_exists {
-                        section_fields.push(TypeScriptField {
-                            name: field_name.to_string(),
-                            ts_type: self.base_type_to_typescript(
+                        section_fields.push(TypeScriptField::from_names(
+                            field_name.to_string(),
+                            field_type_info.canonical_field_name(),
+                            self.base_type_to_typescript(
                                 &field_type_info.base_type,
+                                field_type_info.effective_integer_kind(),
                                 field_type_info.is_array,
                             ),
-                            optional: field_type_info.is_optional,
-                            description: None,
-                        });
+                            field_type_info.is_optional,
+                            FieldPresence::Patch,
+                        ));
                     }
                 }
             }
@@ -349,27 +355,7 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
 
     fn generate_interface_from_fields(&self, name: &str, fields: &[TypeScriptField]) -> String {
         let interface_name = self.section_interface_name(name);
-
-        // All fields are optional (?) since we receive patches - field may not yet exist
-        // For spec-optional fields, we use `T | null` to distinguish "explicitly null" from "not received"
-        let field_definitions: Vec<String> = fields
-            .iter()
-            .map(|field| {
-                let ts_type = if field.optional {
-                    // Spec-optional: can be explicitly null
-                    format!("{} | null", field.ts_type)
-                } else {
-                    field.ts_type.clone()
-                };
-                format!("  {}?: {};", field.name, ts_type)
-            })
-            .collect();
-
-        format!(
-            "export interface {} {{\n{}\n}}",
-            interface_name,
-            field_definitions.join("\n")
-        )
+        render_interface_from_ts_fields(&interface_name, fields, true)
     }
 
     fn section_interface_name(&self, name: &str) -> String {
@@ -399,121 +385,60 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
     fn generate_main_entity_interface(&self) -> String {
         let entity_name = to_pascal_case(&self.entity_name);
 
-        // Extract all top-level sections from the handlers
-        let mut sections = BTreeMap::new();
-
-        for handler in &self.spec.handlers {
-            for mapping in &handler.mappings {
-                if !mapping.emit {
-                    continue;
-                }
-                let parts: Vec<&str> = mapping.target_path.split('.').collect();
-                if parts.len() > 1 {
-                    sections.insert(parts[0], true);
-                }
-            }
+        let main_fields = self.collect_main_entity_fields();
+        if main_fields.is_empty() {
+            return format!(
+                "export interface {} {{\n  // Generated interface - extend as needed\n}}",
+                entity_name
+            );
         }
 
-        if !self.spec.sections.is_empty() {
-            for section in &self.spec.sections {
-                if section.fields.iter().any(|field| field.emit) {
-                    sections.insert(&section.name, true);
-                }
-            }
-        } else {
-            for mapping in &self.spec.handlers {
-                for field_mapping in &mapping.mappings {
-                    if !field_mapping.emit {
-                        continue;
-                    }
-                    let parts: Vec<&str> = field_mapping.target_path.split('.').collect();
-                    if parts.len() > 1 {
-                        sections.insert(parts[0], true);
-                    }
-                }
-            }
-        }
-
-        let mut fields = Vec::new();
-
-        // Add non-root sections as nested interface references
-        // All fields are optional since we receive patches
-        for section in sections.keys() {
-            if !is_root_section(section) {
-                let base_name = if self.entity_name.contains("Game") {
-                    "Game"
-                } else {
-                    &self.entity_name
-                };
-                let section_interface_name = format!("{}{}", base_name, to_pascal_case(section));
-                // Keep section field names as-is (snake_case from AST)
-                fields.push(format!("  {}?: {};", section, section_interface_name));
-            }
-        }
-
-        // Flatten root section fields directly into main interface
-        // All fields are optional (?) since we receive patches
-        for section in &self.spec.sections {
-            if is_root_section(&section.name) {
-                for field in &section.fields {
-                    if !field.emit {
-                        continue;
-                    }
-                    let base_ts_type = self.field_type_info_to_typescript(field);
-                    let ts_type = if field.is_optional {
-                        format!("{} | null", base_ts_type)
-                    } else {
-                        base_ts_type
-                    };
-                    fields.push(format!("  {}?: {};", field.field_name, ts_type));
-                }
-            }
-        }
-
-        if fields.is_empty() {
-            fields.push("  // Generated interface - extend as needed".to_string());
-        }
-
-        format!(
-            "export interface {} {{\n{}\n}}",
-            entity_name,
-            fields.join("\n")
-        )
+        render_interface_from_ts_fields(&entity_name, &main_fields, true)
     }
 
     fn generate_schemas(&self) -> SchemaOutput {
+        let patch_schema_types = self.patch_schema_type_names();
         let mut definitions = Vec::new();
         let mut names = Vec::new();
         let mut seen = HashSet::new();
 
-        let mut push_schema = |schema_name: String, definition: String| {
+        let mut push_schema = |schema_name: String, definition: String, export_name: bool| {
             if seen.insert(schema_name.clone()) {
-                names.push(schema_name);
+                if export_name {
+                    names.push(schema_name);
+                }
                 definitions.push(definition);
             }
         };
 
         for (schema_name, definition) in self.generate_builtin_resolver_schemas() {
-            push_schema(schema_name, definition);
+            push_schema(schema_name, definition, true);
         }
 
         if self.has_event_types() {
             push_schema(
                 "EventWrapperSchema".to_string(),
                 self.generate_event_wrapper_schema(),
+                true,
             );
         }
 
-        for (schema_name, definition) in self.generate_resolved_type_schemas() {
-            push_schema(schema_name, definition);
+        for (schema_name, definition) in self.generate_resolved_type_schemas(&patch_schema_types) {
+            push_schema(schema_name, definition, true);
+        }
+
+        for (schema_name, definition) in
+            self.generate_resolved_type_patch_schemas(&patch_schema_types)
+        {
+            push_schema(schema_name, definition, false);
         }
 
         for (schema_name, definition) in self.generate_event_schemas() {
-            push_schema(schema_name, definition);
+            push_schema(schema_name, definition, true);
         }
 
         for (schema_name, definition) in self.generate_idl_enum_schemas() {
-            push_schema(schema_name, definition);
+            push_schema(schema_name, definition, true);
         }
 
         let all_sections = self.collect_interface_sections();
@@ -524,18 +449,56 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
             }
             let deduplicated_fields = self.deduplicate_fields(fields.clone());
             let interface_name = self.section_interface_name(section_name);
-            let schema_definition =
-                self.generate_schema_for_fields(&interface_name, &deduplicated_fields, false);
-            push_schema(format!("{}Schema", interface_name), schema_definition);
+            let schema_definition = self.generate_schema_for_fields(
+                &interface_name,
+                &deduplicated_fields,
+                true,
+                SchemaMode::Canonical,
+                &patch_schema_types,
+            );
+            push_schema(format!("{}Schema", interface_name), schema_definition, true);
+
+            let patch_schema_definition = self.generate_schema_for_fields(
+                &interface_name,
+                &deduplicated_fields,
+                false,
+                SchemaMode::Patch,
+                &patch_schema_types,
+            );
+            push_schema(
+                format!("{}PatchSchema", interface_name),
+                patch_schema_definition,
+                false,
+            );
         }
 
         let entity_name = to_pascal_case(&self.entity_name);
         let main_fields = self.collect_main_entity_fields();
-        let entity_schema = self.generate_schema_for_fields(&entity_name, &main_fields, false);
-        push_schema(format!("{}Schema", entity_name), entity_schema);
+        let entity_schema = self.generate_schema_for_fields(
+            &entity_name,
+            &main_fields,
+            true,
+            SchemaMode::Canonical,
+            &patch_schema_types,
+        );
+        push_schema(format!("{}Schema", entity_name), entity_schema, true);
 
-        let completed_schema = self.generate_completed_entity_schema(&entity_name);
-        push_schema(format!("{}CompletedSchema", entity_name), completed_schema);
+        let patch_schema = self.generate_schema_for_fields(
+            &entity_name,
+            &main_fields,
+            false,
+            SchemaMode::Patch,
+            &patch_schema_types,
+        );
+        push_schema(format!("{}PatchSchema", entity_name), patch_schema, false);
+
+        let completed_schema =
+            self.generate_completed_entity_schema(&entity_name, &patch_schema_types);
+        push_schema(
+            format!("{}CompletedSchema", entity_name),
+            completed_schema,
+            true,
+        );
 
         SchemaOutput {
             definitions: definitions.join("\n\n"),
@@ -702,12 +665,11 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                     &self.entity_name
                 };
                 let section_interface_name = format!("{}{}", base_name, to_pascal_case(section));
-                fields.push(TypeScriptField {
-                    name: section.to_string(),
-                    ts_type: section_interface_name,
-                    optional: false,
-                    description: None,
-                });
+                fields.push(TypeScriptField::patch(
+                    section.to_string(),
+                    section_interface_name,
+                    false,
+                ));
             }
         }
 
@@ -717,12 +679,13 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                     if !field.emit {
                         continue;
                     }
-                    fields.push(TypeScriptField {
-                        name: field.field_name.clone(),
-                        ts_type: self.field_type_info_to_typescript(field),
-                        optional: field.is_optional,
-                        description: None,
-                    });
+                    fields.push(TypeScriptField::from_names(
+                        field.raw_field_name().to_string(),
+                        field.canonical_field_name(),
+                        self.field_type_info_to_typescript(field),
+                        field.is_optional,
+                        FieldPresence::Patch,
+                    ));
                 }
             }
         }
@@ -735,38 +698,73 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
         name: &str,
         fields: &[TypeScriptField],
         required: bool,
+        mode: SchemaMode,
+        patch_schema_types: &HashSet<String>,
     ) -> String {
+        if fields.is_empty() {
+            return format!(
+                "export const {} = z.object({{}});",
+                schema_constant_name(name, mode)
+            );
+        }
+
         let mut field_definitions = Vec::new();
+        let mut transform_fields = Vec::new();
 
         for field in fields {
-            let base_schema = self.typescript_type_to_zod(&field.ts_type);
-            let schema = if required {
-                base_schema
+            let base_schema = field.zod_schema.clone().unwrap_or_else(|| {
+                self.typescript_type_to_zod_for_schema(&field.ts_type, mode, patch_schema_types)
+            });
+            let with_nullable = if field.nullable {
+                format!("{}.nullable()", base_schema)
             } else {
-                let with_nullable = if field.optional {
-                    format!("{}.nullable()", base_schema)
-                } else {
-                    base_schema
-                };
+                base_schema
+            };
+            let schema = if required || matches!(field.presence, FieldPresence::Required) {
+                with_nullable
+            } else {
                 format!("{}.optional()", with_nullable)
             };
 
-            field_definitions.push(format!("  {}: {},", field.name, schema));
+            field_definitions.push(format!("  {}: {},", field.raw_name, schema));
+            if mode == SchemaMode::Patch {
+                transform_fields.push(format!(
+                    "  ...(value.{raw_name} !== undefined ? {{ {field_name}: value.{raw_name} }} : {{}}),",
+                    raw_name = field.raw_name,
+                    field_name = field.name,
+                ));
+            } else {
+                transform_fields.push(format!("  {}: value.{},", field.name, field.raw_name));
+            }
         }
 
         format!(
-            "export const {}Schema = z.object({{\n{}\n}});",
-            name,
-            field_definitions.join("\n")
+            "export const {} = z.object({{\n{}\n}}).transform((value) => ({{\n{}\n}}));",
+            schema_constant_name(name, mode),
+            field_definitions.join("\n"),
+            transform_fields.join("\n")
         )
     }
 
-    fn generate_completed_entity_schema(&self, entity_name: &str) -> String {
+    fn generate_completed_entity_schema(
+        &self,
+        entity_name: &str,
+        patch_schema_types: &HashSet<String>,
+    ) -> String {
         let main_fields = self.collect_main_entity_fields();
-        self.generate_schema_for_fields(&format!("{}Completed", entity_name), &main_fields, true)
+        self.generate_schema_for_fields(
+            &format!("{}Completed", entity_name),
+            &main_fields,
+            true,
+            SchemaMode::Canonical,
+            patch_schema_types,
+        )
     }
 
-    fn generate_resolved_type_schemas(&self) -> Vec<(String, String)> {
+    fn generate_resolved_type_schemas(
+        &self,
+        patch_schema_types: &HashSet<String>,
+    ) -> Vec<(String, String)> {
         let mut schemas = Vec::new();
         let mut generated_types = HashSet::new();
         let resolved_name_map = self.build_resolved_type_name_map();
@@ -800,23 +798,47 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                         continue;
                     }
 
-                    let mut field_definitions = Vec::new();
-                    for field in &resolved.fields {
-                        let base = self.resolved_field_to_zod(field);
-                        let schema = if field.is_optional {
-                            format!("{}.nullable().optional()", base)
-                        } else {
-                            format!("{}.optional()", base)
-                        };
-                        field_definitions.push(format!("  {}: {},", field.field_name, schema));
-                    }
-
-                    let schema = format!(
-                        "export const {}Schema = z.object({{\n{}\n}});",
-                        type_name,
-                        field_definitions.join("\n")
+                    let schema = self.generate_schema_for_fields(
+                        &type_name,
+                        &self.resolved_fields_to_typescript_fields(&resolved.fields),
+                        true,
+                        SchemaMode::Canonical,
+                        patch_schema_types,
                     );
                     schemas.push((format!("{}Schema", type_name), schema));
+                }
+            }
+        }
+
+        schemas
+    }
+
+    fn generate_resolved_type_patch_schemas(
+        &self,
+        patch_schema_types: &HashSet<String>,
+    ) -> Vec<(String, String)> {
+        let mut schemas = Vec::new();
+        let mut generated_types = HashSet::new();
+        let resolved_name_map = self.build_resolved_type_name_map();
+
+        for section in &self.spec.sections {
+            for field_info in &section.fields {
+                if let Some(resolved) = &field_info.resolved_type {
+                    let type_name =
+                        self.resolved_type_to_interface_name_with_map(resolved, &resolved_name_map);
+
+                    if !generated_types.insert(type_name.clone()) || resolved.is_enum {
+                        continue;
+                    }
+
+                    let schema = self.generate_schema_for_fields(
+                        &type_name,
+                        &self.resolved_fields_to_typescript_fields(&resolved.fields),
+                        false,
+                        SchemaMode::Patch,
+                        patch_schema_types,
+                    );
+                    schemas.push((format!("{}PatchSchema", type_name), schema));
                 }
             }
         }
@@ -910,8 +932,11 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                         if let Some(arg_type) = arg.get("type") {
                             let ts_type =
                                 self.idl_type_to_typescript(arg_type, transform.as_deref());
-                            let schema = self.typescript_type_to_zod(&ts_type);
-                            fields.push(format!("  {}: {},", field_name, schema));
+                            fields.push(TypeScriptField::patch(
+                                field_name.to_string(),
+                                ts_type,
+                                false,
+                            ));
                         }
                         break;
                     }
@@ -919,11 +944,7 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
             }
         }
 
-        Some(format!(
-            "export const {}Schema = z.object({{\n{}\n}});",
-            interface_name,
-            fields.join("\n")
-        ))
+        Some(render_schema_from_ts_fields(interface_name, &fields, true))
     }
 
     fn generate_idl_enum_schemas(&self) -> Vec<(String, String)> {
@@ -975,36 +996,41 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
         schemas
     }
 
-    fn typescript_type_to_zod(&self, ts_type: &str) -> String {
-        let trimmed = ts_type.trim();
+    fn typescript_type_to_zod_for_schema(
+        &self,
+        ts_type: &str,
+        mode: SchemaMode,
+        patch_schema_types: &HashSet<String>,
+    ) -> String {
+        typescript_type_to_zod_for_schema_static(ts_type, mode, patch_schema_types)
+    }
 
-        if let Some(inner) = trimmed.strip_suffix("[]") {
-            return format!("z.array({})", self.typescript_type_to_zod(inner));
-        }
+    fn patch_schema_type_names(&self) -> HashSet<String> {
+        let mut names = HashSet::new();
+        let resolved_name_map = self.build_resolved_type_name_map();
 
-        if let Some(inner) = trimmed.strip_prefix("EventWrapper<") {
-            if let Some(inner) = inner.strip_suffix('>') {
-                return format!("EventWrapperSchema({})", self.typescript_type_to_zod(inner));
+        for section in &self.spec.sections {
+            if !is_root_section(&section.name) && section.fields.iter().any(|field| field.emit) {
+                names.insert(self.section_interface_name(&section.name));
+            }
+
+            for field in &section.fields {
+                let Some(resolved) = &field.resolved_type else {
+                    continue;
+                };
+
+                if resolved.is_enum {
+                    continue;
+                }
+
+                names.insert(
+                    self.resolved_type_to_interface_name_with_map(resolved, &resolved_name_map),
+                );
             }
         }
 
-        match trimmed {
-            "string" => "z.string()".to_string(),
-            "number" => "z.number()".to_string(),
-            "boolean" => "z.boolean()".to_string(),
-            "any" => "z.any()".to_string(),
-            "Record<string, any>" => "z.record(z.any())".to_string(),
-            _ => format!("{}Schema", trimmed),
-        }
-    }
-
-    fn resolved_field_to_zod(&self, field: &ResolvedField) -> String {
-        let base = self.base_type_to_zod(&field.base_type);
-        if field.is_array {
-            format!("z.array({})", base)
-        } else {
-            base
-        }
+        names.insert("TokenMetadata".to_string());
+        names
     }
 
     fn generate_stack_definition(&self) -> String {
@@ -1028,7 +1054,7 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
         } else {
             let schema_entries: Vec<String> = unique_schemas
                 .iter()
-                .filter(|name| name.ends_with("Schema"))
+                .filter(|name| name.ends_with("Schema") && !name.ends_with("PatchSchema"))
                 .map(|name| format!("    {}: {},", name.trim_end_matches("Schema"), name))
                 .collect();
             if schema_entries.is_empty() {
@@ -1037,6 +1063,11 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
                 format!("\n  schemas: {{\n{}\n  }},", schema_entries.join("\n"))
             }
         };
+
+        let patch_schemas_block = format!(
+            "\n  patchSchemas: {{\n    {entity}: {entity}PatchSchema,\n  }},",
+            entity = entity_pascal
+        );
 
         // Generate URL line - either actual URL or placeholder comment
         let url_line = match &self.config.url {
@@ -1061,7 +1092,7 @@ export const {} = {{
       state: stateView<{}>('{}/state'),
       list: listView<{}>('{}/list'),{}
     }},
-  }},{}
+  }},{}{}
 }} as const;
 
 /** Type alias for the stack */
@@ -1081,6 +1112,7 @@ export default {};"#,
             self.entity_name,
             derived_views,
             schemas_block,
+            patch_schemas_block,
             entity_pascal,
             export_name,
             export_name
@@ -1199,6 +1231,20 @@ export default {};"#,
             }
         }
 
+        if let Some(ts_type) = typescript_integer_type(
+            field_info.effective_integer_kind(),
+            field_info
+                .inner_type
+                .as_deref()
+                .or(Some(field_info.rust_type_name.as_str())),
+        ) {
+            return if field_info.is_array {
+                format!("{}[]", ts_type)
+            } else {
+                ts_type.to_string()
+            };
+        }
+
         if field_info.base_type == BaseType::Any
             || (field_info.base_type == BaseType::Array
                 && field_info.inner_type.as_deref() == Some("Value"))
@@ -1206,15 +1252,17 @@ export default {};"#,
             if let Some(event_type) = self.find_event_interface_for_field(&field_info.field_name) {
                 return if field_info.is_array {
                     format!("{}[]", event_type)
-                } else if field_info.is_optional {
-                    format!("{} | null", event_type)
                 } else {
                     event_type
                 };
             }
         }
 
-        self.base_type_to_typescript(&field_info.base_type, field_info.is_array)
+        self.base_type_to_typescript(
+            &field_info.base_type,
+            field_info.effective_integer_kind(),
+            field_info.is_array,
+        )
     }
 
     /// Find the generated event interface name for a given field
@@ -1484,7 +1532,11 @@ export default {};"#,
                         if let Some(arg_type) = arg.get("type") {
                             let ts_type =
                                 self.idl_type_to_typescript(arg_type, transform.as_deref());
-                            fields.push(format!("  {}: {};", field_name, ts_type));
+                            fields.push(TypeScriptField::patch(
+                                field_name.to_string(),
+                                ts_type,
+                                false,
+                            ));
                         }
                         break;
                     }
@@ -1493,10 +1545,10 @@ export default {};"#,
         }
 
         if !fields.is_empty() {
-            return Some(format!(
-                "export interface {} {{\n{}\n}}",
+            return Some(render_interface_from_ts_fields(
                 interface_name,
-                fields.join("\n")
+                &fields,
+                true,
             ));
         }
 
@@ -1518,9 +1570,8 @@ export default {};"#,
         // Handle different IDL type formats
         if let Some(type_str) = idl_type.as_str() {
             return match type_str {
-                "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" => {
-                    "number".to_string()
-                }
+                "u64" | "u128" | "i64" | "i128" => "bigint".to_string(),
+                "u8" | "u16" | "u32" | "i8" | "i16" | "i32" => "number".to_string(),
                 "f32" | "f64" => "number".to_string(),
                 "bool" => "boolean".to_string(),
                 "string" => "string".to_string(),
@@ -1560,38 +1611,50 @@ export default {};"#,
             return format!("export type {} = {};", interface_name, variants.join(" | "));
         }
 
-        // Handle structs as interfaces
-        // All fields are optional since we receive patches
-        let fields: Vec<String> = resolved
-            .fields
-            .iter()
-            .map(|field| {
-                let base_ts_type = self.resolved_field_to_typescript(field);
-                let ts_type = if field.is_optional {
-                    format!("{} | null", base_ts_type)
-                } else {
-                    base_ts_type
-                };
-                format!("  {}?: {};", field.field_name, ts_type)
-            })
-            .collect();
-
-        format!(
-            "export interface {} {{\n{}\n}}",
-            interface_name,
-            fields.join("\n")
+        render_interface_from_ts_fields(
+            &interface_name,
+            &self.resolved_fields_to_typescript_fields(&resolved.fields),
+            true,
         )
     }
 
     /// Convert a resolved field to TypeScript type
     fn resolved_field_to_typescript(&self, field: &ResolvedField) -> String {
-        let base_ts = self.base_type_to_typescript(&field.base_type, false);
+        if let Some(ts_type) =
+            typescript_integer_type(field.effective_integer_kind(), Some(&field.field_type))
+        {
+            return if field.is_array {
+                format!("{}[]", ts_type)
+            } else {
+                ts_type.to_string()
+            };
+        }
+        let base_ts =
+            self.base_type_to_typescript(&field.base_type, field.effective_integer_kind(), false);
 
         if field.is_array {
             format!("{}[]", base_ts)
         } else {
             base_ts
         }
+    }
+
+    fn resolved_fields_to_typescript_fields(
+        &self,
+        fields: &[ResolvedField],
+    ) -> Vec<TypeScriptField> {
+        fields
+            .iter()
+            .map(|field| {
+                TypeScriptField::from_names(
+                    field.raw_field_name().to_string(),
+                    field.canonical_field_name(),
+                    self.resolved_field_to_typescript(field),
+                    field.is_optional,
+                    FieldPresence::Patch,
+                )
+            })
+            .collect()
     }
 
     /// Check if the spec has any event types
@@ -1713,8 +1776,9 @@ export interface EventWrapper<T> {
         }
     }
 
-    fn is_field_optional(&self, mapping: &TypedFieldMapping<S>) -> bool {
-        // Most fields should be optional by default since we're dealing with Option<T> types
+    fn is_field_nullable(&self, mapping: &TypedFieldMapping<S>) -> bool {
+        // Stream mappings produce patch-shaped objects, so this bool only captures
+        // whether the field can be explicitly null in the payload.
         match &mapping.source {
             // Constants are typically non-optional
             MappingSource::Constant(_) => false,
@@ -1728,16 +1792,25 @@ export interface EventWrapper<T> {
     }
 
     /// Convert language-agnostic base types to TypeScript types
-    fn base_type_to_typescript(&self, base_type: &BaseType, is_array: bool) -> String {
+    fn base_type_to_typescript(
+        &self,
+        base_type: &BaseType,
+        integer_kind: Option<IntegerKind>,
+        is_array: bool,
+    ) -> String {
         let base_ts_type = match base_type {
-            BaseType::Integer => "number",
+            BaseType::Integer => integer_kind
+                .map(integer_kind_to_typescript)
+                .unwrap_or("number"),
             BaseType::Float => "number",
             BaseType::String => "string",
             BaseType::Boolean => "boolean",
-            BaseType::Timestamp => "number", // Unix timestamps as numbers
-            BaseType::Binary => "string",    // Base64 encoded strings
-            BaseType::Pubkey => "string",    // Solana public keys as Base58 strings
-            BaseType::Array => "any[]",      // Default array type
+            BaseType::Timestamp => integer_kind
+                .map(integer_kind_to_typescript)
+                .unwrap_or("number"),
+            BaseType::Binary => "string", // Base64 encoded strings
+            BaseType::Pubkey => "string", // Solana public keys as Base58 strings
+            BaseType::Array => "any[]",   // Default array type
             BaseType::Object => "Record<string, any>", // Generic object
             BaseType::Any => "any",
         };
@@ -1748,34 +1821,125 @@ export interface EventWrapper<T> {
             base_ts_type.to_string()
         }
     }
+}
 
-    /// Convert language-agnostic base types to Zod schema expressions
-    fn base_type_to_zod(&self, base_type: &BaseType) -> String {
-        match base_type {
-            BaseType::Integer | BaseType::Float | BaseType::Timestamp => "z.number()".to_string(),
-            BaseType::String | BaseType::Pubkey | BaseType::Binary => "z.string()".to_string(),
-            BaseType::Boolean => "z.boolean()".to_string(),
-            BaseType::Array => "z.array(z.any())".to_string(),
-            BaseType::Object => "z.record(z.any())".to_string(),
-            BaseType::Any => "z.any()".to_string(),
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldPresence {
+    Patch,
+    Required,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemaMode {
+    Canonical,
+    Patch,
+}
+
+fn schema_constant_name(name: &str, mode: SchemaMode) -> String {
+    match mode {
+        SchemaMode::Canonical => format!("{}Schema", name),
+        SchemaMode::Patch => format!("{}PatchSchema", name),
     }
+}
+
+fn localize_section_field_names(
+    section_name: &str,
+    field_info: &FieldTypeInfo,
+) -> (String, String) {
+    let raw_name = field_info.raw_field_name();
+    if is_root_section(section_name) {
+        return (raw_name.to_string(), field_info.canonical_field_name());
+    }
+
+    let prefix = format!("{}.", section_name);
+    if let Some(local_raw_name) = raw_name.strip_prefix(&prefix) {
+        return (local_raw_name.to_string(), to_camel_case(local_raw_name));
+    }
+
+    (raw_name.to_string(), field_info.canonical_field_name())
 }
 
 /// Represents a TypeScript field in an interface
 #[derive(Debug, Clone)]
 struct TypeScriptField {
     name: String,
+    raw_name: String,
     ts_type: String,
-    optional: bool,
+    nullable: bool,
+    presence: FieldPresence,
+    zod_schema: Option<String>,
     #[allow(dead_code)]
     description: Option<String>,
+}
+
+impl TypeScriptField {
+    fn patch(raw_name: String, ts_type: String, nullable: bool) -> Self {
+        Self::from_names(
+            raw_name.clone(),
+            to_camel_case(&raw_name),
+            ts_type,
+            nullable,
+            FieldPresence::Patch,
+        )
+    }
+
+    fn required_with_schema(
+        raw_name: String,
+        canonical_name: String,
+        ts_type: String,
+        nullable: bool,
+        zod_schema: String,
+    ) -> Self {
+        let mut field = Self::from_names(
+            raw_name,
+            canonical_name,
+            ts_type,
+            nullable,
+            FieldPresence::Required,
+        );
+        field.zod_schema = Some(zod_schema);
+        field
+    }
+
+    fn from_names(
+        raw_name: String,
+        canonical_name: String,
+        ts_type: String,
+        nullable: bool,
+        presence: FieldPresence,
+    ) -> Self {
+        Self {
+            name: canonical_name,
+            raw_name,
+            ts_type,
+            nullable,
+            presence,
+            zod_schema: None,
+            description: None,
+        }
+    }
+
+    fn rendered_ts_type(&self) -> String {
+        if self.nullable {
+            format!("{} | null", self.ts_type)
+        } else {
+            self.ts_type.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct SchemaOutput {
     definitions: String,
     names: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct IdlAccountArtifacts {
+    code: String,
+    schema_names: Vec<String>,
+    type_names: HashSet<String>,
+    account_type_names: BTreeMap<(String, String), String>,
 }
 
 /// Convert serde_json::Value to TypeScript type string
@@ -1804,6 +1968,699 @@ fn extract_builtin_resolver_type_names(spec: &SerializableStreamSpec) -> HashSet
         }
     }
     names
+}
+
+fn generate_idl_account_artifacts(
+    idls: &[IdlSnapshot],
+    reserved_type_names: &HashSet<String>,
+) -> IdlAccountArtifacts {
+    let mut used_type_names = reserved_type_names.clone();
+    let mut emitted_type_names = HashSet::new();
+    let mut seen_schema_names = HashSet::new();
+    let mut interface_blocks = Vec::new();
+    let mut schema_blocks = Vec::new();
+    let mut schema_names = Vec::new();
+    let mut account_type_names = BTreeMap::new();
+
+    for idl in idls {
+        let program_key = to_camel_case(&idl.name);
+        let program_prefix = to_pascal_case(&idl.name);
+        let type_defs: BTreeMap<String, &IdlTypeDefSnapshot> = idl
+            .types
+            .iter()
+            .map(|type_def| (type_def.name.clone(), type_def))
+            .collect();
+        let account_names: HashSet<String> = idl
+            .accounts
+            .iter()
+            .map(|account| account.name.clone())
+            .collect();
+        let mut local_name_map = BTreeMap::new();
+
+        for account in &idl.accounts {
+            let unique_name =
+                unique_idl_type_name(&account.name, &program_prefix, &mut used_type_names);
+            emitted_type_names.insert(unique_name.clone());
+            local_name_map.insert(account.name.clone(), unique_name.clone());
+            account_type_names.insert((program_key.clone(), account.name.clone()), unique_name);
+        }
+
+        let mut required_defined_types = BTreeSet::new();
+        for account in &idl.accounts {
+            for field in resolve_idl_account_fields(account, &type_defs) {
+                collect_required_defined_types(
+                    &field.type_,
+                    &type_defs,
+                    &account_names,
+                    &mut required_defined_types,
+                );
+            }
+        }
+
+        for type_name in &required_defined_types {
+            if local_name_map.contains_key(type_name) {
+                continue;
+            }
+            let unique_name =
+                unique_idl_type_name(type_name, &program_prefix, &mut used_type_names);
+            emitted_type_names.insert(unique_name.clone());
+            local_name_map.insert(type_name.clone(), unique_name);
+        }
+
+        for type_name in &required_defined_types {
+            if account_names.contains(type_name) {
+                continue;
+            }
+            if let Some(type_def) = type_defs.get(type_name) {
+                if let Some((interface_def, schema_name, schema_def)) =
+                    generate_type_defs_from_idl_type(type_def, &local_name_map)
+                {
+                    interface_blocks.push(interface_def);
+                    if seen_schema_names.insert(schema_name.clone()) {
+                        schema_names.push(schema_name.clone());
+                        schema_blocks.push(schema_def);
+                    }
+                }
+            }
+        }
+
+        for account in &idl.accounts {
+            let Some(type_name) = local_name_map.get(&account.name) else {
+                continue;
+            };
+            let account_fields = resolve_idl_account_fields(account, &type_defs);
+            interface_blocks.push(generate_interface_from_idl_fields(
+                type_name,
+                account_fields,
+                &local_name_map,
+            ));
+            let schema_name = format!("{}Schema", type_name);
+            if seen_schema_names.insert(schema_name.clone()) {
+                schema_names.push(schema_name.clone());
+                schema_blocks.push(generate_schema_from_idl_fields(
+                    type_name,
+                    account_fields,
+                    &local_name_map,
+                ));
+            }
+        }
+    }
+
+    let code = if interface_blocks.is_empty() && schema_blocks.is_empty() {
+        String::new()
+    } else if schema_blocks.is_empty() {
+        interface_blocks.join("\n\n")
+    } else if interface_blocks.is_empty() {
+        schema_blocks.join("\n\n")
+    } else {
+        format!(
+            "{}\n\n{}",
+            interface_blocks.join("\n\n"),
+            schema_blocks.join("\n\n")
+        )
+    };
+
+    IdlAccountArtifacts {
+        code,
+        schema_names,
+        type_names: emitted_type_names,
+        account_type_names,
+    }
+}
+
+fn resolve_idl_account_fields<'a>(
+    account: &'a IdlAccountSnapshot,
+    type_defs: &'a BTreeMap<String, &'a IdlTypeDefSnapshot>,
+) -> &'a [IdlFieldSnapshot] {
+    if !account.fields.is_empty() {
+        return &account.fields;
+    }
+
+    let Some(type_def) = type_defs.get(&account.name) else {
+        return &account.fields;
+    };
+
+    match &type_def.type_def {
+        IdlTypeDefKindSnapshot::Struct { fields, .. } => fields,
+        _ => &account.fields,
+    }
+}
+
+fn unique_idl_type_name(
+    raw_name: &str,
+    program_prefix: &str,
+    used_type_names: &mut HashSet<String>,
+) -> String {
+    let base_name = to_pascal_case(raw_name);
+    if used_type_names.insert(base_name.clone()) {
+        return base_name;
+    }
+
+    let prefixed = format!("{}{}", program_prefix, base_name);
+    if used_type_names.insert(prefixed.clone()) {
+        return prefixed;
+    }
+
+    let mut index = 2;
+    loop {
+        let candidate = format!("{}{}", prefixed, index);
+        if used_type_names.insert(candidate.clone()) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn collect_required_defined_types(
+    idl_type: &IdlTypeSnapshot,
+    type_defs: &BTreeMap<String, &IdlTypeDefSnapshot>,
+    account_names: &HashSet<String>,
+    output: &mut BTreeSet<String>,
+) {
+    match idl_type {
+        IdlTypeSnapshot::Simple(_) => {}
+        IdlTypeSnapshot::Array(array_type) => {
+            for element in &array_type.array {
+                if let IdlArrayElementSnapshot::Type(inner) = element {
+                    collect_required_defined_types(inner, type_defs, account_names, output);
+                }
+            }
+        }
+        IdlTypeSnapshot::Option(option_type) => {
+            collect_required_defined_types(&option_type.option, type_defs, account_names, output);
+        }
+        IdlTypeSnapshot::Vec(vec_type) => {
+            collect_required_defined_types(&vec_type.vec, type_defs, account_names, output);
+        }
+        IdlTypeSnapshot::HashMap(hash_map_type) => {
+            collect_required_defined_types(
+                &hash_map_type.hash_map.0,
+                type_defs,
+                account_names,
+                output,
+            );
+            collect_required_defined_types(
+                &hash_map_type.hash_map.1,
+                type_defs,
+                account_names,
+                output,
+            );
+        }
+        IdlTypeSnapshot::Defined(defined_type) => {
+            let type_name = match &defined_type.defined {
+                IdlDefinedInnerSnapshot::Named { name } => name,
+                IdlDefinedInnerSnapshot::Simple(name) => name,
+            };
+
+            if !output.insert(type_name.clone()) {
+                return;
+            }
+
+            if account_names.contains(type_name) {
+                return;
+            }
+
+            let Some(type_def) = type_defs.get(type_name) else {
+                return;
+            };
+
+            match &type_def.type_def {
+                IdlTypeDefKindSnapshot::Struct { fields, .. } => {
+                    for field in fields {
+                        collect_required_defined_types(
+                            &field.type_,
+                            type_defs,
+                            account_names,
+                            output,
+                        );
+                    }
+                }
+                IdlTypeDefKindSnapshot::TupleStruct { fields, .. } => {
+                    for field in fields {
+                        collect_required_defined_types(field, type_defs, account_names, output);
+                    }
+                }
+                IdlTypeDefKindSnapshot::Enum { variants, .. } => {
+                    for variant in variants {
+                        for field in &variant.fields {
+                            match field {
+                                IdlEnumVariantFieldSnapshot::Named(named) => {
+                                    collect_required_defined_types(
+                                        &named.type_,
+                                        type_defs,
+                                        account_names,
+                                        output,
+                                    );
+                                }
+                                IdlEnumVariantFieldSnapshot::Tuple(tuple) => {
+                                    collect_required_defined_types(
+                                        tuple,
+                                        type_defs,
+                                        account_names,
+                                        output,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn generate_type_defs_from_idl_type(
+    type_def: &IdlTypeDefSnapshot,
+    local_name_map: &BTreeMap<String, String>,
+) -> Option<(String, String, String)> {
+    let type_name = local_name_map
+        .get(&type_def.name)
+        .cloned()
+        .unwrap_or_else(|| to_pascal_case(&type_def.name));
+    let schema_name = format!("{}Schema", type_name);
+
+    match &type_def.type_def {
+        IdlTypeDefKindSnapshot::Struct { fields, .. } => Some((
+            generate_interface_from_idl_fields(&type_name, fields, local_name_map),
+            schema_name,
+            generate_schema_from_idl_fields(&type_name, fields, local_name_map),
+        )),
+        IdlTypeDefKindSnapshot::TupleStruct { fields, .. } => {
+            let interface = format!(
+                "export type {} = [{}];",
+                type_name,
+                fields
+                    .iter()
+                    .map(|field| idl_snapshot_type_to_typescript(field, local_name_map))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            let schema = format!(
+                "export const {} = z.tuple([{}]);",
+                schema_name,
+                fields
+                    .iter()
+                    .map(|field| idl_snapshot_type_to_zod(field, local_name_map))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            Some((interface, schema_name, schema))
+        }
+        IdlTypeDefKindSnapshot::Enum { variants, .. } => {
+            let variant_names = variants
+                .iter()
+                .map(|variant| format!("\"{}\"", variant.name))
+                .collect::<Vec<_>>();
+            let interface = if variant_names.is_empty() {
+                format!("export type {} = string;", type_name)
+            } else {
+                format!("export type {} = {};", type_name, variant_names.join(" | "))
+            };
+            let schema = if variant_names.is_empty() {
+                format!("export const {} = z.string();", schema_name)
+            } else {
+                format!(
+                    "export const {} = z.enum([{}]);",
+                    schema_name,
+                    variant_names.join(", ")
+                )
+            };
+            Some((interface, schema_name, schema))
+        }
+    }
+}
+
+fn generate_interface_from_idl_fields(
+    name: &str,
+    fields: &[IdlFieldSnapshot],
+    local_name_map: &BTreeMap<String, String>,
+) -> String {
+    render_interface_from_ts_fields(name, &normalize_idl_fields(fields, local_name_map), true)
+}
+
+fn generate_schema_from_idl_fields(
+    name: &str,
+    fields: &[IdlFieldSnapshot],
+    local_name_map: &BTreeMap<String, String>,
+) -> String {
+    render_schema_from_ts_fields(name, &normalize_idl_fields(fields, local_name_map), true)
+}
+
+fn normalize_idl_fields(
+    fields: &[IdlFieldSnapshot],
+    local_name_map: &BTreeMap<String, String>,
+) -> Vec<TypeScriptField> {
+    let mut canonical_names = BTreeMap::new();
+    let mut normalized = Vec::with_capacity(fields.len());
+
+    for field in fields {
+        let canonical_name = to_camel_case(&field.name);
+        if let Some(existing_source) =
+            canonical_names.insert(canonical_name.clone(), field.name.clone())
+        {
+            assert_eq!(
+                existing_source, field.name,
+                "IDL field normalization collision: '{}' and '{}' both normalize to '{}'",
+                existing_source, field.name, canonical_name
+            );
+        }
+
+        let (normalized_type, nullable) = strip_nullable_idl_type(&field.type_);
+
+        normalized.push(TypeScriptField::required_with_schema(
+            idl_field_wire_name(&field.name),
+            canonical_name,
+            idl_snapshot_type_to_typescript(normalized_type, local_name_map),
+            nullable,
+            idl_snapshot_type_to_zod(normalized_type, local_name_map),
+        ));
+    }
+
+    normalized
+}
+
+fn idl_field_wire_name(field_name: &str) -> String {
+    idl_to_snake_case(field_name)
+}
+
+fn idl_snapshot_type_to_typescript(
+    idl_type: &IdlTypeSnapshot,
+    local_name_map: &BTreeMap<String, String>,
+) -> String {
+    match idl_type {
+        IdlTypeSnapshot::Simple(type_name) => match type_name.as_str() {
+            "u64" | "u128" | "i64" | "i128" => "bigint".to_string(),
+            "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "f32" | "f64" => "number".to_string(),
+            "bool" => "boolean".to_string(),
+            "string" => "string".to_string(),
+            "pubkey" | "publicKey" => "string".to_string(),
+            "bytes" => "number[]".to_string(),
+            _ => "any".to_string(),
+        },
+        IdlTypeSnapshot::Array(array_type) => {
+            let (inner_ts, size) = match array_type.array.as_slice() {
+                [IdlArrayElementSnapshot::Type(inner), IdlArrayElementSnapshot::Size(size)] => (
+                    Some(idl_snapshot_type_to_typescript(inner, local_name_map)),
+                    Some(*size),
+                ),
+                [IdlArrayElementSnapshot::TypeName(inner), IdlArrayElementSnapshot::Size(size)] => {
+                    (
+                        Some(idl_snapshot_type_to_typescript(
+                            &IdlTypeSnapshot::Simple(inner.clone()),
+                            local_name_map,
+                        )),
+                        Some(*size),
+                    )
+                }
+                _ => (None, None),
+            };
+            let inner_ts = inner_ts.unwrap_or_else(|| "any".to_string());
+            if let Some(size) = size {
+                format!(
+                    "{}[]",
+                    if size == 0 {
+                        "never".to_string()
+                    } else {
+                        inner_ts
+                    }
+                )
+            } else {
+                format!("{}[]", inner_ts)
+            }
+        }
+        IdlTypeSnapshot::Option(option_type) => {
+            format!(
+                "{} | null",
+                idl_snapshot_type_to_typescript(&option_type.option, local_name_map)
+            )
+        }
+        IdlTypeSnapshot::Vec(vec_type) => {
+            format!(
+                "{}[]",
+                idl_snapshot_type_to_typescript(&vec_type.vec, local_name_map)
+            )
+        }
+        IdlTypeSnapshot::HashMap(hash_map_type) => {
+            format!(
+                "Record<string, {}>",
+                idl_snapshot_type_to_typescript(&hash_map_type.hash_map.1, local_name_map)
+            )
+        }
+        IdlTypeSnapshot::Defined(defined_type) => {
+            let type_name = match &defined_type.defined {
+                IdlDefinedInnerSnapshot::Named { name } => name,
+                IdlDefinedInnerSnapshot::Simple(name) => name,
+            };
+            local_name_map
+                .get(type_name)
+                .cloned()
+                .unwrap_or_else(|| to_pascal_case(type_name))
+        }
+    }
+}
+
+fn idl_snapshot_type_to_zod(
+    idl_type: &IdlTypeSnapshot,
+    local_name_map: &BTreeMap<String, String>,
+) -> String {
+    match idl_type {
+        IdlTypeSnapshot::Simple(type_name) => match type_name.as_str() {
+            "u64" | "u128" | "i64" | "i128" => bigint_zod(),
+            "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "f32" | "f64" => "z.number()".to_string(),
+            "bool" => "z.boolean()".to_string(),
+            "string" => "z.string()".to_string(),
+            "pubkey" | "publicKey" => "z.string()".to_string(),
+            "bytes" => "z.array(z.number())".to_string(),
+            _ => "z.any()".to_string(),
+        },
+        IdlTypeSnapshot::Array(array_type) => match array_type.array.as_slice() {
+            [IdlArrayElementSnapshot::Type(inner), IdlArrayElementSnapshot::Size(size)] => {
+                format!(
+                    "z.array({}).length({})",
+                    idl_snapshot_type_to_zod(inner, local_name_map),
+                    size
+                )
+            }
+            [IdlArrayElementSnapshot::TypeName(inner), IdlArrayElementSnapshot::Size(size)] => {
+                format!(
+                    "z.array({}).length({})",
+                    idl_snapshot_type_to_zod(
+                        &IdlTypeSnapshot::Simple(inner.clone()),
+                        local_name_map
+                    ),
+                    size
+                )
+            }
+            _ => "z.array(z.any())".to_string(),
+        },
+        IdlTypeSnapshot::Option(option_type) => {
+            format!(
+                "{}.nullable()",
+                idl_snapshot_type_to_zod(&option_type.option, local_name_map)
+            )
+        }
+        IdlTypeSnapshot::Vec(vec_type) => {
+            format!(
+                "z.array({})",
+                idl_snapshot_type_to_zod(&vec_type.vec, local_name_map)
+            )
+        }
+        IdlTypeSnapshot::HashMap(hash_map_type) => {
+            format!(
+                "z.record({})",
+                idl_snapshot_type_to_zod(&hash_map_type.hash_map.1, local_name_map)
+            )
+        }
+        IdlTypeSnapshot::Defined(defined_type) => {
+            let type_name = match &defined_type.defined {
+                IdlDefinedInnerSnapshot::Named { name } => name,
+                IdlDefinedInnerSnapshot::Simple(name) => name,
+            };
+            let resolved_name = local_name_map
+                .get(type_name)
+                .cloned()
+                .unwrap_or_else(|| to_pascal_case(type_name));
+            format!("z.lazy(() => {}Schema)", resolved_name)
+        }
+    }
+}
+
+fn typescript_integer_type_from_rust(rust_type: &str) -> Option<&'static str> {
+    IntegerKind::from_rust_type(rust_type).map(integer_kind_to_typescript)
+}
+
+fn typescript_integer_type(
+    integer_kind: Option<IntegerKind>,
+    rust_type: Option<&str>,
+) -> Option<&'static str> {
+    integer_kind
+        .map(integer_kind_to_typescript)
+        .or_else(|| rust_type.and_then(typescript_integer_type_from_rust))
+}
+
+fn integer_kind_to_typescript(integer_kind: IntegerKind) -> &'static str {
+    if integer_kind.is_bigint() {
+        "bigint"
+    } else {
+        "number"
+    }
+}
+
+fn strip_nullable_idl_type(mut idl_type: &IdlTypeSnapshot) -> (&IdlTypeSnapshot, bool) {
+    let mut nullable = false;
+    while let IdlTypeSnapshot::Option(option_type) = idl_type {
+        nullable = true;
+        idl_type = &option_type.option;
+    }
+    (idl_type, nullable)
+}
+
+fn typescript_type_to_zod_static(ts_type: &str) -> String {
+    let trimmed = ts_type.trim();
+
+    if let Some(inner) = trimmed.strip_suffix("[]") {
+        return format!("z.array({})", typescript_type_to_zod_static(inner));
+    }
+
+    if let Some(inner) = trimmed.strip_prefix("EventWrapper<") {
+        if let Some(inner) = inner.strip_suffix('>') {
+            return format!(
+                "EventWrapperSchema({})",
+                typescript_type_to_zod_static(inner)
+            );
+        }
+    }
+
+    match trimmed {
+        "string" => "z.string()".to_string(),
+        "number" => "z.number()".to_string(),
+        "bigint" => bigint_zod(),
+        "boolean" => "z.boolean()".to_string(),
+        "any" => "z.any()".to_string(),
+        "Record<string, any>" => "z.record(z.any())".to_string(),
+        _ => format!("{}Schema", trimmed),
+    }
+}
+
+fn typescript_type_to_zod_for_schema_static(
+    ts_type: &str,
+    mode: SchemaMode,
+    patch_schema_types: &HashSet<String>,
+) -> String {
+    let trimmed = ts_type.trim();
+
+    if let Some(inner) = trimmed.strip_suffix("[]") {
+        return format!(
+            "z.array({})",
+            typescript_type_to_zod_for_schema_static(inner, mode, patch_schema_types)
+        );
+    }
+
+    if let Some(inner) = trimmed.strip_prefix("EventWrapper<") {
+        if let Some(inner) = inner.strip_suffix('>') {
+            return format!(
+                "EventWrapperSchema({})",
+                typescript_type_to_zod_for_schema_static(inner, mode, patch_schema_types)
+            );
+        }
+    }
+
+    match trimmed {
+        "string" => "z.string()".to_string(),
+        "number" => "z.number()".to_string(),
+        "bigint" => bigint_zod(),
+        "boolean" => "z.boolean()".to_string(),
+        "any" => "z.any()".to_string(),
+        "Record<string, any>" => "z.record(z.any())".to_string(),
+        _ => {
+            if mode == SchemaMode::Patch && patch_schema_types.contains(trimmed) {
+                format!("{}PatchSchema", trimmed)
+            } else {
+                format!("{}Schema", trimmed)
+            }
+        }
+    }
+}
+
+fn render_interface_from_ts_fields(
+    name: &str,
+    fields: &[TypeScriptField],
+    force_required: bool,
+) -> String {
+    if fields.is_empty() {
+        return format!("export interface {} {{\n}}", name);
+    }
+
+    let field_definitions = fields
+        .iter()
+        .map(|field| {
+            let optional = if force_required || matches!(field.presence, FieldPresence::Required) {
+                ""
+            } else {
+                "?"
+            };
+            format!(
+                "  {}{}: {};",
+                field.name,
+                optional,
+                field.rendered_ts_type()
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!(
+        "export interface {} {{\n{}\n}}",
+        name,
+        field_definitions.join("\n")
+    )
+}
+
+fn render_schema_from_ts_fields(
+    name: &str,
+    fields: &[TypeScriptField],
+    force_required: bool,
+) -> String {
+    if fields.is_empty() {
+        return format!("export const {}Schema = z.object({{}});", name);
+    }
+
+    let field_definitions = fields
+        .iter()
+        .map(|field| {
+            let base_schema = field
+                .zod_schema
+                .clone()
+                .unwrap_or_else(|| typescript_type_to_zod_static(&field.ts_type));
+            let with_nullable = if field.nullable {
+                format!("{}.nullable()", base_schema)
+            } else {
+                base_schema
+            };
+            let schema = if force_required || matches!(field.presence, FieldPresence::Required) {
+                with_nullable
+            } else {
+                format!("{}.optional()", with_nullable)
+            };
+            format!("  {}: {},", field.raw_name, schema)
+        })
+        .collect::<Vec<_>>();
+
+    let transform_fields = fields
+        .iter()
+        .map(|field| format!("  {}: value.{},", field.name, field.raw_name))
+        .collect::<Vec<_>>();
+
+    format!(
+        "export const {}Schema = z.object({{\n{}\n}}).transform((value) => ({{\n{}\n}}));",
+        name,
+        field_definitions.join("\n"),
+        transform_fields.join("\n")
+    )
+}
+
+fn bigint_zod() -> String {
+    "z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))"
+        .to_string()
 }
 
 fn extract_idl_enum_type_names(idl: &serde_json::Value) -> HashSet<String> {
@@ -1889,7 +2746,7 @@ fn unique_resolved_type_name_ts(
 }
 
 /// Convert snake_case to PascalCase
-fn to_pascal_case(s: &str) -> String {
+pub(crate) fn to_pascal_case(s: &str) -> String {
     s.split(['_', '-', '.'])
         .map(|word| {
             let mut chars = word.chars();
@@ -1899,6 +2756,15 @@ fn to_pascal_case(s: &str) -> String {
             }
         })
         .collect()
+}
+
+fn to_camel_case(s: &str) -> String {
+    let pascal = to_pascal_case(s);
+    let mut chars = pascal.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+        None => pascal,
+    }
 }
 
 /// Normalize a name for case-insensitive comparison across naming conventions.
@@ -1999,6 +2865,7 @@ pub struct TypeScriptStackConfig {
     pub generate_helpers: bool,
     pub export_const_name: String,
     pub url: Option<String>,
+    pub extension_import: Option<String>,
 }
 
 impl Default for TypeScriptStackConfig {
@@ -2008,6 +2875,7 @@ impl Default for TypeScriptStackConfig {
             generate_helpers: true,
             export_const_name: "STACK".to_string(),
             url: None,
+            extension_import: None,
         }
     }
 }
@@ -2017,6 +2885,11 @@ pub struct TypeScriptStackOutput {
     pub interfaces: String,
     pub stack_definition: String,
     pub imports: String,
+    /// Non-fatal codegen warnings (skipped instructions, PDAs degraded to
+    /// user-provided accounts). Callers should surface these to the user.
+    pub warnings: Vec<String>,
+    /// Structured PDA degradations for summary reporting.
+    pub pda_degradations: Vec<crate::typescript_instructions::PdaDegradation>,
 }
 
 impl TypeScriptStackOutput {
@@ -2099,30 +2972,206 @@ pub fn compile_stack_spec(
         schema_names.extend(output.schema_names);
     }
 
-    let interfaces = all_interfaces.join("\n\n");
+    let mut interfaces = all_interfaces.join("\n\n");
 
-    // 2. Generate unified stack definition with all entity views
+    // 2. Generate instruction-construction handlers from the stack spec.
+    // Program errors live once at the stack level (in the IDL snapshots) and
+    // are scoped per program by the instruction codegen. Entity interface
+    // names are reserved so defined-type interfaces cannot collide with them.
+    let mut reserved_type_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for line in interfaces.lines() {
+        for prefix in ["export interface ", "export type "] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    reserved_type_names.insert(name);
+                }
+            }
+        }
+    }
+    let idl_account_artifacts =
+        generate_idl_account_artifacts(&stack_spec.idls, &reserved_type_names);
+    for type_name in &idl_account_artifacts.type_names {
+        reserved_type_names.insert(type_name.clone());
+    }
+    if !idl_account_artifacts.code.is_empty() {
+        if interfaces.is_empty() {
+            interfaces = idl_account_artifacts.code.clone();
+        } else {
+            interfaces = format!("{}\n\n{}", interfaces, idl_account_artifacts.code);
+        }
+    }
+    schema_names.extend(idl_account_artifacts.schema_names.clone());
+
+    let instructions_codegen = crate::typescript_instructions::generate_instructions_code(
+        stack_name,
+        &stack_spec.instructions,
+        &stack_spec.idls,
+        &stack_spec.pdas,
+        &stack_spec.program_ids,
+        &reserved_type_names,
+    );
+    if !instructions_codegen.code.is_empty() {
+        if interfaces.is_empty() {
+            interfaces = instructions_codegen.code.clone();
+        } else {
+            interfaces = format!("{}\n\n{}", interfaces, instructions_codegen.code);
+        }
+    }
+
+    // 3. Generate unified stack definition with all entity views and attached program SDKs.
     let stack_definition = generate_stack_definition_multi(
         stack_name,
         &stack_kebab,
         &stack_spec.entities,
         &entity_names,
+        &stack_spec.idls,
         &stack_spec.pdas,
         &stack_spec.program_ids,
         &schema_names,
+        &idl_account_artifacts.account_type_names,
+        &instructions_codegen.stack_entries,
         &config,
     );
 
-    let imports = if stack_spec.pdas.values().any(|p| !p.is_empty()) {
-        "import { z } from 'zod';\nimport { pda, literal, account, arg, bytes } from '@usearete/sdk';".to_string()
-    } else {
-        "import { z } from 'zod';".to_string()
-    };
+    // 4. Assemble `@usearete/sdk` imports based on what was actually emitted.
+    let imports = assemble_sdk_imports(
+        stack_spec.pdas.values().any(|p| !p.is_empty()),
+        !idl_account_artifacts.account_type_names.is_empty(),
+        &instructions_codegen,
+    );
 
     Ok(TypeScriptStackOutput {
         imports,
         interfaces,
         stack_definition,
+        warnings: instructions_codegen.warnings,
+        pda_degradations: instructions_codegen.pda_degradations,
+    })
+}
+
+/// Assemble the `zod` + `@usearete/sdk` import lines based on which runtime
+/// helpers the emitted code references.
+fn assemble_sdk_imports(
+    has_pdas: bool,
+    has_account_reads: bool,
+    instructions_codegen: &crate::typescript_instructions::InstructionsCodegen,
+) -> String {
+    let mut sdk_named: Vec<String> = Vec::new();
+    if has_pdas {
+        for helper in ["pda", "literal", "account", "arg", "bytes"] {
+            sdk_named.push(helper.to_string());
+        }
+    }
+    if has_account_reads {
+        sdk_named.push("programAccountRead".to_string());
+    }
+    if instructions_codegen.needs_runtime_import {
+        sdk_named.push("createInstructionHandler".to_string());
+        sdk_named.push("type ErrorMetadata".to_string());
+    }
+    if !instructions_codegen.stack_entries.is_empty() {
+        sdk_named.push("buildInstruction".to_string());
+        sdk_named.push("type BuildOptions".to_string());
+    }
+    if instructions_codegen.needs_program_runtime_extensions {
+        sdk_named.push("PROGRAM_OPERATION_EXTENSIONS".to_string());
+        sdk_named.push("type ProgramOperationContext".to_string());
+        sdk_named.push("instructionOperation".to_string());
+        sdk_named.push("createPreparedInstruction".to_string());
+    }
+    if instructions_codegen.needs_amount_input {
+        sdk_named.push("type AmountInput".to_string());
+    }
+    if instructions_codegen.needs_resolve_amount_to_raw {
+        sdk_named.push("resolveAmountToRaw".to_string());
+    }
+    if instructions_codegen.needs_to_raw_amount {
+        sdk_named.push("toRawAmount".to_string());
+    }
+    if sdk_named.is_empty() {
+        "import { z } from 'zod';".to_string()
+    } else {
+        format!(
+            "import {{ z }} from 'zod';\nimport {{ {} }} from '@usearete/sdk';",
+            sdk_named.join(", ")
+        )
+    }
+}
+
+/// Compile only the program-SDK surface of a stack spec — account types +
+/// Zod schemas, instruction handlers, and standalone per-program consts.
+/// No entities, views, or stack const are emitted, and the spec's `entities`
+/// may be empty. Used by `a4 sdk create --ts --program-only`.
+pub fn compile_program_modules(
+    stack_spec: SerializableStackSpec,
+    config: Option<TypeScriptStackConfig>,
+) -> Result<TypeScriptStackOutput, String> {
+    let _config = config.unwrap_or_default();
+    let stack_name = &stack_spec.stack_name;
+
+    if stack_spec.idls.is_empty() {
+        return Err(format!(
+            "Stack '{}' carries no IDLs; a program-only SDK has nothing to emit",
+            stack_name
+        ));
+    }
+
+    let mut reserved_type_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let idl_account_artifacts =
+        generate_idl_account_artifacts(&stack_spec.idls, &reserved_type_names);
+    for type_name in &idl_account_artifacts.type_names {
+        reserved_type_names.insert(type_name.clone());
+    }
+
+    let mut interfaces = idl_account_artifacts.code.clone();
+
+    let instructions_codegen = crate::typescript_instructions::generate_instructions_code(
+        stack_name,
+        &stack_spec.instructions,
+        &stack_spec.idls,
+        &stack_spec.pdas,
+        &stack_spec.program_ids,
+        &reserved_type_names,
+    );
+    if !instructions_codegen.code.is_empty() {
+        if interfaces.is_empty() {
+            interfaces = instructions_codegen.code.clone();
+        } else {
+            interfaces = format!("{}\n\n{}", interfaces, instructions_codegen.code);
+        }
+    }
+
+    let unique_schemas: BTreeSet<String> =
+        idl_account_artifacts.schema_names.iter().cloned().collect();
+
+    let stack_definition = generate_program_definitions(
+        stack_name,
+        &stack_spec.idls,
+        &stack_spec.pdas,
+        &stack_spec.program_ids,
+        &instructions_codegen.stack_entries,
+        &unique_schemas,
+        &idl_account_artifacts.account_type_names,
+    );
+
+    let imports = assemble_sdk_imports(
+        stack_spec.pdas.values().any(|p| !p.is_empty()),
+        !idl_account_artifacts.account_type_names.is_empty(),
+        &instructions_codegen,
+    );
+
+    Ok(TypeScriptStackOutput {
+        imports,
+        interfaces,
+        stack_definition,
+        warnings: instructions_codegen.warnings,
+        pda_degradations: instructions_codegen.pda_degradations,
     })
 }
 
@@ -2163,9 +3212,12 @@ fn generate_stack_definition_multi(
     stack_kebab: &str,
     entities: &[SerializableStreamSpec],
     entity_names: &[String],
+    idls: &[IdlSnapshot],
     pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
     program_ids: &[String],
     schema_names: &[String],
+    account_type_names: &BTreeMap<(String, String), String>,
+    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
     config: &TypeScriptStackConfig,
 ) -> String {
     let export_name = format!(
@@ -2173,12 +3225,17 @@ fn generate_stack_definition_multi(
         to_screaming_snake_case(stack_name),
         config.export_const_name
     );
+    let core_export_name = format!("{}_CORE", export_name);
 
     let view_helpers = generate_view_helpers_static();
 
-    let url_line = match &config.url {
-        Some(url) => format!("  url: '{}',", url),
-        None => "  url: '', // TODO: Set after first deployment or pass useArete(..., { url })"
+    let endpoints_block = match &config.url {
+        Some(url) => format!(
+            "  endpoints: {{\n    ws: '{}',\n    http: '{}',\n  }},",
+            url,
+            derive_http_url(url)
+        ),
+        None => "  endpoints: {\n    ws: '', // TODO: Set after first deployment or pass useArete(..., { url })\n    http: '', // TODO: Set after first deployment or pass useArete(..., { httpUrl })\n  },"
             .to_string(),
     };
 
@@ -2226,8 +3283,6 @@ fn generate_stack_definition_multi(
 
     let views_body = entity_view_blocks.join("\n");
 
-    let pdas_block = generate_pdas_block(pdas, program_ids);
-
     let mut unique_schemas: BTreeSet<String> = BTreeSet::new();
     for name in schema_names {
         unique_schemas.insert(name.clone());
@@ -2237,7 +3292,7 @@ fn generate_stack_definition_multi(
     } else {
         let schema_entries: Vec<String> = unique_schemas
             .iter()
-            .filter(|name| name.ends_with("Schema"))
+            .filter(|name| name.ends_with("Schema") && !name.ends_with("PatchSchema"))
             .map(|name| format!("    {}: {},", name.trim_end_matches("Schema"), name))
             .collect();
         if schema_entries.is_empty() {
@@ -2246,8 +3301,51 @@ fn generate_stack_definition_multi(
             format!("\n  schemas: {{\n{}\n  }},", schema_entries.join("\n"))
         }
     };
+    let patch_schema_entries: Vec<String> = entity_names
+        .iter()
+        .map(|entity_name| {
+            let entity_pascal = to_pascal_case(entity_name);
+            format!("    {}: {}PatchSchema,", entity_pascal, entity_pascal)
+        })
+        .collect();
+    let patch_schemas_block = if patch_schema_entries.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n  patchSchemas: {{\n{}\n  }},",
+            patch_schema_entries.join("\n")
+        )
+    };
+
+    let programs_block = generate_programs_block(
+        idls,
+        pdas,
+        program_ids,
+        instruction_entries,
+        &unique_schemas,
+        account_type_names,
+    );
+    let addresses_block = generate_stack_addresses_block(idls, pdas, program_ids);
 
     let entity_types: Vec<String> = entity_names.iter().map(|n| to_pascal_case(n)).collect();
+
+    let stack_export = format!(
+        r#"export const {core_export_name} = {{
+  name: '{stack_kebab}',
+{endpoints_block}
+  views: {{
+{views_body}
+  }},{schemas_section}{patch_schemas_section}{programs_section}{addresses_section}
+}} as const;"#,
+        core_export_name = core_export_name,
+        stack_kebab = stack_kebab,
+        endpoints_block = endpoints_block,
+        views_body = views_body,
+        schemas_section = schemas_block,
+        patch_schemas_section = patch_schemas_block,
+        programs_section = programs_block,
+        addresses_section = addresses_block,
+    );
 
     format!(
         r#"{view_helpers}
@@ -2257,54 +3355,274 @@ fn generate_stack_definition_multi(
 // ============================================================================
 
 /** Stack definition for {stack_name} with {entity_count} entities */
-export const {export_name} = {{
-  name: '{stack_kebab}',
-{url_line}
-  views: {{
-{views_body}
-  }},{schemas_section}{pdas_section}
-}} as const;
+{stack_export}
 
-/** Type alias for the stack */
-export type {stack_name}Stack = typeof {export_name};
+/** Type alias for the core stack */
+export type {stack_name}CoreStack = typeof {core_export_name};
 
 /** Entity types in this stack */
 export type {stack_name}Entity = {entity_union};
 
 /** Default export for convenience */
-export default {export_name};"#,
+export default {core_export_name};"#,
         view_helpers = view_helpers,
         stack_name = stack_name,
         entity_count = entities.len(),
-        export_name = export_name,
-        stack_kebab = stack_kebab,
-        url_line = url_line,
-        views_body = views_body,
-        schemas_section = schemas_block,
-        pdas_section = pdas_block,
+        core_export_name = core_export_name,
+        stack_export = stack_export,
         entity_union = entity_types.join(" | "),
     )
 }
 
-fn generate_pdas_block(
+/// Build one program's `{ name, programId, pdas?, accounts?, instructions? }`
+/// literal body. Sections are indented for nesting inside a stack const
+/// (`programs: { <key>: { ... } }`); callers emitting top-level program
+/// consts dedent them.
+fn generate_single_program_sections(
+    idl: &IdlSnapshot,
+    index: usize,
     pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
     program_ids: &[String],
+    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
+    schema_names: &BTreeSet<String>,
+    account_type_names: &BTreeMap<(String, String), String>,
+) -> (String, Vec<String>) {
+    let program_key = to_camel_case(&idl.name);
+    let multi_program = program_ids.len() > 1
+        || instruction_entries
+            .iter()
+            .any(|entry| entry.program_key.is_some());
+    let program_id = program_ids
+        .get(index)
+        .cloned()
+        .or_else(|| idl.program_id.clone())
+        .unwrap_or_default();
+
+    let instruction_entries_for_program: Vec<
+        &crate::typescript_instructions::StackInstructionEntry,
+    > = instruction_entries
+        .iter()
+        .filter(|entry| {
+            if multi_program {
+                entry.program_key.as_deref() == Some(program_key.as_str())
+            } else {
+                true
+            }
+        })
+        .collect();
+    let instruction_entry_literals: Vec<String> = instruction_entries_for_program
+        .iter()
+        .map(|entry| {
+            format!(
+                "        {}: {},",
+                entry.instruction_name, entry.handler_const
+            )
+        })
+        .collect();
+
+    let account_entries: Vec<String> = idl
+        .accounts
+        .iter()
+        .filter_map(|account| {
+            let type_name = account_type_names
+                .get(&(program_key.clone(), account.name.clone()))?
+                .clone();
+            let schema_name = format!("{}Schema", type_name);
+            if !schema_names.contains(&schema_name) {
+                return None;
+            }
+            Some((account.name.clone(), type_name, schema_name))
+        })
+        .map(|account| {
+            format!(
+                "        {account_name}: programAccountRead<{type_name}>({{ account: '{account_name}', path: '/programs/{program}/accounts/{account_name}', schema: {schema_name} }}),",
+                account_name = account.0,
+                type_name = account.1,
+                schema_name = account.2,
+                program = program_key,
+            )
+        })
+        .collect();
+
+    let program_pdas = pdas
+        .get(&idl.name)
+        .or_else(|| pdas.get(&program_key))
+        .filter(|program_pdas| !program_pdas.is_empty());
+
+    let mut sections: Vec<String> = vec![
+        format!("      name: '{}',", idl.name),
+        format!("      programId: '{}',", program_id),
+    ];
+
+    if let Some(program_pdas) = program_pdas {
+        let pda_entries = generate_program_pda_entries(program_pdas, &program_id, "        ");
+        if !pda_entries.is_empty() {
+            sections.push(format!(
+                "      pdas: {{\n{}\n      }},",
+                pda_entries.join("\n")
+            ));
+            sections.push(format!(
+                "      addresses: {{\n{}\n      }},",
+                pda_entries.join("\n")
+            ));
+        }
+    }
+
+    if !account_entries.is_empty() {
+        sections.push(format!(
+            "      accounts: {{\n{}\n      }},",
+            account_entries.join("\n")
+        ));
+    }
+
+    if !instruction_entry_literals.is_empty() {
+        sections.push(format!(
+            "      rawInstructions: {{\n{}\n      }},",
+            instruction_entry_literals.join("\n")
+        ));
+        if let Some(semantic_block) =
+            generate_program_semantic_instructions_block(&instruction_entries_for_program, "      ")
+        {
+            sections.push(semantic_block);
+        }
+    }
+
+    (program_key, sections)
+}
+
+fn generate_programs_block(
+    idls: &[IdlSnapshot],
+    pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
+    program_ids: &[String],
+    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
+    schema_names: &BTreeSet<String>,
+    account_type_names: &BTreeMap<(String, String), String>,
 ) -> String {
-    if pdas.is_empty() {
+    if idls.is_empty() {
         return String::new();
     }
 
     let mut program_blocks = Vec::new();
 
-    for (program_name, program_pdas) in pdas {
-        if program_pdas.is_empty() {
-            continue;
-        }
+    for (index, idl) in idls.iter().enumerate() {
+        let (program_key, sections) = generate_single_program_sections(
+            idl,
+            index,
+            pdas,
+            program_ids,
+            instruction_entries,
+            schema_names,
+            account_type_names,
+        );
 
-        let program_id = program_ids.first().cloned().unwrap_or_default();
+        program_blocks.push(format!(
+            "    {}: {{\n{}\n    }},",
+            program_key,
+            sections.join("\n")
+        ));
+    }
 
-        let mut pda_entries = Vec::new();
-        for (pda_name, pda_def) in program_pdas {
+    if program_blocks.is_empty() {
+        return String::new();
+    }
+
+    format!("\n  programs: {{\n{}\n  }},", program_blocks.join("\n"))
+}
+
+/// Strip up to `spaces` leading spaces from every line.
+fn dedent_lines(text: &str, spaces: usize) -> String {
+    text.lines()
+        .map(|line| {
+            let strip = line
+                .char_indices()
+                .take_while(|(i, c)| *i < spaces && *c == ' ')
+                .count();
+            &line[strip..]
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Emit standalone per-program consts plus a combined `<STACK>_PROGRAMS` map:
+///
+/// ```typescript
+/// export const SQUADS_MULTISIG_PROGRAM = { name, programId, pdas, accounts, instructions } as const;
+/// export const SQUADS_V4_PROGRAMS = { squadsMultisigProgram: SQUADS_MULTISIG_PROGRAM } as const;
+/// ```
+///
+/// Each const structurally satisfies the runtime's `ProgramSdkDefinition`, so
+/// the map can be dropped straight into `createSession({ programs: ... })`.
+fn generate_program_definitions(
+    stack_name: &str,
+    idls: &[IdlSnapshot],
+    pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
+    program_ids: &[String],
+    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
+    schema_names: &BTreeSet<String>,
+    account_type_names: &BTreeMap<(String, String), String>,
+) -> String {
+    let mut program_consts = Vec::new();
+    let mut map_entries = Vec::new();
+
+    for (index, idl) in idls.iter().enumerate() {
+        let (program_key, sections) = generate_single_program_sections(
+            idl,
+            index,
+            pdas,
+            program_ids,
+            instruction_entries,
+            schema_names,
+            account_type_names,
+        );
+        let const_name = to_screaming_snake_case(&idl.name);
+        let body = dedent_lines(&sections.join("\n"), 4);
+        program_consts.push(format!(
+            "/** Standalone program SDK for '{name}' */\nexport const {const_name} = {{\n{body}\n}} as const;",
+            name = idl.name,
+            const_name = const_name,
+            body = body,
+        ));
+        map_entries.push(format!("  {}: {},", program_key, const_name));
+    }
+
+    let map_name = format!("{}_PROGRAMS", to_screaming_snake_case(stack_name));
+    let type_name = format!("{}Programs", to_pascal_case(stack_name));
+
+    format!(
+        r#"// ============================================================================
+// Program Definitions
+// ============================================================================
+
+{program_consts}
+
+    /** All programs from the {stack_name} stack, ready for createSession({{ programs: ... }}) */
+export const {map_name} = {{
+{map_entries}
+}} as const;
+
+export type {type_name} = typeof {map_name};
+
+export default {map_name};"#,
+        program_consts = program_consts.join("\n\n"),
+        stack_name = stack_name,
+        map_name = map_name,
+        map_entries = map_entries.join("\n"),
+        type_name = type_name,
+    )
+}
+
+fn generate_program_pda_entries(
+    program_pdas: &BTreeMap<String, PdaDefinition>,
+    default_program_id: &str,
+    indent: &str,
+) -> Vec<String> {
+    if program_pdas.is_empty() {
+        return Vec::new();
+    }
+
+    program_pdas
+        .iter()
+        .map(|(pda_name, pda_def)| {
             let seeds_str = pda_def
                 .seeds
                 .iter()
@@ -2328,25 +3646,191 @@ fn generate_pdas_block(
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let pid = pda_def.program_id.as_ref().unwrap_or(&program_id);
-            pda_entries.push(format!(
-                "      {}: pda('{}', {}),",
-                pda_name, pid, seeds_str
-            ));
-        }
+            let pid = pda_def.program_id.as_deref().unwrap_or(default_program_id);
+            format!("{}{}: pda('{}', {}),", indent, pda_name, pid, seeds_str)
+        })
+        .collect()
+}
 
-        program_blocks.push(format!(
-            "    {}: {{\n{}\n    }},",
-            program_name,
-            pda_entries.join("\n")
-        ));
-    }
-
-    if program_blocks.is_empty() {
+fn generate_stack_addresses_block(
+    idls: &[IdlSnapshot],
+    pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
+    program_ids: &[String],
+) -> String {
+    if idls.is_empty() {
         return String::new();
     }
 
-    format!("\n  pdas: {{\n{}\n  }},", program_blocks.join("\n"))
+    if idls.len() == 1 {
+        let idl = &idls[0];
+        let program_id = program_ids
+            .first()
+            .cloned()
+            .or_else(|| idl.program_id.clone())
+            .unwrap_or_default();
+        let Some(program_pdas) = pdas
+            .get(&idl.name)
+            .or_else(|| pdas.get(&to_camel_case(&idl.name)))
+        else {
+            return String::new();
+        };
+        let entries = generate_program_pda_entries(program_pdas, &program_id, "    ");
+        if entries.is_empty() {
+            return String::new();
+        }
+        return format!("\n  addresses: {{\n{}\n  }},", entries.join("\n"));
+    }
+
+    let mut blocks = Vec::new();
+    for (index, idl) in idls.iter().enumerate() {
+        let program_id = program_ids
+            .get(index)
+            .cloned()
+            .or_else(|| idl.program_id.clone())
+            .unwrap_or_default();
+        let Some(program_pdas) = pdas
+            .get(&idl.name)
+            .or_else(|| pdas.get(&to_camel_case(&idl.name)))
+        else {
+            continue;
+        };
+        let entries = generate_program_pda_entries(program_pdas, &program_id, "      ");
+        if entries.is_empty() {
+            continue;
+        }
+        blocks.push(format!(
+            "    {}: {{\n{}\n    }},",
+            to_camel_case(&idl.name),
+            entries.join("\n")
+        ));
+    }
+
+    if blocks.is_empty() {
+        String::new()
+    } else {
+        format!("\n  addresses: {{\n{}\n  }},", blocks.join("\n"))
+    }
+}
+
+fn is_valid_ts_identifier(name: &str) -> bool {
+    name.chars()
+        .next()
+        .map(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+        .unwrap_or(false)
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+fn escape_ts_single_quotes(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace(['\n', '\r'], " ")
+}
+
+fn render_ts_property_name_literal(name: &str) -> String {
+    if is_valid_ts_identifier(name) {
+        name.to_string()
+    } else {
+        format!("'{}'", escape_ts_single_quotes(name))
+    }
+}
+
+fn render_program_semantic_instruction_entry(
+    entry: &crate::typescript_instructions::StackInstructionEntry,
+    indent: &str,
+) -> Option<String> {
+    let semantic_params_type = entry.semantic_params_type.as_ref()?;
+    entry.runtime_program_key.as_ref()?;
+
+    if entry.semantic_amount_args.is_empty() {
+        return Some(format!(
+            "{indent}{instruction_name}: instructionOperation(async (params: {semantic_params_type}) => {{\n{indent}  const instruction = buildInstruction({handler_const}, params as unknown as Record<string, unknown>);\n{indent}  return createPreparedInstruction({{\n{indent}    name: '{instruction_name}',\n{indent}    instruction,\n{indent}    artifacts: {{ instruction }},\n{indent}    errors: {handler_const}.errors,\n{indent}  }});\n{indent}}}),",
+            indent = indent,
+            instruction_name = entry.instruction_name,
+            semantic_params_type = semantic_params_type,
+            handler_const = entry.handler_const,
+        ));
+    }
+
+    let raw_params_setup = if entry.semantic_extra_params.is_empty() {
+        format!(
+            "{indent}    const {{ build, ...rawParams }} = params;",
+            indent = indent
+        )
+    } else {
+        format!(
+            "{indent}    const {{ build, {extras}, ...rawParams }} = params;",
+            indent = indent,
+            extras = entry.semantic_extra_params.join(", "),
+        )
+    };
+    let resolution_lines: Vec<String> = entry
+        .semantic_amount_args
+        .iter()
+        .map(|amount_arg| {
+            format!(
+                "{indent}    const {binding_name} = {raw_expression};",
+                indent = indent,
+                binding_name = amount_arg.binding_name,
+                raw_expression = amount_arg.raw_expression,
+            )
+        })
+        .collect();
+    let raw_assignments: Vec<String> = entry
+        .semantic_amount_args
+        .iter()
+        .map(|amount_arg| {
+            format!(
+                "{indent}      {}: {},",
+                render_ts_property_name_literal(&amount_arg.arg_name),
+                amount_arg.binding_name,
+                indent = indent,
+            )
+        })
+        .collect();
+
+    Some(format!(
+        "{indent}{instruction_name}: instructionOperation(async (params: {semantic_params_type}) => {{\n{raw_params_setup}\n{resolutions}\n{indent}    const instruction = buildInstruction({handler_const}, {{\n{indent}      ...rawParams,\n{assignments}\n{indent}    }} as unknown as Record<string, unknown>, build);\n{indent}    return createPreparedInstruction({{\n{indent}      name: '{instruction_name}',\n{indent}      instruction,\n{indent}      artifacts: {{ instruction }},\n{indent}      errors: {handler_const}.errors,\n{indent}    }});\n{indent}  }}),",
+        indent = indent,
+        instruction_name = entry.instruction_name,
+        semantic_params_type = semantic_params_type,
+        raw_params_setup = raw_params_setup,
+        resolutions = resolution_lines.join("\n"),
+        handler_const = entry.handler_const,
+        assignments = raw_assignments.join("\n"),
+    ))
+}
+
+fn generate_program_semantic_instructions_block(
+    instruction_entries: &[&crate::typescript_instructions::StackInstructionEntry],
+    indent: &str,
+) -> Option<String> {
+    let entry_indent = format!("{}      ", indent);
+    let entries: Vec<String> = instruction_entries
+        .iter()
+        .filter_map(|entry| render_program_semantic_instruction_entry(entry, &entry_indent))
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "{indent}[PROGRAM_OPERATION_EXTENSIONS]: {{\n{indent}  createOperations(context: ProgramOperationContext) {{\n{indent}    return {{\n{indent}      instructions: {{\n{entries}\n{indent}      }},\n{indent}    }};\n{indent}  }},\n{indent}}},",
+        indent = indent,
+        entries = entries.join("\n"),
+    ))
+}
+
+fn derive_http_url(ws_url: &str) -> String {
+    if ws_url.starts_with("wss://") {
+        ws_url.replacen("wss://", "https://", 1)
+    } else if ws_url.starts_with("ws://") {
+        ws_url.replacen("ws://", "http://", 1)
+    } else {
+        ws_url.to_string()
+    }
 }
 
 fn generate_view_helpers_static() -> String {
@@ -2375,7 +3859,7 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
 }
 
 /// Convert PascalCase to SCREAMING_SNAKE_CASE (e.g., "OreStream" -> "ORE_STREAM")
-fn to_screaming_snake_case(s: &str) -> String {
+pub(crate) fn to_screaming_snake_case(s: &str) -> String {
     let mut result = String::new();
     for (i, ch) in s.chars().enumerate() {
         if ch.is_uppercase() && i > 0 {
@@ -2423,6 +3907,312 @@ mod tests {
             "boolean"
         );
         assert_eq!(value_to_typescript_type(&serde_json::json!([])), "any[]");
+    }
+
+    #[test]
+    fn streamed_entity_codegen_normalizes_canonical_names_and_schemas() {
+        let spec = SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: "TokenPosition".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.address".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![],
+            sections: vec![
+                EntitySection {
+                    name: "root".to_string(),
+                    fields: vec![FieldTypeInfo::new(
+                        "total_deposit".to_string(),
+                        "u64".to_string(),
+                    )],
+                    is_nested_struct: false,
+                    parent_field: None,
+                },
+                EntitySection {
+                    name: "metrics".to_string(),
+                    fields: vec![FieldTypeInfo::new(
+                        "last_updated_at".to_string(),
+                        "i64".to_string(),
+                    )],
+                    is_nested_struct: false,
+                    parent_field: None,
+                },
+            ],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            resolver_specs: vec![],
+            instruction_hooks: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        };
+
+        let output = compile_serializable_spec(spec, "TokenPosition".to_string(), None)
+            .expect("should compile");
+        let file = output.full_file();
+
+        assert!(
+            file.contains("export interface TokenPosition {"),
+            "missing main interface:\n{}",
+            file
+        );
+        assert!(
+            file.contains("totalDeposit: bigint;"),
+            "missing root canonical field:\n{}",
+            file
+        );
+        assert!(
+            file.contains("metrics: TokenPositionMetrics;"),
+            "missing nested canonical section field:\n{}",
+            file
+        );
+        assert!(
+            file.contains("export interface TokenPositionMetrics {"),
+            "missing nested interface:\n{}",
+            file
+        );
+        assert!(
+            file.contains("lastUpdatedAt: bigint;"),
+            "missing nested canonical field:\n{}",
+            file
+        );
+
+        let bigint_schema = bigint_zod();
+        assert!(
+            file.contains("export const TokenPositionSchema = z.object({"),
+            "missing main schema:\n{}",
+            file
+        );
+        assert!(
+            file.contains(&format!("total_deposit: {},", bigint_schema)),
+            "missing raw root schema field:\n{}",
+            file
+        );
+        assert!(
+            file.contains("metrics: TokenPositionMetricsSchema,"),
+            "missing nested schema ref:\n{}",
+            file
+        );
+        assert!(
+            file.contains("totalDeposit: value.total_deposit,"),
+            "missing root transform:\n{}",
+            file
+        );
+        assert!(
+            file.contains("metrics: value.metrics,"),
+            "missing nested transform:\n{}",
+            file
+        );
+
+        assert!(
+            file.contains("export const TokenPositionMetricsSchema = z.object({"),
+            "missing nested schema:\n{}",
+            file
+        );
+        assert!(
+            file.contains(&format!("last_updated_at: {},", bigint_schema)),
+            "missing raw nested schema field:\n{}",
+            file
+        );
+        assert!(
+            file.contains("lastUpdatedAt: value.last_updated_at,"),
+            "missing nested transform:\n{}",
+            file
+        );
+
+        assert!(
+            file.contains("export const TokenPositionPatchSchema = z.object({"),
+            "missing patch schema:\n{}",
+            file
+        );
+        assert!(
+            file.contains(&format!("total_deposit: {}.optional(),", bigint_schema)),
+            "missing sparse patch field:\n{}",
+            file
+        );
+        assert!(
+            file.contains("metrics: TokenPositionMetricsPatchSchema.optional(),"),
+            "missing nested patch schema ref:\n{}",
+            file
+        );
+        assert!(
+            file.contains("...(value.total_deposit !== undefined ? { totalDeposit: value.total_deposit } : {}),"),
+            "missing sparse patch transform:\n{}",
+            file
+        );
+        assert!(
+            file.contains("export const TokenPositionMetricsPatchSchema = z.object({"),
+            "missing nested patch schema:\n{}",
+            file
+        );
+        assert!(
+            file.contains("patchSchemas: {\n    TokenPosition: TokenPositionPatchSchema,"),
+            "missing stack patch schema map:\n{}",
+            file
+        );
+    }
+
+    #[test]
+    fn streamed_builtin_token_metadata_codegen_is_canonical_and_sparse() {
+        let spec = SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: "TokenHolder".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.address".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![],
+            sections: vec![EntitySection {
+                name: "root".to_string(),
+                fields: vec![FieldTypeInfo {
+                    field_name: "base_token_metadata".to_string(),
+                    raw_name: Some("base_token_metadata".to_string()),
+                    canonical_name: Some("baseTokenMetadata".to_string()),
+                    rust_type_name: "Option<TokenMetadata>".to_string(),
+                    base_type: BaseType::Object,
+                    integer_kind: None,
+                    is_optional: true,
+                    is_array: false,
+                    inner_type: Some("TokenMetadata".to_string()),
+                    source_path: None,
+                    resolved_type: None,
+                    emit: true,
+                }],
+                is_nested_struct: false,
+                parent_field: None,
+            }],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            resolver_specs: vec![],
+            instruction_hooks: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        };
+
+        let output = compile_serializable_spec(spec, "TokenHolder".to_string(), None)
+            .expect("should compile");
+        let file = output.full_file();
+
+        assert!(
+            file.contains("export interface TokenMetadata {"),
+            "missing builtin interface:\n{}",
+            file
+        );
+        assert!(
+            file.contains("logoUri?: string | null;"),
+            "missing canonical builtin field:\n{}",
+            file
+        );
+        assert!(
+            file.contains("export const TokenMetadataSchema = z.object({"),
+            "missing builtin schema:\n{}",
+            file
+        );
+        assert!(
+            file.contains("logo_uri: z.string().nullable().optional(),"),
+            "missing raw builtin input field:\n{}",
+            file
+        );
+        assert!(
+            file.contains("...(value.logo_uri !== undefined ? { logoUri: value.logo_uri } : {}),"),
+            "missing canonical builtin transform:\n{}",
+            file
+        );
+        assert!(
+            file.contains("export const TokenMetadataPatchSchema = z.object({"),
+            "missing builtin patch schema:\n{}",
+            file
+        );
+        assert!(
+            file.contains("base_token_metadata: TokenMetadataPatchSchema.nullable().optional(),"),
+            "missing patch schema usage for builtin field:\n{}",
+            file
+        );
+    }
+
+    #[test]
+    fn streamed_section_codegen_localizes_prefixed_raw_field_names() {
+        let spec = SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: "OreRound".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.round_id".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![],
+            sections: vec![EntitySection {
+                name: "results".to_string(),
+                fields: vec![FieldTypeInfo {
+                    field_name: "results.expires_at_slot_hash".to_string(),
+                    raw_name: Some("results.expires_at_slot_hash".to_string()),
+                    canonical_name: Some("resultsExpiresAtSlotHash".to_string()),
+                    rust_type_name: "Option<String>".to_string(),
+                    base_type: BaseType::String,
+                    integer_kind: None,
+                    is_optional: true,
+                    is_array: false,
+                    inner_type: Some("String".to_string()),
+                    source_path: None,
+                    resolved_type: None,
+                    emit: true,
+                }],
+                is_nested_struct: false,
+                parent_field: None,
+            }],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            resolver_specs: vec![],
+            instruction_hooks: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        };
+
+        let output =
+            compile_serializable_spec(spec, "OreRound".to_string(), None).expect("should compile");
+        let file = output.full_file();
+
+        assert!(
+            file.contains("export interface OreRoundResults {"),
+            "missing section interface:\n{}",
+            file
+        );
+        assert!(
+            file.contains("expiresAtSlotHash: string | null;"),
+            "missing localized canonical field:\n{}",
+            file
+        );
+        assert!(
+            file.contains("expires_at_slot_hash: z.string().nullable(),"),
+            "missing localized raw schema field:\n{}",
+            file
+        );
+        assert!(
+            file.contains("expiresAtSlotHash: value.expires_at_slot_hash,"),
+            "missing localized transform:\n{}",
+            file
+        );
+        assert!(
+            file.contains("expires_at_slot_hash: z.string().nullable().optional(),"),
+            "missing localized patch schema field:\n{}",
+            file
+        );
+        assert!(
+            file.contains("...(value.expires_at_slot_hash !== undefined ? { expiresAtSlotHash: value.expires_at_slot_hash } : {}),"),
+            "missing localized sparse transform:\n{}",
+            file
+        );
     }
 
     #[test]
@@ -2501,8 +4291,11 @@ mod tests {
     fn test_account_type_collision_uses_account_suffix() {
         let plan_field = FieldTypeInfo {
             field_name: "plan".to_string(),
+            raw_name: Some("plan".to_string()),
+            canonical_name: Some("plan".to_string()),
             rust_type_name: "Option<serde_json::Value>".to_string(),
             base_type: BaseType::Object,
+            integer_kind: None,
             is_optional: false,
             is_array: false,
             inner_type: Some("Value".to_string()),
@@ -2565,7 +4358,7 @@ mod tests {
             output.interfaces
         );
         assert!(
-            output.interfaces.contains("plan?: PlanAccount;"),
+            output.interfaces.contains("plan: PlanAccount;"),
             "expected PlanAccount field reference, got:\n{}",
             output.interfaces
         );
@@ -2642,6 +4435,7 @@ mod tests {
 
         let output =
             compile_stack_spec(stack_spec, None).expect("stack compilation should succeed");
+        let file = output.full_file();
         let count = output
             .interfaces
             .matches("export type PlanStatus =")
@@ -2652,5 +4446,522 @@ mod tests {
             "expected shared enum type to be emitted once, got:\n{}",
             output.interfaces
         );
+        assert!(
+            file.contains("_STACK_CORE = {"),
+            "core export missing:\n{}",
+            file
+        );
+        assert!(
+            !file.contains("extendStack"),
+            "no extension wiring expected:\n{}",
+            file
+        );
+    }
+
+    #[test]
+    fn golden_ore_stack_json_compiles_program_modules_without_entities() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../stacks/ore/.arete/OreStream.stack.json"
+        );
+        let json = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            // Stack JSON is generated by the macro build; skip if not present.
+            Err(_) => return,
+        };
+        let mut spec: SerializableStackSpec =
+            serde_json::from_str(&json).expect("ore stack json should deserialize");
+
+        // Program-only emission must not depend on entities at all.
+        spec.entities.clear();
+
+        let output =
+            compile_program_modules(spec, None).expect("program-module compilation should succeed");
+        let file = output.full_file();
+
+        // Standalone per-program consts plus the combined map.
+        assert!(
+            file.contains("export const ORE = {"),
+            "ore const missing:\n{}",
+            file
+        );
+        assert!(
+            file.contains("export const ENTROPY = {"),
+            "entropy const missing"
+        );
+        assert!(
+            file.contains("export const ORE_STREAM_PROGRAMS = {"),
+            "combined program map missing"
+        );
+        assert!(file.contains("  ore: ORE,"));
+        assert!(file.contains("  entropy: ENTROPY,"));
+        assert!(file.contains("export default ORE_STREAM_PROGRAMS;"));
+        assert!(file.contains("ready for createSession({ programs: ... })"));
+
+        // Program bodies keep the full SDK surface...
+        assert!(file.contains("createInstructionHandler"));
+        assert!(file.contains("pdas: {"));
+        assert!(file.contains("addresses: {"));
+        assert!(file.contains("instructions: {"));
+        assert!(file.contains("createPreparedInstruction({"));
+        assert!(file.contains("buildInstruction("));
+
+        // ...but nothing stack- or view-shaped is emitted.
+        assert!(!file.contains("stateView"), "no view helpers expected");
+        assert!(!file.contains("listView"), "no view helpers expected");
+        assert!(!file.contains("views:"), "no views block expected");
+        assert!(!file.contains("endpoints:"), "no endpoints block expected");
+        assert!(
+            !file.contains("extendStack"),
+            "no extension wiring expected"
+        );
+    }
+
+    #[test]
+    fn compile_program_modules_emits_amount_aware_semantic_instruction_wrappers() {
+        let stack_spec = SerializableStackSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            stack_name: "DemoStream".to_string(),
+            program_ids: vec!["Prog111".to_string()],
+            idls: vec![IdlSnapshot {
+                name: "demo".to_string(),
+                program_id: Some("Prog111".to_string()),
+                version: "0.1.0".to_string(),
+                accounts: vec![],
+                instructions: vec![IdlInstructionSnapshot {
+                    name: "deposit".to_string(),
+                    discriminator: vec![9],
+                    discriminant: None,
+                    docs: vec![],
+                    accounts: vec![],
+                    args: vec![
+                        IdlFieldSnapshot {
+                            name: "amount".to_string(),
+                            type_: IdlTypeSnapshot::Simple("u64".to_string()),
+                            amount_hint: None,
+                        },
+                        IdlFieldSnapshot {
+                            name: "mint".to_string(),
+                            type_: IdlTypeSnapshot::Simple("publicKey".to_string()),
+                            amount_hint: None,
+                        },
+                    ],
+                }],
+                types: vec![],
+                events: vec![],
+                errors: vec![],
+                discriminant_size: 1,
+            }],
+            entities: vec![],
+            pdas: BTreeMap::new(),
+            instructions: vec![InstructionDef {
+                name: "deposit".to_string(),
+                discriminator: vec![9],
+                discriminator_size: 1,
+                accounts: vec![],
+                args: vec![
+                    InstructionArgDef {
+                        name: "amount".to_string(),
+                        arg_type: "u64".to_string(),
+                        docs: vec![],
+                        amount_hint: Some(InstructionAmountHint {
+                            decimals_source: AmountDecimalsSource::ArgMint {
+                                arg_name: "mint".to_string(),
+                            },
+                        }),
+                    },
+                    InstructionArgDef {
+                        name: "mint".to_string(),
+                        arg_type: "solana_pubkey::Pubkey".to_string(),
+                        docs: vec![],
+                        amount_hint: None,
+                    },
+                ],
+                errors: vec![],
+                program_id: Some("Prog111".to_string()),
+                docs: vec![],
+            }],
+            content_hash: None,
+        };
+
+        let output = compile_program_modules(stack_spec, None)
+            .expect("program-module compilation should succeed");
+        let file = output.full_file();
+
+        assert!(
+            file.contains("type AmountInput"),
+            "amount import missing:\n{}",
+            file
+        );
+        assert!(
+            file.contains("PROGRAM_OPERATION_EXTENSIONS"),
+            "runtime extension import missing"
+        );
+        assert!(
+            file.contains("resolveAmountToRaw"),
+            "amount resolver import missing"
+        );
+        assert!(file.contains("export interface DepositSemanticParams"));
+        assert!(file.contains("build?: BuildOptions;"));
+        assert!(file.contains("[PROGRAM_OPERATION_EXTENSIONS]: {"));
+        assert!(file
+            .contains("deposit: instructionOperation(async (params: DepositSemanticParams) => {"));
+        assert!(file.contains("const { build, amountDecimals, ...rawParams } = params;"));
+        assert!(file.contains("resolveAmountToRaw(context.chain"));
+        assert!(file.contains("const instruction = buildInstruction(depositInstruction, {"));
+        assert!(file.contains("createPreparedInstruction({"));
+    }
+
+    #[test]
+    fn golden_ore_stack_json_compiles_stack_with_root_helper_namespaces() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../stacks/ore/.arete/OreStream.stack.json"
+        );
+        let json = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let spec: SerializableStackSpec =
+            serde_json::from_str(&json).expect("ore stack json should deserialize");
+
+        let output = compile_stack_spec(spec, None).expect("stack compilation should succeed");
+        let file = output.full_file();
+
+        assert!(
+            file.contains("endpoints:"),
+            "stack endpoints missing:\n{}",
+            file
+        );
+        assert!(
+            file.contains("programs: {"),
+            "program block missing:\n{}",
+            file
+        );
+        assert!(
+            file.contains("addresses: {"),
+            "root addresses missing:\n{}",
+            file
+        );
+        assert!(
+            file.contains("instructions: {"),
+            "program instructions missing:\n{}",
+            file
+        );
+        assert!(
+            file.contains("buildInstruction("),
+            "instruction builders missing:\n{}",
+            file
+        );
+    }
+
+    #[test]
+    fn account_codegen_normalizes_raw_keys_and_nested_types() {
+        let idl_snapshot = IdlSnapshot {
+            name: "presale".to_string(),
+            program_id: None,
+            version: "0.1.0".to_string(),
+            accounts: vec![IdlAccountSnapshot {
+                name: "Presale".to_string(),
+                discriminator: vec![1, 2, 3, 4, 5, 6, 7, 8],
+                docs: vec![],
+                serialization: None,
+                fields: vec![
+                    IdlFieldSnapshot {
+                        name: "owner".to_string(),
+                        type_: IdlTypeSnapshot::Simple("pubkey".to_string()),
+                        amount_hint: None,
+                    },
+                    IdlFieldSnapshot {
+                        name: "total_deposit".to_string(),
+                        type_: IdlTypeSnapshot::Simple("u64".to_string()),
+                        amount_hint: None,
+                    },
+                    IdlFieldSnapshot {
+                        name: "optional_authority".to_string(),
+                        type_: IdlTypeSnapshot::Option(IdlOptionTypeSnapshot {
+                            option: Box::new(IdlTypeSnapshot::Simple("pubkey".to_string())),
+                        }),
+                        amount_hint: None,
+                    },
+                    IdlFieldSnapshot {
+                        name: "createKey".to_string(),
+                        type_: IdlTypeSnapshot::Simple("pubkey".to_string()),
+                        amount_hint: None,
+                    },
+                    IdlFieldSnapshot {
+                        name: "member".to_string(),
+                        type_: IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                            defined: IdlDefinedInnerSnapshot::Simple("MemberConfig".to_string()),
+                        }),
+                        amount_hint: None,
+                    },
+                ],
+                type_def: None,
+            }],
+            instructions: vec![],
+            types: vec![IdlTypeDefSnapshot {
+                name: "MemberConfig".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![
+                        IdlFieldSnapshot {
+                            name: "last_updated_at".to_string(),
+                            type_: IdlTypeSnapshot::Simple("i128".to_string()),
+                            amount_hint: None,
+                        },
+                        IdlFieldSnapshot {
+                            name: "authority_key".to_string(),
+                            type_: IdlTypeSnapshot::Simple("pubkey".to_string()),
+                            amount_hint: None,
+                        },
+                    ],
+                },
+            }],
+            events: vec![],
+            errors: vec![],
+            discriminant_size: 8,
+        };
+
+        let artifacts = generate_idl_account_artifacts(&[idl_snapshot], &HashSet::new());
+        let account_bigint = bigint_zod();
+
+        assert!(artifacts.code.contains("export interface Presale {"));
+        assert!(
+            artifacts.code.contains("owner: string;"),
+            "missing owner field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("totalDeposit: bigint;"),
+            "missing totalDeposit field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("optionalAuthority: string | null;"),
+            "missing optionalAuthority field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("createKey: string;"),
+            "missing createKey field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("member: MemberConfig;"),
+            "missing nested type field:\n{}",
+            artifacts.code
+        );
+        assert!(artifacts.code.contains("export interface MemberConfig {"));
+        assert!(
+            artifacts.code.contains("lastUpdatedAt: bigint;"),
+            "missing nested bigint field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("authorityKey: string;"),
+            "missing nested camelCase field:\n{}",
+            artifacts.code
+        );
+
+        assert!(artifacts
+            .code
+            .contains("export const PresaleSchema = z.object({"));
+        assert!(
+            artifacts.code.contains("owner: z.string(),"),
+            "missing owner schema field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts
+                .code
+                .contains(&format!("total_deposit: {},", account_bigint)),
+            "missing total_deposit schema field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts
+                .code
+                .contains("optional_authority: z.string().nullable(),"),
+            "missing optional_authority schema field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("create_key: z.string(),"),
+            "missing create_key schema field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts
+                .code
+                .contains("member: z.lazy(() => MemberConfigSchema),"),
+            "missing nested schema field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("owner: value.owner,"),
+            "missing owner transform:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts
+                .code
+                .contains("totalDeposit: value.total_deposit,"),
+            "missing totalDeposit transform:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts
+                .code
+                .contains("optionalAuthority: value.optional_authority,"),
+            "missing optionalAuthority transform:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("createKey: value.create_key,"),
+            "missing createKey transform:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("member: value.member,"),
+            "missing nested transform:\n{}",
+            artifacts.code
+        );
+
+        assert!(artifacts
+            .code
+            .contains("export const MemberConfigSchema = z.object({"));
+        assert!(
+            artifacts
+                .code
+                .contains(&format!("last_updated_at: {},", bigint_zod())),
+            "missing nested bigint schema field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("authority_key: z.string(),"),
+            "missing nested schema field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts
+                .code
+                .contains("lastUpdatedAt: value.last_updated_at,"),
+            "missing nested bigint transform:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts
+                .code
+                .contains("authorityKey: value.authority_key,"),
+            "missing nested camelCase transform:\n{}",
+            artifacts.code
+        );
+    }
+
+    #[test]
+    fn account_codegen_falls_back_to_same_named_type_def_when_account_fields_are_empty() {
+        let idl_snapshot = IdlSnapshot {
+            name: "presale".to_string(),
+            program_id: None,
+            version: "0.1.0".to_string(),
+            accounts: vec![IdlAccountSnapshot {
+                name: "Presale".to_string(),
+                discriminator: vec![1, 2, 3, 4, 5, 6, 7, 8],
+                docs: vec![],
+                serialization: None,
+                fields: vec![],
+                type_def: None,
+            }],
+            instructions: vec![],
+            types: vec![IdlTypeDefSnapshot {
+                name: "Presale".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![
+                        IdlFieldSnapshot {
+                            name: "owner".to_string(),
+                            type_: IdlTypeSnapshot::Simple("pubkey".to_string()),
+                            amount_hint: None,
+                        },
+                        IdlFieldSnapshot {
+                            name: "total_deposit".to_string(),
+                            type_: IdlTypeSnapshot::Simple("u64".to_string()),
+                            amount_hint: None,
+                        },
+                    ],
+                },
+            }],
+            events: vec![],
+            errors: vec![],
+            discriminant_size: 8,
+        };
+
+        let artifacts = generate_idl_account_artifacts(&[idl_snapshot], &HashSet::new());
+
+        assert!(artifacts.code.contains("export interface Presale {"));
+        assert!(
+            artifacts.code.contains("owner: string;"),
+            "missing owner field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("totalDeposit: bigint;"),
+            "missing totalDeposit field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts
+                .code
+                .contains("export const PresaleSchema = z.object({"),
+            "missing schema:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("owner: z.string(),"),
+            "missing owner schema field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts
+                .code
+                .contains(&format!("total_deposit: {},", bigint_zod())),
+            "missing total_deposit schema field:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts.code.contains("owner: value.owner,"),
+            "missing owner transform:\n{}",
+            artifacts.code
+        );
+        assert!(
+            artifacts
+                .code
+                .contains("totalDeposit: value.total_deposit,"),
+            "missing totalDeposit transform:\n{}",
+            artifacts.code
+        );
+    }
+
+    #[test]
+    fn compile_program_modules_rejects_specs_without_idls() {
+        let stack_spec = SerializableStackSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            stack_name: "Empty".to_string(),
+            program_ids: vec![],
+            idls: vec![],
+            entities: vec![],
+            pdas: BTreeMap::new(),
+            instructions: vec![],
+            content_hash: None,
+        };
+
+        let error =
+            compile_program_modules(stack_spec, None).expect_err("no IDLs should be an error");
+        assert!(error.contains("no IDLs"), "unexpected error: {}", error);
     }
 }

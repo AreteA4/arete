@@ -165,6 +165,8 @@ impl UpdateContext {
 
 pub type Register = usize;
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+pub type ComputedEvaluatorResult =
+    std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 pub type RegisterValue = Value;
 
@@ -2287,7 +2289,7 @@ impl VmContext {
         override_state_id: u32,
         entity_name: &str,
         entity_evaluator: Option<
-            &Box<dyn Fn(&mut Value, Option<u64>, i64) -> Result<()> + Send + Sync>,
+            &Box<dyn Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync>,
         >,
         non_emitted_fields: Option<&HashSet<String>>,
     ) -> Result<Vec<Mutation>> {
@@ -4129,7 +4131,7 @@ impl VmContext {
         state_id: u32,
         op: &DeferredWhenOperation,
         entity_evaluator: Option<
-            &Box<dyn Fn(&mut Value, Option<u64>, i64) -> Result<()> + Send + Sync>,
+            &Box<dyn Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync>,
         >,
         computed_paths: Option<&[String]>,
     ) -> Result<Vec<Mutation>> {
@@ -4708,7 +4710,7 @@ impl VmContext {
         let cutoff = now - TEMPORAL_HISTORY_TTL_SECONDS;
         let mut total_removed = 0;
 
-        for (_, index) in state.temporal_indexes.iter_mut() {
+        for index in state.temporal_indexes.values_mut() {
             total_removed += index.cleanup_expired(cutoff);
         }
 
@@ -5433,6 +5435,47 @@ impl VmContext {
                     Err(format!("Cannot call len() on {:?}", value).into())
                 }
             }
+            "sum" => {
+                if !args.is_empty() {
+                    return Err("sum() does not accept arguments".into());
+                }
+                if value.is_null() {
+                    return Ok(Value::Null);
+                }
+
+                let values = value
+                    .as_array()
+                    .ok_or_else(|| format!("Cannot call sum() on {:?}", value))?;
+
+                if values.iter().all(|item| item.as_u64().is_some()) {
+                    let total = values.iter().try_fold(0_u64, |total, item| {
+                        total.checked_add(item.as_u64().unwrap())
+                    });
+                    return total
+                        .map(|total| json!(total))
+                        .ok_or_else(|| "sum() unsigned integer overflow".into());
+                }
+
+                if values.iter().all(|item| item.as_i64().is_some()) {
+                    let total = values.iter().try_fold(0_i64, |total, item| {
+                        total.checked_add(item.as_i64().unwrap())
+                    });
+                    return total
+                        .map(|total| json!(total))
+                        .ok_or_else(|| "sum() signed integer overflow".into());
+                }
+
+                let total = values.iter().try_fold(0.0_f64, |total, item| {
+                    item.as_f64().map(|value| total + value)
+                });
+                match total {
+                    Some(total) if total.is_finite() => serde_json::Number::from_f64(total)
+                        .map(Value::Number)
+                        .ok_or_else(|| "Failed to serialize sum() result".into()),
+                    Some(_) => Err("sum() result is not finite".into()),
+                    None => Err(format!("Cannot sum non-numeric array {:?}", value).into()),
+                }
+            }
             "to_string" => Ok(json!(value.to_string())),
             "min" => {
                 if args.is_empty() {
@@ -5564,7 +5607,8 @@ impl VmContext {
     /// This returns a function that can be passed to the bytecode builder
     pub fn create_evaluator_from_specs(
         specs: Vec<ComputedFieldSpec>,
-    ) -> impl Fn(&mut Value, Option<u64>, i64) -> Result<()> + Send + Sync + 'static {
+    ) -> impl Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync + 'static
+    {
         move |state: &mut Value, context_slot: Option<u64>, context_timestamp: i64| {
             let mut vm = VmContext::new();
             vm.current_context = Some(UpdateContext {
@@ -5572,7 +5616,12 @@ impl VmContext {
                 timestamp: Some(context_timestamp),
                 ..Default::default()
             });
-            vm.evaluate_computed_fields_from_ast(state, &specs)?;
+            vm.evaluate_computed_fields_from_ast(state, &specs)
+                .map_err(|error| {
+                    Box::<dyn std::error::Error + Send + Sync>::from(std::io::Error::other(
+                        error.to_string(),
+                    ))
+                })?;
             Ok(())
         }
     }
@@ -5770,6 +5819,54 @@ mod tests {
             Some(37951316474),
             "Value should be correct sum"
         );
+    }
+
+    #[test]
+    fn test_computed_array_sum_preserves_u64() {
+        let vm = VmContext::new();
+        let mut state = json!({
+            "state": {
+                "deployed": [422874702_u64, 569506895_u64, 573312366_u64]
+            }
+        });
+        let spec = ComputedFieldSpec {
+            target_path: "state.total_deployed".to_string(),
+            result_type: "Option<u64>".to_string(),
+            expression: ComputedExpr::MethodCall {
+                expr: Box::new(ComputedExpr::FieldRef {
+                    path: "state.deployed".to_string(),
+                }),
+                method: "sum".to_string(),
+                args: Vec::new(),
+            },
+        };
+
+        vm.evaluate_computed_fields_from_ast(&mut state, &[spec])
+            .unwrap();
+
+        assert_eq!(state["state"]["total_deployed"], json!(1_565_693_963_u64));
+    }
+
+    #[test]
+    fn test_computed_array_sum_propagates_null() {
+        let vm = VmContext::new();
+        let mut state = json!({ "state": { "deployed": null } });
+        let spec = ComputedFieldSpec {
+            target_path: "state.total_deployed".to_string(),
+            result_type: "Option<u64>".to_string(),
+            expression: ComputedExpr::MethodCall {
+                expr: Box::new(ComputedExpr::FieldRef {
+                    path: "state.deployed".to_string(),
+                }),
+                method: "sum".to_string(),
+                args: Vec::new(),
+            },
+        };
+
+        vm.evaluate_computed_fields_from_ast(&mut state, &[spec])
+            .unwrap();
+
+        assert!(state["state"]["total_deployed"].is_null());
     }
 
     #[test]
@@ -6129,8 +6226,9 @@ mod tests {
             },
         ];
 
-        let evaluator: Box<dyn Fn(&mut Value, Option<u64>, i64) -> Result<()> + Send + Sync> =
-            Box::new(VmContext::create_evaluator_from_specs(computed_specs));
+        let evaluator: Box<
+            dyn Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync,
+        > = Box::new(VmContext::create_evaluator_from_specs(computed_specs));
 
         // Test that when we set entropy.base_value via deferred when-op,
         // both computed fields are updated

@@ -13,6 +13,7 @@ This crate provides a builder API for creating Arete servers that:
 - Process Solana blockchain data via Yellowstone gRPC
 - Parse and transform data using generated IDL parsers and the Arete VM
 - Stream entity updates over WebSockets to connected clients
+- Serve stack-scoped HTTP reads for `/chain/*` and `/programs/*`
 - Support multiple streaming modes (State, List, Append)
 - Monitor stream health and connectivity status
 
@@ -40,10 +41,12 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-### WebSocket Auth Plugins
+### Auth Plugins
 
-`arete-server` now supports pluggable WebSocket auth. By default, all
-connections are allowed.
+`arete-server` supports pluggable auth for both WebSocket connections and HTTP
+read endpoints. By default, all connections and HTTP reads are allowed.
+When WebSocket auth is configured, HTTP reads inherit that plugin unless an
+HTTP-specific plugin is configured.
 
 ```rust
 use std::sync::Arc;
@@ -56,6 +59,9 @@ Server::builder()
     .websocket_auth_plugin(Arc::new(StaticTokenAuthPlugin::new([
         "dev-secret".to_string(),
     ])))
+    .http_auth_plugin(Arc::new(StaticTokenAuthPlugin::new([
+        "dev-secret".to_string(),
+    ])))
     .start()
     .await?;
 ```
@@ -64,6 +70,9 @@ The built-in `StaticTokenAuthPlugin` accepts either:
 
 - `Authorization: Bearer <token>`
 - `?token=<token>` query param
+
+For signed sessions, the same short-lived JWT can be used for both WebSocket
+and HTTP read requests. HTTP reads use bearer-only transport.
 
 ### With Configuration
 

@@ -70,12 +70,13 @@ pub fn build_account_index(idl: &IdlSpec) -> HashMap<String, AccountUsage> {
     let mut index: HashMap<String, AccountUsage> = HashMap::new();
 
     for ix in &idl.instructions {
+        let flat_accounts = ix.flattened_accounts();
         let ix_ref = InstructionRef {
             name: ix.name.clone(),
-            account_count: ix.accounts.len(),
+            account_count: flat_accounts.len(),
             arg_count: ix.args.len(),
         };
-        for acc in &ix.accounts {
+        for acc in &flat_accounts {
             let entry = index
                 .entry(acc.name.clone())
                 .or_insert_with(|| AccountUsage {
@@ -144,18 +145,19 @@ pub fn find_links(idl: &IdlSpec, account_a: &str, account_b: &str) -> Vec<Instru
     idl.instructions
         .iter()
         .filter(|ix| {
-            let names: Vec<&str> = ix.accounts.iter().map(|a| a.name.as_str()).collect();
+            let flat_accounts = ix.flattened_accounts();
+            let names: Vec<&str> = flat_accounts.iter().map(|a| a.name.as_str()).collect();
             names.contains(&account_a) && names.contains(&account_b)
         })
         .map(|ix| {
+            let flat_accounts = ix.flattened_accounts();
             let a_writable = ix
-                .accounts
+                .flattened_accounts()
                 .iter()
                 .find(|a| a.name == account_a)
                 .map(|a| a.is_mut)
                 .unwrap_or(false);
-            let b_writable = ix
-                .accounts
+            let b_writable = flat_accounts
                 .iter()
                 .find(|a| a.name == account_b)
                 .map(|a| a.is_mut)

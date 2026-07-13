@@ -7,8 +7,8 @@ use crate::websocket::auth::{
 };
 use crate::websocket::client_manager::{ClientManager, RateLimitConfig};
 use crate::websocket::frame::{
-    transform_large_u64_to_strings, Frame, Mode, SnapshotEntity, SnapshotFrame, SortConfig,
-    SortOrder, SubscribedFrame,
+    apply_wire_format, Frame, Mode, SnapshotEntity, SnapshotFrame, SortConfig, SortOrder,
+    SubscribedFrame,
 };
 use crate::websocket::subscription::{
     ClientMessage, RefreshAuthRequest, RefreshAuthResponse, SocketIssueMessage, Subscription,
@@ -1370,7 +1370,7 @@ async fn attach_client_to_bus(
 
             if should_send_snapshot {
                 if let Some(mut cached_entity) = ctx.entity_cache.get(view_id, key).await {
-                    transform_large_u64_to_strings(&mut cached_entity);
+                    apply_wire_format(&mut cached_entity, &view_spec.wire_format);
                     let snapshot_entities = vec![SnapshotEntity {
                         key: key.to_string(),
                         data: cached_entity,
@@ -1488,7 +1488,7 @@ async fn attach_client_to_bus(
                     .into_iter()
                     .filter(|(key, _)| subscription.matches_key(key))
                     .map(|(key, mut data)| {
-                        transform_large_u64_to_strings(&mut data);
+                        apply_wire_format(&mut data, &view_spec.wire_format);
                         SnapshotEntity { key, data }
                     })
                     .collect();
@@ -1619,7 +1619,7 @@ async fn attach_derived_view_subscription_otel(
         let snapshot_entities: Vec<SnapshotEntity> = initial_window
             .into_iter()
             .map(|(key, mut data)| {
-                transform_large_u64_to_strings(&mut data);
+                apply_wire_format(&mut data, &view_spec.wire_format);
                 SnapshotEntity { key, data }
             })
             .collect();
@@ -1710,7 +1710,7 @@ async fn attach_derived_view_subscription_otel(
                                         }
 
                                         let mut transformed_data = data.clone();
-                                        transform_large_u64_to_strings(&mut transformed_data);
+                                        apply_wire_format(&mut transformed_data, &view_spec.wire_format);
                                         let frame = Frame {
                                             seq: None,
                                             mode: frame_mode,
@@ -1771,7 +1771,7 @@ async fn attach_derived_view_subscription_otel(
 
                                     for (key, data) in &new_window {
                                         let mut transformed_data = data.clone();
-                                        transform_large_u64_to_strings(&mut transformed_data);
+                                        apply_wire_format(&mut transformed_data, &view_spec.wire_format);
                                         let frame = Frame {
                                             seq: None,
                                             mode: frame_mode,
@@ -1865,7 +1865,7 @@ async fn attach_client_to_bus(
 
             if should_send_snapshot {
                 if let Some(mut cached_entity) = ctx.entity_cache.get(view_id, key).await {
-                    transform_large_u64_to_strings(&mut cached_entity);
+                    apply_wire_format(&mut cached_entity, &view_spec.wire_format);
                     let snapshot_entities = vec![SnapshotEntity {
                         key: key.to_string(),
                         data: cached_entity,
@@ -1977,7 +1977,7 @@ async fn attach_client_to_bus(
                     .into_iter()
                     .filter(|(key, _)| subscription.matches_key(key))
                     .map(|(key, mut data)| {
-                        transform_large_u64_to_strings(&mut data);
+                        apply_wire_format(&mut data, &view_spec.wire_format);
                         SnapshotEntity { key, data }
                     })
                     .collect();
@@ -2102,7 +2102,7 @@ async fn attach_derived_view_subscription(
         let snapshot_entities: Vec<SnapshotEntity> = initial_window
             .into_iter()
             .map(|(key, mut data)| {
-                transform_large_u64_to_strings(&mut data);
+                apply_wire_format(&mut data, &view_spec.wire_format);
                 SnapshotEntity { key, data }
             })
             .collect();
@@ -2188,7 +2188,7 @@ async fn attach_derived_view_subscription(
                                         }
 
                                         let mut transformed_data = data.clone();
-                                        transform_large_u64_to_strings(&mut transformed_data);
+                                        apply_wire_format(&mut transformed_data, &view_spec.wire_format);
                                         let frame = Frame {
                                             seq: None,
                                             mode: frame_mode,
@@ -2242,7 +2242,7 @@ async fn attach_derived_view_subscription(
 
                                     for (key, data) in &new_window {
                                         let mut transformed_data = data.clone();
-                                        transform_large_u64_to_strings(&mut transformed_data);
+                                        apply_wire_format(&mut transformed_data, &view_spec.wire_format);
                                         let frame = Frame {
                                             seq: None,
                                             mode: frame_mode,

@@ -85,5 +85,13 @@ pub fn generate_multi_entity_builder(
             #view_extraction
             all_views
         }
+
+        pub fn get_entity_specs() -> Vec<arete::runtime::arete_interpreter::ast::SerializableStreamSpec> {
+            let stack_json = #stack_spec_json;
+            let stack_spec: arete::runtime::arete_interpreter::ast::SerializableStackSpec =
+                arete::runtime::serde_json::from_str(stack_json)
+                    .unwrap_or_else(|error| panic!("embedded stack spec is invalid: {}", error));
+            stack_spec.entities
+        }
     }
 }

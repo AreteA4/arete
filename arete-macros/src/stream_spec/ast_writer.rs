@@ -13,10 +13,10 @@ use crate::ast::writer::{
     convert_idl_to_snapshot, parse_population_strategy, parse_transformation,
 };
 use crate::ast::{
-    ComputedFieldSpec, ConditionExpr, EntitySection, FieldPath, FieldTypeInfo, HookAction,
-    IdentitySpec, IdlSerializationSnapshot, InstructionHook, KeyResolutionStrategy,
-    LookupIndexSpec, MappingSource, ResolveStrategy, ResolverCondition, ResolverExtractSpec,
-    ResolverHook, ResolverSpec, ResolverStrategy, ResolverType, SerializableFieldMapping,
+    ComputedFieldSpec, ConditionExpr, EntitySection, FieldPath, HookAction, IdentitySpec,
+    IdlSerializationSnapshot, InstructionHook, KeyResolutionStrategy, LookupIndexSpec,
+    MappingSource, ResolveStrategy, ResolverCondition, ResolverExtractSpec, ResolverHook,
+    ResolverSpec, ResolverStrategy, ResolverType, SerializableFieldMapping,
     SerializableHandlerSpec, SerializableStreamSpec, SourceSpec,
 };
 use crate::diagnostic::{idl_error_to_syn, internal_codegen_error};
@@ -187,21 +187,18 @@ pub fn build_ast(
                 || result_type.contains("Vec<")
                 || result_type.contains("[");
 
-            let field_info = FieldTypeInfo {
-                field_name: computed_spec.target_path.clone(),
-                rust_type_name: computed_spec.result_type.clone(),
-                base_type: if is_array {
-                    crate::ast::BaseType::Array
-                } else {
-                    crate::ast::BaseType::Any
-                },
-                is_optional,
-                is_array,
-                inner_type: Some(resolver_type.to_string()),
-                source_path: None,
-                resolved_type: None,
-                emit: true,
+            let mut field_info = crate::stream_spec::sections::analyze_field_type(
+                &computed_spec.target_path,
+                result_type,
+            );
+            field_info.base_type = if is_array {
+                crate::ast::BaseType::Array
+            } else {
+                crate::ast::BaseType::Any
             };
+            field_info.is_optional = is_optional;
+            field_info.is_array = is_array;
+            field_info.inner_type = Some(resolver_type.to_string());
             field_mappings.insert(computed_spec.target_path.clone(), field_info);
         }
     }
@@ -584,14 +581,16 @@ fn build_source_handler(
             let instr_type = path_to_string(when_path);
             let instr_base = instr_type.split("::").last().unwrap_or(&instr_type);
             let program_name = program_name_for_type(&instr_type, idls);
-            scoped_instruction_event_type(program_name, instr_base)
+            let is_cpi_event = instr_type.contains("::events::");
+            scoped_instruction_or_cpi_event_type(program_name, instr_base, is_cpi_event)
         });
 
         let stop = mapping.stop.as_ref().map(|stop_path| {
             let instr_type = path_to_string(stop_path);
             let instr_base = instr_type.split("::").last().unwrap_or(&instr_type);
             let program_name = program_name_for_type(&instr_type, idls);
-            scoped_instruction_event_type(program_name, instr_base)
+            let is_cpi_event = instr_type.contains("::events::");
+            scoped_instruction_or_cpi_event_type(program_name, instr_base, is_cpi_event)
         });
 
         serializable_mappings.push(SerializableFieldMapping {
@@ -1080,7 +1079,11 @@ fn build_event_handler(
         }
     };
 
-    let type_name = scoped_instruction_event_type(program_name, instruction_type);
+    let is_cpi_event = instruction_path_str
+        .as_deref()
+        .is_some_and(|path| path.contains("::events::"));
+    let type_name =
+        scoped_instruction_or_cpi_event_type(program_name, instruction_type, is_cpi_event);
 
     Ok(Some(SerializableHandlerSpec {
         source: SourceSpec::Source {
@@ -1355,7 +1358,9 @@ fn build_instruction_hooks_ast(
             let stop_type = path_to_string(stop_path);
             let stop_base = stop_type.split("::").last().unwrap_or(&stop_type);
             let stop_program = program_name_for_type(&stop_type, idls);
-            let stop_type_state = scoped_instruction_event_type(stop_program, stop_base);
+            let stop_is_cpi_event = stop_type.contains("::events::");
+            let stop_type_state =
+                scoped_instruction_or_cpi_event_type(stop_program, stop_base, stop_is_cpi_event);
 
             let stop_field = format!("__stop:{}", mapping.target_field_name);
 
@@ -1424,7 +1429,12 @@ fn build_instruction_hooks_ast(
                 {
                     let instr_base = source_type.split("::").last().unwrap();
                     let program_name = program_name_for_type(source_type, idls);
-                    let instr_type_state = scoped_instruction_event_type(program_name, instr_base);
+                    let is_cpi_event = source_type.contains("::events::");
+                    let instr_type_state = scoped_instruction_or_cpi_event_type(
+                        program_name,
+                        instr_base,
+                        is_cpi_event,
+                    );
 
                     let condition = condition_expr.clone();
 

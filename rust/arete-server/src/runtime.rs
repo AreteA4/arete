@@ -2,7 +2,7 @@ use crate::bus::BusManager;
 use crate::cache::EntityCache;
 use crate::config::ServerConfig;
 use crate::health::HealthMonitor;
-use crate::http_health::HttpHealthServer;
+use crate::http_server::HttpServer;
 use crate::materialized_view::MaterializedViewRegistry;
 use crate::mutation_batch::MutationBatch;
 use crate::projector::Projector;
@@ -56,6 +56,7 @@ pub struct Runtime {
     spec: Option<Spec>,
     materialized_views: Option<MaterializedViewRegistry>,
     websocket_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
+    http_auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     websocket_usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     websocket_max_clients: Option<usize>,
     websocket_rate_limit_config: Option<RateLimitConfig>,
@@ -72,6 +73,7 @@ impl Runtime {
             spec: None,
             materialized_views: None,
             websocket_auth_plugin: None,
+            http_auth_plugin: None,
             websocket_usage_emitter: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
@@ -87,6 +89,7 @@ impl Runtime {
             spec: None,
             materialized_views: None,
             websocket_auth_plugin: None,
+            http_auth_plugin: None,
             websocket_usage_emitter: None,
             websocket_max_clients: None,
             websocket_rate_limit_config: None,
@@ -108,6 +111,11 @@ impl Runtime {
         websocket_auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     ) -> Self {
         self.websocket_auth_plugin = Some(websocket_auth_plugin);
+        self
+    }
+
+    pub fn with_http_auth_plugin(mut self, http_auth_plugin: Arc<dyn WebSocketAuthPlugin>) -> Self {
+        self.http_auth_plugin = Some(http_auth_plugin);
         self
     }
 
@@ -220,8 +228,8 @@ impl Runtime {
             None
         };
 
-        let parser_handle = if let Some(spec) = self.spec {
-            if let Some(parser_setup) = spec.parser_setup {
+        let parser_handle = if let Some(spec) = self.spec.as_ref() {
+            if let Some(parser_setup) = spec.parser_setup.clone() {
                 let program_id = spec
                     .program_ids
                     .first()
@@ -253,9 +261,21 @@ impl Runtime {
         // always respond even when the event processing pipeline saturates worker threads
         // (e.g. due to std::sync::Mutex contention on VmContext under high throughput).
         let _http_health_handle = if let Some(http_health_config) = &self.config.http_health {
-            let mut http_server = HttpHealthServer::new(http_health_config.bind_address);
+            let mut http_server = HttpServer::new(http_health_config.bind_address);
             if let Some(monitor) = health_monitor.clone() {
                 http_server = http_server.with_health_monitor(monitor);
+            }
+            if let Some(spec) = &self.spec {
+                if let Some(reader) = spec.program_account_reader.clone() {
+                    http_server = http_server.with_program_account_reader(reader);
+                }
+            }
+            if let Some(plugin) = self
+                .http_auth_plugin
+                .clone()
+                .or_else(|| self.websocket_auth_plugin.clone())
+            {
+                http_server = http_server.with_auth_plugin(plugin);
             }
 
             let bind_addr = http_health_config.bind_address;

@@ -142,12 +142,14 @@ Credentials: `~/.arete/credentials.toml`
 ## SDK Generation
 
 ```bash
-a4 install ore-stack-abc123 --ts              # Generate hosted TypeScript SDK directly
-a4 install ore-stack-abc123 --rust            # Generate hosted Rust SDK directly
+a4 install ore-stack-abc123 --ts              # Install a published hosted stack SDK
+a4 install ore-stack-abc123 --rust            # Install a published hosted Rust stack SDK
+a4 install program spl-token --ts             # Install a published hosted program SDK
 a4 sdk list                                   # List available stacks
-a4 sdk create settlement-game --ts            # Generate TypeScript SDK
-a4 sdk create settlement-game --rust          # Generate Rust SDK
-a4 sdk create ore-stack-abc123                # Prompts for SDK language if omitted
+a4 sdk create settlement-game --ts            # Generate a stack TypeScript SDK
+a4 sdk create settlement-game --rust          # Generate a stack Rust SDK
+a4 sdk create settlement-game --ts --program-only
+a4 sdk create --ts --program-only --idl ./idls/spl-token.idl.json
 ```
 
 ## Configuration

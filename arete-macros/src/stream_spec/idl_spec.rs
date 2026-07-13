@@ -139,10 +139,8 @@ pub fn process_idl_spec(
                 impl_blocks.push(impl_item.clone());
             } else if let Item::Macro(item_macro) = item {
                 if item_macro.mac.path.is_ident("pdas") {
-                    match syn::parse2::<PdasBlock>(item_macro.mac.tokens.clone()) {
-                        Ok(block) => manual_pdas_blocks.push(block),
-                        Err(e) => return Err(e),
-                    }
+                    manual_pdas_blocks
+                        .push(syn::parse2::<PdasBlock>(item_macro.mac.tokens.clone())?);
                 }
             }
         }

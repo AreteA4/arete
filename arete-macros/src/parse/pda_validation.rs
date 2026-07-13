@@ -71,7 +71,7 @@ impl<'a> PdaValidationContext<'a> {
 
             ParsedSeedKind::Account(account_name) => {
                 let account_exists = idl.instructions.iter().any(|ix| {
-                    ix.accounts
+                    ix.flattened_accounts()
                         .iter()
                         .any(|acc| &acc.name == account_name || acc.name == *account_name)
                 });
@@ -140,7 +140,7 @@ impl<'a> PdaValidationContext<'a> {
     fn collect_account_names(&self, idl: &IdlSpec) -> Vec<String> {
         let mut names: HashSet<String> = HashSet::new();
         for ix in &idl.instructions {
-            for acc in &ix.accounts {
+            for acc in ix.flattened_accounts() {
                 names.insert(acc.name.clone());
             }
         }
@@ -176,6 +176,7 @@ mod tests {
             metadata: None,
             accounts: vec![],
             constants: vec![],
+            pdas: vec![],
             instructions: vec![IdlInstruction {
                 name: "create".to_string(),
                 discriminator: vec![0; 8],
@@ -188,6 +189,7 @@ mod tests {
                         is_mut: false,
                         address: None,
                         pda: None,
+                        accounts: vec![],
                         optional: false,
                         docs: vec![],
                     },
@@ -197,6 +199,7 @@ mod tests {
                         is_mut: true,
                         address: None,
                         pda: None,
+                        accounts: vec![],
                         optional: false,
                         docs: vec![],
                     },
@@ -204,6 +207,7 @@ mod tests {
                 args: vec![IdlField {
                     name: "roundId".to_string(),
                     type_: IdlType::Simple("u64".to_string()),
+                    amount_hint: None,
                 }],
             }],
             types: vec![],

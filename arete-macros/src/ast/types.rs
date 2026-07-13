@@ -310,7 +310,7 @@ pub enum UnaryOp {
 /// circular dependency between proc-macro crates and their output crates.
 /// When bumping this version, you MUST also update the constant in the
 /// interpreter crate. A test in versioned.rs verifies they stay in sync.
-pub const CURRENT_AST_VERSION: &str = "0.0.2";
+pub const CURRENT_AST_VERSION: &str = "0.0.4";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableStreamSpec {
@@ -509,8 +509,14 @@ pub struct EntitySection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldTypeInfo {
     pub field_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_name: Option<String>,
     pub rust_type_name: String,
     pub base_type: BaseType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integer_kind: Option<IntegerKind>,
     pub is_optional: bool,
     pub is_array: bool,
     #[serde(default)]
@@ -544,10 +550,52 @@ pub struct ResolvedStructType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedField {
     pub field_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_name: Option<String>,
     pub field_type: String,
     pub base_type: BaseType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integer_kind: Option<IntegerKind>,
     pub is_optional: bool,
     pub is_array: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IntegerKind {
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    Usize,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    Isize,
+}
+
+impl IntegerKind {
+    pub fn from_rust_type(type_str: &str) -> Option<Self> {
+        match type_str.trim() {
+            "u8" => Some(Self::U8),
+            "u16" => Some(Self::U16),
+            "u32" => Some(Self::U32),
+            "u64" => Some(Self::U64),
+            "u128" => Some(Self::U128),
+            "usize" => Some(Self::Usize),
+            "i8" => Some(Self::I8),
+            "i16" => Some(Self::I16),
+            "i32" => Some(Self::I32),
+            "i64" => Some(Self::I64),
+            "i128" => Some(Self::I128),
+            "isize" => Some(Self::Isize),
+            _ => None,
+        }
+    }
 }
 
 /// Language-agnostic base type classification
@@ -929,6 +977,25 @@ pub struct InstructionAccountDef {
     pub docs: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstructionAmountHint {
+    pub decimals_source: AmountDecimalsSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AmountDecimalsSource {
+    ArgMint { arg_name: String },
+    ArgDecimals { arg_name: String },
+    KnownAccount { account_name: String },
+    Constant { decimals: u8 },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstructionArgDef {
     pub name: String,
@@ -936,6 +1003,8 @@ pub struct InstructionArgDef {
     pub arg_type: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub docs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_hint: Option<InstructionAmountHint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

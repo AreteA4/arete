@@ -1369,16 +1369,11 @@ pub fn generate_vm_handler(
                                     .unwrap()
                                     .as_secs() as i64);
 
-                            // SAFETY: Carefully splitting mutable borrow into disjoint parts
-                            let vm_ptr: *mut arete::runtime::arete_interpreter::vm::VmContext = &mut *vm as *mut arete::runtime::arete_interpreter::vm::VmContext;
-
                             let mut ctx = arete::runtime::arete_interpreter::resolvers::InstructionContext::with_metrics(
                                 accounts,
                                 0,
                                 &mut *vm,
-                                unsafe { (*vm_ptr).registers_mut() },
                                 2,
-                                unsafe { (*vm_ptr).path_cache() },
                                 instruction_data,
                                 Some(context.slot.unwrap_or(0)),
                                 context.signature.clone(),
@@ -1556,6 +1551,7 @@ pub fn generate_spec_function(
     state_enum_name: &str,
     instruction_enum_name: &str,
     program_name: &str,
+    account_names: &[String],
     config: &RuntimeGenConfig,
 ) -> TokenStream {
     let _state_enum = format_ident!("{}", state_enum_name);
@@ -1594,16 +1590,27 @@ pub fn generate_spec_function(
     let managed_grpc_helpers = generate_managed_grpc_helpers();
     let slot_scheduler_task = generate_slot_scheduler_task();
     let slot_subscription_task = generate_slot_subscription_task();
+    let program_account_reader = generate_program_account_reader_fn(&[PipelineInfo {
+        parser_module_name: "parsers".to_string(),
+        program_name: program_name.to_string(),
+        program_id: String::new(),
+        state_enum_name: state_enum_name.to_string(),
+        instruction_enum_name: instruction_enum_name.to_string(),
+        account_names: account_names.to_vec(),
+    }]);
 
     quote! {
         #managed_grpc_helpers
+        #program_account_reader
 
         pub fn spec() -> arete::runtime::arete_server::Spec {
             let bytecode = create_multi_entity_bytecode();
             let program_id = parsers::PROGRAM_ID_STR.to_string();
 
             arete::runtime::arete_server::Spec::new(bytecode, program_id)
+                .with_entity_specs(get_entity_specs())
                 .with_parser_setup(create_parser_setup())
+                .with_program_account_reader(create_program_account_reader())
                 #views_call
         }
 
@@ -2384,13 +2391,18 @@ pub fn generate_instruction_handler_impl(
 
                 let static_keys_vec = &raw_update.accounts;
                 let event_type = value.event_type();
+                let event_kind = if event_type.ends_with("CpiEvent") {
+                    "program_event"
+                } else {
+                    "instruction"
+                };
                 // Reserve downstream capacity before mutating VM state so a wedged
                 // projector cannot leave the parser ahead of published batches.
                 let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
 
                 let mut log = arete::runtime::arete_interpreter::CanonicalLog::new();
                 log.set("phase", "vixen")
-                    .set("event_kind", "instruction")
+                    .set("event_kind", event_kind)
                     .set("event_type", event_type)
                     .set("slot", slot)
                     .set("txn_index", txn_index)
@@ -2428,15 +2440,11 @@ pub fn generate_instruction_handler_impl(
                                     .unwrap()
                                     .as_secs() as i64);
 
-                            let vm_ptr: *mut arete::runtime::arete_interpreter::vm::VmContext = &mut *vm as *mut arete::runtime::arete_interpreter::vm::VmContext;
-
                             let mut ctx = arete::runtime::arete_interpreter::resolvers::InstructionContext::with_metrics(
                                 accounts,
                                 0,
                                 &mut *vm,
-                                unsafe { (*vm_ptr).registers_mut() },
                                 2,
-                                unsafe { (*vm_ptr).path_cache() },
                                 instruction_data,
                                 Some(context.slot.unwrap_or(0)),
                                 context.signature.clone(),
@@ -2526,6 +2534,94 @@ pub fn generate_instruction_handler_impl(
                             }
                         }
 
+                        use arete::runtime::base64::Engine as _;
+                        for log_line in raw_update.log_messages() {
+                            let Some(encoded) = log_line
+                                .strip_prefix("Program data: ")
+                                .or_else(|| log_line.strip_prefix("Program log: ray_log: "))
+                            else {
+                                continue;
+                            };
+                            let Ok(bytes) = arete::runtime::base64::engine::general_purpose::STANDARD.decode(encoded) else {
+                                continue;
+                            };
+
+                            let mut candidate_event_bytes = vec![bytes.clone()];
+
+                            if bytes.len() >= 6 && bytes[0] == 0 && bytes[1] == 0 {
+                                let payload_len = u32::from_le_bytes([
+                                    bytes[2], bytes[3], bytes[4], bytes[5]
+                                ]) as usize;
+                                if bytes.len() == 6 + payload_len {
+                                    let unwrapped = bytes[6..].to_vec();
+                                    let mut zero_prefixed_unwrapped = Vec::with_capacity(unwrapped.len() + 1);
+                                    zero_prefixed_unwrapped.push(0);
+                                    zero_prefixed_unwrapped.extend_from_slice(&unwrapped);
+                                    candidate_event_bytes.push(unwrapped);
+                                    candidate_event_bytes.push(zero_prefixed_unwrapped);
+                                }
+                            }
+
+                            let mut zero_prefixed = Vec::with_capacity(bytes.len() + 1);
+                            zero_prefixed.push(0);
+                            zero_prefixed.extend_from_slice(&bytes);
+                            candidate_event_bytes.push(zero_prefixed);
+
+                            let mut parsed_program_event = None;
+                            for event_bytes in candidate_event_bytes {
+                                if let Ok(program_event) = #parser_mod::#instruction_enum::try_unpack_log_event(&event_bytes) {
+                                    parsed_program_event = Some(program_event);
+                                    break;
+                                }
+                            }
+
+                            let Some(program_event) = parsed_program_event else {
+                                continue;
+                            };
+
+                            let program_event_type = program_event.event_type();
+                            let mut program_event_value = program_event.to_value_with_accounts(static_keys_vec);
+                            if let Some(obj) = program_event_value.as_object_mut() {
+                                obj.insert(
+                                    "__event_source".to_string(),
+                                    arete::runtime::serde_json::json!("emit"),
+                                );
+                                if let Some(accounts) = event_value.get("accounts") {
+                                    obj.insert("accounts".to_string(), accounts.clone());
+                                }
+                            }
+
+                            let mut program_log = arete::runtime::arete_interpreter::CanonicalLog::new();
+                            program_log.set("phase", "vixen")
+                                .set("event_kind", "program_event")
+                                .set("event_type", program_event_type)
+                                .set("slot", slot)
+                                .set("txn_index", txn_index)
+                                .set("program", #entity_name_lit)
+                                .set("accounts_count", static_keys_vec.len());
+
+                            match vm.process_event(
+                                &bytecode,
+                                program_event_value,
+                                program_event_type,
+                                Some(&context),
+                                Some(&mut program_log),
+                            ) {
+                                Ok(pending_mutations) => {
+                                    if let Ok(ref mut mutations) = result {
+                                        mutations.extend(pending_mutations);
+                                    }
+                                }
+                                Err(e) => {
+                                    arete::runtime::tracing::warn!(
+                                        event_type = %program_event_type,
+                                        error = %e,
+                                        "Failed to process emitted log event"
+                                    );
+                                }
+                            }
+                        }
+
                         if vm.instructions_executed % 1000 == 0 {
                             let _ = vm.cleanup_all_expired(0);
                             let stats = vm.get_memory_stats(0);
@@ -2576,7 +2672,7 @@ pub fn generate_instruction_handler_impl(
                         mutations.extend(resolver_mutations);
                         let event_context = arete::runtime::arete_server::EventContext {
                             program: #entity_name_lit.to_string(),
-                            event_kind: "instruction".to_string(),
+                            event_kind: event_kind.to_string(),
                             event_type: event_type.to_string(),
                             account: None,
                             accounts_count: Some(static_keys_vec.len()),
@@ -2611,6 +2707,80 @@ pub struct PipelineInfo {
     pub program_id: String,
     pub state_enum_name: String,
     pub instruction_enum_name: String,
+    pub account_names: Vec<String>,
+}
+
+fn to_camel_case(value: &str) -> String {
+    let mut result = String::new();
+    let mut uppercase_next = false;
+    for (index, ch) in value.chars().enumerate() {
+        if ch == '_' || ch == '-' {
+            uppercase_next = true;
+            continue;
+        }
+        if index == 0 {
+            result.push(ch.to_ascii_lowercase());
+        } else if uppercase_next {
+            result.push(ch.to_ascii_uppercase());
+            uppercase_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn generate_program_account_reader_fn(pipelines: &[PipelineInfo]) -> TokenStream {
+    let arms: Vec<TokenStream> = pipelines
+        .iter()
+        .flat_map(|pipeline| {
+            let parser_mod = format_ident!("{}", pipeline.parser_module_name);
+            let state_enum = format_ident!("{}", pipeline.state_enum_name);
+            let program_key = to_camel_case(&pipeline.program_name);
+
+            pipeline.account_names.iter().map(move |account_name| {
+                let variant = format_ident!("{}", account_name);
+                let account_name_lit = account_name.clone();
+                let program_key_lit = program_key.clone();
+                let program_name_lit = pipeline.program_name.clone();
+                quote! {
+                    (#program_key_lit, #account_name_lit) | (#program_name_lit, #account_name_lit) => {
+                        let decoded = #parser_mod::#state_enum::try_unpack(data).map_err(|error| {
+                            arete::runtime::anyhow::anyhow!(
+                                "Failed to decode {}.{} account bytes: {}",
+                                #program_key_lit,
+                                #account_name_lit,
+                                error
+                            )
+                        })?;
+                        match decoded {
+                            #parser_mod::#state_enum::#variant(value) => Ok(value.to_json_value()),
+                            _ => Err(arete::runtime::anyhow::anyhow!(
+                                "Account bytes did not decode as {}.{}",
+                                #program_key_lit,
+                                #account_name_lit
+                            )),
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+
+    quote! {
+        fn create_program_account_reader() -> arete::runtime::arete_server::ProgramAccountReaderFn {
+            use std::sync::Arc;
+
+            Arc::new(|program, account, data| match (program, account) {
+                #(#arms,)*
+                _ => Err(arete::runtime::anyhow::anyhow!(
+                    "program account reader not implemented for {}.{}",
+                    program,
+                    account
+                )),
+            })
+        }
+    }
 }
 
 pub fn generate_multi_pipeline_spec_function(
@@ -2706,16 +2876,20 @@ pub fn generate_multi_pipeline_spec_function(
     let managed_grpc_helpers = generate_managed_grpc_helpers();
     let slot_scheduler_task = generate_slot_scheduler_task();
     let slot_subscription_task = generate_slot_subscription_task();
+    let program_account_reader = generate_program_account_reader_fn(pipelines);
 
     quote! {
         #managed_grpc_helpers
+        #program_account_reader
 
         pub fn spec() -> arete::runtime::arete_server::Spec {
             let bytecode = create_multi_entity_bytecode();
             let program_id = #primary_parser_mod::PROGRAM_ID_STR.to_string();
 
             arete::runtime::arete_server::Spec::new(bytecode, program_id)
+                .with_entity_specs(get_entity_specs())
                 .with_parser_setup(create_parser_setup())
+                .with_program_account_reader(create_program_account_reader())
                 #views_call
         }
 
@@ -2909,11 +3083,32 @@ pub fn generate_runtime(
     config: &RuntimeGenConfig,
 ) -> TokenStream {
     let vm_handler = generate_vm_handler(state_enum_name, instruction_enum_name, entity_name);
-    let spec_fn =
-        generate_spec_function(state_enum_name, instruction_enum_name, entity_name, config);
+    let spec_fn = generate_spec_function(
+        state_enum_name,
+        instruction_enum_name,
+        entity_name,
+        &Vec::new(),
+        config,
+    );
 
     quote! {
         #vm_handler
         #spec_fn
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generate_instruction_handler_impl;
+
+    #[test]
+    fn instruction_handler_accepts_raydium_ray_log_prefix() {
+        let code = generate_instruction_handler_impl("parser_mod", "InstructionEnum", "program");
+        let code_str = code.to_string();
+
+        assert!(code_str.contains("Program data: "));
+        assert!(code_str.contains("Program log: ray_log: "));
+        assert!(code_str.contains("bytes . len () >= 6") || code_str.contains("bytes.len() >= 6"));
+        assert!(code_str.contains("zero_prefixed"));
     }
 }

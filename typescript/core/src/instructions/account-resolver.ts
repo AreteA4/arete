@@ -1,5 +1,7 @@
 import type { WalletAdapter } from '../wallet/types';
 import { findProgramAddressSync, decodeBase58, createSeed } from './pda';
+import { serializeSeedValue } from './seed-serializer';
+import { getValueByPath } from './path-utils';
 
 /**
  * Categories of accounts in an instruction.
@@ -45,7 +47,8 @@ export interface PdaConfig {
  */
 export type PdaSeed =
   | { type: 'literal'; value: string }
-  | { type: 'argRef'; argName: string }
+  | { type: 'bytes'; value: number[] }
+  | { type: 'argRef'; argName: string; argType?: string }
   | { type: 'accountRef'; accountName: string };
 
 /**
@@ -76,8 +79,10 @@ export interface AccountResolutionResult {
  * Options for account resolution.
  */
 export interface AccountResolutionOptions {
-  /** User-provided account addresses */
+  /** Explicit account-address overrides, including signer slots when needed */
   accounts?: Record<string, string>;
+  /** Helper-only PDA seed inputs */
+  resolve?: Record<string, unknown>;
   /** Wallet adapter for signer accounts */
   wallet?: WalletAdapter;
   /** Program ID for PDA derivation (required if any PDAs exist) */
@@ -185,12 +190,36 @@ export function resolveAccounts(
     }
   }
 
-  // Return accounts in original order (as defined in accountMetas)
+  // Return accounts in original order (as defined in accountMetas).
+  //
+  // Omitted optional accounts that precede a resolved account cannot simply
+  // be dropped — that would shift every later account into the wrong slot.
+  // Anchor's convention is to pass the program ID as a placeholder; trailing
+  // omitted optionals are dropped as usual.
+  const lastResolvedIndex = accountMetas.reduce(
+    (last, meta, index) => (resolvedMap[meta.name] ? index : last),
+    -1
+  );
+
   const orderedAccounts: ResolvedAccount[] = [];
-  for (const meta of accountMetas) {
+  for (let i = 0; i < accountMetas.length; i++) {
+    const meta = accountMetas[i]!;
     const resolved = resolvedMap[meta.name];
     if (resolved) {
       orderedAccounts.push(resolved);
+    } else if (meta.isOptional && i < lastResolvedIndex) {
+      if (!options.programId) {
+        throw new Error(
+          'Omitted optional account "' + meta.name + '" precedes other accounts and needs ' +
+          'the program ID as a placeholder, but no programId was provided in options.'
+        );
+      }
+      orderedAccounts.push({
+        name: meta.name,
+        address: options.programId,
+        isSigner: false,
+        isWritable: false,
+      });
     }
   }
 
@@ -208,11 +237,11 @@ function resolveSingleAccount(
 ): ResolvedAccount | null {
   switch (meta.category) {
     case 'signer':
-      return resolveSignerAccount(meta, options.wallet);
+      return resolveSignerAccount(meta, options.accounts, options.wallet);
     case 'known':
       return resolveKnownAccount(meta);
     case 'pda':
-      return resolvePdaAccount(meta, args, resolvedMap, options.programId);
+      return resolvePdaAccount(meta, args, resolvedMap, options.programId, options.resolve);
     case 'userProvided':
       return resolveUserProvidedAccount(meta, options.accounts);
     default:
@@ -222,15 +251,18 @@ function resolveSingleAccount(
 
 function resolveSignerAccount(
   meta: AccountMeta,
+  accounts?: Record<string, string>,
   wallet?: WalletAdapter
 ): ResolvedAccount | null {
-  if (!wallet) {
+  const address = accounts?.[meta.name] ?? wallet?.publicKey;
+
+  if (!address) {
     return null;
   }
 
   return {
     name: meta.name,
-    address: wallet.publicKey,
+    address,
     isSigner: true,
     isWritable: meta.isWritable,
   };
@@ -253,7 +285,8 @@ function resolvePdaAccount(
   meta: AccountMeta,
   args: Record<string, unknown>,
   resolvedMap: Record<string, ResolvedAccount>,
-  programId?: string
+  programId?: string,
+  resolve?: Record<string, unknown>
 ): ResolvedAccount | null {
   if (!meta.pdaConfig) {
     return null;
@@ -276,16 +309,20 @@ function resolvePdaAccount(
       case 'literal':
         seeds.push(createSeed(seed.value));
         break;
-        
+
+      case 'bytes':
+        seeds.push(Uint8Array.from(seed.value));
+        break;
+
       case 'argRef': {
-        const argValue = args[seed.argName];
+        const argValue = getValueByPath(args, seed.argName) ?? getValueByPath(resolve, seed.argName);
         if (argValue === undefined) {
           throw new Error(
-            'PDA seed references missing argument: ' + seed.argName + 
+            'PDA seed references missing argument: ' + seed.argName +
             ' (for account "' + meta.name + '")'
           );
         }
-        seeds.push(createSeed(argValue as string | bigint | number));
+        seeds.push(serializeSeedValue(argValue, seed.argType));
         break;
       }
       

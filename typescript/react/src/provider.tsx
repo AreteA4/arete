@@ -1,17 +1,45 @@
 import React, { createContext, useContext, useEffect, useRef, ReactNode, useSyncExternalStore, useCallback } from 'react';
-import { Arete, type ConnectionState, type StackDefinition } from '@usearete/sdk';
-import type { AreteConfig } from './types';
+import {
+  Arete,
+  type ConnectedArete,
+  type ConnectionState,
+  type ProgramSdkDefinition,
+  type StackDefinition,
+  type StackWithAttachedPrograms,
+} from '@usearete/sdk';
+import type { AreteConfig, ClientLookupOptions } from './types';
 import { DEFAULT_FLUSH_INTERVAL_MS } from './types';
 import { ZustandAdapter } from './zustand-adapter';
+import { initializeConnectedClient, syncClientWallets } from './wallet-sync';
+import { createClientCacheKey } from './client-key';
+
+type AnyClient = ConnectedArete<StackDefinition>;
+type ProgramMap = Record<string, ProgramSdkDefinition>;
+type ResolvedStack<
+  TStack extends StackDefinition,
+  TPrograms extends ProgramMap | undefined,
+> = StackWithAttachedPrograms<TStack, TPrograms>;
 
 interface ClientEntry {
-  client: Arete<any>;
+  client: AnyClient;
   disconnect: () => void;
 }
 
 interface AreteContextValue {
-  getOrCreateClient: <TStack extends StackDefinition>(stack: TStack, urlOverride?: string) => Promise<Arete<TStack>>;
-  getClient: <TStack extends StackDefinition>(stack: TStack | undefined) => Arete<TStack> | null;
+  getOrCreateClient: <
+    TStack extends StackDefinition,
+    TPrograms extends ProgramMap | undefined = undefined,
+  >(
+    stack: TStack,
+    options?: ClientLookupOptions<TPrograms>
+  ) => Promise<ConnectedArete<ResolvedStack<TStack, TPrograms>>>;
+  getClient: <
+    TStack extends StackDefinition,
+    TPrograms extends ProgramMap | undefined = undefined,
+  >(
+    stack: TStack | undefined,
+    options?: ClientLookupOptions<TPrograms>
+  ) => ConnectedArete<ResolvedStack<TStack, TPrograms>> | null;
   subscribeToClientChanges: (callback: () => void) => () => void;
   config: AreteConfig;
 }
@@ -27,8 +55,11 @@ export function AreteProvider({
   fallback?: ReactNode;
 }) {
   const clientsRef = useRef<Map<string, ClientEntry>>(new Map());
-  const connectingRef = useRef<Map<string, Promise<Arete<any>>>>(new Map());
+  const connectingRef = useRef<Map<string, Promise<AnyClient>>>(new Map());
   const clientChangeListenersRef = useRef<Set<() => void>>(new Set());
+  const latestWalletRef = useRef(config.wallet);
+
+  latestWalletRef.current = config.wallet;
   
   const notifyClientChange = useCallback(() => {
     clientChangeListenersRef.current.forEach(cb => { cb(); });
@@ -41,59 +72,86 @@ export function AreteProvider({
     };
   }, []);
 
-  const getOrCreateClient = useCallback(async <TStack extends StackDefinition>(stack: TStack, urlOverride?: string): Promise<Arete<TStack>> => {
-    const cacheKey = urlOverride ? `${stack.name}:${urlOverride}` : stack.name;
-    
+  const getOrCreateClient = useCallback(async <
+    TStack extends StackDefinition,
+    TPrograms extends ProgramMap | undefined = undefined,
+  >(
+    stack: TStack,
+    options?: ClientLookupOptions<TPrograms>
+  ): Promise<ConnectedArete<ResolvedStack<TStack, TPrograms>>> => {
+    const cacheKey = createClientCacheKey(stack, options);
+    if (!cacheKey) {
+      throw new Error('Stack is required to create an Arete client');
+    }
+
     const existing = clientsRef.current.get(cacheKey);
     if (existing) {
-      return existing.client as Arete<TStack>;
+      return existing.client as unknown as ConnectedArete<ResolvedStack<TStack, TPrograms>>;
     }
 
     const connecting = connectingRef.current.get(cacheKey);
     if (connecting) {
-      return connecting as Promise<Arete<TStack>>;
+      return connecting as unknown as Promise<ConnectedArete<ResolvedStack<TStack, TPrograms>>>;
     }
 
     const adapter = new ZustandAdapter();
     const connectionPromise = Arete.connect(stack, {
-      url: urlOverride,
+      url: options?.url,
+      httpUrl: options?.httpUrl,
+      transport: options?.transport,
+      programs: options?.programs,
       storage: adapter,
       autoReconnect: config.autoConnect,
       reconnectIntervals: config.reconnectIntervals,
       maxReconnectAttempts: config.maxReconnectAttempts,
       maxEntriesPerView: config.maxEntriesPerView,
       flushIntervalMs: config.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS,
+      fetch: config.fetch,
+      validateFrames: config.validateFrames,
       auth: config.auth,
+      wallet: latestWalletRef.current,
     }).then((client) => {
-      client.onConnectionStateChange((state, error) => {
-        adapter.setConnectionState(state, error);
-      });
-      adapter.setConnectionState(client.connectionState);
+      initializeConnectedClient(client, adapter, latestWalletRef.current);
 
       clientsRef.current.set(cacheKey, {
-        client,
+        client: client as unknown as AnyClient,
         disconnect: () => client.disconnect()
       });
       connectingRef.current.delete(cacheKey);
       notifyClientChange();
       return client;
     });
+    
+    connectingRef.current.set(cacheKey, connectionPromise as unknown as Promise<AnyClient>);
+    return connectionPromise as unknown as Promise<ConnectedArete<ResolvedStack<TStack, TPrograms>>>;
+  }, [config.autoConnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.fetch, config.validateFrames, config.auth, notifyClientChange]);
 
-    connectingRef.current.set(cacheKey, connectionPromise);
-    return connectionPromise as Promise<Arete<TStack>>;
-  }, [config.autoConnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.auth, notifyClientChange]);
-
-  const getClient = useCallback(<TStack extends StackDefinition>(stack: TStack | undefined): Arete<TStack> | null => {
+  const getClient = useCallback(<
+    TStack extends StackDefinition,
+    TPrograms extends ProgramMap | undefined = undefined,
+  >(
+    stack: TStack | undefined,
+    options?: ClientLookupOptions<TPrograms>
+  ): ConnectedArete<ResolvedStack<TStack, TPrograms>> | null => {
     if (!stack) {
       if (clientsRef.current.size === 1) {
-        const firstEntry = clientsRef.current.values().next().value;
-        return firstEntry ? (firstEntry.client as Arete<TStack>) : null;
+          const firstEntry = clientsRef.current.values().next().value;
+          return firstEntry ? (firstEntry.client as unknown as ConnectedArete<ResolvedStack<TStack, TPrograms>>) : null;
       }
       return null;
     }
-    const entry = clientsRef.current.get(stack.name);
-    return entry ? (entry.client as Arete<TStack>) : null;
+    const cacheKey = createClientCacheKey(stack, options);
+    if (!cacheKey) {
+      return null;
+    }
+    const entry = clientsRef.current.get(cacheKey);
+    return entry ? (entry.client as unknown as ConnectedArete<ResolvedStack<TStack, TPrograms>>) : null;
   }, []);
+
+  useEffect(() => {
+    syncClientWallets(clientsRef.current.values(), config.wallet);
+    notifyClientChange();
+  }, [config.wallet, notifyClientChange]);
 
   useEffect(() => {
     return () => {
@@ -127,10 +185,13 @@ export function useAreteContext() {
   return context;
 }
 
-export function useConnectionState(stack?: StackDefinition): ConnectionState {
+export function useConnectionState(
+  stack?: StackDefinition,
+  options?: ClientLookupOptions
+): ConnectionState {
   const { getClient, subscribeToClientChanges } = useAreteContext();
   const [state, setState] = React.useState<ConnectionState>(() => {
-    const client = getClient(stack);
+    const client = getClient(stack, options);
     return client?.connectionState ?? 'disconnected';
   });
   const unsubscribeRef = React.useRef<(() => void) | undefined>(undefined);
@@ -142,10 +203,10 @@ export function useConnectionState(stack?: StackDefinition): ConnectionState {
       unsubscribeRef.current?.();
       unsubscribeRef.current = undefined;
       
-      const client = getClient(stack);
-      if (client && mounted) {
-        setState(client.connectionState);
-        unsubscribeRef.current = client.onConnectionStateChange((newState) => {
+        const client = getClient(stack, options);
+        if (client && mounted) {
+          setState(client.connectionState);
+          unsubscribeRef.current = client.onConnectionStateChange((newState: ConnectionState) => {
           if (mounted) setState(newState);
         });
       } else if (mounted) {
@@ -161,14 +222,18 @@ export function useConnectionState(stack?: StackDefinition): ConnectionState {
       unsubscribeFromClientChanges();
       unsubscribeRef.current?.();
     };
-  }, [getClient, subscribeToClientChanges, stack]);
+  }, [getClient, subscribeToClientChanges, stack, options]);
   
   return state;
 }
 
-export function useView<T>(stack: StackDefinition, viewPath: string): T[] {
+export function useView<T>(
+  stack: StackDefinition,
+  viewPath: string,
+  options?: ClientLookupOptions
+): T[] {
   const { getClient } = useAreteContext();
-  const client = getClient(stack);
+  const client = getClient(stack, options);
   
   return useSyncExternalStore(
     (callback) => {
@@ -183,9 +248,14 @@ export function useView<T>(stack: StackDefinition, viewPath: string): T[] {
   );
 }
 
-export function useEntity<T>(stack: StackDefinition, viewPath: string, key: string): T | null {
+export function useEntity<T>(
+  stack: StackDefinition,
+  viewPath: string,
+  key: string,
+  options?: ClientLookupOptions
+): T | null {
   const { getClient } = useAreteContext();
-  const client = getClient(stack);
+  const client = getClient(stack, options);
   
   return useSyncExternalStore(
     (callback) => {

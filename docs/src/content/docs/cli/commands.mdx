@@ -370,6 +370,24 @@ a4 stack stop my-stack --force  # Skip confirmation
 
 ## SDK Generation
 
+### a4 install \<stack-name\>
+
+Install a published hosted stack SDK.
+
+```bash
+a4 install ore-stack-abc123 --ts
+a4 install ore-stack-abc123 --rust
+```
+
+### a4 install program \<program\>
+
+Install a published hosted program SDK.
+
+```bash
+a4 install program spl-token --ts
+a4 install program system-program --ts
+```
+
 ### a4 sdk list
 
 List stacks available for SDK generation.
@@ -387,6 +405,8 @@ a4 sdk create typescript my-stack
 a4 sdk create typescript my-stack --output ./src/generated/
 a4 sdk create typescript my-stack --package-name @myorg/my-sdk
 a4 sdk create typescript my-stack --url wss://my-stack.stack.arete.run
+a4 sdk create my-stack --ts --program-only
+a4 sdk create --ts --program-only --idl ./idls/spl-token.idl.json
 ```
 
 **Options:**

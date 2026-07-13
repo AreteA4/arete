@@ -9,6 +9,41 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{BinaryOp, ComputedExpr, ComputedFieldSpec, UnaryOp};
 
+fn generate_json_array_sum(inner: TokenStream) -> TokenStream {
+    quote! {
+        {
+            let inner_result = #inner;
+            let sum_result: Option<arete::runtime::serde_json::Value> = inner_result.and_then(|value| {
+                let values = value.as_array()?;
+
+                if values.iter().all(|item| item.as_u64().is_some()) {
+                    return values
+                        .iter()
+                        .try_fold(0_u64, |total, item| total.checked_add(item.as_u64().unwrap()))
+                        .map(arete::runtime::serde_json::Value::from);
+                }
+
+                if values.iter().all(|item| item.as_i64().is_some()) {
+                    return values
+                        .iter()
+                        .try_fold(0_i64, |total, item| total.checked_add(item.as_i64().unwrap()))
+                        .map(arete::runtime::serde_json::Value::from);
+                }
+
+                let total = values
+                    .iter()
+                    .try_fold(0.0_f64, |total, item| item.as_f64().map(|value| total + value))?;
+                if !total.is_finite() {
+                    return None;
+                }
+                arete::runtime::serde_json::Number::from_f64(total)
+                    .map(arete::runtime::serde_json::Value::Number)
+            });
+            sum_result
+        }
+    }
+}
+
 /// Extract field dependencies from a computed expression.
 /// Returns a set of field names (without section prefix) that this expression depends on.
 fn extract_field_dependencies(expr: &ComputedExpr, section: &str) -> HashSet<String> {
@@ -213,7 +248,7 @@ pub fn generate_computed_evaluator(computed_field_specs: &[ComputedFieldSpec]) -
                 _state: &mut arete::runtime::serde_json::Value,
                 _context_slot: Option<u64>,
                 _context_timestamp: i64,
-            ) -> Result<(), Box<dyn std::error::Error>> {
+            ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Ok(())
             }
 
@@ -237,16 +272,16 @@ pub fn generate_computed_evaluator(computed_field_specs: &[ComputedFieldSpec]) -
 
     let section_evals: Vec<TokenStream> = fields_by_section.iter().map(|(section, fields)| {
         let section_str = section.as_str();
-        
+
         // Sort fields by dependencies to ensure correct evaluation order
         let sorted_fields = sort_by_dependencies(fields, section);
-        
+
         // Generate compute-and-write statements for each field in dependency order
         // Each field is computed and immediately written, so dependent fields can read the updated value
         let field_evals: Vec<TokenStream> = sorted_fields.iter().map(|spec| {
             let field_name = spec.target_path.split('.').next_back().unwrap_or(&spec.target_path).to_string();
             let expr_code = generate_computed_expr_code(&spec.expression);
-            
+
             quote! {
                 // Compute and immediately write this field so dependent fields can use it
                 let computed_value = { #expr_code };
@@ -276,7 +311,7 @@ pub fn generate_computed_evaluator(computed_field_specs: &[ComputedFieldSpec]) -
             state: &mut arete::runtime::serde_json::Value,
             __context_slot: Option<u64>,
             __context_timestamp: i64,
-        ) -> Result<(), Box<dyn std::error::Error>> {
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             #(#section_evals)*
             Ok(())
         }
@@ -445,6 +480,10 @@ pub fn generate_computed_expr_code(expr: &ComputedExpr) -> TokenStream {
             let method_ident = format_ident!("{}", method);
             let arg_codes: Vec<TokenStream> =
                 args.iter().map(generate_computed_expr_code).collect();
+
+            if method == "sum" && args.is_empty() {
+                return generate_json_array_sum(inner);
+            }
 
             if method == "map" && args.len() == 1 {
                 if let ComputedExpr::Closure { param, body } = &args[0] {
@@ -739,6 +778,10 @@ pub fn generate_computed_expr_code_with_cache(
             let inner_code =
                 generate_computed_expr_code_with_cache(inner, section, computed_field_names);
             let method_ident = format_ident!("{}", method);
+
+            if method == "sum" && args.is_empty() {
+                return generate_json_array_sum(inner_code);
+            }
 
             // Special handling for .map() with closures - check if closure body references computed fields
             if method == "map" && args.len() == 1 {

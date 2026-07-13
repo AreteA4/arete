@@ -1,5 +1,5 @@
 {
-  "ast_version": "0.0.1",
+  "ast_version": "0.0.4",
   "stack_name": "OreStream",
   "program_ids": [
     "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
@@ -9,7 +9,7 @@
     {
       "name": "ore",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "version": "3.7.22",
+      "version": "4.0.0",
       "accounts": [
         {
           "name": "Automation",
@@ -92,7 +92,7 @@
               "type": "u64"
             },
             {
-              "name": "epoch_id",
+              "name": "production_cost_ema",
               "type": "u64"
             }
           ]
@@ -116,27 +116,15 @@
           "fields": [
             {
               "name": "admin",
-              "type": "publicKey"
+              "type": {
+                "defined": "AdminConfig"
+              }
             },
             {
-              "name": "buffer_a",
-              "type": "publicKey"
-            },
-            {
-              "name": "buffer_b",
-              "type": "publicKey"
-            },
-            {
-              "name": "buffer_c",
-              "type": "publicKey"
-            },
-            {
-              "name": "buffer_d",
-              "type": "publicKey"
-            },
-            {
-              "name": "buffer_e",
-              "type": "u64"
+              "name": "protocol",
+              "type": {
+                "defined": "ProtocolConfig"
+              }
             }
           ]
         },
@@ -162,7 +150,28 @@
               "type": "publicKey"
             },
             {
+              "name": "auto_return",
+              "type": "u64"
+            },
+            {
+              "name": "checkpoint_id",
+              "type": "u64"
+            },
+            {
+              "name": "checkpoint_fee",
+              "type": "u64"
+            },
+            {
               "name": "deployed",
+              "type": {
+                "array": [
+                  "u64",
+                  25
+                ]
+              }
+            },
+            {
+              "name": "mass",
               "type": {
                 "array": [
                   "u64",
@@ -180,20 +189,8 @@
               }
             },
             {
-              "name": "checkpoint_fee",
+              "name": "round_id",
               "type": "u64"
-            },
-            {
-              "name": "checkpoint_id",
-              "type": "u64"
-            },
-            {
-              "name": "last_claim_ore_at",
-              "type": "i64"
-            },
-            {
-              "name": "last_claim_sol_at",
-              "type": "i64"
             },
             {
               "name": "rewards_factor",
@@ -206,20 +203,20 @@
               "type": "u64"
             },
             {
-              "name": "rewards_ore",
-              "type": "u64"
-            },
-            {
               "name": "refined_ore",
               "type": "u64"
             },
             {
-              "name": "round_id",
+              "name": "rewards_ore",
               "type": "u64"
             },
             {
-              "name": "lifetime_rewards_sol",
-              "type": "u64"
+              "name": "last_claim_ore_at",
+              "type": "i64"
+            },
+            {
+              "name": "last_claim_sol_at",
+              "type": "i64"
             },
             {
               "name": "lifetime_rewards_ore",
@@ -227,6 +224,10 @@
             },
             {
               "name": "lifetime_deployed",
+              "type": "u64"
+            },
+            {
+              "name": "lifetime_rewards_sol",
               "type": "u64"
             }
           ]
@@ -262,11 +263,11 @@
               }
             },
             {
-              "name": "slot_hash",
+              "name": "mass",
               "type": {
                 "array": [
-                  "u8",
-                  32
+                  "u64",
+                  25
                 ]
               }
             },
@@ -276,6 +277,15 @@
                 "array": [
                   "u64",
                   25
+                ]
+              }
+            },
+            {
+              "name": "slot_hash",
+              "type": {
+                "array": [
+                  "u8",
+                  32
                 ]
               }
             },
@@ -292,20 +302,13 @@
               "type": "publicKey"
             },
             {
-              "name": "top_miner",
-              "type": "publicKey"
-            },
-            {
-              "name": "top_miner_reward",
-              "type": "u64"
-            },
-            {
-              "name": "total_deployed",
-              "type": "u64"
-            },
-            {
-              "name": "total_miners",
-              "type": "u64"
+              "name": "rewards",
+              "type": {
+                "array": [
+                  "u64",
+                  25
+                ]
+              }
             },
             {
               "name": "total_vaulted",
@@ -314,83 +317,14 @@
             {
               "name": "total_winnings",
               "type": "u64"
-            }
-          ]
-        },
-        {
-          "name": "Stake",
-          "discriminator": [
-            108,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
-          ],
-          "docs": [
-            "State for a staking participant."
-          ],
-          "serialization": null,
-          "fields": [
+            },
             {
-              "name": "authority",
+              "name": "total_miners",
+              "type": "u64"
+            },
+            {
+              "name": "top_miner",
               "type": "publicKey"
-            },
-            {
-              "name": "balance",
-              "type": "u64"
-            },
-            {
-              "name": "buffer_a",
-              "type": "u64"
-            },
-            {
-              "name": "buffer_b",
-              "type": "u64"
-            },
-            {
-              "name": "buffer_c",
-              "type": "u64"
-            },
-            {
-              "name": "buffer_d",
-              "type": "u64"
-            },
-            {
-              "name": "compound_fee_reserve",
-              "type": "u64"
-            },
-            {
-              "name": "last_claim_at",
-              "type": "i64"
-            },
-            {
-              "name": "last_deposit_at",
-              "type": "i64"
-            },
-            {
-              "name": "last_withdraw_at",
-              "type": "i64"
-            },
-            {
-              "name": "rewards_factor",
-              "type": {
-                "defined": "Numeric"
-              }
-            },
-            {
-              "name": "rewards",
-              "type": "u64"
-            },
-            {
-              "name": "lifetime_rewards",
-              "type": "u64"
-            },
-            {
-              "name": "buffer_f",
-              "type": "u64"
             }
           ]
         },
@@ -412,14 +346,6 @@
           "serialization": null,
           "fields": [
             {
-              "name": "balance",
-              "type": "u64"
-            },
-            {
-              "name": "buffer_a",
-              "type": "u64"
-            },
-            {
               "name": "motherlode",
               "type": "u64"
             },
@@ -430,21 +356,7 @@
               }
             },
             {
-              "name": "stake_rewards_factor",
-              "type": {
-                "defined": "Numeric"
-              }
-            },
-            {
-              "name": "buffer_b",
-              "type": "u64"
-            },
-            {
               "name": "total_refined",
-              "type": "u64"
-            },
-            {
-              "name": "total_staked",
               "type": "u64"
             },
             {
@@ -528,10 +440,6 @@
             {
               "name": "strategy",
               "type": "u8"
-            },
-            {
-              "name": "reload",
-              "type": "u64"
             }
           ]
         },
@@ -556,7 +464,7 @@
             },
             {
               "name": "board",
-              "writable": false,
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": null,
@@ -617,7 +525,7 @@
             },
             {
               "name": "board",
-              "writable": true,
+              "writable": false,
               "signer": false,
               "optional": false,
               "address": null,
@@ -670,7 +578,7 @@
             },
             {
               "name": "board",
-              "writable": true,
+              "writable": false,
               "signer": false,
               "optional": false,
               "address": null,
@@ -765,7 +673,7 @@
           "accounts": [
             {
               "name": "signer",
-              "writable": false,
+              "writable": true,
               "signer": true,
               "optional": false,
               "address": null,
@@ -838,7 +746,7 @@
             },
             {
               "name": "authority",
-              "writable": true,
+              "writable": false,
               "signer": false,
               "optional": false,
               "address": null,
@@ -862,7 +770,7 @@
             },
             {
               "name": "config",
-              "writable": true,
+              "writable": false,
               "signer": false,
               "optional": false,
               "address": null,
@@ -898,6 +806,22 @@
               "signer": false,
               "optional": false,
               "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
+              "docs": []
+            },
+            {
+              "name": "entropyVar",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "entropyProgram",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
               "docs": []
             }
           ],
@@ -1074,340 +998,33 @@
               "optional": false,
               "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
               "docs": []
-            },
-            {
-              "name": "mintAuthority",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "oreMintProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "mintzxW6Kckmeyh1h6Zfdj9QcYgCzhPSGiC8ChZ6fCx",
-              "docs": []
             }
           ],
           "args": []
         },
         {
-          "name": "deposit",
+          "name": "bury",
           "discriminator": [
-            10
+            13
           ],
           "discriminant": null,
           "docs": [
-            "Deposits ORE into a staking account.",
-            "Stake PDA seeds: [\"stake\", signer]."
+            "Burns ORE and distributes yield to stakers.",
+            "Treasury PDA seeds: [\"treasury\"]."
           ],
           "accounts": [
             {
               "name": "signer",
-              "writable": true,
-              "signer": true,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "payer",
-              "writable": true,
-              "signer": true,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "mint",
               "writable": false,
-              "signer": false,
+              "signer": true,
               "optional": false,
-              "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp",
+              "address": null,
               "docs": []
             },
             {
               "name": "sender",
               "writable": true,
               "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "stake",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "stakeTokens",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "treasury",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "systemProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "11111111111111111111111111111111",
-              "docs": []
-            },
-            {
-              "name": "tokenProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-              "docs": []
-            },
-            {
-              "name": "associatedTokenProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
-              "docs": []
-            }
-          ],
-          "args": [
-            {
-              "name": "amount",
-              "type": "u64"
-            },
-            {
-              "name": "compound_fee",
-              "type": "u64"
-            }
-          ]
-        },
-        {
-          "name": "withdraw",
-          "discriminator": [
-            11
-          ],
-          "discriminant": null,
-          "docs": [
-            "Withdraws ORE from a staking account.",
-            "Stake PDA seeds: [\"stake\", signer]."
-          ],
-          "accounts": [
-            {
-              "name": "signer",
-              "writable": true,
-              "signer": true,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "mint",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp",
-              "docs": []
-            },
-            {
-              "name": "recipient",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "stake",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "stakeTokens",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "treasury",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "systemProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "11111111111111111111111111111111",
-              "docs": []
-            },
-            {
-              "name": "tokenProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-              "docs": []
-            },
-            {
-              "name": "associatedTokenProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
-              "docs": []
-            }
-          ],
-          "args": [
-            {
-              "name": "amount",
-              "type": "u64"
-            }
-          ]
-        },
-        {
-          "name": "claimYield",
-          "discriminator": [
-            12
-          ],
-          "discriminant": null,
-          "docs": [
-            "Claims accrued staking rewards.",
-            "Stake PDA seeds: [\"stake\", signer].",
-            "Treasury PDA seeds: [\"treasury\"]."
-          ],
-          "accounts": [
-            {
-              "name": "signer",
-              "writable": true,
-              "signer": true,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "mint",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp",
-              "docs": []
-            },
-            {
-              "name": "recipient",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "stake",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "treasury",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "treasuryTokens",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "systemProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "11111111111111111111111111111111",
-              "docs": []
-            },
-            {
-              "name": "tokenProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-              "docs": []
-            },
-            {
-              "name": "associatedTokenProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
-              "docs": []
-            }
-          ],
-          "args": [
-            {
-              "name": "amount",
-              "type": "u64"
-            }
-          ]
-        },
-        {
-          "name": "buyback",
-          "discriminator": [
-            13
-          ],
-          "discriminant": null,
-          "docs": [
-            "Buys back ORE from the market."
-          ],
-          "accounts": [],
-          "args": []
-        },
-        {
-          "name": "bury",
-          "discriminator": [
-            24
-          ],
-          "discriminant": null,
-          "docs": [
-            "Swaps vaulted SOL for ORE via a CPI and burns the proceeds.",
-            "Treasury PDA seeds: [\"treasury\"].",
-            "Additional swap accounts are passed through as remaining accounts."
-          ],
-          "accounts": [
-            {
-              "name": "signer",
-              "writable": false,
-              "signer": true,
               "optional": false,
               "address": null,
               "docs": []
@@ -1421,19 +1038,11 @@
               "docs": []
             },
             {
-              "name": "config",
-              "writable": false,
+              "name": "mint",
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": null,
-              "docs": []
-            },
-            {
-              "name": "mint",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp",
               "docs": []
             },
             {
@@ -1453,7 +1062,23 @@
               "docs": []
             },
             {
-              "name": "treasurySol",
+              "name": "stakeTreasury",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "stakeTreasuryTokens",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "stakeVesting",
               "writable": true,
               "signer": false,
               "optional": false,
@@ -1474,6 +1099,14 @@
               "signer": false,
               "optional": false,
               "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
+              "docs": []
+            },
+            {
+              "name": "oreStakeProgram",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": null,
               "docs": []
             }
           ],
@@ -1588,7 +1221,7 @@
         {
           "name": "newVar",
           "discriminator": [
-            19
+            17
           ],
           "discriminant": null,
           "docs": [
@@ -1597,7 +1230,7 @@
           "accounts": [
             {
               "name": "signer",
-              "writable": false,
+              "writable": true,
               "signer": true,
               "optional": false,
               "address": null,
@@ -1671,78 +1304,71 @@
               "type": "u64"
             }
           ]
-        },
-        {
-          "name": "reloadSol",
-          "discriminator": [
-            21
-          ],
-          "discriminant": null,
-          "docs": [
-            "Reloads SOL into the automation account."
-          ],
-          "accounts": [
-            {
-              "name": "signer",
-              "writable": true,
-              "signer": true,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "automation",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "miner",
-              "writable": true,
-              "signer": false,
-              "optional": false,
-              "address": null,
-              "docs": []
-            },
-            {
-              "name": "systemProgram",
-              "writable": false,
-              "signer": false,
-              "optional": false,
-              "address": "11111111111111111111111111111111",
-              "docs": []
-            }
-          ],
-          "args": []
-        },
-        {
-          "name": "compoundYield",
-          "discriminator": [
-            22
-          ],
-          "discriminant": null,
-          "docs": [
-            "Compounds staking yield."
-          ],
-          "accounts": [],
-          "args": []
-        },
-        {
-          "name": "liq",
-          "discriminator": [
-            25
-          ],
-          "discriminant": null,
-          "docs": [
-            "Liquidation instruction."
-          ],
-          "accounts": [],
-          "args": []
         }
       ],
       "types": [
+        {
+          "name": "AdminConfig",
+          "docs": [
+            "Admin configuration."
+          ],
+          "type": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "authority",
+                "type": "publicKey"
+              },
+              {
+                "name": "fee_collector",
+                "type": "publicKey"
+              },
+              {
+                "name": "fee_rate",
+                "type": "u64"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ProtocolConfig",
+          "docs": [
+            "Protocol configuration."
+          ],
+          "type": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "authority",
+                "type": "publicKey"
+              },
+              {
+                "name": "fee_collector",
+                "type": "publicKey"
+              },
+              {
+                "name": "fee_rate",
+                "type": "u64"
+              },
+              {
+                "name": "intermission_slots",
+                "type": "u64"
+              },
+              {
+                "name": "round_slots",
+                "type": "u64"
+              },
+              {
+                "name": "entropy_var_address",
+                "type": "publicKey"
+              },
+              {
+                "name": "entropy_program_id",
+                "type": "publicKey"
+              }
+            ]
+          }
+        },
         {
           "name": "Numeric",
           "docs": [
@@ -1936,6 +1562,35 @@
           }
         },
         {
+          "name": "ClaimEvent",
+          "docs": [],
+          "type": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "disc",
+                "type": "u64"
+              },
+              {
+                "name": "authority",
+                "type": "publicKey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              },
+              {
+                "name": "claim_type",
+                "type": "u64"
+              },
+              {
+                "name": "ts",
+                "type": "i64"
+              }
+            ]
+          }
+        },
+        {
           "name": "Automation",
           "docs": [
             "Automation parameters for automated mining deployments."
@@ -1999,7 +1654,7 @@
                 "type": "u64"
               },
               {
-                "name": "epoch_id",
+                "name": "production_cost_ema",
                 "type": "u64"
               }
             ]
@@ -2015,27 +1670,15 @@
             "fields": [
               {
                 "name": "admin",
-                "type": "publicKey"
+                "type": {
+                  "defined": "AdminConfig"
+                }
               },
               {
-                "name": "buffer_a",
-                "type": "publicKey"
-              },
-              {
-                "name": "buffer_b",
-                "type": "publicKey"
-              },
-              {
-                "name": "buffer_c",
-                "type": "publicKey"
-              },
-              {
-                "name": "buffer_d",
-                "type": "publicKey"
-              },
-              {
-                "name": "buffer_e",
-                "type": "u64"
+                "name": "protocol",
+                "type": {
+                  "defined": "ProtocolConfig"
+                }
               }
             ]
           }
@@ -2053,7 +1696,28 @@
                 "type": "publicKey"
               },
               {
+                "name": "auto_return",
+                "type": "u64"
+              },
+              {
+                "name": "checkpoint_id",
+                "type": "u64"
+              },
+              {
+                "name": "checkpoint_fee",
+                "type": "u64"
+              },
+              {
                 "name": "deployed",
+                "type": {
+                  "array": [
+                    "u64",
+                    25
+                  ]
+                }
+              },
+              {
+                "name": "mass",
                 "type": {
                   "array": [
                     "u64",
@@ -2071,20 +1735,8 @@
                 }
               },
               {
-                "name": "checkpoint_fee",
+                "name": "round_id",
                 "type": "u64"
-              },
-              {
-                "name": "checkpoint_id",
-                "type": "u64"
-              },
-              {
-                "name": "last_claim_ore_at",
-                "type": "i64"
-              },
-              {
-                "name": "last_claim_sol_at",
-                "type": "i64"
               },
               {
                 "name": "rewards_factor",
@@ -2097,20 +1749,20 @@
                 "type": "u64"
               },
               {
-                "name": "rewards_ore",
-                "type": "u64"
-              },
-              {
                 "name": "refined_ore",
                 "type": "u64"
               },
               {
-                "name": "round_id",
+                "name": "rewards_ore",
                 "type": "u64"
               },
               {
-                "name": "lifetime_rewards_sol",
-                "type": "u64"
+                "name": "last_claim_ore_at",
+                "type": "i64"
+              },
+              {
+                "name": "last_claim_sol_at",
+                "type": "i64"
               },
               {
                 "name": "lifetime_rewards_ore",
@@ -2118,6 +1770,10 @@
               },
               {
                 "name": "lifetime_deployed",
+                "type": "u64"
+              },
+              {
+                "name": "lifetime_rewards_sol",
                 "type": "u64"
               }
             ]
@@ -2145,11 +1801,11 @@
                 }
               },
               {
-                "name": "slot_hash",
+                "name": "mass",
                 "type": {
                   "array": [
-                    "u8",
-                    32
+                    "u64",
+                    25
                   ]
                 }
               },
@@ -2159,6 +1815,15 @@
                   "array": [
                     "u64",
                     25
+                  ]
+                }
+              },
+              {
+                "name": "slot_hash",
+                "type": {
+                  "array": [
+                    "u8",
+                    32
                   ]
                 }
               },
@@ -2175,20 +1840,13 @@
                 "type": "publicKey"
               },
               {
-                "name": "top_miner",
-                "type": "publicKey"
-              },
-              {
-                "name": "top_miner_reward",
-                "type": "u64"
-              },
-              {
-                "name": "total_deployed",
-                "type": "u64"
-              },
-              {
-                "name": "total_miners",
-                "type": "u64"
+                "name": "rewards",
+                "type": {
+                  "array": [
+                    "u64",
+                    25
+                  ]
+                }
               },
               {
                 "name": "total_vaulted",
@@ -2197,75 +1855,14 @@
               {
                 "name": "total_winnings",
                 "type": "u64"
-              }
-            ]
-          }
-        },
-        {
-          "name": "Stake",
-          "docs": [
-            "State for a staking participant."
-          ],
-          "type": {
-            "kind": "struct",
-            "fields": [
+              },
               {
-                "name": "authority",
+                "name": "total_miners",
+                "type": "u64"
+              },
+              {
+                "name": "top_miner",
                 "type": "publicKey"
-              },
-              {
-                "name": "balance",
-                "type": "u64"
-              },
-              {
-                "name": "buffer_a",
-                "type": "u64"
-              },
-              {
-                "name": "buffer_b",
-                "type": "u64"
-              },
-              {
-                "name": "buffer_c",
-                "type": "u64"
-              },
-              {
-                "name": "buffer_d",
-                "type": "u64"
-              },
-              {
-                "name": "compound_fee_reserve",
-                "type": "u64"
-              },
-              {
-                "name": "last_claim_at",
-                "type": "i64"
-              },
-              {
-                "name": "last_deposit_at",
-                "type": "i64"
-              },
-              {
-                "name": "last_withdraw_at",
-                "type": "i64"
-              },
-              {
-                "name": "rewards_factor",
-                "type": {
-                  "defined": "Numeric"
-                }
-              },
-              {
-                "name": "rewards",
-                "type": "u64"
-              },
-              {
-                "name": "lifetime_rewards",
-                "type": "u64"
-              },
-              {
-                "name": "buffer_f",
-                "type": "u64"
               }
             ]
           }
@@ -2279,14 +1876,6 @@
             "kind": "struct",
             "fields": [
               {
-                "name": "balance",
-                "type": "u64"
-              },
-              {
-                "name": "buffer_a",
-                "type": "u64"
-              },
-              {
                 "name": "motherlode",
                 "type": "u64"
               },
@@ -2297,21 +1886,7 @@
                 }
               },
               {
-                "name": "stake_rewards_factor",
-                "type": {
-                  "defined": "Numeric"
-                }
-              },
-              {
-                "name": "buffer_b",
-                "type": "u64"
-              },
-              {
                 "name": "total_refined",
-                "type": "u64"
-              },
-              {
-                "name": "total_staked",
                 "type": "u64"
               },
               {
@@ -2335,7 +1910,69 @@
             0,
             0
           ],
-          "docs": []
+          "docs": [],
+          "fields": [
+            {
+              "name": "disc",
+              "type": "u64"
+            },
+            {
+              "name": "round_id",
+              "type": "u64"
+            },
+            {
+              "name": "start_slot",
+              "type": "u64"
+            },
+            {
+              "name": "end_slot",
+              "type": "u64"
+            },
+            {
+              "name": "winning_square",
+              "type": "u64"
+            },
+            {
+              "name": "top_miner",
+              "type": "publicKey"
+            },
+            {
+              "name": "num_winners",
+              "type": "u64"
+            },
+            {
+              "name": "motherlode",
+              "type": "u64"
+            },
+            {
+              "name": "total_deployed",
+              "type": "u64"
+            },
+            {
+              "name": "total_vaulted",
+              "type": "u64"
+            },
+            {
+              "name": "total_winnings",
+              "type": "u64"
+            },
+            {
+              "name": "total_minted",
+              "type": "u64"
+            },
+            {
+              "name": "ts",
+              "type": "i64"
+            },
+            {
+              "name": "rng",
+              "type": "u64"
+            },
+            {
+              "name": "deployed_winning_square",
+              "type": "u64"
+            }
+          ]
         },
         {
           "name": "BuryEvent",
@@ -2349,7 +1986,33 @@
             0,
             0
           ],
-          "docs": []
+          "docs": [],
+          "fields": [
+            {
+              "name": "disc",
+              "type": "u64"
+            },
+            {
+              "name": "ore_buried",
+              "type": "u64"
+            },
+            {
+              "name": "ore_shared",
+              "type": "u64"
+            },
+            {
+              "name": "sol_amount",
+              "type": "u64"
+            },
+            {
+              "name": "new_circulating_supply",
+              "type": "u64"
+            },
+            {
+              "name": "ts",
+              "type": "i64"
+            }
+          ]
         },
         {
           "name": "DeployEvent",
@@ -2363,7 +2026,45 @@
             0,
             0
           ],
-          "docs": []
+          "docs": [],
+          "fields": [
+            {
+              "name": "disc",
+              "type": "u64"
+            },
+            {
+              "name": "authority",
+              "type": "publicKey"
+            },
+            {
+              "name": "amount",
+              "type": "u64"
+            },
+            {
+              "name": "mask",
+              "type": "u64"
+            },
+            {
+              "name": "round_id",
+              "type": "u64"
+            },
+            {
+              "name": "signer",
+              "type": "publicKey"
+            },
+            {
+              "name": "strategy",
+              "type": "u64"
+            },
+            {
+              "name": "total_squares",
+              "type": "u64"
+            },
+            {
+              "name": "ts",
+              "type": "i64"
+            }
+          ]
         },
         {
           "name": "LiqEvent",
@@ -2377,7 +2078,61 @@
             0,
             0
           ],
-          "docs": []
+          "docs": [],
+          "fields": [
+            {
+              "name": "disc",
+              "type": "u64"
+            },
+            {
+              "name": "sol_amount",
+              "type": "u64"
+            },
+            {
+              "name": "recipient",
+              "type": "publicKey"
+            },
+            {
+              "name": "ts",
+              "type": "i64"
+            }
+          ]
+        },
+        {
+          "name": "ClaimEvent",
+          "discriminator": [
+            4,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "docs": [],
+          "fields": [
+            {
+              "name": "disc",
+              "type": "u64"
+            },
+            {
+              "name": "authority",
+              "type": "publicKey"
+            },
+            {
+              "name": "amount",
+              "type": "u64"
+            },
+            {
+              "name": "claim_type",
+              "type": "u64"
+            },
+            {
+              "name": "ts",
+              "type": "i64"
+            }
+          ]
         }
       ],
       "errors": [
@@ -2390,6 +2145,11 @@
           "code": 1,
           "name": "NotAuthorized",
           "msg": "Not authorized"
+        },
+        {
+          "code": 2,
+          "name": "InvalidExecutor",
+          "msg": "Invalid executor"
         }
       ],
       "discriminant_size": 1
@@ -2810,7 +2570,7 @@
   ],
   "entities": [
     {
-      "ast_version": "0.0.1",
+      "ast_version": "0.0.4",
       "state_name": "OreRound",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "idl": null,
@@ -2940,73 +2700,6 @@
                 }
               },
               "when": "entropy::RevealIxState"
-            },
-            {
-              "target_path": "entropy.entropy_value_bytes",
-              "source": {
-                "FromSource": {
-                  "path": {
-                    "segments": [
-                      "value"
-                    ],
-                    "offsets": null
-                  },
-                  "default": null,
-                  "transform": null
-                }
-              },
-              "transform": null,
-              "population": "LastWrite",
-              "condition": {
-                "expression": "value != ZERO_32",
-                "parsed": {
-                  "Comparison": {
-                    "field": {
-                      "segments": [
-                        "value"
-                      ],
-                      "offsets": null
-                    },
-                    "op": "NotEqual",
-                    "value": [
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0
-                    ]
-                  }
-                }
-              },
-              "when": "entropy::RevealIxState",
-              "emit": false
             },
             {
               "target_path": "entropy.entropy_seed",
@@ -3169,12 +2862,12 @@
               "population": "SetOnce"
             },
             {
-              "target_path": "state.__motherlode_raw",
+              "target_path": "state.closes_at",
               "source": {
                 "FromSource": {
                   "path": {
                     "segments": [
-                      "motherlode"
+                      "expires_at"
                     ],
                     "offsets": null
                   },
@@ -3183,16 +2876,15 @@
                 }
               },
               "transform": null,
-              "population": "LastWrite",
-              "emit": false
+              "population": "LastWrite"
             },
             {
-              "target_path": "state.__total_deployed_raw",
+              "target_path": "state.__motherlode_raw",
               "source": {
                 "FromSource": {
                   "path": {
                     "segments": [
-                      "total_deployed"
+                      "motherlode"
                     ],
                     "offsets": null
                   },
@@ -3309,12 +3001,12 @@
               "population": "LastWrite"
             },
             {
-              "target_path": "results.__top_miner_reward_raw",
+              "target_path": "results.rewards_per_square",
               "source": {
                 "FromSource": {
                   "path": {
                     "segments": [
-                      "top_miner_reward"
+                      "rewards"
                     ],
                     "offsets": null
                   },
@@ -3516,8 +3208,11 @@
           "fields": [
             {
               "field_name": "round_id",
+              "raw_name": "round_id",
+              "canonical_name": "roundId",
               "rust_type_name": "u64",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": false,
               "is_array": false,
               "inner_type": null,
@@ -3526,6 +3221,8 @@
             },
             {
               "field_name": "round_address",
+              "raw_name": "round_address",
+              "canonical_name": "roundAddress",
               "rust_type_name": "String",
               "base_type": "String",
               "is_optional": false,
@@ -3542,9 +3239,25 @@
           "name": "state",
           "fields": [
             {
-              "field_name": "expires_at",
+              "field_name": "closes_at",
+              "raw_name": "closes_at",
+              "canonical_name": "closesAt",
               "rust_type_name": "Option < u64 >",
               "base_type": "Timestamp",
+              "integer_kind": "U64",
+              "is_optional": true,
+              "is_array": false,
+              "inner_type": "u64",
+              "source_path": null,
+              "resolved_type": null
+            },
+            {
+              "field_name": "expires_at",
+              "raw_name": "expires_at",
+              "canonical_name": "expiresAt",
+              "rust_type_name": "Option < u64 >",
+              "base_type": "Timestamp",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3553,8 +3266,11 @@
             },
             {
               "field_name": "estimated_expires_at_unix",
+              "raw_name": "estimated_expires_at_unix",
+              "canonical_name": "estimatedExpiresAtUnix",
               "rust_type_name": "Option < i64 >",
               "base_type": "Integer",
+              "integer_kind": "I64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "i64",
@@ -3563,6 +3279,8 @@
             },
             {
               "field_name": "motherlode",
+              "raw_name": "motherlode",
+              "canonical_name": "motherlode",
               "rust_type_name": "Option < f64 >",
               "base_type": "Float",
               "is_optional": true,
@@ -3573,6 +3291,8 @@
             },
             {
               "field_name": "total_deployed",
+              "raw_name": "total_deployed",
+              "canonical_name": "totalDeployed",
               "rust_type_name": "Option < f64 >",
               "base_type": "Float",
               "is_optional": true,
@@ -3583,6 +3303,8 @@
             },
             {
               "field_name": "total_vaulted",
+              "raw_name": "total_vaulted",
+              "canonical_name": "totalVaulted",
               "rust_type_name": "Option < f64 >",
               "base_type": "Float",
               "is_optional": true,
@@ -3593,6 +3315,8 @@
             },
             {
               "field_name": "total_winnings",
+              "raw_name": "total_winnings",
+              "canonical_name": "totalWinnings",
               "rust_type_name": "Option < f64 >",
               "base_type": "Float",
               "is_optional": true,
@@ -3603,8 +3327,11 @@
             },
             {
               "field_name": "total_miners",
+              "raw_name": "total_miners",
+              "canonical_name": "totalMiners",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3613,8 +3340,11 @@
             },
             {
               "field_name": "deployed_per_square",
+              "raw_name": "deployed_per_square",
+              "canonical_name": "deployedPerSquare",
               "rust_type_name": "Option < Vec < u64 > >",
               "base_type": "Array",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": true,
               "inner_type": "Vec < u64 >",
@@ -3623,6 +3353,8 @@
             },
             {
               "field_name": "deployed_per_square_ui",
+              "raw_name": "deployed_per_square_ui",
+              "canonical_name": "deployedPerSquareUi",
               "rust_type_name": "Option < Vec < f64 > >",
               "base_type": "Array",
               "is_optional": true,
@@ -3633,8 +3365,11 @@
             },
             {
               "field_name": "count_per_square",
+              "raw_name": "count_per_square",
+              "canonical_name": "countPerSquare",
               "rust_type_name": "Option < Vec < u64 > >",
               "base_type": "Array",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": true,
               "inner_type": "Vec < u64 >",
@@ -3650,6 +3385,8 @@
           "fields": [
             {
               "field_name": "top_miner",
+              "raw_name": "top_miner",
+              "canonical_name": "topMiner",
               "rust_type_name": "Option < String >",
               "base_type": "String",
               "is_optional": true,
@@ -3659,7 +3396,23 @@
               "resolved_type": null
             },
             {
+              "field_name": "rewards_per_square",
+              "raw_name": "rewards_per_square",
+              "canonical_name": "rewardsPerSquare",
+              "rust_type_name": "Option < Vec < u64 > >",
+              "base_type": "Array",
+              "integer_kind": "U64",
+              "is_optional": true,
+              "is_array": true,
+              "inner_type": "Vec < u64 >",
+              "source_path": null,
+              "resolved_type": null,
+              "emit": false
+            },
+            {
               "field_name": "top_miner_reward",
+              "raw_name": "top_miner_reward",
+              "canonical_name": "topMinerReward",
               "rust_type_name": "Option < f64 >",
               "base_type": "Float",
               "is_optional": true,
@@ -3670,6 +3423,8 @@
             },
             {
               "field_name": "rent_payer",
+              "raw_name": "rent_payer",
+              "canonical_name": "rentPayer",
               "rust_type_name": "Option < String >",
               "base_type": "String",
               "is_optional": true,
@@ -3680,6 +3435,8 @@
             },
             {
               "field_name": "slot_hash",
+              "raw_name": "slot_hash",
+              "canonical_name": "slotHash",
               "rust_type_name": "Option < String >",
               "base_type": "String",
               "is_optional": true,
@@ -3690,8 +3447,11 @@
             },
             {
               "field_name": "slot_hash_bytes",
+              "raw_name": "slot_hash_bytes",
+              "canonical_name": "slotHashBytes",
               "rust_type_name": "Option < Vec < u8 > >",
               "base_type": "Array",
+              "integer_kind": "U8",
               "is_optional": true,
               "is_array": true,
               "inner_type": "Vec < u8 >",
@@ -3701,8 +3461,11 @@
             },
             {
               "field_name": "expires_at_slot_hash",
+              "raw_name": "expires_at_slot_hash",
+              "canonical_name": "expiresAtSlotHash",
               "rust_type_name": "Option < Vec < u8 > >",
               "base_type": "Array",
+              "integer_kind": "U8",
               "is_optional": true,
               "is_array": true,
               "inner_type": "Vec < u8 >",
@@ -3711,8 +3474,11 @@
             },
             {
               "field_name": "rng",
+              "raw_name": "rng",
+              "canonical_name": "rng",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3721,8 +3487,11 @@
             },
             {
               "field_name": "winning_square",
+              "raw_name": "winning_square",
+              "canonical_name": "winningSquare",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3731,6 +3500,8 @@
             },
             {
               "field_name": "did_hit_motherlode",
+              "raw_name": "did_hit_motherlode",
+              "canonical_name": "didHitMotherlode",
               "rust_type_name": "Option < bool >",
               "base_type": "Boolean",
               "is_optional": true,
@@ -3741,8 +3512,11 @@
             },
             {
               "field_name": "pre_reveal_rng",
+              "raw_name": "pre_reveal_rng",
+              "canonical_name": "preRevealRng",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3751,8 +3525,11 @@
             },
             {
               "field_name": "pre_reveal_winning_square",
+              "raw_name": "pre_reveal_winning_square",
+              "canonical_name": "preRevealWinningSquare",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3768,8 +3545,11 @@
           "fields": [
             {
               "field_name": "deploy_count",
+              "raw_name": "deploy_count",
+              "canonical_name": "deployCount",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3778,8 +3558,11 @@
             },
             {
               "field_name": "checkpoint_count",
+              "raw_name": "checkpoint_count",
+              "canonical_name": "checkpointCount",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3795,6 +3578,8 @@
           "fields": [
             {
               "field_name": "motherlode",
+              "raw_name": "motherlode",
+              "canonical_name": "motherlode",
               "rust_type_name": "Option < f64 >",
               "base_type": "Float",
               "is_optional": true,
@@ -3812,6 +3597,8 @@
           "fields": [
             {
               "field_name": "entropy_value",
+              "raw_name": "entropy_value",
+              "canonical_name": "entropyValue",
               "rust_type_name": "Option < String >",
               "base_type": "String",
               "is_optional": true,
@@ -3821,18 +3608,9 @@
               "resolved_type": null
             },
             {
-              "field_name": "entropy_value_bytes",
-              "rust_type_name": "Option < Vec < u8 > >",
-              "base_type": "Array",
-              "is_optional": true,
-              "is_array": true,
-              "inner_type": "Vec < u8 >",
-              "source_path": null,
-              "resolved_type": null,
-              "emit": false
-            },
-            {
               "field_name": "entropy_seed",
+              "raw_name": "entropy_seed",
+              "canonical_name": "entropySeed",
               "rust_type_name": "Option < String >",
               "base_type": "String",
               "is_optional": true,
@@ -3843,6 +3621,8 @@
             },
             {
               "field_name": "entropy_slot_hash",
+              "raw_name": "entropy_slot_hash",
+              "canonical_name": "entropySlotHash",
               "rust_type_name": "Option < String >",
               "base_type": "String",
               "is_optional": true,
@@ -3853,8 +3633,11 @@
             },
             {
               "field_name": "entropy_start_at",
+              "raw_name": "entropy_start_at",
+              "canonical_name": "entropyStartAt",
               "rust_type_name": "Option < u64 >",
               "base_type": "Timestamp",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3863,8 +3646,11 @@
             },
             {
               "field_name": "entropy_end_at",
+              "raw_name": "entropy_end_at",
+              "canonical_name": "entropyEndAt",
               "rust_type_name": "Option < u64 >",
               "base_type": "Timestamp",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3873,8 +3659,11 @@
             },
             {
               "field_name": "entropy_samples",
+              "raw_name": "entropy_samples",
+              "canonical_name": "entropySamples",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -3883,6 +3672,8 @@
             },
             {
               "field_name": "entropy_var_address",
+              "raw_name": "entropy_var_address",
+              "canonical_name": "entropyVarAddress",
               "rust_type_name": "Option < String >",
               "base_type": "String",
               "is_optional": true,
@@ -3893,8 +3684,11 @@
             },
             {
               "field_name": "resolved_seed",
+              "raw_name": "resolved_seed",
+              "canonical_name": "resolvedSeed",
               "rust_type_name": "Option < Vec < u8 > >",
               "base_type": "Array",
+              "integer_kind": "U8",
               "is_optional": true,
               "is_array": true,
               "inner_type": "Vec < u8 >",
@@ -3910,6 +3704,8 @@
           "fields": [
             {
               "field_name": "ore_metadata",
+              "raw_name": "ore_metadata",
+              "canonical_name": "oreMetadata",
               "rust_type_name": "Option < TokenMetadata >",
               "base_type": "Object",
               "is_optional": true,
@@ -3926,8 +3722,11 @@
       "field_mappings": {
         "entropy.entropy_end_at": {
           "field_name": "entropy_end_at",
+          "raw_name": "entropy_end_at",
+          "canonical_name": "entropyEndAt",
           "rust_type_name": "Option < u64 >",
           "base_type": "Timestamp",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -3936,8 +3735,11 @@
         },
         "entropy.entropy_samples": {
           "field_name": "entropy_samples",
+          "raw_name": "entropy_samples",
+          "canonical_name": "entropySamples",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -3946,6 +3748,8 @@
         },
         "entropy.entropy_seed": {
           "field_name": "entropy_seed",
+          "raw_name": "entropy_seed",
+          "canonical_name": "entropySeed",
           "rust_type_name": "Option < String >",
           "base_type": "String",
           "is_optional": true,
@@ -3956,6 +3760,8 @@
         },
         "entropy.entropy_slot_hash": {
           "field_name": "entropy_slot_hash",
+          "raw_name": "entropy_slot_hash",
+          "canonical_name": "entropySlotHash",
           "rust_type_name": "Option < String >",
           "base_type": "String",
           "is_optional": true,
@@ -3966,8 +3772,11 @@
         },
         "entropy.entropy_start_at": {
           "field_name": "entropy_start_at",
+          "raw_name": "entropy_start_at",
+          "canonical_name": "entropyStartAt",
           "rust_type_name": "Option < u64 >",
           "base_type": "Timestamp",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -3976,6 +3785,8 @@
         },
         "entropy.entropy_value": {
           "field_name": "entropy_value",
+          "raw_name": "entropy_value",
+          "canonical_name": "entropyValue",
           "rust_type_name": "Option < String >",
           "base_type": "String",
           "is_optional": true,
@@ -3984,19 +3795,10 @@
           "source_path": null,
           "resolved_type": null
         },
-        "entropy.entropy_value_bytes": {
-          "field_name": "entropy_value_bytes",
-          "rust_type_name": "Option < Vec < u8 > >",
-          "base_type": "Array",
-          "is_optional": true,
-          "is_array": true,
-          "inner_type": "Vec < u8 >",
-          "source_path": null,
-          "resolved_type": null,
-          "emit": false
-        },
         "entropy.entropy_var_address": {
           "field_name": "entropy_var_address",
+          "raw_name": "entropy_var_address",
+          "canonical_name": "entropyVarAddress",
           "rust_type_name": "Option < String >",
           "base_type": "String",
           "is_optional": true,
@@ -4007,8 +3809,11 @@
         },
         "entropy.resolved_seed": {
           "field_name": "resolved_seed",
+          "raw_name": "resolved_seed",
+          "canonical_name": "resolvedSeed",
           "rust_type_name": "Option < Vec < u8 > >",
           "base_type": "Array",
+          "integer_kind": "U8",
           "is_optional": true,
           "is_array": true,
           "inner_type": "Vec < u8 >",
@@ -4017,6 +3822,8 @@
         },
         "id.round_address": {
           "field_name": "round_address",
+          "raw_name": "round_address",
+          "canonical_name": "roundAddress",
           "rust_type_name": "String",
           "base_type": "String",
           "is_optional": false,
@@ -4027,8 +3834,11 @@
         },
         "id.round_id": {
           "field_name": "round_id",
+          "raw_name": "round_id",
+          "canonical_name": "roundId",
           "rust_type_name": "u64",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": false,
           "is_array": false,
           "inner_type": null,
@@ -4037,8 +3847,11 @@
         },
         "metrics.checkpoint_count": {
           "field_name": "checkpoint_count",
+          "raw_name": "checkpoint_count",
+          "canonical_name": "checkpointCount",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -4047,8 +3860,11 @@
         },
         "metrics.deploy_count": {
           "field_name": "deploy_count",
+          "raw_name": "deploy_count",
+          "canonical_name": "deployCount",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -4057,6 +3873,8 @@
         },
         "ore_metadata": {
           "field_name": "ore_metadata",
+          "raw_name": "ore_metadata",
+          "canonical_name": "oreMetadata",
           "rust_type_name": "Option < TokenMetadata >",
           "base_type": "Object",
           "is_optional": true,
@@ -4067,6 +3885,8 @@
         },
         "results.did_hit_motherlode": {
           "field_name": "did_hit_motherlode",
+          "raw_name": "did_hit_motherlode",
+          "canonical_name": "didHitMotherlode",
           "rust_type_name": "Option < bool >",
           "base_type": "Boolean",
           "is_optional": true,
@@ -4077,8 +3897,11 @@
         },
         "results.expires_at_slot_hash": {
           "field_name": "results.expires_at_slot_hash",
+          "raw_name": "results.expires_at_slot_hash",
+          "canonical_name": "resultsExpiresAtSlotHash",
           "rust_type_name": "Option < Vec < u8 > >",
           "base_type": "Array",
+          "integer_kind": "U8",
           "is_optional": true,
           "is_array": true,
           "inner_type": "SlotHashBytes",
@@ -4087,8 +3910,11 @@
         },
         "results.pre_reveal_rng": {
           "field_name": "results.pre_reveal_rng",
+          "raw_name": "results.pre_reveal_rng",
+          "canonical_name": "resultsPreRevealRng",
           "rust_type_name": "Option < u64 >",
           "base_type": "Any",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "KeccakRngValue",
@@ -4097,8 +3923,11 @@
         },
         "results.pre_reveal_winning_square": {
           "field_name": "pre_reveal_winning_square",
+          "raw_name": "pre_reveal_winning_square",
+          "canonical_name": "preRevealWinningSquare",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -4107,6 +3936,8 @@
         },
         "results.rent_payer": {
           "field_name": "rent_payer",
+          "raw_name": "rent_payer",
+          "canonical_name": "rentPayer",
           "rust_type_name": "Option < String >",
           "base_type": "String",
           "is_optional": true,
@@ -4115,10 +3946,27 @@
           "source_path": null,
           "resolved_type": null
         },
+        "results.rewards_per_square": {
+          "field_name": "rewards_per_square",
+          "raw_name": "rewards_per_square",
+          "canonical_name": "rewardsPerSquare",
+          "rust_type_name": "Option < Vec < u64 > >",
+          "base_type": "Array",
+          "integer_kind": "U64",
+          "is_optional": true,
+          "is_array": true,
+          "inner_type": "Vec < u64 >",
+          "source_path": null,
+          "resolved_type": null,
+          "emit": false
+        },
         "results.rng": {
           "field_name": "results.rng",
+          "raw_name": "results.rng",
+          "canonical_name": "resultsRng",
           "rust_type_name": "Option < u64 >",
           "base_type": "Any",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "KeccakRngValue",
@@ -4127,6 +3975,8 @@
         },
         "results.slot_hash": {
           "field_name": "slot_hash",
+          "raw_name": "slot_hash",
+          "canonical_name": "slotHash",
           "rust_type_name": "Option < String >",
           "base_type": "String",
           "is_optional": true,
@@ -4137,8 +3987,11 @@
         },
         "results.slot_hash_bytes": {
           "field_name": "slot_hash_bytes",
+          "raw_name": "slot_hash_bytes",
+          "canonical_name": "slotHashBytes",
           "rust_type_name": "Option < Vec < u8 > >",
           "base_type": "Array",
+          "integer_kind": "U8",
           "is_optional": true,
           "is_array": true,
           "inner_type": "Vec < u8 >",
@@ -4148,6 +4001,8 @@
         },
         "results.top_miner": {
           "field_name": "top_miner",
+          "raw_name": "top_miner",
+          "canonical_name": "topMiner",
           "rust_type_name": "Option < String >",
           "base_type": "String",
           "is_optional": true,
@@ -4158,6 +4013,8 @@
         },
         "results.top_miner_reward": {
           "field_name": "results.top_miner_reward",
+          "raw_name": "results.top_miner_reward",
+          "canonical_name": "resultsTopMinerReward",
           "rust_type_name": "Option < f64 >",
           "base_type": "Any",
           "is_optional": true,
@@ -4168,8 +4025,24 @@
         },
         "results.winning_square": {
           "field_name": "winning_square",
+          "raw_name": "winning_square",
+          "canonical_name": "winningSquare",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
+          "is_optional": true,
+          "is_array": false,
+          "inner_type": "u64",
+          "source_path": null,
+          "resolved_type": null
+        },
+        "state.closes_at": {
+          "field_name": "closes_at",
+          "raw_name": "closes_at",
+          "canonical_name": "closesAt",
+          "rust_type_name": "Option < u64 >",
+          "base_type": "Timestamp",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -4178,8 +4051,11 @@
         },
         "state.count_per_square": {
           "field_name": "count_per_square",
+          "raw_name": "count_per_square",
+          "canonical_name": "countPerSquare",
           "rust_type_name": "Option < Vec < u64 > >",
           "base_type": "Array",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": true,
           "inner_type": "Vec < u64 >",
@@ -4188,8 +4064,11 @@
         },
         "state.deployed_per_square": {
           "field_name": "deployed_per_square",
+          "raw_name": "deployed_per_square",
+          "canonical_name": "deployedPerSquare",
           "rust_type_name": "Option < Vec < u64 > >",
           "base_type": "Array",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": true,
           "inner_type": "Vec < u64 >",
@@ -4198,6 +4077,8 @@
         },
         "state.deployed_per_square_ui": {
           "field_name": "deployed_per_square_ui",
+          "raw_name": "deployed_per_square_ui",
+          "canonical_name": "deployedPerSquareUi",
           "rust_type_name": "Option < Vec < f64 > >",
           "base_type": "Array",
           "is_optional": true,
@@ -4208,8 +4089,11 @@
         },
         "state.estimated_expires_at_unix": {
           "field_name": "estimated_expires_at_unix",
+          "raw_name": "estimated_expires_at_unix",
+          "canonical_name": "estimatedExpiresAtUnix",
           "rust_type_name": "Option < i64 >",
           "base_type": "Integer",
+          "integer_kind": "I64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "i64",
@@ -4218,8 +4102,11 @@
         },
         "state.expires_at": {
           "field_name": "expires_at",
+          "raw_name": "expires_at",
+          "canonical_name": "expiresAt",
           "rust_type_name": "Option < u64 >",
           "base_type": "Timestamp",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -4228,6 +4115,8 @@
         },
         "state.motherlode": {
           "field_name": "state.motherlode",
+          "raw_name": "state.motherlode",
+          "canonical_name": "stateMotherlode",
           "rust_type_name": "Option < f64 >",
           "base_type": "Any",
           "is_optional": true,
@@ -4238,6 +4127,8 @@
         },
         "state.total_deployed": {
           "field_name": "state.total_deployed",
+          "raw_name": "state.total_deployed",
+          "canonical_name": "stateTotalDeployed",
           "rust_type_name": "Option < f64 >",
           "base_type": "Any",
           "is_optional": true,
@@ -4248,8 +4139,11 @@
         },
         "state.total_miners": {
           "field_name": "total_miners",
+          "raw_name": "total_miners",
+          "canonical_name": "totalMiners",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -4258,6 +4152,8 @@
         },
         "state.total_vaulted": {
           "field_name": "state.total_vaulted",
+          "raw_name": "state.total_vaulted",
+          "canonical_name": "stateTotalVaulted",
           "rust_type_name": "Option < f64 >",
           "base_type": "Any",
           "is_optional": true,
@@ -4268,6 +4164,8 @@
         },
         "state.total_winnings": {
           "field_name": "state.total_winnings",
+          "raw_name": "state.total_winnings",
+          "canonical_name": "stateTotalWinnings",
           "rust_type_name": "Option < f64 >",
           "base_type": "Any",
           "is_optional": true,
@@ -4278,6 +4176,8 @@
         },
         "treasury.motherlode": {
           "field_name": "treasury.motherlode",
+          "raw_name": "treasury.motherlode",
+          "canonical_name": "treasuryMotherlode",
           "rust_type_name": "Option < f64 >",
           "base_type": "Any",
           "is_optional": true,
@@ -4288,15 +4188,6 @@
         }
       },
       "resolver_hooks": [
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        },
         {
           "account_type": "ore::TreasuryState",
           "strategy": {
@@ -4309,9 +4200,62 @@
               ]
             }
           }
+        },
+        {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
         }
       ],
       "instruction_hooks": [
+        {
+          "instruction_type": "ore::DeployIxState",
+          "actions": [
+            {
+              "RegisterPdaMapping": {
+                "pda_field": {
+                  "segments": [
+                    "accounts",
+                    "entropyVar"
+                  ],
+                  "offsets": null
+                },
+                "seed_field": {
+                  "segments": [
+                    "accounts",
+                    "round"
+                  ],
+                  "offsets": null
+                },
+                "lookup_name": "default_pda_lookup"
+              }
+            },
+            {
+              "RegisterPdaMapping": {
+                "pda_field": {
+                  "segments": [
+                    "accounts",
+                    "entropyVar"
+                  ],
+                  "offsets": null
+                },
+                "seed_field": {
+                  "segments": [
+                    "accounts",
+                    "round"
+                  ],
+                  "offsets": null
+                },
+                "lookup_name": "default_pda_lookup"
+              }
+            }
+          ],
+          "lookup_by": null
+        },
         {
           "instruction_type": "ore::ResetIxState",
           "actions": [
@@ -4602,8 +4546,8 @@
                   }
                 },
                 {
-                  "FieldRef": {
-                    "path": "ore_metadata.decimals"
+                  "Literal": {
+                    "value": 11
                   }
                 }
               ]
@@ -4619,8 +4563,14 @@
               "method": "ui_amount",
               "args": [
                 {
-                  "FieldRef": {
-                    "path": "state.__total_deployed_raw"
+                  "MethodCall": {
+                    "expr": {
+                      "FieldRef": {
+                        "path": "state.deployed_per_square"
+                      }
+                    },
+                    "method": "sum",
+                    "args": []
                   }
                 },
                 {
@@ -4724,13 +4674,19 @@
               "method": "ui_amount",
               "args": [
                 {
-                  "FieldRef": {
-                    "path": "results.__top_miner_reward_raw"
+                  "MethodCall": {
+                    "expr": {
+                      "FieldRef": {
+                        "path": "results.rewards_per_square"
+                      }
+                    },
+                    "method": "sum",
+                    "args": []
                   }
                 },
                 {
-                  "FieldRef": {
-                    "path": "ore_metadata.decimals"
+                  "Literal": {
+                    "value": 11
                   }
                 }
               ]
@@ -4758,104 +4714,67 @@
         {
           "target_path": "results.rng",
           "expression": {
-            "Let": {
-              "name": "hash",
-              "value": {
-                "JsonToBytes": {
+            "If": {
+              "condition": {
+                "MethodCall": {
                   "expr": {
                     "FieldRef": {
-                      "path": "entropy.entropy_value_bytes"
+                      "path": "results.slot_hash_bytes"
                     }
-                  }
+                  },
+                  "method": "is_none",
+                  "args": []
                 }
               },
-              "body": {
-                "If": {
-                  "condition": {
-                    "Binary": {
-                      "op": "Ne",
-                      "left": {
-                        "Paren": {
-                          "expr": {
-                            "Cast": {
-                              "expr": {
-                                "MethodCall": {
-                                  "expr": {
-                                    "Var": {
-                                      "name": "hash"
-                                    }
-                                  },
-                                  "method": "len",
-                                  "args": []
-                                }
-                              },
-                              "to_type": "u64"
-                            }
-                          }
-                        }
-                      },
-                      "right": {
-                        "Literal": {
-                          "value": 32
+              "then_branch": "None",
+              "else_branch": {
+                "Let": {
+                  "name": "hash",
+                  "value": {
+                    "JsonToBytes": {
+                      "expr": {
+                        "FieldRef": {
+                          "path": "results.slot_hash_bytes"
                         }
                       }
                     }
                   },
-                  "then_branch": "None",
-                  "else_branch": {
-                    "Let": {
-                      "name": "all_zeros",
-                      "value": {
+                  "body": {
+                    "If": {
+                      "condition": {
                         "Binary": {
-                          "op": "Eq",
+                          "op": "Ne",
                           "left": {
-                            "Var": {
-                              "name": "hash"
+                            "Paren": {
+                              "expr": {
+                                "Cast": {
+                                  "expr": {
+                                    "MethodCall": {
+                                      "expr": {
+                                        "Var": {
+                                          "name": "hash"
+                                        }
+                                      },
+                                      "method": "len",
+                                      "args": []
+                                    }
+                                  },
+                                  "to_type": "u64"
+                                }
+                              }
                             }
                           },
                           "right": {
-                            "ByteArray": {
-                              "bytes": [
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0
-                              ]
+                            "Literal": {
+                              "value": 32
                             }
                           }
                         }
                       },
-                      "body": {
+                      "then_branch": "None",
+                      "else_branch": {
                         "Let": {
-                          "name": "all_ff",
+                          "name": "all_zeros",
                           "value": {
                             "Binary": {
                               "op": "Eq",
@@ -4867,82 +4786,115 @@
                               "right": {
                                 "ByteArray": {
                                   "bytes": [
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255,
-                                    255
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
                                   ]
                                 }
                               }
                             }
                           },
                           "body": {
-                            "If": {
-                              "condition": {
+                            "Let": {
+                              "name": "all_ff",
+                              "value": {
                                 "Binary": {
-                                  "op": "Or",
+                                  "op": "Eq",
                                   "left": {
                                     "Var": {
-                                      "name": "all_zeros"
+                                      "name": "hash"
                                     }
                                   },
                                   "right": {
-                                    "Var": {
-                                      "name": "all_ff"
+                                    "ByteArray": {
+                                      "bytes": [
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255,
+                                        255
+                                      ]
                                     }
                                   }
                                 }
                               },
-                              "then_branch": "None",
-                              "else_branch": {
-                                "Let": {
-                                  "name": "r1",
-                                  "value": {
-                                    "U64FromLeBytes": {
-                                      "bytes": {
-                                        "Slice": {
-                                          "expr": {
-                                            "Var": {
-                                              "name": "hash"
-                                            }
-                                          },
-                                          "start": 0,
-                                          "end": 8
+                              "body": {
+                                "If": {
+                                  "condition": {
+                                    "Binary": {
+                                      "op": "Or",
+                                      "left": {
+                                        "Var": {
+                                          "name": "all_zeros"
+                                        }
+                                      },
+                                      "right": {
+                                        "Var": {
+                                          "name": "all_ff"
                                         }
                                       }
                                     }
                                   },
-                                  "body": {
+                                  "then_branch": "None",
+                                  "else_branch": {
                                     "Let": {
-                                      "name": "r2",
+                                      "name": "r1",
                                       "value": {
                                         "U64FromLeBytes": {
                                           "bytes": {
@@ -4952,15 +4904,15 @@
                                                   "name": "hash"
                                                 }
                                               },
-                                              "start": 8,
-                                              "end": 16
+                                              "start": 0,
+                                              "end": 8
                                             }
                                           }
                                         }
                                       },
                                       "body": {
                                         "Let": {
-                                          "name": "r3",
+                                          "name": "r2",
                                           "value": {
                                             "U64FromLeBytes": {
                                               "bytes": {
@@ -4970,15 +4922,15 @@
                                                       "name": "hash"
                                                     }
                                                   },
-                                                  "start": 16,
-                                                  "end": 24
+                                                  "start": 8,
+                                                  "end": 16
                                                 }
                                               }
                                             }
                                           },
                                           "body": {
                                             "Let": {
-                                              "name": "r4",
+                                              "name": "r3",
                                               "value": {
                                                 "U64FromLeBytes": {
                                                   "bytes": {
@@ -4988,45 +4940,65 @@
                                                           "name": "hash"
                                                         }
                                                       },
-                                                      "start": 24,
-                                                      "end": 32
+                                                      "start": 16,
+                                                      "end": 24
                                                     }
                                                   }
                                                 }
                                               },
                                               "body": {
-                                                "Some": {
+                                                "Let": {
+                                                  "name": "r4",
                                                   "value": {
-                                                    "Binary": {
-                                                      "op": "Xor",
-                                                      "left": {
+                                                    "U64FromLeBytes": {
+                                                      "bytes": {
+                                                        "Slice": {
+                                                          "expr": {
+                                                            "Var": {
+                                                              "name": "hash"
+                                                            }
+                                                          },
+                                                          "start": 24,
+                                                          "end": 32
+                                                        }
+                                                      }
+                                                    }
+                                                  },
+                                                  "body": {
+                                                    "Some": {
+                                                      "value": {
                                                         "Binary": {
                                                           "op": "Xor",
                                                           "left": {
                                                             "Binary": {
                                                               "op": "Xor",
                                                               "left": {
-                                                                "Var": {
-                                                                  "name": "r1"
+                                                                "Binary": {
+                                                                  "op": "Xor",
+                                                                  "left": {
+                                                                    "Var": {
+                                                                      "name": "r1"
+                                                                    }
+                                                                  },
+                                                                  "right": {
+                                                                    "Var": {
+                                                                      "name": "r2"
+                                                                    }
+                                                                  }
                                                                 }
                                                               },
                                                               "right": {
                                                                 "Var": {
-                                                                  "name": "r2"
+                                                                  "name": "r3"
                                                                 }
                                                               }
                                                             }
                                                           },
                                                           "right": {
                                                             "Var": {
-                                                              "name": "r3"
+                                                              "name": "r4"
                                                             }
                                                           }
-                                                        }
-                                                      },
-                                                      "right": {
-                                                        "Var": {
-                                                          "name": "r4"
                                                         }
                                                       }
                                                     }
@@ -5216,8 +5188,8 @@
                   }
                 },
                 {
-                  "FieldRef": {
-                    "path": "ore_metadata.decimals"
+                  "Literal": {
+                    "value": 11
                   }
                 }
               ]
@@ -5226,7 +5198,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "19878988154c1337bf635e15e4b90ce0a04971d337855e5c598030d96a0f9a7f",
+      "content_hash": "d8ef747d7abd1cf2b9cc4a63d6f99567be5a8a594e536738e17bd0db9ce5e5cb",
       "views": [
         {
           "id": "OreRound/latest",
@@ -5254,7 +5226,7 @@
       ]
     },
     {
-      "ast_version": "0.0.1",
+      "ast_version": "0.0.4",
       "state_name": "OreTreasury",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "idl": null,
@@ -5303,23 +5275,6 @@
               "population": "SetOnce"
             },
             {
-              "target_path": "state.balance",
-              "source": {
-                "FromSource": {
-                  "path": {
-                    "segments": [
-                      "balance"
-                    ],
-                    "offsets": null
-                  },
-                  "default": null,
-                  "transform": null
-                }
-              },
-              "transform": null,
-              "population": "LastWrite"
-            },
-            {
               "target_path": "state.__motherlode_raw",
               "source": {
                 "FromSource": {
@@ -5344,24 +5299,6 @@
                   "path": {
                     "segments": [
                       "total_refined"
-                    ],
-                    "offsets": null
-                  },
-                  "default": null,
-                  "transform": null
-                }
-              },
-              "transform": null,
-              "population": "LastWrite",
-              "emit": false
-            },
-            {
-              "target_path": "state.__total_staked_raw",
-              "source": {
-                "FromSource": {
-                  "path": {
-                    "segments": [
-                      "total_staked"
                     ],
                     "offsets": null
                   },
@@ -5412,6 +5349,8 @@
           "fields": [
             {
               "field_name": "address",
+              "raw_name": "address",
+              "canonical_name": "address",
               "rust_type_name": "String",
               "base_type": "String",
               "is_optional": false,
@@ -5428,17 +5367,9 @@
           "name": "state",
           "fields": [
             {
-              "field_name": "balance",
-              "rust_type_name": "Option < u64 >",
-              "base_type": "Integer",
-              "is_optional": true,
-              "is_array": false,
-              "inner_type": "u64",
-              "source_path": null,
-              "resolved_type": null
-            },
-            {
               "field_name": "motherlode",
+              "raw_name": "motherlode",
+              "canonical_name": "motherlode",
               "rust_type_name": "Option < f64 >",
               "base_type": "Float",
               "is_optional": true,
@@ -5449,16 +5380,8 @@
             },
             {
               "field_name": "total_refined",
-              "rust_type_name": "Option < f64 >",
-              "base_type": "Float",
-              "is_optional": true,
-              "is_array": false,
-              "inner_type": "f64",
-              "source_path": null,
-              "resolved_type": null
-            },
-            {
-              "field_name": "total_staked",
+              "raw_name": "total_refined",
+              "canonical_name": "totalRefined",
               "rust_type_name": "Option < f64 >",
               "base_type": "Float",
               "is_optional": true,
@@ -5469,6 +5392,8 @@
             },
             {
               "field_name": "total_unclaimed",
+              "raw_name": "total_unclaimed",
+              "canonical_name": "totalUnclaimed",
               "rust_type_name": "Option < f64 >",
               "base_type": "Float",
               "is_optional": true,
@@ -5486,6 +5411,8 @@
           "fields": [
             {
               "field_name": "treasury_snapshot",
+              "raw_name": "treasury_snapshot",
+              "canonical_name": "treasurySnapshot",
               "rust_type_name": "Option < ore_sdk :: accounts :: Treasury >",
               "base_type": "Object",
               "is_optional": true,
@@ -5496,65 +5423,41 @@
                 "type_name": "Treasury",
                 "fields": [
                   {
-                    "field_name": "balance",
-                    "field_type": "u64",
-                    "base_type": "Integer",
-                    "is_optional": false,
-                    "is_array": false
-                  },
-                  {
-                    "field_name": "buffer_a",
-                    "field_type": "u64",
-                    "base_type": "Integer",
-                    "is_optional": false,
-                    "is_array": false
-                  },
-                  {
                     "field_name": "motherlode",
+                    "raw_name": "motherlode",
+                    "canonical_name": "motherlode",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "miner_rewards_factor",
+                    "raw_name": "miner_rewards_factor",
+                    "canonical_name": "minerRewardsFactor",
                     "field_type": "Numeric",
                     "base_type": "Object",
-                    "is_optional": false,
-                    "is_array": false
-                  },
-                  {
-                    "field_name": "stake_rewards_factor",
-                    "field_type": "Numeric",
-                    "base_type": "Object",
-                    "is_optional": false,
-                    "is_array": false
-                  },
-                  {
-                    "field_name": "buffer_b",
-                    "field_type": "u64",
-                    "base_type": "Integer",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "total_refined",
+                    "raw_name": "total_refined",
+                    "canonical_name": "totalRefined",
                     "field_type": "u64",
                     "base_type": "Integer",
-                    "is_optional": false,
-                    "is_array": false
-                  },
-                  {
-                    "field_name": "total_staked",
-                    "field_type": "u64",
-                    "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "total_unclaimed",
+                    "raw_name": "total_unclaimed",
+                    "canonical_name": "totalUnclaimed",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   }
@@ -5574,6 +5477,8 @@
       "field_mappings": {
         "id.address": {
           "field_name": "address",
+          "raw_name": "address",
+          "canonical_name": "address",
           "rust_type_name": "String",
           "base_type": "String",
           "is_optional": false,
@@ -5582,18 +5487,10 @@
           "source_path": null,
           "resolved_type": null
         },
-        "state.balance": {
-          "field_name": "balance",
-          "rust_type_name": "Option < u64 >",
-          "base_type": "Integer",
-          "is_optional": true,
-          "is_array": false,
-          "inner_type": "u64",
-          "source_path": null,
-          "resolved_type": null
-        },
         "state.motherlode": {
           "field_name": "state.motherlode",
+          "raw_name": "state.motherlode",
+          "canonical_name": "stateMotherlode",
           "rust_type_name": "Option < f64 >",
           "base_type": "Any",
           "is_optional": true,
@@ -5604,16 +5501,8 @@
         },
         "state.total_refined": {
           "field_name": "state.total_refined",
-          "rust_type_name": "Option < f64 >",
-          "base_type": "Any",
-          "is_optional": true,
-          "is_array": false,
-          "inner_type": "TokenUiAmount",
-          "source_path": null,
-          "resolved_type": null
-        },
-        "state.total_staked": {
-          "field_name": "state.total_staked",
+          "raw_name": "state.total_refined",
+          "canonical_name": "stateTotalRefined",
           "rust_type_name": "Option < f64 >",
           "base_type": "Any",
           "is_optional": true,
@@ -5624,6 +5513,8 @@
         },
         "state.total_unclaimed": {
           "field_name": "state.total_unclaimed",
+          "raw_name": "state.total_unclaimed",
+          "canonical_name": "stateTotalUnclaimed",
           "rust_type_name": "Option < f64 >",
           "base_type": "Any",
           "is_optional": true,
@@ -5634,6 +5525,8 @@
         },
         "treasury_snapshot": {
           "field_name": "treasury_snapshot",
+          "raw_name": "treasury_snapshot",
+          "canonical_name": "treasurySnapshot",
           "rust_type_name": "Option < ore_sdk :: accounts :: Treasury >",
           "base_type": "Object",
           "is_optional": true,
@@ -5644,65 +5537,41 @@
             "type_name": "Treasury",
             "fields": [
               {
-                "field_name": "balance",
-                "field_type": "u64",
-                "base_type": "Integer",
-                "is_optional": false,
-                "is_array": false
-              },
-              {
-                "field_name": "buffer_a",
-                "field_type": "u64",
-                "base_type": "Integer",
-                "is_optional": false,
-                "is_array": false
-              },
-              {
                 "field_name": "motherlode",
+                "raw_name": "motherlode",
+                "canonical_name": "motherlode",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "miner_rewards_factor",
+                "raw_name": "miner_rewards_factor",
+                "canonical_name": "minerRewardsFactor",
                 "field_type": "Numeric",
                 "base_type": "Object",
-                "is_optional": false,
-                "is_array": false
-              },
-              {
-                "field_name": "stake_rewards_factor",
-                "field_type": "Numeric",
-                "base_type": "Object",
-                "is_optional": false,
-                "is_array": false
-              },
-              {
-                "field_name": "buffer_b",
-                "field_type": "u64",
-                "base_type": "Integer",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "total_refined",
+                "raw_name": "total_refined",
+                "canonical_name": "totalRefined",
                 "field_type": "u64",
                 "base_type": "Integer",
-                "is_optional": false,
-                "is_array": false
-              },
-              {
-                "field_name": "total_staked",
-                "field_type": "u64",
-                "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "total_unclaimed",
+                "raw_name": "total_unclaimed",
+                "canonical_name": "totalUnclaimed",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               }
@@ -5717,15 +5586,6 @@
       },
       "resolver_hooks": [
         {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        },
-        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -5737,6 +5597,15 @@
               ]
             }
           }
+        },
+        {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
         }
       ],
       "instruction_hooks": [],
@@ -5744,7 +5613,6 @@
       "computed_fields": [
         "state.motherlode",
         "state.total_refined",
-        "state.total_staked",
         "state.total_unclaimed"
       ],
       "computed_field_specs": [
@@ -5793,28 +5661,6 @@
           "result_type": "Option < f64 >"
         },
         {
-          "target_path": "state.total_staked",
-          "expression": {
-            "ResolverComputed": {
-              "resolver": "TokenMetadata",
-              "method": "ui_amount",
-              "args": [
-                {
-                  "FieldRef": {
-                    "path": "state.__total_staked_raw"
-                  }
-                },
-                {
-                  "Literal": {
-                    "value": 11
-                  }
-                }
-              ]
-            }
-          },
-          "result_type": "Option < f64 >"
-        },
-        {
           "target_path": "state.total_unclaimed",
           "expression": {
             "ResolverComputed": {
@@ -5837,11 +5683,11 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "8af49fe56b1ba1bf13ae05421f2f43e557a01c9695a5bbf5ec3cc0ecb3998817",
+      "content_hash": "34869aef926e15181ccffdb5642585529bc62d0e102052f4023aa0d3d25fab65",
       "views": []
     },
     {
-      "ast_version": "0.0.1",
+      "ast_version": "0.0.4",
       "state_name": "OreMiner",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "idl": null,
@@ -6312,6 +6158,8 @@
           "fields": [
             {
               "field_name": "authority",
+              "raw_name": "authority",
+              "canonical_name": "authority",
               "rust_type_name": "String",
               "base_type": "String",
               "is_optional": false,
@@ -6322,6 +6170,8 @@
             },
             {
               "field_name": "miner_address",
+              "raw_name": "miner_address",
+              "canonical_name": "minerAddress",
               "rust_type_name": "String",
               "base_type": "String",
               "is_optional": false,
@@ -6332,6 +6182,8 @@
             },
             {
               "field_name": "automation_address",
+              "raw_name": "automation_address",
+              "canonical_name": "automationAddress",
               "rust_type_name": "Option < String >",
               "base_type": "String",
               "is_optional": true,
@@ -6349,8 +6201,11 @@
           "fields": [
             {
               "field_name": "rewards_sol",
+              "raw_name": "rewards_sol",
+              "canonical_name": "rewardsSol",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6359,8 +6214,11 @@
             },
             {
               "field_name": "rewards_ore",
+              "raw_name": "rewards_ore",
+              "canonical_name": "rewardsOre",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6369,8 +6227,11 @@
             },
             {
               "field_name": "refined_ore",
+              "raw_name": "refined_ore",
+              "canonical_name": "refinedOre",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6379,8 +6240,11 @@
             },
             {
               "field_name": "lifetime_rewards_sol",
+              "raw_name": "lifetime_rewards_sol",
+              "canonical_name": "lifetimeRewardsSol",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6389,8 +6253,11 @@
             },
             {
               "field_name": "lifetime_rewards_ore",
+              "raw_name": "lifetime_rewards_ore",
+              "canonical_name": "lifetimeRewardsOre",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6399,8 +6266,11 @@
             },
             {
               "field_name": "lifetime_deployed",
+              "raw_name": "lifetime_deployed",
+              "canonical_name": "lifetimeDeployed",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6416,8 +6286,11 @@
           "fields": [
             {
               "field_name": "round_id",
+              "raw_name": "round_id",
+              "canonical_name": "roundId",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6426,8 +6299,11 @@
             },
             {
               "field_name": "checkpoint_id",
+              "raw_name": "checkpoint_id",
+              "canonical_name": "checkpointId",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6436,8 +6312,11 @@
             },
             {
               "field_name": "checkpoint_fee",
+              "raw_name": "checkpoint_fee",
+              "canonical_name": "checkpointFee",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6446,8 +6325,11 @@
             },
             {
               "field_name": "last_claim_ore_at",
+              "raw_name": "last_claim_ore_at",
+              "canonical_name": "lastClaimOreAt",
               "rust_type_name": "Option < i64 >",
               "base_type": "Timestamp",
+              "integer_kind": "I64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "i64",
@@ -6456,8 +6338,11 @@
             },
             {
               "field_name": "last_claim_sol_at",
+              "raw_name": "last_claim_sol_at",
+              "canonical_name": "lastClaimSolAt",
               "rust_type_name": "Option < i64 >",
               "base_type": "Timestamp",
+              "integer_kind": "I64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "i64",
@@ -6473,8 +6358,11 @@
           "fields": [
             {
               "field_name": "amount",
+              "raw_name": "amount",
+              "canonical_name": "amount",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6483,8 +6371,11 @@
             },
             {
               "field_name": "balance",
+              "raw_name": "balance",
+              "canonical_name": "balance",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6493,6 +6384,8 @@
             },
             {
               "field_name": "executor",
+              "raw_name": "executor",
+              "canonical_name": "executor",
               "rust_type_name": "Option < String >",
               "base_type": "String",
               "is_optional": true,
@@ -6503,8 +6396,11 @@
             },
             {
               "field_name": "fee",
+              "raw_name": "fee",
+              "canonical_name": "fee",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6513,8 +6409,11 @@
             },
             {
               "field_name": "strategy",
+              "raw_name": "strategy",
+              "canonical_name": "strategy",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6523,8 +6422,11 @@
             },
             {
               "field_name": "mask",
+              "raw_name": "mask",
+              "canonical_name": "mask",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6533,8 +6435,11 @@
             },
             {
               "field_name": "reload",
+              "raw_name": "reload",
+              "canonical_name": "reload",
               "rust_type_name": "Option < u64 >",
               "base_type": "Integer",
+              "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
@@ -6550,6 +6455,8 @@
           "fields": [
             {
               "field_name": "miner_snapshot",
+              "raw_name": "miner_snapshot",
+              "canonical_name": "minerSnapshot",
               "rust_type_name": "Option < ore_sdk :: accounts :: Miner >",
               "base_type": "Object",
               "is_optional": true,
@@ -6561,55 +6468,87 @@
                 "fields": [
                   {
                     "field_name": "authority",
+                    "raw_name": "authority",
+                    "canonical_name": "authority",
                     "field_type": "publicKey",
                     "base_type": "Pubkey",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
-                    "field_name": "deployed",
-                    "field_type": "[u64]",
-                    "base_type": "Integer",
-                    "is_optional": false,
-                    "is_array": true
-                  },
-                  {
-                    "field_name": "cumulative",
-                    "field_type": "[u64]",
-                    "base_type": "Integer",
-                    "is_optional": false,
-                    "is_array": true
-                  },
-                  {
-                    "field_name": "checkpoint_fee",
+                    "field_name": "auto_return",
+                    "raw_name": "auto_return",
+                    "canonical_name": "autoReturn",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "checkpoint_id",
+                    "raw_name": "checkpoint_id",
+                    "canonical_name": "checkpointId",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
-                    "field_name": "last_claim_ore_at",
-                    "field_type": "i64",
+                    "field_name": "checkpoint_fee",
+                    "raw_name": "checkpoint_fee",
+                    "canonical_name": "checkpointFee",
+                    "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
-                    "field_name": "last_claim_sol_at",
-                    "field_type": "i64",
+                    "field_name": "deployed",
+                    "raw_name": "deployed",
+                    "canonical_name": "deployed",
+                    "field_type": "[u64]",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
+                    "is_optional": false,
+                    "is_array": true
+                  },
+                  {
+                    "field_name": "mass",
+                    "raw_name": "mass",
+                    "canonical_name": "mass",
+                    "field_type": "[u64]",
+                    "base_type": "Integer",
+                    "integer_kind": "U64",
+                    "is_optional": false,
+                    "is_array": true
+                  },
+                  {
+                    "field_name": "cumulative",
+                    "raw_name": "cumulative",
+                    "canonical_name": "cumulative",
+                    "field_type": "[u64]",
+                    "base_type": "Integer",
+                    "integer_kind": "U64",
+                    "is_optional": false,
+                    "is_array": true
+                  },
+                  {
+                    "field_name": "round_id",
+                    "raw_name": "round_id",
+                    "canonical_name": "roundId",
+                    "field_type": "u64",
+                    "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "rewards_factor",
+                    "raw_name": "rewards_factor",
+                    "canonical_name": "rewardsFactor",
                     "field_type": "Numeric",
                     "base_type": "Object",
                     "is_optional": false,
@@ -6617,50 +6556,81 @@
                   },
                   {
                     "field_name": "rewards_sol",
+                    "raw_name": "rewards_sol",
+                    "canonical_name": "rewardsSol",
                     "field_type": "u64",
                     "base_type": "Integer",
-                    "is_optional": false,
-                    "is_array": false
-                  },
-                  {
-                    "field_name": "rewards_ore",
-                    "field_type": "u64",
-                    "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "refined_ore",
+                    "raw_name": "refined_ore",
+                    "canonical_name": "refinedOre",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
-                    "field_name": "round_id",
+                    "field_name": "rewards_ore",
+                    "raw_name": "rewards_ore",
+                    "canonical_name": "rewardsOre",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
-                    "field_name": "lifetime_rewards_sol",
-                    "field_type": "u64",
+                    "field_name": "last_claim_ore_at",
+                    "raw_name": "last_claim_ore_at",
+                    "canonical_name": "lastClaimOreAt",
+                    "field_type": "i64",
                     "base_type": "Integer",
+                    "integer_kind": "I64",
+                    "is_optional": false,
+                    "is_array": false
+                  },
+                  {
+                    "field_name": "last_claim_sol_at",
+                    "raw_name": "last_claim_sol_at",
+                    "canonical_name": "lastClaimSolAt",
+                    "field_type": "i64",
+                    "base_type": "Integer",
+                    "integer_kind": "I64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "lifetime_rewards_ore",
+                    "raw_name": "lifetime_rewards_ore",
+                    "canonical_name": "lifetimeRewardsOre",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "lifetime_deployed",
+                    "raw_name": "lifetime_deployed",
+                    "canonical_name": "lifetimeDeployed",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
+                    "is_optional": false,
+                    "is_array": false
+                  },
+                  {
+                    "field_name": "lifetime_rewards_sol",
+                    "raw_name": "lifetime_rewards_sol",
+                    "canonical_name": "lifetimeRewardsSol",
+                    "field_type": "u64",
+                    "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   }
@@ -6674,6 +6644,8 @@
             },
             {
               "field_name": "automation_snapshot",
+              "raw_name": "automation_snapshot",
+              "canonical_name": "automationSnapshot",
               "rust_type_name": "Option < ore_sdk :: accounts :: Automation >",
               "base_type": "Object",
               "is_optional": true,
@@ -6685,13 +6657,18 @@
                 "fields": [
                   {
                     "field_name": "amount",
+                    "raw_name": "amount",
+                    "canonical_name": "amount",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "authority",
+                    "raw_name": "authority",
+                    "canonical_name": "authority",
                     "field_type": "publicKey",
                     "base_type": "Pubkey",
                     "is_optional": false,
@@ -6699,13 +6676,18 @@
                   },
                   {
                     "field_name": "balance",
+                    "raw_name": "balance",
+                    "canonical_name": "balance",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "executor",
+                    "raw_name": "executor",
+                    "canonical_name": "executor",
                     "field_type": "publicKey",
                     "base_type": "Pubkey",
                     "is_optional": false,
@@ -6713,29 +6695,41 @@
                   },
                   {
                     "field_name": "fee",
+                    "raw_name": "fee",
+                    "canonical_name": "fee",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "strategy",
+                    "raw_name": "strategy",
+                    "canonical_name": "strategy",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "mask",
+                    "raw_name": "mask",
+                    "canonical_name": "mask",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   },
                   {
                     "field_name": "reload",
+                    "raw_name": "reload",
+                    "canonical_name": "reload",
                     "field_type": "u64",
                     "base_type": "Integer",
+                    "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
                   }
@@ -6755,8 +6749,11 @@
       "field_mappings": {
         "automation.amount": {
           "field_name": "amount",
+          "raw_name": "amount",
+          "canonical_name": "amount",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -6765,8 +6762,11 @@
         },
         "automation.balance": {
           "field_name": "balance",
+          "raw_name": "balance",
+          "canonical_name": "balance",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -6775,6 +6775,8 @@
         },
         "automation.executor": {
           "field_name": "executor",
+          "raw_name": "executor",
+          "canonical_name": "executor",
           "rust_type_name": "Option < String >",
           "base_type": "String",
           "is_optional": true,
@@ -6785,8 +6787,11 @@
         },
         "automation.fee": {
           "field_name": "fee",
+          "raw_name": "fee",
+          "canonical_name": "fee",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -6795,8 +6800,11 @@
         },
         "automation.mask": {
           "field_name": "mask",
+          "raw_name": "mask",
+          "canonical_name": "mask",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -6805,8 +6813,11 @@
         },
         "automation.reload": {
           "field_name": "reload",
+          "raw_name": "reload",
+          "canonical_name": "reload",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -6815,8 +6826,11 @@
         },
         "automation.strategy": {
           "field_name": "strategy",
+          "raw_name": "strategy",
+          "canonical_name": "strategy",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -6825,6 +6839,8 @@
         },
         "automation_snapshot": {
           "field_name": "automation_snapshot",
+          "raw_name": "automation_snapshot",
+          "canonical_name": "automationSnapshot",
           "rust_type_name": "Option < ore_sdk :: accounts :: Automation >",
           "base_type": "Object",
           "is_optional": true,
@@ -6836,13 +6852,18 @@
             "fields": [
               {
                 "field_name": "amount",
+                "raw_name": "amount",
+                "canonical_name": "amount",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "authority",
+                "raw_name": "authority",
+                "canonical_name": "authority",
                 "field_type": "publicKey",
                 "base_type": "Pubkey",
                 "is_optional": false,
@@ -6850,13 +6871,18 @@
               },
               {
                 "field_name": "balance",
+                "raw_name": "balance",
+                "canonical_name": "balance",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "executor",
+                "raw_name": "executor",
+                "canonical_name": "executor",
                 "field_type": "publicKey",
                 "base_type": "Pubkey",
                 "is_optional": false,
@@ -6864,29 +6890,41 @@
               },
               {
                 "field_name": "fee",
+                "raw_name": "fee",
+                "canonical_name": "fee",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "strategy",
+                "raw_name": "strategy",
+                "canonical_name": "strategy",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "mask",
+                "raw_name": "mask",
+                "canonical_name": "mask",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "reload",
+                "raw_name": "reload",
+                "canonical_name": "reload",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               }
@@ -6900,6 +6938,8 @@
         },
         "id.authority": {
           "field_name": "authority",
+          "raw_name": "authority",
+          "canonical_name": "authority",
           "rust_type_name": "String",
           "base_type": "String",
           "is_optional": false,
@@ -6910,6 +6950,8 @@
         },
         "id.automation_address": {
           "field_name": "automation_address",
+          "raw_name": "automation_address",
+          "canonical_name": "automationAddress",
           "rust_type_name": "Option < String >",
           "base_type": "String",
           "is_optional": true,
@@ -6920,6 +6962,8 @@
         },
         "id.miner_address": {
           "field_name": "miner_address",
+          "raw_name": "miner_address",
+          "canonical_name": "minerAddress",
           "rust_type_name": "String",
           "base_type": "String",
           "is_optional": false,
@@ -6930,6 +6974,8 @@
         },
         "miner_snapshot": {
           "field_name": "miner_snapshot",
+          "raw_name": "miner_snapshot",
+          "canonical_name": "minerSnapshot",
           "rust_type_name": "Option < ore_sdk :: accounts :: Miner >",
           "base_type": "Object",
           "is_optional": true,
@@ -6941,55 +6987,87 @@
             "fields": [
               {
                 "field_name": "authority",
+                "raw_name": "authority",
+                "canonical_name": "authority",
                 "field_type": "publicKey",
                 "base_type": "Pubkey",
                 "is_optional": false,
                 "is_array": false
               },
               {
-                "field_name": "deployed",
-                "field_type": "[u64]",
-                "base_type": "Integer",
-                "is_optional": false,
-                "is_array": true
-              },
-              {
-                "field_name": "cumulative",
-                "field_type": "[u64]",
-                "base_type": "Integer",
-                "is_optional": false,
-                "is_array": true
-              },
-              {
-                "field_name": "checkpoint_fee",
+                "field_name": "auto_return",
+                "raw_name": "auto_return",
+                "canonical_name": "autoReturn",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "checkpoint_id",
+                "raw_name": "checkpoint_id",
+                "canonical_name": "checkpointId",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
-                "field_name": "last_claim_ore_at",
-                "field_type": "i64",
+                "field_name": "checkpoint_fee",
+                "raw_name": "checkpoint_fee",
+                "canonical_name": "checkpointFee",
+                "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
-                "field_name": "last_claim_sol_at",
-                "field_type": "i64",
+                "field_name": "deployed",
+                "raw_name": "deployed",
+                "canonical_name": "deployed",
+                "field_type": "[u64]",
                 "base_type": "Integer",
+                "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": true
+              },
+              {
+                "field_name": "mass",
+                "raw_name": "mass",
+                "canonical_name": "mass",
+                "field_type": "[u64]",
+                "base_type": "Integer",
+                "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": true
+              },
+              {
+                "field_name": "cumulative",
+                "raw_name": "cumulative",
+                "canonical_name": "cumulative",
+                "field_type": "[u64]",
+                "base_type": "Integer",
+                "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": true
+              },
+              {
+                "field_name": "round_id",
+                "raw_name": "round_id",
+                "canonical_name": "roundId",
+                "field_type": "u64",
+                "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "rewards_factor",
+                "raw_name": "rewards_factor",
+                "canonical_name": "rewardsFactor",
                 "field_type": "Numeric",
                 "base_type": "Object",
                 "is_optional": false,
@@ -6997,50 +7075,81 @@
               },
               {
                 "field_name": "rewards_sol",
+                "raw_name": "rewards_sol",
+                "canonical_name": "rewardsSol",
                 "field_type": "u64",
                 "base_type": "Integer",
-                "is_optional": false,
-                "is_array": false
-              },
-              {
-                "field_name": "rewards_ore",
-                "field_type": "u64",
-                "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "refined_ore",
+                "raw_name": "refined_ore",
+                "canonical_name": "refinedOre",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
-                "field_name": "round_id",
+                "field_name": "rewards_ore",
+                "raw_name": "rewards_ore",
+                "canonical_name": "rewardsOre",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
-                "field_name": "lifetime_rewards_sol",
-                "field_type": "u64",
+                "field_name": "last_claim_ore_at",
+                "raw_name": "last_claim_ore_at",
+                "canonical_name": "lastClaimOreAt",
+                "field_type": "i64",
                 "base_type": "Integer",
+                "integer_kind": "I64",
+                "is_optional": false,
+                "is_array": false
+              },
+              {
+                "field_name": "last_claim_sol_at",
+                "raw_name": "last_claim_sol_at",
+                "canonical_name": "lastClaimSolAt",
+                "field_type": "i64",
+                "base_type": "Integer",
+                "integer_kind": "I64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "lifetime_rewards_ore",
+                "raw_name": "lifetime_rewards_ore",
+                "canonical_name": "lifetimeRewardsOre",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               },
               {
                 "field_name": "lifetime_deployed",
+                "raw_name": "lifetime_deployed",
+                "canonical_name": "lifetimeDeployed",
                 "field_type": "u64",
                 "base_type": "Integer",
+                "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": false
+              },
+              {
+                "field_name": "lifetime_rewards_sol",
+                "raw_name": "lifetime_rewards_sol",
+                "canonical_name": "lifetimeRewardsSol",
+                "field_type": "u64",
+                "base_type": "Integer",
+                "integer_kind": "U64",
                 "is_optional": false,
                 "is_array": false
               }
@@ -7054,8 +7163,11 @@
         },
         "rewards.lifetime_deployed": {
           "field_name": "lifetime_deployed",
+          "raw_name": "lifetime_deployed",
+          "canonical_name": "lifetimeDeployed",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -7064,8 +7176,11 @@
         },
         "rewards.lifetime_rewards_ore": {
           "field_name": "lifetime_rewards_ore",
+          "raw_name": "lifetime_rewards_ore",
+          "canonical_name": "lifetimeRewardsOre",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -7074,8 +7189,11 @@
         },
         "rewards.lifetime_rewards_sol": {
           "field_name": "lifetime_rewards_sol",
+          "raw_name": "lifetime_rewards_sol",
+          "canonical_name": "lifetimeRewardsSol",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -7084,8 +7202,11 @@
         },
         "rewards.refined_ore": {
           "field_name": "refined_ore",
+          "raw_name": "refined_ore",
+          "canonical_name": "refinedOre",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -7094,8 +7215,11 @@
         },
         "rewards.rewards_ore": {
           "field_name": "rewards_ore",
+          "raw_name": "rewards_ore",
+          "canonical_name": "rewardsOre",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -7104,8 +7228,11 @@
         },
         "rewards.rewards_sol": {
           "field_name": "rewards_sol",
+          "raw_name": "rewards_sol",
+          "canonical_name": "rewardsSol",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -7114,8 +7241,11 @@
         },
         "state.checkpoint_fee": {
           "field_name": "checkpoint_fee",
+          "raw_name": "checkpoint_fee",
+          "canonical_name": "checkpointFee",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -7124,8 +7254,11 @@
         },
         "state.checkpoint_id": {
           "field_name": "checkpoint_id",
+          "raw_name": "checkpoint_id",
+          "canonical_name": "checkpointId",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -7134,8 +7267,11 @@
         },
         "state.last_claim_ore_at": {
           "field_name": "last_claim_ore_at",
+          "raw_name": "last_claim_ore_at",
+          "canonical_name": "lastClaimOreAt",
           "rust_type_name": "Option < i64 >",
           "base_type": "Timestamp",
+          "integer_kind": "I64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "i64",
@@ -7144,8 +7280,11 @@
         },
         "state.last_claim_sol_at": {
           "field_name": "last_claim_sol_at",
+          "raw_name": "last_claim_sol_at",
+          "canonical_name": "lastClaimSolAt",
           "rust_type_name": "Option < i64 >",
           "base_type": "Timestamp",
+          "integer_kind": "I64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "i64",
@@ -7154,8 +7293,11 @@
         },
         "state.round_id": {
           "field_name": "round_id",
+          "raw_name": "round_id",
+          "canonical_name": "roundId",
           "rust_type_name": "Option < u64 >",
           "base_type": "Integer",
+          "integer_kind": "U64",
           "is_optional": true,
           "is_array": false,
           "inner_type": "u64",
@@ -7164,15 +7306,6 @@
         }
       },
       "resolver_hooks": [
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        },
         {
           "account_type": "ore::TreasuryState",
           "strategy": {
@@ -7185,13 +7318,22 @@
               ]
             }
           }
+        },
+        {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
         }
       ],
       "instruction_hooks": [],
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "c97234a54cfec692c7df03c9889a34ff7c3a1fbc1748b809e06822907ee77647",
+      "content_hash": "9a2386283308d45d0095e697d0ee172d46175581938b91492d1911c417f508d2",
       "views": []
     }
   ],
@@ -7330,10 +7472,6 @@
         {
           "name": "strategy",
           "type": "u8"
-        },
-        {
-          "name": "reload",
-          "type": "u64"
         }
       ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
@@ -7362,7 +7500,7 @@
         {
           "name": "board",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "pdaRef",
             "pda_name": "board"
@@ -7435,7 +7573,7 @@
         {
           "name": "board",
           "is_signer": false,
-          "is_writable": true,
+          "is_writable": false,
           "resolution": {
             "category": "pdaRef",
             "pda_name": "board"
@@ -7498,7 +7636,7 @@
         {
           "name": "board",
           "is_signer": false,
-          "is_writable": true,
+          "is_writable": false,
           "resolution": {
             "category": "pdaRef",
             "pda_name": "board"
@@ -7610,7 +7748,7 @@
         {
           "name": "signer",
           "is_signer": true,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "signer"
           },
@@ -7692,7 +7830,7 @@
         {
           "name": "authority",
           "is_signer": false,
-          "is_writable": true,
+          "is_writable": false,
           "resolution": {
             "category": "userProvided"
           },
@@ -7721,7 +7859,7 @@
         {
           "name": "config",
           "is_signer": false,
-          "is_writable": true,
+          "is_writable": false,
           "resolution": {
             "category": "pdaRef",
             "pda_name": "config"
@@ -7764,6 +7902,25 @@
           "resolution": {
             "category": "known",
             "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "entropyVar",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "entropyProgram",
+          "is_signer": false,
+          "is_writable": false,
+          "resolution": {
+            "category": "known",
+            "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
           },
           "is_optional": false
         }
@@ -7970,25 +8127,6 @@
             "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
           },
           "is_optional": false
-        },
-        {
-          "name": "mintAuthority",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "oreMintProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "mintzxW6Kckmeyh1h6Zfdj9QcYgCzhPSGiC8ChZ6fCx"
-          },
-          "is_optional": false
         }
       ],
       "args": [],
@@ -8001,37 +8139,18 @@
       ]
     },
     {
-      "name": "deposit",
+      "name": "bury",
       "discriminator": [
-        10
+        13
       ],
       "discriminator_size": 1,
       "accounts": [
         {
           "name": "signer",
           "is_signer": true,
-          "is_writable": true,
-          "resolution": {
-            "category": "signer"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "payer",
-          "is_signer": true,
-          "is_writable": true,
-          "resolution": {
-            "category": "signer"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "mint",
-          "is_signer": false,
           "is_writable": false,
           "resolution": {
-            "category": "known",
-            "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
+            "category": "signer"
           },
           "is_optional": false
         },
@@ -8041,323 +8160,6 @@
           "is_writable": true,
           "resolution": {
             "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "stake",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "stakeTokens",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "treasury",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "pdaRef",
-            "pda_name": "treasury"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "systemProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "11111111111111111111111111111111"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "tokenProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "associatedTokenProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-          },
-          "is_optional": false
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u64"
-        },
-        {
-          "name": "compound_fee",
-          "type": "u64"
-        }
-      ],
-      "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "docs": [
-        "Deposits ORE into a staking account.",
-        "Stake PDA seeds: [\"stake\", signer]."
-      ]
-    },
-    {
-      "name": "withdraw",
-      "discriminator": [
-        11
-      ],
-      "discriminator_size": 1,
-      "accounts": [
-        {
-          "name": "signer",
-          "is_signer": true,
-          "is_writable": true,
-          "resolution": {
-            "category": "signer"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "mint",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "recipient",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "stake",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "stakeTokens",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "treasury",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "pdaRef",
-            "pda_name": "treasury"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "systemProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "11111111111111111111111111111111"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "tokenProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "associatedTokenProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-          },
-          "is_optional": false
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u64"
-        }
-      ],
-      "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "docs": [
-        "Withdraws ORE from a staking account.",
-        "Stake PDA seeds: [\"stake\", signer]."
-      ]
-    },
-    {
-      "name": "claimYield",
-      "discriminator": [
-        12
-      ],
-      "discriminator_size": 1,
-      "accounts": [
-        {
-          "name": "signer",
-          "is_signer": true,
-          "is_writable": true,
-          "resolution": {
-            "category": "signer"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "mint",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "recipient",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "stake",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "treasury",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "pdaRef",
-            "pda_name": "treasury"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "treasuryTokens",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "userProvided"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "systemProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "11111111111111111111111111111111"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "tokenProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "associatedTokenProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-          },
-          "is_optional": false
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u64"
-        }
-      ],
-      "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "docs": [
-        "Claims accrued staking rewards.",
-        "Stake PDA seeds: [\"stake\", signer].",
-        "Treasury PDA seeds: [\"treasury\"]."
-      ]
-    },
-    {
-      "name": "buyback",
-      "discriminator": [
-        13
-      ],
-      "discriminator_size": 1,
-      "accounts": [],
-      "args": [],
-      "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "docs": [
-        "Buys back ORE from the market."
-      ]
-    },
-    {
-      "name": "bury",
-      "discriminator": [
-        24
-      ],
-      "discriminator_size": 1,
-      "accounts": [
-        {
-          "name": "signer",
-          "is_signer": true,
-          "is_writable": false,
-          "resolution": {
-            "category": "signer"
           },
           "is_optional": false
         },
@@ -8372,22 +8174,11 @@
           "is_optional": false
         },
         {
-          "name": "config",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "pdaRef",
-            "pda_name": "config"
-          },
-          "is_optional": false
-        },
-        {
           "name": "mint",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
-            "category": "known",
-            "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
+            "category": "userProvided"
           },
           "is_optional": false
         },
@@ -8411,7 +8202,25 @@
           "is_optional": false
         },
         {
-          "name": "treasurySol",
+          "name": "stakeTreasury",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "stakeTreasuryTokens",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "stakeVesting",
           "is_signer": false,
           "is_writable": true,
           "resolution": {
@@ -8438,6 +8247,15 @@
             "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
           },
           "is_optional": false
+        },
+        {
+          "name": "oreStakeProgram",
+          "is_signer": false,
+          "is_writable": false,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
         }
       ],
       "args": [
@@ -8448,9 +8266,8 @@
       ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
-        "Swaps vaulted SOL for ORE via a CPI and burns the proceeds.",
-        "Treasury PDA seeds: [\"treasury\"].",
-        "Additional swap accounts are passed through as remaining accounts."
+        "Burns ORE and distributes yield to stakers.",
+        "Treasury PDA seeds: [\"treasury\"]."
       ]
     },
     {
@@ -8572,14 +8389,14 @@
     {
       "name": "newVar",
       "discriminator": [
-        19
+        17
       ],
       "discriminator_size": 1,
       "accounts": [
         {
           "name": "signer",
           "is_signer": true,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "signer"
           },
@@ -8661,85 +8478,6 @@
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Creates a new entropy var account through the entropy program."
-      ]
-    },
-    {
-      "name": "reloadSol",
-      "discriminator": [
-        21
-      ],
-      "discriminator_size": 1,
-      "accounts": [
-        {
-          "name": "signer",
-          "is_signer": true,
-          "is_writable": true,
-          "resolution": {
-            "category": "signer"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "automation",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "pdaRef",
-            "pda_name": "automation"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "miner",
-          "is_signer": false,
-          "is_writable": true,
-          "resolution": {
-            "category": "pdaRef",
-            "pda_name": "miner"
-          },
-          "is_optional": false
-        },
-        {
-          "name": "systemProgram",
-          "is_signer": false,
-          "is_writable": false,
-          "resolution": {
-            "category": "known",
-            "address": "11111111111111111111111111111111"
-          },
-          "is_optional": false
-        }
-      ],
-      "args": [],
-      "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "docs": [
-        "Reloads SOL into the automation account."
-      ]
-    },
-    {
-      "name": "compoundYield",
-      "discriminator": [
-        22
-      ],
-      "discriminator_size": 1,
-      "accounts": [],
-      "args": [],
-      "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "docs": [
-        "Compounds staking yield."
-      ]
-    },
-    {
-      "name": "liq",
-      "discriminator": [
-        25
-      ],
-      "discriminator_size": 1,
-      "accounts": [],
-      "args": [],
-      "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "docs": [
-        "Liquidation instruction."
       ]
     },
     {
@@ -8986,5 +8724,5 @@
       ]
     }
   ],
-  "content_hash": "c4ee37009abf94c16ee4658e70fe59cb764cb37dc4aa28a6752ec0d7ed0b865a"
+  "content_hash": "90e4720e41e0d9641658aeccec4ceba379a3f883c01d26a879fd2b5632c578f2"
 }

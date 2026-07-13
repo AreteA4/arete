@@ -16,7 +16,7 @@ These rules apply to all `a4 idl` subcommands:
 
 - **Path argument**: Every subcommand takes `<path>` as its first positional argument (the path to the IDL JSON file).
 - **JSON output**: Most commands support the `--json` flag for machine-readable output.
-- **Fuzzy matching**: Lookups for instructions, accounts, and types are case-insensitive. If you make a typo, the CLI suggests the closest match.
+- **Fuzzy matching**: Lookups for instructions, accounts, types, and events are case-insensitive. If you make a typo, the CLI suggests the closest match.
 - **Error handling**: File-not-found or invalid names exit with code 1 and a clear message.
 
 ---
@@ -34,6 +34,7 @@ These rules apply to all `a4 idl` subcommands:
 | [`type`](#a4-idl-type)                   | Detail view of a specific custom type    |
 | [`errors`](#a4-idl-errors)               | List all program errors                  |
 | [`events`](#a4-idl-events)               | List all program events                  |
+| [`event`](#a4-idl-event)                 | Detail view of a specific event          |
 | [`constants`](#a4-idl-constants)         | List all defined constants               |
 | [`search`](#a4-idl-search)               | Fuzzy search across the entire IDL       |
 | [`discriminator`](#a4-idl-discriminator) | Compute Anchor discriminators            |
@@ -180,6 +181,29 @@ List all events emitted by the program.
 ```bash
 # List all events
 a4 idl events meteora_dlmm.json
+
+# Inspect resolved event payloads as JSON
+a4 idl events subscriptions.json --json
+```
+
+`--json` returns enriched event objects with resolved payload fields. For IDLs that omit inline event fields, the CLI falls back to the event's explicit backing type or a same-name struct in `types[]`.
+
+**Options:**
+
+| Flag     | Description    |
+| -------- | -------------- |
+| `--json` | Output as JSON |
+
+### a4 idl event
+
+Show the full definition of a specific event, including its discriminator, docs, resolved payload fields, and the source used to resolve those fields.
+
+```bash
+# Detail view for an event
+a4 idl event subscriptions.json SubscriptionTransferEvent
+
+# Machine-readable output
+a4 idl event subscriptions.json SubscriptionTransferEvent --json
 ```
 
 **Options:**
@@ -205,7 +229,7 @@ a4 idl constants ore.json
 
 ### a4 idl search
 
-Perform a fuzzy search across instructions, accounts, types, errors, events, and constants.
+Perform a fuzzy search across instructions, accounts, types, errors, events, event payload fields, and constants.
 
 ```bash
 # Search for anything related to "swap"
@@ -214,7 +238,12 @@ a4 idl search meteora_dlmm.json swap
 # Use JSON to see where matches were found
 a4 idl search meteora_dlmm.json swap --json | jq '.[].section' | sort -u
 # Output: "error", "event", "instruction", "type"
+
+# Search for event payload fields directly
+a4 idl search subscriptions.json periodStartTs --json
 ```
+
+Event-field matches include a `path` like `SubscriptionTransferEvent.periodStartTs` and a `parent_name` pointing back to the owning event.
 
 **Options:**
 

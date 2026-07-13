@@ -246,7 +246,8 @@ pub struct EntityBytecode {
                     &mut Value,
                     Option<u64>,
                     i64,
-                ) -> std::result::Result<(), Box<dyn std::error::Error>>
+                )
+                    -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
                 + Send
                 + Sync,
         >,
@@ -357,7 +358,8 @@ impl MultiEntityBytecodeBuilder {
                     &mut Value,
                     Option<u64>,
                     i64,
-                ) -> std::result::Result<(), Box<dyn std::error::Error>>,
+                )
+                    -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>,
             >,
         )
     }
@@ -370,7 +372,11 @@ impl MultiEntityBytecodeBuilder {
         evaluator: Option<F>,
     ) -> Self
     where
-        F: Fn(&mut Value, Option<u64>, i64) -> std::result::Result<(), Box<dyn std::error::Error>>
+        F: Fn(
+                &mut Value,
+                Option<u64>,
+                i64,
+            ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
             + Send
             + Sync
             + 'static,

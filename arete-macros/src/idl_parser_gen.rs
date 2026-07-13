@@ -114,7 +114,7 @@ fn generate_account_parser(idl: &IdlSpec, program_id: &str) -> TokenStream {
         }
 
         impl #state_enum_name {
-            pub fn try_unpack(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+            pub fn try_unpack(data: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
                 if data.is_empty() {
                     return Err("Data too short for discriminator".into());
                 }
@@ -267,14 +267,15 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         }
     });
 
-    // Anchor CPI event wire format:
-    //   bytes  0- 7: SHA256("anchor:event")[..8] = [29, 154, 203, 81, 46, 165, 69, 228]
-    //   bytes  8-15: SHA256("event:<Name>")[..8]  = the event-specific discriminator
-    //   bytes 16+  : Borsh-encoded event payload
+    // Anchor-compatible CPI event wire format:
+    //   bytes 0-7:  SHA256("anchor:event")[..8] as little-endian u64
+    //   bytes 8..: event-specific discriminator followed by event payload
     //
-    // So we match a 16-byte prefix (anchor tag + event disc) and pass &data[8..] to
-    // try_from_bytes(), which skips its own 8-byte discriminator and reads from byte 16.
-    // SHA256("anchor:event")[..8] — the fixed tag prepended to all Anchor CPI event instructions
+    // Standard Anchor events use an 8-byte event discriminator, but some
+    // Codama/Pinocchio programs use shorter discriminators while retaining the
+    // same Anchor event tag. Match the discriminator length declared in the IDL.
+    // We pass &data[8..] to try_from_bytes(), which validates and strips the
+    // event-specific discriminator before decoding the payload.
     let anchor_event_tag: [u8; 8] = [228u8, 69, 165, 46, 81, 203, 154, 29];
     let at0 = anchor_event_tag[0];
     let at1 = anchor_event_tag[1];
@@ -289,23 +290,24 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         let variant_name = format_ident!("Event_{}", ev.name);
         let event_type = format_ident!("{}", ev.name);
         let discriminator = ev.get_discriminator();
-        let disc_bytes: Vec<u8> = discriminator.iter().take(8).copied().collect();
-        let d0 = disc_bytes.first().copied().unwrap_or(0);
-        let d1 = disc_bytes.get(1).copied().unwrap_or(0);
-        let d2 = disc_bytes.get(2).copied().unwrap_or(0);
-        let d3 = disc_bytes.get(3).copied().unwrap_or(0);
-        let d4 = disc_bytes.get(4).copied().unwrap_or(0);
-        let d5 = disc_bytes.get(5).copied().unwrap_or(0);
-        let d6 = disc_bytes.get(6).copied().unwrap_or(0);
-        let d7 = disc_bytes.get(7).copied().unwrap_or(0);
 
-        // Match the full 16-byte prefix: anchor:event tag + event-specific discriminator.
-        // Pass &data[8..] to try_from_bytes so it can skip the 8-byte event discriminator
-        // and deserialize the payload starting at byte 16.
         quote! {
-            [#at0, #at1, #at2, #at3, #at4, #at5, #at6, #at7,
-             #d0, #d1, #d2, #d3, #d4, #d5, #d6, #d7, ..] => {
+            data if data.starts_with(&[#at0, #at1, #at2, #at3, #at4, #at5, #at6, #at7])
+                && data[8..].starts_with(&[#(#discriminator),*]) => {
                 let event_data = events::#event_type::try_from_bytes(&data[8..])?;
+                Ok(#ix_enum_name::#variant_name(event_data))
+            }
+        }
+    });
+
+    let event_log_unpack_arms = idl.events.iter().map(|ev| {
+        let variant_name = format_ident!("Event_{}", ev.name);
+        let event_type = format_ident!("{}", ev.name);
+        let discriminator = ev.get_discriminator();
+
+        quote! {
+            data if data.starts_with(&[#(#discriminator),*]) => {
+                let event_data = events::#event_type::try_from_bytes(data)?;
                 Ok(#ix_enum_name::#variant_name(event_data))
             }
         }
@@ -450,14 +452,14 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         }
 
         impl #ix_enum_name {
-            pub fn try_unpack(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+            pub fn try_unpack(data: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
                 if data.is_empty() {
                     return Err("Empty instruction data".into());
                 }
 
                 match data {
-                    #(#unpack_arms,)*
                     #(#event_unpack_arms,)*
+                    #(#unpack_arms,)*
                     _ => {
                         let disc_preview: Vec<u8> = data.iter().take(8).copied().collect();
                         Err(format!("Unknown instruction discriminator: {:?}", disc_preview).into())
@@ -490,6 +492,20 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
                 match self {
                     #(#to_value_with_accounts_arms,)*
                     #(#to_value_with_accounts_arms_ev),*
+                }
+            }
+
+            pub fn try_unpack_log_event(data: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+                if data.is_empty() {
+                    return Err("Empty event data".into());
+                }
+
+                match data {
+                    #(#event_log_unpack_arms,)*
+                    _ => {
+                        let disc_preview: Vec<u8> = data.iter().take(8).copied().collect();
+                        Err(format!("Unknown event discriminator: {:?}", disc_preview).into())
+                    }
                 }
             }
         }

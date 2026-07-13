@@ -366,4 +366,21 @@ describe('ConnectionManager auth', () => {
     });
     expect(MockWebSocket.instances[0]?.url).toBe('wss://private.stack.arete.run');
   });
+
+  it('accepts a null websocketUrl but refuses to connect or subscribe', async () => {
+    const manager = new ConnectionManager({ websocketUrl: null });
+
+    await expect(manager.connect()).rejects.toMatchObject({ code: 'WEBSOCKET_DISABLED' });
+    expect(() => manager.subscribe({ view: 'Thing/list' })).toThrowError(
+      expect.objectContaining({ code: 'WEBSOCKET_DISABLED' })
+    );
+    expect(manager.isConnected()).toBe(false);
+  });
+
+  it('treats the legacy disabled sentinel URL as a null websocketUrl', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://127.0.0.1/__arete_disabled__' });
+
+    await expect(manager.connect()).rejects.toMatchObject({ code: 'WEBSOCKET_DISABLED' });
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
 });

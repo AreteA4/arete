@@ -12,6 +12,8 @@ pub struct OreRoundId {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OreRoundState {
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_i64")]
+    pub closes_at: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_i64")]
     pub expires_at: Option<Option<i64>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_i64")]
     pub estimated_expires_at_unix: Option<Option<i64>>,
@@ -117,14 +119,10 @@ pub struct OreTreasuryId {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OreTreasuryState {
-    #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
-    pub balance: Option<Option<u64>>,
     #[serde(default)]
     pub motherlode: Option<Option<f64>>,
     #[serde(default)]
     pub total_refined: Option<Option<f64>>,
-    #[serde(default)]
-    pub total_staked: Option<Option<f64>>,
     #[serde(default)]
     pub total_unclaimed: Option<Option<f64>>,
 }
@@ -144,21 +142,11 @@ pub struct OreTreasury {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Treasury {
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
-    pub balance: Option<u64>,
-    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
-    pub buffer_a: Option<u64>,
-    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
     pub motherlode: Option<u64>,
     #[serde(default)]
     pub miner_rewards_factor: Option<serde_json::Value>,
-    #[serde(default)]
-    pub stake_rewards_factor: Option<serde_json::Value>,
-    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
-    pub buffer_b: Option<u64>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
     pub total_refined: Option<u64>,
-    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
-    pub total_staked: Option<u64>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
     pub total_unclaimed: Option<u64>,
 }
@@ -243,34 +231,38 @@ pub struct OreMiner {
 pub struct Miner {
     #[serde(default)]
     pub authority: Option<String>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub auto_return: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub checkpoint_id: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub checkpoint_fee: Option<u64>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
     pub deployed: Option<Vec<u64>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
+    pub mass: Option<Vec<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_vec_u64")]
     pub cumulative: Option<Vec<u64>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
-    pub checkpoint_fee: Option<u64>,
-    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
-    pub checkpoint_id: Option<u64>,
-    #[serde(default, deserialize_with = "serde_utils::deserialize_option_i64")]
-    pub last_claim_ore_at: Option<i64>,
-    #[serde(default, deserialize_with = "serde_utils::deserialize_option_i64")]
-    pub last_claim_sol_at: Option<i64>,
+    pub round_id: Option<u64>,
     #[serde(default)]
     pub rewards_factor: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
     pub rewards_sol: Option<u64>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
-    pub rewards_ore: Option<u64>,
-    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
     pub refined_ore: Option<u64>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
-    pub round_id: Option<u64>,
-    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
-    pub lifetime_rewards_sol: Option<u64>,
+    pub rewards_ore: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_i64")]
+    pub last_claim_ore_at: Option<i64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_i64")]
+    pub last_claim_sol_at: Option<i64>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
     pub lifetime_rewards_ore: Option<u64>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
     pub lifetime_deployed: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub lifetime_rewards_sol: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

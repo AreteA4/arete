@@ -720,7 +720,7 @@ pub fn process_entity_struct_with_idl(
                 _state: &mut arete::runtime::serde_json::Value,
                 _context_slot: Option<u64>,
                 _context_timestamp: i64,
-            ) -> Result<(), Box<dyn std::error::Error>> {
+            ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Ok(())
             }
 
@@ -1095,7 +1095,7 @@ fn generate_computed_fields_hook(
                 __context_slot: Option<u64>,
                 __context_timestamp: i64,
                 #(#cross_section_params),*
-            ) -> Result<(), Box<dyn std::error::Error>> {
+            ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 // Initialize cache with current section values for intra-section computed field dependencies
                 let mut computed_cache: std::collections::HashMap<String, arete::runtime::serde_json::Value> = std::collections::HashMap::new();
                 for (key, value) in section_obj.iter() {
@@ -1200,7 +1200,7 @@ fn generate_computed_fields_hook(
             state: &mut arete::runtime::serde_json::Value,
             __context_slot: Option<u64>,
             __context_timestamp: i64,
-        ) -> Result<(), Box<dyn std::error::Error>> {
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             #(#eval_calls)*
             Ok(())
         }

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -186,7 +187,7 @@ impl AreteConfig {
             }
         }
 
-        PathBuf::from(self.get_typescript_output_dir()).join(format!("{}-stack.ts", stack_name))
+        PathBuf::from(self.get_typescript_output_dir()).join(stack_name)
     }
 
     pub fn get_rust_output_path(
@@ -302,25 +303,49 @@ fn discover_in_dir(dir: &Path, discovered: &mut Vec<DiscoveredAst>) -> Result<()
         return Ok(());
     }
 
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    let mut stack_paths: Vec<PathBuf> = fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|name| name.ends_with(".stack.json"))
+                    .unwrap_or(false)
+        })
+        .collect();
 
-        if path.is_file() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.ends_with(".stack.json") {
-                    match DiscoveredAst::from_path(path.clone()) {
-                        Ok(ast) => discovered.push(ast),
-                        Err(e) => {
-                            eprintln!("Warning: Failed to parse {}: {}", path.display(), e);
-                        }
-                    }
-                }
+    stack_paths.sort_by(|left, right| compare_stack_artifact_priority(left, right));
+
+    for path in stack_paths {
+        match DiscoveredAst::from_path(path.clone()) {
+            Ok(ast) => discovered.push(ast),
+            Err(e) => {
+                eprintln!("Warning: Failed to parse {}: {}", path.display(), e);
             }
         }
     }
 
     Ok(())
+}
+
+fn compare_stack_artifact_priority(left: &Path, right: &Path) -> Ordering {
+    let left_name = left
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let right_name = right
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+
+    let left_augmented = left_name.ends_with(".augmented.stack.json");
+    let right_augmented = right_name.ends_with(".augmented.stack.json");
+
+    left_augmented
+        .cmp(&right_augmented)
+        .then_with(|| left_name.cmp(right_name))
+        .then_with(|| left.cmp(right))
 }
 
 fn discover_recursive(
@@ -432,5 +457,44 @@ mod tests {
         assert_eq!(to_kebab_case("PumpfunToken"), "pumpfun-token");
         assert_eq!(to_kebab_case("simple"), "simple");
         assert_eq!(to_kebab_case("ABC"), "a-b-c");
+    }
+
+    #[test]
+    fn discover_ast_files_prefers_canonical_stack_json_over_augmented_variant() {
+        let temp = std::env::temp_dir().join(format!(
+            "arete-config-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        let arete_dir = temp.join(".arete");
+        fs::create_dir_all(&arete_dir).expect(".arete dir should create");
+
+        let stack_json = r#"{
+          "stack_name": "DemoStack",
+          "program_ids": ["Prog111"],
+          "idls": [],
+          "entities": [],
+          "pdas": {},
+          "instructions": []
+        }"#;
+
+        fs::write(arete_dir.join("DemoStack.augmented.stack.json"), stack_json)
+            .expect("augmented stack should write");
+        fs::write(arete_dir.join("DemoStack.stack.json"), stack_json)
+            .expect("canonical stack should write");
+
+        let discovered = discover_ast_files(Some(&temp)).expect("stack discovery should succeed");
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(
+            discovered[0]
+                .path
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("DemoStack.stack.json")
+        );
+
+        let _ = fs::remove_dir_all(&temp);
     }
 }

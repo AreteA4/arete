@@ -183,6 +183,8 @@ pub async fn mint_token(
         max_snapshot_rows: Some(1000),
         max_messages_per_minute: Some(10000),
         max_bytes_per_minute: Some(100 * 1024 * 1024), // 100 MB
+        max_http_requests_per_minute: Some(1200),
+        max_http_batch_addresses: Some(100),
     };
 
     let mut claims = SessionClaims::builder(

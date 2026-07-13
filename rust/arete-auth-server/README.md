@@ -1,6 +1,6 @@
 # Arete Auth Server
 
-A reference authentication server for self-hosted Arete deployments. This server provides token minting and JWKS endpoints for WebSocket session authentication.
+A reference authentication server for self-hosted Arete deployments. This server provides token minting and JWKS endpoints for signed session authentication used by both WebSocket streams and HTTP reads.
 
 ## Overview
 
@@ -63,7 +63,7 @@ The server will start on `0.0.0.0:8080` by default.
 
 ### POST /ws/sessions
 
-Mint a new WebSocket session token.
+Mint a new signed session token.
 
 **Request Headers:**
 - `Authorization: Bearer <api_key>` (required)
@@ -98,7 +98,7 @@ The token is a JWT with the following claims:
 - `scope` - Granted permissions
 - `metering_key` - For usage attribution
 - `key_class` - "secret" or "publishable"
-- `limits` - Resource limits
+- `limits` - Resource limits for both WebSocket and HTTP read usage
 
 ### GET /.well-known/jwks.json
 
@@ -179,6 +179,13 @@ const client = createClient({
   },
 });
 ```
+
+The minted session token can then be reused for:
+
+- WebSocket streaming
+- HTTP stack reads like `/chain/*` and `/programs/*`
+
+HTTP reads should send the token as `Authorization: Bearer <token>`.
 
 ## Token Revocation
 

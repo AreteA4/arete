@@ -60,20 +60,26 @@ These macros are applied to fields within an `#[entity]` struct to define how da
 
 ### `#[map]`
 
-Maps a field from a Solana account directly to an entity field.
+Maps a field from a Solana account, instruction, or IDL event directly to an entity field.
 
 ```rust
 #[map(pump_sdk::accounts::BondingCurve::virtual_sol_reserves, strategy = LastWrite)]
 pub reserves: u64,
 ```
 
-The path prefix (`pump_sdk::accounts::`) is derived from the IDL's program name. See [Stack Definitions](/building-stacks/stack-definitions) for the naming convention.
+The path prefix is derived from the IDL's program name. Common forms are:
+
+- `my_program_sdk::accounts::AccountName::field_name`
+- `my_program_sdk::instructions::InstructionName::field_name`
+- `my_program_sdk::events::EventName::field_name`
+
+See [Stack Definitions](/building-stacks/stack-definitions) for the naming convention.
 
 **Arguments:**
 
 | Argument         | Type           | Required | Description                                                                                                                                                                                                 |
 | ---------------- | -------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `from`           | `path`         | Yes      | Source account field (e.g., `AccountType::field_name`).                                                                                                                                                     |
+| `from`           | `path`         | Yes      | Source field path from an account, instruction, or IDL event (e.g., `AccountType::field_name`).                                                                                                             |
 | `primary_key`    | `bool`         | No       | Marks this field as the primary key for the entity.                                                                                                                                                         |
 | `lookup_index`   | `bool` \| `fn` | No       | Creates a lookup index for this field. Accepts an optional `register_from` parameter for cross-account PDA resolution (see [Cross-Account Resolution](#cross-account-resolution-with-register_from) below). |
 | `strategy`       | `Strategy`     | No       | Update strategy (default: `SetOnce`).                                                                                                                                                                       |
@@ -96,7 +102,7 @@ Accepts the same arguments as `#[map]`.
 
 ### `#[event]`
 
-Captures multiple fields from an instruction as a single structured event.
+Captures multiple fields from an instruction or IDL event as a single structured record on the entity.
 
 ```rust
 #[event(
@@ -109,15 +115,15 @@ pub trades: Vec<TradeEvent>,
 
 **Arguments:**
 
-| Argument     | Type       | Required | Description                                                                                                                |
-| ------------ | ---------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `from`       | `path`     | Yes      | The source instruction type.                                                                                               |
-| `fields`     | `array`    | Yes      | List of fields to capture. Use `accounts::name` for instruction accounts and `args::name` (or `data::name`) for arguments. |
-| `strategy`   | `Strategy` | No       | Update strategy (default: `SetOnce`).                                                                                      |
-| `transforms` | `array`    | No       | List of `(field, Transform)` tuples for processing captured fields.                                                        |
-| `lookup_by`  | `field`    | No       | Field used to resolve the entity key.                                                                                      |
-| `rename`     | `string`   | No       | Custom target field name.                                                                                                  |
-| `join_on`    | `field`    | No       | Join field for multi-entity lookups.                                                                                       |
+| Argument     | Type       | Required | Description                                                                                                                                                                      |
+| ------------ | ---------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `from`       | `path`     | Yes      | The source instruction or event type.                                                                                                                                            |
+| `fields`     | `array`    | Yes      | List of fields to capture. Use `accounts::name` for instruction accounts and `args::name` (or `data::name`) for instruction arguments. Event sources expose payload fields only. |
+| `strategy`   | `Strategy` | No       | Update strategy (default: `SetOnce`).                                                                                                                                            |
+| `transforms` | `array`    | No       | List of `(field, Transform)` tuples for processing captured fields.                                                                                                              |
+| `lookup_by`  | `field`    | No       | Field used to resolve the entity key.                                                                                                                                            |
+| `rename`     | `string`   | No       | Custom target field name.                                                                                                                                                        |
+| `join_on`    | `field`    | No       | Join field for multi-entity lookups.                                                                                                                                             |
 
 ### `#[snapshot]`
 
@@ -141,7 +147,7 @@ pub latest_state: BondingCurve,
 
 ### `#[aggregate]`
 
-Defines a declarative aggregation from instructions.
+Defines a declarative aggregation from instructions or IDL events.
 
 ```rust
 #[aggregate(from = [Buy, Sell], field = amount, strategy = Sum)]
@@ -150,16 +156,16 @@ pub total_volume: u64,
 
 **Arguments:**
 
-| Argument    | Type              | Required | Description                                                                             |
-| ----------- | ----------------- | -------- | --------------------------------------------------------------------------------------- |
-| `from`      | `path` \| `array` | Yes      | Instruction(s) to aggregate from.                                                       |
-| `field`     | `field`           | No       | Field to aggregate. Use `accounts::name` or `args::name`. If omitted, performs `Count`. |
-| `strategy`  | `Strategy`        | No       | `Sum`, `Count`, `Min`, `Max`, `UniqueCount`.                                            |
-| `condition` | `string`          | No       | Boolean expression (e.g., `"amount > 1_000_000"`).                                      |
-| `transform` | `Transform`       | No       | Transform to apply before aggregating.                                                  |
-| `lookup_by` | `field`           | No       | Field used to resolve the entity key.                                                   |
-| `rename`    | `string`          | No       | Custom target field name.                                                               |
-| `join_on`   | `field`           | No       | Join field for multi-entity lookups.                                                    |
+| Argument    | Type              | Required | Description                                                                                                                            |
+| ----------- | ----------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `from`      | `path` \| `array` | Yes      | Instruction(s) or event(s) to aggregate from.                                                                                          |
+| `field`     | `field`           | No       | Field to aggregate. Use `accounts::name` or `args::name` for instructions, or payload fields for events. If omitted, performs `Count`. |
+| `strategy`  | `Strategy`        | No       | `Sum`, `Count`, `Min`, `Max`, `UniqueCount`.                                                                                           |
+| `condition` | `string`          | No       | Boolean expression (e.g., `"amount > 1_000_000"`).                                                                                     |
+| `transform` | `Transform`       | No       | Transform to apply before aggregating.                                                                                                 |
+| `lookup_by` | `field`           | No       | Field used to resolve the entity key.                                                                                                  |
+| `rename`    | `string`          | No       | Custom target field name.                                                                                                              |
+| `join_on`   | `field`           | No       | Join field for multi-entity lookups.                                                                                                   |
 
 ### `#[computed]`
 
@@ -216,7 +222,7 @@ See [Resolvers](./resolvers) for the full reference on `TokenMetadata` fields an
 
 ### `#[derive_from]`
 
-Derives values from instruction metadata or arguments.
+Derives values from instruction metadata, instruction fields, or IDL event payload fields.
 
 ```rust
 #[derive_from(from = [Buy, Sell], field = __timestamp)]
@@ -225,14 +231,14 @@ pub last_updated: i64,
 
 **Arguments:**
 
-| Argument    | Type              | Required | Description                                                        |
-| ----------- | ----------------- | -------- | ------------------------------------------------------------------ |
-| `from`      | `path` \| `array` | Yes      | Instruction(s) to derive from.                                     |
-| `field`     | `field`           | Yes      | Target field. Can be a special field or a regular instruction arg. |
-| `strategy`  | `Strategy`        | No       | `LastWrite` or `SetOnce`.                                          |
-| `condition` | `string`          | No       | Boolean expression for conditional derivation.                     |
-| `transform` | `Transform`       | No       | Transform to apply.                                                |
-| `lookup_by` | `field`           | No       | Field used to resolve the entity key.                              |
+| Argument    | Type              | Required | Description                                                                |
+| ----------- | ----------------- | -------- | -------------------------------------------------------------------------- |
+| `from`      | `path` \| `array` | Yes      | Instruction(s) or event(s) to derive from.                                 |
+| `field`     | `field`           | Yes      | Target field. Can be a special field or a regular instruction/event field. |
+| `strategy`  | `Strategy`        | No       | `LastWrite` or `SetOnce`.                                                  |
+| `condition` | `string`          | No       | Boolean expression for conditional derivation.                             |
+| `transform` | `Transform`       | No       | Transform to apply.                                                        |
+| `lookup_by` | `field`           | No       | Field used to resolve the entity key.                                      |
 
 **Special Fields:**
 

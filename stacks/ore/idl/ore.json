@@ -1,5 +1,5 @@
 {
-  "version": "3.7.22",
+  "version": "4.0.0",
   "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
   "name": "ore",
   "instructions": [
@@ -62,10 +62,6 @@
         {
           "name": "strategy",
           "type": "u8"
-        },
-        {
-          "name": "reload",
-          "type": "u64"
         }
       ]
     },
@@ -87,7 +83,7 @@
         },
         {
           "name": "board",
-          "isMut": false,
+          "isMut": true,
           "isSigner": false
         },
         {
@@ -131,7 +127,7 @@
         },
         {
           "name": "board",
-          "isMut": true,
+          "isMut": false,
           "isSigner": false
         },
         {
@@ -171,7 +167,7 @@
         },
         {
           "name": "board",
-          "isMut": true,
+          "isMut": false,
           "isSigner": false
         },
         {
@@ -241,7 +237,7 @@
       "accounts": [
         {
           "name": "signer",
-          "isMut": false,
+          "isMut": true,
           "isSigner": true
         },
         {
@@ -294,7 +290,7 @@
         },
         {
           "name": "authority",
-          "isMut": true,
+          "isMut": false,
           "isSigner": false
         },
         {
@@ -309,7 +305,7 @@
         },
         {
           "name": "config",
-          "isMut": true,
+          "isMut": false,
           "isSigner": false
         },
         {
@@ -333,6 +329,17 @@
           "isMut": false,
           "isSigner": false,
           "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
+        },
+        {
+          "name": "entropyVar",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "entropyProgram",
+          "isMut": false,
+          "isSigner": false,
+          "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
         }
       ],
       "args": [
@@ -463,47 +470,25 @@
           "isMut": false,
           "isSigner": false,
           "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
-        },
-        {
-          "name": "mintAuthority",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "oreMintProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "mintzxW6Kckmeyh1h6Zfdj9QcYgCzhPSGiC8ChZ6fCx"
         }
       ],
       "args": []
     },
     {
-      "name": "deposit",
+      "name": "bury",
       "discriminant": {
         "type": "u8",
-        "value": 10
+        "value": 13
       },
       "docs": [
-        "Deposits ORE into a staking account.",
-        "Stake PDA seeds: [\"stake\", signer]."
+        "Burns ORE and distributes yield to stakers.",
+        "Treasury PDA seeds: [\"treasury\"]."
       ],
       "accounts": [
         {
           "name": "signer",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "payer",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "mint",
           "isMut": false,
-          "isSigner": false,
-          "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
+          "isSigner": true
         },
         {
           "name": "sender",
@@ -511,231 +496,14 @@
           "isSigner": false
         },
         {
-          "name": "stake",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "stakeTokens",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "treasury",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "systemProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "tokenProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "associatedTokenProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u64"
-        },
-        {
-          "name": "compound_fee",
-          "type": "u64"
-        }
-      ]
-    },
-    {
-      "name": "withdraw",
-      "discriminant": {
-        "type": "u8",
-        "value": 11
-      },
-      "docs": [
-        "Withdraws ORE from a staking account.",
-        "Stake PDA seeds: [\"stake\", signer]."
-      ],
-      "accounts": [
-        {
-          "name": "signer",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "mint",
-          "isMut": false,
-          "isSigner": false,
-          "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
-        },
-        {
-          "name": "recipient",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "stake",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "stakeTokens",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "treasury",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "systemProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "tokenProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "associatedTokenProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u64"
-        }
-      ]
-    },
-    {
-      "name": "claimYield",
-      "discriminant": {
-        "type": "u8",
-        "value": 12
-      },
-      "docs": [
-        "Claims accrued staking rewards.",
-        "Stake PDA seeds: [\"stake\", signer].",
-        "Treasury PDA seeds: [\"treasury\"]."
-      ],
-      "accounts": [
-        {
-          "name": "signer",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "mint",
-          "isMut": false,
-          "isSigner": false,
-          "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
-        },
-        {
-          "name": "recipient",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "stake",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "treasury",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "treasuryTokens",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "systemProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "tokenProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "associatedTokenProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u64"
-        }
-      ]
-    },
-    {
-      "name": "buyback",
-      "discriminant": {
-        "type": "u8",
-        "value": 13
-      },
-      "docs": [
-        "Buys back ORE from the market."
-      ],
-      "accounts": [],
-      "args": []
-    },
-    {
-      "name": "bury",
-      "discriminant": {
-        "type": "u8",
-        "value": 24
-      },
-      "docs": [
-        "Swaps vaulted SOL for ORE via a CPI and burns the proceeds.",
-        "Treasury PDA seeds: [\"treasury\"].",
-        "Additional swap accounts are passed through as remaining accounts."
-      ],
-      "accounts": [
-        {
-          "name": "signer",
-          "isMut": false,
-          "isSigner": true
-        },
-        {
           "name": "board",
           "isMut": true,
           "isSigner": false
         },
         {
-          "name": "config",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
           "name": "mint",
-          "isMut": false,
-          "isSigner": false,
-          "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
+          "isMut": true,
+          "isSigner": false
         },
         {
           "name": "treasury",
@@ -748,7 +516,17 @@
           "isSigner": false
         },
         {
-          "name": "treasurySol",
+          "name": "stakeTreasury",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "stakeTreasuryTokens",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "stakeVesting",
           "isMut": true,
           "isSigner": false
         },
@@ -763,6 +541,11 @@
           "isMut": false,
           "isSigner": false,
           "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
+        },
+        {
+          "name": "oreStakeProgram",
+          "isMut": false,
+          "isSigner": false
         }
       ],
       "args": [
@@ -855,7 +638,7 @@
       "name": "newVar",
       "discriminant": {
         "type": "u8",
-        "value": 19
+          "value": 17
       },
       "docs": [
         "Creates a new entropy var account through the entropy program."
@@ -863,7 +646,7 @@
       "accounts": [
         {
           "name": "signer",
-          "isMut": false,
+          "isMut": true,
           "isSigner": true
         },
         {
@@ -918,64 +701,6 @@
           "type": "u64"
         }
       ]
-    },
-    {
-      "name": "reloadSol",
-      "discriminant": {
-        "type": "u8",
-        "value": 21
-      },
-      "docs": [
-        "Reloads SOL into the automation account."
-      ],
-      "accounts": [
-        {
-          "name": "signer",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "automation",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "miner",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "systemProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "compoundYield",
-      "discriminant": {
-        "type": "u8",
-        "value": 22
-      },
-      "docs": [
-        "Compounds staking yield."
-      ],
-      "accounts": [],
-      "args": []
-    },
-    {
-      "name": "liq",
-      "discriminant": {
-        "type": "u8",
-        "value": 25
-      },
-      "docs": [
-        "Liquidation instruction."
-      ],
-      "accounts": [],
-      "args": []
     }
   ],
   "accounts": [
@@ -1063,7 +788,7 @@
             "type": "u64"
           },
           {
-            "name": "epoch_id",
+            "name": "production_cost_ema",
             "type": "u64"
           }
         ]
@@ -1089,27 +814,15 @@
         "fields": [
           {
             "name": "admin",
-            "type": "publicKey"
+            "type": {
+              "defined": "AdminConfig"
+            }
           },
           {
-            "name": "buffer_a",
-            "type": "publicKey"
-          },
-          {
-            "name": "buffer_b",
-            "type": "publicKey"
-          },
-          {
-            "name": "buffer_c",
-            "type": "publicKey"
-          },
-          {
-            "name": "buffer_d",
-            "type": "publicKey"
-          },
-          {
-            "name": "buffer_e",
-            "type": "u64"
+            "name": "protocol",
+            "type": {
+              "defined": "ProtocolConfig"
+            }
           }
         ]
       }
@@ -1137,7 +850,28 @@
             "type": "publicKey"
           },
           {
+            "name": "auto_return",
+            "type": "u64"
+          },
+          {
+            "name": "checkpoint_id",
+            "type": "u64"
+          },
+          {
+            "name": "checkpoint_fee",
+            "type": "u64"
+          },
+          {
             "name": "deployed",
+            "type": {
+              "array": [
+                "u64",
+                25
+              ]
+            }
+          },
+          {
+            "name": "mass",
             "type": {
               "array": [
                 "u64",
@@ -1155,20 +889,8 @@
             }
           },
           {
-            "name": "checkpoint_fee",
+            "name": "round_id",
             "type": "u64"
-          },
-          {
-            "name": "checkpoint_id",
-            "type": "u64"
-          },
-          {
-            "name": "last_claim_ore_at",
-            "type": "i64"
-          },
-          {
-            "name": "last_claim_sol_at",
-            "type": "i64"
           },
           {
             "name": "rewards_factor",
@@ -1181,20 +903,20 @@
             "type": "u64"
           },
           {
-            "name": "rewards_ore",
-            "type": "u64"
-          },
-          {
             "name": "refined_ore",
             "type": "u64"
           },
           {
-            "name": "round_id",
+            "name": "rewards_ore",
             "type": "u64"
           },
           {
-            "name": "lifetime_rewards_sol",
-            "type": "u64"
+            "name": "last_claim_ore_at",
+            "type": "i64"
+          },
+          {
+            "name": "last_claim_sol_at",
+            "type": "i64"
           },
           {
             "name": "lifetime_rewards_ore",
@@ -1202,6 +924,10 @@
           },
           {
             "name": "lifetime_deployed",
+            "type": "u64"
+          },
+          {
+            "name": "lifetime_rewards_sol",
             "type": "u64"
           }
         ]
@@ -1239,11 +965,11 @@
             }
           },
           {
-            "name": "slot_hash",
+            "name": "mass",
             "type": {
               "array": [
-                "u8",
-                32
+                "u64",
+                25
               ]
             }
           },
@@ -1253,6 +979,15 @@
               "array": [
                 "u64",
                 25
+              ]
+            }
+          },
+          {
+            "name": "slot_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
               ]
             }
           },
@@ -1269,20 +1004,13 @@
             "type": "publicKey"
           },
           {
-            "name": "top_miner",
-            "type": "publicKey"
-          },
-          {
-            "name": "top_miner_reward",
-            "type": "u64"
-          },
-          {
-            "name": "total_deployed",
-            "type": "u64"
-          },
-          {
-            "name": "total_miners",
-            "type": "u64"
+            "name": "rewards",
+            "type": {
+              "array": [
+                "u64",
+                25
+              ]
+            }
           },
           {
             "name": "total_vaulted",
@@ -1291,85 +1019,14 @@
           {
             "name": "total_winnings",
             "type": "u64"
-          }
-        ]
-      }
-    },
-    {
-      "name": "Stake",
-      "discriminator": [
-        108,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
-      ],
-      "docs": [
-        "State for a staking participant."
-      ],
-      "type": {
-        "kind": "struct",
-        "fields": [
+          },
           {
-            "name": "authority",
+            "name": "total_miners",
+            "type": "u64"
+          },
+          {
+            "name": "top_miner",
             "type": "publicKey"
-          },
-          {
-            "name": "balance",
-            "type": "u64"
-          },
-          {
-            "name": "buffer_a",
-            "type": "u64"
-          },
-          {
-            "name": "buffer_b",
-            "type": "u64"
-          },
-          {
-            "name": "buffer_c",
-            "type": "u64"
-          },
-          {
-            "name": "buffer_d",
-            "type": "u64"
-          },
-          {
-            "name": "compound_fee_reserve",
-            "type": "u64"
-          },
-          {
-            "name": "last_claim_at",
-            "type": "i64"
-          },
-          {
-            "name": "last_deposit_at",
-            "type": "i64"
-          },
-          {
-            "name": "last_withdraw_at",
-            "type": "i64"
-          },
-          {
-            "name": "rewards_factor",
-            "type": {
-              "defined": "Numeric"
-            }
-          },
-          {
-            "name": "rewards",
-            "type": "u64"
-          },
-          {
-            "name": "lifetime_rewards",
-            "type": "u64"
-          },
-          {
-            "name": "buffer_f",
-            "type": "u64"
           }
         ]
       }
@@ -1393,14 +1050,6 @@
         "kind": "struct",
         "fields": [
           {
-            "name": "balance",
-            "type": "u64"
-          },
-          {
-            "name": "buffer_a",
-            "type": "u64"
-          },
-          {
             "name": "motherlode",
             "type": "u64"
           },
@@ -1411,21 +1060,7 @@
             }
           },
           {
-            "name": "stake_rewards_factor",
-            "type": {
-              "defined": "Numeric"
-            }
-          },
-          {
-            "name": "buffer_b",
-            "type": "u64"
-          },
-          {
             "name": "total_refined",
-            "type": "u64"
-          },
-          {
-            "name": "total_staked",
             "type": "u64"
           },
           {
@@ -1437,6 +1072,68 @@
     }
   ],
   "types": [
+    {
+      "name": "AdminConfig",
+      "docs": [
+        "Admin configuration."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "publicKey"
+          },
+          {
+            "name": "fee_collector",
+            "type": "publicKey"
+          },
+          {
+            "name": "fee_rate",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolConfig",
+      "docs": [
+        "Protocol configuration."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "publicKey"
+          },
+          {
+            "name": "fee_collector",
+            "type": "publicKey"
+          },
+          {
+            "name": "fee_rate",
+            "type": "u64"
+          },
+          {
+            "name": "intermission_slots",
+            "type": "u64"
+          },
+          {
+            "name": "round_slots",
+            "type": "u64"
+          },
+          {
+            "name": "entropy_var_address",
+            "type": "publicKey"
+          },
+          {
+            "name": "entropy_program_id",
+            "type": "publicKey"
+          }
+        ]
+      }
+    },
     {
       "name": "Numeric",
       "docs": [
@@ -1617,6 +1314,34 @@
           {
             "name": "recipient",
             "type": "publicKey"
+          },
+          {
+            "name": "ts",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClaimEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "disc",
+            "type": "u64"
+          },
+          {
+            "name": "authority",
+            "type": "publicKey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "claim_type",
+            "type": "u64"
           },
           {
             "name": "ts",
@@ -1856,6 +1581,46 @@
           "index": false
         }
       ]
+    },
+    {
+      "name": "ClaimEvent",
+      "discriminator": [
+        4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fields": [
+        {
+          "name": "disc",
+          "type": "u64",
+          "index": false
+        },
+        {
+          "name": "authority",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "amount",
+          "type": "u64",
+          "index": false
+        },
+        {
+          "name": "claim_type",
+          "type": "u64",
+          "index": false
+        },
+        {
+          "name": "ts",
+          "type": "i64",
+          "index": false
+        }
+      ]
     }
   ],
   "errors": [
@@ -1868,6 +1633,11 @@
       "code": 1,
       "name": "NotAuthorized",
       "msg": "Not authorized"
+    },
+    {
+      "code": 2,
+      "name": "InvalidExecutor",
+      "msg": "Invalid executor"
     }
   ],
   "metadata": {

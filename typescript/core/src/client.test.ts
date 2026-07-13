@@ -1,12 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { parseFrame, isSnapshotFrame } from './frame';
 import { gzip } from 'pako';
+import { z } from 'zod';
 
 describe('Arete SDK', () => {
   it('should export Arete class', async () => {
     const { Arete } = await import('./index');
     expect(Arete).toBeDefined();
     expect(typeof Arete.connect).toBe('function');
+    expect(typeof Arete.session).toBe('function');
   });
 
   it('should export ConnectionManager', async () => {
@@ -22,6 +24,11 @@ describe('Arete SDK', () => {
   it('should export FrameProcessor', async () => {
     const { FrameProcessor } = await import('./index');
     expect(FrameProcessor).toBeDefined();
+  });
+
+  it('should not export EntityStore', async () => {
+    const sdk = await import('./index');
+    expect('EntityStore' in sdk).toBe(false);
   });
 });
 
@@ -86,4 +93,839 @@ describe('Frame parsing', () => {
     }
   });
 
+});
+
+describe('Arete instructions (namespaced stacks)', () => {
+  const SIGNER = 'So11111111111111111111111111111111111111112';
+
+  async function makeClient(errors: { code: number; name: string; msg: string }[] = []) {
+    const { Arete, createInstructionHandler } = await import('./index');
+    const handler = (programId: string) =>
+      createInstructionHandler({
+        programId,
+        discriminator: [9],
+        args: [],
+        accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+        errors,
+      });
+
+    const stack = {
+      name: 'demo',
+      endpoints: {
+        ws: 'wss://example.invalid',
+        http: 'https://example.invalid',
+      },
+      views: {},
+      programs: {
+        ore: {
+          name: 'ore',
+          programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+          rawInstructions: { close: handler('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv') },
+        },
+        entropy: {
+          name: 'entropy',
+          programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
+          rawInstructions: { close: handler('3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X') },
+        },
+      },
+    } as const;
+
+    // autoReconnect: false keeps the client fully offline.
+    return Arete.connect(stack, { autoReconnect: false });
+  }
+
+  it('mirrors per-program nesting and builds through the raw path', async () => {
+    const client = await makeClient();
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend() {
+        throw new Error('not used');
+      },
+    };
+
+    const ix = client.programs.ore.raw.close.build({}, { wallet });
+    expect(ix.programId).toBe('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv');
+    expect(ix.keys[0]!.pubkey).toBe(SIGNER);
+
+    const ix2 = client.programs.entropy.raw.close.build({}, { wallet });
+    expect(ix2.programId).toBe('3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X');
+  });
+
+  it('exposes attached programs through client.programs', async () => {
+    const { Arete, createInstructionHandler, extendProgram } = await import('./index');
+    const handler = createInstructionHandler({
+      programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      discriminator: [7],
+      args: [],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      errors: [],
+    });
+    const attachedProgram = extendProgram(
+      {
+        name: 'attached',
+        programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+        rawInstructions: { transfer: handler },
+      } as const,
+      {
+        addresses: { vault: () => 'VaultAddr' },
+        constants: { AuthorityType: { MintTokens: 'AuthorityMintTokens' } },
+      }
+    );
+    const client = await Arete.connect(
+      {
+        name: 'attached-demo',
+        endpoints: {
+          ws: 'wss://example.invalid',
+          http: 'https://example.invalid',
+        },
+        views: {},
+        programs: {},
+      } as const,
+      {
+        autoReconnect: false,
+        programs: {
+          attached: attachedProgram,
+        },
+      }
+    );
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend() {
+        throw new Error('not used');
+      },
+    };
+
+    const ix = client.programs.attached.raw.transfer.build({}, { wallet });
+    expect(ix.programId).toBe('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+    expect(ix.keys[0]!.pubkey).toBe(SIGNER);
+    expect(client.programs.attached.addresses.vault()).toBe('VaultAddr');
+    expect(client.programs.attached.constants.AuthorityType.MintTokens).toBe('AuthorityMintTokens');
+  });
+
+  it('prefers stack-defined programs over attached programs with the same key', async () => {
+    const { Arete, createInstructionHandler } = await import('./index');
+    const stackHandler = createInstructionHandler({
+      programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+      discriminator: [9],
+      args: [],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      errors: [],
+    });
+    const attachedHandler = createInstructionHandler({
+      programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      discriminator: [7],
+      args: [],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      errors: [],
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const client = await Arete.connect(
+        {
+          name: 'collision-demo',
+          endpoints: {
+            ws: 'wss://example.invalid',
+            http: 'https://example.invalid',
+          },
+          views: {},
+          programs: {
+            ore: {
+              name: 'ore',
+              programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+              rawInstructions: { close: stackHandler },
+            },
+          },
+        } as const,
+        {
+          autoReconnect: false,
+          programs: {
+            ore: {
+              name: 'ore-attached',
+              programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+              rawInstructions: { close: attachedHandler },
+            },
+          },
+        }
+      );
+      const wallet = {
+        publicKey: SIGNER,
+        async signAndSend() {
+          throw new Error('not used');
+        },
+      };
+
+      const ix = client.programs.ore.raw.close.build({}, { wallet });
+      expect(ix.programId).toBe('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv');
+      expect(warn).toHaveBeenCalledWith(
+        "Ignoring attached program 'ore' for stack 'collision-demo' because the stack already defines that key"
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('parses attached-program errors in transaction() from aggregated handler metadata', async () => {
+    const { Arete, InstructionError, createInstructionHandler } = await import('./index');
+    const handler = createInstructionHandler({
+      programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      discriminator: [7],
+      args: [],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      errors: [{ code: 7000, name: 'AttachedProgramError', msg: 'attached failure' }],
+    });
+    const client = await Arete.connect(
+      {
+        name: 'attached-errors-demo',
+        endpoints: {
+          ws: 'wss://example.invalid',
+          http: 'https://example.invalid',
+        },
+        views: {},
+        programs: {},
+      } as const,
+      {
+        autoReconnect: false,
+        programs: {
+          attached: {
+            name: 'attached',
+            programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+            rawInstructions: { transfer: handler },
+          },
+        },
+      }
+    );
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend(): Promise<{ signature: string }> {
+        throw { InstructionError: [0, { Custom: 7000 }] };
+      },
+    };
+
+    const ix = client.programs.attached.raw.transfer.build({}, { wallet });
+    await expect(client.transaction([ix], { wallet })).rejects.toMatchObject({
+      name: 'InstructionError',
+      programError: { code: 7000, name: 'AttachedProgramError' },
+    });
+    await expect(client.transaction([ix], { wallet })).rejects.toBeInstanceOf(InstructionError);
+  });
+
+  it('parses program errors in transaction() from aggregated handler metadata', async () => {
+    const { InstructionError } = await import('./index');
+    const client = await makeClient([
+      { code: 6000, name: 'SlippageExceeded', msg: 'Slippage tolerance exceeded' },
+    ]);
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend(): Promise<{ signature: string }> {
+        throw { InstructionError: [0, { Custom: 6000 }] };
+      },
+    };
+
+    const ix = client.programs.ore.raw.close.build({}, { wallet });
+    await expect(client.transaction([ix], { wallet })).rejects.toMatchObject({
+      name: 'InstructionError',
+      programError: { code: 6000, name: 'SlippageExceeded' },
+    });
+    await expect(client.transaction([ix], { wallet })).rejects.toBeInstanceOf(InstructionError);
+  });
+
+  it('prefers explicit errors over aggregated metadata in transaction()', async () => {
+    const client = await makeClient([
+      { code: 6000, name: 'WrongName', msg: 'from aggregate' },
+    ]);
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend(): Promise<{ signature: string }> {
+        throw { InstructionError: [0, { Custom: 6000 }] };
+      },
+    };
+
+    const ix = client.programs.ore.raw.close.build({}, { wallet });
+    await expect(
+      client.transaction([ix], {
+        wallet,
+        errors: [{ code: 6000, name: 'RightName', msg: 'from override' }],
+      })
+    ).rejects.toMatchObject({
+      programError: { code: 6000, name: 'RightName' },
+    });
+  });
+
+  it('executes prepared flows through the client instance', async () => {
+    const { createPreparedFlow } = await import('./index');
+    const client = await makeClient();
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend(): Promise<{ signature: string; slot: number }> {
+        return { signature: 'sig-plan', slot: 77 };
+      },
+    };
+    client.setWallet(wallet);
+
+    const ix = client.programs.ore.raw.close.build({}, { wallet });
+    const plan = createPreparedFlow({
+      name: 'close-plan',
+      artifacts: { closed: true },
+      transactions: [{ name: 'close-stage', instructions: [ix], requiredSignerAddresses: [SIGNER], errors: [] }],
+    });
+
+    await expect(client.execute(plan)).resolves.toEqual({
+      kind: 'flow',
+      operationName: 'close-plan',
+      artifacts: { closed: true },
+      signatures: ['sig-plan'],
+      transactions: [{ transactionIndex: 0, transactionName: 'close-stage', signature: 'sig-plan', slot: 77 }],
+    });
+  });
+
+  it('attaches stack extensions to the connected client without extra binding', async () => {
+    const { Arete, createInstructionHandler, createPreparedFlow, extendStack, flowOperation } = await import('./index');
+    const handler = createInstructionHandler({
+      programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+      discriminator: [9],
+      args: [],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      errors: [],
+    });
+
+    let plan: ReturnType<typeof createPreparedFlow>;
+
+    const stack = extendStack(
+      {
+        name: 'extended-demo',
+        endpoints: {
+          ws: 'wss://example.invalid',
+          http: 'https://example.invalid',
+        },
+        views: {},
+        programs: {
+          ore: {
+            name: 'ore',
+            programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+            rawInstructions: { close: handler },
+          },
+        },
+      } as const,
+      {
+        addresses: {
+          vault(owner: string) {
+            return `vault:${owner}`;
+          },
+        },
+        constants: {
+          closeMemo: 'prepared-close',
+        },
+        createFlows() {
+          return {
+            close: flowOperation(async () => plan),
+          };
+        },
+        createRead(client) {
+          return {
+            closeMemo() {
+              return (client as { constants: { closeMemo: string } }).constants.closeMemo;
+            },
+          };
+        },
+      }
+    );
+
+    const client = await Arete.connect(stack, { autoReconnect: false });
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend(): Promise<{ signature: string; slot: number }> {
+        return { signature: 'sig-extended', slot: 99 };
+      },
+    };
+    client.setWallet(wallet);
+
+    const ix = client.programs.ore.raw.close.build({}, { wallet });
+    plan = createPreparedFlow({
+      name: 'extended-close-plan',
+      artifacts: { closed: true },
+      transactions: [
+        {
+          name: 'extended-close-stage',
+          instructions: [ix],
+          requiredSignerAddresses: [SIGNER],
+          errors: [],
+        },
+      ],
+    });
+
+    expect(client.addresses.vault('alice')).toBe('vault:alice');
+    expect(client.constants.closeMemo).toBe('prepared-close');
+    await expect(client.flows.close.prepare({})).resolves.toBe(plan);
+    expect(client.read.closeMemo()).toBe('prepared-close');
+    await expect(client.execute(plan)).resolves.toEqual({
+      kind: 'flow',
+      operationName: 'extended-close-plan',
+      artifacts: { closed: true },
+      signatures: ['sig-extended'],
+      transactions: [{ transactionIndex: 0, transactionName: 'extended-close-stage', signature: 'sig-extended', slot: 99 }],
+    });
+  });
+
+  it('preserves standalone program extension namespaces on connected clients', async () => {
+    const { Arete, createInstructionHandler, createPreparedInstruction, extendProgram, instructionOperation } = await import('./index');
+    const rawHandler = createInstructionHandler({
+      programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+      discriminator: [9],
+      args: [],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      errors: [],
+    });
+    const stack = {
+      name: 'program-extensions-demo',
+      endpoints: {
+        ws: 'wss://example.invalid',
+        http: 'https://example.invalid',
+      },
+      views: {},
+      programs: {
+        ore: extendProgram(
+          {
+            name: 'ore',
+            programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+            rawInstructions: { close: rawHandler },
+          },
+          {
+            raw: { close: rawHandler },
+            addresses: { vault: (owner: string) => `vault:${owner}` },
+            defaults: { closeMemo: 'prepared-close' },
+            math: { double: (value: number) => value * 2 },
+            createOperations() {
+              return {
+                instructions: {
+                  close: instructionOperation(async () =>
+                    createPreparedInstruction({
+                      name: 'close',
+                      instruction: {
+                        programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+                        keys: [],
+                        data: new Uint8Array([1]),
+                      },
+                      artifacts: { closed: true },
+                    })
+                  ),
+                },
+              };
+            },
+          }
+        ),
+      },
+    } as const;
+
+    const client = await Arete.connect(stack, { autoReconnect: false });
+
+    const wallet = {
+      publicKey: SIGNER,
+      async signAndSend(): Promise<{ signature: string; slot: number }> {
+        return { signature: 'sig-program-extension', slot: 101 };
+      },
+    };
+    client.setWallet(wallet);
+
+    expect(client.programs.ore.addresses.vault('alice')).toBe('vault:alice');
+    expect(client.programs.ore.defaults.closeMemo).toBe('prepared-close');
+    expect(client.programs.ore.math.double(3)).toBe(6);
+    const prepared = await client.programs.ore.instructions.close.prepare({});
+    expect(prepared.kind).toBe('instruction');
+    await expect(client.execute(prepared)).resolves.toEqual({
+      kind: 'instruction',
+      operationName: 'close',
+      artifacts: { closed: true },
+      signatures: ['sig-program-extension'],
+      transaction: { transactionIndex: 0, transactionName: 'close', signature: 'sig-program-extension', slot: 101 },
+    });
+  });
+
+  it('provides program extension callbacks with the connected program interface', async () => {
+    const {
+      Arete,
+      createInstructionHandler,
+      createPreparedInstruction,
+      defineProgramExtensions,
+      extendProgram,
+      instructionOperation,
+    } = await import('./index');
+    const rawHandler = createInstructionHandler({
+      programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+      discriminator: [9],
+      args: [],
+      accounts: [],
+      errors: [],
+    });
+    const base = extendProgram(
+      {
+        name: 'ore',
+        programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+        rawInstructions: { close: rawHandler },
+      },
+      {
+        createOperations() {
+          return {
+            instructions: {
+              close: instructionOperation(async () =>
+                createPreparedInstruction({
+                  name: 'close',
+                  instruction: { programId: 'ore', keys: [], data: new Uint8Array([1]) },
+                  artifacts: { source: 'base' as const },
+                })
+              ),
+            },
+          };
+        },
+      }
+    );
+    const extensions = defineProgramExtensions<typeof base>()({
+      addresses: { vault: (owner: string) => `vault:${owner}` },
+      defaults: { operationName: 'close-via-context' as const },
+      math: { double: (value: number) => value * 2 },
+      createOperations(context) {
+        context.program.instructions.close.kind satisfies 'instruction';
+        context.program.addresses.vault('typecheck');
+        context.program.defaults.operationName satisfies 'close-via-context';
+        context.program.math.double(3) satisfies number;
+        context.program.raw.close.build;
+        // @ts-expect-error operations being created are available after the factory returns
+        context.program.instructions.closeViaContext;
+        return {
+          instructions: {
+            closeViaContext: instructionOperation(async () => {
+              const prepared = await context.program.instructions.close.prepare({});
+              return createPreparedInstruction({
+                name: context.program.defaults.operationName,
+                instruction: prepared.instruction,
+                artifacts: {
+                  source: prepared.artifacts.source,
+                  vault: context.program.addresses.vault('alice'),
+                },
+              });
+            }),
+          },
+        };
+      },
+    });
+    const stack = {
+      name: 'program-extension-context-demo',
+      endpoints: { ws: 'wss://example.invalid', http: 'https://example.invalid' },
+      views: {},
+      programs: { ore: extendProgram(base, extensions) },
+    } as const;
+
+    const client = await Arete.connect(stack, { autoReconnect: false });
+    const prepared = await client.programs.ore.instructions.closeViaContext.prepare({});
+
+    expect(prepared.artifacts).toEqual({ source: 'base', vault: 'vault:alice' });
+  });
+
+  it('exposes program account reads, stack queries, and chain helpers through HTTP surfaces', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/programs/squads/accounts/Multisig/multisig-1')) {
+        return new Response(JSON.stringify({ threshold: 2, transactionIndex: '41' }), { status: 200 });
+      }
+      if (url.endsWith('/programs/squads/queries/findThreshold')) {
+        return new Response(JSON.stringify({ transaction_index: '99' }), { status: 200 });
+      }
+      if (url.endsWith('/queries/currentMultisig')) {
+        return new Response(JSON.stringify({ multisig_key: 'multisig-1' }), { status: 200 });
+      }
+      if (url.endsWith('/chain/exists/multisig-1')) {
+        return new Response(JSON.stringify({ exists: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ init }), { status: 200 });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    try {
+      const { Arete, programAccountRead, programQuery, stackQuery } = await import('./index');
+      const bigintSchema = z
+        .union([z.bigint(), z.string(), z.number().int()])
+        .transform((value) => BigInt(value));
+      const stack = {
+        name: 'reads-demo',
+        endpoints: {
+          ws: 'wss://example.invalid',
+          http: 'https://example.invalid',
+        },
+        views: {},
+        queries: {
+          currentMultisig: stackQuery<{ owner: string }, { multisigKey: string }>({
+            name: 'currentMultisig',
+            path: '/queries/currentMultisig',
+            schema: z
+              .object({ multisig_key: z.string() })
+              .transform((value) => ({ multisigKey: value.multisig_key })),
+          }),
+        },
+        programs: {
+          squads: {
+            name: 'squads',
+            programId: 'SQDS111111111111111111111111111111111111111',
+            accounts: {
+              Multisig: programAccountRead<{ threshold: number; transactionIndex: bigint }>({
+                account: 'Multisig',
+                path: '/programs/squads/accounts/Multisig',
+                schema: z
+                  .object({
+                    threshold: z.number(),
+                    transaction_index: bigintSchema,
+                  })
+                  .transform((value) => ({
+                    threshold: value.threshold,
+                    transactionIndex: value.transaction_index,
+                  })),
+              }),
+            },
+            queries: {
+              findThreshold: programQuery<{ owner: string }, { transactionIndex: bigint }>({
+                name: 'findThreshold',
+                path: '/programs/squads/queries/findThreshold',
+                schema: z
+                  .object({ transaction_index: bigintSchema })
+                  .transform((value) => ({ transactionIndex: value.transaction_index })),
+              }),
+            },
+            rawInstructions: {},
+          },
+        },
+      } as const;
+
+      const client = await Arete.connect(stack, {
+        autoReconnect: false,
+        auth: {
+          getToken: async () => ({ token: 'session-token', expiresAt: Math.floor(Date.now() / 1000) + 300 }),
+        },
+      });
+      await expect(client.programs.squads.accounts.Multisig.fetch('multisig-1')).resolves.toEqual({
+        threshold: 2,
+        transactionIndex: BigInt('41'),
+      });
+      await expect(client.programs.squads.queries.findThreshold({ owner: 'owner-1' })).resolves.toEqual({
+        transactionIndex: BigInt('99'),
+      });
+      await expect(client.queries.currentMultisig({ owner: 'owner-1' })).resolves.toEqual({
+        multisigKey: 'multisig-1',
+      });
+      await expect(client.chain.exists('multisig-1')).resolves.toBe(true);
+
+      expect(fetchMock).toHaveBeenCalledWith('https://example.invalid/programs/squads/accounts/Multisig/multisig-1', {
+        method: 'GET',
+        headers: expect.any(Headers),
+        body: undefined,
+      });
+      expect(fetchMock).toHaveBeenCalledWith('https://example.invalid/programs/squads/queries/findThreshold', {
+        method: 'POST',
+        headers: expect.any(Headers),
+        body: JSON.stringify({ owner: 'owner-1' }),
+      });
+      expect(fetchMock).toHaveBeenCalledWith('https://example.invalid/queries/currentMultisig', {
+        method: 'POST',
+        headers: expect.any(Headers),
+        body: JSON.stringify({ owner: 'owner-1' }),
+      });
+      const firstHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Headers;
+      const secondHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Headers;
+      const thirdHeaders = fetchMock.mock.calls[2]?.[1]?.headers as Headers;
+      expect(firstHeaders.get('authorization')).toBe('Bearer session-token');
+      expect(secondHeaders.get('authorization')).toBe('Bearer session-token');
+      expect(thirdHeaders.get('authorization')).toBe('Bearer session-token');
+      expect(secondHeaders.get('content-type')).toBe('application/json');
+      expect(thirdHeaders.get('content-type')).toBe('application/json');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('allows HTTP-only clients when autoReconnect is disabled', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ exists: false }), { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    try {
+      const { Arete } = await import('./index');
+      const stack = {
+        name: 'http-only',
+        endpoints: {
+          ws: '',
+          http: 'https://example.invalid',
+        },
+        views: {},
+        programs: {},
+      } as const;
+
+      const client = await Arete.connect(stack, { autoReconnect: false });
+      await expect(client.chain.exists('unused')).resolves.toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('throws structured HTTP read errors without conflating schema failures', async () => {
+    const { Arete, ReadRequestError, stackQuery } = await import('./index');
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/queries/failing') {
+        return new Response(JSON.stringify({ error: 'read failed', code: 'read-denied' }), {
+          status: 403,
+          headers: { 'X-Error-Code': 'read-denied' },
+        });
+      }
+      return new Response(JSON.stringify({ unexpected: true }), { status: 200 });
+    });
+    const stack = {
+      name: 'read-errors',
+      endpoints: { ws: '', http: 'https://example.invalid' },
+      views: {},
+      queries: {
+        failing: stackQuery({ name: 'failing', path: '/queries/failing' }),
+        invalid: stackQuery({
+          name: 'invalid',
+          path: '/queries/invalid',
+          schema: z.object({ value: z.string() }),
+        }),
+      },
+      programs: {},
+    } as const;
+    const client = await Arete.connect(stack, {
+      transport: 'http',
+      fetch: fetchMock as typeof fetch,
+    });
+
+    const requestError = await client.queries.failing({}).catch((error: unknown) => error);
+    expect(requestError).toBeInstanceOf(ReadRequestError);
+    expect(requestError).toMatchObject({
+      status: 403,
+      path: '/queries/failing',
+      body: JSON.stringify({ error: 'read failed', code: 'read-denied' }),
+      serverErrorCode: 'read-denied',
+    });
+
+    const schemaError = await client.queries.invalid({}).catch((error: unknown) => error);
+    expect(schemaError).not.toBeInstanceOf(ReadRequestError);
+    expect(schemaError).toEqual(expect.objectContaining({
+      message: "Query 'invalid' failed schema validation",
+    }));
+  });
+});
+
+describe('Arete transport: http', () => {
+  const HTTP_STACK = {
+    name: 'http-demo',
+    endpoints: {
+      ws: 'wss://example.invalid',
+      http: 'https://example.invalid',
+    },
+    views: {
+      Thing: {
+        list: { mode: 'list', view: 'Thing/list' },
+      },
+    },
+    programs: {},
+  } as const;
+
+  it('serves point reads and chain reads without opening a socket', async () => {
+    const { Arete } = await import('./index');
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/chain/exists/addr-1')) {
+        return new Response(JSON.stringify({ exists: true }), { status: 200 });
+      }
+      if (url.endsWith('/chain/rent-exemption/82')) {
+        return new Response(JSON.stringify({ lamports: 1461600 }), { status: 200 });
+      }
+      if (url.includes('/chain/accounts/addr-1')) {
+        return new Response(
+          JSON.stringify({
+            address: 'addr-1',
+            ownerProgram: 'owner-program',
+            lamports: 5,
+            executable: false,
+            data: Buffer.from([1, 2, 3]).toString('base64'),
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response('null', { status: 200 });
+    });
+
+    const client = await Arete.connect(HTTP_STACK, { transport: 'http', fetch: fetchMock as typeof fetch });
+    expect(client.isConnected()).toBe(false);
+    await expect(client.chain.exists('addr-1')).resolves.toBe(true);
+    await expect(client.chain.minimumBalanceForRentExemption(82)).resolves.toBe(1461600);
+
+    const account = await client.chain.account('addr-1');
+    expect(account).toMatchObject({ address: 'addr-1', ownerProgram: 'owner-program', lamports: 5 });
+    expect(Array.from(account!.data)).toEqual([1, 2, 3]);
+  });
+
+  it('uses structured errors for failed chain reads', async () => {
+    const { Arete, ReadRequestError } = await import('./index');
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ error: 'temporarily unavailable', code: 'chain-unavailable' }),
+      { status: 503 }
+    ));
+    const client = await Arete.connect(HTTP_STACK, {
+      transport: 'http',
+      fetch: fetchMock as typeof fetch,
+    });
+
+    const error = await client.chain.exists('addr-1').catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ReadRequestError);
+    expect(error).toMatchObject({
+      status: 503,
+      path: '/chain/exists/addr-1',
+      serverErrorCode: 'chain-unavailable',
+    });
+  });
+
+  it('rejects connect() and view subscriptions with WEBSOCKET_DISABLED', async () => {
+    const { Arete } = await import('./index');
+    const client = await Arete.connect(HTTP_STACK, {
+      transport: 'http',
+      fetch: vi.fn(async () => new Response('null', { status: 200 })) as typeof fetch,
+    });
+
+    await expect(client.connect()).rejects.toMatchObject({ code: 'WEBSOCKET_DISABLED' });
+
+    const iterate = async () => {
+      for await (const _entry of client.views.Thing.list.use()) {
+        break;
+      }
+    };
+    await expect(iterate()).rejects.toMatchObject({ code: 'WEBSOCKET_DISABLED' });
+  });
+
+  it('requires an HTTP endpoint in http transport mode', async () => {
+    const { Arete } = await import('./index');
+    const stack = {
+      name: 'no-http',
+      endpoints: { ws: '' },
+      views: {},
+      programs: {},
+    } as const;
+
+    await expect(Arete.connect(stack, { transport: 'http' })).rejects.toMatchObject({
+      code: 'INVALID_CONFIG',
+    });
+  });
+
+  it('derives the HTTP endpoint from the ws endpoint when only ws is defined', async () => {
+    const { Arete } = await import('./index');
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ exists: true }), { status: 200 }));
+    const stack = {
+      name: 'derive-http',
+      endpoints: { ws: 'wss://derive.invalid' },
+      views: {},
+      programs: {},
+    } as const;
+
+    const client = await Arete.connect(stack, { transport: 'http', fetch: fetchMock as typeof fetch });
+    await expect(client.chain.exists('x')).resolves.toBe(true);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://derive.invalid/chain/exists/x');
+  });
 });

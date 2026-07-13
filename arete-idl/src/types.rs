@@ -1,6 +1,7 @@
 //! Core type definitions for IDL
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IdlSpec {
@@ -11,6 +12,7 @@ pub struct IdlSpec {
     #[serde(default)]
     pub address: Option<String>,
     pub instructions: Vec<IdlInstruction>,
+    #[serde(default)]
     pub accounts: Vec<IdlAccount>,
     #[serde(default)]
     pub types: Vec<IdlTypeDef>,
@@ -20,6 +22,8 @@ pub struct IdlSpec {
     pub errors: Vec<IdlError>,
     #[serde(default)]
     pub constants: Vec<IdlConstant>,
+    #[serde(default)]
+    pub pdas: Vec<IdlNamedPda>,
     pub metadata: Option<IdlMetadata>,
 }
 
@@ -81,16 +85,31 @@ impl IdlInstruction {
             return vec![value];
         }
 
-        crate::discriminator::anchor_discriminator(&format!(
-            "global:{}",
-            to_snake_case(&self.name)
-        ))
+        crate::discriminator::anchor_discriminator(&format!("global:{}", to_snake_case(&self.name)))
+    }
+
+    pub fn flattened_accounts(&self) -> Vec<IdlAccountArg> {
+        self.accounts
+            .iter()
+            .flat_map(|account| account.flattened(None))
+            .collect()
     }
 }
 
 /// PDA definition in Anchor IDL format
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IdlPda {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub seeds: Vec<IdlPdaSeed>,
+    #[serde(default)]
+    pub program: Option<IdlPdaProgram>,
+}
+
+/// Named PDA definition at the program/IDL level.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IdlNamedPda {
+    pub name: String,
     pub seeds: Vec<IdlPdaSeed>,
     #[serde(default)]
     pub program: Option<IdlPdaProgram>,
@@ -143,6 +162,59 @@ pub struct IdlAccountArg {
     pub docs: Vec<String>,
     #[serde(default)]
     pub pda: Option<IdlPda>,
+    #[serde(default)]
+    pub accounts: Vec<IdlAccountArg>,
+}
+
+impl IdlAccountArg {
+    pub fn flattened(&self, prefix: Option<&str>) -> Vec<IdlAccountArg> {
+        self.flattened_with_siblings(prefix, None)
+    }
+
+    fn flattened_with_siblings(
+        &self,
+        prefix: Option<&str>,
+        sibling_names: Option<&HashSet<String>>,
+    ) -> Vec<IdlAccountArg> {
+        let flattened_name = match prefix {
+            Some(prefix) => format!("{}{}", prefix, to_pascal_case(&self.name)),
+            None => self.name.clone(),
+        };
+
+        if self.accounts.is_empty() {
+            let mut account = self.clone();
+            account.name = flattened_name;
+            account.accounts = Vec::new();
+            if let Some(pda) = account.pda.as_mut() {
+                if prefix.is_some() {
+                    pda.name = None;
+                }
+                for seed in &mut pda.seeds {
+                    if let IdlPdaSeed::Account { path, .. } = seed {
+                        if let (Some(prefix), Some(siblings)) = (prefix, sibling_names) {
+                            if siblings.contains(path.as_str()) {
+                                *path = format!("{}{}", prefix, to_pascal_case(path));
+                            }
+                        }
+                    }
+                }
+            }
+            return vec![account];
+        }
+
+        let sibling_names: HashSet<String> = self
+            .accounts
+            .iter()
+            .map(|account| account.name.clone())
+            .collect();
+
+        self.accounts
+            .iter()
+            .flat_map(|account| {
+                account.flattened_with_siblings(Some(&flattened_name), Some(&sibling_names))
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -178,6 +250,31 @@ pub struct IdlField {
     pub name: String,
     #[serde(rename = "type")]
     pub type_: IdlType,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "amountHint"
+    )]
+    pub amount_hint: Option<IdlAmountHint>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdlAmountHint {
+    pub decimals_source: IdlAmountDecimalsSource,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum IdlAmountDecimalsSource {
+    ArgMint { arg_name: String },
+    ArgDecimals { arg_name: String },
+    KnownAccount { account_name: String },
+    Constant { decimals: u8 },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -304,12 +401,38 @@ pub enum IdlEnumVariantField {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IdlEventDataRef {
+    #[serde(default)]
+    pub kind: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IdlEventFieldSource {
+    Inline,
+    EventDataType { type_name: String },
+    MatchingType { type_name: String },
+    Unavailable,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedEventFields<'a> {
+    pub source: IdlEventFieldSource,
+    pub fields: Vec<&'a IdlField>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IdlEvent {
     pub name: String,
     #[serde(default)]
     pub discriminator: Vec<u8>,
     #[serde(default)]
     pub docs: Vec<String>,
+    #[serde(default)]
+    pub fields: Vec<IdlField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<IdlEventDataRef>,
 }
 
 impl IdlEvent {
@@ -348,6 +471,61 @@ impl IdlSpec {
             .unwrap_or("0.1.0")
     }
 
+    pub fn find_event(&self, event_name: &str) -> Option<&IdlEvent> {
+        self.events
+            .iter()
+            .find(|event| event.name.eq_ignore_ascii_case(event_name))
+    }
+
+    pub fn resolve_event_fields<'a>(&'a self, event_name: &str) -> Option<ResolvedEventFields<'a>> {
+        self.find_event(event_name)
+            .map(|event| self.resolve_event_fields_for(event))
+    }
+
+    pub fn resolve_event_fields_for<'a>(&'a self, event: &'a IdlEvent) -> ResolvedEventFields<'a> {
+        if !event.fields.is_empty() {
+            return ResolvedEventFields {
+                source: IdlEventFieldSource::Inline,
+                fields: event.fields.iter().collect(),
+            };
+        }
+
+        if let Some(data) = &event.data {
+            if let Some(fields) = self.lookup_struct_fields(&data.name) {
+                return ResolvedEventFields {
+                    source: IdlEventFieldSource::EventDataType {
+                        type_name: data.name.clone(),
+                    },
+                    fields,
+                };
+            }
+        }
+
+        if let Some(fields) = self.lookup_struct_fields(&event.name) {
+            return ResolvedEventFields {
+                source: IdlEventFieldSource::MatchingType {
+                    type_name: event.name.clone(),
+                },
+                fields,
+            };
+        }
+
+        ResolvedEventFields {
+            source: IdlEventFieldSource::Unavailable,
+            fields: Vec::new(),
+        }
+    }
+
+    fn lookup_struct_fields<'a>(&'a self, type_name: &str) -> Option<Vec<&'a IdlField>> {
+        self.types
+            .iter()
+            .find(|ty| ty.name.eq_ignore_ascii_case(type_name))
+            .and_then(|ty| match &ty.type_def {
+                IdlTypeDefKind::Struct { fields, .. } => Some(fields.iter().collect()),
+                _ => None,
+            })
+    }
+
     /// Check if a field is an account (vs an arg/data field) for a given instruction
     /// Returns Some("accounts") if it's an account, Some("data") if it's an arg, None if not found
     pub fn get_instruction_field_prefix(
@@ -361,7 +539,7 @@ impl IdlSpec {
             if instruction.name == normalized_name
                 || instruction.name.eq_ignore_ascii_case(instruction_name)
             {
-                for account in &instruction.accounts {
+                for account in instruction.flattened_accounts() {
                     if account.name == field_name {
                         return Some("accounts");
                     }

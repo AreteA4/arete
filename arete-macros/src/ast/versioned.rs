@@ -27,7 +27,7 @@ use super::types::{SerializableStackSpec, SerializableStreamSpec, CURRENT_AST_VE
 
 /// Older versions this build can still deserialize directly (all changes
 /// since were additive with serde defaults).
-const COMPATIBLE_AST_VERSIONS: &[&str] = &["0.0.1"];
+const COMPATIBLE_AST_VERSIONS: &[&str] = &["0.0.1", "0.0.2", "0.0.3"];
 
 /// Error type for versioned AST loading failures.
 // Not yet used within this crate, but part of public API for future use
@@ -185,6 +185,10 @@ pub enum VersionedStackSpec {
     V1(SerializableStackSpec),
     #[serde(rename = "0.0.2")]
     V2(SerializableStackSpec),
+    #[serde(rename = "0.0.3")]
+    V3(SerializableStackSpec),
+    #[serde(rename = "0.0.4")]
+    V4(SerializableStackSpec),
 }
 
 impl VersionedStackSpec {
@@ -197,7 +201,10 @@ impl VersionedStackSpec {
     #[allow(dead_code)]
     pub fn into_latest(self) -> SerializableStackSpec {
         match self {
-            VersionedStackSpec::V1(spec) | VersionedStackSpec::V2(spec) => spec,
+            VersionedStackSpec::V1(spec)
+            | VersionedStackSpec::V2(spec)
+            | VersionedStackSpec::V3(spec)
+            | VersionedStackSpec::V4(spec) => spec,
         }
     }
 }
@@ -222,6 +229,10 @@ pub enum VersionedStreamSpec {
     V1(SerializableStreamSpec),
     #[serde(rename = "0.0.2")]
     V2(SerializableStreamSpec),
+    #[serde(rename = "0.0.3")]
+    V3(SerializableStreamSpec),
+    #[serde(rename = "0.0.4")]
+    V4(SerializableStreamSpec),
 }
 
 impl VersionedStreamSpec {
@@ -234,7 +245,10 @@ impl VersionedStreamSpec {
     #[allow(dead_code)]
     pub fn into_latest(self) -> SerializableStreamSpec {
         match self {
-            VersionedStreamSpec::V1(spec) | VersionedStreamSpec::V2(spec) => spec,
+            VersionedStreamSpec::V1(spec)
+            | VersionedStreamSpec::V2(spec)
+            | VersionedStreamSpec::V3(spec)
+            | VersionedStreamSpec::V4(spec) => spec,
         }
     }
 }
@@ -279,6 +293,48 @@ mod tests {
         let json = r#"
         {
             "ast_version": "0.0.1",
+            "stack_name": "TestStack",
+            "program_ids": [],
+            "idls": [],
+            "entities": [],
+            "pdas": {},
+            "instructions": []
+        }
+        "#;
+
+        let result = load_stack_spec(json);
+        assert!(result.is_ok());
+        let spec = result.unwrap();
+        assert_eq!(spec.stack_name, "TestStack");
+        assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
+    }
+
+    #[test]
+    fn test_load_stack_spec_v2_without_new_field_metadata() {
+        let json = r#"
+        {
+            "ast_version": "0.0.2",
+            "stack_name": "TestStack",
+            "program_ids": [],
+            "idls": [],
+            "entities": [],
+            "pdas": {},
+            "instructions": []
+        }
+        "#;
+
+        let result = load_stack_spec(json);
+        assert!(result.is_ok());
+        let spec = result.unwrap();
+        assert_eq!(spec.stack_name, "TestStack");
+        assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
+    }
+
+    #[test]
+    fn test_load_stack_spec_v3_without_instruction_amount_hints() {
+        let json = r#"
+        {
+            "ast_version": "0.0.3",
             "stack_name": "TestStack",
             "program_ids": [],
             "idls": [],
@@ -343,6 +399,58 @@ mod tests {
         let json = r#"
         {
             "ast_version": "0.0.1",
+            "state_name": "TestEntity",
+            "identity": {"primary_keys": ["id"], "lookup_indexes": []},
+            "handlers": [],
+            "sections": [],
+            "field_mappings": {},
+            "resolver_hooks": [],
+            "instruction_hooks": [],
+            "resolver_specs": [],
+            "computed_fields": [],
+            "computed_field_specs": [],
+            "views": []
+        }
+        "#;
+
+        let result = load_stream_spec(json);
+        assert!(result.is_ok());
+        let spec = result.unwrap();
+        assert_eq!(spec.state_name, "TestEntity");
+        assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
+    }
+
+    #[test]
+    fn test_load_stream_spec_v2_without_new_field_metadata() {
+        let json = r#"
+        {
+            "ast_version": "0.0.2",
+            "state_name": "TestEntity",
+            "identity": {"primary_keys": ["id"], "lookup_indexes": []},
+            "handlers": [],
+            "sections": [],
+            "field_mappings": {},
+            "resolver_hooks": [],
+            "instruction_hooks": [],
+            "resolver_specs": [],
+            "computed_fields": [],
+            "computed_field_specs": [],
+            "views": []
+        }
+        "#;
+
+        let result = load_stream_spec(json);
+        assert!(result.is_ok());
+        let spec = result.unwrap();
+        assert_eq!(spec.state_name, "TestEntity");
+        assert_eq!(spec.ast_version, CURRENT_AST_VERSION);
+    }
+
+    #[test]
+    fn test_load_stream_spec_v3_without_instruction_amount_hints() {
+        let json = r#"
+        {
+            "ast_version": "0.0.3",
             "state_name": "TestEntity",
             "identity": {"primary_keys": ["id"], "lookup_indexes": []},
             "handlers": [],

@@ -19,10 +19,8 @@ fn print_round(round: &OreRound) {
 fn print_treasury(treasury: &OreTreasury) {
     println!("\n=== Treasury ===");
     println!("Address: {:?}", treasury.id.address);
-    println!("Balance: {:?}", treasury.state.balance);
     println!("Motherlode: {:?}", treasury.state.motherlode);
     println!("Total Refined: {:?}", treasury.state.total_refined);
-    println!("Total Staked: {:?}", treasury.state.total_staked);
     println!("Total Unclaimed: {:?}", treasury.state.total_unclaimed);
     println!();
 }

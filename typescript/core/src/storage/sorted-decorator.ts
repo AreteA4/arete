@@ -17,8 +17,17 @@ function compareSortValues(a: unknown, b: unknown): number {
   if (a === undefined || a === null) return -1;
   if (b === undefined || b === null) return 1;
 
+  if (typeof a === 'bigint' && typeof b === 'bigint') {
+    return a < b ? -1 : 1;
+  }
   if (typeof a === 'number' && typeof b === 'number') {
     return a - b;
+  }
+  if (typeof a === 'bigint' && typeof b === 'number' && Number.isInteger(b)) {
+    return a < BigInt(b) ? -1 : 1;
+  }
+  if (typeof a === 'number' && typeof b === 'bigint' && Number.isInteger(a)) {
+    return BigInt(a) < b ? -1 : 1;
   }
   if (typeof a === 'string' && typeof b === 'string') {
     return a.localeCompare(b);

@@ -81,22 +81,22 @@ npm run dev
 ### TypeScript: Install
 
 ```bash
-npm install arete-typescript
+npm install @usearete/sdk
 ```
 
 ### TypeScript: Create a script
 
 ```typescript
 // stream.ts
-import { Arete } from "arete-typescript";
-import { ORE_STREAM_STACK, type OreRound } from "arete-stacks/ore";
+import { createSession } from "@usearete/sdk";
+import { ORE_STREAM_STACK } from "arete-stacks/ore";
 
 async function main() {
-  const a4 = await Arete.connect("wss://ore.stack.arete.run", {
-    stack: ORE_STREAM_STACK,
+  const session = await createSession({
+    stacks: { ore: ORE_STREAM_STACK },
   });
 
-  for await (const update of a4.views.OreRound.latest.watch()) {
+  for await (const update of session.stacks.ore.views.OreRound.latest.watch()) {
     if (update.type === "upsert") {
       const round = update.data;
       console.log(`Round #${round.id?.round_id}`);
@@ -201,7 +201,11 @@ The stack is public — just point your SDK at the WebSocket URL.
 
 ## About Stack SDKs
 
-A stack SDK tells the Arete client what entities and views are available, and provides the types for each. There are two ways to get one:
+A generated stack is like a **cartridge**: it packages a domain's typed data and operations. An Arete session is the **console** that connects one or more of those cartridges and supplies shared `session.chain` reads and `session.execute(...)` execution. These terms are a mental model only; generated stacks keep their existing API names and types.
+
+Insert cartridges under names you choose, then access them through `session.stacks.<name>`. A connected stack has stable `views`, `queries`, `programs`, `addresses`, `constants`, `defaults`, `math`, `read`, and `flows` namespaces when those capabilities are defined. Programs packaged by stacks are automatically promoted by reference to the canonical `session.programs.<name>` surface; owner-scoped stack paths remain available for disambiguation. Programs use `programId`, `schemas`, `pdas`, `addresses`, `accounts`, `queries`, `raw`, `instructions`, `transactions`, `flows`, `constants`, `defaults`, and `math`.
+
+There are two ways to get a generated stack:
 
 **Pre-built for publicly deployed stacks (like ORE)** — We publish ready-to-use SDKs for both TypeScript and Rust:
 
@@ -231,7 +235,9 @@ a4 sdk create typescript my-stack
 a4 sdk create rust my-stack
 ```
 
-Both approaches produce the same result: a typed SDK that works identically with the Arete client.
+Both approaches produce the same result: a generated stack definition that can be inserted into an Arete session.
+
+For writes, prefer semantic `.prepare(...)` operations. They accept normal camelCase objects and derive or normalize protocol details before you call `session.execute(prepared)`. Use `program.raw.<idlInstruction>.build(...)` only as the exact IDL escape hatch; raw instruction names, account names, argument names, and nested objects preserve the IDL shape, including snake_case.
 
 ---
 

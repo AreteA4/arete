@@ -78,7 +78,12 @@ fn codama_root_to_idl_spec(root: &CodamaRoot) -> Result<IdlSpec, String> {
             .iter()
             .map(codama_defined_type_to_idl)
             .collect::<Result<Vec<_>, _>>()?,
-        events: Vec::new(),
+        events: root
+            .program
+            .events
+            .iter()
+            .map(codama_event_to_idl)
+            .collect(),
         errors: root
             .program
             .errors
@@ -90,6 +95,12 @@ fn codama_root_to_idl_spec(root: &CodamaRoot) -> Result<IdlSpec, String> {
             })
             .collect(),
         constants: Vec::new(),
+        pdas: root
+            .program
+            .pdas
+            .iter()
+            .map(codama_pda_to_idl_named)
+            .collect::<Result<Vec<_>, _>>()?,
         metadata: Some(IdlMetadata {
             name: Some(root.program.name.clone()),
             version: root.program.version.clone(),
@@ -98,6 +109,41 @@ fn codama_root_to_idl_spec(root: &CodamaRoot) -> Result<IdlSpec, String> {
             description: None,
             origin: Some("codama-rootNode".to_string()),
         }),
+    })
+}
+
+fn codama_pda_to_idl_named(pda: &CodamaPdaNode) -> Result<IdlNamedPda, String> {
+    let seeds = pda
+        .seeds
+        .iter()
+        .map(|seed| match seed {
+            CodamaPdaSeedNode::Constant { seed_type, value } => {
+                let bytes =
+                    codama_constant_seed_bytes(value, seed_type.as_ref()).ok_or_else(|| {
+                        format!(
+                            "Codama pda '{}' has a constant seed that could not be encoded",
+                            pda.name
+                        )
+                    })?;
+                Ok(IdlPdaSeed::Const { value: bytes })
+            }
+            CodamaPdaSeedNode::Variable { name, seed_type } => Ok(IdlPdaSeed::Arg {
+                path: name.clone(),
+                arg_type: seed_type.as_ref().and_then(codama_seed_type_name),
+            }),
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(IdlNamedPda {
+        name: pda.name.clone(),
+        seeds,
+        program: pda
+            .program_id
+            .as_ref()
+            .map(|program_id| IdlPdaProgram::Literal {
+                kind: "programId".to_string(),
+                value: program_id.clone(),
+            }),
     })
 }
 
@@ -153,6 +199,22 @@ fn codama_account_to_idl(
         docs: Vec::new(),
         type_def: Some(codama_type_def_kind_to_idl(&account.data)?),
     })
+}
+
+fn codama_event_to_idl(event: &CodamaEvent) -> IdlEvent {
+    IdlEvent {
+        name: event.name.clone(),
+        discriminator: event.discriminator.clone(),
+        docs: event.docs.clone(),
+        fields: Vec::new(),
+        data: event
+            .data
+            .as_ref()
+            .map(|data| crate::types::IdlEventDataRef {
+                kind: data.kind.clone(),
+                name: data.name.clone(),
+            }),
+    }
 }
 
 fn codama_defined_type_to_idl(defined_type: &CodamaDefinedType) -> Result<IdlTypeDef, String> {
@@ -222,6 +284,7 @@ fn codama_instruction_to_idl(
                     docs
                 },
                 pda: codama_account_pda(account, pda_defs),
+                accounts: Vec::new(),
             })
             .collect(),
         args: instruction
@@ -275,6 +338,7 @@ fn codama_field_to_idl(field: &CodamaFieldNode) -> Result<IdlField, String> {
     Ok(IdlField {
         name: field.name.clone(),
         type_: codama_type_to_idl(&field.type_)?,
+        amount_hint: None,
     })
 }
 
@@ -391,6 +455,8 @@ struct CodamaProgram {
     #[serde(default)]
     errors: Vec<CodamaError>,
     #[serde(default)]
+    events: Vec<CodamaEvent>,
+    #[serde(default)]
     instructions: Vec<CodamaInstruction>,
     #[serde(default)]
     pdas: Vec<CodamaPdaNode>,
@@ -407,6 +473,25 @@ struct CodamaDefinedType {
     name: String,
     #[serde(rename = "type")]
     type_: CodamaTypeNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodamaEvent {
+    name: String,
+    #[serde(default)]
+    discriminator: Vec<u8>,
+    #[serde(default)]
+    docs: Vec<String>,
+    #[serde(default)]
+    data: Option<CodamaEventDataRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodamaEventDataRef {
+    #[serde(default)]
+    kind: Option<String>,
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -692,13 +777,14 @@ fn codama_account_pda(
     for seed in pda_seeds {
         match seed {
             CodamaPdaSeedNode::Constant { seed_type, value } => {
-                let bytes = codama_constant_seed_bytes(value, seed_type.as_ref()).or_else(|| {
-                    tracing::warn!(
-                        account = %account.name,
-                        "failed to encode constant PDA seed; degrading to user-provided"
-                    );
-                    None
-                })?;
+                let bytes =
+                    codama_constant_seed_bytes(value, seed_type.as_ref()).or_else(|| {
+                        tracing::warn!(
+                            account = %account.name,
+                            "failed to encode constant PDA seed; degrading to user-provided"
+                        );
+                        None
+                    })?;
                 idl_seeds.push(IdlPdaSeed::Const { value: bytes });
             }
             CodamaPdaSeedNode::Variable { name, seed_type } => {
@@ -750,6 +836,10 @@ fn codama_account_pda(
     }
 
     Some(IdlPda {
+        name: match pda {
+            CodamaPdaSource::Link { name } => Some(name.clone()),
+            CodamaPdaSource::Inline { name, .. } => Some(name.clone()),
+        },
         seeds: idl_seeds,
         program: pda_program_id.map(|program_id| IdlPdaProgram::Literal {
             kind: "programId".to_string(),
@@ -932,6 +1022,7 @@ mod tests {
             .expect("subscriptionAuthority account present");
 
         let pda = pda_account.pda.as_ref().expect("PDA should be resolved");
+        assert_eq!(pda.name.as_deref(), Some("subscriptionAuthority"));
         assert_eq!(pda.seeds.len(), 3);
         match &pda.seeds[0] {
             IdlPdaSeed::Const { value } => assert_eq!(value, b"SubscriptionAuthority"),
@@ -949,6 +1040,39 @@ mod tests {
         // Non-PDA accounts stay unresolved.
         let owner = ix.accounts.iter().find(|a| a.name == "owner").unwrap();
         assert!(owner.pda.is_none());
+        assert_eq!(spec.pdas.len(), 1);
+        assert_eq!(spec.pdas[0].name, "subscriptionAuthority");
+    }
+
+    #[test]
+    fn test_legacy_idl_program_level_pdas_parse() {
+        let json = r#"{
+            "name": "test",
+            "instructions": [],
+            "accounts": [],
+            "types": [],
+            "errors": [],
+            "pdas": [
+                {
+                    "name": "proposal",
+                    "seeds": [
+                        { "kind": "const", "value": [112, 114, 111, 112, 111, 115, 97, 108] },
+                        { "kind": "arg", "path": "transactionIndex", "type": "u64" }
+                    ]
+                }
+            ]
+        }"#;
+
+        let spec = parse_idl_content(json).expect("legacy IDL with top-level pdas should parse");
+        assert_eq!(spec.pdas.len(), 1);
+        assert_eq!(spec.pdas[0].name, "proposal");
+        match &spec.pdas[0].seeds[1] {
+            IdlPdaSeed::Arg { path, arg_type } => {
+                assert_eq!(path, "transactionIndex");
+                assert_eq!(arg_type.as_deref(), Some("u64"));
+            }
+            other => panic!("expected arg seed, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1135,17 +1259,42 @@ mod tests {
 
     #[test]
     fn test_real_subscriptions_idl_resolves_pdas() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../stacks/subscriptions/idl/subscriptions.json"
-        );
-        let json = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            // The stack IDL is not part of this crate; skip if unavailable.
-            Err(_) => return,
+        use std::path::PathBuf;
+
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let candidates = [
+            manifest_dir.join("../../arete-examples/idls/subscriptions.idl.json"),
+            manifest_dir.join("../stacks/subscriptions/idl/subscriptions.json"),
+        ];
+
+        let mut parse_errors = Vec::new();
+        let mut spec = None;
+
+        for path in candidates {
+            let Ok(json) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+
+            match parse_idl_content(&json) {
+                Ok(parsed) => {
+                    spec = Some(parsed);
+                    break;
+                }
+                Err(error) => parse_errors.push(format!("{}: {}", path.display(), error)),
+            }
+        }
+
+        let Some(spec) = spec else {
+            if parse_errors.is_empty() {
+                // The subscriptions IDL is not part of this crate; skip if unavailable.
+                return;
+            }
+            panic!(
+                "subscriptions idl should parse from at least one candidate path:\n{}",
+                parse_errors.join("\n")
+            );
         };
 
-        let spec = parse_idl_content(&json).expect("subscriptions idl should parse");
         let ix = spec
             .instructions
             .iter()
@@ -1331,6 +1480,68 @@ mod tests {
         assert_eq!(disc.len(), 8);
         let expected = anchor_discriminator("event:TransferEvent");
         assert_eq!(disc, expected);
+    }
+
+    #[test]
+    fn test_codama_events_are_preserved() {
+        let json = r#"{
+            "kind": "rootNode",
+            "program": {
+                "name": "test",
+                "publicKey": "11111111111111111111111111111111",
+                "version": "0.1.0",
+                "events": [
+                    {
+                        "kind": "eventNode",
+                        "name": "SubscriptionCreatedEvent",
+                        "discriminator": [0],
+                        "docs": ["created"],
+                        "data": {
+                            "kind": "definedTypeLinkNode",
+                            "name": "SubscriptionCreatedEventData"
+                        }
+                    }
+                ]
+            }
+        }"#;
+        let idl = parse_idl_content(json).unwrap();
+
+        assert_eq!(idl.events.len(), 1);
+        assert_eq!(idl.events[0].name, "SubscriptionCreatedEvent");
+        assert_eq!(idl.events[0].get_discriminator(), vec![0]);
+        assert_eq!(idl.events[0].docs, vec!["created"]);
+        assert_eq!(
+            idl.events[0].data.as_ref().map(|data| data.name.as_str()),
+            Some("SubscriptionCreatedEventData")
+        );
+    }
+
+    #[test]
+    fn test_anchor_events_preserve_inline_fields() {
+        let json = r#"{
+            "name": "test",
+            "instructions": [],
+            "accounts": [],
+            "types": [],
+            "events": [
+                {
+                    "name": "TradeEvent",
+                    "discriminator": [1,2,3,4,5,6,7,8],
+                    "fields": [
+                        {"name": "amount", "type": "u64", "index": false},
+                        {"name": "user", "type": "publicKey", "index": false}
+                    ]
+                }
+            ],
+            "errors": []
+        }"#;
+        let idl = parse_idl_content(json).unwrap();
+
+        assert_eq!(idl.events.len(), 1);
+        assert_eq!(idl.events[0].name, "TradeEvent");
+        assert_eq!(idl.events[0].fields.len(), 2);
+        assert_eq!(idl.events[0].fields[0].name, "amount");
+        assert_eq!(idl.events[0].fields[1].name, "user");
     }
 
     #[test]

@@ -142,6 +142,7 @@ pub fn generate_all_from_spec(
             &state_enum_name,
             &instruction_enum_name,
             program_name,
+            &Vec::new(),
             &runtime_config,
         )
     } else {
@@ -245,6 +246,7 @@ pub fn generate_components_from_spec(
                 &state_enum_name,
                 &instruction_enum_name,
                 program_name,
+                &Vec::new(),
                 &runtime_config,
             )
         } else {

@@ -137,9 +137,15 @@ function isHostedAreteWebsocketUrl(websocketUrl: string): boolean {
   }
 }
 
+/**
+ * Historical sentinel accepted for back-compat: connecting with this URL is
+ * treated the same as passing no WebSocket URL at all (HTTP-only mode).
+ */
+export const DISABLED_WEBSOCKET_URL = 'ws://127.0.0.1/__arete_disabled__';
+
 export class ConnectionManager {
   private ws: WebSocket | null = null;
-  private websocketUrl: string;
+  private websocketUrl: string | null;
   private reconnectIntervals: number[];
   private maxReconnectAttempts: number;
   private reconnectAttempts = 0;
@@ -162,11 +168,12 @@ export class ConnectionManager {
   private reconnectForTokenRefresh = false;
 
   constructor(config: AreteConfig) {
-    if (!config.websocketUrl) {
-      throw new AreteError('websocketUrl is required', 'INVALID_CONFIG');
-    }
-    this.websocketUrl = config.websocketUrl;
-    this.hostedAreteUrl = isHostedAreteWebsocketUrl(config.websocketUrl);
+    const websocketUrl =
+      config.websocketUrl && config.websocketUrl !== DISABLED_WEBSOCKET_URL
+        ? config.websocketUrl
+        : null;
+    this.websocketUrl = websocketUrl;
+    this.hostedAreteUrl = websocketUrl !== null && isHostedAreteWebsocketUrl(websocketUrl);
     this.reconnectIntervals = config.reconnectIntervals ?? DEFAULT_CONFIG.reconnectIntervals;
     this.maxReconnectAttempts =
       config.maxReconnectAttempts ?? DEFAULT_CONFIG.maxReconnectAttempts;
@@ -291,7 +298,7 @@ export class ConnectionManager {
 
   private createTokenEndpointRequestBody(): Record<string, string> {
     return {
-      websocket_url: this.websocketUrl,
+      websocket_url: this.websocketUrl ?? '',
     };
   }
 
@@ -484,16 +491,27 @@ export class ConnectionManager {
   }
 
   private buildAuthUrl(token: string | undefined): string {
+    const websocketUrl = this.requireWebsocketUrl();
     if (this.authConfig?.tokenTransport === 'bearer') {
-      return this.websocketUrl;
+      return websocketUrl;
     }
 
     if (!token) {
-      return this.websocketUrl;
+      return websocketUrl;
     }
 
-    const separator = this.websocketUrl.includes('?') ? '&' : '?';
-    return `${this.websocketUrl}${separator}${DEFAULT_QUERY_PARAMETER}=${encodeURIComponent(token)}`;
+    const separator = websocketUrl.includes('?') ? '&' : '?';
+    return `${websocketUrl}${separator}${DEFAULT_QUERY_PARAMETER}=${encodeURIComponent(token)}`;
+  }
+
+  private requireWebsocketUrl(): string {
+    if (this.websocketUrl === null) {
+      throw new AreteError(
+        'WebSocket transport is disabled (client was connected with transport: "http"); views and subscriptions are unavailable',
+        'WEBSOCKET_DISABLED'
+      );
+    }
+    return this.websocketUrl;
   }
 
   private createWebSocket(url: string, token: string | undefined): WebSocket {
@@ -521,6 +539,14 @@ export class ConnectionManager {
 
   getState(): ConnectionState {
     return this.currentState;
+  }
+
+  async getHttpAuthToken(forceRefresh = false): Promise<string | undefined> {
+    return this.getOrRefreshToken(forceRefresh);
+  }
+
+  clearHttpAuthToken(): void {
+    this.clearTokenState();
   }
 
   onFrame(handler: FrameHandler): () => void {
@@ -564,6 +590,8 @@ export class ConnectionManager {
   }
 
   async connect(): Promise<void> {
+    this.requireWebsocketUrl();
+
     if (
       this.ws?.readyState === WebSocket.OPEN ||
       this.ws?.readyState === WebSocket.CONNECTING ||
@@ -738,6 +766,8 @@ export class ConnectionManager {
   }
 
   subscribe(subscription: Subscription): void {
+    this.requireWebsocketUrl();
+
     const subKey = this.makeSubKey(subscription);
 
     if (this.currentState === 'connected' && this.ws?.readyState === WebSocket.OPEN) {

@@ -1,4 +1,6 @@
 import { findProgramAddress, findProgramAddressSync, decodeBase58 } from './pda';
+import { serializeSeedValue } from './seed-serializer';
+import { getValueByPath } from './path-utils';
 
 export type SeedDef =
   | { type: 'literal'; value: string }
@@ -9,6 +11,7 @@ export type SeedDef =
 export interface PdaDeriveContext {
   accounts?: Record<string, string>;
   args?: Record<string, unknown>;
+  resolve?: Record<string, unknown>;
   programId?: string;
 }
 
@@ -44,11 +47,11 @@ function resolveSeeds(seeds: readonly SeedDef[], context: PdaDeriveContext): Uin
       case 'bytes':
         return seed.value;
       case 'argRef': {
-        const value = context.args?.[seed.argName];
+        const value = getValueByPath(context.args, seed.argName) ?? getValueByPath(context.resolve, seed.argName);
         if (value === undefined) {
           throw new Error(`Missing arg for PDA seed: ${seed.argName}`);
         }
-        return serializeArgForSeed(value, seed.argType);
+        return serializeSeedValue(value, seed.argType);
       }
       case 'accountRef': {
         const address = context.accounts?.[seed.accountName];
@@ -59,50 +62,6 @@ function resolveSeeds(seeds: readonly SeedDef[], context: PdaDeriveContext): Uin
       }
     }
   });
-}
-
-function serializeArgForSeed(value: unknown, argType?: string): Uint8Array {
-  if (value instanceof Uint8Array) {
-    return value;
-  }
-
-  if (typeof value === 'string') {
-    if (value.length === 43 || value.length === 44) {
-      try {
-        return decodeBase58(value);
-      } catch {
-        return new TextEncoder().encode(value);
-      }
-    }
-    return new TextEncoder().encode(value);
-  }
-
-  if (typeof value === 'bigint' || typeof value === 'number') {
-    const size = getArgSize(argType);
-    return serializeNumber(value, size);
-  }
-
-  throw new Error(`Cannot serialize value for PDA seed: ${typeof value}`);
-}
-
-function getArgSize(argType?: string): number {
-  if (!argType) return 8;
-  const match = argType.match(/^[ui](\d+)$/);
-  if (match && match[1]) {
-    return parseInt(match[1], 10) / 8;
-  }
-  if (argType === 'pubkey') return 32;
-  return 8;
-}
-
-function serializeNumber(value: bigint | number, size: number): Uint8Array {
-  const buffer = new Uint8Array(size);
-  let n = typeof value === 'bigint' ? value : BigInt(value);
-  for (let i = 0; i < size; i++) {
-    buffer[i] = Number(n & BigInt(0xff));
-    n >>= BigInt(8);
-  }
-  return buffer;
 }
 
 export function pda(programId: string, ...seeds: SeedDef[]): PdaFactory {

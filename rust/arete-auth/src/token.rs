@@ -466,6 +466,8 @@ mod tests {
                 max_snapshot_rows: Some(1000),
                 max_messages_per_minute: Some(1000),
                 max_bytes_per_minute: Some(10_000_000),
+                max_http_requests_per_minute: Some(300),
+                max_http_batch_addresses: Some(100),
             })
             .build()
     }
