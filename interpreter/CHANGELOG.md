@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.2.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.1.5...arete-interpreter-v0.2.0) (2026-07-13)
+
+
+### Features
+
+* add generated program SDKs, sessions, HTTP reads, and typed execution ([f1437f1](https://github.com/AreteA4/arete/commit/f1437f1cbb615e8451d4f381c8e497c227f40c04))
+* generate typed instruction handlers from stack specs ([2181c06](https://github.com/AreteA4/arete/commit/2181c061f9d5a420786f7945e4ac58e540c52299))
+* remove external IDL fixture dependency ([284d263](https://github.com/AreteA4/arete/commit/284d263751f26b5bef1f7479c62ec33f64ed5f18))
+
+
+### Bug Fixes
+
+* avoid aliasing vm borrows in instruction hook contexts ([a0cda20](https://github.com/AreteA4/arete/commit/a0cda20f8bf4a6b3e222bcfafef0dff61f3e1bfe))
+* normalize generated stream data shapes ([094c5ab](https://github.com/AreteA4/arete/commit/094c5abab496e62b87f1f64ccdbedd98d98e0437))
+* preserve integer precision in computed array sums ([cd6ab09](https://github.com/AreteA4/arete/commit/cd6ab0944cab1eb3e3b4c9311229b5f4f4a1c7f4))
+* remove external IDL fixture dependency ([9a054a2](https://github.com/AreteA4/arete/commit/9a054a2f1c25cf376463c97db096b9a82727c75b))
+* update ORE instruction golden account flags ([89592c0](https://github.com/AreteA4/arete/commit/89592c0b956523b9342a822b856d5fe0880a9215))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.1.5 to 0.2.0
+    * arete-idl bumped from 0.0.3 to 0.1.0
+
 ## [0.1.5](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.1.4...arete-interpreter-v0.1.5) (2026-06-18)
 
 

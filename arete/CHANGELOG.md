@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.0](https://github.com/AreteA4/arete/compare/arete-v0.1.5...arete-v0.2.0) (2026-07-13)
+
+
+### Features
+
+* add generated program SDKs, sessions, HTTP reads, and typed execution ([f1437f1](https://github.com/AreteA4/arete/commit/f1437f1cbb615e8451d4f381c8e497c227f40c04))
+
+
+### Bug Fixes
+
+* decode generated runtime log events across event formats ([25ef416](https://github.com/AreteA4/arete/commit/25ef416a23dff665e135b7a037cc6edc37240cdc))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.1.5 to 0.2.0
+    * arete-macros bumped from 0.1.5 to 0.2.0
+    * arete-server bumped from 0.1.5 to 0.2.0
+
 ## [0.1.5](https://github.com/AreteA4/arete/compare/arete-v0.1.4...arete-v0.1.5) (2026-06-18)
 
 

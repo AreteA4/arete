@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.1.5...arete-mcp-v0.2.0) (2026-07-13)
+
+
+### Miscellaneous Chores
+
+* **arete-mcp:** Synchronize arete versions
+
 ## [0.1.5](https://github.com/AreteA4/arete/compare/arete-mcp-v0.1.4...arete-mcp-v0.1.5) (2026-06-18)
 
 

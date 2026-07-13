@@ -6,6 +6,31 @@
 
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.2.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.1.5...a4-cli-v0.2.0) (2026-07-13)
+
+
+### Features
+
+* add generated program SDKs, sessions, HTTP reads, and typed execution ([f1437f1](https://github.com/AreteA4/arete/commit/f1437f1cbb615e8451d4f381c8e497c227f40c04))
+* generate and synchronize standalone program SDKs ([a771b98](https://github.com/AreteA4/arete/commit/a771b98e178241f08f9c588c6e3ce27f12464885))
+* generate typed instruction handlers from stack specs ([2181c06](https://github.com/AreteA4/arete/commit/2181c061f9d5a420786f7945e4ac58e540c52299))
+* improve idl event discovery and validation ([970aed3](https://github.com/AreteA4/arete/commit/970aed3eeb8efe7ce0a4cb76f0310b58fb957d8a))
+
+
+### Bug Fixes
+
+* prefer canonical stack artifacts during discovery ([1f47419](https://github.com/AreteA4/arete/commit/1f4741921becae105428c723a370029693eb63dc))
+* reject incompatible SDK extension artifacts ([577692c](https://github.com/AreteA4/arete/commit/577692cc46a9539671f44dac45a6635e918daba7))
+* restrict inferred extensions to the entry file ([e58f20b](https://github.com/AreteA4/arete/commit/e58f20b8ccc8485732711b4cccb0cc93696dadea))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.1.5 to 0.2.0
+    * arete-idl bumped from 0.0.3 to 0.1.0
+
 ## [0.1.5](https://github.com/AreteA4/arete/compare/a4-cli-v0.1.4...a4-cli-v0.1.5) (2026-06-18)
 
 

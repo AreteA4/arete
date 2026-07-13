@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.1.5...arete-macros-v0.2.0) (2026-07-13)
+
+
+### Features
+
+* add generated program SDKs, sessions, HTTP reads, and typed execution ([f1437f1](https://github.com/AreteA4/arete/commit/f1437f1cbb615e8451d4f381c8e497c227f40c04))
+* improve idl event discovery and validation ([970aed3](https://github.com/AreteA4/arete/commit/970aed3eeb8efe7ce0a4cb76f0310b58fb957d8a))
+* preserve event fields in parsed IDLs ([f7fc0c6](https://github.com/AreteA4/arete/commit/f7fc0c60ebec9040d67e2f15b57bc5d777dcdc36))
+
+
+### Bug Fixes
+
+* avoid aliasing vm borrows in instruction hook contexts ([a0cda20](https://github.com/AreteA4/arete/commit/a0cda20f8bf4a6b3e222bcfafef0dff61f3e1bfe))
+* decode generated runtime log events across event formats ([25ef416](https://github.com/AreteA4/arete/commit/25ef416a23dff665e135b7a037cc6edc37240cdc))
+* decode ray_log events in the generated runtime ([defe9ef](https://github.com/AreteA4/arete/commit/defe9ef581eba033438db553fdf17f7e03cb9a79))
+* make nested computed tests self-contained ([48793cc](https://github.com/AreteA4/arete/commit/48793cc4a0f5a4db8ff3540b37ffd6354fd802d6))
+* normalize generated stream data shapes ([094c5ab](https://github.com/AreteA4/arete/commit/094c5abab496e62b87f1f64ccdbedd98d98e0437))
+* preserve CPI event field metadata in stream specs ([ce4c5c1](https://github.com/AreteA4/arete/commit/ce4c5c127c3f58bc35b8a35ad5573af8b3cbf3ac))
+* preserve integer precision in computed array sums ([cd6ab09](https://github.com/AreteA4/arete/commit/cd6ab0944cab1eb3e3b4c9311229b5f4f4a1c7f4))
+* validate nested computed field paths ([5dbd4e8](https://github.com/AreteA4/arete/commit/5dbd4e8ccd163b7ad26a1bd1272f34c34f7e0d2c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.0.3 to 0.1.0
+
 ## [0.1.5](https://github.com/AreteA4/arete/compare/arete-macros-v0.1.4...arete-macros-v0.1.5) (2026-06-18)
 
 
