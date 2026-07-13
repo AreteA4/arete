@@ -45,6 +45,8 @@ async fn main() -> anyhow::Result<()> {
 
 `arete-server` supports pluggable auth for both WebSocket connections and HTTP
 read endpoints. By default, all connections and HTTP reads are allowed.
+When WebSocket auth is configured, HTTP reads inherit that plugin unless an
+HTTP-specific plugin is configured.
 
 ```rust
 use std::sync::Arc;

@@ -270,7 +270,11 @@ impl Runtime {
                     http_server = http_server.with_program_account_reader(reader);
                 }
             }
-            if let Some(plugin) = self.http_auth_plugin.clone() {
+            if let Some(plugin) = self
+                .http_auth_plugin
+                .clone()
+                .or_else(|| self.websocket_auth_plugin.clone())
+            {
                 http_server = http_server.with_auth_plugin(plugin);
             }
 
