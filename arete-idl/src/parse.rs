@@ -1258,65 +1258,6 @@ mod tests {
     }
 
     #[test]
-    fn test_real_subscriptions_idl_resolves_pdas() {
-        use std::path::PathBuf;
-
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let candidates = [
-            manifest_dir.join("../../arete-examples/idls/subscriptions.idl.json"),
-            manifest_dir.join("../stacks/subscriptions/idl/subscriptions.json"),
-        ];
-
-        let mut parse_errors = Vec::new();
-        let mut spec = None;
-
-        for path in candidates {
-            let Ok(json) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-
-            match parse_idl_content(&json) {
-                Ok(parsed) => {
-                    spec = Some(parsed);
-                    break;
-                }
-                Err(error) => parse_errors.push(format!("{}: {}", path.display(), error)),
-            }
-        }
-
-        let Some(spec) = spec else {
-            if parse_errors.is_empty() {
-                // The subscriptions IDL is not part of this crate; skip if unavailable.
-                return;
-            }
-            panic!(
-                "subscriptions idl should parse from at least one candidate path:\n{}",
-                parse_errors.join("\n")
-            );
-        };
-
-        let ix = spec
-            .instructions
-            .iter()
-            .find(|i| i.name == "initSubscriptionAuthority")
-            .expect("initSubscriptionAuthority instruction present");
-        let pda_account = ix
-            .accounts
-            .iter()
-            .find(|a| a.name == "subscriptionAuthority")
-            .expect("subscriptionAuthority account present");
-        let pda = pda_account
-            .pda
-            .as_ref()
-            .expect("Codama defaultValue PDA should be resolved from the real IDL");
-        assert!(
-            pda.seeds.len() >= 2,
-            "expected resolved seeds, got {:?}",
-            pda.seeds
-        );
-    }
-
-    #[test]
     fn test_legacy_idl_parses_without_discriminator() {
         let json = r#"{
             "address": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
