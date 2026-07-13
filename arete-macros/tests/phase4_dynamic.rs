@@ -52,14 +52,9 @@ fn pump_idl_path() -> String {
     )
 }
 
-fn meteora_presale_idl_path() -> String {
+fn nested_computed_idl_path() -> String {
     escape_path(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("workspace root")
-            .parent()
-            .expect("hypertek root")
-            .join("arete-examples/idls/meteora-presale.idl.json"),
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/nested-computed.idl.json"),
     )
 }
 
@@ -257,7 +252,7 @@ mod good {{
 
 fn main() {{}}
 "#,
-        meteora_presale_idl_path()
+        nested_computed_idl_path()
     );
 
     let cargo = cargo_toml(
@@ -327,7 +322,7 @@ mod broken {{
 
 fn main() {{}}
 "#,
-        meteora_presale_idl_path()
+        nested_computed_idl_path()
     );
 
     let cargo = cargo_toml(

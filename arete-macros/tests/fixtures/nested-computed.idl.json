@@ -1,0 +1,57 @@
+{
+  "name": "presale",
+  "instructions": [
+    {
+      "name": "initialize_presale",
+      "accounts": [{ "name": "presale" }],
+      "args": [
+        {
+          "name": "params",
+          "type": { "defined": { "name": "InitializePresaleArgs" } }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Presale",
+      "discriminator": [38, 215, 222, 14, 115, 220, 52, 168]
+    }
+  ],
+  "types": [
+    {
+      "name": "Presale",
+      "type": {
+        "kind": "struct",
+        "fields": [{ "name": "version", "type": "u8" }]
+      }
+    },
+    {
+      "name": "InitializePresaleArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "presale_params",
+            "type": { "defined": { "name": "PresaleArgs" } }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PresaleArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "disable_earlier_presale_end_once_cap_reached",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ],
+  "events": [],
+  "errors": [],
+  "constants": []
+}
