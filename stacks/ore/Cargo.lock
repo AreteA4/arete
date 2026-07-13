@@ -102,7 +102,7 @@ checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
 name = "arete"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "arete-a4-sdk"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "arete-auth"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "arete-idl"
-version = "0.0.3"
+version = "0.1.0"
 dependencies = [
  "bs58",
  "serde",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "arete-interpreter"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "arete-idl",
  "arete-macros",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "arete-macros"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "arete-idl",
  "bs58",
@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "arete-server"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arete-auth",

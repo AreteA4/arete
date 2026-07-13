@@ -1,23 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "bump-minor-pre-major": true,
-  "extra-files": [
-    {
-      "type": "json",
-      "path": "examples/ore-react/package.json",
-      "jsonpath": "$.dependencies['@usearete/react']"
-    },
-    {
-      "type": "json",
-      "path": "examples/ore-typescript/package.json",
-      "jsonpath": "$.dependencies['@usearete/sdk']"
-    },
-    {
-      "type": "toml",
-      "path": "examples/ore-rust/Cargo.toml",
-      "jsonpath": "$.dependencies['arete-sdk'].version"
-    }
-  ],
   "packages": {
     "arete": {
       "release-type": "rust",
@@ -37,7 +20,24 @@
     },
     "rust/arete-a4-sdk": {
       "release-type": "rust",
-      "component": "arete-sdk"
+      "component": "arete-sdk",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/arete/Cargo.toml",
+          "jsonpath": "$['dependencies']['arete-sdk']['version']"
+        },
+        {
+          "type": "toml",
+          "path": "/cli/Cargo.toml",
+          "jsonpath": "$['dependencies']['arete-sdk']['version']"
+        },
+        {
+          "type": "toml",
+          "path": "/rust/arete-mcp/Cargo.toml",
+          "jsonpath": "$['dependencies']['arete-sdk']['version']"
+        }
+      ]
     },
     "rust/arete-auth": {
       "release-type": "rust",
