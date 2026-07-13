@@ -4,7 +4,7 @@ import { OreIcon, SolanaIcon } from './icons';
 
 interface StatsPanelProps {
   round: ValidatedOreRound | undefined;
-  treasuryMotherlode: number | null | undefined;
+  treasuryMotherlode: bigint | number | null | undefined;
   isConnected: boolean;
 }
 
@@ -12,37 +12,37 @@ export function StatsPanel({ round, treasuryMotherlode, isConnected }: StatsPane
   const [timeRemaining, setTimeRemaining] = useState<string>('00:00');
 
   useEffect(() => {
-    const expiresAtUnix = round?.state?.estimated_expires_at_unix;
+    const expiresAtUnix = round?.state?.estimatedExpiresAtUnix;
     if (!expiresAtUnix) {
       setTimeRemaining('00:00');
       return;
     }
 
     const updateTimer = () => {
-      const now = Math.floor(Date.now() / 1000);
-      const remaining = Math.max(0, expiresAtUnix - now);
+      const now = BigInt(Math.floor(Date.now() / 1000));
+      const remaining = expiresAtUnix > now ? expiresAtUnix - now : 0n;
 
-      if (remaining > 300) {
+      if (remaining > 300n) {
         setTimeRemaining('00:00');
         return;
       }
 
-      const minutes = Math.floor(remaining / 60);
-      const seconds = remaining % 60;
+      const minutes = Number(remaining / 60n);
+      const seconds = Number(remaining % 60n);
       setTimeRemaining(`${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`);
     };
 
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, [round?.state?.estimated_expires_at_unix]);
+  }, [round?.state?.estimatedExpiresAtUnix]);
 
   return (
     <div className="flex flex-col gap-6 h-full">
       <div className="bg-white dark:bg-stone-800 rounded-2xl p-8 shadow-sm dark:shadow-none dark:ring-1 dark:ring-stone-700">
         <div className="flex items-center gap-3 text-5xl font-bold text-stone-800 dark:text-stone-100">
           <OreIcon />
-          <span>{treasuryMotherlode ?? '–'}</span>
+          <span>{treasuryMotherlode != null ? treasuryMotherlode.toString() : '–'}</span>
         </div>
         <div className="text-base text-stone-500 dark:text-stone-400 mt-2">Motherlode</div>
       </div>
@@ -56,7 +56,7 @@ export function StatsPanel({ round, treasuryMotherlode, isConnected }: StatsPane
         <div className="bg-white dark:bg-stone-800 rounded-2xl p-6 shadow-sm dark:shadow-none dark:ring-1 dark:ring-stone-700">
           <div className="flex items-center gap-2 text-2xl font-semibold text-stone-800 dark:text-stone-100">
             <SolanaIcon size={20} />
-            <span>{round ? round.state?.total_deployed?.toFixed(4) : '0.0000'}</span>
+            <span>{round ? round.state?.totalDeployed?.toFixed(4) : '0.0000'}</span>
           </div>
           <div className="text-base text-stone-500 dark:text-stone-400 mt-2">Total deployed</div>
         </div>
@@ -70,11 +70,11 @@ export function StatsPanel({ round, treasuryMotherlode, isConnected }: StatsPane
       </div>
 
       <div className="flex items-center gap-4 px-2 text-base text-stone-500 dark:text-stone-400 mt-auto">
-        <span>Round {round?.id?.round_id ?? '–'}</span>
+        <span>Round {round?.id?.roundId?.toString() ?? '–'}</span>
         {round && (
           <>
             <span className="text-stone-300 dark:text-stone-600">·</span>
-            <span>{round.state?.total_miners} miners</span>
+            <span>{round.state?.totalMiners?.toString() ?? '0'} miners</span>
           </>
         )}
       </div>

@@ -1,0 +1,2266 @@
+import { z } from 'zod';
+import { pda, literal, account, arg, bytes, programAccountRead, createInstructionHandler, type ErrorMetadata, buildInstruction, type BuildOptions, PROGRAM_OPERATION_EXTENSIONS, type ProgramOperationContext, instructionOperation, createPreparedInstruction } from '@usearete/sdk';
+
+export interface OreRoundEntropy {
+  entropyEndAt: bigint | null;
+  entropySamples: bigint | null;
+  entropySeed: string | null;
+  entropySlotHash: string | null;
+  entropyStartAt: bigint | null;
+  entropyValue: string | null;
+  entropyVarAddress: string | null;
+  resolvedSeed: any[] | null;
+}
+
+export interface OreRoundId {
+  roundAddress: string | null;
+  roundId: bigint | null;
+}
+
+export interface OreRoundMetrics {
+  checkpointCount: bigint | null;
+  deployCount: bigint | null;
+}
+
+export interface OreRoundResults {
+  didHitMotherlode: boolean | null;
+  expiresAtSlotHash: SlotHashBytes | null;
+  preRevealRng: KeccakRngValue | null;
+  preRevealWinningSquare: bigint | null;
+  rentPayer: string | null;
+  rng: KeccakRngValue | null;
+  slotHash: string | null;
+  topMiner: string | null;
+  topMinerReward: number | null;
+  winningSquare: bigint | null;
+}
+
+export interface OreRoundState {
+  countPerSquare: any[] | null;
+  deployedPerSquare: any[] | null;
+  deployedPerSquareUi: any[] | null;
+  estimatedExpiresAtUnix: bigint | null;
+  expiresAt: bigint | null;
+  motherlode: number | null;
+  totalDeployed: number | null;
+  totalMiners: bigint | null;
+  totalVaulted: number | null;
+  totalWinnings: number | null;
+}
+
+export interface OreRoundTreasury {
+  motherlode: number | null;
+}
+
+export interface OreRound {
+  entropy: OreRoundEntropy;
+  id: OreRoundId;
+  metrics: OreRoundMetrics;
+  results: OreRoundResults;
+  state: OreRoundState;
+  treasury: OreRoundTreasury;
+  oreMetadata: TokenMetadata | null;
+}
+
+export interface SlotHashBytes {
+  /** 32-byte slot hash as array of numbers (0-255) */
+  bytes: number[];
+}
+
+export type KeccakRngValue = string;
+
+export interface TokenMetadata {
+  mint: string;
+  name?: string | null;
+  symbol?: string | null;
+  decimals?: number | null;
+  logoUri?: string | null;
+}
+
+export const SlotHashBytesSchema = z.object({
+  bytes: z.array(z.number().int().min(0).max(255)).length(32),
+});
+
+export const KeccakRngValueSchema = z.string();
+
+export const TokenMetadataSchema = z.object({
+  mint: z.string(),
+  name: z.string().nullable().optional(),
+  symbol: z.string().nullable().optional(),
+  decimals: z.number().nullable().optional(),
+  logo_uri: z.string().nullable().optional(),
+}).transform((value) => ({
+  mint: value.mint,
+  ...(value.name !== undefined ? { name: value.name } : {}),
+  ...(value.symbol !== undefined ? { symbol: value.symbol } : {}),
+  ...(value.decimals !== undefined ? { decimals: value.decimals } : {}),
+  ...(value.logo_uri !== undefined ? { logoUri: value.logo_uri } : {}),
+}));
+
+export const TokenMetadataPatchSchema = z.object({
+  mint: z.string().optional(),
+  name: z.string().nullable().optional(),
+  symbol: z.string().nullable().optional(),
+  decimals: z.number().nullable().optional(),
+  logo_uri: z.string().nullable().optional(),
+}).transform((value) => ({
+  ...(value.mint !== undefined ? { mint: value.mint } : {}),
+  ...(value.name !== undefined ? { name: value.name } : {}),
+  ...(value.symbol !== undefined ? { symbol: value.symbol } : {}),
+  ...(value.decimals !== undefined ? { decimals: value.decimals } : {}),
+  ...(value.logo_uri !== undefined ? { logoUri: value.logo_uri } : {}),
+}));
+
+export const OreRoundEntropySchema = z.object({
+  entropy_end_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  entropy_samples: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  entropy_seed: z.string().nullable(),
+  entropy_slot_hash: z.string().nullable(),
+  entropy_start_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  entropy_value: z.string().nullable(),
+  entropy_var_address: z.string().nullable(),
+  resolved_seed: z.array(z.any()).nullable(),
+}).transform((value) => ({
+  entropyEndAt: value.entropy_end_at,
+  entropySamples: value.entropy_samples,
+  entropySeed: value.entropy_seed,
+  entropySlotHash: value.entropy_slot_hash,
+  entropyStartAt: value.entropy_start_at,
+  entropyValue: value.entropy_value,
+  entropyVarAddress: value.entropy_var_address,
+  resolvedSeed: value.resolved_seed,
+}));
+
+export const OreRoundEntropyPatchSchema = z.object({
+  entropy_end_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  entropy_samples: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  entropy_seed: z.string().nullable().optional(),
+  entropy_slot_hash: z.string().nullable().optional(),
+  entropy_start_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  entropy_value: z.string().nullable().optional(),
+  entropy_var_address: z.string().nullable().optional(),
+  resolved_seed: z.array(z.any()).nullable().optional(),
+}).transform((value) => ({
+  ...(value.entropy_end_at !== undefined ? { entropyEndAt: value.entropy_end_at } : {}),
+  ...(value.entropy_samples !== undefined ? { entropySamples: value.entropy_samples } : {}),
+  ...(value.entropy_seed !== undefined ? { entropySeed: value.entropy_seed } : {}),
+  ...(value.entropy_slot_hash !== undefined ? { entropySlotHash: value.entropy_slot_hash } : {}),
+  ...(value.entropy_start_at !== undefined ? { entropyStartAt: value.entropy_start_at } : {}),
+  ...(value.entropy_value !== undefined ? { entropyValue: value.entropy_value } : {}),
+  ...(value.entropy_var_address !== undefined ? { entropyVarAddress: value.entropy_var_address } : {}),
+  ...(value.resolved_seed !== undefined ? { resolvedSeed: value.resolved_seed } : {}),
+}));
+
+export const OreRoundIdSchema = z.object({
+  round_address: z.string().nullable(),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+}).transform((value) => ({
+  roundAddress: value.round_address,
+  roundId: value.round_id,
+}));
+
+export const OreRoundIdPatchSchema = z.object({
+  round_address: z.string().nullable().optional(),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+}).transform((value) => ({
+  ...(value.round_address !== undefined ? { roundAddress: value.round_address } : {}),
+  ...(value.round_id !== undefined ? { roundId: value.round_id } : {}),
+}));
+
+export const OreRoundMetricsSchema = z.object({
+  checkpoint_count: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  deploy_count: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+}).transform((value) => ({
+  checkpointCount: value.checkpoint_count,
+  deployCount: value.deploy_count,
+}));
+
+export const OreRoundMetricsPatchSchema = z.object({
+  checkpoint_count: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  deploy_count: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+}).transform((value) => ({
+  ...(value.checkpoint_count !== undefined ? { checkpointCount: value.checkpoint_count } : {}),
+  ...(value.deploy_count !== undefined ? { deployCount: value.deploy_count } : {}),
+}));
+
+export const OreRoundResultsSchema = z.object({
+  did_hit_motherlode: z.boolean().nullable(),
+  expires_at_slot_hash: SlotHashBytesSchema.nullable(),
+  pre_reveal_rng: KeccakRngValueSchema.nullable(),
+  pre_reveal_winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  rent_payer: z.string().nullable(),
+  rng: KeccakRngValueSchema.nullable(),
+  slot_hash: z.string().nullable(),
+  top_miner: z.string().nullable(),
+  top_miner_reward: z.number().nullable(),
+  winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+}).transform((value) => ({
+  didHitMotherlode: value.did_hit_motherlode,
+  expiresAtSlotHash: value.expires_at_slot_hash,
+  preRevealRng: value.pre_reveal_rng,
+  preRevealWinningSquare: value.pre_reveal_winning_square,
+  rentPayer: value.rent_payer,
+  rng: value.rng,
+  slotHash: value.slot_hash,
+  topMiner: value.top_miner,
+  topMinerReward: value.top_miner_reward,
+  winningSquare: value.winning_square,
+}));
+
+export const OreRoundResultsPatchSchema = z.object({
+  did_hit_motherlode: z.boolean().nullable().optional(),
+  expires_at_slot_hash: SlotHashBytesSchema.nullable().optional(),
+  pre_reveal_rng: KeccakRngValueSchema.nullable().optional(),
+  pre_reveal_winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  rent_payer: z.string().nullable().optional(),
+  rng: KeccakRngValueSchema.nullable().optional(),
+  slot_hash: z.string().nullable().optional(),
+  top_miner: z.string().nullable().optional(),
+  top_miner_reward: z.number().nullable().optional(),
+  winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+}).transform((value) => ({
+  ...(value.did_hit_motherlode !== undefined ? { didHitMotherlode: value.did_hit_motherlode } : {}),
+  ...(value.expires_at_slot_hash !== undefined ? { expiresAtSlotHash: value.expires_at_slot_hash } : {}),
+  ...(value.pre_reveal_rng !== undefined ? { preRevealRng: value.pre_reveal_rng } : {}),
+  ...(value.pre_reveal_winning_square !== undefined ? { preRevealWinningSquare: value.pre_reveal_winning_square } : {}),
+  ...(value.rent_payer !== undefined ? { rentPayer: value.rent_payer } : {}),
+  ...(value.rng !== undefined ? { rng: value.rng } : {}),
+  ...(value.slot_hash !== undefined ? { slotHash: value.slot_hash } : {}),
+  ...(value.top_miner !== undefined ? { topMiner: value.top_miner } : {}),
+  ...(value.top_miner_reward !== undefined ? { topMinerReward: value.top_miner_reward } : {}),
+  ...(value.winning_square !== undefined ? { winningSquare: value.winning_square } : {}),
+}));
+
+export const OreRoundStateSchema = z.object({
+  count_per_square: z.array(z.any()).nullable(),
+  deployed_per_square: z.array(z.any()).nullable(),
+  deployed_per_square_ui: z.array(z.any()).nullable(),
+  estimated_expires_at_unix: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  expires_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  motherlode: z.number().nullable(),
+  total_deployed: z.number().nullable(),
+  total_miners: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  total_vaulted: z.number().nullable(),
+  total_winnings: z.number().nullable(),
+}).transform((value) => ({
+  countPerSquare: value.count_per_square,
+  deployedPerSquare: value.deployed_per_square,
+  deployedPerSquareUi: value.deployed_per_square_ui,
+  estimatedExpiresAtUnix: value.estimated_expires_at_unix,
+  expiresAt: value.expires_at,
+  motherlode: value.motherlode,
+  totalDeployed: value.total_deployed,
+  totalMiners: value.total_miners,
+  totalVaulted: value.total_vaulted,
+  totalWinnings: value.total_winnings,
+}));
+
+export const OreRoundStatePatchSchema = z.object({
+  count_per_square: z.array(z.any()).nullable().optional(),
+  deployed_per_square: z.array(z.any()).nullable().optional(),
+  deployed_per_square_ui: z.array(z.any()).nullable().optional(),
+  estimated_expires_at_unix: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  expires_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  motherlode: z.number().nullable().optional(),
+  total_deployed: z.number().nullable().optional(),
+  total_miners: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  total_vaulted: z.number().nullable().optional(),
+  total_winnings: z.number().nullable().optional(),
+}).transform((value) => ({
+  ...(value.count_per_square !== undefined ? { countPerSquare: value.count_per_square } : {}),
+  ...(value.deployed_per_square !== undefined ? { deployedPerSquare: value.deployed_per_square } : {}),
+  ...(value.deployed_per_square_ui !== undefined ? { deployedPerSquareUi: value.deployed_per_square_ui } : {}),
+  ...(value.estimated_expires_at_unix !== undefined ? { estimatedExpiresAtUnix: value.estimated_expires_at_unix } : {}),
+  ...(value.expires_at !== undefined ? { expiresAt: value.expires_at } : {}),
+  ...(value.motherlode !== undefined ? { motherlode: value.motherlode } : {}),
+  ...(value.total_deployed !== undefined ? { totalDeployed: value.total_deployed } : {}),
+  ...(value.total_miners !== undefined ? { totalMiners: value.total_miners } : {}),
+  ...(value.total_vaulted !== undefined ? { totalVaulted: value.total_vaulted } : {}),
+  ...(value.total_winnings !== undefined ? { totalWinnings: value.total_winnings } : {}),
+}));
+
+export const OreRoundTreasurySchema = z.object({
+  motherlode: z.number().nullable(),
+}).transform((value) => ({
+  motherlode: value.motherlode,
+}));
+
+export const OreRoundTreasuryPatchSchema = z.object({
+  motherlode: z.number().nullable().optional(),
+}).transform((value) => ({
+  ...(value.motherlode !== undefined ? { motherlode: value.motherlode } : {}),
+}));
+
+export const OreRoundSchema = z.object({
+  entropy: OreRoundEntropySchema,
+  id: OreRoundIdSchema,
+  metrics: OreRoundMetricsSchema,
+  results: OreRoundResultsSchema,
+  state: OreRoundStateSchema,
+  treasury: OreRoundTreasurySchema,
+  ore_metadata: TokenMetadataSchema.nullable(),
+}).transform((value) => ({
+  entropy: value.entropy,
+  id: value.id,
+  metrics: value.metrics,
+  results: value.results,
+  state: value.state,
+  treasury: value.treasury,
+  oreMetadata: value.ore_metadata,
+}));
+
+export const OreRoundPatchSchema = z.object({
+  entropy: OreRoundEntropyPatchSchema.optional(),
+  id: OreRoundIdPatchSchema.optional(),
+  metrics: OreRoundMetricsPatchSchema.optional(),
+  results: OreRoundResultsPatchSchema.optional(),
+  state: OreRoundStatePatchSchema.optional(),
+  treasury: OreRoundTreasuryPatchSchema.optional(),
+  ore_metadata: TokenMetadataPatchSchema.nullable().optional(),
+}).transform((value) => ({
+  ...(value.entropy !== undefined ? { entropy: value.entropy } : {}),
+  ...(value.id !== undefined ? { id: value.id } : {}),
+  ...(value.metrics !== undefined ? { metrics: value.metrics } : {}),
+  ...(value.results !== undefined ? { results: value.results } : {}),
+  ...(value.state !== undefined ? { state: value.state } : {}),
+  ...(value.treasury !== undefined ? { treasury: value.treasury } : {}),
+  ...(value.ore_metadata !== undefined ? { oreMetadata: value.ore_metadata } : {}),
+}));
+
+export const OreRoundCompletedSchema = z.object({
+  entropy: OreRoundEntropySchema,
+  id: OreRoundIdSchema,
+  metrics: OreRoundMetricsSchema,
+  results: OreRoundResultsSchema,
+  state: OreRoundStateSchema,
+  treasury: OreRoundTreasurySchema,
+  ore_metadata: TokenMetadataSchema.nullable(),
+}).transform((value) => ({
+  entropy: value.entropy,
+  id: value.id,
+  metrics: value.metrics,
+  results: value.results,
+  state: value.state,
+  treasury: value.treasury,
+  oreMetadata: value.ore_metadata,
+}));
+
+export interface OreTreasuryId {
+  address: string | null;
+}
+
+export interface OreTreasuryState {
+  balance: bigint | null;
+  motherlode: number | null;
+  totalRefined: number | null;
+  totalStaked: number | null;
+  totalUnclaimed: number | null;
+}
+
+export interface OreTreasury {
+  id: OreTreasuryId;
+  state: OreTreasuryState;
+  treasurySnapshot: Treasury | null;
+}
+
+export interface Treasury {
+  balance: bigint;
+  bufferA: bigint;
+  motherlode: bigint;
+  minerRewardsFactor: Record<string, any>;
+  stakeRewardsFactor: Record<string, any>;
+  bufferB: bigint;
+  totalRefined: bigint;
+  totalStaked: bigint;
+  totalUnclaimed: bigint;
+}
+
+export const TreasurySchema = z.object({
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  buffer_a: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  motherlode: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  miner_rewards_factor: z.record(z.any()),
+  stake_rewards_factor: z.record(z.any()),
+  buffer_b: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_refined: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_staked: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_unclaimed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  balance: value.balance,
+  bufferA: value.buffer_a,
+  motherlode: value.motherlode,
+  minerRewardsFactor: value.miner_rewards_factor,
+  stakeRewardsFactor: value.stake_rewards_factor,
+  bufferB: value.buffer_b,
+  totalRefined: value.total_refined,
+  totalStaked: value.total_staked,
+  totalUnclaimed: value.total_unclaimed,
+}));
+
+export const TreasuryPatchSchema = z.object({
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  buffer_a: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  motherlode: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  miner_rewards_factor: z.record(z.any()).optional(),
+  stake_rewards_factor: z.record(z.any()).optional(),
+  buffer_b: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  total_refined: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  total_staked: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  total_unclaimed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+}).transform((value) => ({
+  ...(value.balance !== undefined ? { balance: value.balance } : {}),
+  ...(value.buffer_a !== undefined ? { bufferA: value.buffer_a } : {}),
+  ...(value.motherlode !== undefined ? { motherlode: value.motherlode } : {}),
+  ...(value.miner_rewards_factor !== undefined ? { minerRewardsFactor: value.miner_rewards_factor } : {}),
+  ...(value.stake_rewards_factor !== undefined ? { stakeRewardsFactor: value.stake_rewards_factor } : {}),
+  ...(value.buffer_b !== undefined ? { bufferB: value.buffer_b } : {}),
+  ...(value.total_refined !== undefined ? { totalRefined: value.total_refined } : {}),
+  ...(value.total_staked !== undefined ? { totalStaked: value.total_staked } : {}),
+  ...(value.total_unclaimed !== undefined ? { totalUnclaimed: value.total_unclaimed } : {}),
+}));
+
+export const OreTreasuryIdSchema = z.object({
+  address: z.string().nullable(),
+}).transform((value) => ({
+  address: value.address,
+}));
+
+export const OreTreasuryIdPatchSchema = z.object({
+  address: z.string().nullable().optional(),
+}).transform((value) => ({
+  ...(value.address !== undefined ? { address: value.address } : {}),
+}));
+
+export const OreTreasuryStateSchema = z.object({
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  motherlode: z.number().nullable(),
+  total_refined: z.number().nullable(),
+  total_staked: z.number().nullable(),
+  total_unclaimed: z.number().nullable(),
+}).transform((value) => ({
+  balance: value.balance,
+  motherlode: value.motherlode,
+  totalRefined: value.total_refined,
+  totalStaked: value.total_staked,
+  totalUnclaimed: value.total_unclaimed,
+}));
+
+export const OreTreasuryStatePatchSchema = z.object({
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  motherlode: z.number().nullable().optional(),
+  total_refined: z.number().nullable().optional(),
+  total_staked: z.number().nullable().optional(),
+  total_unclaimed: z.number().nullable().optional(),
+}).transform((value) => ({
+  ...(value.balance !== undefined ? { balance: value.balance } : {}),
+  ...(value.motherlode !== undefined ? { motherlode: value.motherlode } : {}),
+  ...(value.total_refined !== undefined ? { totalRefined: value.total_refined } : {}),
+  ...(value.total_staked !== undefined ? { totalStaked: value.total_staked } : {}),
+  ...(value.total_unclaimed !== undefined ? { totalUnclaimed: value.total_unclaimed } : {}),
+}));
+
+export const OreTreasurySchema = z.object({
+  id: OreTreasuryIdSchema,
+  state: OreTreasuryStateSchema,
+  treasury_snapshot: TreasurySchema.nullable(),
+}).transform((value) => ({
+  id: value.id,
+  state: value.state,
+  treasurySnapshot: value.treasury_snapshot,
+}));
+
+export const OreTreasuryPatchSchema = z.object({
+  id: OreTreasuryIdPatchSchema.optional(),
+  state: OreTreasuryStatePatchSchema.optional(),
+  treasury_snapshot: TreasuryPatchSchema.nullable().optional(),
+}).transform((value) => ({
+  ...(value.id !== undefined ? { id: value.id } : {}),
+  ...(value.state !== undefined ? { state: value.state } : {}),
+  ...(value.treasury_snapshot !== undefined ? { treasurySnapshot: value.treasury_snapshot } : {}),
+}));
+
+export const OreTreasuryCompletedSchema = z.object({
+  id: OreTreasuryIdSchema,
+  state: OreTreasuryStateSchema,
+  treasury_snapshot: TreasurySchema.nullable(),
+}).transform((value) => ({
+  id: value.id,
+  state: value.state,
+  treasurySnapshot: value.treasury_snapshot,
+}));
+
+export interface OreMinerAutomation {
+  amount: bigint | null;
+  balance: bigint | null;
+  executor: string | null;
+  fee: bigint | null;
+  mask: bigint | null;
+  reload: bigint | null;
+  strategy: bigint | null;
+}
+
+export interface OreMinerId {
+  authority: string | null;
+  automationAddress: string | null;
+  minerAddress: string | null;
+}
+
+export interface OreMinerRewards {
+  lifetimeDeployed: bigint | null;
+  lifetimeRewardsOre: bigint | null;
+  lifetimeRewardsSol: bigint | null;
+  refinedOre: bigint | null;
+  rewardsOre: bigint | null;
+  rewardsSol: bigint | null;
+}
+
+export interface OreMinerState {
+  checkpointFee: bigint | null;
+  checkpointId: bigint | null;
+  lastClaimOreAt: bigint | null;
+  lastClaimSolAt: bigint | null;
+  roundId: bigint | null;
+}
+
+export interface OreMiner {
+  automation: OreMinerAutomation;
+  id: OreMinerId;
+  rewards: OreMinerRewards;
+  state: OreMinerState;
+  minerSnapshot: Miner | null;
+  automationSnapshot: Automation | null;
+}
+
+export interface Miner {
+  authority: string;
+  deployed: number[];
+  cumulative: number[];
+  checkpointFee: bigint;
+  checkpointId: bigint;
+  lastClaimOreAt: bigint;
+  lastClaimSolAt: bigint;
+  rewardsFactor: Record<string, any>;
+  rewardsSol: bigint;
+  rewardsOre: bigint;
+  refinedOre: bigint;
+  roundId: bigint;
+  lifetimeRewardsSol: bigint;
+  lifetimeRewardsOre: bigint;
+  lifetimeDeployed: bigint;
+}
+
+export interface Automation {
+  amount: bigint;
+  authority: string;
+  balance: bigint;
+  executor: string;
+  fee: bigint;
+  strategy: bigint;
+  mask: bigint;
+  reload: bigint;
+}
+
+export const MinerSchema = z.object({
+  authority: z.string(),
+  deployed: z.array(z.number()),
+  cumulative: z.array(z.number()),
+  checkpoint_fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  checkpoint_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  last_claim_ore_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  last_claim_sol_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  rewards_factor: z.record(z.any()),
+  rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  refined_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  lifetime_rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  lifetime_rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  lifetime_deployed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  authority: value.authority,
+  deployed: value.deployed,
+  cumulative: value.cumulative,
+  checkpointFee: value.checkpoint_fee,
+  checkpointId: value.checkpoint_id,
+  lastClaimOreAt: value.last_claim_ore_at,
+  lastClaimSolAt: value.last_claim_sol_at,
+  rewardsFactor: value.rewards_factor,
+  rewardsSol: value.rewards_sol,
+  rewardsOre: value.rewards_ore,
+  refinedOre: value.refined_ore,
+  roundId: value.round_id,
+  lifetimeRewardsSol: value.lifetime_rewards_sol,
+  lifetimeRewardsOre: value.lifetime_rewards_ore,
+  lifetimeDeployed: value.lifetime_deployed,
+}));
+
+export const AutomationSchema = z.object({
+  amount: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  authority: z.string(),
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  executor: z.string(),
+  fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  amount: value.amount,
+  authority: value.authority,
+  balance: value.balance,
+  executor: value.executor,
+  fee: value.fee,
+  strategy: value.strategy,
+  mask: value.mask,
+  reload: value.reload,
+}));
+
+export const MinerPatchSchema = z.object({
+  authority: z.string().optional(),
+  deployed: z.array(z.number()).optional(),
+  cumulative: z.array(z.number()).optional(),
+  checkpoint_fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  checkpoint_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  last_claim_ore_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  last_claim_sol_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  rewards_factor: z.record(z.any()).optional(),
+  rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  refined_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  lifetime_rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  lifetime_rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  lifetime_deployed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+}).transform((value) => ({
+  ...(value.authority !== undefined ? { authority: value.authority } : {}),
+  ...(value.deployed !== undefined ? { deployed: value.deployed } : {}),
+  ...(value.cumulative !== undefined ? { cumulative: value.cumulative } : {}),
+  ...(value.checkpoint_fee !== undefined ? { checkpointFee: value.checkpoint_fee } : {}),
+  ...(value.checkpoint_id !== undefined ? { checkpointId: value.checkpoint_id } : {}),
+  ...(value.last_claim_ore_at !== undefined ? { lastClaimOreAt: value.last_claim_ore_at } : {}),
+  ...(value.last_claim_sol_at !== undefined ? { lastClaimSolAt: value.last_claim_sol_at } : {}),
+  ...(value.rewards_factor !== undefined ? { rewardsFactor: value.rewards_factor } : {}),
+  ...(value.rewards_sol !== undefined ? { rewardsSol: value.rewards_sol } : {}),
+  ...(value.rewards_ore !== undefined ? { rewardsOre: value.rewards_ore } : {}),
+  ...(value.refined_ore !== undefined ? { refinedOre: value.refined_ore } : {}),
+  ...(value.round_id !== undefined ? { roundId: value.round_id } : {}),
+  ...(value.lifetime_rewards_sol !== undefined ? { lifetimeRewardsSol: value.lifetime_rewards_sol } : {}),
+  ...(value.lifetime_rewards_ore !== undefined ? { lifetimeRewardsOre: value.lifetime_rewards_ore } : {}),
+  ...(value.lifetime_deployed !== undefined ? { lifetimeDeployed: value.lifetime_deployed } : {}),
+}));
+
+export const AutomationPatchSchema = z.object({
+  amount: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  authority: z.string().optional(),
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  executor: z.string().optional(),
+  fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+}).transform((value) => ({
+  ...(value.amount !== undefined ? { amount: value.amount } : {}),
+  ...(value.authority !== undefined ? { authority: value.authority } : {}),
+  ...(value.balance !== undefined ? { balance: value.balance } : {}),
+  ...(value.executor !== undefined ? { executor: value.executor } : {}),
+  ...(value.fee !== undefined ? { fee: value.fee } : {}),
+  ...(value.strategy !== undefined ? { strategy: value.strategy } : {}),
+  ...(value.mask !== undefined ? { mask: value.mask } : {}),
+  ...(value.reload !== undefined ? { reload: value.reload } : {}),
+}));
+
+export const OreMinerAutomationSchema = z.object({
+  amount: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  executor: z.string().nullable(),
+  fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+}).transform((value) => ({
+  amount: value.amount,
+  balance: value.balance,
+  executor: value.executor,
+  fee: value.fee,
+  mask: value.mask,
+  reload: value.reload,
+  strategy: value.strategy,
+}));
+
+export const OreMinerAutomationPatchSchema = z.object({
+  amount: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  executor: z.string().nullable().optional(),
+  fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+}).transform((value) => ({
+  ...(value.amount !== undefined ? { amount: value.amount } : {}),
+  ...(value.balance !== undefined ? { balance: value.balance } : {}),
+  ...(value.executor !== undefined ? { executor: value.executor } : {}),
+  ...(value.fee !== undefined ? { fee: value.fee } : {}),
+  ...(value.mask !== undefined ? { mask: value.mask } : {}),
+  ...(value.reload !== undefined ? { reload: value.reload } : {}),
+  ...(value.strategy !== undefined ? { strategy: value.strategy } : {}),
+}));
+
+export const OreMinerIdSchema = z.object({
+  authority: z.string().nullable(),
+  automation_address: z.string().nullable(),
+  miner_address: z.string().nullable(),
+}).transform((value) => ({
+  authority: value.authority,
+  automationAddress: value.automation_address,
+  minerAddress: value.miner_address,
+}));
+
+export const OreMinerIdPatchSchema = z.object({
+  authority: z.string().nullable().optional(),
+  automation_address: z.string().nullable().optional(),
+  miner_address: z.string().nullable().optional(),
+}).transform((value) => ({
+  ...(value.authority !== undefined ? { authority: value.authority } : {}),
+  ...(value.automation_address !== undefined ? { automationAddress: value.automation_address } : {}),
+  ...(value.miner_address !== undefined ? { minerAddress: value.miner_address } : {}),
+}));
+
+export const OreMinerRewardsSchema = z.object({
+  lifetime_deployed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  lifetime_rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  lifetime_rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  refined_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+}).transform((value) => ({
+  lifetimeDeployed: value.lifetime_deployed,
+  lifetimeRewardsOre: value.lifetime_rewards_ore,
+  lifetimeRewardsSol: value.lifetime_rewards_sol,
+  refinedOre: value.refined_ore,
+  rewardsOre: value.rewards_ore,
+  rewardsSol: value.rewards_sol,
+}));
+
+export const OreMinerRewardsPatchSchema = z.object({
+  lifetime_deployed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  lifetime_rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  lifetime_rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  refined_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+}).transform((value) => ({
+  ...(value.lifetime_deployed !== undefined ? { lifetimeDeployed: value.lifetime_deployed } : {}),
+  ...(value.lifetime_rewards_ore !== undefined ? { lifetimeRewardsOre: value.lifetime_rewards_ore } : {}),
+  ...(value.lifetime_rewards_sol !== undefined ? { lifetimeRewardsSol: value.lifetime_rewards_sol } : {}),
+  ...(value.refined_ore !== undefined ? { refinedOre: value.refined_ore } : {}),
+  ...(value.rewards_ore !== undefined ? { rewardsOre: value.rewards_ore } : {}),
+  ...(value.rewards_sol !== undefined ? { rewardsSol: value.rewards_sol } : {}),
+}));
+
+export const OreMinerStateSchema = z.object({
+  checkpoint_fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  checkpoint_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  last_claim_ore_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  last_claim_sol_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+}).transform((value) => ({
+  checkpointFee: value.checkpoint_fee,
+  checkpointId: value.checkpoint_id,
+  lastClaimOreAt: value.last_claim_ore_at,
+  lastClaimSolAt: value.last_claim_sol_at,
+  roundId: value.round_id,
+}));
+
+export const OreMinerStatePatchSchema = z.object({
+  checkpoint_fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  checkpoint_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  last_claim_ore_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  last_claim_sol_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+}).transform((value) => ({
+  ...(value.checkpoint_fee !== undefined ? { checkpointFee: value.checkpoint_fee } : {}),
+  ...(value.checkpoint_id !== undefined ? { checkpointId: value.checkpoint_id } : {}),
+  ...(value.last_claim_ore_at !== undefined ? { lastClaimOreAt: value.last_claim_ore_at } : {}),
+  ...(value.last_claim_sol_at !== undefined ? { lastClaimSolAt: value.last_claim_sol_at } : {}),
+  ...(value.round_id !== undefined ? { roundId: value.round_id } : {}),
+}));
+
+export const OreMinerSchema = z.object({
+  automation: OreMinerAutomationSchema,
+  id: OreMinerIdSchema,
+  rewards: OreMinerRewardsSchema,
+  state: OreMinerStateSchema,
+  miner_snapshot: MinerSchema.nullable(),
+  automation_snapshot: AutomationSchema.nullable(),
+}).transform((value) => ({
+  automation: value.automation,
+  id: value.id,
+  rewards: value.rewards,
+  state: value.state,
+  minerSnapshot: value.miner_snapshot,
+  automationSnapshot: value.automation_snapshot,
+}));
+
+export const OreMinerPatchSchema = z.object({
+  automation: OreMinerAutomationPatchSchema.optional(),
+  id: OreMinerIdPatchSchema.optional(),
+  rewards: OreMinerRewardsPatchSchema.optional(),
+  state: OreMinerStatePatchSchema.optional(),
+  miner_snapshot: MinerPatchSchema.nullable().optional(),
+  automation_snapshot: AutomationPatchSchema.nullable().optional(),
+}).transform((value) => ({
+  ...(value.automation !== undefined ? { automation: value.automation } : {}),
+  ...(value.id !== undefined ? { id: value.id } : {}),
+  ...(value.rewards !== undefined ? { rewards: value.rewards } : {}),
+  ...(value.state !== undefined ? { state: value.state } : {}),
+  ...(value.miner_snapshot !== undefined ? { minerSnapshot: value.miner_snapshot } : {}),
+  ...(value.automation_snapshot !== undefined ? { automationSnapshot: value.automation_snapshot } : {}),
+}));
+
+export const OreMinerCompletedSchema = z.object({
+  automation: OreMinerAutomationSchema,
+  id: OreMinerIdSchema,
+  rewards: OreMinerRewardsSchema,
+  state: OreMinerStateSchema,
+  miner_snapshot: MinerSchema.nullable(),
+  automation_snapshot: AutomationSchema.nullable(),
+}).transform((value) => ({
+  automation: value.automation,
+  id: value.id,
+  rewards: value.rewards,
+  state: value.state,
+  minerSnapshot: value.miner_snapshot,
+  automationSnapshot: value.automation_snapshot,
+}));
+
+export interface Numeric {
+  bits: number[];
+}
+
+export interface OreAutomation {
+  amount: bigint;
+  authority: string;
+  balance: bigint;
+  executor: string;
+  fee: bigint;
+  strategy: bigint;
+  mask: bigint;
+  reload: bigint;
+}
+
+export interface Board {
+  roundId: bigint;
+  startSlot: bigint;
+  endSlot: bigint;
+  epochId: bigint;
+}
+
+export interface Config {
+  admin: string;
+  bufferA: string;
+  bufferB: string;
+  bufferC: string;
+  bufferD: string;
+  bufferE: bigint;
+}
+
+export interface OreMiner2 {
+  authority: string;
+  deployed: bigint[];
+  cumulative: bigint[];
+  checkpointFee: bigint;
+  checkpointId: bigint;
+  lastClaimOreAt: bigint;
+  lastClaimSolAt: bigint;
+  rewardsFactor: Numeric;
+  rewardsSol: bigint;
+  rewardsOre: bigint;
+  refinedOre: bigint;
+  roundId: bigint;
+  lifetimeRewardsSol: bigint;
+  lifetimeRewardsOre: bigint;
+  lifetimeDeployed: bigint;
+}
+
+export interface Round {
+  id: bigint;
+  deployed: bigint[];
+  slotHash: number[];
+  count: bigint[];
+  expiresAt: bigint;
+  motherlode: bigint;
+  rentPayer: string;
+  topMiner: string;
+  topMinerReward: bigint;
+  totalDeployed: bigint;
+  totalMiners: bigint;
+  totalVaulted: bigint;
+  totalWinnings: bigint;
+}
+
+export interface Stake {
+  authority: string;
+  balance: bigint;
+  bufferA: bigint;
+  bufferB: bigint;
+  bufferC: bigint;
+  bufferD: bigint;
+  compoundFeeReserve: bigint;
+  lastClaimAt: bigint;
+  lastDepositAt: bigint;
+  lastWithdrawAt: bigint;
+  rewardsFactor: Numeric;
+  rewards: bigint;
+  lifetimeRewards: bigint;
+  bufferF: bigint;
+}
+
+export interface OreTreasury2 {
+  balance: bigint;
+  bufferA: bigint;
+  motherlode: bigint;
+  minerRewardsFactor: Numeric;
+  stakeRewardsFactor: Numeric;
+  bufferB: bigint;
+  totalRefined: bigint;
+  totalStaked: bigint;
+  totalUnclaimed: bigint;
+}
+
+export interface Var {
+  authority: string;
+  id: bigint;
+  provider: string;
+  commit: number[];
+  seed: number[];
+  slotHash: number[];
+  value: number[];
+  samples: bigint;
+  isAuto: bigint;
+  startAt: bigint;
+  endAt: bigint;
+}
+
+export const NumericSchema = z.object({
+  bits: z.array(z.number()).length(16),
+}).transform((value) => ({
+  bits: value.bits,
+}));
+
+export const OreAutomationSchema = z.object({
+  amount: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  authority: z.string(),
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  executor: z.string(),
+  fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  amount: value.amount,
+  authority: value.authority,
+  balance: value.balance,
+  executor: value.executor,
+  fee: value.fee,
+  strategy: value.strategy,
+  mask: value.mask,
+  reload: value.reload,
+}));
+
+export const BoardSchema = z.object({
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  start_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  epoch_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  roundId: value.round_id,
+  startSlot: value.start_slot,
+  endSlot: value.end_slot,
+  epochId: value.epoch_id,
+}));
+
+export const ConfigSchema = z.object({
+  admin: z.string(),
+  buffer_a: z.string(),
+  buffer_b: z.string(),
+  buffer_c: z.string(),
+  buffer_d: z.string(),
+  buffer_e: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  admin: value.admin,
+  bufferA: value.buffer_a,
+  bufferB: value.buffer_b,
+  bufferC: value.buffer_c,
+  bufferD: value.buffer_d,
+  bufferE: value.buffer_e,
+}));
+
+export const OreMiner2Schema = z.object({
+  authority: z.string(),
+  deployed: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).length(25),
+  cumulative: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).length(25),
+  checkpoint_fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  checkpoint_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  last_claim_ore_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  last_claim_sol_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  rewards_factor: z.lazy(() => NumericSchema),
+  rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  refined_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  lifetime_rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  lifetime_rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  lifetime_deployed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  authority: value.authority,
+  deployed: value.deployed,
+  cumulative: value.cumulative,
+  checkpointFee: value.checkpoint_fee,
+  checkpointId: value.checkpoint_id,
+  lastClaimOreAt: value.last_claim_ore_at,
+  lastClaimSolAt: value.last_claim_sol_at,
+  rewardsFactor: value.rewards_factor,
+  rewardsSol: value.rewards_sol,
+  rewardsOre: value.rewards_ore,
+  refinedOre: value.refined_ore,
+  roundId: value.round_id,
+  lifetimeRewardsSol: value.lifetime_rewards_sol,
+  lifetimeRewardsOre: value.lifetime_rewards_ore,
+  lifetimeDeployed: value.lifetime_deployed,
+}));
+
+export const RoundSchema = z.object({
+  id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  deployed: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).length(25),
+  slot_hash: z.array(z.number()).length(32),
+  count: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).length(25),
+  expires_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  motherlode: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  rent_payer: z.string(),
+  top_miner: z.string(),
+  top_miner_reward: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_deployed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_miners: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_vaulted: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_winnings: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  id: value.id,
+  deployed: value.deployed,
+  slotHash: value.slot_hash,
+  count: value.count,
+  expiresAt: value.expires_at,
+  motherlode: value.motherlode,
+  rentPayer: value.rent_payer,
+  topMiner: value.top_miner,
+  topMinerReward: value.top_miner_reward,
+  totalDeployed: value.total_deployed,
+  totalMiners: value.total_miners,
+  totalVaulted: value.total_vaulted,
+  totalWinnings: value.total_winnings,
+}));
+
+export const StakeSchema = z.object({
+  authority: z.string(),
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  buffer_a: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  buffer_b: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  buffer_c: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  buffer_d: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  compound_fee_reserve: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  last_claim_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  last_deposit_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  last_withdraw_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  rewards_factor: z.lazy(() => NumericSchema),
+  rewards: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  lifetime_rewards: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  buffer_f: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  authority: value.authority,
+  balance: value.balance,
+  bufferA: value.buffer_a,
+  bufferB: value.buffer_b,
+  bufferC: value.buffer_c,
+  bufferD: value.buffer_d,
+  compoundFeeReserve: value.compound_fee_reserve,
+  lastClaimAt: value.last_claim_at,
+  lastDepositAt: value.last_deposit_at,
+  lastWithdrawAt: value.last_withdraw_at,
+  rewardsFactor: value.rewards_factor,
+  rewards: value.rewards,
+  lifetimeRewards: value.lifetime_rewards,
+  bufferF: value.buffer_f,
+}));
+
+export const OreTreasury2Schema = z.object({
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  buffer_a: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  motherlode: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  miner_rewards_factor: z.lazy(() => NumericSchema),
+  stake_rewards_factor: z.lazy(() => NumericSchema),
+  buffer_b: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_refined: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_staked: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_unclaimed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  balance: value.balance,
+  bufferA: value.buffer_a,
+  motherlode: value.motherlode,
+  minerRewardsFactor: value.miner_rewards_factor,
+  stakeRewardsFactor: value.stake_rewards_factor,
+  bufferB: value.buffer_b,
+  totalRefined: value.total_refined,
+  totalStaked: value.total_staked,
+  totalUnclaimed: value.total_unclaimed,
+}));
+
+export const VarSchema = z.object({
+  authority: z.string(),
+  id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  provider: z.string(),
+  commit: z.array(z.number()).length(32),
+  seed: z.array(z.number()).length(32),
+  slot_hash: z.array(z.number()).length(32),
+  value: z.array(z.number()).length(32),
+  samples: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  is_auto: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  start_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  end_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  authority: value.authority,
+  id: value.id,
+  provider: value.provider,
+  commit: value.commit,
+  seed: value.seed,
+  slotHash: value.slot_hash,
+  value: value.value,
+  samples: value.samples,
+  isAuto: value.is_auto,
+  startAt: value.start_at,
+  endAt: value.end_at,
+}));
+
+// ============================================================================
+// Instruction Handlers
+// ============================================================================
+
+/** Union of all program errors declared across this stack's instructions. */
+export type OreStreamOreProgramError =
+  | { code: 0; name: 'AmountTooSmall'; msg: string }
+  | { code: 1; name: 'NotAuthorized'; msg: string };
+
+const ORE_STREAM_ORE_PROGRAM_ERRORS: ErrorMetadata[] = [
+  { code: 0, name: 'AmountTooSmall', msg: 'Amount too small' },
+  { code: 1, name: 'NotAuthorized', msg: 'Not authorized' },
+];
+
+/** Union of all program errors declared across this stack's instructions. */
+export type OreStreamEntropyProgramError =
+  | { code: 0; name: 'IncompleteDigest'; msg: string }
+  | { code: 1; name: 'InvalidSeed'; msg: string };
+
+const ORE_STREAM_ENTROPY_PROGRAM_ERRORS: ErrorMetadata[] = [
+  { code: 0, name: 'IncompleteDigest', msg: 'Incomplete digest' },
+  { code: 1, name: 'InvalidSeed', msg: 'Invalid seed' },
+];
+
+export interface OreAutomateParams {
+  amount: bigint;
+  deposit: bigint;
+  fee: bigint;
+  mask: bigint;
+  strategy: number;
+  reload: bigint;
+  automation: string;
+  executor: string;
+  miner: string;
+}
+
+export type OreAutomateError = OreStreamOreProgramError;
+
+/**
+ * Configures or closes a miner automation account.
+ * Automation PDA seeds: ["automation", signer].
+ * Miner PDA seeds: ["miner", signer].
+ */
+export const oreAutomateInstruction = createInstructionHandler<OreAutomateParams, OreAutomateError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [0],
+  args: [
+    { name: 'amount', type: 'u64' },
+    { name: 'deposit', type: 'u64' },
+    { name: 'fee', type: 'u64' },
+    { name: 'mask', type: 'u64' },
+    { name: 'strategy', type: 'u8' },
+    { name: 'reload', type: 'u64' },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    // [arete codegen] instruction 'automate': account 'automation' PDA 'automation' degraded to userProvided (seed references account 'authority' not present in this instruction)
+    { name: 'automation', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'executor', isSigner: false, isWritable: false, category: 'userProvided' },
+    // [arete codegen] instruction 'automate': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
+    { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreCheckpointParams {
+  board?: string;
+  miner: string;
+  round: string;
+  treasury?: string;
+}
+
+export type OreCheckpointError = OreStreamOreProgramError;
+
+/**
+ * Settles miner rewards for a completed round.
+ * Treasury PDA seeds: ["treasury"].
+ */
+export const oreCheckpointInstruction = createInstructionHandler<OreCheckpointParams, OreCheckpointError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [2],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'board', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    // [arete codegen] instruction 'checkpoint': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
+    { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreClaimSolParams {
+  board?: string;
+  miner: string;
+}
+
+export type OreClaimSolError = OreStreamOreProgramError;
+
+/**
+ * Claims SOL rewards from the miner account.
+ */
+export const oreClaimSolInstruction = createInstructionHandler<OreClaimSolParams, OreClaimSolError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [3],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    // [arete codegen] instruction 'claimSol': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
+    { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+    { name: 'oreProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreClaimOreParams {
+  board?: string;
+  miner: string;
+  recipient: string;
+  treasury?: string;
+  treasuryTokens: string;
+}
+
+export type OreClaimOreError = OreStreamOreProgramError;
+
+/**
+ * Claims ORE token rewards from the treasury vault.
+ */
+export const oreClaimOreInstruction = createInstructionHandler<OreClaimOreParams, OreClaimOreError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [4],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    // [arete codegen] instruction 'claimOre': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
+    { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'mint', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
+    { name: 'recipient', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'treasuryTokens', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+    { name: 'tokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+    { name: 'associatedTokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' },
+    { name: 'oreProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreCloseParams {
+  board?: string;
+  rentPayer: string;
+  round: string;
+  treasury?: string;
+}
+
+export type OreCloseError = OreStreamOreProgramError;
+
+/**
+ * Closes an expired round account and returns rent to the payer.
+ * Round PDA seeds: ["round", round_id].
+ * Treasury PDA seeds: ["treasury"].
+ */
+export const oreCloseInstruction = createInstructionHandler<OreCloseParams, OreCloseError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [5],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: false, category: 'signer' },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    { name: 'rentPayer', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreDeployParams {
+  amount: bigint;
+  squares: number;
+  authority: string;
+  automation?: string;
+  board?: string;
+  config?: string;
+  miner?: string;
+  round: string;
+}
+
+export type OreDeployError = OreStreamOreProgramError;
+
+/**
+ * Deploys SOL to selected squares for the current round.
+ * Automation PDA seeds: ["automation", authority].
+ * Config PDA seeds: ["config"].
+ * Miner PDA seeds: ["miner", authority].
+ * Round PDA seeds: ["round", board.round_id].
+ */
+export const oreDeployInstruction = createInstructionHandler<OreDeployParams, OreDeployError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [6],
+  args: [
+    { name: 'amount', type: 'u64' },
+    { name: 'squares', type: 'u32' },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'authority', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'automation', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'automation' }, { type: 'accountRef', accountName: 'authority' }] } },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
+    { name: 'miner', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'miner' }, { type: 'accountRef', accountName: 'authority' }] } },
+    { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+    { name: 'oreProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreLogParams {
+  // This instruction takes no arguments or user-provided accounts.
+}
+
+export type OreLogError = OreStreamOreProgramError;
+
+/**
+ * Emits an arbitrary log message from the board PDA.
+ * Bytes following the discriminator are logged verbatim.
+ */
+export const oreLogInstruction = createInstructionHandler<OreLogParams, OreLogError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [8],
+  args: [],
+  accounts: [
+    { name: 'board', isSigner: true, isWritable: false, category: 'signer' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreResetParams {
+  board?: string;
+  config?: string;
+  feeCollector: string;
+  round: string;
+  roundNext: string;
+  topMiner: string;
+  treasury?: string;
+  treasuryTokens: string;
+  entropyVar: string;
+  mintAuthority: string;
+}
+
+export type OreResetError = OreStreamOreProgramError;
+
+/**
+ * Finalizes the current round, mints rewards, and opens the next round.
+ * Board PDA seeds: ["board"].
+ * Treasury PDA seeds: ["treasury"].
+ * Round PDA seeds: ["round", board.round_id] and ["round", board.round_id + 1].
+ */
+export const oreResetInstruction = createInstructionHandler<OreResetParams, OreResetError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [9],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    { name: 'config', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
+    { name: 'feeCollector', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'mint', isSigner: false, isWritable: true, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
+    { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'roundNext', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'topMiner', isSigner: false, isWritable: false, category: 'userProvided' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'treasuryTokens', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+    { name: 'tokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+    { name: 'oreProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv' },
+    { name: 'slotHashesSysvar', isSigner: false, isWritable: false, category: 'known', knownAddress: 'SysvarS1otHashes111111111111111111111111111' },
+    { name: 'entropyVar', isSigner: false, isWritable: false, category: 'userProvided' },
+    { name: 'entropyProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X' },
+    { name: 'mintAuthority', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'oreMintProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'mintzxW6Kckmeyh1h6Zfdj9QcYgCzhPSGiC8ChZ6fCx' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreDepositParams {
+  amount: bigint;
+  compound_fee: bigint;
+  sender: string;
+  stake: string;
+  stakeTokens: string;
+  treasury?: string;
+}
+
+export type OreDepositError = OreStreamOreProgramError;
+
+/**
+ * Deposits ORE into a staking account.
+ * Stake PDA seeds: ["stake", signer].
+ */
+export const oreDepositInstruction = createInstructionHandler<OreDepositParams, OreDepositError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [10],
+  args: [
+    { name: 'amount', type: 'u64' },
+    { name: 'compound_fee', type: 'u64' },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'payer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'mint', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
+    { name: 'sender', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stake', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stakeTokens', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+    { name: 'tokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+    { name: 'associatedTokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreWithdrawParams {
+  amount: bigint;
+  recipient: string;
+  stake: string;
+  stakeTokens: string;
+  treasury?: string;
+}
+
+export type OreWithdrawError = OreStreamOreProgramError;
+
+/**
+ * Withdraws ORE from a staking account.
+ * Stake PDA seeds: ["stake", signer].
+ */
+export const oreWithdrawInstruction = createInstructionHandler<OreWithdrawParams, OreWithdrawError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [11],
+  args: [
+    { name: 'amount', type: 'u64' },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'mint', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
+    { name: 'recipient', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stake', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stakeTokens', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+    { name: 'tokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+    { name: 'associatedTokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreClaimYieldParams {
+  amount: bigint;
+  recipient: string;
+  stake: string;
+  treasury?: string;
+  treasuryTokens: string;
+}
+
+export type OreClaimYieldError = OreStreamOreProgramError;
+
+/**
+ * Claims accrued staking rewards.
+ * Stake PDA seeds: ["stake", signer].
+ * Treasury PDA seeds: ["treasury"].
+ */
+export const oreClaimYieldInstruction = createInstructionHandler<OreClaimYieldParams, OreClaimYieldError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [12],
+  args: [
+    { name: 'amount', type: 'u64' },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'mint', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
+    { name: 'recipient', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stake', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'treasuryTokens', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+    { name: 'tokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+    { name: 'associatedTokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreBuybackParams {
+  // This instruction takes no arguments or user-provided accounts.
+}
+
+export type OreBuybackError = OreStreamOreProgramError;
+
+/**
+ * Buys back ORE from the market.
+ */
+export const oreBuybackInstruction = createInstructionHandler<OreBuybackParams, OreBuybackError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [13],
+  args: [],
+  accounts: [],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreBuryParams {
+  amount: bigint;
+  board?: string;
+  config?: string;
+  treasury?: string;
+  treasuryOre: string;
+  treasurySol: string;
+}
+
+export type OreBuryError = OreStreamOreProgramError;
+
+/**
+ * Swaps vaulted SOL for ORE via a CPI and burns the proceeds.
+ * Treasury PDA seeds: ["treasury"].
+ * Additional swap accounts are passed through as remaining accounts.
+ */
+export const oreBuryInstruction = createInstructionHandler<OreBuryParams, OreBuryError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [24],
+  args: [
+    { name: 'amount', type: 'u64' },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: false, category: 'signer' },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    { name: 'config', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
+    { name: 'mint', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'treasuryOre', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'treasurySol', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'tokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+    { name: 'oreProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreWrapParams {
+  amount: bigint;
+  config?: string;
+  treasury?: string;
+  treasurySol: string;
+}
+
+export type OreWrapError = OreStreamOreProgramError;
+
+/**
+ * Wraps SOL held by the treasury into WSOL for swapping.
+ * Treasury PDA seeds: ["treasury"].
+ */
+export const oreWrapInstruction = createInstructionHandler<OreWrapParams, OreWrapError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [14],
+  args: [
+    { name: 'amount', type: 'u64' },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: false, category: 'signer' },
+    { name: 'config', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'treasurySol', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreSetAdminParams {
+  admin: string;
+  config?: string;
+}
+
+export type OreSetAdminError = OreStreamOreProgramError;
+
+/**
+ * Updates the program admin address.
+ */
+export const oreSetAdminInstruction = createInstructionHandler<OreSetAdminParams, OreSetAdminError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [15],
+  args: [
+    { name: 'admin', type: 'pubkey' },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: false, category: 'signer' },
+    { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreNewVarParams {
+  id: bigint;
+  commit: number[];
+  samples: bigint;
+  board?: string;
+  config?: string;
+  provider: string;
+  var: string;
+}
+
+export type OreNewVarError = OreStreamOreProgramError;
+
+/**
+ * Creates a new entropy var account through the entropy program.
+ */
+export const oreNewVarInstruction = createInstructionHandler<OreNewVarParams, OreNewVarError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [19],
+  args: [
+    { name: 'id', type: 'u64' },
+    { name: 'commit', type: { array: ['u8', 32] } },
+    { name: 'samples', type: 'u64' },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: false, category: 'signer' },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
+    { name: 'provider', isSigner: false, isWritable: false, category: 'userProvided' },
+    { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+    { name: 'entropyProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreReloadSolParams {
+  automation: string;
+  miner: string;
+}
+
+export type OreReloadSolError = OreStreamOreProgramError;
+
+/**
+ * Reloads SOL into the automation account.
+ */
+export const oreReloadSolInstruction = createInstructionHandler<OreReloadSolParams, OreReloadSolError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [21],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    // [arete codegen] instruction 'reloadSol': account 'automation' PDA 'automation' degraded to userProvided (seed references account 'authority' not present in this instruction)
+    { name: 'automation', isSigner: false, isWritable: true, category: 'userProvided' },
+    // [arete codegen] instruction 'reloadSol': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
+    { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreCompoundYieldParams {
+  // This instruction takes no arguments or user-provided accounts.
+}
+
+export type OreCompoundYieldError = OreStreamOreProgramError;
+
+/**
+ * Compounds staking yield.
+ */
+export const oreCompoundYieldInstruction = createInstructionHandler<OreCompoundYieldParams, OreCompoundYieldError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [22],
+  args: [],
+  accounts: [],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreLiqParams {
+  // This instruction takes no arguments or user-provided accounts.
+}
+
+export type OreLiqError = OreStreamOreProgramError;
+
+/**
+ * Liquidation instruction.
+ */
+export const oreLiqInstruction = createInstructionHandler<OreLiqParams, OreLiqError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [25],
+  args: [],
+  accounts: [],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface EntropyOpenParams {
+  id: bigint;
+  commit: number[];
+  isAuto: bigint;
+  samples: bigint;
+  endAt: bigint;
+  provider: string;
+  var: string;
+}
+
+export type EntropyOpenError = OreStreamEntropyProgramError;
+
+/**
+ * Creates a new entropy var account.
+ * Var PDA seeds: ["var", authority, id].
+ */
+export const entropyOpenInstruction = createInstructionHandler<EntropyOpenParams, EntropyOpenError>({
+  programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
+  discriminator: [0],
+  args: [
+    { name: 'id', type: 'u64' },
+    { name: 'commit', type: { array: ['u8', 32] } },
+    { name: 'isAuto', type: 'u64' },
+    { name: 'samples', type: 'u64' },
+    { name: 'endAt', type: 'u64' },
+  ],
+  accounts: [
+    { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'payer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'provider', isSigner: false, isWritable: false, category: 'userProvided' },
+    { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+  ],
+  errors: ORE_STREAM_ENTROPY_PROGRAM_ERRORS,
+});
+
+export interface EntropyCloseParams {
+  var: string;
+}
+
+export type EntropyCloseError = OreStreamEntropyProgramError;
+
+/**
+ * Closes an entropy var account and returns rent to the authority.
+ */
+export const entropyCloseInstruction = createInstructionHandler<EntropyCloseParams, EntropyCloseError>({
+  programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
+  discriminator: [1],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
+  ],
+  errors: ORE_STREAM_ENTROPY_PROGRAM_ERRORS,
+});
+
+export interface EntropyNextParams {
+  endAt: bigint;
+  var: string;
+}
+
+export type EntropyNextError = OreStreamEntropyProgramError;
+
+/**
+ * Updates the var for the next random value sample.
+ * Resets the commit to the previous seed and clears slot_hash, seed, and value.
+ */
+export const entropyNextInstruction = createInstructionHandler<EntropyNextParams, EntropyNextError>({
+  programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
+  discriminator: [2],
+  args: [
+    { name: 'endAt', type: 'u64' },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
+  ],
+  errors: ORE_STREAM_ENTROPY_PROGRAM_ERRORS,
+});
+
+export interface EntropyRevealParams {
+  seed: number[];
+  var: string;
+}
+
+export type EntropyRevealError = OreStreamEntropyProgramError;
+
+/**
+ * Reveals the seed and finalizes the random value.
+ * The seed must hash to the commit stored in the var account.
+ */
+export const entropyRevealInstruction = createInstructionHandler<EntropyRevealParams, EntropyRevealError>({
+  programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
+  discriminator: [4],
+  args: [
+    { name: 'seed', type: { array: ['u8', 32] } },
+  ],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
+  ],
+  errors: ORE_STREAM_ENTROPY_PROGRAM_ERRORS,
+});
+
+export interface EntropySampleParams {
+  var: string;
+}
+
+export type EntropySampleError = OreStreamEntropyProgramError;
+
+/**
+ * Samples the slot hash at the end_at slot.
+ * Must be called after the end_at slot has passed.
+ */
+export const entropySampleInstruction = createInstructionHandler<EntropySampleParams, EntropySampleError>({
+  programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
+  discriminator: [5],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'slotHashesSysvar', isSigner: false, isWritable: false, category: 'known', knownAddress: 'SysvarS1otHashes111111111111111111111111111' },
+  ],
+  errors: ORE_STREAM_ENTROPY_PROGRAM_ERRORS,
+});
+
+// ============================================================================
+// View Definition Types (framework-agnostic)
+// ============================================================================
+
+/** View definition with embedded entity type */
+export interface ViewDef<T, TMode extends 'state' | 'list'> {
+  readonly mode: TMode;
+  readonly view: string;
+  /** Phantom field for type inference - not present at runtime */
+  readonly _entity?: T;
+}
+
+/** Helper to create typed state view definitions (keyed lookups) */
+function stateView<T>(view: string): ViewDef<T, 'state'> {
+  return { mode: 'state', view } as const;
+}
+
+/** Helper to create typed list view definitions (collections) */
+function listView<T>(view: string): ViewDef<T, 'list'> {
+  return { mode: 'list', view } as const;
+}
+
+// ============================================================================
+// Stack Definition
+// ============================================================================
+
+/** Stack definition for OreStream with 3 entities */
+export const ORE_STREAM_STACK_CORE = {
+  name: 'ore-stream',
+  endpoints: {
+    ws: 'wss://ore.stack.arete.run',
+    http: 'https://ore.stack.arete.run',
+  },
+  views: {
+    OreRound: {
+      state: stateView<OreRound>('OreRound/state'),
+      list: listView<OreRound>('OreRound/list'),
+      latest: listView<OreRound>('OreRound/latest'),
+    },
+    OreTreasury: {
+      state: stateView<OreTreasury>('OreTreasury/state'),
+      list: listView<OreTreasury>('OreTreasury/list'),
+    },
+    OreMiner: {
+      state: stateView<OreMiner>('OreMiner/state'),
+      list: listView<OreMiner>('OreMiner/list'),
+    },
+  },
+  schemas: {
+    Automation: AutomationSchema,
+    Board: BoardSchema,
+    Config: ConfigSchema,
+    Miner: MinerSchema,
+    Numeric: NumericSchema,
+    OreAutomation: OreAutomationSchema,
+    OreMiner2: OreMiner2Schema,
+    OreMinerAutomation: OreMinerAutomationSchema,
+    OreMinerCompleted: OreMinerCompletedSchema,
+    OreMinerId: OreMinerIdSchema,
+    OreMinerRewards: OreMinerRewardsSchema,
+    OreMiner: OreMinerSchema,
+    OreMinerState: OreMinerStateSchema,
+    OreRoundCompleted: OreRoundCompletedSchema,
+    OreRoundEntropy: OreRoundEntropySchema,
+    OreRoundId: OreRoundIdSchema,
+    OreRoundMetrics: OreRoundMetricsSchema,
+    OreRoundResults: OreRoundResultsSchema,
+    OreRound: OreRoundSchema,
+    OreRoundState: OreRoundStateSchema,
+    OreRoundTreasury: OreRoundTreasurySchema,
+    OreTreasury2: OreTreasury2Schema,
+    OreTreasuryCompleted: OreTreasuryCompletedSchema,
+    OreTreasuryId: OreTreasuryIdSchema,
+    OreTreasury: OreTreasurySchema,
+    OreTreasuryState: OreTreasuryStateSchema,
+    Round: RoundSchema,
+    Stake: StakeSchema,
+    TokenMetadata: TokenMetadataSchema,
+    Treasury: TreasurySchema,
+    Var: VarSchema,
+  },
+  patchSchemas: {
+    OreRound: OreRoundPatchSchema,
+    OreTreasury: OreTreasuryPatchSchema,
+    OreMiner: OreMinerPatchSchema,
+  },
+  programs: {
+    ore: {
+      name: 'ore',
+      programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+      pdas: {
+        automation: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('automation'), account('authority')),
+        board: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('board')),
+        config: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('config')),
+        miner: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('miner'), account('authority')),
+        treasury: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('treasury')),
+      },
+      addresses: {
+        automation: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('automation'), account('authority')),
+        board: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('board')),
+        config: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('config')),
+        miner: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('miner'), account('authority')),
+        treasury: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('treasury')),
+      },
+      accounts: {
+        Automation: programAccountRead<OreAutomation>({ account: 'Automation', path: '/programs/ore/accounts/Automation', schema: OreAutomationSchema }),
+        Board: programAccountRead<Board>({ account: 'Board', path: '/programs/ore/accounts/Board', schema: BoardSchema }),
+        Config: programAccountRead<Config>({ account: 'Config', path: '/programs/ore/accounts/Config', schema: ConfigSchema }),
+        Miner: programAccountRead<OreMiner2>({ account: 'Miner', path: '/programs/ore/accounts/Miner', schema: OreMiner2Schema }),
+        Round: programAccountRead<Round>({ account: 'Round', path: '/programs/ore/accounts/Round', schema: RoundSchema }),
+        Stake: programAccountRead<Stake>({ account: 'Stake', path: '/programs/ore/accounts/Stake', schema: StakeSchema }),
+        Treasury: programAccountRead<OreTreasury2>({ account: 'Treasury', path: '/programs/ore/accounts/Treasury', schema: OreTreasury2Schema }),
+      },
+      rawInstructions: {
+        automate: oreAutomateInstruction,
+        checkpoint: oreCheckpointInstruction,
+        claimSol: oreClaimSolInstruction,
+        claimOre: oreClaimOreInstruction,
+        close: oreCloseInstruction,
+        deploy: oreDeployInstruction,
+        log: oreLogInstruction,
+        reset: oreResetInstruction,
+        deposit: oreDepositInstruction,
+        withdraw: oreWithdrawInstruction,
+        claimYield: oreClaimYieldInstruction,
+        buyback: oreBuybackInstruction,
+        bury: oreBuryInstruction,
+        wrap: oreWrapInstruction,
+        setAdmin: oreSetAdminInstruction,
+        newVar: oreNewVarInstruction,
+        reloadSol: oreReloadSolInstruction,
+        compoundYield: oreCompoundYieldInstruction,
+        liq: oreLiqInstruction,
+      },
+      [PROGRAM_OPERATION_EXTENSIONS]: {
+        createOperations(context: ProgramOperationContext) {
+          return {
+            instructions: {
+            automate: instructionOperation(async (params: OreAutomateParams) => {
+              const instruction = buildInstruction(oreAutomateInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'automate',
+                instruction,
+                artifacts: { instruction },
+                errors: oreAutomateInstruction.errors,
+              });
+            }),
+            checkpoint: instructionOperation(async (params: OreCheckpointParams) => {
+              const instruction = buildInstruction(oreCheckpointInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'checkpoint',
+                instruction,
+                artifacts: { instruction },
+                errors: oreCheckpointInstruction.errors,
+              });
+            }),
+            claimSol: instructionOperation(async (params: OreClaimSolParams) => {
+              const instruction = buildInstruction(oreClaimSolInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'claimSol',
+                instruction,
+                artifacts: { instruction },
+                errors: oreClaimSolInstruction.errors,
+              });
+            }),
+            claimOre: instructionOperation(async (params: OreClaimOreParams) => {
+              const instruction = buildInstruction(oreClaimOreInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'claimOre',
+                instruction,
+                artifacts: { instruction },
+                errors: oreClaimOreInstruction.errors,
+              });
+            }),
+            close: instructionOperation(async (params: OreCloseParams) => {
+              const instruction = buildInstruction(oreCloseInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'close',
+                instruction,
+                artifacts: { instruction },
+                errors: oreCloseInstruction.errors,
+              });
+            }),
+            deploy: instructionOperation(async (params: OreDeployParams) => {
+              const instruction = buildInstruction(oreDeployInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'deploy',
+                instruction,
+                artifacts: { instruction },
+                errors: oreDeployInstruction.errors,
+              });
+            }),
+            log: instructionOperation(async (params: OreLogParams) => {
+              const instruction = buildInstruction(oreLogInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'log',
+                instruction,
+                artifacts: { instruction },
+                errors: oreLogInstruction.errors,
+              });
+            }),
+            reset: instructionOperation(async (params: OreResetParams) => {
+              const instruction = buildInstruction(oreResetInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'reset',
+                instruction,
+                artifacts: { instruction },
+                errors: oreResetInstruction.errors,
+              });
+            }),
+            deposit: instructionOperation(async (params: OreDepositParams) => {
+              const instruction = buildInstruction(oreDepositInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'deposit',
+                instruction,
+                artifacts: { instruction },
+                errors: oreDepositInstruction.errors,
+              });
+            }),
+            withdraw: instructionOperation(async (params: OreWithdrawParams) => {
+              const instruction = buildInstruction(oreWithdrawInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'withdraw',
+                instruction,
+                artifacts: { instruction },
+                errors: oreWithdrawInstruction.errors,
+              });
+            }),
+            claimYield: instructionOperation(async (params: OreClaimYieldParams) => {
+              const instruction = buildInstruction(oreClaimYieldInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'claimYield',
+                instruction,
+                artifacts: { instruction },
+                errors: oreClaimYieldInstruction.errors,
+              });
+            }),
+            buyback: instructionOperation(async (params: OreBuybackParams) => {
+              const instruction = buildInstruction(oreBuybackInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'buyback',
+                instruction,
+                artifacts: { instruction },
+                errors: oreBuybackInstruction.errors,
+              });
+            }),
+            bury: instructionOperation(async (params: OreBuryParams) => {
+              const instruction = buildInstruction(oreBuryInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'bury',
+                instruction,
+                artifacts: { instruction },
+                errors: oreBuryInstruction.errors,
+              });
+            }),
+            wrap: instructionOperation(async (params: OreWrapParams) => {
+              const instruction = buildInstruction(oreWrapInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'wrap',
+                instruction,
+                artifacts: { instruction },
+                errors: oreWrapInstruction.errors,
+              });
+            }),
+            setAdmin: instructionOperation(async (params: OreSetAdminParams) => {
+              const instruction = buildInstruction(oreSetAdminInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'setAdmin',
+                instruction,
+                artifacts: { instruction },
+                errors: oreSetAdminInstruction.errors,
+              });
+            }),
+            newVar: instructionOperation(async (params: OreNewVarParams) => {
+              const instruction = buildInstruction(oreNewVarInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'newVar',
+                instruction,
+                artifacts: { instruction },
+                errors: oreNewVarInstruction.errors,
+              });
+            }),
+            reloadSol: instructionOperation(async (params: OreReloadSolParams) => {
+              const instruction = buildInstruction(oreReloadSolInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'reloadSol',
+                instruction,
+                artifacts: { instruction },
+                errors: oreReloadSolInstruction.errors,
+              });
+            }),
+            compoundYield: instructionOperation(async (params: OreCompoundYieldParams) => {
+              const instruction = buildInstruction(oreCompoundYieldInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'compoundYield',
+                instruction,
+                artifacts: { instruction },
+                errors: oreCompoundYieldInstruction.errors,
+              });
+            }),
+            liq: instructionOperation(async (params: OreLiqParams) => {
+              const instruction = buildInstruction(oreLiqInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'liq',
+                instruction,
+                artifacts: { instruction },
+                errors: oreLiqInstruction.errors,
+              });
+            }),
+            },
+          };
+        },
+      },
+    },
+    entropy: {
+      name: 'entropy',
+      programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
+      accounts: {
+        Var: programAccountRead<Var>({ account: 'Var', path: '/programs/entropy/accounts/Var', schema: VarSchema }),
+      },
+      rawInstructions: {
+        open: entropyOpenInstruction,
+        close: entropyCloseInstruction,
+        next: entropyNextInstruction,
+        reveal: entropyRevealInstruction,
+        sample: entropySampleInstruction,
+      },
+      [PROGRAM_OPERATION_EXTENSIONS]: {
+        createOperations(context: ProgramOperationContext) {
+          return {
+            instructions: {
+            open: instructionOperation(async (params: EntropyOpenParams) => {
+              const instruction = buildInstruction(entropyOpenInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'open',
+                instruction,
+                artifacts: { instruction },
+                errors: entropyOpenInstruction.errors,
+              });
+            }),
+            close: instructionOperation(async (params: EntropyCloseParams) => {
+              const instruction = buildInstruction(entropyCloseInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'close',
+                instruction,
+                artifacts: { instruction },
+                errors: entropyCloseInstruction.errors,
+              });
+            }),
+            next: instructionOperation(async (params: EntropyNextParams) => {
+              const instruction = buildInstruction(entropyNextInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'next',
+                instruction,
+                artifacts: { instruction },
+                errors: entropyNextInstruction.errors,
+              });
+            }),
+            reveal: instructionOperation(async (params: EntropyRevealParams) => {
+              const instruction = buildInstruction(entropyRevealInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'reveal',
+                instruction,
+                artifacts: { instruction },
+                errors: entropyRevealInstruction.errors,
+              });
+            }),
+            sample: instructionOperation(async (params: EntropySampleParams) => {
+              const instruction = buildInstruction(entropySampleInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'sample',
+                instruction,
+                artifacts: { instruction },
+                errors: entropySampleInstruction.errors,
+              });
+            }),
+            },
+          };
+        },
+      },
+    },
+  },
+  addresses: {
+    ore: {
+      automation: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('automation'), account('authority')),
+      board: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('board')),
+      config: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('config')),
+      miner: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('miner'), account('authority')),
+      treasury: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('treasury')),
+    },
+  },
+} as const;
+
+/** Type alias for the core stack */
+export type OreStreamCoreStack = typeof ORE_STREAM_STACK_CORE;
+
+/** Entity types in this stack */
+export type OreStreamEntity = OreRound | OreTreasury | OreMiner;
+
+/** Default export for convenience */
+export default ORE_STREAM_STACK_CORE;
