@@ -79,7 +79,7 @@ See [Stack Definitions](/building-stacks/stack-definitions) for the naming conve
 
 | Argument         | Type           | Required | Description                                                                                                                                                                                                 |
 | ---------------- | -------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `from`           | `path`         | Yes      | Source field path from an account, instruction, or IDL event (e.g., `AccountType::field_name`).                                                                                                            |
+| `from`           | `path`         | Yes      | Source field path from an account, instruction, or IDL event (e.g., `AccountType::field_name`).                                                                                                             |
 | `primary_key`    | `bool`         | No       | Marks this field as the primary key for the entity.                                                                                                                                                         |
 | `lookup_index`   | `bool` \| `fn` | No       | Creates a lookup index for this field. Accepts an optional `register_from` parameter for cross-account PDA resolution (see [Cross-Account Resolution](#cross-account-resolution-with-register_from) below). |
 | `strategy`       | `Strategy`     | No       | Update strategy (default: `SetOnce`).                                                                                                                                                                       |
@@ -115,15 +115,15 @@ pub trades: Vec<TradeEvent>,
 
 **Arguments:**
 
-| Argument     | Type       | Required | Description                                                                                                                |
-| ------------ | ---------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `from`       | `path`     | Yes      | The source instruction or event type.                                                                                      |
+| Argument     | Type       | Required | Description                                                                                                                                                                      |
+| ------------ | ---------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `from`       | `path`     | Yes      | The source instruction or event type.                                                                                                                                            |
 | `fields`     | `array`    | Yes      | List of fields to capture. Use `accounts::name` for instruction accounts and `args::name` (or `data::name`) for instruction arguments. Event sources expose payload fields only. |
-| `strategy`   | `Strategy` | No       | Update strategy (default: `SetOnce`).                                                                                      |
-| `transforms` | `array`    | No       | List of `(field, Transform)` tuples for processing captured fields.                                                        |
-| `lookup_by`  | `field`    | No       | Field used to resolve the entity key.                                                                                      |
-| `rename`     | `string`   | No       | Custom target field name.                                                                                                  |
-| `join_on`    | `field`    | No       | Join field for multi-entity lookups.                                                                                       |
+| `strategy`   | `Strategy` | No       | Update strategy (default: `SetOnce`).                                                                                                                                            |
+| `transforms` | `array`    | No       | List of `(field, Transform)` tuples for processing captured fields.                                                                                                              |
+| `lookup_by`  | `field`    | No       | Field used to resolve the entity key.                                                                                                                                            |
+| `rename`     | `string`   | No       | Custom target field name.                                                                                                                                                        |
+| `join_on`    | `field`    | No       | Join field for multi-entity lookups.                                                                                                                                             |
 
 ### `#[snapshot]`
 
@@ -156,16 +156,16 @@ pub total_volume: u64,
 
 **Arguments:**
 
-| Argument    | Type              | Required | Description                                                                             |
-| ----------- | ----------------- | -------- | --------------------------------------------------------------------------------------- |
-| `from`      | `path` \| `array` | Yes      | Instruction(s) or event(s) to aggregate from.                                           |
+| Argument    | Type              | Required | Description                                                                                                                            |
+| ----------- | ----------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `from`      | `path` \| `array` | Yes      | Instruction(s) or event(s) to aggregate from.                                                                                          |
 | `field`     | `field`           | No       | Field to aggregate. Use `accounts::name` or `args::name` for instructions, or payload fields for events. If omitted, performs `Count`. |
-| `strategy`  | `Strategy`        | No       | `Sum`, `Count`, `Min`, `Max`, `UniqueCount`.                                            |
-| `condition` | `string`          | No       | Boolean expression (e.g., `"amount > 1_000_000"`).                                      |
-| `transform` | `Transform`       | No       | Transform to apply before aggregating.                                                  |
-| `lookup_by` | `field`           | No       | Field used to resolve the entity key.                                                   |
-| `rename`    | `string`          | No       | Custom target field name.                                                               |
-| `join_on`   | `field`           | No       | Join field for multi-entity lookups.                                                    |
+| `strategy`  | `Strategy`        | No       | `Sum`, `Count`, `Min`, `Max`, `UniqueCount`.                                                                                           |
+| `condition` | `string`          | No       | Boolean expression (e.g., `"amount > 1_000_000"`).                                                                                     |
+| `transform` | `Transform`       | No       | Transform to apply before aggregating.                                                                                                 |
+| `lookup_by` | `field`           | No       | Field used to resolve the entity key.                                                                                                  |
+| `rename`    | `string`          | No       | Custom target field name.                                                                                                              |
+| `join_on`   | `field`           | No       | Join field for multi-entity lookups.                                                                                                   |
 
 ### `#[computed]`
 
@@ -231,14 +231,14 @@ pub last_updated: i64,
 
 **Arguments:**
 
-| Argument    | Type              | Required | Description                                                        |
-| ----------- | ----------------- | -------- | ------------------------------------------------------------------ |
-| `from`      | `path` \| `array` | Yes      | Instruction(s) or event(s) to derive from.                         |
+| Argument    | Type              | Required | Description                                                                |
+| ----------- | ----------------- | -------- | -------------------------------------------------------------------------- |
+| `from`      | `path` \| `array` | Yes      | Instruction(s) or event(s) to derive from.                                 |
 | `field`     | `field`           | Yes      | Target field. Can be a special field or a regular instruction/event field. |
-| `strategy`  | `Strategy`        | No       | `LastWrite` or `SetOnce`.                                          |
-| `condition` | `string`          | No       | Boolean expression for conditional derivation.                     |
-| `transform` | `Transform`       | No       | Transform to apply.                                                |
-| `lookup_by` | `field`           | No       | Field used to resolve the entity key.                              |
+| `strategy`  | `Strategy`        | No       | `LastWrite` or `SetOnce`.                                                  |
+| `condition` | `string`          | No       | Boolean expression for conditional derivation.                             |
+| `transform` | `Transform`       | No       | Transform to apply.                                                        |
+| `lookup_by` | `field`           | No       | Field used to resolve the entity key.                                      |
 
 **Special Fields:**
 

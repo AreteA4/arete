@@ -46,17 +46,17 @@ Think of a generated stack as a **cartridge**: it packages a domain's typed data
 
 A connected stack at `session.stacks.<name>` has these stable namespaces:
 
-| Namespace | Purpose |
-| --- | --- |
-| `views` | Typed live and point-in-time entity views |
-| `queries` | Stack-level HTTP queries |
-| `programs` | Programs packaged with the stack |
-| `addresses` | Domain address derivations, when defined |
-| `constants` | Domain constants and enums, when defined |
-| `defaults` | Reusable domain defaults, when defined |
-| `math` | Pure domain calculations, when defined |
-| `read` | Connected domain reads, when defined |
-| `flows` | Stack-level multi-transaction operations, when defined |
+| Namespace   | Purpose                                                |
+| ----------- | ------------------------------------------------------ |
+| `views`     | Typed live and point-in-time entity views              |
+| `queries`   | Stack-level HTTP queries                               |
+| `programs`  | Programs packaged with the stack                       |
+| `addresses` | Domain address derivations, when defined               |
+| `constants` | Domain constants and enums, when defined               |
+| `defaults`  | Reusable domain defaults, when defined                 |
+| `math`      | Pure domain calculations, when defined                 |
+| `read`      | Connected domain reads, when defined                   |
+| `flows`     | Stack-level multi-transaction operations, when defined |
 
 Programs at `session.stacks.<name>.programs.<program>` and `session.programs.<name>` have these stable namespaces: `programId`, `schemas`, `pdas`, `addresses`, `accounts`, `queries`, `raw`, `instructions`, `transactions`, `flows`, `constants`, `defaults`, and `math`.
 
