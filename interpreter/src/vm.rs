@@ -4710,7 +4710,7 @@ impl VmContext {
         let cutoff = now - TEMPORAL_HISTORY_TTL_SECONDS;
         let mut total_removed = 0;
 
-        for (_, index) in state.temporal_indexes.iter_mut() {
+        for index in state.temporal_indexes.values_mut() {
             total_removed += index.cleanup_expired(cutoff);
         }
 
