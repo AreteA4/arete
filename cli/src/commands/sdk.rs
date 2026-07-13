@@ -1105,49 +1105,10 @@ fn infer_extensions_artifact_from_entry(entry_path: &Path) -> Result<ResolvedExt
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow::anyhow!("Invalid extensions entry path: {}", entry_path.display()))?
         .to_string();
-    let entry_stem = entry_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!("Invalid extensions entry path: {}", entry_path.display())
-        })?;
-
-    let mut files = if let Some(prefix) = entry_stem.strip_suffix("-extensions") {
-        let file_prefix = format!("{}-", prefix);
-        fs::read_dir(&source_dir)
-            .with_context(|| {
-                format!(
-                    "Failed to read extensions directory: {}",
-                    source_dir.display()
-                )
-            })?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("ts"))
-            .filter_map(|path| {
-                let name = path.file_name()?.to_str()?.to_string();
-                if !name.starts_with(&file_prefix)
-                    || name.ends_with("-stream.ts")
-                    || name.ends_with("-stream-core.ts")
-                {
-                    return None;
-                }
-                Some(name)
-            })
-            .collect::<Vec<_>>()
-    } else {
-        vec![entry.clone()]
-    };
-
-    if !files.iter().any(|file| file == &entry) {
-        files.push(entry.clone());
-    }
-    files.sort();
-    files.dedup();
 
     build_extensions_artifact(
-        entry,
-        read_extensions_files(&source_dir, &files)?,
+        entry.clone(),
+        read_extensions_files(&source_dir, &[entry])?,
         None,
         None,
         None,
@@ -2686,6 +2647,34 @@ mod tests {
                 .map(|file| file.path.as_str())
                 .collect::<Vec<_>>(),
             vec!["index.ts"]
+        );
+    }
+
+    #[test]
+    fn named_extension_fallback_does_not_capture_prefixed_sibling_files() {
+        let source_dir =
+            std::env::temp_dir().join(format!("a4-named-extensions-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&source_dir);
+        fs::create_dir_all(&source_dir).expect("temp extensions directory should be created");
+        fs::write(source_dir.join("ore-extensions.ts"), "export default {};")
+            .expect("named extension should be written");
+        fs::write(
+            source_dir.join("ore-stale.ts"),
+            "this is not valid TypeScript",
+        )
+        .expect("stale extension should be written");
+
+        let artifact = infer_extensions_artifact_from_entry(&source_dir.join("ore-extensions.ts"))
+            .expect("named extension should resolve");
+
+        let _ = fs::remove_dir_all(&source_dir);
+        assert_eq!(
+            artifact
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ore-extensions.ts"]
         );
     }
 
