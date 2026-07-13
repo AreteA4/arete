@@ -185,6 +185,7 @@ export function buildProgramHookInterfaces<TClient extends ExecutionClient>(
       addresses: program.addresses,
       constants: program.constants,
       defaults: program.defaults,
+      math: program.math,
       raw: raw as ProgramHookInterface<ProgramSdkDefinition, TClient>['raw'],
       instructions: wrapMaybeOperationNamespace(program.instructions, client, createMutationHook) as ProgramHookInterface<ProgramSdkDefinition, TClient>['instructions'],
       transactions: wrapMaybeOperationNamespace(program.transactions, client, createMutationHook) as ProgramHookInterface<ProgramSdkDefinition, TClient>['transactions'],
