@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -326,14 +327,74 @@ pub struct RegistrySchemaResponse {
     pub schema: StackSchema,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryAstResponse {
     pub name: String,
     pub stack: String,
     pub websocket_url: String,
+    pub http_url: String,
+    pub websocket_auth: serde_json::Value,
+    pub http_auth: serde_json::Value,
     pub description: Option<String>,
     pub visibility: String,
     pub ast_payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegistrySdkExtensionInputKind {
+    StackAst,
+    ProgramIdl,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistrySdkExtensionManifest {
+    pub entry: String,
+    pub files: Vec<String>,
+    pub input_kind: Option<RegistrySdkExtensionInputKind>,
+    pub input_hash: Option<String>,
+    pub sdk_range: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistrySdkExtensionArtifact {
+    pub artifact_hash: String,
+    pub manifest: RegistrySdkExtensionManifest,
+    pub files: BTreeMap<String, String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryStackInstallResponse {
+    pub name: String,
+    pub stack: String,
+    pub websocket_url: String,
+    pub http_url: String,
+    pub websocket_auth: serde_json::Value,
+    pub http_auth: serde_json::Value,
+    pub description: Option<String>,
+    pub visibility: String,
+    pub spec_version_id: Option<i32>,
+    pub ast_content_hash: String,
+    pub ast_payload: serde_json::Value,
+    pub extensions: Option<RegistrySdkExtensionArtifact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryProgramInstallResponse {
+    pub display_name: String,
+    pub program_id: String,
+    pub install_name: Option<String>,
+    pub name: String,
+    pub version: String,
+    pub idl_content_hash: String,
+    pub idl_payload: serde_json::Value,
+    pub extensions: Option<RegistrySdkExtensionArtifact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -604,6 +665,7 @@ impl ApiClient {
     }
 
     /// Get raw AST for a deployed registry stack identifier.
+    #[allow(dead_code)]
     pub fn get_registry_ast_by_stack(&self, stack: &str) -> Result<RegistryAstResponse> {
         let response = self
             .with_optional_auth(self.client.get(format!(
@@ -612,6 +674,35 @@ impl ApiClient {
             )))
             .send()
             .context("Failed to send registry AST request")?;
+
+        Self::handle_response(response)
+    }
+
+    /// Get deployment-pinned install data for a hosted stack.
+    pub fn get_registry_stack_install(&self, stack: &str) -> Result<RegistryStackInstallResponse> {
+        let response = self
+            .with_optional_auth(self.client.get(format!(
+                "{}/api/registry/stacks/{}/install",
+                self.base_url, stack
+            )))
+            .send()
+            .context("Failed to send registry stack install request")?;
+
+        Self::handle_response(response)
+    }
+
+    /// Get canonical install data for a hosted program SDK.
+    pub fn get_registry_program_install(
+        &self,
+        program: &str,
+    ) -> Result<RegistryProgramInstallResponse> {
+        let response = self
+            .with_optional_auth(self.client.get(format!(
+                "{}/api/registry/programs/{}/install",
+                self.base_url, program
+            )))
+            .send()
+            .context("Failed to send registry program install request")?;
 
         Self::handle_response(response)
     }

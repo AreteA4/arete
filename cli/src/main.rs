@@ -127,8 +127,11 @@ enum Commands {
 
     /// Generate a TypeScript or Rust SDK from a hosted stack
     Install {
-        /// Hosted stack identifier to generate SDK for
-        stack_name: String,
+        /// Hosted stack identifier, or the reserved install target `program`
+        target: String,
+
+        /// Program install identifier when using `a4 install program <program>`
+        install_name: Option<String>,
 
         /// Generate a TypeScript SDK
         #[arg(long, conflicts_with = "rust")]
@@ -157,6 +160,10 @@ enum Commands {
         /// WebSocket URL for the stack
         #[arg(long)]
         url: Option<String>,
+
+        /// Local extensions artifact source (manifest file, entry file, or directory)
+        #[arg(long)]
+        extensions: Option<String>,
     },
 
     /// SDK generation commands
@@ -195,6 +202,9 @@ enum SdkCommands {
     /// Create SDK from a stack
     Create(SdkCreateArgs),
 
+    /// Regenerate SDKs for every configured stack
+    Sync(SdkSyncArgs),
+
     /// List all available stacks from arete.toml
     List,
 }
@@ -202,7 +212,8 @@ enum SdkCommands {
 #[derive(Args)]
 struct SdkCreateArgs {
     /// Name of the stack to generate SDK for
-    stack_name: String,
+    #[arg(required_unless_present = "idl", conflicts_with = "idl")]
+    stack_name: Option<String>,
 
     /// Generate a TypeScript SDK
     #[arg(long, conflicts_with = "rust")]
@@ -231,6 +242,34 @@ struct SdkCreateArgs {
     /// WebSocket URL for the stack (overrides config)
     #[arg(long)]
     url: Option<String>,
+
+    /// Local extensions artifact source (manifest file, entry file, or directory)
+    #[arg(long)]
+    extensions: Option<String>,
+
+    /// Raw IDL file to generate a standalone program SDK from (TypeScript + --program-only only)
+    #[arg(long, requires = "program_only", conflicts_with = "stack_name")]
+    idl: Option<String>,
+
+    /// Emit a standalone program-SDK module (pdas/accounts/instructions, no
+    /// views or stack const). TypeScript only.
+    #[arg(long, conflicts_with = "rust")]
+    program_only: bool,
+}
+
+#[derive(Args)]
+struct SdkSyncArgs {
+    /// Sync TypeScript SDKs only
+    #[arg(long, conflicts_with = "rust")]
+    ts: bool,
+
+    /// Sync Rust SDKs only
+    #[arg(long, conflicts_with = "ts")]
+    rust: bool,
+
+    /// Limit sync to one or more configured stack names
+    #[arg(long = "stack", short = 's')]
+    stacks: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -518,7 +557,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         },
         Commands::Push { stack_name } => commands::stack::push(&cli.config, stack_name.as_deref()),
         Commands::Install {
-            stack_name,
+            target,
+            install_name,
             ts,
             rust,
             output,
@@ -526,8 +566,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             crate_name,
             module,
             url,
-        } => commands::sdk::install(
-            &stack_name,
+            extensions,
+        } => commands::sdk::install_command(
+            &target,
+            install_name.as_deref(),
             ts,
             rust,
             output,
@@ -535,11 +577,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             crate_name,
             module,
             url,
+            extensions,
         ),
         Commands::Sdk(sdk_cmd) => match sdk_cmd {
             SdkCommands::Create(create_args) => commands::sdk::create(
                 &cli.config,
-                &create_args.stack_name,
+                create_args.stack_name.as_deref(),
                 create_args.ts,
                 create_args.rust,
                 create_args.output,
@@ -547,7 +590,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 create_args.crate_name,
                 create_args.module,
                 create_args.url,
+                create_args.extensions,
+                create_args.idl,
+                create_args.program_only,
             ),
+            SdkCommands::Sync(sync_args) => {
+                commands::sdk::sync(&cli.config, sync_args.ts, sync_args.rust, sync_args.stacks)
+            }
             SdkCommands::List => commands::sdk::list(&cli.config),
         },
         Commands::Config(config_cmd) => match config_cmd {
@@ -626,5 +675,47 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             TelemetryCommands::Enable => commands::telemetry::enable(),
             TelemetryCommands::Disable => commands::telemetry::disable(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_install_stack_shorthand() {
+        let cli = Cli::try_parse_from(["a4", "install", "ore"]).expect("cli should parse");
+
+        match cli.command {
+            Some(Commands::Install {
+                target,
+                install_name,
+                ..
+            }) => {
+                assert_eq!(target, "ore");
+                assert_eq!(install_name, None);
+            }
+            _ => panic!("expected install command"),
+        }
+    }
+
+    #[test]
+    fn parse_install_program_target() {
+        let cli = Cli::try_parse_from(["a4", "install", "program", "spl-token", "--ts"])
+            .expect("cli should parse");
+
+        match cli.command {
+            Some(Commands::Install {
+                target,
+                install_name,
+                ts,
+                ..
+            }) => {
+                assert_eq!(target, "program");
+                assert_eq!(install_name.as_deref(), Some("spl-token"));
+                assert!(ts);
+            }
+            _ => panic!("expected install command"),
+        }
     }
 }
