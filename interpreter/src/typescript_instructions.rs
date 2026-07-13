@@ -6,9 +6,6 @@
 //! generated: the output is metadata (discriminator, ordered accounts, arg
 //! schema, errors) plus typed `Params`/`Error` shapes the core runtime
 //! interprets.
-//!
-//! The generated handlers are the codegen counterpart to the hand-written
-//! golden fixture in `examples/subscriptions-instructions/src/handlers.ts`.
 
 use crate::ast::{
     AccountResolution, AmountDecimalsSource, IdlArrayElementSnapshot, IdlDefinedInnerSnapshot,
