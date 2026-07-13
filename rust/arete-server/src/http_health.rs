@@ -45,6 +45,16 @@ impl HttpHealthConfig {
     }
 }
 
+#[derive(Clone)]
+struct HttpRequestState {
+    health_monitor: Arc<Option<HealthMonitor>>,
+    rpc_url: Arc<Option<String>>,
+    rpc_client: Client,
+    program_account_reader: Arc<Option<ProgramAccountReaderFn>>,
+    auth_plugin: Arc<Option<Arc<dyn WebSocketAuthPlugin>>>,
+    limit_state: Arc<HttpLimitState>,
+}
+
 /// HTTP server that exposes health endpoints
 pub struct HttpHealthServer {
     bind_addr: SocketAddr,
@@ -84,45 +94,25 @@ impl HttpHealthServer {
         let listener = TcpListener::bind(&self.bind_addr).await?;
         info!("HTTP health server listening on {}", self.bind_addr);
 
-        let health_monitor = Arc::new(self.health_monitor);
-        let program_account_reader = Arc::new(self.program_account_reader);
-        let auth_plugin = Arc::new(self.auth_plugin);
-        let rpc_url = Arc::new(resolve_rpc_url());
-        let rpc_client = Client::builder().build()?;
-        let http_limit_state = Arc::new(HttpLimitState::default());
+        let request_state = HttpRequestState {
+            health_monitor: Arc::new(self.health_monitor),
+            rpc_url: Arc::new(resolve_rpc_url()),
+            rpc_client: Client::builder().build()?,
+            program_account_reader: Arc::new(self.program_account_reader),
+            auth_plugin: Arc::new(self.auth_plugin),
+            limit_state: Arc::new(HttpLimitState::default()),
+        };
 
         loop {
             match listener.accept().await {
                 Ok((stream, remote_addr)) => {
                     let io = TokioIo::new(stream);
-                    let monitor = health_monitor.clone();
-                    let reader = program_account_reader.clone();
-                    let auth_plugin = auth_plugin.clone();
-                    let rpc_url = rpc_url.clone();
-                    let rpc_client = rpc_client.clone();
-                    let http_limit_state = http_limit_state.clone();
+                    let request_state = request_state.clone();
 
                     tokio::spawn(async move {
                         let service = service_fn(move |req| {
-                            let monitor = monitor.clone();
-                            let reader = reader.clone();
-                            let auth_plugin = auth_plugin.clone();
-                            let rpc_url = rpc_url.clone();
-                            let rpc_client = rpc_client.clone();
-                            let http_limit_state = http_limit_state.clone();
-                            async move {
-                                handle_request(
-                                    remote_addr,
-                                    req,
-                                    monitor,
-                                    rpc_url,
-                                    rpc_client,
-                                    reader,
-                                    auth_plugin,
-                                    http_limit_state,
-                                )
-                                .await
-                            }
+                            let request_state = request_state.clone();
+                            async move { handle_request(remote_addr, req, request_state).await }
                         });
 
                         if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
@@ -141,13 +131,16 @@ impl HttpHealthServer {
 async fn handle_request(
     remote_addr: SocketAddr,
     req: Request<hyper::body::Incoming>,
-    health_monitor: Arc<Option<HealthMonitor>>,
-    rpc_url: Arc<Option<String>>,
-    rpc_client: Client,
-    program_account_reader: Arc<Option<ProgramAccountReaderFn>>,
-    auth_plugin: Arc<Option<Arc<dyn WebSocketAuthPlugin>>>,
-    http_limit_state: Arc<HttpLimitState>,
+    state: HttpRequestState,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    let HttpRequestState {
+        health_monitor,
+        rpc_url,
+        rpc_client,
+        program_account_reader,
+        auth_plugin,
+        limit_state,
+    } = state;
     let path = req.uri().path().to_string();
 
     match path.as_str() {
@@ -227,7 +220,7 @@ async fn handle_request(
                 remote_addr,
                 &req,
                 auth_plugin.as_ref().as_ref(),
-                &http_limit_state,
+                &limit_state,
             )
             .await
             {
@@ -241,7 +234,7 @@ async fn handle_request(
                 remote_addr,
                 &req,
                 auth_plugin.as_ref().as_ref(),
-                &http_limit_state,
+                &limit_state,
             )
             .await
             {
@@ -355,7 +348,7 @@ async fn authorize_http_request(
 fn enforce_http_limits(
     context: &crate::websocket::auth::AuthContext,
     limit_state: &HttpLimitState,
-) -> std::result::Result<(), AuthDeny> {
+) -> std::result::Result<(), Box<AuthDeny>> {
     let Some(limit) = context.limits.max_http_requests_per_minute else {
         return Ok(());
     };
@@ -374,10 +367,10 @@ fn enforce_http_limits(
         *entry = (now_bucket, 0);
     }
     if entry.1 >= limit {
-        return Err(AuthDeny::rate_limited(
+        return Err(Box::new(AuthDeny::rate_limited(
             Duration::from_secs(60),
             "http reads",
-        ));
+        )));
     }
     entry.1 += 1;
     Ok(())

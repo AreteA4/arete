@@ -119,8 +119,8 @@ pub fn lookup_event<'a>(
         .ok_or_else(|| build_not_found_error(event_name, "events".to_string(), available))
 }
 
-pub fn lookup_event_field<'a>(
-    idl: &'a IdlSpec,
+pub fn lookup_event_field(
+    idl: &IdlSpec,
     event_name: &str,
     field_name: &str,
 ) -> Result<(), IdlSearchError> {

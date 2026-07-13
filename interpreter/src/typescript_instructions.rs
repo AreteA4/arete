@@ -177,9 +177,7 @@ fn find_instruction_snapshot<'a>(
             instruction
                 .program_id
                 .as_deref()
-                .map_or(true, |program_id| {
-                    idl.program_id.as_deref() == Some(program_id)
-                })
+                .is_none_or(|program_id| idl.program_id.as_deref() == Some(program_id))
         })
         .flat_map(|idl| idl.instructions.iter())
         .filter(|candidate| instruction_snapshot_matches(instruction, candidate));

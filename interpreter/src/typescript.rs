@@ -3042,12 +3042,7 @@ pub fn compile_stack_spec(
     let imports = assemble_sdk_imports(
         stack_spec.pdas.values().any(|p| !p.is_empty()),
         !idl_account_artifacts.account_type_names.is_empty(),
-        instructions_codegen.needs_runtime_import,
-        !instructions_codegen.stack_entries.is_empty(),
-        instructions_codegen.needs_program_runtime_extensions,
-        instructions_codegen.needs_amount_input,
-        instructions_codegen.needs_resolve_amount_to_raw,
-        instructions_codegen.needs_to_raw_amount,
+        &instructions_codegen,
     );
 
     Ok(TypeScriptStackOutput {
@@ -3064,12 +3059,7 @@ pub fn compile_stack_spec(
 fn assemble_sdk_imports(
     has_pdas: bool,
     has_account_reads: bool,
-    needs_instruction_runtime: bool,
-    needs_prepare_helpers: bool,
-    needs_program_runtime_extensions: bool,
-    needs_amount_input: bool,
-    needs_resolve_amount_to_raw: bool,
-    needs_to_raw_amount: bool,
+    instructions_codegen: &crate::typescript_instructions::InstructionsCodegen,
 ) -> String {
     let mut sdk_named: Vec<String> = Vec::new();
     if has_pdas {
@@ -3080,27 +3070,27 @@ fn assemble_sdk_imports(
     if has_account_reads {
         sdk_named.push("programAccountRead".to_string());
     }
-    if needs_instruction_runtime {
+    if instructions_codegen.needs_runtime_import {
         sdk_named.push("createInstructionHandler".to_string());
         sdk_named.push("type ErrorMetadata".to_string());
     }
-    if needs_prepare_helpers {
+    if !instructions_codegen.stack_entries.is_empty() {
         sdk_named.push("buildInstruction".to_string());
         sdk_named.push("type BuildOptions".to_string());
     }
-    if needs_program_runtime_extensions {
+    if instructions_codegen.needs_program_runtime_extensions {
         sdk_named.push("PROGRAM_OPERATION_EXTENSIONS".to_string());
         sdk_named.push("type ProgramOperationContext".to_string());
         sdk_named.push("instructionOperation".to_string());
         sdk_named.push("createPreparedInstruction".to_string());
     }
-    if needs_amount_input {
+    if instructions_codegen.needs_amount_input {
         sdk_named.push("type AmountInput".to_string());
     }
-    if needs_resolve_amount_to_raw {
+    if instructions_codegen.needs_resolve_amount_to_raw {
         sdk_named.push("resolveAmountToRaw".to_string());
     }
-    if needs_to_raw_amount {
+    if instructions_codegen.needs_to_raw_amount {
         sdk_named.push("toRawAmount".to_string());
     }
     if sdk_named.is_empty() {
@@ -3173,12 +3163,7 @@ pub fn compile_program_modules(
     let imports = assemble_sdk_imports(
         stack_spec.pdas.values().any(|p| !p.is_empty()),
         !idl_account_artifacts.account_type_names.is_empty(),
-        instructions_codegen.needs_runtime_import,
-        !instructions_codegen.stack_entries.is_empty(),
-        instructions_codegen.needs_program_runtime_extensions,
-        instructions_codegen.needs_amount_input,
-        instructions_codegen.needs_resolve_amount_to_raw,
-        instructions_codegen.needs_to_raw_amount,
+        &instructions_codegen,
     );
 
     Ok(TypeScriptStackOutput {
@@ -3667,42 +3652,6 @@ fn generate_program_pda_entries(
         .collect()
 }
 
-fn generate_program_prepare_entries(
-    instruction_entries: &[&crate::typescript_instructions::StackInstructionEntry],
-    indent: &str,
-) -> Vec<String> {
-    instruction_entries
-        .iter()
-        .map(|entry| {
-            format!(
-                "{indent}{instruction_name}: (params: {params_type}, options?: BuildOptions) => buildInstruction({handler_const}, params as unknown as Record<string, unknown>, options),",
-                indent = indent,
-                instruction_name = entry.instruction_name,
-                params_type = entry.params_type,
-                handler_const = entry.handler_const,
-            )
-        })
-        .collect()
-}
-
-fn generate_program_plan_entries(
-    instruction_entries: &[&crate::typescript_instructions::StackInstructionEntry],
-    indent: &str,
-) -> Vec<String> {
-    instruction_entries
-        .iter()
-        .map(|entry| {
-            format!(
-                "{indent}{instruction_name}: (params: {params_type}, options?: BuildOptions) => {{\n{indent}  const instruction = buildInstruction({handler_const}, params as unknown as Record<string, unknown>, options);\n{indent}  return {{\n{indent}    name: '{instruction_name}',\n{indent}    artifacts: {{ instruction }},\n{indent}    stages: [{{\n{indent}      name: '{instruction_name}',\n{indent}      instructions: [instruction],\n{indent}      requiredSignerAddresses: instruction.keys.filter((key) => key.isSigner).map((key) => key.pubkey),\n{indent}      errors: {handler_const}.errors,\n{indent}    }}],\n{indent}  }};\n{indent}}},",
-                indent = indent,
-                instruction_name = entry.instruction_name,
-                params_type = entry.params_type,
-                handler_const = entry.handler_const,
-            )
-        })
-        .collect()
-}
-
 fn generate_stack_addresses_block(
     idls: &[IdlSnapshot],
     pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
@@ -3760,111 +3709,6 @@ fn generate_stack_addresses_block(
         String::new()
     } else {
         format!("\n  addresses: {{\n{}\n  }},", blocks.join("\n"))
-    }
-}
-
-fn generate_stack_prepare_block(
-    idls: &[IdlSnapshot],
-    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
-) -> String {
-    if instruction_entries.is_empty() {
-        return String::new();
-    }
-
-    if idls.len() <= 1 {
-        let single_program_entries: Vec<&crate::typescript_instructions::StackInstructionEntry> =
-            instruction_entries.iter().collect();
-        let entries = generate_program_prepare_entries(&single_program_entries, "    ");
-        return format!("\n  prepare: {{\n{}\n  }},", entries.join("\n"));
-    }
-
-    let mut lines: Vec<String> = instruction_entries
-        .iter()
-        .filter(|entry| entry.program_key.is_none())
-        .map(|entry| {
-            format!(
-                "    {}: (params: {}, options?: BuildOptions) => buildInstruction({}, params as unknown as Record<string, unknown>, options),",
-                entry.instruction_name, entry.params_type, entry.handler_const
-            )
-        })
-        .collect();
-
-    for idl in idls {
-        let program_key = to_camel_case(&idl.name);
-        let program_entries: Vec<&crate::typescript_instructions::StackInstructionEntry> =
-            instruction_entries
-                .iter()
-                .filter(|entry| entry.program_key.as_deref() == Some(program_key.as_str()))
-                .collect();
-        if program_entries.is_empty() {
-            continue;
-        }
-        lines.push(format!(
-            "    {}: {{\n{}\n    }},",
-            program_key,
-            generate_program_prepare_entries(&program_entries, "      ").join("\n")
-        ));
-    }
-
-    if lines.is_empty() {
-        String::new()
-    } else {
-        format!("\n  prepare: {{\n{}\n  }},", lines.join("\n"))
-    }
-}
-
-fn generate_stack_plan_block(
-    idls: &[IdlSnapshot],
-    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
-) -> String {
-    if instruction_entries.is_empty() {
-        return String::new();
-    }
-
-    if idls.len() <= 1 {
-        let single_program_entries: Vec<&crate::typescript_instructions::StackInstructionEntry> =
-            instruction_entries.iter().collect();
-        let entries = generate_program_plan_entries(&single_program_entries, "    ");
-        return format!("\n  rawPlan: {{\n{}\n  }},", entries.join("\n"));
-    }
-
-    let mut lines: Vec<String> = instruction_entries
-        .iter()
-        .filter(|entry| entry.program_key.is_none())
-        .map(|entry| {
-            format!(
-                "    {}: (params: {}, options?: BuildOptions) => {{\n      const instruction = buildInstruction({}, params as unknown as Record<string, unknown>, options);\n      return {{\n        name: '{}',\n        artifacts: {{ instruction }},\n        stages: [{{\n          name: '{}',\n          instructions: [instruction],\n          requiredSignerAddresses: instruction.keys.filter((key) => key.isSigner).map((key) => key.pubkey),\n          errors: {}.errors,\n        }}],\n      }};\n    }},",
-                entry.instruction_name,
-                entry.params_type,
-                entry.handler_const,
-                entry.instruction_name,
-                entry.instruction_name,
-                entry.handler_const,
-            )
-        })
-        .collect();
-
-    for idl in idls {
-        let program_key = to_camel_case(&idl.name);
-        let program_entries: Vec<&crate::typescript_instructions::StackInstructionEntry> =
-            instruction_entries
-                .iter()
-                .filter(|entry| entry.program_key.as_deref() == Some(program_key.as_str()))
-                .collect();
-        if program_entries.is_empty() {
-            continue;
-        }
-        lines.push(format!(
-            "    {}: {{\n{}\n    }},",
-            program_key,
-            generate_program_plan_entries(&program_entries, "      ").join("\n")
-        ));
-    }
-
-    if lines.is_empty() {
-        String::new()
-    } else {
-        format!("\n  rawPlan: {{\n{}\n  }},", lines.join("\n"))
     }
 }
 

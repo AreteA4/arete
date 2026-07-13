@@ -5618,8 +5618,7 @@ impl VmContext {
             });
             vm.evaluate_computed_fields_from_ast(state, &specs)
                 .map_err(|error| {
-                    Box::<dyn std::error::Error + Send + Sync>::from(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    Box::<dyn std::error::Error + Send + Sync>::from(std::io::Error::other(
                         error.to_string(),
                     ))
                 })?;

@@ -260,8 +260,8 @@ pub fn sync(config_path: &str, ts: bool, rust: bool, stack_filters: Vec<String>)
         anyhow::bail!("No stacks are configured in {}", config_path);
     }
 
-    let sync_typescript = ts || (!ts && !rust);
-    let sync_rust = rust || (!ts && !rust);
+    let sync_typescript = ts || !rust;
+    let sync_rust = rust || !ts;
     let filter_set: BTreeSet<String> = stack_filters.into_iter().collect();
     let selected = resolve_sync_stack_names(&config, &filter_set)?;
 
@@ -372,6 +372,7 @@ pub fn create(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_typescript(
     config_path: &str,
     stack_name: Option<&str>,
@@ -1764,10 +1765,18 @@ fn generate_typescript_program_sdk_from_idl(
         stack_spec,
         output_path,
         package_name,
-        &input_pin,
-        extensions_path,
-        None,
+        TypeScriptProgramSdkExtensions {
+            input_pin: &input_pin,
+            path: extensions_path,
+            hosted_artifact: None,
+        },
     )
+}
+
+struct TypeScriptProgramSdkExtensions<'a> {
+    input_pin: &'a ResolvedExtensionsInputPin,
+    path: Option<&'a Path>,
+    hosted_artifact: Option<&'a ResolvedExtensionsArtifact>,
 }
 
 fn write_typescript_program_sdk(
@@ -1776,9 +1785,7 @@ fn write_typescript_program_sdk(
     stack_spec: arete_interpreter::ast::SerializableStackSpec,
     output_path: &Path,
     package_name: &str,
-    input_pin: &ResolvedExtensionsInputPin,
-    extensions_path: Option<&Path>,
-    hosted_artifact: Option<&ResolvedExtensionsArtifact>,
+    extensions: TypeScriptProgramSdkExtensions<'_>,
 ) -> Result<()> {
     let output = arete_interpreter::typescript::compile_program_modules(
         stack_spec,
@@ -1812,9 +1819,10 @@ fn write_typescript_program_sdk(
         )
     })?;
 
-    let artifact = resolve_extensions_artifact(extensions_path, &layout, hosted_artifact)?;
+    let artifact =
+        resolve_extensions_artifact(extensions.path, &layout, extensions.hosted_artifact)?;
     if let Some(ref artifact) = artifact {
-        stage_extensions_artifact(artifact, &layout.output_dir, input_pin)?;
+        stage_extensions_artifact(artifact, &layout.output_dir, extensions.input_pin)?;
     }
 
     let entry_contents = render_typescript_program_entry(
@@ -1859,13 +1867,15 @@ fn generate_typescript_program_sdk_from_install(
 
     write_typescript_program_sdk(
         sdk_name,
-        &idl.get_name().to_string(),
+        idl.get_name(),
         stack_spec,
         output_path,
         package_name,
-        &input_pin,
-        extensions_path,
-        hosted_artifact,
+        TypeScriptProgramSdkExtensions {
+            input_pin: &input_pin,
+            path: extensions_path,
+            hosted_artifact,
+        },
     )
 }
 
