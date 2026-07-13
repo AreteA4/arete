@@ -4,79 +4,434 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to recover (e.g. 0.5.0)"
+        description: Existing linked release version, without the v prefix
         required: true
         type: string
-      release_name:
-        description: "Release name/tag override (default: a4-cli-v<version>)"
-        required: false
-        default: ""
+      source_sha:
+        description: Full reviewed commit SHA on main to build and publish
+        required: true
         type: string
-      mcp_release_name:
-        description: "MCP release name/tag override (default: arete-mcp-v<version>)"
-        required: false
-        default: ""
+      rust_toolchain:
+        description: Rust toolchain used to build recovery artifacts
+        required: true
+        default: 1.97.0
         type: string
-      run_bundle_templates:
-        description: "Re-run template versioning, tarball, and upload"
+      publish:
+        description: Publish crates, upload assets, and publish missing npm wrappers
         required: true
-        default: true
+        default: false
         type: boolean
-      run_build_binaries:
-        description: "Re-run cross-platform CLI binary builds and upload"
+      confirmation:
+        description: Type RECOVER followed by a space and the version
         required: true
-        default: true
-        type: boolean
-      run_publish_npm_cli:
-        description: "Re-run npm publish for packages/arete"
-        required: true
-        default: true
-        type: boolean
-      run_build_mcp_binaries:
-        description: "Re-run cross-platform MCP binary builds and upload"
-        required: true
-        default: true
-        type: boolean
-      run_publish_npm_mcp:
-        description: "Re-run npm publish for packages/mcp"
-        required: true
-        default: true
-        type: boolean
+        type: string
 
 permissions:
   contents: write
 
-env:
-  CARGO_TERM_COLOR: always
-  GH_REPO: ${{ github.repository }}
+concurrency:
+  group: recover-release-${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
-  bundle-templates:
-    name: Bundle CLI Templates
+  validate:
+    name: Validate recovery source
     runs-on: ubuntu-latest
-    if: ${{ inputs.run_bundle_templates }}
+    outputs:
+      idl_version: ${{ steps.validate.outputs.idl_version }}
+      auth_version: ${{ steps.validate.outputs.auth_version }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
+
+      - name: Validate release state
+        id: validate
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must be a stable semantic version"
+            exit 1
+          fi
+
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be a lowercase, full 40-character commit SHA"
+            exit 1
+          fi
+
+          if [[ "$CONFIRMATION" != "RECOVER $VERSION" ]]; then
+            echo "confirmation must exactly match: RECOVER $VERSION"
+            exit 1
+          fi
+
+          if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]]; then
+            echo "Checked out commit does not match source_sha"
+            exit 1
+          fi
+
+          git fetch origin main --no-tags
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" origin/main; then
+            echo "$SOURCE_SHA is not on origin/main"
+            exit 1
+          fi
+
+          METADATA="$(cargo metadata --locked --no-deps --format-version 1)"
+          crate_version() {
+            jq -r --arg name "$1" '.packages[] | select(.name == $name) | .version' <<<"$METADATA"
+          }
+
+          LINKED_CRATES=(
+            arete
+            arete-interpreter
+            arete-macros
+            arete-a4-sdk
+            arete-server
+            a4-cli
+            arete-mcp
+          )
+
+          for crate in "${LINKED_CRATES[@]}"; do
+            actual="$(crate_version "$crate")"
+            if [[ "$actual" != "$VERSION" ]]; then
+              echo "Expected $crate@$VERSION, found $actual"
+              exit 1
+            fi
+          done
+
+          for package_json in \
+            typescript/core/package.json \
+            typescript/react/package.json \
+            packages/arete/package.json \
+            packages/mcp/package.json; do
+            if ! jq -e --arg version "$VERSION" '.version == $version' "$package_json" >/dev/null; then
+              echo "Expected $package_json to have version $VERSION"
+              exit 1
+            fi
+          done
+
+          IDL_VERSION="$(crate_version arete-idl)"
+          AUTH_VERSION="$(crate_version arete-auth)"
+          echo "idl_version=$IDL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "auth_version=$AUTH_VERSION" >> "$GITHUB_OUTPUT"
+
+          git fetch --tags --force
+          RELEASE_TAGS=(
+            "arete-v$VERSION"
+            "arete-interpreter-v$VERSION"
+            "arete-macros-v$VERSION"
+            "arete-sdk-v$VERSION"
+            "arete-server-v$VERSION"
+            "a4-cli-v$VERSION"
+            "arete-mcp-v$VERSION"
+            "arete-idl-v$IDL_VERSION"
+            "arete-auth-v$AUTH_VERSION"
+            "arete-typescript-v$VERSION"
+            "arete-react-v$VERSION"
+            "a4-npm-v$VERSION"
+            "arete-mcp-npm-v$VERSION"
+          )
+
+          for tag in "${RELEASE_TAGS[@]}"; do
+            gh release view "$tag" >/dev/null
+            tag_sha="$(git rev-list -n 1 "$tag")"
+            if ! git merge-base --is-ancestor "$tag_sha" "$SOURCE_SHA"; then
+              echo "$SOURCE_SHA is not descended from $tag"
+              exit 1
+            fi
+          done
+
+          RELEASE_SHA="$(git rev-list -n 1 "arete-v$VERSION")"
+          NPM_PACKAGES=(
+            '@usearete/sdk'
+            '@usearete/react'
+            '@usearete/a4'
+            '@usearete/mcp'
+          )
+
+          for package in "${NPM_PACKAGES[@]}"; do
+            encoded_name="${package//@/%40}"
+            encoded_name="${encoded_name//\//%2F}"
+            response_file="$(mktemp)"
+            status="$(curl --silent --show-error --retry 3 --retry-all-errors \
+              --user-agent 'arete-release-workflow (https://github.com/AreteA4/arete)' \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              "https://registry.npmjs.org/${encoded_name}/${VERSION}")"
+
+            case "$status" in
+              200)
+                git_head="$(jq -r '.gitHead // empty' "$response_file")"
+                if [[ "$git_head" != "$RELEASE_SHA" && "$git_head" != "$SOURCE_SHA" ]]; then
+                  echo "$package@$VERSION has unexpected npm gitHead: $git_head"
+                  rm -f "$response_file"
+                  exit 1
+                fi
+                ;;
+              404)
+                ;;
+              *)
+                echo "Unable to check $package@$VERSION on npm (HTTP $status)"
+                cat "$response_file"
+                rm -f "$response_file"
+                exit 1
+                ;;
+            esac
+
+            rm -f "$response_file"
+          done
+
+          while IFS= read -r changed_file; do
+            case "$changed_file" in
+              .github/workflows/release-please.yml|.github/workflows/release-recovery.yml|arete/Cargo.toml|cli/Cargo.toml|release-please-config.json|rust/arete-mcp/Cargo.toml|scripts/publish-crate.sh|scripts/publish-npm-package.sh|scripts/publish-npm-version.sh|scripts/upload-release-asset.sh|stacks/ore/Cargo.lock)
+                ;;
+              *)
+                echo "Recovery source contains an unapproved change: $changed_file"
+                echo "Create a new release instead of recovering the existing version"
+                exit 1
+                ;;
+            esac
+          done < <(git diff --name-only "arete-v$VERSION..$SOURCE_SHA")
+
+          echo "Recovery source differs from the release tag by:"
+          git diff --stat "arete-v$VERSION..$SOURCE_SHA"
+
+  publish-rust:
+    name: Publish missing Rust crates
+    if: ${{ inputs.publish }}
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
+
+      - name: Publish crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          ./scripts/publish-crate.sh arete-idl
+          ./scripts/publish-crate.sh arete-macros
+          ./scripts/publish-crate.sh interpreter
+          ./scripts/publish-crate.sh rust/arete-auth
+          ./scripts/publish-crate.sh rust/arete-server
+          ./scripts/publish-crate.sh rust/arete-a4-sdk
+          ./scripts/publish-crate.sh arete
+          ./scripts/publish-crate.sh cli
+          ./scripts/publish-crate.sh rust/arete-mcp
+
+  build-binaries:
+    name: Build ${{ matrix.binary_name }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            package: a4-cli
+            source_name: a4
+            binary_name: a4-darwin-arm64
+            release: a4-cli
+            artifact_prefix: cli
+          - os: macos-15-large
+            target: x86_64-apple-darwin
+            package: a4-cli
+            source_name: a4
+            binary_name: a4-darwin-x64
+            release: a4-cli
+            artifact_prefix: cli
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            package: a4-cli
+            source_name: a4
+            binary_name: a4-linux-x64
+            release: a4-cli
+            artifact_prefix: cli
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            package: a4-cli
+            source_name: a4
+            binary_name: a4-linux-arm64
+            release: a4-cli
+            artifact_prefix: cli
+            cross: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            package: a4-cli
+            source_name: a4.exe
+            binary_name: a4-win32-x64.exe
+            release: a4-cli
+            artifact_prefix: cli
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            package: arete-mcp
+            source_name: a4-mcp
+            binary_name: a4-mcp-darwin-arm64
+            release: arete-mcp
+            artifact_prefix: mcp
+          - os: macos-15-large
+            target: x86_64-apple-darwin
+            package: arete-mcp
+            source_name: a4-mcp
+            binary_name: a4-mcp-darwin-x64
+            release: arete-mcp
+            artifact_prefix: mcp
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            package: arete-mcp
+            source_name: a4-mcp
+            binary_name: a4-mcp-linux-x64
+            release: arete-mcp
+            artifact_prefix: mcp
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            package: arete-mcp
+            source_name: a4-mcp
+            binary_name: a4-mcp-linux-arm64
+            release: arete-mcp
+            artifact_prefix: mcp
+            cross: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            package: arete-mcp
+            source_name: a4-mcp.exe
+            binary_name: a4-mcp-win32-x64.exe
+            release: arete-mcp
+            artifact_prefix: mcp
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
+          targets: ${{ matrix.target }}
+
+      - name: Install cargo-zigbuild
+        if: matrix.cross
+        run: |
+          pip3 install ziglang==0.16.0
+          cargo install cargo-zigbuild --version 0.23.0 --locked
+
+      - name: Build binary
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cargo zigbuild --locked --release --target "${{ matrix.target }}" --package "${{ matrix.package }}"
+          else
+            cargo build --locked --release --target "${{ matrix.target }}" --package "${{ matrix.package }}"
+          fi
+        shell: bash
+
+      - name: Rename binary
+        run: cp "target/${{ matrix.target }}/release/${{ matrix.source_name }}" "${{ matrix.binary_name }}"
+        shell: bash
+
+      - name: Write checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "${{ matrix.binary_name }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.binary_name }}" | Out-File -FilePath "${{ matrix.binary_name }}.sha256" -Encoding ascii
+
+      - name: Upload checksum artifact
+        if: ${{ inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_prefix }}-sha256-${{ matrix.binary_name }}
+          path: ${{ matrix.binary_name }}.sha256
+
+      - name: Upload binary to release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: ./scripts/upload-release-asset.sh "${{ matrix.release }}-v${VERSION}" "${{ matrix.binary_name }}"
+        shell: bash
+
+  publish-checksums:
+    name: Publish binary checksums
+    if: ${{ inputs.publish }}
+    needs: [validate, build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - name: Download CLI checksums
+        uses: actions/download-artifact@v5
+        with:
+          pattern: cli-sha256-*
+          path: cli-checksums
+          merge-multiple: true
+
+      - name: Download MCP checksums
+        uses: actions/download-artifact@v5
+        with:
+          pattern: mcp-sha256-*
+          path: mcp-checksums
+          merge-multiple: true
+
+      - name: Combine and publish checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          sort cli-checksums/*.sha256 > cli-checksums/checksums.txt
+          sort mcp-checksums/*.sha256 > mcp-checksums/checksums.txt
+          ./scripts/upload-release-asset.sh "a4-cli-v${VERSION}" cli-checksums/checksums.txt
+          ./scripts/upload-release-asset.sh "arete-mcp-v${VERSION}" mcp-checksums/checksums.txt
+
+  bundle-templates:
+    name: Bundle CLI templates
+    if: ${{ inputs.publish }}
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: '20'
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
 
-      - name: Prepare example templates
+      - name: Prepare and bundle templates
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          VERSION="${{ inputs.version }}"
           ./scripts/prepare-example-templates.sh "$VERSION"
-
-      - name: Create templates tarball
-        run: |
-          VERSION="${{ inputs.version }}"
-          echo "Bundling templates for version ${VERSION}"
-
           tar -czvf "arete-templates-v${VERSION}.tar.gz" \
+            --sort=name \
+            --mtime='UTC 1970-01-01' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
             --exclude='node_modules' \
             --exclude='dist' \
             --exclude='.env' \
@@ -88,304 +443,31 @@ jobs:
             ore-rust \
             ore-typescript
 
-      - name: Upload templates to CLI release
+      - name: Upload templates to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ inputs.version }}"
-          RELEASE_NAME="${{ inputs.release_name }}"
-          if [ -z "$RELEASE_NAME" ]; then
-            RELEASE_NAME="a4-cli-v${VERSION}"
-          fi
+          VERSION: ${{ inputs.version }}
+        run: ./scripts/upload-release-asset.sh "a4-cli-v${VERSION}" "arete-templates-v${VERSION}.tar.gz"
 
-          gh release upload "$RELEASE_NAME" \
-            "arete-templates-v${VERSION}.tar.gz" \
-            --clobber
-
-  build-cli-binaries:
-    name: Build CLI Binaries
-    if: ${{ inputs.run_build_binaries }}
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary_name: a4-darwin-arm64
-          - os: macos-15-large
-            target: x86_64-apple-darwin
-            binary_name: a4-darwin-x64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary_name: a4-linux-x64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            binary_name: a4-linux-arm64
-            cross: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary_name: a4-win32-x64.exe
-    runs-on: ${{ matrix.os }}
+  publish-npm-wrappers:
+    name: Publish missing npm wrappers
+    if: ${{ inputs.publish }}
+    needs: [validate, publish-rust, build-binaries, publish-checksums, bundle-templates]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
-
-      - name: Install cargo-zigbuild
-        if: ${{ matrix.cross }}
-        run: |
-          pip3 install ziglang
-          cargo install cargo-zigbuild
-
-      - name: Build binary
-        run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} --package a4-cli
-          else
-            cargo build --release --target ${{ matrix.target }} --package a4-cli
-          fi
-        shell: bash
-
-      - name: Rename binary
-        run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/${{ matrix.target }}/release/a4.exe ${{ matrix.binary_name }}
-          else
-            cp target/${{ matrix.target }}/release/a4 ${{ matrix.binary_name }}
-          fi
-        shell: bash
-
-      - name: Write checksum
-        shell: pwsh
-        run: |
-          $hash = (Get-FileHash "${{ matrix.binary_name }}" -Algorithm SHA256).Hash.ToLower()
-          "$hash  ${{ matrix.binary_name }}" | Out-File -FilePath "${{ matrix.binary_name }}.sha256" -Encoding ascii
-
-      - name: Upload checksum artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-sha256-${{ matrix.binary_name }}
-          path: ${{ matrix.binary_name }}.sha256
-
-      - name: Upload binary to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ inputs.version }}"
-          RELEASE_NAME="${{ inputs.release_name }}"
-          if [ -z "$RELEASE_NAME" ]; then
-            RELEASE_NAME="a4-cli-v${VERSION}"
-          fi
-
-          gh release upload "$RELEASE_NAME" \
-            "${{ matrix.binary_name }}" \
-            --clobber
-        shell: bash
-
-  publish-cli-checksums:
-    name: Publish CLI Checksums
-    needs: build-cli-binaries
-    runs-on: ubuntu-latest
-    if: ${{ inputs.run_build_binaries }}
-    steps:
-      - name: Download checksum artifacts
-        uses: actions/download-artifact@v5
-        with:
-          pattern: cli-sha256-*
-          path: checksums
-          merge-multiple: true
-
-      - name: Combine checksums
-        run: sort checksums/*.sha256 > checksums.txt
-
-      - name: Upload checksums to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ inputs.version }}"
-          RELEASE_NAME="${{ inputs.release_name }}"
-          if [ -z "$RELEASE_NAME" ]; then
-            RELEASE_NAME="a4-cli-v${VERSION}"
-          fi
-
-          gh release upload "$RELEASE_NAME" \
-            "checksums.txt" \
-            --clobber
-        shell: bash
-
-  publish-npm-cli:
-    name: Publish CLI to npm
-    needs: [build-cli-binaries, publish-cli-checksums]
-    runs-on: ubuntu-latest
-    if: ${{ always() && inputs.run_publish_npm_cli && (needs.build-cli-binaries.result == 'success' || needs.build-cli-binaries.result == 'skipped') && (needs.publish-cli-checksums.result == 'success' || needs.publish-cli-checksums.result == 'skipped') }}
-    steps:
-      - uses: actions/checkout@v6
+          ref: ${{ inputs.source_sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
+          node-version: '20'
+          registry-url: https://registry.npmjs.org
 
-      - name: Publish arete CLI wrapper
-        run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name")
-          PACKAGE_VERSION=$(node -p "require('./package.json').version")
-
-          echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} as $(npm whoami)"
-
-          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
-            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published"
-            exit 0
-          fi
-
-          npm publish --access public
-        working-directory: packages/arete
+      - name: Publish missing packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  build-mcp-binaries:
-    name: Build MCP Binaries
-    if: ${{ inputs.run_build_mcp_binaries }}
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary_name: a4-mcp-darwin-arm64
-          - os: macos-15-large
-            target: x86_64-apple-darwin
-            binary_name: a4-mcp-darwin-x64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary_name: a4-mcp-linux-x64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            binary_name: a4-mcp-linux-arm64
-            cross: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary_name: a4-mcp-win32-x64.exe
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install cargo-zigbuild
-        if: ${{ matrix.cross }}
         run: |
-          pip3 install ziglang
-          cargo install cargo-zigbuild
-
-      - name: Build binary
-        run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} --package arete-mcp
-          else
-            cargo build --release --target ${{ matrix.target }} --package arete-mcp
-          fi
-        shell: bash
-
-      - name: Rename binary
-        run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/${{ matrix.target }}/release/a4-mcp.exe ${{ matrix.binary_name }}
-          else
-            cp target/${{ matrix.target }}/release/a4-mcp ${{ matrix.binary_name }}
-          fi
-        shell: bash
-
-      - name: Write checksum
-        shell: pwsh
-        run: |
-          $hash = (Get-FileHash "${{ matrix.binary_name }}" -Algorithm SHA256).Hash.ToLower()
-          "$hash  ${{ matrix.binary_name }}" | Out-File -FilePath "${{ matrix.binary_name }}.sha256" -Encoding ascii
-
-      - name: Upload checksum artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mcp-sha256-${{ matrix.binary_name }}
-          path: ${{ matrix.binary_name }}.sha256
-
-      - name: Upload binary to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ inputs.version }}"
-          RELEASE_NAME="${{ inputs.mcp_release_name }}"
-          if [ -z "$RELEASE_NAME" ]; then
-            RELEASE_NAME="arete-mcp-v${VERSION}"
-          fi
-
-          gh release upload "$RELEASE_NAME" \
-            "${{ matrix.binary_name }}" \
-            --clobber
-        shell: bash
-
-  publish-mcp-checksums:
-    name: Publish MCP Checksums
-    needs: build-mcp-binaries
-    runs-on: ubuntu-latest
-    if: ${{ inputs.run_build_mcp_binaries }}
-    steps:
-      - name: Download checksum artifacts
-        uses: actions/download-artifact@v5
-        with:
-          pattern: mcp-sha256-*
-          path: checksums
-          merge-multiple: true
-
-      - name: Combine checksums
-        run: sort checksums/*.sha256 > checksums.txt
-
-      - name: Upload checksums to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ inputs.version }}"
-          RELEASE_NAME="${{ inputs.mcp_release_name }}"
-          if [ -z "$RELEASE_NAME" ]; then
-            RELEASE_NAME="arete-mcp-v${VERSION}"
-          fi
-
-          gh release upload "$RELEASE_NAME" \
-            "checksums.txt" \
-            --clobber
-        shell: bash
-
-  publish-npm-mcp:
-    name: Publish MCP to npm
-    needs: [build-mcp-binaries, publish-mcp-checksums]
-    runs-on: ubuntu-latest
-    if: ${{ always() && inputs.run_publish_npm_mcp && (needs.build-mcp-binaries.result == 'success' || needs.build-mcp-binaries.result == 'skipped') && (needs.publish-mcp-checksums.result == 'success' || needs.publish-mcp-checksums.result == 'skipped') }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Publish arete MCP wrapper
-        run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name")
-          PACKAGE_VERSION=$(node -p "require('./package.json').version")
-
-          echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} as $(npm whoami)"
-
-          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
-            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published"
-            exit 0
-          fi
-
-          npm publish --access public
-        working-directory: packages/mcp
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          ./scripts/publish-npm-package.sh packages/arete
+          ./scripts/publish-npm-package.sh packages/mcp

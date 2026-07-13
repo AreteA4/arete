@@ -127,10 +127,31 @@ publish_package() {
     exit 1
   fi
 
-  if npm view "${package_name}@${VERSION}" version >/dev/null 2>&1; then
-    echo "Skipping ${package_name}@${VERSION}; already published"
-    return
-  fi
+  local encoded_name
+  local response_file
+  local status
+  encoded_name="${package_name//@/%40}"
+  encoded_name="${encoded_name//\//%2F}"
+  response_file="$(mktemp "$STAGING_DIR/npm-registry-response.XXXXXX")"
+  status="$(curl --silent --show-error --retry 3 --retry-all-errors \
+    --user-agent 'arete-release-workflow (https://github.com/AreteA4/arete)' \
+    --output "$response_file" \
+    --write-out '%{http_code}' \
+    "https://registry.npmjs.org/${encoded_name}/${VERSION}")"
+
+  case "$status" in
+    200)
+      echo "Skipping ${package_name}@${VERSION}; already published"
+      return
+      ;;
+    404)
+      ;;
+    *)
+      echo "Unable to check ${package_name}@${VERSION} on npm (HTTP $status)"
+      cat "$response_file"
+      exit 1
+      ;;
+  esac
 
   echo
   echo "Publishing ${package_name}@${VERSION}"
