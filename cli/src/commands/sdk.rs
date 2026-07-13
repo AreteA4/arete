@@ -1135,19 +1135,6 @@ fn infer_extensions_artifact_from_entry(entry_path: &Path) -> Result<ResolvedExt
                 Some(name)
             })
             .collect::<Vec<_>>()
-    } else if entry == "index.ts" {
-        fs::read_dir(&source_dir)
-            .with_context(|| {
-                format!(
-                    "Failed to read extensions directory: {}",
-                    source_dir.display()
-                )
-            })?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("ts"))
-            .filter_map(|path| path.file_name()?.to_str().map(|name| name.to_string()))
-            .collect::<Vec<_>>()
     } else {
         vec![entry.clone()]
     };
@@ -1363,23 +1350,23 @@ fn validate_extensions_input_pin(
     artifact: &ResolvedExtensionsArtifact,
     input_pin: &ResolvedExtensionsInputPin,
 ) -> Vec<String> {
-    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
 
     match (artifact.input_kind, artifact.input_hash.as_deref()) {
         (None, None) => {}
-        (Some(_), None) | (None, Some(_)) => warnings.push(
+        (Some(_), None) | (None, Some(_)) => errors.push(
             "extensions input pin is incomplete: inputKind and inputHash must be set together"
                 .to_string(),
         ),
         (Some(manifest_kind), Some(manifest_hash)) => {
             if manifest_kind != input_pin.kind {
-                warnings.push(format!(
+                errors.push(format!(
                     "extensions input kind mismatch: manifest={}, generated={}",
                     manifest_kind.as_manifest_value(),
                     input_pin.kind.as_manifest_value()
                 ));
             } else if manifest_hash != input_pin.hash {
-                warnings.push(format!(
+                errors.push(format!(
                     "extensions input hash mismatch: manifest={}, generated={}",
                     manifest_hash, input_pin.hash
                 ));
@@ -1387,7 +1374,7 @@ fn validate_extensions_input_pin(
         }
     }
 
-    warnings
+    errors
 }
 
 fn resolved_extensions_artifact_from_registry(
@@ -1422,8 +1409,12 @@ fn stage_extensions_artifact(
     output_dir: &Path,
     input_pin: &ResolvedExtensionsInputPin,
 ) -> Result<()> {
-    for warning in validate_extensions_input_pin(artifact, input_pin) {
-        println!("{} {}", "⚠".yellow().bold(), warning);
+    let input_pin_errors = validate_extensions_input_pin(artifact, input_pin);
+    if !input_pin_errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Extensions artifact is incompatible with generated input: {}",
+            input_pin_errors.join("; ")
+        ));
     }
 
     if let Some(range) = artifact.sdk_range.as_deref() {
@@ -2619,6 +2610,23 @@ mod tests {
     }
 
     #[test]
+    fn stage_extensions_artifact_rejects_input_pin_mismatch() {
+        let artifact = test_artifact(ExtensionsInputKind::ProgramIdl, "hash-1");
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackAst,
+            hash: "hash-1".to_string(),
+        };
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-mismatched-extensions-{}", std::process::id()));
+
+        let error = stage_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect_err("mismatched extension artifact should be rejected");
+
+        assert!(error.to_string().contains("extensions input kind mismatch"));
+        assert!(!output_dir.join("index.ts").exists());
+    }
+
+    #[test]
     fn version_satisfies_range_supports_standard_semver_requirements() {
         assert!(version_satisfies_range("0.1.5", "^0.1.5"));
         assert!(version_satisfies_range("0.1.8", ">=0.1.5, <0.2.0"));
@@ -2654,6 +2662,31 @@ mod tests {
         assert!(error
             .to_string()
             .contains("must be a normalized relative path"));
+    }
+
+    #[test]
+    fn index_extension_fallback_does_not_capture_sibling_typescript_files() {
+        let source_dir =
+            std::env::temp_dir().join(format!("a4-index-extensions-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&source_dir);
+        fs::create_dir_all(&source_dir).expect("temp extensions directory should be created");
+        fs::write(source_dir.join("index.ts"), "export default {};")
+            .expect("index extension should be written");
+        fs::write(source_dir.join("stale.ts"), "this is not valid TypeScript")
+            .expect("stale extension should be written");
+
+        let artifact = infer_extensions_artifact_from_entry(&source_dir.join("index.ts"))
+            .expect("index extension should resolve");
+
+        let _ = fs::remove_dir_all(&source_dir);
+        assert_eq!(
+            artifact
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["index.ts"]
+        );
     }
 
     #[test]
