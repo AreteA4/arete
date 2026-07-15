@@ -29,6 +29,28 @@ const tokenPositionSchema = z
     metrics: value.metrics,
   }));
 
+const completeEntitySchema = z
+  .object({
+    entity_id: z.string(),
+    total_deposit: bigintSchema,
+  })
+  .transform((value) => ({
+    entityId: value.entity_id,
+    totalDeposit: value.total_deposit,
+    validatedBy: 'full' as const,
+  }));
+
+const partialEntitySchema = z
+  .object({
+    entity_id: z.string().optional(),
+    total_deposit: bigintSchema.optional(),
+  })
+  .transform((value) => ({
+    ...(value.entity_id !== undefined ? { entityId: value.entity_id } : {}),
+    ...(value.total_deposit !== undefined ? { totalDeposit: value.total_deposit } : {}),
+    validatedBy: 'patch' as const,
+  }));
+
 describe('FrameProcessor', () => {
   it('stores canonical snapshot data and keeps seq as internal metadata', () => {
     const storage = new SortedStorageDecorator(new MemoryAdapter());
@@ -67,6 +89,129 @@ describe('FrameProcessor', () => {
       key: 'position-1',
       data: stored,
     });
+  });
+
+  it('prefers the full schema for complete snapshots', () => {
+    const storage = new SortedStorageDecorator(new MemoryAdapter());
+    const processor = new FrameProcessor(storage, {
+      schemas: { SparseEntity: completeEntitySchema },
+      patchSchemas: { SparseEntity: partialEntitySchema },
+    });
+
+    processor.handleFrame({
+      mode: 'list',
+      entity: 'SparseEntity/list',
+      op: 'snapshot',
+      data: [{
+        key: 'complete',
+        data: { entity_id: 'complete', total_deposit: '7' },
+      }],
+      complete: true,
+    } satisfies SnapshotFrame);
+
+    expect(storage.get('SparseEntity/list', 'complete')).toEqual({
+      entityId: 'complete',
+      totalDeposit: 7n,
+      validatedBy: 'full',
+    });
+  });
+
+  it('falls back to the patch schema for sparse snapshots', () => {
+    const storage = new SortedStorageDecorator(new MemoryAdapter());
+    const processor = new FrameProcessor(storage, {
+      schemas: { SparseEntity: completeEntitySchema },
+      patchSchemas: { SparseEntity: partialEntitySchema },
+    });
+
+    processor.handleFrame({
+      mode: 'list',
+      entity: 'SparseEntity/list',
+      op: 'snapshot',
+      data: [{
+        key: 'sparse',
+        data: { entity_id: 'sparse' },
+      }],
+      complete: true,
+    } satisfies SnapshotFrame);
+
+    expect(storage.get('SparseEntity/list', 'sparse')).toEqual({
+      entityId: 'sparse',
+      validatedBy: 'patch',
+    });
+  });
+
+  it('falls back to the patch schema for sparse upserts', () => {
+    const storage = new SortedStorageDecorator(new MemoryAdapter());
+    const processor = new FrameProcessor(storage, {
+      schemas: { SparseEntity: completeEntitySchema },
+      patchSchemas: { SparseEntity: partialEntitySchema },
+    });
+
+    processor.handleFrame({
+      mode: 'list',
+      entity: 'SparseEntity/list',
+      op: 'upsert',
+      key: 'sparse',
+      data: { total_deposit: '9' },
+    } satisfies EntityFrame);
+
+    expect(storage.get('SparseEntity/list', 'sparse')).toEqual({
+      totalDeposit: 9n,
+      validatedBy: 'patch',
+    });
+  });
+
+  it('prefers the patch schema for patch frames', () => {
+    const storage = new SortedStorageDecorator(new MemoryAdapter());
+    const processor = new FrameProcessor(storage, {
+      schemas: { SparseEntity: completeEntitySchema },
+      patchSchemas: { SparseEntity: partialEntitySchema },
+    });
+
+    processor.handleFrame({
+      mode: 'list',
+      entity: 'SparseEntity/list',
+      op: 'upsert',
+      key: 'entity',
+      data: { entity_id: 'entity', total_deposit: '1' },
+    } satisfies EntityFrame);
+    processor.handleFrame({
+      mode: 'list',
+      entity: 'SparseEntity/list',
+      op: 'patch',
+      key: 'entity',
+      data: { entity_id: 'entity', total_deposit: '2' },
+    } satisfies EntityFrame);
+
+    expect(storage.get('SparseEntity/list', 'entity')).toEqual({
+      entityId: 'entity',
+      totalDeposit: 2n,
+      validatedBy: 'patch',
+    });
+  });
+
+  it('rejects frames that fail both full and patch schemas', () => {
+    const storage = new SortedStorageDecorator(new MemoryAdapter());
+    const processor = new FrameProcessor(storage, {
+      schemas: { SparseEntity: completeEntitySchema },
+      patchSchemas: { SparseEntity: partialEntitySchema },
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    processor.handleFrame({
+      mode: 'list',
+      entity: 'SparseEntity/list',
+      op: 'upsert',
+      key: 'invalid',
+      data: { entity_id: 7 },
+    } satisfies EntityFrame);
+
+    expect(storage.get('SparseEntity/list', 'invalid')).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Arete] Frame validation failed:',
+      expect.objectContaining({ view: 'SparseEntity/list' }),
+    );
+    warnSpy.mockRestore();
   });
 
   it('normalizes patch payloads before merge and append-path handling', () => {

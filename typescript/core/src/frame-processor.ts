@@ -140,20 +140,30 @@ export class FrameProcessor {
   }
 
   private normalizeEntity<T>(viewPath: string, data: unknown, patch = false): T | null {
-    const schema = this.getSchema(viewPath, patch)
-      ?? (!patch ? null : this.getSchema(viewPath));
-    if (!schema) return data as T;
+    const fullSchema = this.getSchema(viewPath);
+    const patchSchema = this.getSchema(viewPath, true);
+    const schemas = patch
+      ? [patchSchema, fullSchema]
+      : [fullSchema, patchSchema];
+    let validationError: unknown;
 
-    const result = schema.safeParse(data);
-    if (!result.success) {
-      console.warn('[Arete] Frame validation failed:', {
-        view: viewPath,
-        error: result.error,
-      });
-      return null;
+    for (const schema of schemas) {
+      if (!schema) continue;
+
+      const result = schema.safeParse(data);
+      if (result.success) {
+        return stripUndefinedProperties(result.data as T);
+      }
+      validationError = result.error;
     }
 
-    return stripUndefinedProperties(result.data as T);
+    if (!fullSchema && !patchSchema) return data as T;
+
+    console.warn('[Arete] Frame validation failed:', {
+      view: viewPath,
+      error: validationError,
+    });
+    return null;
   }
 
   private hasSchema(viewPath: string): boolean {
