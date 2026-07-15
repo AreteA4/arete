@@ -18,6 +18,8 @@ pub struct SortKey {
     sort_value: SortValue,
     /// Entity key for tie-breaking
     entity_key: String,
+    /// Direction to apply to the sort value comparison.
+    order: SortOrder,
 }
 
 impl PartialOrd for SortKey {
@@ -28,7 +30,23 @@ impl PartialOrd for SortKey {
 
 impl Ord for SortKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        match self.sort_value.cmp(&other.sort_value) {
+        if self.order != other.order {
+            return match (self.order, other.order) {
+                (SortOrder::Asc, SortOrder::Desc) => Ordering::Less,
+                (SortOrder::Desc, SortOrder::Asc) => Ordering::Greater,
+                _ => Ordering::Equal,
+            };
+        }
+
+        let sort_order = self.sort_value.cmp(&other.sort_value);
+        let sort_order = match (&self.sort_value, &other.sort_value, self.order) {
+            (SortValue::Null, _, _) | (_, SortValue::Null, _) | (_, _, SortOrder::Asc) => {
+                sort_order
+            }
+            (_, _, SortOrder::Desc) => sort_order.reverse(),
+        };
+
+        match sort_order {
             Ordering::Equal => self.entity_key.cmp(&other.entity_key),
             other => other,
         }
@@ -54,7 +72,9 @@ impl Ord for SortValue {
             (SortValue::Bool(a), SortValue::Bool(b)) => a.cmp(b),
             (SortValue::Integer(a), SortValue::Integer(b)) => a.cmp(b),
             (SortValue::Float(a), SortValue::Float(b)) => a.cmp(b),
-            (SortValue::String(a), SortValue::String(b)) => a.cmp(b),
+            (SortValue::String(a), SortValue::String(b)) => {
+                compare_decimal_strings(a, b).unwrap_or_else(|| a.cmp(b))
+            }
             // Cross-type comparisons: numbers < strings
             (SortValue::Integer(_), SortValue::String(_)) => Ordering::Less,
             (SortValue::String(_), SortValue::Integer(_)) => Ordering::Greater,
@@ -193,6 +213,7 @@ impl SortedViewCache {
             let new_sort_key = SortKey {
                 sort_value: effective_sort_value,
                 entity_key: entity_key.clone(),
+                order: self.order,
             };
 
             // Merge incoming entity with existing to preserve fields not in the update
@@ -221,6 +242,7 @@ impl SortedViewCache {
         let new_sort_key = SortKey {
             sort_value,
             entity_key: entity_key.clone(),
+            order: self.order,
         };
 
         self.sorted.insert(new_sort_key.clone(), ());
@@ -339,10 +361,7 @@ impl SortedViewCache {
             }
         }
 
-        match self.order {
-            SortOrder::Asc => value_to_sort_value(current),
-            SortOrder::Desc => value_to_sort_value_desc(current),
-        }
+        value_to_sort_value(current)
     }
 
     fn find_position(&self, entity_key: &str) -> usize {
@@ -390,26 +409,38 @@ fn value_to_sort_value(v: &Value) -> SortValue {
     }
 }
 
-fn value_to_sort_value_desc(v: &Value) -> SortValue {
-    match v {
-        Value::Null => SortValue::Null,
-        Value::Bool(b) => SortValue::Bool(!*b),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                SortValue::Integer(-i)
-            } else if let Some(f) = n.as_f64() {
-                SortValue::Float(OrderedFloat(-f))
+fn compare_decimal_strings(left: &str, right: &str) -> Option<Ordering> {
+    fn parts(value: &str) -> Option<(bool, &str)> {
+        let (negative, digits) = match value.strip_prefix('-') {
+            Some(digits) => (true, digits),
+            None => (false, value),
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+
+        let digits = digits.trim_start_matches('0');
+        let digits = if digits.is_empty() { "0" } else { digits };
+        Some((negative && digits != "0", digits))
+    }
+
+    let (left_negative, left_digits) = parts(left)?;
+    let (right_negative, right_digits) = parts(right)?;
+
+    match (left_negative, right_negative) {
+        (true, false) => Some(Ordering::Less),
+        (false, true) => Some(Ordering::Greater),
+        _ => {
+            let magnitude = left_digits
+                .len()
+                .cmp(&right_digits.len())
+                .then_with(|| left_digits.cmp(right_digits));
+            Some(if left_negative {
+                magnitude.reverse()
             } else {
-                SortValue::Null
-            }
+                magnitude
+            })
         }
-        Value::String(s) => {
-            // For desc strings, we'd need a more complex approach
-            // For now, just negate won't work for strings
-            // We'll handle this at the comparison level instead
-            SortValue::String(s.clone())
-        }
-        _ => SortValue::Null,
     }
 }
 
@@ -547,6 +578,36 @@ mod tests {
 
         let keys = cache.ordered_keys();
         assert_eq!(keys, vec!["b", "c", "a"]);
+    }
+
+    #[test]
+    fn test_nested_decimal_string_sort_field() {
+        let mut cache = SortedViewCache::new(
+            "test/latest".to_string(),
+            vec!["id".to_string(), "round_id".to_string()],
+            SortOrder::Desc,
+        );
+
+        cache.upsert("9".to_string(), json!({"id": {"round_id": "9"}}));
+        cache.upsert("100".to_string(), json!({"id": {"round_id": "100"}}));
+        cache.upsert("10".to_string(), json!({"id": {"round_id": "10"}}));
+
+        assert_eq!(cache.ordered_keys(), vec!["100", "10", "9"]);
+    }
+
+    #[test]
+    fn test_descending_string_sort_field() {
+        let mut cache = SortedViewCache::new(
+            "test/latest".to_string(),
+            vec!["name".to_string()],
+            SortOrder::Desc,
+        );
+
+        cache.upsert("a".to_string(), json!({"name": "alpha"}));
+        cache.upsert("c".to_string(), json!({"name": "charlie"}));
+        cache.upsert("b".to_string(), json!({"name": "bravo"}));
+
+        assert_eq!(cache.ordered_keys(), vec!["c", "b", "a"]);
     }
 
     #[test]
