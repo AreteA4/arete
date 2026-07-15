@@ -254,7 +254,7 @@ pub mod runtime {
 }
 
 pub mod resolvers {
-    pub use arete_interpreter::resolvers::TokenMetadata;
+    pub use arete_interpreter::resolvers::{ResolvedSlotHash, TokenMetadata};
 }
 
 /// Prelude module for convenient imports
@@ -269,7 +269,7 @@ pub mod prelude {
     };
 
     #[cfg(feature = "interpreter")]
-    pub use arete_interpreter::resolvers::TokenMetadata;
+    pub use arete_interpreter::resolvers::{ResolvedSlotHash, TokenMetadata};
 
     #[cfg(feature = "macros")]
     pub use arete_macros::{arete, Stream};

@@ -33,9 +33,9 @@ pub struct UpdateContext {
     /// Transaction index for instruction updates (orders transactions within a slot)
     /// Used for staleness detection to reject out-of-order updates
     pub txn_index: Option<u64>,
-    /// When true, QueueResolver opcodes are skipped during handler execution.
-    /// Set for reprocessed cached data from PDA mapping changes to prevent
-    /// stale data from triggering resolvers or locking in wrong values via SetOnce.
+    /// When true, immediate resolver execution is skipped during handler execution.
+    /// Future scheduled callbacks are still registered after a PDA remap so fresh
+    /// account data can resolve at its intended slot.
     pub skip_resolvers: bool,
     /// Additional custom metadata that can be added without breaking changes
     pub metadata: HashMap<String, Value>,
@@ -95,8 +95,8 @@ impl UpdateContext {
     }
 
     /// Create context for reprocessed cached account data from PDA mapping changes.
-    /// Uses empty signature to prevent `when` guards from matching stale instructions,
-    /// and sets skip_resolvers to prevent stale scheduling/SetOnce lock-in.
+    /// Uses an empty signature to prevent `when` guards from matching stale
+    /// instructions and blocks immediate resolver execution to avoid SetOnce lock-in.
     pub fn new_reprocessed(slot: u64, write_version: u64) -> Self {
         Self {
             slot: Some(slot),
@@ -3328,18 +3328,13 @@ impl VmContext {
                 } => {
                     let actual_state_id = override_state_id;
 
-                    // Skip resolvers for reprocessed cached data from PDA mapping changes.
-                    // Stale data can carry wrong field values (e.g. old entropy_value) and
-                    // wrong schedule_at slots that would lock in incorrect results via SetOnce.
-                    if self
+                    // Reprocessed account data may safely register a future callback, but
+                    // must not resolve immediately and lock stale data in via SetOnce.
+                    let skip_immediate_resolver = self
                         .current_context
                         .as_ref()
                         .map(|c| c.skip_resolvers)
-                        .unwrap_or(false)
-                    {
-                        pc += 1;
-                        continue;
-                    }
+                        .unwrap_or(false);
 
                     // Evaluate condition if present
                     if let Some(cond) = condition {
@@ -3360,7 +3355,11 @@ impl VmContext {
                         let target_val =
                             Self::get_value_at_path(&self.registers[*state], schedule_path);
 
-                        match target_val.and_then(|v| v.as_u64()) {
+                        match target_val.as_ref().and_then(|value| {
+                            value.as_u64().or_else(|| {
+                                value.as_str().and_then(|text| text.parse::<u64>().ok())
+                            })
+                        }) {
                             Some(target_slot) => {
                                 let current_slot = self
                                     .current_context
@@ -3400,6 +3399,11 @@ impl VmContext {
                                 continue;
                             }
                         }
+                    }
+
+                    if skip_immediate_resolver {
+                        pc += 1;
+                        continue;
                     }
 
                     // Build resolver input from template, literal value, or field path
@@ -5037,29 +5041,67 @@ impl VmContext {
 
             ComputedExpr::MethodCall { expr, method, args } => {
                 let val = self.evaluate_computed_expr_with_env(expr, state, env)?;
-                // Special handling for map() with closures
-                if method == "map" && args.len() == 1 {
+                // Option/iterator methods need the unevaluated closure body.
+                if (method == "map" || method == "filter") && args.len() == 1 {
                     if let ComputedExpr::Closure { param, body } = &args[0] {
-                        // If the value is null, return null (Option::None.map returns None)
+                        // Option::None.map/filter returns None.
                         if val.is_null() {
                             return Ok(Value::Null);
+                        }
+
+                        if method == "map" {
+                            if let Value::Array(arr) = &val {
+                                let results: Result<Vec<Value>> = arr
+                                    .iter()
+                                    .map(|elem| {
+                                        let mut closure_env = env.clone();
+                                        closure_env.insert(param.clone(), elem.clone());
+                                        self.evaluate_computed_expr_with_env(
+                                            body,
+                                            state,
+                                            &closure_env,
+                                        )
+                                    })
+                                    .collect();
+                                return Ok(Value::Array(results?));
+                            }
+
+                            let mut closure_env = env.clone();
+                            closure_env.insert(param.clone(), val);
+                            return self.evaluate_computed_expr_with_env(body, state, &closure_env);
                         }
 
                         if let Value::Array(arr) = &val {
                             let results: Result<Vec<Value>> = arr
                                 .iter()
-                                .map(|elem| {
+                                .filter_map(|elem| {
                                     let mut closure_env = env.clone();
                                     closure_env.insert(param.clone(), elem.clone());
-                                    self.evaluate_computed_expr_with_env(body, state, &closure_env)
+                                    match self.evaluate_computed_expr_with_env(
+                                        body,
+                                        state,
+                                        &closure_env,
+                                    ) {
+                                        Ok(predicate) if self.value_to_bool(&predicate) => {
+                                            Some(Ok(elem.clone()))
+                                        }
+                                        Ok(_) => None,
+                                        Err(error) => Some(Err(error)),
+                                    }
                                 })
                                 .collect();
                             return Ok(Value::Array(results?));
                         }
 
                         let mut closure_env = env.clone();
-                        closure_env.insert(param.clone(), val);
-                        return self.evaluate_computed_expr_with_env(body, state, &closure_env);
+                        closure_env.insert(param.clone(), val.clone());
+                        let predicate =
+                            self.evaluate_computed_expr_with_env(body, state, &closure_env)?;
+                        return Ok(if self.value_to_bool(&predicate) {
+                            val
+                        } else {
+                            Value::Null
+                        });
                     }
                 }
                 let evaluated_args: Vec<Value> = args
@@ -5415,6 +5457,17 @@ impl VmContext {
             }
             "is_some" => Ok(json!(!value.is_null())),
             "is_none" => Ok(json!(value.is_null())),
+            "is_null" => Ok(json!(value.is_null())),
+            "or" => {
+                if args.len() != 1 {
+                    return Err("or() requires exactly one argument".into());
+                }
+                if value.is_null() {
+                    Ok(args[0].clone())
+                } else {
+                    Ok(value.clone())
+                }
+            }
             "abs" => {
                 if let Some(n) = value.as_i64() {
                     Ok(json!(n.abs()))
@@ -5447,26 +5500,42 @@ impl VmContext {
                     .as_array()
                     .ok_or_else(|| format!("Cannot call sum() on {:?}", value))?;
 
-                if values.iter().all(|item| item.as_u64().is_some()) {
-                    let total = values.iter().try_fold(0_u64, |total, item| {
-                        total.checked_add(item.as_u64().unwrap())
-                    });
+                let unsigned_values = values
+                    .iter()
+                    .map(|item| {
+                        item.as_u64()
+                            .or_else(|| item.as_str().and_then(|text| text.parse::<u64>().ok()))
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(unsigned_values) = unsigned_values {
+                    let total = unsigned_values
+                        .iter()
+                        .try_fold(0_u64, |total, item| total.checked_add(*item));
                     return total
                         .map(|total| json!(total))
                         .ok_or_else(|| "sum() unsigned integer overflow".into());
                 }
 
-                if values.iter().all(|item| item.as_i64().is_some()) {
-                    let total = values.iter().try_fold(0_i64, |total, item| {
-                        total.checked_add(item.as_i64().unwrap())
-                    });
+                let signed_values = values
+                    .iter()
+                    .map(|item| {
+                        item.as_i64()
+                            .or_else(|| item.as_str().and_then(|text| text.parse::<i64>().ok()))
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(signed_values) = signed_values {
+                    let total = signed_values
+                        .iter()
+                        .try_fold(0_i64, |total, item| total.checked_add(*item));
                     return total
                         .map(|total| json!(total))
                         .ok_or_else(|| "sum() signed integer overflow".into());
                 }
 
                 let total = values.iter().try_fold(0.0_f64, |total, item| {
-                    item.as_f64().map(|value| total + value)
+                    item.as_f64()
+                        .or_else(|| item.as_str().and_then(|text| text.parse::<f64>().ok()))
+                        .map(|value| total + value)
                 });
                 match total {
                     Some(total) if total.is_finite() => serde_json::Number::from_f64(total)
@@ -5848,6 +5917,32 @@ mod tests {
     }
 
     #[test]
+    fn test_computed_array_sum_accepts_u64_strings() {
+        let vm = VmContext::new();
+        let mut state = json!({
+            "state": {
+                "deployed": ["422874702", "569506895", "573312366"]
+            }
+        });
+        let spec = ComputedFieldSpec {
+            target_path: "state.total_deployed".to_string(),
+            result_type: "Option<u64>".to_string(),
+            expression: ComputedExpr::MethodCall {
+                expr: Box::new(ComputedExpr::FieldRef {
+                    path: "state.deployed".to_string(),
+                }),
+                method: "sum".to_string(),
+                args: Vec::new(),
+            },
+        };
+
+        vm.evaluate_computed_fields_from_ast(&mut state, &[spec])
+            .unwrap();
+
+        assert_eq!(state["state"]["total_deployed"], json!(1_565_693_963_u64));
+    }
+
+    #[test]
     fn test_computed_array_sum_propagates_null() {
         let vm = VmContext::new();
         let mut state = json!({ "state": { "deployed": null } });
@@ -5867,6 +5962,85 @@ mod tests {
             .unwrap();
 
         assert!(state["state"]["total_deployed"].is_null());
+    }
+
+    #[test]
+    fn test_computed_option_filter_or_fallback() {
+        fn specs() -> Vec<ComputedFieldSpec> {
+            vec![
+                ComputedFieldSpec {
+                    target_path: "results.pre_reveal_rng".to_string(),
+                    result_type: "Option<u64>".to_string(),
+                    expression: ComputedExpr::MethodCall {
+                        expr: Box::new(ComputedExpr::MethodCall {
+                            expr: Box::new(ComputedExpr::FieldRef {
+                                path: "results.rng".to_string(),
+                            }),
+                            method: "filter".to_string(),
+                            args: vec![ComputedExpr::Closure {
+                                param: "rng".to_string(),
+                                body: Box::new(ComputedExpr::Unary {
+                                    op: crate::ast::UnaryOp::Not,
+                                    expr: Box::new(ComputedExpr::MethodCall {
+                                        expr: Box::new(ComputedExpr::Var {
+                                            name: "rng".to_string(),
+                                        }),
+                                        method: "is_null".to_string(),
+                                        args: Vec::new(),
+                                    }),
+                                }),
+                            }],
+                        }),
+                        method: "or".to_string(),
+                        args: vec![ComputedExpr::FieldRef {
+                            path: "results.pre_reveal_rng_candidate".to_string(),
+                        }],
+                    },
+                },
+                ComputedFieldSpec {
+                    target_path: "results.pre_reveal_winning_square".to_string(),
+                    result_type: "Option<u64>".to_string(),
+                    expression: ComputedExpr::MethodCall {
+                        expr: Box::new(ComputedExpr::FieldRef {
+                            path: "results.pre_reveal_rng".to_string(),
+                        }),
+                        method: "map".to_string(),
+                        args: vec![ComputedExpr::Closure {
+                            param: "rng".to_string(),
+                            body: Box::new(ComputedExpr::Binary {
+                                op: BinaryOp::Mod,
+                                left: Box::new(ComputedExpr::Var {
+                                    name: "rng".to_string(),
+                                }),
+                                right: Box::new(ComputedExpr::Literal { value: json!(25) }),
+                            }),
+                        }],
+                    },
+                },
+            ]
+        }
+
+        let vm = VmContext::new();
+        for (rng, candidate, expected_rng, expected_square) in [
+            (Value::Null, json!(42_u64), json!(42_u64), json!(17_u64)),
+            (json!(7_u64), json!(42_u64), json!(7_u64), json!(7_u64)),
+        ] {
+            let mut state = json!({
+                "results": {
+                    "rng": rng,
+                    "pre_reveal_rng_candidate": candidate,
+                }
+            });
+
+            vm.evaluate_computed_fields_from_ast(&mut state, &specs())
+                .unwrap();
+
+            assert_eq!(state["results"]["pre_reveal_rng"], expected_rng);
+            assert_eq!(
+                state["results"]["pre_reveal_winning_square"],
+                expected_square
+            );
+        }
     }
 
     #[test]

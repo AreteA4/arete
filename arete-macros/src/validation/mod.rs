@@ -79,7 +79,8 @@ enum ResolvedMappingSource<'a> {
 }
 
 pub fn validate_semantics(input: ValidationInput<'_>) -> syn::Result<()> {
-    let known_fields = collect_known_field_paths(input.section_specs, input.computed_fields, input.idls);
+    let known_fields =
+        collect_known_field_paths(input.section_specs, input.computed_fields, input.idls);
     let available_fields = sorted_field_paths(&known_fields);
 
     let mut errors = ErrorCollector::default();
@@ -263,14 +264,17 @@ fn collect_known_field_paths_recursive(
             continue;
         }
 
-        let nested_info = analyze_field_type_with_idl(
-            &nested_field.field_name,
-            &nested_field.field_type,
-            idls,
-        );
+        let nested_info =
+            analyze_field_type_with_idl(&nested_field.field_name, &nested_field.field_type, idls);
 
         if nested_info.resolved_type.is_some() {
-            collect_known_field_paths_recursive(&nested_path, &nested_info, idls, known, type_stack);
+            collect_known_field_paths_recursive(
+                &nested_path,
+                &nested_info,
+                idls,
+                known,
+                type_stack,
+            );
         }
     }
 
