@@ -155,7 +155,7 @@ export class ConnectionManager {
   private tokenRefreshInFlight: Promise<void> | null = null;
   private currentState: ConnectionState = 'disconnected';
   private subscriptionQueue: Subscription[] = [];
-  private activeSubscriptions: Set<string> = new Set();
+  private activeSubscriptions: Map<string, Subscription> = new Map();
 
   private frameHandlers: Set<FrameHandler> = new Set();
   private stateHandlers: Set<ConnectionStateCallback> = new Set();
@@ -776,7 +776,7 @@ export class ConnectionManager {
       }
       const subMsg = { type: 'subscribe', ...subscription };
       this.ws.send(JSON.stringify(subMsg));
-      this.activeSubscriptions.add(subKey);
+      this.activeSubscriptions.set(subKey, subscription);
     } else {
       const alreadyQueued = this.subscriptionQueue.some(
         (queuedSubscription) => this.makeSubKey(queuedSubscription) === subKey
@@ -819,14 +819,7 @@ export class ConnectionManager {
   }
 
   private resubscribeActive(): void {
-    for (const subKey of this.activeSubscriptions) {
-      const [view, key, partition] = subKey.split(':');
-      const subscription: Subscription = {
-        view: view ?? '',
-        key: key === '*' ? undefined : key,
-        partition: partition || undefined,
-      };
-
+    for (const subscription of this.activeSubscriptions.values()) {
       if (this.ws?.readyState === WebSocket.OPEN) {
         const subMsg = { type: 'subscribe', ...subscription };
         this.ws.send(JSON.stringify(subMsg));

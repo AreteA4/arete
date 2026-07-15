@@ -377,6 +377,37 @@ describe('ConnectionManager auth', () => {
     expect(manager.isConnected()).toBe(false);
   });
 
+  it('preserves window options when reconnecting active subscriptions', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+
+    await manager.connect();
+    manager.subscribe({
+      view: 'OreRound/latest',
+      take: 1,
+      skip: 2,
+      withSnapshot: false,
+    });
+
+    expect(JSON.parse(MockWebSocket.instances[0]!.sent[0]!)).toEqual({
+      type: 'subscribe',
+      view: 'OreRound/latest',
+      take: 1,
+      skip: 2,
+      withSnapshot: false,
+    });
+
+    manager.disconnect();
+    await manager.connect();
+
+    expect(JSON.parse(MockWebSocket.instances[1]!.sent[0]!)).toEqual({
+      type: 'subscribe',
+      view: 'OreRound/latest',
+      take: 1,
+      skip: 2,
+      withSnapshot: false,
+    });
+  });
+
   it('treats the legacy disabled sentinel URL as a null websocketUrl', async () => {
     const manager = new ConnectionManager({ websocketUrl: 'ws://127.0.0.1/__arete_disabled__' });
 
