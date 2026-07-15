@@ -5,6 +5,13 @@ interface BlockGridProps {
   round: ValidatedOreRound | undefined;
 }
 
+function formatLamports(lamports: bigint) {
+  const roundedUnits = (lamports + 50_000n) / 100_000n;
+  const whole = roundedUnits / 10_000n;
+  const fraction = (roundedUnits % 10_000n).toString().padStart(4, '0');
+  return `${whole}.${fraction}`;
+}
+
 export function BlockGrid({ round }: BlockGridProps) {
   const blocks = Array.from({ length: 25 }, (_, i) => {
     const deployedUi = round?.state?.deployedPerSquareUi?.[i];
@@ -12,8 +19,10 @@ export function BlockGrid({ round }: BlockGridProps) {
 
     return {
       id: i + 1,
-      minerCount: Number(round?.state?.countPerSquare?.[i] ?? 0),
-      deployedUi: deployedUi ?? Number(deployedLamports ?? 0) / 1_000_000_000,
+      minerCount: (round?.state?.countPerSquare?.[i] ?? 0n).toString(),
+      deployed: deployedUi == null
+        ? formatLamports(deployedLamports ?? 0n)
+        : Number(deployedUi).toFixed(4),
       isWinner:
         round?.results?.winningSquare === BigInt(i)
         || round?.results?.preRevealWinningSquare === BigInt(i),
@@ -50,7 +59,7 @@ export function BlockGrid({ round }: BlockGridProps) {
           </div>
           <div className="flex items-center gap-2 text-xl font-semibold text-stone-800 dark:text-stone-100">
             <SolanaIcon size={18} />
-            <span>{Number(block.deployedUi).toFixed(4)}</span>
+            <span>{block.deployed}</span>
           </div>
         </div>
       ))}
