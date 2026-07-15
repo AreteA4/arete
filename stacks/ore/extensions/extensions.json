@@ -1,0 +1,10 @@
+{
+  "entry": "ore-stack-extensions.ts",
+  "files": [
+    "ore-devex.ts",
+    "ore-stack-extensions.ts"
+  ],
+  "inputKind": "stack-ast",
+  "inputHash": "0561c686523af65cd5648a2603e4fc59f81d66bf373ebb56e026cd626423590d",
+  "sdkRange": "^0.2.0"
+}
