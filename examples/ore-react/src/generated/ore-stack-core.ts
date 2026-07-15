@@ -25,7 +25,8 @@ export interface OreRoundMetrics {
 export interface OreRoundResults {
   didHitMotherlode: boolean | null;
   expiresAtSlotHash: SlotHashBytes | null;
-  preRevealRng: KeccakRngValue | null;
+  preRevealRng: bigint | null;
+  preRevealRngCandidate: KeccakRngValue | null;
   preRevealWinningSquare: bigint | null;
   rentPayer: string | null;
   rng: KeccakRngValue | null;
@@ -187,7 +188,8 @@ export const OreRoundMetricsPatchSchema = z.object({
 export const OreRoundResultsSchema = z.object({
   did_hit_motherlode: z.boolean().nullable(),
   expires_at_slot_hash: SlotHashBytesSchema.nullable(),
-  pre_reveal_rng: KeccakRngValueSchema.nullable(),
+  pre_reveal_rng: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  pre_reveal_rng_candidate: KeccakRngValueSchema.nullable(),
   pre_reveal_winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
   rent_payer: z.string().nullable(),
   rng: KeccakRngValueSchema.nullable(),
@@ -199,6 +201,7 @@ export const OreRoundResultsSchema = z.object({
   didHitMotherlode: value.did_hit_motherlode,
   expiresAtSlotHash: value.expires_at_slot_hash,
   preRevealRng: value.pre_reveal_rng,
+  preRevealRngCandidate: value.pre_reveal_rng_candidate,
   preRevealWinningSquare: value.pre_reveal_winning_square,
   rentPayer: value.rent_payer,
   rng: value.rng,
@@ -211,7 +214,8 @@ export const OreRoundResultsSchema = z.object({
 export const OreRoundResultsPatchSchema = z.object({
   did_hit_motherlode: z.boolean().nullable().optional(),
   expires_at_slot_hash: SlotHashBytesSchema.nullable().optional(),
-  pre_reveal_rng: KeccakRngValueSchema.nullable().optional(),
+  pre_reveal_rng: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  pre_reveal_rng_candidate: KeccakRngValueSchema.nullable().optional(),
   pre_reveal_winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   rent_payer: z.string().nullable().optional(),
   rng: KeccakRngValueSchema.nullable().optional(),
@@ -223,6 +227,7 @@ export const OreRoundResultsPatchSchema = z.object({
   ...(value.did_hit_motherlode !== undefined ? { didHitMotherlode: value.did_hit_motherlode } : {}),
   ...(value.expires_at_slot_hash !== undefined ? { expiresAtSlotHash: value.expires_at_slot_hash } : {}),
   ...(value.pre_reveal_rng !== undefined ? { preRevealRng: value.pre_reveal_rng } : {}),
+  ...(value.pre_reveal_rng_candidate !== undefined ? { preRevealRngCandidate: value.pre_reveal_rng_candidate } : {}),
   ...(value.pre_reveal_winning_square !== undefined ? { preRevealWinningSquare: value.pre_reveal_winning_square } : {}),
   ...(value.rent_payer !== undefined ? { rentPayer: value.rent_payer } : {}),
   ...(value.rng !== undefined ? { rng: value.rng } : {}),

@@ -54,6 +54,8 @@ pub struct OreRoundResults {
     #[serde(default)]
     pub did_hit_motherlode: Option<Option<bool>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
+    pub pre_reveal_rng_candidate: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
     pub pre_reveal_rng: Option<Option<u64>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
     pub pre_reveal_winning_square: Option<Option<u64>>,
