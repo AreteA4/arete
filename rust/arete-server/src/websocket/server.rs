@@ -493,21 +493,48 @@ mod tests {
 
     #[test]
     fn derived_window_emits_new_and_updated_entities_only() {
-        let current_keys = HashSet::from(["current".to_string()]);
+        let current_keys = vec!["current".to_string()];
 
         assert!(should_emit_derived_upsert(
             &current_keys,
             "replacement",
+            0,
             "replacement"
         ));
         assert!(should_emit_derived_upsert(
             &current_keys,
             "current",
+            0,
             "current"
         ));
         assert!(!should_emit_derived_upsert(
             &current_keys,
             "current",
+            0,
+            "outside-window"
+        ));
+    }
+
+    #[test]
+    fn ordered_derived_window_emits_entities_that_change_position() {
+        let current_keys = vec!["first".to_string(), "second".to_string()];
+
+        assert!(should_emit_derived_upsert(
+            &current_keys,
+            "second",
+            0,
+            "outside-window"
+        ));
+        assert!(should_emit_derived_upsert(
+            &current_keys,
+            "replacement",
+            1,
+            "outside-window"
+        ));
+        assert!(!should_emit_derived_upsert(
+            &current_keys,
+            "first",
+            0,
             "outside-window"
         ));
     }
@@ -1304,11 +1331,13 @@ fn extract_sort_config(view_spec: &ViewSpec) -> Option<SortConfig> {
 }
 
 fn should_emit_derived_upsert(
-    current_window_keys: &HashSet<String>,
+    current_window_keys: &[String],
     entity_key: &str,
+    new_position: usize,
     updated_key: &str,
 ) -> bool {
-    !current_window_keys.contains(entity_key) || entity_key == updated_key
+    entity_key == updated_key
+        || current_window_keys.get(new_position).map(String::as_str) != Some(entity_key)
 }
 
 fn send_subscribed_frame(
@@ -1641,7 +1670,7 @@ async fn attach_derived_view_subscription_otel(
         }
     };
 
-    let initial_keys: HashSet<String> = initial_window.iter().map(|(k, _)| k.clone()).collect();
+    let initial_keys: Vec<String> = initial_window.iter().map(|(k, _)| k.clone()).collect();
 
     if !initial_window.is_empty() {
         let snapshot_entities: Vec<SnapshotEntity> = initial_window
@@ -1703,16 +1732,20 @@ async fn attach_derived_view_subscription_otel(
                                     }
                                 };
 
-                                let new_keys: HashSet<String> =
+                                let current_key_set: HashSet<&String> =
+                                    current_window_keys.iter().collect();
+                                let new_key_set: HashSet<&String> =
+                                    new_window.iter().map(|(key, _)| key).collect();
+                                let new_keys: Vec<String> =
                                     new_window.iter().map(|(k, _)| k.clone()).collect();
 
-                                for key in current_window_keys.difference(&new_keys) {
+                                for key in current_key_set.difference(&new_key_set) {
                                     let delete_frame = Frame {
                                         seq: None,
                                         mode: frame_mode,
                                         export: view_id_clone.clone(),
                                         op: "delete",
-                                        key: key.clone(),
+                                        key: (*key).clone(),
                                         data: serde_json::Value::Null,
                                         append: vec![],
                                     };
@@ -1735,10 +1768,11 @@ async fn attach_derived_view_subscription_otel(
                                     }
                                 }
 
-                                for (key, data) in &new_window {
+                                for (new_position, (key, data)) in new_window.iter().enumerate() {
                                     if !should_emit_derived_upsert(
                                         &current_window_keys,
                                         key,
+                                        new_position,
                                         &envelope.key,
                                     ) {
                                         continue;
@@ -2067,7 +2101,7 @@ async fn attach_derived_view_subscription(
         }
     };
 
-    let initial_keys: HashSet<String> = initial_window.iter().map(|(k, _)| k.clone()).collect();
+    let initial_keys: Vec<String> = initial_window.iter().map(|(k, _)| k.clone()).collect();
 
     if !initial_window.is_empty() {
         let snapshot_entities: Vec<SnapshotEntity> = initial_window
@@ -2127,16 +2161,20 @@ async fn attach_derived_view_subscription(
                                     }
                                 };
 
-                                let new_keys: HashSet<String> =
+                                let current_key_set: HashSet<&String> =
+                                    current_window_keys.iter().collect();
+                                let new_key_set: HashSet<&String> =
+                                    new_window.iter().map(|(key, _)| key).collect();
+                                let new_keys: Vec<String> =
                                     new_window.iter().map(|(k, _)| k.clone()).collect();
 
-                                for key in current_window_keys.difference(&new_keys) {
+                                for key in current_key_set.difference(&new_key_set) {
                                     let delete_frame = Frame {
                                         seq: None,
                                         mode: frame_mode,
                                         export: view_id_clone.clone(),
                                         op: "delete",
-                                        key: key.clone(),
+                                        key: (*key).clone(),
                                         data: serde_json::Value::Null,
                                         append: vec![],
                                     };
@@ -2156,10 +2194,11 @@ async fn attach_derived_view_subscription(
                                     }
                                 }
 
-                                for (key, data) in &new_window {
+                                for (new_position, (key, data)) in new_window.iter().enumerate() {
                                     if !should_emit_derived_upsert(
                                         &current_window_keys,
                                         key,
+                                        new_position,
                                         &envelope.key,
                                     ) {
                                         continue;
