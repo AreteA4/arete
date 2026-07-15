@@ -46,7 +46,7 @@ pub struct OreRoundResults {
     #[serde(default)]
     pub slot_hash: Option<Option<String>>,
     #[serde(default)]
-    pub expires_at_slot_hash: Option<Option<Vec<serde_json::Value>>>,
+    pub expires_at_slot_hash: Option<Option<serde_json::Value>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
     pub rng: Option<Option<u64>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
@@ -283,6 +283,12 @@ pub struct Automation {
     pub mask: Option<u64>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
     pub reload: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub total_sol_spent: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub total_ore_earned: Option<u64>,
+    #[serde(default)]
+    pub conditions: Option<serde_json::Value>,
 }
 
 

@@ -1,5 +1,5 @@
 {
-  "version": "4.0.0",
+  "version": "3.8.15",
   "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
   "name": "ore",
   "instructions": [
@@ -62,6 +62,10 @@
         {
           "name": "strategy",
           "type": "u8"
+        },
+        {
+          "name": "reload",
+          "type": "u64"
         }
       ]
     },
@@ -80,6 +84,16 @@
           "name": "signer",
           "isMut": true,
           "isSigner": true
+        },
+        {
+          "name": "authority",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "automation",
+          "isMut": true,
+          "isSigner": false
         },
         {
           "name": "board",
@@ -127,7 +141,7 @@
         },
         {
           "name": "board",
-          "isMut": false,
+          "isMut": true,
           "isSigner": false
         },
         {
@@ -157,7 +171,8 @@
         "value": 4
       },
       "docs": [
-        "Claims ORE token rewards from the treasury vault."
+        "Claims a percentage of ORE token rewards from the treasury vault.",
+        "The current instruction encodes bps as u64. Legacy empty payloads are accepted by the program as 10000 bps."
       ],
       "accounts": [
         {
@@ -167,7 +182,7 @@
         },
         {
           "name": "board",
-          "isMut": false,
+          "isMut": true,
           "isSigner": false
         },
         {
@@ -177,7 +192,7 @@
         },
         {
           "name": "mint",
-          "isMut": false,
+          "isMut": true,
           "isSigner": false,
           "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
         },
@@ -221,7 +236,12 @@
           "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "bps",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "close",
@@ -290,7 +310,7 @@
         },
         {
           "name": "authority",
-          "isMut": false,
+          "isMut": true,
           "isSigner": false
         },
         {
@@ -305,7 +325,7 @@
         },
         {
           "name": "config",
-          "isMut": false,
+          "isMut": true,
           "isSigner": false
         },
         {
@@ -365,8 +385,8 @@
       ],
       "accounts": [
         {
-          "name": "board",
-          "isMut": false,
+          "name": "signer",
+          "isMut": true,
           "isSigner": true
         }
       ],
@@ -397,7 +417,7 @@
         },
         {
           "name": "config",
-          "isMut": false,
+          "isMut": true,
           "isSigner": false
         },
         {
@@ -423,7 +443,7 @@
         },
         {
           "name": "topMiner",
-          "isMut": false,
+          "isMut": true,
           "isSigner": false
         },
         {
@@ -462,7 +482,7 @@
         },
         {
           "name": "entropyVar",
-          "isMut": false,
+          "isMut": true,
           "isSigner": false
         },
         {
@@ -470,6 +490,111 @@
           "isMut": false,
           "isSigner": false,
           "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
+        },
+        {
+          "name": "mintAuthority",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "mintProgram",
+          "isMut": false,
+          "isSigner": false,
+          "address": "mintzxW6Kckmeyh1h6Zfdj9QcYgCzhPSGiC8ChZ6fCx"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "buyback",
+      "discriminant": {
+        "type": "u8",
+        "value": 13
+      },
+      "docs": [
+        "Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.",
+        "The 15 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator."
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "isMut": true,
+          "isSigner": true,
+          "address": "HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T"
+        },
+        {
+          "name": "board",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "config",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "manager",
+          "isMut": true,
+          "isSigner": false,
+          "address": "DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee"
+        },
+        {
+          "name": "managerSol",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "mint",
+          "isMut": true,
+          "isSigner": false,
+          "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
+        },
+        {
+          "name": "treasury",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "treasuryOre",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "treasurySol",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "stakeTreasury",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "stakeTreasuryOre",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "stakeVesting",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "oreProgram",
+          "isMut": false,
+          "isSigner": false,
+          "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
+        },
+        {
+          "name": "oreStakeProgram",
+          "isMut": false,
+          "isSigner": false
         }
       ],
       "args": []
@@ -478,7 +603,7 @@
       "name": "bury",
       "discriminant": {
         "type": "u8",
-        "value": 13
+        "value": 24
       },
       "docs": [
         "Burns ORE and distributes yield to stakers.",
@@ -487,7 +612,7 @@
       "accounts": [
         {
           "name": "signer",
-          "isMut": false,
+          "isMut": true,
           "isSigner": true
         },
         {
@@ -503,7 +628,8 @@
         {
           "name": "mint",
           "isMut": true,
-          "isSigner": false
+          "isSigner": false,
+          "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
         },
         {
           "name": "treasury",
@@ -568,8 +694,9 @@
       "accounts": [
         {
           "name": "signer",
-          "isMut": false,
-          "isSigner": true
+          "isMut": true,
+          "isSigner": true,
+          "address": "HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T"
         },
         {
           "name": "config",
@@ -612,7 +739,7 @@
       "accounts": [
         {
           "name": "signer",
-          "isMut": false,
+          "isMut": true,
           "isSigner": true
         },
         {
@@ -638,7 +765,7 @@
       "name": "newVar",
       "discriminant": {
         "type": "u8",
-          "value": 17
+        "value": 19
       },
       "docs": [
         "Creates a new entropy var account through the entropy program."
@@ -661,7 +788,7 @@
         },
         {
           "name": "provider",
-          "isMut": false,
+          "isMut": true,
           "isSigner": false
         },
         {
@@ -701,6 +828,40 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "reloadSol",
+      "discriminant": {
+        "type": "u8",
+        "value": 21
+      },
+      "docs": [
+        "Deprecated since 3.8.15; this behavior is now included in checkpoint."
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "automation",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "miner",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false,
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [
@@ -753,6 +914,20 @@
           {
             "name": "reload",
             "type": "u64"
+          },
+          {
+            "name": "total_sol_spent",
+            "type": "u64"
+          },
+          {
+            "name": "total_ore_earned",
+            "type": "u64"
+          },
+          {
+            "name": "conditions",
+            "type": {
+              "defined": "AutomationConditions"
+            }
           }
         ]
       }
@@ -1072,6 +1247,29 @@
     }
   ],
   "types": [
+    {
+      "name": "AutomationConditions",
+      "docs": [
+        "Conditions that gate whether an automation deploys in a round."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "max_production_cost",
+            "type": "u64"
+          },
+          {
+            "name": "min_motherlode",
+            "type": "u64"
+          },
+          {
+            "name": "max_motherlode",
+            "type": "u64"
+          }
+        ]
+      }
+    },
     {
       "name": "AdminConfig",
       "docs": [
@@ -1643,7 +1841,7 @@
   "metadata": {
     "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
     "name": "ore",
-    "version": "0.1.0",
+    "version": "3.8.15",
     "spec": "0.1.0",
     "origin": "steel"
   }

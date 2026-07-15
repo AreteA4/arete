@@ -6,21 +6,19 @@ interface BlockGridProps {
 }
 
 export function BlockGrid({ round }: BlockGridProps) {
-  const blocks = round
-    ? (round.state?.deployedPerSquareUi || []).map((deployedUi, i) => ({
+  const blocks = Array.from({ length: 25 }, (_, i) => {
+    const deployedUi = round?.state?.deployedPerSquareUi?.[i];
+    const deployedLamports = round?.state?.deployedPerSquare?.[i];
+
+    return {
       id: i + 1,
-      minerCount: Number(round.state?.countPerSquare?.[i] ?? 0),
-      deployedUi,
+      minerCount: Number(round?.state?.countPerSquare?.[i] ?? 0),
+      deployedUi: deployedUi ?? Number(deployedLamports ?? 0) / 1_000_000_000,
       isWinner:
-        round.results?.winningSquare === BigInt(i)
-        || round.results?.preRevealWinningSquare === BigInt(i),
-    }))
-    : Array.from({ length: 25 }, (_, i) => ({
-      id: i + 1,
-      minerCount: 0,
-      deployedUi: 0,
-      isWinner: false,
-    }));
+        round?.results?.winningSquare === BigInt(i)
+        || round?.results?.preRevealWinningSquare === BigInt(i),
+    };
+  });
 
   return (
     <div

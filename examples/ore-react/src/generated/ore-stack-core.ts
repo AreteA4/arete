@@ -530,6 +530,9 @@ export interface Automation {
   strategy: bigint;
   mask: bigint;
   reload: bigint;
+  totalSolSpent: bigint;
+  totalOreEarned: bigint;
+  conditions: Record<string, any>;
 }
 
 export const MinerSchema = z.object({
@@ -579,6 +582,9 @@ export const AutomationSchema = z.object({
   strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_sol_spent: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_ore_earned: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  conditions: z.record(z.any()),
 }).transform((value) => ({
   amount: value.amount,
   authority: value.authority,
@@ -588,6 +594,9 @@ export const AutomationSchema = z.object({
   strategy: value.strategy,
   mask: value.mask,
   reload: value.reload,
+  totalSolSpent: value.total_sol_spent,
+  totalOreEarned: value.total_ore_earned,
+  conditions: value.conditions,
 }));
 
 export const MinerPatchSchema = z.object({
@@ -637,6 +646,9 @@ export const AutomationPatchSchema = z.object({
   strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
   mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
   reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  total_sol_spent: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  total_ore_earned: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  conditions: z.record(z.any()).optional(),
 }).transform((value) => ({
   ...(value.amount !== undefined ? { amount: value.amount } : {}),
   ...(value.authority !== undefined ? { authority: value.authority } : {}),
@@ -646,6 +658,9 @@ export const AutomationPatchSchema = z.object({
   ...(value.strategy !== undefined ? { strategy: value.strategy } : {}),
   ...(value.mask !== undefined ? { mask: value.mask } : {}),
   ...(value.reload !== undefined ? { reload: value.reload } : {}),
+  ...(value.total_sol_spent !== undefined ? { totalSolSpent: value.total_sol_spent } : {}),
+  ...(value.total_ore_earned !== undefined ? { totalOreEarned: value.total_ore_earned } : {}),
+  ...(value.conditions !== undefined ? { conditions: value.conditions } : {}),
 }));
 
 export const OreMinerAutomationSchema = z.object({
@@ -818,6 +833,12 @@ export interface AdminConfig {
   feeRate: bigint;
 }
 
+export interface AutomationConditions {
+  maxProductionCost: bigint;
+  minMotherlode: bigint;
+  maxMotherlode: bigint;
+}
+
 export interface Numeric {
   bits: number[];
 }
@@ -841,6 +862,9 @@ export interface OreAutomation {
   strategy: bigint;
   mask: bigint;
   reload: bigint;
+  totalSolSpent: bigint;
+  totalOreEarned: bigint;
+  conditions: AutomationConditions;
 }
 
 export interface Board {
@@ -922,6 +946,16 @@ export const AdminConfigSchema = z.object({
   feeRate: value.fee_rate,
 }));
 
+export const AutomationConditionsSchema = z.object({
+  max_production_cost: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  min_motherlode: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  max_motherlode: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  maxProductionCost: value.max_production_cost,
+  minMotherlode: value.min_motherlode,
+  maxMotherlode: value.max_motherlode,
+}));
+
 export const NumericSchema = z.object({
   bits: z.array(z.number()).length(16),
 }).transform((value) => ({
@@ -955,6 +989,9 @@ export const OreAutomationSchema = z.object({
   strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_sol_spent: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_ore_earned: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  conditions: z.lazy(() => AutomationConditionsSchema),
 }).transform((value) => ({
   amount: value.amount,
   authority: value.authority,
@@ -964,6 +1001,9 @@ export const OreAutomationSchema = z.object({
   strategy: value.strategy,
   mask: value.mask,
   reload: value.reload,
+  totalSolSpent: value.total_sol_spent,
+  totalOreEarned: value.total_ore_earned,
+  conditions: value.conditions,
 }));
 
 export const BoardSchema = z.object({
@@ -1124,6 +1164,7 @@ export interface OreAutomateParams {
   fee: bigint;
   mask: bigint;
   strategy: number;
+  reload: bigint;
   automation: string;
   executor: string;
   miner: string;
@@ -1145,6 +1186,7 @@ export const oreAutomateInstruction = createInstructionHandler<OreAutomateParams
     { name: 'fee', type: 'u64' },
     { name: 'mask', type: 'u64' },
     { name: 'strategy', type: 'u8' },
+    { name: 'reload', type: 'u64' },
   ],
   accounts: [
     { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
@@ -1159,8 +1201,10 @@ export const oreAutomateInstruction = createInstructionHandler<OreAutomateParams
 });
 
 export interface OreCheckpointParams {
+  authority: string;
+  automation?: string;
   board?: string;
-  miner: string;
+  miner?: string;
   round: string;
   treasury?: string;
 }
@@ -1177,9 +1221,10 @@ export const oreCheckpointInstruction = createInstructionHandler<OreCheckpointPa
   args: [],
   accounts: [
     { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'authority', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'automation', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'automation' }, { type: 'accountRef', accountName: 'authority' }] } },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
-    // [arete codegen] instruction 'checkpoint': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
-    { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'miner', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'miner' }, { type: 'accountRef', accountName: 'authority' }] } },
     { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
     { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
@@ -1203,7 +1248,7 @@ export const oreClaimSolInstruction = createInstructionHandler<OreClaimSolParams
   args: [],
   accounts: [
     { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
-    { name: 'board', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     // [arete codegen] instruction 'claimSol': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
     { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
@@ -1213,6 +1258,7 @@ export const oreClaimSolInstruction = createInstructionHandler<OreClaimSolParams
 });
 
 export interface OreClaimOreParams {
+  bps: bigint;
   board?: string;
   miner: string;
   recipient: string;
@@ -1223,18 +1269,21 @@ export interface OreClaimOreParams {
 export type OreClaimOreError = OreStreamOreProgramError;
 
 /**
- * Claims ORE token rewards from the treasury vault.
+ * Claims a percentage of ORE token rewards from the treasury vault.
+ * The current instruction encodes bps as u64. Legacy empty payloads are accepted by the program as 10000 bps.
  */
 export const oreClaimOreInstruction = createInstructionHandler<OreClaimOreParams, OreClaimOreError>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [4],
-  args: [],
+  args: [
+    { name: 'bps', type: 'u64' },
+  ],
   accounts: [
     { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
-    { name: 'board', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     // [arete codegen] instruction 'claimOre': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
     { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
-    { name: 'mint', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
+    { name: 'mint', isSigner: false, isWritable: true, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
     { name: 'recipient', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
     { name: 'treasuryTokens', isSigner: false, isWritable: true, category: 'userProvided' },
@@ -1305,10 +1354,10 @@ export const oreDeployInstruction = createInstructionHandler<OreDeployParams, Or
   ],
   accounts: [
     { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
-    { name: 'authority', isSigner: false, isWritable: false, category: 'userProvided' },
+    { name: 'authority', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'automation', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'automation' }, { type: 'accountRef', accountName: 'authority' }] } },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
-    { name: 'config', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
+    { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
     { name: 'miner', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'miner' }, { type: 'accountRef', accountName: 'authority' }] } },
     { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
@@ -1334,7 +1383,7 @@ export const oreLogInstruction = createInstructionHandler<OreLogParams, OreLogEr
   discriminator: [8],
   args: [],
   accounts: [
-    { name: 'board', isSigner: true, isWritable: false, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
   ],
   errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
 });
@@ -1349,6 +1398,7 @@ export interface OreResetParams {
   treasury?: string;
   treasuryTokens: string;
   entropyVar: string;
+  mintAuthority: string;
 }
 
 export type OreResetError = OreStreamOreProgramError;
@@ -1366,20 +1416,65 @@ export const oreResetInstruction = createInstructionHandler<OreResetParams, OreR
   accounts: [
     { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
-    { name: 'config', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
+    { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
     { name: 'feeCollector', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'mint', isSigner: false, isWritable: true, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
     { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'roundNext', isSigner: false, isWritable: true, category: 'userProvided' },
-    { name: 'topMiner', isSigner: false, isWritable: false, category: 'userProvided' },
+    { name: 'topMiner', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
     { name: 'treasuryTokens', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
     { name: 'tokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
     { name: 'oreProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv' },
     { name: 'slotHashesSysvar', isSigner: false, isWritable: false, category: 'known', knownAddress: 'SysvarS1otHashes111111111111111111111111111' },
-    { name: 'entropyVar', isSigner: false, isWritable: false, category: 'userProvided' },
+    { name: 'entropyVar', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'entropyProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X' },
+    { name: 'mintAuthority', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'mintProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'mintzxW6Kckmeyh1h6Zfdj9QcYgCzhPSGiC8ChZ6fCx' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreBuybackParams {
+  board?: string;
+  config?: string;
+  managerSol: string;
+  treasury?: string;
+  treasuryOre: string;
+  treasurySol: string;
+  stakeTreasury: string;
+  stakeTreasuryOre: string;
+  stakeVesting: string;
+  oreStakeProgram: string;
+}
+
+export type OreBuybackError = OreStreamOreProgramError;
+
+/**
+ * Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.
+ * The 15 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
+ */
+export const oreBuybackInstruction = createInstructionHandler<OreBuybackParams, OreBuybackError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [13],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'known', knownAddress: 'HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T' },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    { name: 'config', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
+    { name: 'manager', isSigner: false, isWritable: true, category: 'known', knownAddress: 'DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee' },
+    { name: 'managerSol', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'mint', isSigner: false, isWritable: true, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'treasuryOre', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'treasurySol', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stakeTreasury', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stakeTreasuryOre', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stakeVesting', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'tokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+    { name: 'oreProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv' },
+    { name: 'oreStakeProgram', isSigner: false, isWritable: false, category: 'userProvided' },
   ],
   errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
 });
@@ -1388,7 +1483,6 @@ export interface OreBuryParams {
   amount: bigint;
   sender: string;
   board?: string;
-  mint: string;
   treasury?: string;
   treasuryOre: string;
   stakeTreasury: string;
@@ -1405,15 +1499,15 @@ export type OreBuryError = OreStreamOreProgramError;
  */
 export const oreBuryInstruction = createInstructionHandler<OreBuryParams, OreBuryError>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-  discriminator: [13],
+  discriminator: [24],
   args: [
     { name: 'amount', type: 'u64' },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: false, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
     { name: 'sender', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
-    { name: 'mint', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'mint', isSigner: false, isWritable: true, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
     { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
     { name: 'treasuryOre', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'stakeTreasury', isSigner: false, isWritable: true, category: 'userProvided' },
@@ -1446,7 +1540,7 @@ export const oreWrapInstruction = createInstructionHandler<OreWrapParams, OreWra
     { name: 'amount', type: 'u64' },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: false, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'known', knownAddress: 'HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T' },
     { name: 'config', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
     { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
     { name: 'treasurySol', isSigner: false, isWritable: true, category: 'userProvided' },
@@ -1472,7 +1566,7 @@ export const oreSetAdminInstruction = createInstructionHandler<OreSetAdminParams
     { name: 'admin', type: 'pubkey' },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: false, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
     { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
     { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
   ],
@@ -1496,7 +1590,7 @@ export type OreNewVarError = OreStreamOreProgramError;
  */
 export const oreNewVarInstruction = createInstructionHandler<OreNewVarParams, OreNewVarError>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-  discriminator: [17],
+  discriminator: [19],
   args: [
     { name: 'id', type: 'u64' },
     { name: 'commit', type: { array: ['u8', 32] } },
@@ -1506,10 +1600,35 @@ export const oreNewVarInstruction = createInstructionHandler<OreNewVarParams, Or
     { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
-    { name: 'provider', isSigner: false, isWritable: false, category: 'userProvided' },
+    { name: 'provider', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
     { name: 'entropyProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreReloadSolParams {
+  automation: string;
+  miner: string;
+}
+
+export type OreReloadSolError = OreStreamOreProgramError;
+
+/**
+ * Deprecated since 3.8.15; this behavior is now included in checkpoint.
+ */
+export const oreReloadSolInstruction = createInstructionHandler<OreReloadSolParams, OreReloadSolError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [21],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    // [arete codegen] instruction 'reloadSol': account 'automation' PDA 'automation' degraded to userProvided (seed references account 'authority' not present in this instruction)
+    { name: 'automation', isSigner: false, isWritable: true, category: 'userProvided' },
+    // [arete codegen] instruction 'reloadSol': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
+    { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
   ],
   errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
 });
@@ -1691,6 +1810,7 @@ export const ORE_STREAM_STACK_CORE = {
   },
   schemas: {
     AdminConfig: AdminConfigSchema,
+    AutomationConditions: AutomationConditionsSchema,
     Automation: AutomationSchema,
     Board: BoardSchema,
     Config: ConfigSchema,
@@ -1763,10 +1883,12 @@ export const ORE_STREAM_STACK_CORE = {
         deploy: oreDeployInstruction,
         log: oreLogInstruction,
         reset: oreResetInstruction,
+        buyback: oreBuybackInstruction,
         bury: oreBuryInstruction,
         wrap: oreWrapInstruction,
         setAdmin: oreSetAdminInstruction,
         newVar: oreNewVarInstruction,
+        reloadSol: oreReloadSolInstruction,
       },
       [PROGRAM_OPERATION_EXTENSIONS]: {
         createOperations(context: ProgramOperationContext) {
@@ -1844,6 +1966,15 @@ export const ORE_STREAM_STACK_CORE = {
                 errors: oreResetInstruction.errors,
               });
             }),
+            buyback: instructionOperation(async (params: OreBuybackParams) => {
+              const instruction = buildInstruction(oreBuybackInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'buyback',
+                instruction,
+                artifacts: { instruction },
+                errors: oreBuybackInstruction.errors,
+              });
+            }),
             bury: instructionOperation(async (params: OreBuryParams) => {
               const instruction = buildInstruction(oreBuryInstruction, params as unknown as Record<string, unknown>);
               return createPreparedInstruction({
@@ -1878,6 +2009,15 @@ export const ORE_STREAM_STACK_CORE = {
                 instruction,
                 artifacts: { instruction },
                 errors: oreNewVarInstruction.errors,
+              });
+            }),
+            reloadSol: instructionOperation(async (params: OreReloadSolParams) => {
+              const instruction = buildInstruction(oreReloadSolInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'reloadSol',
+                instruction,
+                artifacts: { instruction },
+                errors: oreReloadSolInstruction.errors,
               });
             }),
             },

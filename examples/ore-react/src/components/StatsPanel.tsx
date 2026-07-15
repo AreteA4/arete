@@ -8,34 +8,55 @@ interface StatsPanelProps {
   isConnected: boolean;
 }
 
-export function StatsPanel({ round, treasuryMotherlode, isConnected }: StatsPanelProps) {
+function estimateDeadlineMs(round: ValidatedOreRound | undefined): number | null {
+  const now = Date.now();
+  const estimatedUnix = round?.state?.estimatedExpiresAtUnix;
+  if (estimatedUnix != null && estimatedUnix > 0n) {
+    return Number(estimatedUnix) * 1_000;
+  }
+
+  const expiresAt = round?.state?.expiresAt ?? round?.entropy?.entropyEndAt;
+  const sequenceSlotText = round?.sequence?.split(':')[0];
+  if (expiresAt == null || !sequenceSlotText) return null;
+
+  try {
+    const slotsRemaining = expiresAt - BigInt(sequenceSlotText);
+    return now + Math.max(0, Number(slotsRemaining) * 400);
+  } catch {
+    return null;
+  }
+}
+
+export function StatsPanel({
+  round,
+  treasuryMotherlode,
+  isConnected,
+}: StatsPanelProps) {
   const [timeRemaining, setTimeRemaining] = useState<string>('00:00');
 
   useEffect(() => {
-    const expiresAtUnix = round?.state?.estimatedExpiresAtUnix;
-    if (!expiresAtUnix) {
+    const deadlineMs = estimateDeadlineMs(round);
+    if (deadlineMs == null) {
       setTimeRemaining('00:00');
       return;
     }
 
     const updateTimer = () => {
-      const now = BigInt(Math.floor(Date.now() / 1000));
-      const remaining = expiresAtUnix > now ? expiresAtUnix - now : 0n;
-
-      if (remaining > 300n) {
-        setTimeRemaining('00:00');
-        return;
-      }
-
-      const minutes = Number(remaining / 60n);
-      const seconds = Number(remaining % 60n);
+      const remaining = Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1_000));
+      const minutes = Math.floor(remaining / 60);
+      const seconds = remaining % 60;
       setTimeRemaining(`${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`);
     };
 
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, [round?.state?.estimatedExpiresAtUnix]);
+  }, [
+    round?.entropy?.entropyEndAt,
+    round?.sequence,
+    round?.state?.estimatedExpiresAtUnix,
+    round?.state?.expiresAt,
+  ]);
 
   return (
     <div className="flex flex-col gap-6 h-full">
