@@ -490,6 +490,54 @@ mod tests {
         assert_eq!(handshake_response.status(), StatusCode::FORBIDDEN);
         assert!(handshake_response.headers().get("Retry-After").is_none());
     }
+
+    #[test]
+    fn derived_window_emits_new_and_updated_entities_only() {
+        let current_keys = vec!["current".to_string()];
+
+        assert!(should_emit_derived_upsert(
+            &current_keys,
+            "replacement",
+            0,
+            "replacement"
+        ));
+        assert!(should_emit_derived_upsert(
+            &current_keys,
+            "current",
+            0,
+            "current"
+        ));
+        assert!(!should_emit_derived_upsert(
+            &current_keys,
+            "current",
+            0,
+            "outside-window"
+        ));
+    }
+
+    #[test]
+    fn ordered_derived_window_emits_entities_that_change_position() {
+        let current_keys = vec!["first".to_string(), "second".to_string()];
+
+        assert!(should_emit_derived_upsert(
+            &current_keys,
+            "second",
+            0,
+            "outside-window"
+        ));
+        assert!(should_emit_derived_upsert(
+            &current_keys,
+            "replacement",
+            1,
+            "outside-window"
+        ));
+        assert!(!should_emit_derived_upsert(
+            &current_keys,
+            "first",
+            0,
+            "outside-window"
+        ));
+    }
 }
 
 #[allow(clippy::result_large_err)]
@@ -1282,6 +1330,16 @@ fn extract_sort_config(view_spec: &ViewSpec) -> Option<SortConfig> {
     None
 }
 
+fn should_emit_derived_upsert(
+    current_window_keys: &[String],
+    entity_key: &str,
+    new_position: usize,
+    updated_key: &str,
+) -> bool {
+    entity_key == updated_key
+        || current_window_keys.get(new_position).map(String::as_str) != Some(entity_key)
+}
+
 fn send_subscribed_frame(
     client_id: Uuid,
     view_id: &str,
@@ -1590,7 +1648,6 @@ async fn attach_derived_view_subscription_otel(
         .unwrap_or(100);
     let take = subscription.take.unwrap_or(pipeline_limit);
     let skip = subscription.skip.unwrap_or(0);
-    let is_single = take == 1;
 
     let source_view_id = match &view_spec.source_view {
         Some(s) => s.clone(),
@@ -1613,7 +1670,7 @@ async fn attach_derived_view_subscription_otel(
         }
     };
 
-    let initial_keys: HashSet<String> = initial_window.iter().map(|(k, _)| k.clone()).collect();
+    let initial_keys: Vec<String> = initial_window.iter().map(|(k, _)| k.clone()).collect();
 
     if !initial_window.is_empty() {
         let snapshot_entities: Vec<SnapshotEntity> = initial_window
@@ -1665,7 +1722,7 @@ async fn attach_derived_view_subscription_otel(
                     }
                     result = rx.recv() => {
                         match result {
-                            Ok(_envelope) => {
+                            Ok(envelope) => {
                                 let new_window: Vec<(String, serde_json::Value)> = {
                                     let mut caches = sorted_caches_clone.write().await;
                                     if let Some(cache) = caches.get_mut(&view_id_clone) {
@@ -1675,129 +1732,78 @@ async fn attach_derived_view_subscription_otel(
                                     }
                                 };
 
-                                let new_keys: HashSet<String> =
+                                let current_key_set: HashSet<&String> =
+                                    current_window_keys.iter().collect();
+                                let new_key_set: HashSet<&String> =
+                                    new_window.iter().map(|(key, _)| key).collect();
+                                let new_keys: Vec<String> =
                                     new_window.iter().map(|(k, _)| k.clone()).collect();
 
-                                if is_single {
-                                    if let Some((new_key, data)) = new_window.first() {
-                                        for old_key in current_window_keys.difference(&new_keys) {
-                                            let delete_frame = Frame {
-                                            seq: None,
-                                                mode: frame_mode,
-                                                export: view_id_clone.clone(),
-                                                op: "delete",
-                                                key: old_key.clone(),
-                                                data: serde_json::Value::Null,
-                                                append: vec![],
-                                            };
-                                            if let Ok(json) = serde_json::to_vec(&delete_frame) {
-                                                let payload = Arc::new(Bytes::from(json));
-                                                let payload_len = payload.len();
-                                                if client_mgr.send_to_client(client_id, payload).is_err() {
-                                                    return;
-                                                }
-                                                if let Some(ref m) = metrics_clone {
-                                                    m.record_ws_message_sent();
-                                                }
-                                                emit_update_sent_for_client(
-                                                    &usage_emitter,
-                                                    &client_mgr,
-                                                    client_id,
-                                                    &view_id_clone,
-                                                    payload_len,
-                                                );
-                                            }
+                                for key in current_key_set.difference(&new_key_set) {
+                                    let delete_frame = Frame {
+                                        seq: None,
+                                        mode: frame_mode,
+                                        export: view_id_clone.clone(),
+                                        op: "delete",
+                                        key: (*key).clone(),
+                                        data: serde_json::Value::Null,
+                                        append: vec![],
+                                    };
+                                    if let Ok(json) = serde_json::to_vec(&delete_frame) {
+                                        let payload = Arc::new(Bytes::from(json));
+                                        let payload_len = payload.len();
+                                        if client_mgr.send_to_client(client_id, payload).is_err() {
+                                            return;
                                         }
-
-                                        let mut transformed_data = data.clone();
-                                        apply_wire_format(&mut transformed_data, &view_spec.wire_format);
-                                        let frame = Frame {
-                                            seq: None,
-                                            mode: frame_mode,
-                                            export: view_id_clone.clone(),
-                                            op: "upsert",
-                                            key: new_key.clone(),
-                                            data: transformed_data,
-                                            append: vec![],
-                                        };
-
-                                        if let Ok(json) = serde_json::to_vec(&frame) {
-                                            let payload = Arc::new(Bytes::from(json));
-                                            let payload_len = payload.len();
-                                            if client_mgr.send_to_client(client_id, payload).is_err() {
-                                                return;
-                                            }
-                                            if let Some(ref m) = metrics_clone {
-                                                m.record_ws_message_sent();
-                                            }
-                                            emit_update_sent_for_client(
-                                                &usage_emitter,
-                                                &client_mgr,
-                                                client_id,
-                                                &view_id_clone,
-                                                payload_len,
-                                            );
+                                        if let Some(ref m) = metrics_clone {
+                                            m.record_ws_message_sent();
                                         }
+                                        emit_update_sent_for_client(
+                                            &usage_emitter,
+                                            &client_mgr,
+                                            client_id,
+                                            &view_id_clone,
+                                            payload_len,
+                                        );
                                     }
-                                } else {
-                                    for key in current_window_keys.difference(&new_keys) {
-                                        let delete_frame = Frame {
-                                            seq: None,
-                                            mode: frame_mode,
-                                            export: view_id_clone.clone(),
-                                            op: "delete",
-                                            key: key.clone(),
-                                            data: serde_json::Value::Null,
-                                            append: vec![],
-                                        };
-                                        if let Ok(json) = serde_json::to_vec(&delete_frame) {
-                                            let payload = Arc::new(Bytes::from(json));
-                                            let payload_len = payload.len();
-                                            if client_mgr.send_to_client(client_id, payload).is_err() {
-                                                return;
-                                            }
-                                            if let Some(ref m) = metrics_clone {
-                                                m.record_ws_message_sent();
-                                            }
-                                            emit_update_sent_for_client(
-                                                &usage_emitter,
-                                                &client_mgr,
-                                                client_id,
-                                                &view_id_clone,
-                                                payload_len,
-                                            );
-                                        }
-                                    }
+                                }
 
-                                    for (key, data) in &new_window {
-                                        let mut transformed_data = data.clone();
-                                        apply_wire_format(&mut transformed_data, &view_spec.wire_format);
-                                        let frame = Frame {
-                                            seq: None,
-                                            mode: frame_mode,
-                                            export: view_id_clone.clone(),
-                                            op: "upsert",
-                                            key: key.clone(),
-                                            data: transformed_data,
-                                            append: vec![],
-                                        };
-                                        if let Ok(json) = serde_json::to_vec(&frame) {
-                                            let payload = Arc::new(Bytes::from(json));
-                                            let payload_len = payload.len();
-                                            if client_mgr.send_to_client(client_id, payload).is_err() {
-                                                return;
-                                            }
-                                            if let Some(ref m) = metrics_clone {
-                                                m.record_ws_message_sent();
-                                            }
-                                            emit_update_sent_for_client(
-                                                &usage_emitter,
-                                                &client_mgr,
-                                                client_id,
-                                                &view_id_clone,
-                                                payload_len,
-                                            );
+                                for (new_position, (key, data)) in new_window.iter().enumerate() {
+                                    if !should_emit_derived_upsert(
+                                        &current_window_keys,
+                                        key,
+                                        new_position,
+                                        &envelope.key,
+                                    ) {
+                                        continue;
+                                    }
+                                    let mut transformed_data = data.clone();
+                                    apply_wire_format(&mut transformed_data, &view_spec.wire_format);
+                                    let frame = Frame {
+                                        seq: None,
+                                        mode: frame_mode,
+                                        export: view_id_clone.clone(),
+                                        op: "upsert",
+                                        key: key.clone(),
+                                        data: transformed_data,
+                                        append: vec![],
+                                    };
+                                    if let Ok(json) = serde_json::to_vec(&frame) {
+                                        let payload = Arc::new(Bytes::from(json));
+                                        let payload_len = payload.len();
+                                        if client_mgr.send_to_client(client_id, payload).is_err() {
+                                            return;
                                         }
+                                        if let Some(ref m) = metrics_clone {
+                                            m.record_ws_message_sent();
+                                        }
+                                        emit_update_sent_for_client(
+                                            &usage_emitter,
+                                            &client_mgr,
+                                            client_id,
+                                            &view_id_clone,
+                                            payload_len,
+                                        );
                                     }
                                 }
 
@@ -2073,7 +2079,6 @@ async fn attach_derived_view_subscription(
         .unwrap_or(100);
     let take = subscription.take.unwrap_or(pipeline_limit);
     let skip = subscription.skip.unwrap_or(0);
-    let is_single = take == 1;
 
     let source_view_id = match &view_spec.source_view {
         Some(s) => s.clone(),
@@ -2096,7 +2101,7 @@ async fn attach_derived_view_subscription(
         }
     };
 
-    let initial_keys: HashSet<String> = initial_window.iter().map(|(k, _)| k.clone()).collect();
+    let initial_keys: Vec<String> = initial_window.iter().map(|(k, _)| k.clone()).collect();
 
     if !initial_window.is_empty() {
         let snapshot_entities: Vec<SnapshotEntity> = initial_window
@@ -2146,7 +2151,7 @@ async fn attach_derived_view_subscription(
                     }
                     result = rx.recv() => {
                         match result {
-                            Ok(_envelope) => {
+                            Ok(envelope) => {
                                 let new_window: Vec<(String, serde_json::Value)> = {
                                     let mut caches = sorted_caches_clone.write().await;
                                     if let Some(cache) = caches.get_mut(&view_id_clone) {
@@ -2156,116 +2161,72 @@ async fn attach_derived_view_subscription(
                                     }
                                 };
 
-                                let new_keys: HashSet<String> =
+                                let current_key_set: HashSet<&String> =
+                                    current_window_keys.iter().collect();
+                                let new_key_set: HashSet<&String> =
+                                    new_window.iter().map(|(key, _)| key).collect();
+                                let new_keys: Vec<String> =
                                     new_window.iter().map(|(k, _)| k.clone()).collect();
 
-                                if is_single {
-                                    if let Some((new_key, data)) = new_window.first() {
-                                        for old_key in current_window_keys.difference(&new_keys) {
-                                            let delete_frame = Frame {
-                                            seq: None,
-                                                mode: frame_mode,
-                                                export: view_id_clone.clone(),
-                                                op: "delete",
-                                                key: old_key.clone(),
-                                                data: serde_json::Value::Null,
-                                                append: vec![],
-                                            };
-                                            if let Ok(json) = serde_json::to_vec(&delete_frame) {
-                                                let payload = Arc::new(Bytes::from(json));
-                                                let payload_len = payload.len();
-                                                if client_mgr.send_to_client(client_id, payload).is_err() {
-                                                    return;
-                                                }
-                                                emit_update_sent_for_client(
-                                                    &usage_emitter,
-                                                    &client_mgr,
-                                                    client_id,
-                                                    &view_id_clone,
-                                                    payload_len,
-                                                );
-                                            }
+                                for key in current_key_set.difference(&new_key_set) {
+                                    let delete_frame = Frame {
+                                        seq: None,
+                                        mode: frame_mode,
+                                        export: view_id_clone.clone(),
+                                        op: "delete",
+                                        key: (*key).clone(),
+                                        data: serde_json::Value::Null,
+                                        append: vec![],
+                                    };
+                                    if let Ok(json) = serde_json::to_vec(&delete_frame) {
+                                        let payload = Arc::new(Bytes::from(json));
+                                        let payload_len = payload.len();
+                                        if client_mgr.send_to_client(client_id, payload).is_err() {
+                                            return;
                                         }
-
-                                        let mut transformed_data = data.clone();
-                                        apply_wire_format(&mut transformed_data, &view_spec.wire_format);
-                                        let frame = Frame {
-                                            seq: None,
-                                            mode: frame_mode,
-                                            export: view_id_clone.clone(),
-                                            op: "upsert",
-                                            key: new_key.clone(),
-                                            data: transformed_data,
-                                            append: vec![],
-                                        };
-                                        if let Ok(json) = serde_json::to_vec(&frame) {
-                                            let payload = Arc::new(Bytes::from(json));
-                                            let payload_len = payload.len();
-                                            if client_mgr.send_to_client(client_id, payload).is_err() {
-                                                return;
-                                            }
-                                            emit_update_sent_for_client(
-                                                &usage_emitter,
-                                                &client_mgr,
-                                                client_id,
-                                                &view_id_clone,
-                                                payload_len,
-                                            );
-                                        }
+                                        emit_update_sent_for_client(
+                                            &usage_emitter,
+                                            &client_mgr,
+                                            client_id,
+                                            &view_id_clone,
+                                            payload_len,
+                                        );
                                     }
-                                } else {
-                                    for key in current_window_keys.difference(&new_keys) {
-                                        let delete_frame = Frame {
-                                            seq: None,
-                                            mode: frame_mode,
-                                            export: view_id_clone.clone(),
-                                            op: "delete",
-                                            key: key.clone(),
-                                            data: serde_json::Value::Null,
-                                            append: vec![],
-                                        };
-                                        if let Ok(json) = serde_json::to_vec(&delete_frame) {
-                                            let payload = Arc::new(Bytes::from(json));
-                                            let payload_len = payload.len();
-                                            if client_mgr.send_to_client(client_id, payload).is_err() {
-                                                return;
-                                            }
-                                            emit_update_sent_for_client(
-                                                &usage_emitter,
-                                                &client_mgr,
-                                                client_id,
-                                                &view_id_clone,
-                                                payload_len,
-                                            );
-                                        }
-                                    }
+                                }
 
-                                    for (key, data) in &new_window {
-                                        let mut transformed_data = data.clone();
-                                        apply_wire_format(&mut transformed_data, &view_spec.wire_format);
-                                        let frame = Frame {
-                                            seq: None,
-                                            mode: frame_mode,
-                                            export: view_id_clone.clone(),
-                                            op: "upsert",
-                                            key: key.clone(),
-                                            data: transformed_data,
-                                            append: vec![],
-                                        };
-                                        if let Ok(json) = serde_json::to_vec(&frame) {
-                                            let payload = Arc::new(Bytes::from(json));
-                                            let payload_len = payload.len();
-                                            if client_mgr.send_to_client(client_id, payload).is_err() {
-                                                return;
-                                            }
-                                            emit_update_sent_for_client(
-                                                &usage_emitter,
-                                                &client_mgr,
-                                                client_id,
-                                                &view_id_clone,
-                                                payload_len,
-                                            );
+                                for (new_position, (key, data)) in new_window.iter().enumerate() {
+                                    if !should_emit_derived_upsert(
+                                        &current_window_keys,
+                                        key,
+                                        new_position,
+                                        &envelope.key,
+                                    ) {
+                                        continue;
+                                    }
+                                    let mut transformed_data = data.clone();
+                                    apply_wire_format(&mut transformed_data, &view_spec.wire_format);
+                                    let frame = Frame {
+                                        seq: None,
+                                        mode: frame_mode,
+                                        export: view_id_clone.clone(),
+                                        op: "upsert",
+                                        key: key.clone(),
+                                        data: transformed_data,
+                                        append: vec![],
+                                    };
+                                    if let Ok(json) = serde_json::to_vec(&frame) {
+                                        let payload = Arc::new(Bytes::from(json));
+                                        let payload_len = payload.len();
+                                        if client_mgr.send_to_client(client_id, payload).is_err() {
+                                            return;
                                         }
+                                        emit_update_sent_for_client(
+                                            &usage_emitter,
+                                            &client_mgr,
+                                            client_id,
+                                            &view_id_clone,
+                                            payload_len,
+                                        );
                                     }
                                 }
 

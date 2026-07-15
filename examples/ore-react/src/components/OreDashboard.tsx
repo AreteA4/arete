@@ -1,15 +1,19 @@
 import { useArete } from '@usearete/react';
 import { ORE_STREAM_STACK } from '../generated/ore-stack';
-import { ValidatedOreRoundSchema } from '../schemas/ore-round-validated';
+import { toValidatedOreRound } from '../schemas/ore-round-validated';
 import { BlockGrid } from './BlockGrid';
 import { StatsPanel } from './StatsPanel';
 import { ConnectionBadge } from './ConnectionBadge';
 import { ThemeToggle } from './ThemeToggle';
 
+const ARETE_WS_URL = import.meta.env.VITE_ARETE_WS_URL || 'ws://127.0.0.1:8877';
+console.log('ARETE_WS_URL', ARETE_WS_URL);
+
 export function OreDashboard() {
-  const { views, isConnected } = useArete(ORE_STREAM_STACK);
-  const { data: latestRound } = views.OreRound.latest.useOne({ schema: ValidatedOreRoundSchema });
+  const { views, isConnected } = useArete(ORE_STREAM_STACK, { url: ARETE_WS_URL });
+  const { data: latestRound } = views.OreRound.latest.useOne();
   const { data: treasuryData } = views.OreTreasury.list.useOne();
+  const round = toValidatedOreRound(latestRound);
 
   return (
     <div className="h-screen w-full bg-stone-100 dark:bg-stone-900 p-6 font-sans text-stone-900 dark:text-stone-100 relative transition-colors overflow-hidden flex flex-col">
@@ -23,12 +27,12 @@ export function OreDashboard() {
 
       <div className="flex gap-8 flex-1 min-h-0">
         <div className="flex-shrink-0">
-          <BlockGrid round={latestRound} />
+          <BlockGrid round={round} />
         </div>
 
         <div className="flex-1 min-w-[280px] max-w-md">
           <StatsPanel
-            round={latestRound}
+            round={round}
             treasuryMotherlode={treasuryData?.state?.motherlode}
             isConnected={isConnected}
           />

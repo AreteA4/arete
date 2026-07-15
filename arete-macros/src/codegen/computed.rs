@@ -16,23 +16,41 @@ fn generate_json_array_sum(inner: TokenStream) -> TokenStream {
             let sum_result: Option<arete::runtime::serde_json::Value> = inner_result.and_then(|value| {
                 let values = value.as_array()?;
 
-                if values.iter().all(|item| item.as_u64().is_some()) {
-                    return values
+                let unsigned_values = values
+                    .iter()
+                    .map(|item| {
+                        item.as_u64()
+                            .or_else(|| item.as_str().and_then(|text| text.parse::<u64>().ok()))
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(unsigned_values) = unsigned_values {
+                    return unsigned_values
                         .iter()
-                        .try_fold(0_u64, |total, item| total.checked_add(item.as_u64().unwrap()))
+                        .try_fold(0_u64, |total, item| total.checked_add(*item))
                         .map(arete::runtime::serde_json::Value::from);
                 }
 
-                if values.iter().all(|item| item.as_i64().is_some()) {
-                    return values
+                let signed_values = values
+                    .iter()
+                    .map(|item| {
+                        item.as_i64()
+                            .or_else(|| item.as_str().and_then(|text| text.parse::<i64>().ok()))
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(signed_values) = signed_values {
+                    return signed_values
                         .iter()
-                        .try_fold(0_i64, |total, item| total.checked_add(item.as_i64().unwrap()))
+                        .try_fold(0_i64, |total, item| total.checked_add(*item))
                         .map(arete::runtime::serde_json::Value::from);
                 }
 
                 let total = values
                     .iter()
-                    .try_fold(0.0_f64, |total, item| item.as_f64().map(|value| total + value))?;
+                    .try_fold(0.0_f64, |total, item| {
+                        item.as_f64()
+                            .or_else(|| item.as_str().and_then(|text| text.parse::<f64>().ok()))
+                            .map(|value| total + value)
+                    })?;
                 if !total.is_finite() {
                     return None;
                 }

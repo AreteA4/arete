@@ -101,6 +101,11 @@ pub struct TokenMetadata {
     pub logo_uri: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedSlotHash {
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ResolverTypeScriptSchema {
     pub name: &'static str,
@@ -667,6 +672,12 @@ const SLOT_HASH_METHODS: &[ResolverComputedMethod] = &[
 ];
 
 impl SlotHashResolver {
+    fn optional_u64(value: &Value) -> Option<u64> {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+    }
+
     /// Compute keccak256(slot_hash || seed || samples_le_bytes) and XOR-fold into a u64.
     /// args[0] = slot_hash bytes (JSON array of 32 bytes)
     /// args[1] = seed bytes (JSON array of 32 bytes)
@@ -683,10 +694,7 @@ impl SlotHashResolver {
         };
         let slot_hash = Self::json_array_to_bytes(&slot_hash_bytes, 32);
         let seed = Self::json_array_to_bytes(&args[1], 32);
-        let samples = match &args[2] {
-            Value::Number(n) => n.as_u64(),
-            _ => None,
-        };
+        let samples = Self::optional_u64(&args[2]);
 
         let (slot_hash, seed, samples) = match (slot_hash, seed, samples) {
             (Some(s), Some(sd), Some(sm)) => (s, sd, sm),
@@ -737,10 +745,7 @@ impl SlotHashResolver {
             return Ok(Value::Null);
         }
 
-        let slot = match &args[0] {
-            Value::Number(n) => n.as_u64().unwrap_or(0),
-            _ => return Ok(Value::Null),
-        };
+        let slot = Self::optional_u64(&args[0]).unwrap_or(0);
 
         if slot == 0 {
             return Ok(Value::Null);

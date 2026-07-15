@@ -9,7 +9,7 @@
     {
       "name": "ore",
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "version": "4.0.0",
+      "version": "3.8.15",
       "accounts": [
         {
           "name": "Automation",
@@ -59,6 +59,20 @@
             {
               "name": "reload",
               "type": "u64"
+            },
+            {
+              "name": "total_sol_spent",
+              "type": "u64"
+            },
+            {
+              "name": "total_ore_earned",
+              "type": "u64"
+            },
+            {
+              "name": "conditions",
+              "type": {
+                "defined": "AutomationConditions"
+              }
             }
           ]
         },
@@ -440,6 +454,10 @@
             {
               "name": "strategy",
               "type": "u8"
+            },
+            {
+              "name": "reload",
+              "type": "u64"
             }
           ]
         },
@@ -458,6 +476,22 @@
               "name": "signer",
               "writable": true,
               "signer": true,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "authority",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "automation",
+              "writable": true,
+              "signer": false,
               "optional": false,
               "address": null,
               "docs": []
@@ -525,7 +559,7 @@
             },
             {
               "name": "board",
-              "writable": false,
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": null,
@@ -565,7 +599,8 @@
           ],
           "discriminant": null,
           "docs": [
-            "Claims ORE token rewards from the treasury vault."
+            "Claims a percentage of ORE token rewards from the treasury vault.",
+            "The current instruction encodes bps as u64. Legacy empty payloads are accepted by the program as 10000 bps."
           ],
           "accounts": [
             {
@@ -578,7 +613,7 @@
             },
             {
               "name": "board",
-              "writable": false,
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": null,
@@ -594,7 +629,7 @@
             },
             {
               "name": "mint",
-              "writable": false,
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp",
@@ -657,7 +692,12 @@
               "docs": []
             }
           ],
-          "args": []
+          "args": [
+            {
+              "name": "bps",
+              "type": "u64"
+            }
+          ]
         },
         {
           "name": "close",
@@ -746,7 +786,7 @@
             },
             {
               "name": "authority",
-              "writable": false,
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": null,
@@ -770,7 +810,7 @@
             },
             {
               "name": "config",
-              "writable": false,
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": null,
@@ -848,8 +888,8 @@
           ],
           "accounts": [
             {
-              "name": "board",
-              "writable": false,
+              "name": "signer",
+              "writable": true,
               "signer": true,
               "optional": false,
               "address": null,
@@ -889,7 +929,7 @@
             },
             {
               "name": "config",
-              "writable": false,
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": null,
@@ -929,7 +969,7 @@
             },
             {
               "name": "topMiner",
-              "writable": false,
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": null,
@@ -985,7 +1025,7 @@
             },
             {
               "name": "entropyVar",
-              "writable": false,
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": null,
@@ -998,6 +1038,156 @@
               "optional": false,
               "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
               "docs": []
+            },
+            {
+              "name": "mintAuthority",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "mintProgram",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": "mintzxW6Kckmeyh1h6Zfdj9QcYgCzhPSGiC8ChZ6fCx",
+              "docs": []
+            }
+          ],
+          "args": []
+        },
+        {
+          "name": "buyback",
+          "discriminator": [
+            13
+          ],
+          "discriminant": null,
+          "docs": [
+            "Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.",
+            "The 15 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator."
+          ],
+          "accounts": [
+            {
+              "name": "signer",
+              "writable": true,
+              "signer": true,
+              "optional": false,
+              "address": "HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T",
+              "docs": []
+            },
+            {
+              "name": "board",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "config",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "manager",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": "DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee",
+              "docs": []
+            },
+            {
+              "name": "managerSol",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "mint",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp",
+              "docs": []
+            },
+            {
+              "name": "treasury",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "treasuryOre",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "treasurySol",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "stakeTreasury",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "stakeTreasuryOre",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "stakeVesting",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "tokenProgram",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "docs": []
+            },
+            {
+              "name": "oreProgram",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
+              "docs": []
+            },
+            {
+              "name": "oreStakeProgram",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
             }
           ],
           "args": []
@@ -1005,7 +1195,7 @@
         {
           "name": "bury",
           "discriminator": [
-            13
+            24
           ],
           "discriminant": null,
           "docs": [
@@ -1015,7 +1205,7 @@
           "accounts": [
             {
               "name": "signer",
-              "writable": false,
+              "writable": true,
               "signer": true,
               "optional": false,
               "address": null,
@@ -1042,7 +1232,7 @@
               "writable": true,
               "signer": false,
               "optional": false,
-              "address": null,
+              "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp",
               "docs": []
             },
             {
@@ -1130,10 +1320,10 @@
           "accounts": [
             {
               "name": "signer",
-              "writable": false,
+              "writable": true,
               "signer": true,
               "optional": false,
-              "address": null,
+              "address": "HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T",
               "docs": []
             },
             {
@@ -1188,7 +1378,7 @@
           "accounts": [
             {
               "name": "signer",
-              "writable": false,
+              "writable": true,
               "signer": true,
               "optional": false,
               "address": null,
@@ -1221,7 +1411,7 @@
         {
           "name": "newVar",
           "discriminator": [
-            17
+            19
           ],
           "discriminant": null,
           "docs": [
@@ -1254,7 +1444,7 @@
             },
             {
               "name": "provider",
-              "writable": false,
+              "writable": true,
               "signer": false,
               "optional": false,
               "address": null,
@@ -1304,9 +1494,77 @@
               "type": "u64"
             }
           ]
+        },
+        {
+          "name": "reloadSol",
+          "discriminator": [
+            21
+          ],
+          "discriminant": null,
+          "docs": [
+            "Deprecated since 3.8.15; this behavior is now included in checkpoint."
+          ],
+          "accounts": [
+            {
+              "name": "signer",
+              "writable": true,
+              "signer": true,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "automation",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "miner",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
+              "name": "systemProgram",
+              "writable": false,
+              "signer": false,
+              "optional": false,
+              "address": "11111111111111111111111111111111",
+              "docs": []
+            }
+          ],
+          "args": []
         }
       ],
       "types": [
+        {
+          "name": "AutomationConditions",
+          "docs": [
+            "Conditions that gate whether an automation deploys in a round."
+          ],
+          "type": {
+            "kind": "struct",
+            "fields": [
+              {
+                "name": "max_production_cost",
+                "type": "u64"
+              },
+              {
+                "name": "min_motherlode",
+                "type": "u64"
+              },
+              {
+                "name": "max_motherlode",
+                "type": "u64"
+              }
+            ]
+          }
+        },
         {
           "name": "AdminConfig",
           "docs": [
@@ -1629,6 +1887,20 @@
               {
                 "name": "reload",
                 "type": "u64"
+              },
+              {
+                "name": "total_sol_spent",
+                "type": "u64"
+              },
+              {
+                "name": "total_ore_earned",
+                "type": "u64"
+              },
+              {
+                "name": "conditions",
+                "type": {
+                  "defined": "AutomationConditions"
+                }
               }
             ]
           }
@@ -2633,7 +2905,7 @@
                 }
               },
               "transform": null,
-              "population": "LastWrite"
+              "population": "SetOnce"
             },
             {
               "target_path": "entropy.entropy_value",
@@ -3110,7 +3382,6 @@
               },
               "transform": null,
               "population": "SetOnce",
-              "stop": "ore::ResetIxState",
               "emit": false
             }
           ],
@@ -3463,12 +3734,11 @@
               "field_name": "expires_at_slot_hash",
               "raw_name": "expires_at_slot_hash",
               "canonical_name": "expiresAtSlotHash",
-              "rust_type_name": "Option < Vec < u8 > >",
-              "base_type": "Array",
-              "integer_kind": "U8",
+              "rust_type_name": "Option < ResolvedSlotHash >",
+              "base_type": "Object",
               "is_optional": true,
-              "is_array": true,
-              "inner_type": "Vec < u8 >",
+              "is_array": false,
+              "inner_type": "ResolvedSlotHash",
               "source_path": null,
               "resolved_type": null
             },
@@ -3507,6 +3777,19 @@
               "is_optional": true,
               "is_array": false,
               "inner_type": "bool",
+              "source_path": null,
+              "resolved_type": null
+            },
+            {
+              "field_name": "pre_reveal_rng_candidate",
+              "raw_name": "pre_reveal_rng_candidate",
+              "canonical_name": "preRevealRngCandidate",
+              "rust_type_name": "Option < u64 >",
+              "base_type": "Integer",
+              "integer_kind": "U64",
+              "is_optional": true,
+              "is_array": false,
+              "inner_type": "u64",
               "source_path": null,
               "resolved_type": null
             },
@@ -3899,19 +4182,31 @@
           "field_name": "results.expires_at_slot_hash",
           "raw_name": "results.expires_at_slot_hash",
           "canonical_name": "resultsExpiresAtSlotHash",
-          "rust_type_name": "Option < Vec < u8 > >",
-          "base_type": "Array",
-          "integer_kind": "U8",
+          "rust_type_name": "Option < ResolvedSlotHash >",
+          "base_type": "Any",
           "is_optional": true,
-          "is_array": true,
+          "is_array": false,
           "inner_type": "SlotHashBytes",
           "source_path": null,
           "resolved_type": null
         },
         "results.pre_reveal_rng": {
-          "field_name": "results.pre_reveal_rng",
-          "raw_name": "results.pre_reveal_rng",
-          "canonical_name": "resultsPreRevealRng",
+          "field_name": "pre_reveal_rng",
+          "raw_name": "pre_reveal_rng",
+          "canonical_name": "preRevealRng",
+          "rust_type_name": "Option < u64 >",
+          "base_type": "Integer",
+          "integer_kind": "U64",
+          "is_optional": true,
+          "is_array": false,
+          "inner_type": "u64",
+          "source_path": null,
+          "resolved_type": null
+        },
+        "results.pre_reveal_rng_candidate": {
+          "field_name": "results.pre_reveal_rng_candidate",
+          "raw_name": "results.pre_reveal_rng_candidate",
+          "canonical_name": "resultsPreRevealRngCandidate",
           "rust_type_name": "Option < u64 >",
           "base_type": "Any",
           "integer_kind": "U64",
@@ -4315,24 +4610,9 @@
                 },
                 "lookup_name": "default_pda_lookup"
               }
-            },
-            {
-              "SetField": {
-                "target_field": "__stop:treasury.__motherlode_raw",
-                "source": {
-                  "Constant": true
-                },
-                "condition": null
-              }
             }
           ],
-          "lookup_by": {
-            "segments": [
-              "accounts",
-              "roundNext"
-            ],
-            "offsets": null
-          }
+          "lookup_by": null
         }
       ],
       "resolver_specs": [
@@ -4396,6 +4676,7 @@
         "results.rng",
         "results.winning_square",
         "results.did_hit_motherlode",
+        "results.pre_reveal_rng_candidate",
         "results.pre_reveal_rng",
         "results.pre_reveal_winning_square",
         "treasury.motherlode"
@@ -4709,7 +4990,7 @@
               ]
             }
           },
-          "result_type": "Option < Vec < u8 > >"
+          "result_type": "Option < ResolvedSlotHash >"
         },
         {
           "target_path": "results.rng",
@@ -5113,7 +5394,7 @@
           "result_type": "Option < bool >"
         },
         {
-          "target_path": "results.pre_reveal_rng",
+          "target_path": "results.pre_reveal_rng_candidate",
           "expression": {
             "ResolverComputed": {
               "resolver": "SlotHash",
@@ -5132,6 +5413,55 @@
                 {
                   "FieldRef": {
                     "path": "entropy.entropy_samples"
+                  }
+                }
+              ]
+            }
+          },
+          "result_type": "Option < u64 >"
+        },
+        {
+          "target_path": "results.pre_reveal_rng",
+          "expression": {
+            "MethodCall": {
+              "expr": {
+                "MethodCall": {
+                  "expr": {
+                    "FieldRef": {
+                      "path": "results.rng"
+                    }
+                  },
+                  "method": "filter",
+                  "args": [
+                    {
+                      "Closure": {
+                        "param": "rng",
+                        "body": {
+                          "Unary": {
+                            "op": "Not",
+                            "expr": {
+                              "MethodCall": {
+                                "expr": {
+                                  "Var": {
+                                    "name": "rng"
+                                  }
+                                },
+                                "method": "is_null",
+                                "args": []
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "method": "or",
+              "args": [
+                {
+                  "FieldRef": {
+                    "path": "results.pre_reveal_rng_candidate"
                   }
                 }
               ]
@@ -5198,7 +5528,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "d8ef747d7abd1cf2b9cc4a63d6f99567be5a8a594e536738e17bd0db9ce5e5cb",
+      "content_hash": "4c9b4db60495c91aaf035e9303c28f88b613ec6ebb51adcf6f740473983d1aae",
       "views": [
         {
           "id": "OreRound/latest",
@@ -5683,7 +6013,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "34869aef926e15181ccffdb5642585529bc62d0e102052f4023aa0d3d25fab65",
+      "content_hash": "7a7ef04b564aa5ef55cd9bf779b01a27280eee578d24d00dfa799efa2bd2719a",
       "views": []
     },
     {
@@ -6732,6 +7062,35 @@
                     "integer_kind": "U64",
                     "is_optional": false,
                     "is_array": false
+                  },
+                  {
+                    "field_name": "total_sol_spent",
+                    "raw_name": "total_sol_spent",
+                    "canonical_name": "totalSolSpent",
+                    "field_type": "u64",
+                    "base_type": "Integer",
+                    "integer_kind": "U64",
+                    "is_optional": false,
+                    "is_array": false
+                  },
+                  {
+                    "field_name": "total_ore_earned",
+                    "raw_name": "total_ore_earned",
+                    "canonical_name": "totalOreEarned",
+                    "field_type": "u64",
+                    "base_type": "Integer",
+                    "integer_kind": "U64",
+                    "is_optional": false,
+                    "is_array": false
+                  },
+                  {
+                    "field_name": "conditions",
+                    "raw_name": "conditions",
+                    "canonical_name": "conditions",
+                    "field_type": "AutomationConditions",
+                    "base_type": "Object",
+                    "is_optional": false,
+                    "is_array": false
                   }
                 ],
                 "is_instruction": false,
@@ -6925,6 +7284,35 @@
                 "field_type": "u64",
                 "base_type": "Integer",
                 "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": false
+              },
+              {
+                "field_name": "total_sol_spent",
+                "raw_name": "total_sol_spent",
+                "canonical_name": "totalSolSpent",
+                "field_type": "u64",
+                "base_type": "Integer",
+                "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": false
+              },
+              {
+                "field_name": "total_ore_earned",
+                "raw_name": "total_ore_earned",
+                "canonical_name": "totalOreEarned",
+                "field_type": "u64",
+                "base_type": "Integer",
+                "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": false
+              },
+              {
+                "field_name": "conditions",
+                "raw_name": "conditions",
+                "canonical_name": "conditions",
+                "field_type": "AutomationConditions",
+                "base_type": "Object",
                 "is_optional": false,
                 "is_array": false
               }
@@ -7333,7 +7721,7 @@
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "9a2386283308d45d0095e697d0ee172d46175581938b91492d1911c417f508d2",
+      "content_hash": "5a936dd7af96782dfe8e92b0054ed641dfe2d088ef29c236d961665f06d55f88",
       "views": []
     }
   ],
@@ -7472,6 +7860,10 @@
         {
           "name": "strategy",
           "type": "u8"
+        },
+        {
+          "name": "reload",
+          "type": "u64"
         }
       ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
@@ -7494,6 +7886,25 @@
           "is_writable": true,
           "resolution": {
             "category": "signer"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "authority",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "automation",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "pdaRef",
+            "pda_name": "automation"
           },
           "is_optional": false
         },
@@ -7573,7 +7984,7 @@
         {
           "name": "board",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "pdaRef",
             "pda_name": "board"
@@ -7636,7 +8047,7 @@
         {
           "name": "board",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "pdaRef",
             "pda_name": "board"
@@ -7656,7 +8067,7 @@
         {
           "name": "mint",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "known",
             "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
@@ -7732,10 +8143,16 @@
           "is_optional": false
         }
       ],
-      "args": [],
+      "args": [
+        {
+          "name": "bps",
+          "type": "u64"
+        }
+      ],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
-        "Claims ORE token rewards from the treasury vault."
+        "Claims a percentage of ORE token rewards from the treasury vault.",
+        "The current instruction encodes bps as u64. Legacy empty payloads are accepted by the program as 10000 bps."
       ]
     },
     {
@@ -7830,7 +8247,7 @@
         {
           "name": "authority",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "userProvided"
           },
@@ -7859,7 +8276,7 @@
         {
           "name": "config",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "pdaRef",
             "pda_name": "config"
@@ -7952,9 +8369,9 @@
       "discriminator_size": 1,
       "accounts": [
         {
-          "name": "board",
+          "name": "signer",
           "is_signer": true,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "signer"
           },
@@ -7997,7 +8414,7 @@
         {
           "name": "config",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "pdaRef",
             "pda_name": "config"
@@ -8044,7 +8461,7 @@
         {
           "name": "topMiner",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "userProvided"
           },
@@ -8112,7 +8529,7 @@
         {
           "name": "entropyVar",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "userProvided"
           },
@@ -8127,6 +8544,25 @@
             "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
           },
           "is_optional": false
+        },
+        {
+          "name": "mintAuthority",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "mintProgram",
+          "is_signer": false,
+          "is_writable": false,
+          "resolution": {
+            "category": "known",
+            "address": "mintzxW6Kckmeyh1h6Zfdj9QcYgCzhPSGiC8ChZ6fCx"
+          },
+          "is_optional": false
         }
       ],
       "args": [],
@@ -8139,7 +8575,7 @@
       ]
     },
     {
-      "name": "bury",
+      "name": "buyback",
       "discriminator": [
         13
       ],
@@ -8148,7 +8584,165 @@
         {
           "name": "signer",
           "is_signer": true,
+          "is_writable": true,
+          "resolution": {
+            "category": "known",
+            "address": "HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "board",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "pdaRef",
+            "pda_name": "board"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "config",
+          "is_signer": false,
           "is_writable": false,
+          "resolution": {
+            "category": "pdaRef",
+            "pda_name": "config"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "manager",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "known",
+            "address": "DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "managerSol",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "mint",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "known",
+            "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "treasury",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "pdaRef",
+            "pda_name": "treasury"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "treasuryOre",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "treasurySol",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "stakeTreasury",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "stakeTreasuryOre",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "stakeVesting",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "tokenProgram",
+          "is_signer": false,
+          "is_writable": false,
+          "resolution": {
+            "category": "known",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "oreProgram",
+          "is_signer": false,
+          "is_writable": false,
+          "resolution": {
+            "category": "known",
+            "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "oreStakeProgram",
+          "is_signer": false,
+          "is_writable": false,
+          "resolution": {
+            "category": "userProvided"
+          },
+          "is_optional": false
+        }
+      ],
+      "args": [],
+      "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
+      "docs": [
+        "Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.",
+        "The 15 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator."
+      ]
+    },
+    {
+      "name": "bury",
+      "discriminator": [
+        24
+      ],
+      "discriminator_size": 1,
+      "accounts": [
+        {
+          "name": "signer",
+          "is_signer": true,
+          "is_writable": true,
           "resolution": {
             "category": "signer"
           },
@@ -8178,7 +8772,8 @@
           "is_signer": false,
           "is_writable": true,
           "resolution": {
-            "category": "userProvided"
+            "category": "known",
+            "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
           },
           "is_optional": false
         },
@@ -8280,9 +8875,10 @@
         {
           "name": "signer",
           "is_signer": true,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
-            "category": "signer"
+            "category": "known",
+            "address": "HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T"
           },
           "is_optional": false
         },
@@ -8348,7 +8944,7 @@
         {
           "name": "signer",
           "is_signer": true,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "signer"
           },
@@ -8389,7 +8985,7 @@
     {
       "name": "newVar",
       "discriminator": [
-        17
+        19
       ],
       "discriminator_size": 1,
       "accounts": [
@@ -8425,7 +9021,7 @@
         {
           "name": "provider",
           "is_signer": false,
-          "is_writable": false,
+          "is_writable": true,
           "resolution": {
             "category": "userProvided"
           },
@@ -8478,6 +9074,59 @@
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
         "Creates a new entropy var account through the entropy program."
+      ]
+    },
+    {
+      "name": "reloadSol",
+      "discriminator": [
+        21
+      ],
+      "discriminator_size": 1,
+      "accounts": [
+        {
+          "name": "signer",
+          "is_signer": true,
+          "is_writable": true,
+          "resolution": {
+            "category": "signer"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "automation",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "pdaRef",
+            "pda_name": "automation"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "miner",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "pdaRef",
+            "pda_name": "miner"
+          },
+          "is_optional": false
+        },
+        {
+          "name": "systemProgram",
+          "is_signer": false,
+          "is_writable": false,
+          "resolution": {
+            "category": "known",
+            "address": "11111111111111111111111111111111"
+          },
+          "is_optional": false
+        }
+      ],
+      "args": [],
+      "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
+      "docs": [
+        "Deprecated since 3.8.15; this behavior is now included in checkpoint."
       ]
     },
     {
@@ -8724,5 +9373,5 @@
       ]
     }
   ],
-  "content_hash": "90e4720e41e0d9641658aeccec4ceba379a3f883c01d26a879fd2b5632c578f2"
+  "content_hash": "0561c686523af65cd5648a2603e4fc59f81d66bf373ebb56e026cd626423590d"
 }
