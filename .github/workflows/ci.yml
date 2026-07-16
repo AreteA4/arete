@@ -95,26 +95,85 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            examples/ore-typescript/package-lock.json
+
       - name: Regenerate example SDKs
         run: bash ./scripts/generate-example-sdks.sh
 
       - name: Check generated SDKs are committed
         run: git diff --exit-code -- examples/ore-react/src/generated examples/ore-typescript/src/generated examples/ore-rust/src/generated
 
-  typescript-stacks:
-    name: TypeScript Stacks
+      - name: Install TypeScript example dependencies
+        working-directory: examples/ore-typescript
+        run: npm ci
+
+      - name: Strict compile TypeScript example
+        working-directory: examples/ore-typescript
+        run: npx tsc --noEmit
+
+  ore-react:
+    name: ORE React App
+    needs: generated-example-sdks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20.18.0"
+          cache: "npm"
+          cache-dependency-path: |
+            typescript/core/package-lock.json
+            typescript/react/package-lock.json
+            typescript/adapters/web3js/package-lock.json
+            examples/ore-react/package-lock.json
 
-      - name: Regenerate example TypeScript SDKs
-        run: bash ./scripts/generate-example-sdks.sh
+      - name: Build local SDK
+        working-directory: typescript/core
+        run: npm ci && npm run build
 
-      - name: Check generated TypeScript SDKs are committed
-        run: git diff --exit-code -- examples/ore-react/src/generated examples/ore-typescript/src/generated
+      - name: Build local React SDK
+        working-directory: typescript/react
+        run: npm ci && npm install ../core --no-save --package-lock=false && npm run build
+
+      - name: Build local web3.js adapter
+        working-directory: typescript/adapters/web3js
+        run: npm ci && npm install ../../core --no-save --package-lock=false && npm run build
+
+      - name: Install app dependencies
+        working-directory: examples/ore-react
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: examples/ore-react
+        run: npx playwright install --with-deps chromium
+
+      - name: Typecheck
+        working-directory: examples/ore-react
+        run: npm run typecheck
+
+      - name: Unit and component tests
+        working-directory: examples/ore-react
+        run: npm test
+
+      - name: Build
+        working-directory: examples/ore-react
+        run: npm run build
+
+      - name: Disconnected browser tests
+        working-directory: examples/ore-react
+        run: npm run test:e2e
+
+      - name: Verify one SDK version
+        working-directory: examples/ore-react
+        run: npm ls @usearete/sdk
 
   typescript-core:
     name: TypeScript Core
@@ -128,8 +187,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "20"
+          cache: "npm"
           cache-dependency-path: typescript/core/package-lock.json
 
       - name: Install dependencies
@@ -141,6 +200,66 @@ jobs:
       - name: Test
         run: npm test
 
+  typescript-adapters:
+    name: TypeScript Adapters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20.18.0"
+          cache: "npm"
+          cache-dependency-path: |
+            typescript/core/package-lock.json
+            typescript/adapters/kit/package-lock.json
+            typescript/adapters/web3js/package-lock.json
+
+      - name: Build core dependency
+        working-directory: typescript/core
+        run: npm ci && npm run build
+
+      - name: Install Kit adapter dependencies
+        working-directory: typescript/adapters/kit
+        run: npm ci && npm install ../../core --no-save --package-lock=false
+
+      - name: Typecheck Kit adapter
+        working-directory: typescript/adapters/kit
+        run: npm run typecheck
+
+      - name: Test Kit adapter
+        working-directory: typescript/adapters/kit
+        run: npm test
+
+      - name: Build Kit adapter
+        working-directory: typescript/adapters/kit
+        run: npm run build
+
+      - name: Pack-smoke Kit adapter
+        working-directory: typescript/adapters/kit
+        run: node pack-smoke.mjs
+
+      - name: Install web3.js adapter dependencies
+        working-directory: typescript/adapters/web3js
+        run: npm ci && npm install ../../core --no-save --package-lock=false
+
+      - name: Typecheck web3.js adapter
+        working-directory: typescript/adapters/web3js
+        run: npm run typecheck
+
+      - name: Test web3.js adapter
+        working-directory: typescript/adapters/web3js
+        run: npm test
+
+      - name: Build web3.js adapter
+        working-directory: typescript/adapters/web3js
+        run: npm run build
+
+      - name: Pack-smoke web3.js adapter
+        working-directory: typescript/adapters/web3js
+        run: node scripts/pack-smoke.mjs
+
   typescript-react:
     name: TypeScript React
     runs-on: ubuntu-latest
@@ -150,7 +269,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Build core dependency
         working-directory: typescript/core
@@ -180,7 +299,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install package
         run: pip install -e .
@@ -205,8 +324,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "20"
+          cache: "npm"
           cache-dependency-path: docs/package-lock.json
 
       - name: Install dependencies
