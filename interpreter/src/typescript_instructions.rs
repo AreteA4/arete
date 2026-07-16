@@ -37,6 +37,8 @@ pub struct StackInstructionEntry {
     pub semantic_extra_params: Vec<String>,
     /// Root-arg conversions applied before delegating to the raw connected plan.
     pub semantic_amount_args: Vec<SemanticAmountArgEntry>,
+    /// Whether the emitted semantic conversions reference the operation context.
+    pub uses_operation_context: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +46,7 @@ pub struct SemanticAmountArgEntry {
     pub arg_name: String,
     pub binding_name: String,
     pub raw_expression: String,
+    pub uses_operation_context: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +77,15 @@ pub enum SemanticAmountResolution {
     },
 }
 
+impl SemanticAmountResolution {
+    fn uses_operation_context(&self) -> bool {
+        matches!(
+            self,
+            Self::ArgMint { .. } | Self::KnownAccount { .. } | Self::KnownAddress { .. }
+        )
+    }
+}
+
 /// Result of generating instruction handler code for a stack.
 #[derive(Debug, Clone, Default)]
 pub struct InstructionsCodegen {
@@ -93,6 +105,10 @@ pub struct InstructionsCodegen {
     pub needs_resolve_amount_to_raw: bool,
     /// Whether generated semantic wrappers reference `toRawAmount`.
     pub needs_to_raw_amount: bool,
+    /// Whether an emitted semantic parameter interface references `BuildOptions`.
+    pub needs_build_options: bool,
+    /// Whether an emitted operation factory references `ProgramOperationContext`.
+    pub needs_operation_context: bool,
     /// Human-readable warnings (skipped instructions, degraded PDAs).
     pub warnings: Vec<String>,
     /// Structured PDA degradation metadata for CLI summaries.
@@ -235,6 +251,8 @@ pub fn generate_instructions_code(
     let mut needs_amount_input = false;
     let mut needs_resolve_amount_to_raw = false;
     let mut needs_to_raw_amount = false;
+    let mut needs_build_options = false;
+    let mut needs_operation_context = false;
 
     let stack_screaming = to_screaming_snake_case(stack_name);
     let stack_pascal = to_pascal_case(stack_name);
@@ -503,14 +521,10 @@ pub fn generate_instructions_code(
             Vec::new()
         } else {
             needs_amount_input = true;
-            if semantic_specs.iter().any(|spec| {
-                matches!(
-                    spec.resolution,
-                    SemanticAmountResolution::ArgMint { .. }
-                        | SemanticAmountResolution::KnownAccount { .. }
-                        | SemanticAmountResolution::KnownAddress { .. }
-                )
-            }) {
+            if semantic_specs
+                .iter()
+                .any(|spec| spec.resolution.uses_operation_context())
+            {
                 needs_resolve_amount_to_raw = true;
             }
             if semantic_specs.iter().any(|spec| {
@@ -553,6 +567,9 @@ pub fn generate_instructions_code(
                     arg_name: arg_name.clone(),
                     binding_name: semantic_raw_binding_name(arg_name),
                     raw_expression,
+                    uses_operation_context: arg_specs
+                        .iter()
+                        .any(|spec| spec.resolution.uses_operation_context()),
                 });
             }
             conversions
@@ -563,6 +580,7 @@ pub fn generate_instructions_code(
         } else if semantic_specs.is_empty() {
             Some((params_type.clone(), None))
         } else {
+            needs_build_options = true;
             let type_name = format!("{}SemanticParams", pascal);
             let interface = render_semantic_params_interface(
                 &type_name,
@@ -575,6 +593,10 @@ pub fn generate_instructions_code(
             );
             Some((type_name, Some(interface)))
         };
+        let uses_operation_context = semantic_amount_args
+            .iter()
+            .any(|amount_arg| amount_arg.uses_operation_context);
+        needs_operation_context |= uses_operation_context;
 
         // --- Error type. Program errors are stack-wide (IDLs do not scope
         // errors to instructions), so each handler's typed error is an alias of
@@ -652,6 +674,7 @@ pub fn generate_instructions_code(
             semantic_params_type: semantic_params.as_ref().map(|(name, _)| name.clone()),
             semantic_extra_params,
             semantic_amount_args,
+            uses_operation_context,
         });
     }
 
@@ -667,6 +690,8 @@ pub fn generate_instructions_code(
             needs_amount_input,
             needs_resolve_amount_to_raw,
             needs_to_raw_amount,
+            needs_build_options,
+            needs_operation_context,
             warnings,
             pda_degradations,
         };
@@ -722,6 +747,8 @@ pub fn generate_instructions_code(
         needs_amount_input,
         needs_resolve_amount_to_raw,
         needs_to_raw_amount,
+        needs_build_options,
+        needs_operation_context,
         warnings,
         pda_degradations,
     }
@@ -3108,6 +3135,7 @@ mod tests {
                 semantic_params_type: Some("CloseSubscriptionAuthorityParams".to_string()),
                 semantic_extra_params: vec![],
                 semantic_amount_args: vec![],
+                uses_operation_context: false,
             }]
         );
         assert!(out.needs_runtime_import);
@@ -3735,6 +3763,9 @@ mod tests {
         assert!(out.needs_amount_input);
         assert!(out.needs_program_runtime_extensions);
         assert!(out.needs_resolve_amount_to_raw);
+        assert!(out.needs_operation_context);
+        assert!(out.stack_entries[0].uses_operation_context);
+        assert!(out.stack_entries[0].semantic_amount_args[0].uses_operation_context);
         assert_eq!(
             out.stack_entries[0].semantic_params_type.as_deref(),
             Some("DepositSemanticParams")
