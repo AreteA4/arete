@@ -5,6 +5,6 @@
     "ore-stack-extensions.ts"
   ],
   "inputKind": "stack-ast",
-  "inputHash": "0561c686523af65cd5648a2603e4fc59f81d66bf373ebb56e026cd626423590d",
-  "sdkRange": "^0.2.0"
+  "inputHash": "11d0687994f00e4086ce9f25abe0913e081eb84256a5c2e1725ebb3b906b6b41",
+  "sdkRange": "^0.2.0 || ^0.3.0"
 }

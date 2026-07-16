@@ -41,6 +41,8 @@ export const INTERMISSION_SLOTS = 35n;
 export const ROUND_EXPIRY_SLOTS = 216_000n;
 export const CHECKPOINT_BOT_WINDOW_SLOTS = 108_000n;
 export const CHECKPOINT_FEE_LAMPORTS = 10_000n;
+export const PERMISSIONLESS_EXECUTOR_FEE_LAMPORTS = 5_000n;
+export const MOTHERLODE_ODDS_V2_ROUND = 335_000n;
 export const U64_MAX = 0xffff_ffff_ffff_ffffn;
 
 export const AutomationStrategy = {
@@ -193,6 +195,92 @@ export interface OreCheckpointPreview {
   solDestination: 'authority' | 'automation' | 'miner' | null;
 }
 
+export interface SolClaimPreview {
+  checkpointedRewardsSol: bigint;
+  unresolvedRewardsSol: bigint;
+  totalClaimableSol: bigint;
+  checkpoint: OreCheckpointPreview | null;
+  action: 'none' | 'claim' | 'checkpoint' | 'checkpointAndClaim';
+}
+
+export interface QuoteMinerState {
+  roundId: bigint;
+  checkpointFee: bigint;
+  deployed: readonly bigint[];
+}
+
+export interface QuoteAutomationState {
+  balance: bigint;
+}
+
+export interface QuoteManualDeploymentInput {
+  roundId: bigint;
+  totalPrincipal: bigint;
+  selectedSquares: readonly number[];
+  miner?: QuoteMinerState | null;
+  automation?: QuoteAutomationState | null;
+}
+
+export interface ManualDeploymentQuote {
+  roundId: bigint;
+  totalPrincipal: bigint;
+  requestedSquares: readonly SquareIndex[];
+  effectiveSquares: readonly SquareIndex[];
+  alreadyDeployedSquares: readonly SquareIndex[];
+  existingMinerDeployment: readonly bigint[];
+  requestedSquareMask: bigint;
+  effectiveSquareMask: bigint;
+  requestedSquareCount: number;
+  effectiveSquareCount: number;
+  amountPerSquare: bigint;
+  allocatedPrincipal: bigint;
+  roundingRemainder: bigint;
+  maximumDeploymentTransfer: bigint;
+  unspentPrincipal: bigint;
+  checkpointReserve: bigint;
+  maximumWalletDebit: bigint;
+  hasActiveAutomation: boolean;
+  requiresDisableBeforeDeployment: boolean;
+  includesNetworkFee: false;
+  includesAccountRent: false;
+}
+
+export interface QuoteAutomationFundingInput {
+  totalPrincipal: bigint;
+  rounds: bigint;
+  preferredSquares: readonly number[];
+  miner?: Pick<QuoteMinerState, 'checkpointFee'> | null;
+  automation?: QuoteAutomationState | null;
+}
+
+export interface AutomationFundingQuote {
+  totalPrincipal: bigint;
+  rounds: bigint;
+  preferredSquares: readonly SquareIndex[];
+  preferredSquareCount: number;
+  preferredSquareMask: bigint;
+  amountPerSquare: bigint;
+  principalPerRound: bigint;
+  allocatedPrincipal: bigint;
+  roundingRemainder: bigint;
+  executorFeePerRound: bigint;
+  totalExecutorFees: bigint;
+  existingAutomationBalance: bigint;
+  targetAutomationBalance: bigint;
+  incrementalDeposit: bigint;
+  resultingAutomationBalance: bigint;
+  checkpointReserve: bigint;
+  maximumWalletDebit: bigint;
+  existingFundedRounds: bigint;
+  existingFundingRemainder: bigint;
+  estimatedFundedRounds: bigint;
+  fundingRemainder: bigint;
+  hasActiveAutomation: boolean;
+  requiresDisableBeforeReplacement: boolean;
+  includesNetworkFee: false;
+  includesAccountRent: false;
+}
+
 function deriveProgramAddress(
   seeds: Uint8Array[],
   programId = ORE_PROGRAM_ADDRESS,
@@ -211,6 +299,50 @@ function assertPositiveU64(value: bigint, label: string): void {
   if (value === 0n) {
     throw new Error(`${label} must be greater than zero`);
   }
+}
+
+function checkedU64Add(left: bigint, right: bigint, label: string): bigint {
+  const value = left + right;
+  assertU64(value, label);
+  return value;
+}
+
+function checkedU64Multiply(
+  left: bigint,
+  right: bigint,
+  label: string,
+): bigint {
+  const value = left * right;
+  assertU64(value, label);
+  return value;
+}
+
+function checkpointReserve(
+  miner: Pick<QuoteMinerState, 'checkpointFee'> | null | undefined,
+): bigint {
+  if (miner) {
+    assertU64(miner.checkpointFee, 'miner.checkpointFee');
+  }
+  return !miner || miner.checkpointFee === 0n ? CHECKPOINT_FEE_LAMPORTS : 0n;
+}
+
+function normalizeMinerDeployment(
+  miner: QuoteMinerState | null | undefined,
+  roundId: bigint,
+): readonly bigint[] {
+  if (!miner) {
+    return Array<bigint>(SQUARE_COUNT).fill(0n);
+  }
+  assertU64(miner.roundId, 'miner.roundId');
+  if (miner.deployed.length !== SQUARE_COUNT) {
+    throw new Error(`miner.deployed must contain ${SQUARE_COUNT} square amounts`);
+  }
+  for (const amount of miner.deployed) {
+    assertU64(amount, 'miner.deployed amount');
+  }
+  return miner.roundId === roundId
+    ? [...miner.deployed]
+    : Array<bigint>(SQUARE_COUNT).fill(0n);
 }
 
 export function assertSquareIndex(value: number): asserts value is SquareIndex {
@@ -253,6 +385,164 @@ export function decodeSquareMask(mask: number | bigint): SquareIndex[] {
 
 export function countSquareMask(mask: number | bigint): number {
   return decodeSquareMask(mask).length;
+}
+
+export function quoteManualDeployment(
+  input: QuoteManualDeploymentInput,
+): ManualDeploymentQuote {
+  assertU64(input.roundId, 'roundId');
+  assertPositiveU64(input.totalPrincipal, 'totalPrincipal');
+  const requestedSquareMask = BigInt(encodeSquareMask(input.selectedSquares));
+  const requestedSquares = decodeSquareMask(requestedSquareMask);
+  const existingMinerDeployment = normalizeMinerDeployment(input.miner, input.roundId);
+  const alreadyDeployedSquares = requestedSquares.filter(
+    (square) => existingMinerDeployment[square]! > 0n,
+  );
+  const effectiveSquares = requestedSquares.filter(
+    (square) => existingMinerDeployment[square] === 0n,
+  );
+  const effectiveSquareMask = effectiveSquares.reduce(
+    (mask, square) => mask | (1n << BigInt(square)),
+    0n,
+  );
+  const requestedSquareCount = requestedSquares.length;
+  const amountPerSquare =
+    input.totalPrincipal / BigInt(requestedSquareCount);
+  if (amountPerSquare === 0n) {
+    throw new Error('totalPrincipal must allocate at least one lamport per selected square');
+  }
+  assertU64(amountPerSquare, 'amountPerSquare');
+  const allocatedPrincipal = checkedU64Multiply(
+    amountPerSquare,
+    BigInt(requestedSquareCount),
+    'allocatedPrincipal',
+  );
+  const maximumDeploymentTransfer = checkedU64Multiply(
+    amountPerSquare,
+    BigInt(effectiveSquares.length),
+    'maximumDeploymentTransfer',
+  );
+  const reserve = checkpointReserve(input.miner);
+  const maximumWalletDebit = checkedU64Add(
+    maximumDeploymentTransfer,
+    reserve,
+    'maximumWalletDebit',
+  );
+  const hasActiveAutomation = input.automation != null;
+
+  return {
+    roundId: input.roundId,
+    totalPrincipal: input.totalPrincipal,
+    requestedSquares,
+    effectiveSquares,
+    alreadyDeployedSquares,
+    existingMinerDeployment,
+    requestedSquareMask,
+    effectiveSquareMask,
+    requestedSquareCount,
+    effectiveSquareCount: effectiveSquares.length,
+    amountPerSquare,
+    allocatedPrincipal,
+    roundingRemainder: input.totalPrincipal - allocatedPrincipal,
+    maximumDeploymentTransfer,
+    unspentPrincipal: input.totalPrincipal - maximumDeploymentTransfer,
+    checkpointReserve: reserve,
+    maximumWalletDebit,
+    hasActiveAutomation,
+    requiresDisableBeforeDeployment: hasActiveAutomation,
+    includesNetworkFee: false,
+    includesAccountRent: false,
+  };
+}
+
+export function quoteAutomationFunding(
+  input: QuoteAutomationFundingInput,
+): AutomationFundingQuote {
+  assertPositiveU64(input.totalPrincipal, 'totalPrincipal');
+  assertPositiveU64(input.rounds, 'rounds');
+  const preferredSquareMask = BigInt(encodeSquareMask(input.preferredSquares));
+  const preferredSquares = decodeSquareMask(preferredSquareMask);
+  const preferredSquareCount = preferredSquares.length;
+  const amountPerSquare =
+    input.totalPrincipal /
+    (input.rounds * BigInt(preferredSquareCount));
+  if (amountPerSquare === 0n) {
+    throw new Error(
+      'totalPrincipal must allocate at least one lamport per preferred square and funded round',
+    );
+  }
+  assertU64(amountPerSquare, 'amountPerSquare');
+  const principalPerRound = checkedU64Multiply(
+    amountPerSquare,
+    BigInt(preferredSquareCount),
+    'principalPerRound',
+  );
+  const allocatedPrincipal = checkedU64Multiply(
+    principalPerRound,
+    input.rounds,
+    'allocatedPrincipal',
+  );
+  const costPerRound = checkedU64Add(
+    principalPerRound,
+    PERMISSIONLESS_EXECUTOR_FEE_LAMPORTS,
+    'automation cost per round',
+  );
+  const totalExecutorFees = checkedU64Multiply(
+    PERMISSIONLESS_EXECUTOR_FEE_LAMPORTS,
+    input.rounds,
+    'totalExecutorFees',
+  );
+  const targetAutomationBalance = checkedU64Multiply(
+    costPerRound,
+    input.rounds,
+    'targetAutomationBalance',
+  );
+  const existingAutomationBalance = input.automation?.balance ?? 0n;
+  assertU64(existingAutomationBalance, 'automation.balance');
+  const incrementalDeposit =
+    targetAutomationBalance > existingAutomationBalance
+      ? targetAutomationBalance - existingAutomationBalance
+      : 0n;
+  const resultingAutomationBalance = checkedU64Add(
+    existingAutomationBalance,
+    incrementalDeposit,
+    'resultingAutomationBalance',
+  );
+  const reserve = checkpointReserve(input.miner);
+  const maximumWalletDebit = checkedU64Add(
+    incrementalDeposit,
+    reserve,
+    'maximumWalletDebit',
+  );
+  const hasActiveAutomation = input.automation != null;
+
+  return {
+    totalPrincipal: input.totalPrincipal,
+    rounds: input.rounds,
+    preferredSquares,
+    preferredSquareCount,
+    preferredSquareMask,
+    amountPerSquare,
+    principalPerRound,
+    allocatedPrincipal,
+    roundingRemainder: input.totalPrincipal - allocatedPrincipal,
+    executorFeePerRound: PERMISSIONLESS_EXECUTOR_FEE_LAMPORTS,
+    totalExecutorFees,
+    existingAutomationBalance,
+    targetAutomationBalance,
+    incrementalDeposit,
+    resultingAutomationBalance,
+    checkpointReserve: reserve,
+    maximumWalletDebit,
+    existingFundedRounds: existingAutomationBalance / costPerRound,
+    existingFundingRemainder: existingAutomationBalance % costPerRound,
+    estimatedFundedRounds: resultingAutomationBalance / costPerRound,
+    fundingRemainder: resultingAutomationBalance % costPerRound,
+    hasActiveAutomation,
+    requiresDisableBeforeReplacement: hasActiveAutomation,
+    includesNetworkFee: false,
+    includesAccountRent: false,
+  };
 }
 
 export function getBoardPda(): Address {
@@ -400,8 +690,10 @@ export function isSplitReward(rng: bigint): boolean {
   return folded % 2 === 0;
 }
 
-export function didHitMotherlode(rng: bigint): boolean {
-  return reverseBits64(rng) % 625n === 0n;
+export function didHitMotherlode(rng: bigint, roundId: bigint): boolean {
+  assertU64(roundId, 'roundId');
+  const odds = roundId >= MOTHERLODE_ODDS_V2_ROUND ? 500n : 625n;
+  return reverseBits64(rng) % odds === 0n;
 }
 
 function numericToRaw(value: low.Numeric): bigint {
@@ -546,6 +838,29 @@ export function previewCheckpoint(input: {
     botFee,
     winningSquare,
     solDestination,
+  };
+}
+
+export function previewSolClaim(input: {
+  checkpointedRewardsSol: bigint;
+  checkpoint?: OreCheckpointPreview | null;
+}): SolClaimPreview {
+  const checkpoint = input.checkpoint ?? null;
+  const unresolvedRewardsSol = checkpoint?.status === 'claimable'
+    ? checkpoint.rewardsSol
+    : 0n;
+  const requiresCheckpoint = unresolvedRewardsSol > 0n;
+  const requiresClaim = input.checkpointedRewardsSol > 0n
+    || (requiresCheckpoint && checkpoint?.solDestination === 'miner');
+  const action = requiresCheckpoint
+    ? requiresClaim ? 'checkpointAndClaim' : 'checkpoint'
+    : requiresClaim ? 'claim' : 'none';
+  return {
+    checkpointedRewardsSol: input.checkpointedRewardsSol,
+    unresolvedRewardsSol,
+    totalClaimableSol: input.checkpointedRewardsSol + unresolvedRewardsSol,
+    checkpoint,
+    action,
   };
 }
 
@@ -789,6 +1104,9 @@ export const oreDevex = {
     ROUND_EXPIRY_SLOTS,
     CHECKPOINT_BOT_WINDOW_SLOTS,
     CHECKPOINT_FEE_LAMPORTS,
+    PERMISSIONLESS_EXECUTOR_FEE_LAMPORTS,
+    MOTHERLODE_ODDS_V2_ROUND,
+    U64_MAX,
     AutomationStrategy,
   },
   addresses: {
@@ -803,6 +1121,8 @@ export const oreDevex = {
     oreTokenAccount: getOreTokenAccount,
   },
   math: {
+    quoteManualDeployment,
+    quoteAutomationFunding,
     amounts: {
       resolveSol: resolveSolAmount,
       resolveBps,
@@ -824,6 +1144,7 @@ export const oreDevex = {
     },
     miner: {
       previewCheckpoint,
+      previewSolClaim,
       previewOreClaim,
     },
   },

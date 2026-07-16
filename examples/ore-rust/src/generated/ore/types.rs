@@ -114,6 +114,48 @@ pub struct OreRound {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OreBoardId {
+    #[serde(default)]
+    pub address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OreBoardState {
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub round_id: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub start_slot: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub end_slot: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub production_cost_ema: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OreBoard {
+    #[serde(default)]
+    pub id: OreBoardId,
+    #[serde(default)]
+    pub state: OreBoardState,
+    #[serde(default)]
+    pub board_snapshot: Option<Option<serde_json::Value>>,
+}
+
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Board {
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub round_id: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub start_slot: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub end_slot: Option<u64>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub production_cost_ema: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OreTreasuryId {
     #[serde(default)]
     pub address: Option<String>,

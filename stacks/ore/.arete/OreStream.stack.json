@@ -4484,6 +4484,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -4493,15 +4502,6 @@
                   9
                 ]
               ]
-            }
-          }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
             }
           }
         }
@@ -5345,50 +5345,126 @@
         {
           "target_path": "results.did_hit_motherlode",
           "expression": {
-            "MethodCall": {
-              "expr": {
-                "FieldRef": {
-                  "path": "results.rng"
+            "If": {
+              "condition": {
+                "Binary": {
+                  "op": "Gte",
+                  "left": {
+                    "Cast": {
+                      "expr": {
+                        "UnwrapOr": {
+                          "expr": {
+                            "FieldRef": {
+                              "path": "id.round_id"
+                            }
+                          },
+                          "default": 0
+                        }
+                      },
+                      "to_type": "u64"
+                    }
+                  },
+                  "right": {
+                    "Literal": {
+                      "value": 335000
+                    }
+                  }
                 }
               },
-              "method": "map",
-              "args": [
-                {
-                  "Closure": {
-                    "param": "r",
-                    "body": {
-                      "Binary": {
-                        "op": "Eq",
-                        "left": {
+              "then_branch": {
+                "MethodCall": {
+                  "expr": {
+                    "FieldRef": {
+                      "path": "results.rng"
+                    }
+                  },
+                  "method": "map",
+                  "args": [
+                    {
+                      "Closure": {
+                        "param": "r",
+                        "body": {
                           "Binary": {
-                            "op": "Mod",
+                            "op": "Eq",
                             "left": {
-                              "Unary": {
-                                "op": "ReverseBits",
-                                "expr": {
-                                  "Var": {
-                                    "name": "r"
+                              "Binary": {
+                                "op": "Mod",
+                                "left": {
+                                  "Unary": {
+                                    "op": "ReverseBits",
+                                    "expr": {
+                                      "Var": {
+                                        "name": "r"
+                                      }
+                                    }
+                                  }
+                                },
+                                "right": {
+                                  "Literal": {
+                                    "value": 500
                                   }
                                 }
                               }
                             },
                             "right": {
                               "Literal": {
-                                "value": 625
+                                "value": 0
                               }
                             }
-                          }
-                        },
-                        "right": {
-                          "Literal": {
-                            "value": 0
                           }
                         }
                       }
                     }
-                  }
+                  ]
                 }
-              ]
+              },
+              "else_branch": {
+                "MethodCall": {
+                  "expr": {
+                    "FieldRef": {
+                      "path": "results.rng"
+                    }
+                  },
+                  "method": "map",
+                  "args": [
+                    {
+                      "Closure": {
+                        "param": "r",
+                        "body": {
+                          "Binary": {
+                            "op": "Eq",
+                            "left": {
+                              "Binary": {
+                                "op": "Mod",
+                                "left": {
+                                  "Unary": {
+                                    "op": "ReverseBits",
+                                    "expr": {
+                                      "Var": {
+                                        "name": "r"
+                                      }
+                                    }
+                                  }
+                                },
+                                "right": {
+                                  "Literal": {
+                                    "value": 625
+                                  }
+                                }
+                              }
+                            },
+                            "right": {
+                              "Literal": {
+                                "value": 0
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
             }
           },
           "result_type": "Option < bool >"
@@ -5528,7 +5604,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "4c9b4db60495c91aaf035e9303c28f88b613ec6ebb51adcf6f740473983d1aae",
+      "content_hash": "00fe16d03055afbab6c0ec9f25c36d59c2bc71fdf2fa9175392713a4ba29f369",
       "views": [
         {
           "id": "OreRound/latest",
@@ -5554,6 +5630,444 @@
           "output": "Collection"
         }
       ]
+    },
+    {
+      "ast_version": "0.0.4",
+      "state_name": "OreBoard",
+      "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
+      "idl": null,
+      "identity": {
+        "primary_keys": [
+          "id.address"
+        ],
+        "lookup_indexes": []
+      },
+      "handlers": [
+        {
+          "source": {
+            "Source": {
+              "program_id": null,
+              "discriminator": null,
+              "type_name": "ore::BoardState",
+              "is_account": true
+            }
+          },
+          "key_resolution": {
+            "Embedded": {
+              "primary_field": {
+                "segments": [
+                  "__account_address"
+                ],
+                "offsets": null
+              }
+            }
+          },
+          "mappings": [
+            {
+              "target_path": "id.address",
+              "source": {
+                "FromSource": {
+                  "path": {
+                    "segments": [
+                      "__account_address"
+                    ],
+                    "offsets": null
+                  },
+                  "default": null,
+                  "transform": null
+                }
+              },
+              "transform": null,
+              "population": "SetOnce"
+            },
+            {
+              "target_path": "state.round_id",
+              "source": {
+                "FromSource": {
+                  "path": {
+                    "segments": [
+                      "round_id"
+                    ],
+                    "offsets": null
+                  },
+                  "default": null,
+                  "transform": null
+                }
+              },
+              "transform": null,
+              "population": "LastWrite"
+            },
+            {
+              "target_path": "state.start_slot",
+              "source": {
+                "FromSource": {
+                  "path": {
+                    "segments": [
+                      "start_slot"
+                    ],
+                    "offsets": null
+                  },
+                  "default": null,
+                  "transform": null
+                }
+              },
+              "transform": null,
+              "population": "LastWrite"
+            },
+            {
+              "target_path": "state.end_slot",
+              "source": {
+                "FromSource": {
+                  "path": {
+                    "segments": [
+                      "end_slot"
+                    ],
+                    "offsets": null
+                  },
+                  "default": null,
+                  "transform": null
+                }
+              },
+              "transform": null,
+              "population": "LastWrite"
+            },
+            {
+              "target_path": "state.production_cost_ema",
+              "source": {
+                "FromSource": {
+                  "path": {
+                    "segments": [
+                      "production_cost_ema"
+                    ],
+                    "offsets": null
+                  },
+                  "default": null,
+                  "transform": null
+                }
+              },
+              "transform": null,
+              "population": "LastWrite"
+            },
+            {
+              "target_path": "board_snapshot",
+              "source": {
+                "AsCapture": {
+                  "field_transforms": {}
+                }
+              },
+              "transform": null,
+              "population": "LastWrite"
+            }
+          ],
+          "conditions": [],
+          "emit": true
+        }
+      ],
+      "sections": [
+        {
+          "name": "id",
+          "fields": [
+            {
+              "field_name": "address",
+              "raw_name": "address",
+              "canonical_name": "address",
+              "rust_type_name": "String",
+              "base_type": "String",
+              "is_optional": false,
+              "is_array": false,
+              "inner_type": null,
+              "source_path": null,
+              "resolved_type": null
+            }
+          ],
+          "is_nested_struct": false,
+          "parent_field": null
+        },
+        {
+          "name": "state",
+          "fields": [
+            {
+              "field_name": "round_id",
+              "raw_name": "round_id",
+              "canonical_name": "roundId",
+              "rust_type_name": "u64",
+              "base_type": "Integer",
+              "integer_kind": "U64",
+              "is_optional": false,
+              "is_array": false,
+              "inner_type": null,
+              "source_path": null,
+              "resolved_type": null
+            },
+            {
+              "field_name": "start_slot",
+              "raw_name": "start_slot",
+              "canonical_name": "startSlot",
+              "rust_type_name": "u64",
+              "base_type": "Integer",
+              "integer_kind": "U64",
+              "is_optional": false,
+              "is_array": false,
+              "inner_type": null,
+              "source_path": null,
+              "resolved_type": null
+            },
+            {
+              "field_name": "end_slot",
+              "raw_name": "end_slot",
+              "canonical_name": "endSlot",
+              "rust_type_name": "u64",
+              "base_type": "Integer",
+              "integer_kind": "U64",
+              "is_optional": false,
+              "is_array": false,
+              "inner_type": null,
+              "source_path": null,
+              "resolved_type": null
+            },
+            {
+              "field_name": "production_cost_ema",
+              "raw_name": "production_cost_ema",
+              "canonical_name": "productionCostEma",
+              "rust_type_name": "u64",
+              "base_type": "Integer",
+              "integer_kind": "U64",
+              "is_optional": false,
+              "is_array": false,
+              "inner_type": null,
+              "source_path": null,
+              "resolved_type": null
+            }
+          ],
+          "is_nested_struct": false,
+          "parent_field": null
+        },
+        {
+          "name": "root",
+          "fields": [
+            {
+              "field_name": "board_snapshot",
+              "raw_name": "board_snapshot",
+              "canonical_name": "boardSnapshot",
+              "rust_type_name": "Option < ore_sdk :: accounts :: Board >",
+              "base_type": "Object",
+              "is_optional": true,
+              "is_array": false,
+              "inner_type": "ore_sdk :: accounts :: Board",
+              "source_path": null,
+              "resolved_type": {
+                "type_name": "Board",
+                "fields": [
+                  {
+                    "field_name": "round_id",
+                    "raw_name": "round_id",
+                    "canonical_name": "roundId",
+                    "field_type": "u64",
+                    "base_type": "Integer",
+                    "integer_kind": "U64",
+                    "is_optional": false,
+                    "is_array": false
+                  },
+                  {
+                    "field_name": "start_slot",
+                    "raw_name": "start_slot",
+                    "canonical_name": "startSlot",
+                    "field_type": "u64",
+                    "base_type": "Integer",
+                    "integer_kind": "U64",
+                    "is_optional": false,
+                    "is_array": false
+                  },
+                  {
+                    "field_name": "end_slot",
+                    "raw_name": "end_slot",
+                    "canonical_name": "endSlot",
+                    "field_type": "u64",
+                    "base_type": "Integer",
+                    "integer_kind": "U64",
+                    "is_optional": false,
+                    "is_array": false
+                  },
+                  {
+                    "field_name": "production_cost_ema",
+                    "raw_name": "production_cost_ema",
+                    "canonical_name": "productionCostEma",
+                    "field_type": "u64",
+                    "base_type": "Integer",
+                    "integer_kind": "U64",
+                    "is_optional": false,
+                    "is_array": false
+                  }
+                ],
+                "is_instruction": false,
+                "is_account": true,
+                "is_event": false,
+                "is_enum": false,
+                "enum_variants": []
+              }
+            }
+          ],
+          "is_nested_struct": false,
+          "parent_field": null
+        }
+      ],
+      "field_mappings": {
+        "board_snapshot": {
+          "field_name": "board_snapshot",
+          "raw_name": "board_snapshot",
+          "canonical_name": "boardSnapshot",
+          "rust_type_name": "Option < ore_sdk :: accounts :: Board >",
+          "base_type": "Object",
+          "is_optional": true,
+          "is_array": false,
+          "inner_type": "ore_sdk :: accounts :: Board",
+          "source_path": null,
+          "resolved_type": {
+            "type_name": "Board",
+            "fields": [
+              {
+                "field_name": "round_id",
+                "raw_name": "round_id",
+                "canonical_name": "roundId",
+                "field_type": "u64",
+                "base_type": "Integer",
+                "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": false
+              },
+              {
+                "field_name": "start_slot",
+                "raw_name": "start_slot",
+                "canonical_name": "startSlot",
+                "field_type": "u64",
+                "base_type": "Integer",
+                "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": false
+              },
+              {
+                "field_name": "end_slot",
+                "raw_name": "end_slot",
+                "canonical_name": "endSlot",
+                "field_type": "u64",
+                "base_type": "Integer",
+                "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": false
+              },
+              {
+                "field_name": "production_cost_ema",
+                "raw_name": "production_cost_ema",
+                "canonical_name": "productionCostEma",
+                "field_type": "u64",
+                "base_type": "Integer",
+                "integer_kind": "U64",
+                "is_optional": false,
+                "is_array": false
+              }
+            ],
+            "is_instruction": false,
+            "is_account": true,
+            "is_event": false,
+            "is_enum": false,
+            "enum_variants": []
+          }
+        },
+        "id.address": {
+          "field_name": "address",
+          "raw_name": "address",
+          "canonical_name": "address",
+          "rust_type_name": "String",
+          "base_type": "String",
+          "is_optional": false,
+          "is_array": false,
+          "inner_type": null,
+          "source_path": null,
+          "resolved_type": null
+        },
+        "state.end_slot": {
+          "field_name": "end_slot",
+          "raw_name": "end_slot",
+          "canonical_name": "endSlot",
+          "rust_type_name": "u64",
+          "base_type": "Integer",
+          "integer_kind": "U64",
+          "is_optional": false,
+          "is_array": false,
+          "inner_type": null,
+          "source_path": null,
+          "resolved_type": null
+        },
+        "state.production_cost_ema": {
+          "field_name": "production_cost_ema",
+          "raw_name": "production_cost_ema",
+          "canonical_name": "productionCostEma",
+          "rust_type_name": "u64",
+          "base_type": "Integer",
+          "integer_kind": "U64",
+          "is_optional": false,
+          "is_array": false,
+          "inner_type": null,
+          "source_path": null,
+          "resolved_type": null
+        },
+        "state.round_id": {
+          "field_name": "round_id",
+          "raw_name": "round_id",
+          "canonical_name": "roundId",
+          "rust_type_name": "u64",
+          "base_type": "Integer",
+          "integer_kind": "U64",
+          "is_optional": false,
+          "is_array": false,
+          "inner_type": null,
+          "source_path": null,
+          "resolved_type": null
+        },
+        "state.start_slot": {
+          "field_name": "start_slot",
+          "raw_name": "start_slot",
+          "canonical_name": "startSlot",
+          "rust_type_name": "u64",
+          "base_type": "Integer",
+          "integer_kind": "U64",
+          "is_optional": false,
+          "is_array": false,
+          "inner_type": null,
+          "source_path": null,
+          "resolved_type": null
+        }
+      },
+      "resolver_hooks": [
+        {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
+          "account_type": "ore::TreasuryState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": [
+                [
+                  9
+                ]
+              ]
+            }
+          }
+        }
+      ],
+      "instruction_hooks": [],
+      "resolver_specs": [],
+      "computed_fields": [],
+      "computed_field_specs": [],
+      "content_hash": "23710a6a2aec511be83f8399a11d42d7ffad6b7920d62b9b2cd91995aa72abcd",
+      "views": []
     },
     {
       "ast_version": "0.0.4",
@@ -5916,6 +6430,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -5925,15 +6448,6 @@
                   9
                 ]
               ]
-            }
-          }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
             }
           }
         }
@@ -6013,7 +6527,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "7a7ef04b564aa5ef55cd9bf779b01a27280eee578d24d00dfa799efa2bd2719a",
+      "content_hash": "a23132056c59091e4d62b63cbee2b93865e13a83cf35235180e57a16c6995e69",
       "views": []
     },
     {
@@ -7695,6 +8209,15 @@
       },
       "resolver_hooks": [
         {
+          "account_type": "entropy::VarState",
+          "strategy": {
+            "PdaReverseLookup": {
+              "lookup_name": "default_pda_lookup",
+              "queue_discriminators": []
+            }
+          }
+        },
+        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -7706,22 +8229,13 @@
               ]
             }
           }
-        },
-        {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
         }
       ],
       "instruction_hooks": [],
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "5a936dd7af96782dfe8e92b0054ed641dfe2d088ef29c236d961665f06d55f88",
+      "content_hash": "c675dce303911c951ba6776daa68590556e1d2843fad14eb0147a6e1320a845b",
       "views": []
     }
   ],
@@ -9373,5 +9887,5 @@
       ]
     }
   ],
-  "content_hash": "0561c686523af65cd5648a2603e4fc59f81d66bf373ebb56e026cd626423590d"
+  "content_hash": "11d0687994f00e4086ce9f25abe0913e081eb84256a5c2e1725ebb3b906b6b41"
 }

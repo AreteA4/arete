@@ -156,7 +156,11 @@ pub mod ore_stream {
         #[computed(results.rng.map(|r| r % 25))]
         pub winning_square: Option<u64>,
 
-        #[computed(results.rng.map(|r| r.reverse_bits() % 625 == 0))]
+        #[computed(if id.round_id.unwrap_or(0) as u64 >= 335000 {
+            results.rng.map(|r| r.reverse_bits() % 500 == 0)
+        } else {
+            results.rng.map(|r| r.reverse_bits() % 625 == 0)
+        })]
         pub did_hit_motherlode: Option<bool>,
 
         // Pre-reveal RNG calculation using resolved seed from API
@@ -238,6 +242,40 @@ pub mod ore_stream {
             strategy = SetOnce
         )]
         pub resolved_seed: Option<Vec<u8>>,
+    }
+
+    // ========================================================================
+    // Board Entity — Authoritative singleton current-round state
+    // ========================================================================
+
+    #[entity(name = "OreBoard")]
+    pub struct OreBoard {
+        pub id: BoardId,
+        pub state: BoardState,
+
+        #[snapshot(strategy = LastWrite)]
+        pub board_snapshot: Option<ore_sdk::accounts::Board>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
+    pub struct BoardId {
+        #[map(ore_sdk::accounts::Board::__account_address, primary_key, strategy = SetOnce)]
+        pub address: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
+    pub struct BoardState {
+        #[map(ore_sdk::accounts::Board::round_id, strategy = LastWrite)]
+        pub round_id: u64,
+
+        #[map(ore_sdk::accounts::Board::start_slot, strategy = LastWrite)]
+        pub start_slot: u64,
+
+        #[map(ore_sdk::accounts::Board::end_slot, strategy = LastWrite)]
+        pub end_slot: u64,
+
+        #[map(ore_sdk::accounts::Board::production_cost_ema, strategy = LastWrite)]
+        pub production_cost_ema: u64,
     }
 
     // ========================================================================
@@ -383,6 +421,7 @@ mod tests {
         record_slot_hash(slot, "11111111111111111111111111111111".to_string());
 
         let mut state = json!({
+            "id": { "round_id": "0" },
             "state": { "expires_at": slot.to_string() },
             "entropy": {},
             "results": {},
@@ -397,6 +436,7 @@ mod tests {
     #[test]
     fn deployed_per_square_computes_total_deployed() {
         let mut state = json!({
+            "id": { "round_id": "0" },
             "state": {
                 "deployed_per_square": ["1000000000", "500000000"],
             },
@@ -412,6 +452,117 @@ mod tests {
                 .and_then(|value| value.as_f64()),
             Some(1.5)
         );
+    }
+
+    #[test]
+    fn round_expiry_computes_unix_timestamp_from_update_context() {
+        let mut state = json!({
+            "id": { "round_id": "0" },
+            "state": { "expires_at": "1150" },
+            "entropy": {},
+            "results": {},
+        });
+
+        ore_stream::ore_round::evaluate_computed_fields(&mut state, Some(1000), 1_000).unwrap();
+
+        assert_eq!(
+            state
+                .pointer("/state/estimated_expires_at_unix")
+                .and_then(|value| value.as_i64()),
+            Some(1_060)
+        );
+    }
+
+    #[test]
+    fn motherlode_odds_change_at_round_335000() {
+        fn did_hit(round_id: u64, reversed_rng: u64) -> bool {
+            let mut slot_hash_bytes = reversed_rng.reverse_bits().to_le_bytes().to_vec();
+            slot_hash_bytes.extend([0_u8; 24]);
+            let mut state = json!({
+                "id": { "round_id": round_id },
+                "state": {},
+                "entropy": {},
+                "results": { "slot_hash_bytes": slot_hash_bytes },
+            });
+
+            ore_stream::ore_round::evaluate_computed_fields(&mut state, Some(1), 0).unwrap();
+            ore_stream::ore_round::evaluate_computed_fields(&mut state, Some(1), 0).unwrap();
+            state
+                .pointer("/results/did_hit_motherlode")
+                .and_then(|value| value.as_bool())
+                .unwrap()
+        }
+
+        assert!(did_hit(334_999, 625));
+        assert!(!did_hit(335_000, 625));
+        assert!(did_hit(335_000, 500));
+    }
+
+    #[test]
+    fn board_account_updates_authoritative_round_state() {
+        let bytecode = ore_stream::create_multi_entity_bytecode();
+        let mut vm = VmContext::new();
+        let board_address = "11111111111111111111111111111111";
+
+        for (slot, round_id, start_slot, end_slot, production_cost_ema) in [
+            (100, 334_999, 90, 240, 1_000),
+            (241, 335_000, 242, u64::MAX, 1_100),
+        ] {
+            vm.process_event(
+                &bytecode,
+                json!({
+                    "__account_address": board_address,
+                    "round_id": round_id,
+                    "start_slot": start_slot,
+                    "end_slot": end_slot.to_string(),
+                    "production_cost_ema": production_cost_ema,
+                }),
+                "ore::BoardState",
+                Some(&UpdateContext::new_account(
+                    slot,
+                    format!("board-{round_id}"),
+                    round_id,
+                )),
+                None,
+            )
+            .unwrap();
+        }
+
+        let board = vm.get_entity_state(1, &json!(board_address)).unwrap();
+        assert_eq!(
+            board
+                .pointer("/id/address")
+                .and_then(|value| value.as_str()),
+            Some(board_address)
+        );
+        assert_eq!(
+            board
+                .pointer("/state/round_id")
+                .and_then(|value| value.as_u64()),
+            Some(335_000)
+        );
+        assert_eq!(
+            board
+                .pointer("/state/start_slot")
+                .and_then(|value| value.as_u64()),
+            Some(242)
+        );
+        assert_eq!(
+            board
+                .pointer("/state/end_slot")
+                .and_then(|value| value.as_str()),
+            Some("18446744073709551615")
+        );
+        assert_eq!(
+            board
+                .pointer("/state/production_cost_ema")
+                .and_then(|value| value.as_u64()),
+            Some(1_100)
+        );
+        assert!(board
+            .pointer("/board_snapshot")
+            .and_then(|value| value.as_object())
+            .is_some());
     }
 
     #[test]
@@ -451,6 +602,7 @@ mod tests {
         record_slot_hash(slot, "11111111111111111111111111111111".to_string());
 
         let mut state = json!({
+            "id": { "round_id": "0" },
             "state": { "expires_at": slot.to_string() },
             "entropy": {
                 "resolved_seed": vec![0_u8; 32],

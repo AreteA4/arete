@@ -21,6 +21,8 @@ import oreDevex, {
   type PrepareDeployInput,
   type PrepareDisableAutomationInput,
   type PreparedOreInstruction,
+  type QuoteAutomationFundingInput,
+  type QuoteManualDeploymentInput,
 } from './ore-devex.js';
 
 const addresses = oreDevex.addresses;
@@ -71,6 +73,21 @@ export interface ClaimAllSemanticInput
   bps?: number | bigint;
   includeSol?: boolean;
 }
+
+export type ManualDeploymentQuoteReadInput = Omit<
+  QuoteManualDeploymentInput,
+  'roundId' | 'miner' | 'automation'
+> & {
+  authority: Address;
+  roundId?: bigint;
+};
+
+export type AutomationFundingQuoteReadInput = Omit<
+  QuoteAutomationFundingInput,
+  'miner' | 'automation'
+> & {
+  authority: Address;
+};
 
 function operationFromPrepared<TArtifacts>(
   name: string,
@@ -383,52 +400,93 @@ export default defineStackExtensions<typeof ORE_STREAM_STACK_CORE>()({
       return program.accounts.Round.fetch(addresses.round(roundId));
     }
 
+    async function boardState() {
+      return client.views.OreBoard.state.get(addresses.board());
+    }
+
+    async function roundState(roundId: bigint) {
+      return client.views.OreRound.state.get(roundId.toString());
+    }
+
+    async function resolveAuthoritativeRoundId(roundId?: bigint) {
+      if (roundId !== undefined) {
+        return roundId;
+      }
+      const entity = await boardState();
+      const currentRoundId = entity?.state.roundId;
+      if (currentRoundId == null) {
+        throw new Error(
+          `ORE Board state is unavailable; subscribe to OreBoard/state with key ${addresses.board()}`,
+        );
+      }
+      return currentRoundId;
+    }
+
     async function currentRound() {
-      const [boardAccount, clock] = await Promise.all([
-        board(),
+      const [boardEntity, clock] = await Promise.all([
+        boardState(),
         client.chain.clock(),
       ]);
-      if (!boardAccount) {
+      const roundId = boardEntity?.state.roundId;
+      const startSlot = boardEntity?.state.startSlot;
+      const endSlot = boardEntity?.state.endSlot;
+      if (
+        !boardEntity ||
+        roundId == null ||
+        startSlot == null ||
+        endSlot == null
+      ) {
         return null;
       }
-      const roundAddress = addresses.round(boardAccount.roundId);
-      const roundAccount = await program.accounts.Round.fetch(roundAddress);
+      const roundAddress = addresses.round(roundId);
+      const roundEntity = await roundState(roundId);
       const currentSlot = BigInt(clock.slot);
       return {
-        board: boardAccount,
-        round: roundAccount,
+        board: boardEntity,
+        round: roundEntity,
         roundAddress,
         clock,
-        phase: math.round.phase(boardAccount, currentSlot),
+        phase: math.round.phase({ startSlot, endSlot }, currentSlot),
       };
     }
 
     async function miningContext(authority: Address) {
-      const [boardAccount, minerAccount, automationAccount, treasuryAccount, clock] =
+      const [boardEntity, minerAccount, automationAccount, treasuryAccount, clock] =
         await Promise.all([
-          board(),
+          boardState(),
           miner(authority),
           automation(authority),
           treasury(),
           client.chain.clock(),
         ]);
-      if (!boardAccount) {
+      const roundId = boardEntity?.state.roundId;
+      const startSlot = boardEntity?.state.startSlot;
+      const endSlot = boardEntity?.state.endSlot;
+      if (
+        !boardEntity ||
+        roundId == null ||
+        startSlot == null ||
+        endSlot == null
+      ) {
         return null;
       }
-      const currentRoundAddress = addresses.round(boardAccount.roundId);
+      const currentRoundAddress = addresses.round(roundId);
       const minerRoundId = minerAccount?.roundId ?? null;
       const minerRoundAddress =
         minerRoundId === null ? null : addresses.round(minerRoundId);
-      const [currentRoundAccount, minerRoundAccount] = await Promise.all([
+      const [currentRoundAccount, currentRoundEntity, minerRoundAccount] = await Promise.all([
         program.accounts.Round.fetch(currentRoundAddress),
+        roundState(roundId),
         minerRoundAddress === null || minerRoundAddress === currentRoundAddress
           ? Promise.resolve(null)
           : program.accounts.Round.fetch(minerRoundAddress),
       ]);
       return {
         authority,
-        board: boardAccount,
+        board: boardEntity,
+        boardAccount: boardEntity.boardSnapshot,
         currentRound: currentRoundAccount,
+        currentRoundState: currentRoundEntity,
         currentRoundAddress,
         miner: minerAccount,
         minerRound:
@@ -439,8 +497,36 @@ export default defineStackExtensions<typeof ORE_STREAM_STACK_CORE>()({
         automation: automationAccount,
         treasury: treasuryAccount,
         clock,
-        phase: math.round.phase(boardAccount, BigInt(clock.slot)),
+        phase: math.round.phase({ startSlot, endSlot }, BigInt(clock.slot)),
       };
+    }
+
+    async function quoteManualDeployment(input: ManualDeploymentQuoteReadInput) {
+      const { authority, roundId: requestedRoundId, ...quoteInput } = input;
+      const roundId = await resolveAuthoritativeRoundId(requestedRoundId);
+      const [minerAccount, automationAccount] = await Promise.all([
+        miner(authority),
+        automation(authority),
+      ]);
+      return math.quoteManualDeployment({
+        ...quoteInput,
+        roundId,
+        miner: minerAccount,
+        automation: automationAccount,
+      });
+    }
+
+    async function quoteAutomationFunding(input: AutomationFundingQuoteReadInput) {
+      const { authority, ...quoteInput } = input;
+      const [minerAccount, automationAccount] = await Promise.all([
+        miner(authority),
+        automation(authority),
+      ]);
+      return math.quoteAutomationFunding({
+        ...quoteInput,
+        miner: minerAccount,
+        automation: automationAccount,
+      });
     }
 
     async function claimPreview(
@@ -465,9 +551,38 @@ export default defineStackExtensions<typeof ORE_STREAM_STACK_CORE>()({
       return math.miner.previewCheckpoint({
         miner: context.miner,
         round: context.minerRound,
-        boardRoundId: context.board.roundId,
+        boardRoundId: context.board.state.roundId!,
         currentSlot: BigInt(context.clock.slot),
         automation: context.automation,
+      });
+    }
+
+    async function solClaimPreview(authority: Address) {
+      const [minerAccount, boardAccount, automationAccount, clock] =
+        await Promise.all([
+          miner(authority),
+          board(),
+          automation(authority),
+          client.chain.clock(),
+        ]);
+      if (!minerAccount) {
+        return null;
+      }
+      const minerRound = boardAccount && minerAccount.checkpointId !== minerAccount.roundId
+        ? await round(minerAccount.roundId)
+        : null;
+      const checkpoint = boardAccount && minerRound
+        ? math.miner.previewCheckpoint({
+            miner: minerAccount,
+            round: minerRound,
+            boardRoundId: boardAccount.roundId,
+            currentSlot: BigInt(clock.slot),
+            automation: automationAccount,
+          })
+        : null;
+      return math.miner.previewSolClaim({
+        checkpointedRewardsSol: minerAccount.rewardsSol,
+        checkpoint,
       });
     }
 
@@ -478,10 +593,15 @@ export default defineStackExtensions<typeof ORE_STREAM_STACK_CORE>()({
       miner,
       automation,
       round,
+      boardState,
+      roundState,
       currentRound,
       miningContext,
+      quoteManualDeployment,
+      quoteAutomationFunding,
       claimPreview,
       checkpointPreview,
+      solClaimPreview,
     };
   },
 });
