@@ -24,12 +24,13 @@ async fn main() -> anyhow::Result<()> {
 
     let spec = ore_stream::spec();
 
-    println!("Starting Ore server on [::]:8878...");
+    println!("Starting Ore server on ws://localhost:8878 and http://localhost:8081...");
 
     Server::builder()
         .spec(spec)
         .websocket()
         .bind("[::]:8878".parse::<SocketAddr>()?)
+        .http()
         .health_monitoring()
         .start()
         .await?;
