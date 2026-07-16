@@ -1,4 +1,5 @@
-use crate::{health::HealthMonitor, ProgramAccountReaderFn};
+use crate::http::transactions::{self, TransactionState};
+use crate::{config::TransactionConfig, health::HealthMonitor, ProgramAccountReaderFn};
 use anyhow::Result;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
@@ -6,9 +7,13 @@ use dashmap::DashMap;
 use http_body_util::BodyExt;
 use http_body_util::Full;
 use hyper::body::Bytes;
+use hyper::header::{
+    HeaderValue, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
+    ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, ACCESS_CONTROL_MAX_AGE,
+};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use reqwest::Client;
 use serde::Deserialize;
@@ -53,6 +58,7 @@ struct HttpRequestState {
     program_account_reader: Arc<Option<ProgramAccountReaderFn>>,
     auth_plugin: Arc<Option<Arc<dyn WebSocketAuthPlugin>>>,
     limit_state: Arc<HttpLimitState>,
+    transaction_state: Arc<Option<TransactionState>>,
 }
 
 /// HTTP server that exposes health endpoints
@@ -61,6 +67,9 @@ pub struct HttpHealthServer {
     health_monitor: Option<HealthMonitor>,
     program_account_reader: Option<ProgramAccountReaderFn>,
     auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
+    transaction_config: Option<TransactionConfig>,
+    #[cfg(feature = "otel")]
+    metrics: Option<Arc<crate::metrics::Metrics>>,
 }
 
 impl HttpHealthServer {
@@ -70,6 +79,9 @@ impl HttpHealthServer {
             health_monitor: None,
             program_account_reader: None,
             auth_plugin: None,
+            transaction_config: None,
+            #[cfg(feature = "otel")]
+            metrics: None,
         }
     }
 
@@ -88,12 +100,30 @@ impl HttpHealthServer {
         self
     }
 
+    pub fn with_transaction_config(mut self, config: TransactionConfig) -> Self {
+        self.transaction_config = Some(config);
+        self
+    }
+
+    #[cfg(feature = "otel")]
+    pub fn with_metrics(mut self, metrics: Option<Arc<crate::metrics::Metrics>>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
     pub async fn start(self) -> Result<()> {
         info!("Starting HTTP health server on {}", self.bind_addr);
 
         let listener = TcpListener::bind(&self.bind_addr).await?;
         info!("HTTP health server listening on {}", self.bind_addr);
 
+        let transaction_state = self
+            .transaction_config
+            .filter(|config| config.enabled)
+            .map(TransactionState::new)
+            .transpose()?;
+        #[cfg(feature = "otel")]
+        let transaction_state = transaction_state.map(|state| state.with_metrics(self.metrics));
         let request_state = HttpRequestState {
             health_monitor: Arc::new(self.health_monitor),
             rpc_url: Arc::new(resolve_rpc_url()),
@@ -101,6 +131,7 @@ impl HttpHealthServer {
             program_account_reader: Arc::new(self.program_account_reader),
             auth_plugin: Arc::new(self.auth_plugin),
             limit_state: Arc::new(HttpLimitState::default()),
+            transaction_state: Arc::new(transaction_state),
         };
 
         loop {
@@ -133,6 +164,45 @@ async fn handle_request(
     req: Request<hyper::body::Incoming>,
     state: HttpRequestState,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    if req.method() == Method::OPTIONS {
+        return Ok(with_cors(
+            Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        ));
+    }
+
+    let response = handle_request_inner(remote_addr, req, state).await?;
+    Ok(with_cors(response))
+}
+
+fn with_cors(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+    let headers = response.headers_mut();
+    headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Authorization, Content-Type"),
+    );
+    headers.insert(
+        ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static(
+            "Retry-After, X-Error-Code, X-Request-Id, X-Arete-Upstream-Attempted",
+        ),
+    );
+    headers.insert(ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("86400"));
+    response
+}
+
+async fn handle_request_inner(
+    remote_addr: SocketAddr,
+    req: Request<hyper::body::Incoming>,
+    state: HttpRequestState,
+) -> Result<Response<Full<Bytes>>, Infallible> {
     let HttpRequestState {
         health_monitor,
         rpc_url,
@@ -140,6 +210,7 @@ async fn handle_request(
         program_account_reader,
         auth_plugin,
         limit_state,
+        transaction_state,
     } = state;
     let path = req.uri().path().to_string();
 
@@ -215,12 +286,37 @@ async fn handle_request(
                     .unwrap())
             }
         }
+        _ if path.starts_with("/transactions/") => {
+            let Some(transaction_state) = transaction_state.as_ref() else {
+                return Ok(error_response(StatusCode::NOT_FOUND, "Not Found"));
+            };
+            let client_addr = transaction_state.client_addr(remote_addr, req.headers());
+            let auth_context = match authorize_http_request(
+                client_addr,
+                &req,
+                auth_plugin.as_ref().as_ref(),
+                &limit_state,
+                None,
+                false,
+            )
+            .await
+            {
+                Ok(context) => context,
+                Err(response) => return Ok(transaction_auth_error(response, path.as_str())),
+            };
+            Ok(
+                transactions::handle(client_addr, req, auth_context, transaction_state.clone())
+                    .await,
+            )
+        }
         _ if path.starts_with("/chain/") => {
             let auth_context = match authorize_http_request(
                 remote_addr,
                 &req,
                 auth_plugin.as_ref().as_ref(),
                 &limit_state,
+                Some("read"),
+                true,
             )
             .await
             {
@@ -235,6 +331,8 @@ async fn handle_request(
                 &req,
                 auth_plugin.as_ref().as_ref(),
                 &limit_state,
+                Some("read"),
+                true,
             )
             .await
             {
@@ -259,6 +357,34 @@ async fn handle_request(
     }
 }
 
+fn transaction_auth_error(response: Response<Full<Bytes>>, path: &str) -> Response<Full<Bytes>> {
+    let status = response.status();
+    let code = response
+        .headers()
+        .get("X-Error-Code")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("authentication_failed")
+        .to_string();
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let mut value = json!({
+        "code": code,
+        "message": "Transaction request authentication failed",
+        "retryable": status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::UNAUTHORIZED,
+        "requestId": request_id,
+    });
+    if path == "/transactions/v1/send" {
+        value["submissionState"] = json!("not_submitted");
+    }
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .header("X-Error-Code", code)
+        .header("X-Request-Id", request_id)
+        .header("X-Arete-Upstream-Attempted", "false")
+        .body(Full::new(Bytes::from(value.to_string())))
+        .expect("valid transaction authentication response")
+}
+
 #[derive(Debug, Deserialize)]
 struct AddressesBody {
     addresses: Vec<String>,
@@ -270,6 +396,15 @@ struct BalanceBody {
     mint: String,
     #[serde(default, rename = "tokenProgram")]
     token_program: Option<String>,
+    #[serde(default, rename = "minContextSlot")]
+    min_context_slot: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeBalanceBody {
+    address: String,
+    #[serde(default, rename = "minContextSlot")]
+    min_context_slot: Option<String>,
 }
 
 #[derive(Default)]
@@ -294,6 +429,21 @@ fn json_response(status: StatusCode, value: Value) -> Response<Full<Bytes>> {
 
 fn error_response(status: StatusCode, message: impl Into<String>) -> Response<Full<Bytes>> {
     json_response(status, json!({ "error": message.into() }))
+}
+
+fn parse_min_context_slot(
+    value: Option<&str>,
+) -> std::result::Result<Option<u64>, Response<Full<Bytes>>> {
+    value
+        .map(|slot| {
+            slot.parse::<u64>().map_err(|_| {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    "minContextSlot must be a decimal u64 string",
+                )
+            })
+        })
+        .transpose()
 }
 
 fn auth_deny_response(deny: &AuthDeny) -> Response<Full<Bytes>> {
@@ -327,6 +477,8 @@ async fn authorize_http_request(
     req: &Request<hyper::body::Incoming>,
     auth_plugin: Option<&Arc<dyn WebSocketAuthPlugin>>,
     limit_state: &HttpLimitState,
+    required_scope: Option<&str>,
+    enforce_read_limits: bool,
 ) -> std::result::Result<Option<crate::websocket::auth::AuthContext>, Response<Full<Bytes>>> {
     let Some(plugin) = auth_plugin else {
         return Ok(None);
@@ -341,7 +493,24 @@ async fn authorize_http_request(
         AuthDecision::Deny(deny) => return Err(auth_deny_response(&deny)),
     };
 
-    enforce_http_limits(&context, limit_state).map_err(|deny| auth_deny_response(&deny))?;
+    if let Some(required_scope) = required_scope {
+        if !context.has_scope(required_scope) {
+            return Err(json_response(
+                StatusCode::FORBIDDEN,
+                json!({
+                    "error": "insufficient_scope",
+                    "message": format!("Required scope: {required_scope}"),
+                    "code": "insufficient_scope",
+                    "retryable": false,
+                    "fatal": true
+                }),
+            ));
+        }
+    }
+
+    if enforce_read_limits {
+        enforce_http_limits(&context, limit_state).map_err(|deny| auth_deny_response(&deny))?;
+    }
     Ok(Some(context))
 }
 
@@ -427,6 +596,22 @@ async fn handle_chain_request(
                 Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
             }
         }
+        ("POST", "/chain/native-balance") => match read_json_body::<NativeBalanceBody>(req).await {
+            Ok(body) => {
+                let min_context_slot =
+                    match parse_min_context_slot(body.min_context_slot.as_deref()) {
+                        Ok(slot) => slot,
+                        Err(response) => return response,
+                    };
+                match rpc_get_native_balance(&rpc_client, rpc_url, &body.address, min_context_slot)
+                    .await
+                {
+                    Ok(balance) => json_response(StatusCode::OK, balance),
+                    Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                }
+            }
+            Err(response) => response,
+        },
         ("GET", path) if path.starts_with("/chain/rent-exemption/") => {
             let raw_space = path.trim_start_matches("/chain/rent-exemption/");
             let Ok(space) = raw_space.parse::<u64>() else {
@@ -516,18 +701,26 @@ async fn handle_chain_request(
             }
         }
         ("POST", "/chain/balances") => match read_json_body::<BalanceBody>(req).await {
-            Ok(body) => match rpc_get_token_balance(
-                &rpc_client,
-                rpc_url,
-                &body.owner,
-                &body.mint,
-                body.token_program.as_deref(),
-            )
-            .await
-            {
-                Ok(balance) => json_response(StatusCode::OK, balance),
-                Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
-            },
+            Ok(body) => {
+                let min_context_slot =
+                    match parse_min_context_slot(body.min_context_slot.as_deref()) {
+                        Ok(slot) => slot,
+                        Err(response) => return response,
+                    };
+                match rpc_get_token_balance(
+                    &rpc_client,
+                    rpc_url,
+                    &body.owner,
+                    &body.mint,
+                    body.token_program.as_deref(),
+                    min_context_slot,
+                )
+                .await
+                {
+                    Ok(balance) => json_response(StatusCode::OK, balance),
+                    Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                }
+            }
             Err(response) => response,
         },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
@@ -654,6 +847,51 @@ async fn rpc_call(
     Ok(value.get("result").cloned().unwrap_or(Value::Null))
 }
 
+fn rpc_read_config(encoding: Option<&str>, min_context_slot: Option<u64>) -> Value {
+    let mut config = json!({ "commitment": "confirmed" });
+    let object = config
+        .as_object_mut()
+        .expect("RPC read config is always an object");
+    if let Some(encoding) = encoding {
+        object.insert("encoding".to_string(), json!(encoding));
+    }
+    if let Some(min_context_slot) = min_context_slot {
+        object.insert("minContextSlot".to_string(), json!(min_context_slot));
+    }
+    config
+}
+
+async fn rpc_get_native_balance(
+    client: &Client,
+    rpc_url: &str,
+    address: &str,
+    min_context_slot: Option<u64>,
+) -> anyhow::Result<Value> {
+    let result = rpc_call(
+        client,
+        rpc_url,
+        "getBalance",
+        json!([address, rpc_read_config(None, min_context_slot)]),
+    )
+    .await?;
+    contextual_native_balance_json(&result)
+}
+
+fn contextual_native_balance_json(result: &Value) -> anyhow::Result<Value> {
+    let lamports = result
+        .get("value")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("getBalance response is missing a u64 value"))?;
+    let context_slot = result
+        .pointer("/context/slot")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("getBalance response is missing a u64 context slot"))?;
+    Ok(json!({
+        "lamports": lamports.to_string(),
+        "contextSlot": context_slot.to_string(),
+    }))
+}
+
 async fn rpc_get_account_info(
     client: &Client,
     rpc_url: &str,
@@ -712,6 +950,7 @@ async fn rpc_get_token_balance(
     owner: &str,
     mint: &str,
     token_program: Option<&str>,
+    min_context_slot: Option<u64>,
 ) -> anyhow::Result<Value> {
     let filter = token_program
         .map(|program_id| json!({ "programId": program_id }))
@@ -723,10 +962,26 @@ async fn rpc_get_token_balance(
         json!([
             owner,
             filter,
-            { "encoding": "jsonParsed", "commitment": "confirmed" }
+            rpc_read_config(Some("jsonParsed"), min_context_slot)
         ]),
     )
     .await?;
+
+    contextual_token_balance_json(&result, owner, mint, token_program)
+}
+
+fn contextual_token_balance_json(
+    result: &Value,
+    owner: &str,
+    mint: &str,
+    token_program: Option<&str>,
+) -> anyhow::Result<Value> {
+    let context_slot = result
+        .pointer("/context/slot")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            anyhow::anyhow!("getTokenAccountsByOwner response is missing a u64 context slot")
+        })?;
 
     let account = result
         .get("value")
@@ -752,6 +1007,7 @@ async fn rpc_get_token_balance(
             "amount": info.and_then(|value| value.pointer("/tokenAmount/amount")).and_then(Value::as_str).unwrap_or("0"),
             "decimals": info.and_then(|value| value.pointer("/tokenAmount/decimals")).and_then(Value::as_u64),
             "uiAmountString": info.and_then(|value| value.pointer("/tokenAmount/uiAmountString")).and_then(Value::as_str),
+            "contextSlot": context_slot.to_string(),
         }));
     }
 
@@ -764,6 +1020,7 @@ async fn rpc_get_token_balance(
         "amount": "0",
         "decimals": Value::Null,
         "uiAmountString": Value::Null,
+        "contextSlot": context_slot.to_string(),
     }))
 }
 
@@ -816,4 +1073,107 @@ fn token_account_json(address: &str, value: &Value) -> Value {
         "amount": info.and_then(|v| v.pointer("/tokenAmount/amount")).and_then(Value::as_str),
         "uiAmountString": info.and_then(|v| v.pointer("/tokenAmount/uiAmountString")).and_then(Value::as_str),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cors_headers_allow_browser_sdk_reads() {
+        let response = with_cors(
+            Response::builder()
+                .status(StatusCode::OK)
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        );
+
+        assert_eq!(response.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+        assert_eq!(
+            response.headers()[ACCESS_CONTROL_ALLOW_METHODS],
+            "GET, POST, OPTIONS"
+        );
+        assert_eq!(
+            response.headers()[ACCESS_CONTROL_ALLOW_HEADERS],
+            "Authorization, Content-Type"
+        );
+    }
+
+    #[test]
+    fn native_balance_serializes_u64_values_as_decimal_strings() {
+        let value = contextual_native_balance_json(&json!({
+            "context": { "slot": 9_007_199_254_740_995_u64 },
+            "value": 9_007_199_254_740_993_u64,
+        }))
+        .unwrap();
+
+        assert_eq!(value["lamports"], "9007199254740993");
+        assert_eq!(value["contextSlot"], "9007199254740995");
+    }
+
+    #[test]
+    fn rpc_read_config_propagates_min_context_slot() {
+        let config = rpc_read_config(Some("jsonParsed"), Some(9_007_199_254_740_997));
+
+        assert_eq!(config["commitment"], "confirmed");
+        assert_eq!(config["encoding"], "jsonParsed");
+        assert_eq!(config["minContextSlot"], 9_007_199_254_740_997_u64);
+    }
+
+    #[test]
+    fn token_balance_preserves_raw_amount_and_stringifies_context_slot() {
+        let value = contextual_token_balance_json(
+            &json!({
+                "context": { "slot": 9_007_199_254_740_995_u64 },
+                "value": [{
+                    "pubkey": "token-account",
+                    "account": {
+                        "data": {
+                            "parsed": {
+                                "info": {
+                                    "mint": "mint",
+                                    "tokenAmount": {
+                                        "amount": "18446744073709551615",
+                                        "decimals": 9,
+                                        "uiAmountString": "18446744073.709551615"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }]
+            }),
+            "owner",
+            "mint",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(value["amount"], "18446744073709551615");
+        assert_eq!(value["contextSlot"], "9007199254740995");
+    }
+
+    #[test]
+    fn balance_bodies_accept_decimal_string_min_context_slots() {
+        let native: NativeBalanceBody = serde_json::from_value(json!({
+            "address": "owner",
+            "minContextSlot": "9007199254740997",
+        }))
+        .unwrap();
+        let token: BalanceBody = serde_json::from_value(json!({
+            "owner": "owner",
+            "mint": "mint",
+            "minContextSlot": "9007199254740999",
+        }))
+        .unwrap();
+
+        assert_eq!(
+            parse_min_context_slot(native.min_context_slot.as_deref()).unwrap(),
+            Some(9_007_199_254_740_997)
+        );
+        assert_eq!(
+            parse_min_context_slot(token.min_context_slot.as_deref()).unwrap(),
+            Some(9_007_199_254_740_999)
+        );
+    }
 }

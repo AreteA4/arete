@@ -35,6 +35,7 @@ pub mod cache;
 pub mod compression;
 pub mod config;
 pub mod health;
+mod http;
 pub mod http_health;
 pub mod http_server;
 pub mod materialized_view;
@@ -53,7 +54,7 @@ pub use bus::{BusManager, BusMessage};
 pub use cache::{EntityCache, EntityCacheConfig};
 pub use config::{
     HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, ServerConfig,
-    WebSocketConfig, YellowstoneConfig,
+    TransactionConfig, WebSocketConfig, YellowstoneConfig,
 };
 pub use health::{HealthMonitor, SlotTracker, StreamStatus};
 pub use http_health::HttpHealthServer;
@@ -307,6 +308,12 @@ impl ServerBuilder {
     /// Configure the HTTP server.
     pub fn http_config(mut self, config: crate::http_server::HttpServerConfig) -> Self {
         self.config.http_health = Some(config);
+        self
+    }
+
+    /// Configure and explicitly enable the fixed transaction HTTP routes.
+    pub fn transactions_config(mut self, config: TransactionConfig) -> Self {
+        self.config.transactions = Some(config);
         self
     }
 

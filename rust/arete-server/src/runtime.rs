@@ -1,6 +1,7 @@
 use crate::bus::BusManager;
 use crate::cache::EntityCache;
 use crate::config::ServerConfig;
+use crate::config::TransactionConfig;
 use crate::health::HealthMonitor;
 use crate::http_server::HttpServer;
 use crate::materialized_view::MaterializedViewRegistry;
@@ -145,6 +146,11 @@ impl Runtime {
     pub async fn run(self) -> Result<()> {
         info!("Starting Arete runtime");
 
+        let transaction_config = match self.config.transactions.clone() {
+            Some(config) => config,
+            None => TransactionConfig::from_env()?,
+        };
+
         let (mutations_tx, mutations_rx) = mpsc::channel::<MutationBatch>(1024);
 
         let bus_manager = BusManager::new();
@@ -276,6 +282,13 @@ impl Runtime {
                 .or_else(|| self.websocket_auth_plugin.clone())
             {
                 http_server = http_server.with_auth_plugin(plugin);
+            }
+            if transaction_config.enabled {
+                http_server = http_server.with_transaction_config(transaction_config.clone());
+            }
+            #[cfg(feature = "otel")]
+            {
+                http_server = http_server.with_metrics(self.metrics.clone());
             }
 
             let bind_addr = http_health_config.bind_address;
