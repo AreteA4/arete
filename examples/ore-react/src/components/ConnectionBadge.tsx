@@ -1,16 +1,21 @@
 interface ConnectionBadgeProps {
   isConnected: boolean;
+  connectionState: string;
+  error: Error | null;
 }
 
-export function ConnectionBadge({ isConnected }: ConnectionBadgeProps) {
+export function ConnectionBadge({ isConnected, connectionState, error }: ConnectionBadgeProps) {
+  const label = isConnected ? 'Connected' : error ? 'Offline' : connectionState === 'connecting' ? 'Connecting' : 'Disconnected';
   return (
-    <a href="https://docs.arete.run" target="_blank" rel="noreferrer" className="text-stone-600 dark:text-stone-300">
-      <div className="fixed bottom-6 right-6 flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-stone-800 rounded-full shadow-sm dark:shadow-none dark:ring-1 dark:ring-stone-700">
-        <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-        <span className={`text-xs font-medium ${isConnected ? 'text-stone-600 dark:text-stone-300' : 'text-amber-600 dark:text-amber-400'}`}>
-          {isConnected ? 'Connected' : 'Connecting'}
-        </span>
-      </div>
+    <a
+      className="flex min-h-11 items-center gap-2 rounded-full bg-white px-3 text-xs font-medium text-stone-600 shadow-sm dark:bg-stone-800 dark:text-stone-300 dark:ring-1 dark:ring-stone-700"
+      href="https://docs.arete.run"
+      target="_blank"
+      rel="noreferrer"
+      title={error?.message}
+    >
+      <i className={`h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-amber-500'}`} aria-hidden="true" />
+      {label}
     </a>
   );
 }
