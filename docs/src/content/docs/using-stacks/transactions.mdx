@@ -1,0 +1,226 @@
+---
+title: Transactions
+description: Inspect, sign, submit, and confirm Solana transactions through Arete.
+sidebar:
+  order: 6
+---
+
+Arete's transaction transport lets an application use the same authenticated stack endpoint for transaction inspection, submission, and confirmation. The wallet still compiles and signs locally. Arete never receives a private key and never signs on the user's behalf.
+
+The transaction transport is separate from the WebSocket transport used for streamed views:
+
+- `ConnectOptions.transport` selects WebSocket or HTTP-only stack data access.
+- A wallet adapter's `transport` selects Arete, direct Solana RPC, or a custom transaction transport.
+
+## Install
+
+```bash
+npm install @usearete/sdk @usearete/adapter-web3js @solana/web3.js
+```
+
+## Auto mode
+
+Use `auto` for normal hosted and self-hosted applications. When the wallet is invoked by a connected Arete client, the adapter receives that client's authenticated transaction transport. A standalone adapter can still use a configured direct connection for backward compatibility.
+
+```ts
+import { createSession } from '@usearete/sdk';
+import { createWalletAdapter } from '@usearete/adapter-web3js';
+import { MY_STACK } from './generated/my-stack';
+
+const wallet = createWalletAdapter({
+  signer: {
+    publicKey,
+    signTransaction,
+    supportedTransactionVersions,
+  },
+  transport: 'auto',
+});
+
+const session = await createSession(
+  { stacks: { app: MY_STACK } },
+  {
+    wallet,
+    auth: { publishableKey: import.meta.env.VITE_ARETE_PUBLISHABLE_KEY },
+  },
+);
+```
+
+The connected client supplies its transport per invocation. This means one wallet can safely serve multiple clients connected to different stacks without mutable global transport state.
+
+There is no automatic Arete-to-direct fallback after an operation starts. In particular, a failed or ambiguous Arete submission is never retried through a direct RPC connection.
+
+## Prepare and inspect
+
+Prepare a generated semantic operation, then inspect it without signing or prompting the wallet:
+
+```ts
+const prepared = await session.programs.myProgram.transactions.deposit.prepare({
+  owner: publicKey.toBase58(),
+  amount: 1_000_000n,
+});
+
+const inspection = await session.stacks.app.inspectOperation(prepared, {
+  inspect: {
+    commitment: 'confirmed',
+    minContextSlot,
+    innerInstructions: true,
+  },
+});
+
+console.log(inspection.transaction.feeLamports);
+console.log(inspection.transaction.logs);
+console.log(inspection.programError);
+```
+
+Inspection compiles an unsigned v0 transaction locally and calls the Arete fee and simulation routes. It does not sign or submit. Core enriches simulation failures with generated program error metadata when available.
+
+## Execute
+
+```ts
+const receipt = await session.execute(prepared, {
+  send: {
+    confirmationLevel: 'confirmed',
+    confirmationTimeoutMs: 60_000,
+    statusPollIntervalMs: 500,
+  },
+});
+
+console.log(receipt.transaction.signature);
+console.log(receipt.transaction.slot);
+```
+
+The adapter performs these steps:
+
+1. Fetch a recent blockhash through Arete.
+2. Compile a static-key v0 message locally.
+3. Sign locally once.
+4. Submit the fully signed wire transaction once.
+5. Poll signature status and block height through Arete.
+6. Return the landed slot when the requested commitment is reached.
+
+The Web3.js adapter currently requires v0 wallet support and does not accept address lookup table accounts.
+
+## Raw instructions
+
+You can submit manually composed generated instructions through the same transport:
+
+```ts
+const instruction = session.programs.myProgram.raw.deposit.build({
+  owner: publicKey.toBase58(),
+  amount: 1_000_000n,
+});
+
+const result = await session.transaction([instruction]);
+console.log(result.signature);
+```
+
+## Direct mode
+
+Use direct mode when the application intentionally owns its Solana RPC connection:
+
+```ts
+import { Connection } from '@solana/web3.js';
+
+const wallet = createWalletAdapter({
+  connection: new Connection(process.env.SOLANA_RPC_URL!, 'confirmed'),
+  signer,
+  transport: 'direct',
+});
+```
+
+Direct mode ignores the Arete transaction transport. The SDK does not restrict the RPC cluster; cluster checks in the ORE React example are example-specific safety checks.
+
+## Custom transport
+
+Implement `TransactionTransport` when routing through another trusted gateway or test harness:
+
+```ts
+import type { TransactionTransport } from '@usearete/sdk';
+
+const transactions: TransactionTransport = {
+  getLatestBlockhash,
+  getFeeForMessage,
+  simulateTransaction,
+  sendTransaction,
+  getSignatureStatus,
+  getBlockHeight,
+};
+
+const session = await createSession(
+  { stacks: { app: MY_STACK } },
+  { wallet, transactions },
+);
+```
+
+A custom transport can also be passed to `createWalletAdapter({ transport: transactions })` or supplied per transaction/operation with `transactionTransport`.
+
+Custom transports must preserve the safety contract: submit a signed transaction at most once, preserve its signature, and classify uncertainty conservatively.
+
+## Authentication and scopes
+
+Hosted clients normally provide `auth.publishableKey`. The SDK requests short-lived tokens from the configured token endpoint and upgrades the shared token when an operation requires additional scopes.
+
+The scopes are independent:
+
+| Scope                 | Allows                                                        |
+| --------------------- | ------------------------------------------------------------- |
+| `read`                | Stack reads and streamed data                                 |
+| `transaction:inspect` | Blockhash, fee, simulation, status, and block-height requests |
+| `transaction:send`    | Submission of a fully signed wire transaction                 |
+
+Static tokens must already contain the required scopes. Browser publishable-key sessions in Arete Cloud must be origin-bound and requested from the key's exact allowlisted origin.
+
+## Failure outcomes
+
+Application execution errors have three important outcomes:
+
+| Outcome             | Meaning                                             | Safe response                                                            |
+| ------------------- | --------------------------------------------------- | ------------------------------------------------------------------------ |
+| `not-submitted`     | The transaction definitely did not reach submission | Fix the cause; retry only under explicit application policy              |
+| `submitted-unknown` | The signed transaction may have reached Solana      | Reconcile the included signature; do not blindly resend                  |
+| `chain-failed`      | Solana reported an on-chain error                   | Display the parsed program error when available; do not resend unchanged |
+
+```ts
+import { getTransactionFailureOutcome } from '@usearete/sdk';
+
+try {
+  await session.execute(prepared);
+} catch (error) {
+  const outcome = getTransactionFailureOutcome(error);
+  if (outcome?.status === 'submitted-unknown') {
+    console.error('Check this signature before retrying:', outcome.signature);
+  }
+  throw error;
+}
+```
+
+HTTP relay failures are exposed as `TransactionTransportError` with `status`, `code`, `retryable`, `requestId`, `submissionState`, `signature`, and sanitized `details`. Record the request ID and signature in application diagnostics.
+
+## Troubleshooting
+
+| Symptom                       | Check                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------- |
+| `AUTH_REQUIRED`               | Configure `publishableKey`, `tokenEndpoint`, `getToken`, or a static token |
+| `insufficient_scope`          | Request the exact inspect or send scope                                    |
+| `transaction-relay-disabled`  | Check cloud and deployment rollout gates                                   |
+| `transaction-origin-required` | Use an origin-bound publishable key from its allowlisted origin            |
+| `request_too_large`           | Compare the JSON body with the relay body limit and token claim            |
+| `transaction_too_large`       | Compare decoded wire bytes with the 1232-byte default                      |
+| `rate_limit_exceeded`         | Check session claims, trusted proxy configuration, and per-route limits    |
+| `submission_unknown`          | Query the returned signature; never resend blindly                         |
+| Confirmation timeout          | Check status/block-height RPC health or increase `confirmationTimeoutMs`   |
+| Direct mode has no transport  | Supply a Web3.js `Connection` and a v0-capable signer                      |
+
+## Current limitations and improvements
+
+Before broad production scale, prioritize:
+
+1. Add a reusable conformance suite for custom `TransactionTransport` implementations.
+2. Persist or externally queue transaction usage events; V1 uses bounded in-memory retries.
+3. Externalize admission/rate state before running more than one transaction-enabled atom replica.
+4. Add address lookup table support to the Web3.js adapter.
+5. Narrow `getSignatureStatus` options to fields the route actually uses.
+6. Add release-gated validator and hosted-browser transaction smoke tests.
+7. Add dashboards and alerts for ambiguous submissions, upstream timeouts, rate denials, and usage queue drops.
+
+See [Self-hosting the transaction relay](/a4-server/transaction-relay/) for server configuration and security guidance.
