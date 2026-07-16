@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ConnectionManager } from './connection';
+import { SubscriptionRegistry } from './subscription';
 import { AreteError } from './types';
 
 function toBase64Url(value: string): string {
@@ -131,6 +132,7 @@ describe('ConnectionManager auth', () => {
     const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(requestInit.body))).toEqual({
       websocket_url: 'wss://demo.stack.arete.run',
+      scopes: ['read'],
     });
     expect(requestInit.headers).toMatchObject({
       Authorization: 'Bearer hspk_test_123',
@@ -270,6 +272,39 @@ describe('ConnectionManager auth', () => {
     });
   });
 
+  it('reuses and atomically upgrades the shared token scope cache', async () => {
+    const getToken = vi.fn(async (request?: { scopes: readonly string[] }) => ({
+      token: `token-${request?.scopes.join('+')}`,
+      scopes: request?.scopes,
+      expiresAt: Math.floor(Date.now() / 1000) + 300,
+    }));
+    const manager = new ConnectionManager({ websocketUrl: null, auth: { getToken } });
+
+    await expect(manager.getHttpAuthToken(['read'])).resolves.toBe('token-read');
+    await expect(manager.getHttpAuthToken(['read'])).resolves.toBe('token-read');
+    expect(getToken).toHaveBeenCalledTimes(1);
+
+    const [inspect, send] = await Promise.all([
+      manager.getHttpAuthToken(['transaction:inspect']),
+      manager.getHttpAuthToken(['transaction:send']),
+    ]);
+    expect(inspect).toBe(send);
+    expect(getToken).toHaveBeenCalledTimes(2);
+    expect(getToken.mock.calls[1]?.[0]?.scopes).toEqual([
+      'read', 'transaction:inspect', 'transaction:send',
+    ]);
+  });
+
+  it('shares an unauthenticated local token lookup without requiring scopes', async () => {
+    const manager = new ConnectionManager({ websocketUrl: null });
+
+    await expect(Promise.all([
+      manager.getHttpAuthToken(['read']),
+      manager.getHttpAuthToken(['transaction:inspect']),
+      manager.getHttpAuthToken(['transaction:send']),
+    ])).resolves.toEqual([undefined, undefined, undefined]);
+  });
+
   it('handles refresh_auth success responses as control messages', async () => {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const manager = new ConnectionManager({
@@ -406,6 +441,117 @@ describe('ConnectionManager auth', () => {
       skip: 2,
       withSnapshot: false,
     });
+  });
+
+  it('orders refresh unsubscribe before resubscribe and preserves exact options', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+    const subscription = {
+      view: 'OreMiner/state',
+      key: 'wallet',
+      filters: { status: 'open', owner: 'wallet' },
+      withSnapshot: true,
+      after: '20:1',
+      snapshotLimit: 1,
+    };
+
+    await manager.connect();
+    manager.subscribe(subscription);
+    const ws = MockWebSocket.instances[0]!;
+    ws.sent = [];
+
+    manager.refresh({
+      ...subscription,
+      filters: { owner: 'wallet', status: 'open' },
+    });
+
+    expect(ws.sent.map((message) => JSON.parse(message))).toEqual([
+      { type: 'unsubscribe', view: 'OreMiner/state', key: 'wallet' },
+      {
+        type: 'subscribe',
+        view: 'OreMiner/state',
+        key: 'wallet',
+        filters: { owner: 'wallet', status: 'open' },
+        withSnapshot: true,
+        after: '20:1',
+        snapshotLimit: 1,
+      },
+    ]);
+
+    manager.disconnect();
+    await manager.connect();
+    expect(JSON.parse(MockWebSocket.instances[1]!.sent[0]!)).toEqual({
+      type: 'subscribe',
+      view: 'OreMiner/state',
+      key: 'wallet',
+      filters: { owner: 'wallet', status: 'open' },
+      withSnapshot: true,
+      after: '20:1',
+      snapshotLimit: 1,
+    });
+  });
+
+  it('rejects incompatible options for an active wire identity', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+
+    await manager.connect();
+    manager.subscribe({ view: 'Position/list', key: 'position', take: 1 });
+
+    expect(() =>
+      manager.subscribe({ view: 'Position/list', key: 'position', take: 2 })
+    ).toThrowError(/incompatible options/);
+    expect(MockWebSocket.instances[0]!.sent).toHaveLength(1);
+  });
+
+  it('rejects refresh for an inactive wire identity without sending messages', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+
+    await manager.connect();
+
+    expect(() =>
+      manager.refresh({ view: 'OreMiner/state', key: 'wallet' })
+    ).toThrowError(/Cannot refresh inactive subscription/);
+    expect(MockWebSocket.instances[0]!.sent).toHaveLength(0);
+  });
+
+  it('compensates for a subscribe send that throws after reaching the socket', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+    const registry = new SubscriptionRegistry(manager);
+
+    await manager.connect();
+    const ws = MockWebSocket.instances[0]!;
+    vi.spyOn(ws, 'send').mockImplementationOnce((data: string) => {
+      ws.sent.push(data);
+      throw new Error('socket send failed');
+    });
+
+    expect(() =>
+      registry.subscribe({ view: 'OreMiner/state', key: 'wallet' })
+    ).toThrowError(/socket send failed/);
+    expect(ws.sent.map((message) => JSON.parse(message))).toEqual([
+      { type: 'subscribe', view: 'OreMiner/state', key: 'wallet' },
+      { type: 'unsubscribe', view: 'OreMiner/state', key: 'wallet' },
+    ]);
+    expect(registry.getRefCount({ view: 'OreMiner/state', key: 'wallet' })).toBe(0);
+    expect(registry.getActiveSubscriptions()).toEqual([]);
+  });
+
+  it('does not send unsubscribe for an inactive wire identity', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+
+    await manager.connect();
+    manager.unsubscribe('OreMiner/state', 'wallet');
+
+    expect(MockWebSocket.instances[0]!.sent).toHaveLength(0);
+  });
+
+  it('removes queued subscriptions before they connect', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+
+    manager.subscribe({ view: 'OreMiner/state', key: 'wallet' });
+    manager.unsubscribe('OreMiner/state', 'wallet');
+    await manager.connect();
+
+    expect(MockWebSocket.instances[0]!.sent).toHaveLength(0);
   });
 
   it('treats the legacy disabled sentinel URL as a null websocketUrl', async () => {

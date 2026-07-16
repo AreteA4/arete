@@ -13,7 +13,13 @@ import {
   validateAccountResolution,
   type AccountMeta,
 } from './account-resolver';
-import { parseInstructionError, formatProgramError } from './error-parser';
+import {
+  InstructionError,
+  parseInstructionError,
+  formatProgramError,
+  normalizeTransactionError,
+  TransactionExecutionError,
+} from './error-parser';
 import {
   createInstructionHandler,
   buildInstruction,
@@ -94,6 +100,27 @@ describe('findProgramAddress', () => {
 });
 
 describe('serializeInstructionData', () => {
+  it('does not require an ambient Buffer global', () => {
+    const ambientBuffer = globalThis.Buffer;
+    try {
+      Object.defineProperty(globalThis, 'Buffer', {
+        configurable: true,
+        value: undefined,
+      });
+      const data = serializeInstructionData(
+        Uint8Array.from([0xaa]),
+        { amount: 1n },
+        [{ name: 'amount', type: 'u64' }]
+      );
+      expect([...data]).toEqual([0xaa, 1, 0, 0, 0, 0, 0, 0, 0]);
+    } finally {
+      Object.defineProperty(globalThis, 'Buffer', {
+        configurable: true,
+        value: ambientBuffer,
+      });
+    }
+  });
+
   it('prefixes the discriminator and serializes primitives', () => {
     const schema: ArgSchema[] = [
       { name: 'amount', type: 'u64' },
@@ -625,6 +652,141 @@ describe('parseInstructionError', () => {
     expect(parseInstructionError(null, errors)).toBeNull();
     expect(parseInstructionError(new Error('network down'), errors)).toBeNull();
   });
+
+  it('finds an InstructionError nested in RPC response and cause wrappers', () => {
+    const parsed = parseInstructionError({
+      cause: {
+        value: { err: { InstructionError: [2, { Custom: 6000 }] } },
+      },
+    }, errors);
+    expect(parsed).toMatchObject({ code: 6000, name: 'SlippageExceeded' });
+  });
+});
+
+describe('normalizeTransactionError', () => {
+  const errors = [{ code: 6000, name: 'OreProgramError', msg: 'ORE failed' }];
+
+  it('lets deterministic program errors override submitted-unknown outcomes', () => {
+    const chainCause = { InstructionError: [0, { Custom: 6000 }] };
+    const submittedUnknown = new TransactionExecutionError({
+      status: 'submitted-unknown',
+      phase: 'confirmation',
+      signature: 'known-signature',
+      slot: 44,
+      cause: chainCause,
+    });
+
+    const normalized = normalizeTransactionError(submittedUnknown, errors);
+
+    expect(normalized).toBeInstanceOf(InstructionError);
+    expect(normalized).toMatchObject({
+      cause: chainCause,
+      signature: 'known-signature',
+      slot: 44,
+      programError: { code: 6000, name: 'OreProgramError' },
+      outcome: {
+        status: 'chain-failed',
+        phase: 'chain',
+        signature: 'known-signature',
+        slot: 44,
+        cause: chainCause,
+      },
+    });
+  });
+
+  it('prefers nested InstructionError evidence over a conflicting wallet code', () => {
+    const chainCause = { InstructionError: [1, { Custom: 6000 }] };
+    const normalized = normalizeTransactionError({ code: 4001, cause: chainCause }, errors);
+
+    expect(normalized).toBeInstanceOf(InstructionError);
+    expect(normalized).toMatchObject({
+      outcome: { status: 'chain-failed' },
+      programError: { code: 6000, name: 'OreProgramError' },
+    });
+  });
+
+  it('treats a direct code matching IDL metadata as deterministic', () => {
+    const chainCause = { code: 6000, message: 'transaction simulation failed' };
+    const submittedUnknown = new TransactionExecutionError({
+      status: 'submitted-unknown',
+      phase: 'confirmation',
+      signature: 'known-signature',
+      cause: chainCause,
+    });
+
+    expect(normalizeTransactionError(submittedUnknown, errors)).toMatchObject({
+      name: 'InstructionError',
+      cause: chainCause,
+      outcome: { status: 'chain-failed', signature: 'known-signature' },
+      programError: { code: 6000, name: 'OreProgramError' },
+    });
+  });
+
+  it('does not replace submitted-unknown with an unrecognized generic adapter code', () => {
+    const submittedUnknown = new TransactionExecutionError({
+      status: 'submitted-unknown',
+      phase: 'confirmation',
+      signature: 'known-signature',
+      cause: { code: -32002, message: 'RPC request failed' },
+    });
+
+    expect(normalizeTransactionError(submittedUnknown, errors)).toBe(submittedUnknown);
+  });
+
+  it('matches nested user rejection narrowly without treating generic wallet failures as rejection', () => {
+    const nestedRejection = Object.assign(new Error('Signing failed'), {
+      cause: new Error('User rejected the transaction.'),
+    });
+    expect(normalizeTransactionError(nestedRejection, errors)).toMatchObject({
+      outcome: { status: 'not-submitted', phase: 'wallet', cause: nestedRejection },
+    });
+
+    const genericWalletFailure = new Error(
+      'Wallet rejected transaction because simulation failed'
+    );
+    expect(normalizeTransactionError(genericWalletFailure, errors)).toMatchObject({
+      outcome: { status: 'not-submitted', phase: 'send', cause: genericWalletFailure },
+    });
+  });
+
+  it('keeps InstructionError cause and outcome cause aligned without traversing explicit outcomes', () => {
+    const originalCause = new Error('original chain failure');
+    const opaqueCause = {};
+    Object.defineProperty(opaqueCause, 'outcome', {
+      get() {
+        throw new Error('outcome should not be inspected');
+      },
+    });
+    const outcome = {
+      status: 'chain-failed' as const,
+      phase: 'chain' as const,
+      signature: 'chain-signature',
+      cause: originalCause,
+    };
+
+    const error = new InstructionError('ORE failed', null, opaqueCause, outcome);
+
+    expect(error.cause).toBe(originalCause);
+    expect(error.outcome.cause).toBe(originalCause);
+    expect(error.signature).toBe('chain-signature');
+  });
+
+  it('unwraps structured causes once and retains their transaction context', () => {
+    const originalCause = new Error('chain failure');
+    const transactionError = new TransactionExecutionError({
+      status: 'chain-failed',
+      phase: 'confirmation',
+      signature: 'chain-signature',
+      slot: 45,
+      cause: originalCause,
+    });
+
+    const error = new InstructionError('ORE failed', null, transactionError);
+
+    expect(error.cause).toBe(originalCause);
+    expect(error.outcome.cause).toBe(originalCause);
+    expect(error).toMatchObject({ signature: 'chain-signature', slot: 45 });
+  });
 });
 
 describe('createInstructionHandler + buildInstruction', () => {
@@ -807,5 +969,22 @@ describe('createInstructionHandler + buildInstruction', () => {
     await expect(
       executeInstruction(handler, { amount: 1n, mint: SYSTEM_PROGRAM }, { wallet: failWallet })
     ).rejects.toMatchObject({ name: 'InstructionError', programError: { code: 6000, name: 'Boom' } });
+  });
+
+  it('classifies instruction build failures before wallet submission', async () => {
+    const handler = makeHandler();
+    const signAndSend = async (): Promise<SendResult> => ({ signature: 'not-called' });
+
+    const error = await executeInstruction(
+      handler,
+      { mint: SYSTEM_PROGRAM },
+      { wallet: { publicKey: WSOL_MINT, signAndSend } }
+    ).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(TransactionExecutionError);
+    expect(error).toMatchObject({
+      outcome: { status: 'not-submitted', phase: 'build' },
+      cause: expect.objectContaining({ message: expect.stringContaining('amount') }),
+    });
   });
 });

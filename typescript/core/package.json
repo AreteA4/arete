@@ -3,38 +3,38 @@
   "version": "0.2.0",
   "type": "module",
   "description": "Pure TypeScript SDK for the Arete Solana streaming platform",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "module": "dist/index.esm.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "import": "./dist/index.esm.js",
-      "require": "./dist/index.js",
+      "require": "./dist/index.cjs",
       "types": "./dist/index.d.ts"
     },
     "./ssr": {
       "import": "./dist/ssr/index.esm.js",
-      "require": "./dist/ssr/index.js",
+      "require": "./dist/ssr/index.cjs",
       "types": "./dist/ssr/index.d.ts"
     },
     "./ssr/handlers": {
       "import": "./dist/ssr/handlers.esm.js",
-      "require": "./dist/ssr/handlers.js",
+      "require": "./dist/ssr/handlers.cjs",
       "types": "./dist/ssr/handlers.d.ts"
     },
     "./ssr/nextjs-app": {
       "import": "./dist/ssr/nextjs-app.esm.js",
-      "require": "./dist/ssr/nextjs-app.js",
+      "require": "./dist/ssr/nextjs-app.cjs",
       "types": "./dist/ssr/nextjs-app.d.ts"
     },
     "./ssr/vite": {
       "import": "./dist/ssr/vite.esm.js",
-      "require": "./dist/ssr/vite.js",
+      "require": "./dist/ssr/vite.cjs",
       "types": "./dist/ssr/vite.d.ts"
     },
     "./ssr/tanstack-start": {
       "import": "./dist/ssr/tanstack-start.esm.js",
-      "require": "./dist/ssr/tanstack-start.js",
+      "require": "./dist/ssr/tanstack-start.cjs",
       "types": "./dist/ssr/tanstack-start.d.ts"
     }
   },
@@ -73,6 +73,7 @@
   },
   "dependencies": {
     "@noble/ed25519": "^2.3.0",
+    "buffer": "^6.0.3",
     "jsonwebtoken": "^9.0.2",
     "pako": "^2.1.0",
     "zod": "^3.24.1"

@@ -32,6 +32,22 @@ export interface TokenBalanceInfo {
   amount: string;
   decimals?: number | null;
   uiAmountString?: string | null;
+  contextSlot: bigint;
+}
+
+export interface NativeBalanceInfo {
+  lamports: bigint;
+  contextSlot: bigint;
+}
+
+export interface ContextSlotOptions {
+  minContextSlot?: number | bigint;
+}
+
+export interface TokenBalanceInput {
+  owner: string;
+  mint: string;
+  tokenProgram?: string;
 }
 
 export interface RawAccountInfo {
@@ -45,12 +61,13 @@ export interface RawAccountInfo {
 export interface ChainClient {
   exists(address: string): Promise<boolean>;
   lamports(address: string): Promise<number>;
+  nativeBalance(address: string, options?: ContextSlotOptions): Promise<NativeBalanceInfo>;
   minimumBalanceForRentExemption(space: number): Promise<number>;
   clock(): Promise<ChainClock>;
   account(address: string): Promise<RawAccountInfo | null>;
   mint(address: string): Promise<MintAccountInfo | null>;
   tokenAccount(address: string): Promise<TokenAccountInfo | null>;
-  balance(input: { owner: string; mint: string; tokenProgram?: string }): Promise<TokenBalanceInfo>;
+  balance(input: TokenBalanceInput, options?: ContextSlotOptions): Promise<TokenBalanceInfo>;
 }
 
 type FetchLike = typeof fetch;
@@ -73,6 +90,42 @@ function decodeBase64(encoded: string): Uint8Array {
     return new Uint8Array(bufferCtor.from(encoded, 'base64'));
   }
   throw new Error('No base64 decoder available in this environment');
+}
+
+function decimalU64(value: string, field: string): bigint {
+  if (!/^\d+$/.test(value)) {
+    throw new TypeError(`${field} must be a decimal u64 string`);
+  }
+  const parsed = BigInt(value);
+  if (parsed > 18_446_744_073_709_551_615n) {
+    throw new RangeError(`${field} exceeds u64`);
+  }
+  return parsed;
+}
+
+function serializeContextSlot(value: number | bigint): string {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new RangeError('minContextSlot must be a non-negative safe integer or bigint');
+    }
+    return String(value);
+  }
+  if (value < 0n || value > 18_446_744_073_709_551_615n) {
+    throw new RangeError('minContextSlot must fit in u64');
+  }
+  return value.toString();
+}
+
+function withContextSlot<T extends object>(input: T, options?: ContextSlotOptions): T & {
+  minContextSlot?: string;
+} {
+  if (options?.minContextSlot === undefined) {
+    return input;
+  }
+  return {
+    ...input,
+    minContextSlot: serializeContextSlot(options.minContextSlot),
+  };
 }
 
 export function deriveHttpEndpoint(wsUrl: string): string {
@@ -103,6 +156,26 @@ export function createChainClient(httpBaseUrl: string, fetchImpl: FetchLike): Ch
       const response = await fetchImpl(joinUrl(httpBaseUrl, path));
       const body = await parseReadResponse<{ lamports: number }>(response, path);
       return body.lamports;
+    },
+
+    async nativeBalance(
+      address: string,
+      options?: ContextSlotOptions
+    ): Promise<NativeBalanceInfo> {
+      const path = '/chain/native-balance';
+      const response = await fetchImpl(joinUrl(httpBaseUrl, path), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(withContextSlot({ address }, options)),
+      });
+      const body = await parseReadResponse<{ lamports: string; contextSlot: string }>(
+        response,
+        path
+      );
+      return {
+        lamports: decimalU64(body.lamports, 'lamports'),
+        contextSlot: decimalU64(body.contextSlot, 'contextSlot'),
+      };
     },
 
     async minimumBalanceForRentExemption(space: number): Promise<number> {
@@ -151,14 +224,23 @@ export function createChainClient(httpBaseUrl: string, fetchImpl: FetchLike): Ch
       return parseReadResponse<TokenAccountInfo | null>(response, path);
     },
 
-    async balance(input: { owner: string; mint: string; tokenProgram?: string }): Promise<TokenBalanceInfo> {
+    async balance(
+      input: TokenBalanceInput,
+      options?: ContextSlotOptions
+    ): Promise<TokenBalanceInfo> {
       const path = '/chain/balances';
       const response = await fetchImpl(joinUrl(httpBaseUrl, path), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(input),
+        body: JSON.stringify(withContextSlot(input, options)),
       });
-      return parseReadResponse<TokenBalanceInfo>(response, path);
+      const body = await parseReadResponse<
+        Omit<TokenBalanceInfo, 'contextSlot'> & { contextSlot: string }
+      >(response, path);
+      return {
+        ...body,
+        contextSlot: decimalU64(body.contextSlot, 'contextSlot'),
+      };
     },
   };
 }

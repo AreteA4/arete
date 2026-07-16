@@ -8,6 +8,8 @@
  * (@solana/web3.js, @solana/kit, a raw Keypair signer for scripts, etc.).
  */
 
+import type { TransactionTransport } from '../transactions';
+
 /**
  * A single account reference within a built instruction.
  */
@@ -77,6 +79,38 @@ export interface SendResult {
 }
 
 /**
+ * Adapter-specific options for unsigned transaction inspection.
+ *
+ * Inspection must not sign or submit the transaction. Concrete adapters may
+ * accept additional simulation options through this passthrough object.
+ */
+export interface TransactionInspectionOptions {
+  [key: string]: unknown;
+}
+
+/**
+ * Unsigned transaction inspection returned by a capable wallet adapter.
+ */
+export interface TransactionInspectionResult {
+  /** Estimated transaction fee in lamports, when available. */
+  feeLamports?: number;
+  /** Program logs produced by simulation, when available. */
+  logs?: readonly string[];
+  /** Compute units consumed by simulation, when available. */
+  computeUnitsConsumed?: number;
+  /** RPC context slot for the inspection, when available. */
+  contextSlot?: number;
+  /** Raw simulation failure, if the inspected transaction would fail. */
+  error?: unknown;
+  /** Adapter-specific inspection fields. */
+  [key: string]: unknown;
+}
+
+export interface WalletExecutionContext {
+  transactionTransport?: TransactionTransport;
+}
+
+/**
  * Wallet adapter interface for signing and sending transactions.
  *
  * Implementations own blockhash fetching, message compilation (legacy or v0),
@@ -101,7 +135,23 @@ export interface WalletAdapter {
    * @param options - Adapter-specific send/confirmation options
    * @returns The transaction signature (and slot, if known)
    */
-  signAndSend(instructions: readonly BuiltInstruction[], options?: SendOptions): Promise<SendResult>;
+  signAndSend(
+    instructions: readonly BuiltInstruction[],
+    options?: SendOptions,
+    context?: WalletExecutionContext
+  ): Promise<SendResult>;
+
+  /**
+   * Inspect a transaction without signing, submitting, or prompting a wallet.
+   *
+   * This capability is optional because not every adapter has an RPC-backed
+   * unsigned simulation implementation.
+   */
+  inspectTransaction?(
+    instructions: readonly BuiltInstruction[],
+    options?: TransactionInspectionOptions,
+    context?: WalletExecutionContext
+  ): Promise<TransactionInspectionResult>;
 }
 
 /**

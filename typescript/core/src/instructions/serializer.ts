@@ -5,6 +5,7 @@
  * expected by Solana programs using Borsh serialization.
  */
 
+import { Buffer } from 'buffer';
 import { decodeBase58 } from './pda';
 
 /**

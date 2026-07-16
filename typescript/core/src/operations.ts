@@ -1,6 +1,23 @@
-import type { ErrorMetadata } from './instructions';
+import {
+  InstructionError,
+  TransactionExecutionError,
+  getTransactionFailureOutcome,
+  normalizeTransactionError,
+  parseInstructionError,
+  type ErrorMetadata,
+  type ProgramError,
+  type TransactionFailureOutcome,
+} from './instructions';
 import type { SignerRegistry } from './signer-registry';
-import type { BuiltInstruction, SendOptions, WalletAdapter } from './wallet/types';
+import type { TransactionTransport } from './transactions';
+import type {
+  BuiltInstruction,
+  SendOptions,
+  TransactionInspectionOptions,
+  TransactionInspectionResult,
+  WalletAdapter,
+  WalletExecutionContext,
+} from './wallet/types';
 
 export type OperationKind = 'instruction' | 'transaction' | 'flow';
 export type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
@@ -28,6 +45,21 @@ export interface PreparedOperationDescription {
       readonly data: readonly number[];
     }[];
   }[];
+}
+
+export interface OperationInspection {
+  /** JSON-safe description produced by {@link describePreparedOperation}. */
+  readonly description: PreparedOperationDescription;
+  /** Raw unsigned inspection returned by the adapter. */
+  readonly transaction: TransactionInspectionResult;
+  /** IDL-aware program error parsed from the inspection failure, if any. */
+  readonly programError: ProgramError | null;
+}
+
+export interface OperationInspectionOptions {
+  wallet?: WalletAdapter;
+  inspect?: TransactionInspectionOptions;
+  transactionTransport?: TransactionTransport;
 }
 
 export interface PreparedTransactionBody {
@@ -307,6 +339,7 @@ export interface SingleTransactionOperationReceipt<TArtifacts> {
   readonly artifacts: TArtifacts;
   readonly signatures: NonEmptyReadonlyArray<string>;
   readonly transaction: OperationTransactionReceipt;
+  readonly callbackErrors?: readonly OperationCallbackError[];
 }
 
 export interface FlowOperationReceipt<TArtifacts> {
@@ -315,6 +348,7 @@ export interface FlowOperationReceipt<TArtifacts> {
   readonly artifacts: TArtifacts;
   readonly signatures: NonEmptyReadonlyArray<string>;
   readonly transactions: NonEmptyReadonlyArray<OperationTransactionReceipt>;
+  readonly callbackErrors?: readonly OperationCallbackError[];
 }
 
 export type OperationReceiptFor<TPrepared extends PreparedOperation> =
@@ -338,11 +372,14 @@ export interface OperationExecutionSuccessEvent<
   readonly receipt: OperationTransactionReceipt;
 }
 
+export type OperationCallbackPhase = 'transaction-start' | 'transaction-success';
+
 export interface OperationExecutionOptions<
   TSigner = unknown,
   TPrepared extends PreparedOperation = PreparedOperation,
 > {
   wallet?: WalletAdapter;
+  transactionTransport?: TransactionTransport;
   send?: SendOptions;
   signers?: readonly TSigner[];
   signerRegistry?: SignerRegistry<TSigner>;
@@ -352,6 +389,10 @@ export interface OperationExecutionOptions<
   ) => void | Promise<void>;
   onTransactionSuccess?: (
     event: OperationExecutionSuccessEvent<TPrepared>
+  ) => void | Promise<void>;
+  /** Receives observer failures without changing the transaction outcome. */
+  onCallbackError?: (
+    error: OperationCallbackError<TPrepared>
   ) => void | Promise<void>;
 }
 
@@ -365,6 +406,7 @@ export interface OperationExecutionHost<TSigner = unknown> {
       send?: SendOptions;
       errors?: ErrorMetadata[];
       signers?: readonly TSigner[];
+      transactionTransport?: TransactionTransport;
     }
   ): Promise<{ signature: string; slot?: number }>;
 }
@@ -426,6 +468,37 @@ function validateTransactionSigners<
   }
 }
 
+export class OperationCallbackError<
+  TPrepared extends PreparedOperation = PreparedOperation,
+> extends Error {
+  readonly phase: OperationCallbackPhase;
+  readonly operation: TPrepared;
+  readonly transaction: PreparedTransactionBody;
+  readonly transactionIndex: number;
+  readonly receipt?: OperationTransactionReceipt;
+  readonly cause: unknown;
+
+  constructor(input: {
+    phase: OperationCallbackPhase;
+    operation: TPrepared;
+    transaction: PreparedTransactionBody;
+    transactionIndex: number;
+    receipt?: OperationTransactionReceipt;
+    cause: unknown;
+  }) {
+    super(
+      `Operation '${input.operation.name}' ${input.phase} callback failed for transaction ${input.transactionIndex + 1} (${input.transaction.name})`
+    );
+    this.name = 'OperationCallbackError';
+    this.phase = input.phase;
+    this.operation = input.operation;
+    this.transaction = input.transaction;
+    this.transactionIndex = input.transactionIndex;
+    this.receipt = input.receipt;
+    this.cause = input.cause;
+  }
+}
+
 export class OperationExecutionError<
   TPrepared extends PreparedOperation = PreparedOperation,
 > extends Error {
@@ -433,6 +506,10 @@ export class OperationExecutionError<
   readonly failedTransaction: PreparedTransactionBody;
   readonly failedTransactionIndex: number;
   readonly completedReceipts: readonly OperationTransactionReceipt[];
+  readonly callbackErrors: readonly OperationCallbackError<TPrepared>[];
+  readonly outcome: TransactionFailureOutcome;
+  readonly signature?: string;
+  readonly slot?: number;
   readonly cause: unknown;
 
   constructor(input: {
@@ -440,17 +517,64 @@ export class OperationExecutionError<
     failedTransaction: PreparedTransactionBody;
     failedTransactionIndex: number;
     completedReceipts: readonly OperationTransactionReceipt[];
+    callbackErrors?: readonly OperationCallbackError<TPrepared>[];
+    outcome?: TransactionFailureOutcome;
     cause: unknown;
   }) {
-    super(
-      `Operation '${input.operation.name}' failed at transaction ${input.failedTransactionIndex + 1} (${input.failedTransaction.name})`
-    );
+    const context = `Operation '${input.operation.name}' failed at transaction ${input.failedTransactionIndex + 1} (${input.failedTransaction.name})`;
+    const detail = input.cause instanceof Error
+      ? input.cause.message
+      : typeof input.cause === 'string' ? input.cause : '';
+    super(detail ? `${context}: ${detail}` : context);
     this.name = 'OperationExecutionError';
     this.operation = input.operation;
     this.failedTransaction = input.failedTransaction;
     this.failedTransactionIndex = input.failedTransactionIndex;
     this.completedReceipts = [...input.completedReceipts];
+    this.callbackErrors = [...(input.callbackErrors ?? [])];
+    this.outcome = getTransactionFailureOutcome(input.cause) ?? input.outcome ?? {
+      status: 'not-submitted',
+      phase: 'send',
+      cause: input.cause,
+    };
+    this.signature = 'signature' in this.outcome ? this.outcome.signature : undefined;
+    this.slot = 'slot' in this.outcome ? this.outcome.slot : undefined;
     this.cause = input.cause;
+  }
+}
+
+async function runOperationCallback<TPrepared extends PreparedOperation>(
+  input: {
+    phase: OperationCallbackPhase;
+    operation: TPrepared;
+    transaction: PreparedTransactionBody;
+    transactionIndex: number;
+    receipt?: OperationTransactionReceipt;
+    callback?: () => void | Promise<void>;
+  },
+  callbackErrors: OperationCallbackError<TPrepared>[],
+  onCallbackError?: (error: OperationCallbackError<TPrepared>) => void | Promise<void>
+): Promise<void> {
+  if (!input.callback) {
+    return;
+  }
+  try {
+    await input.callback();
+  } catch (cause) {
+    const error = new OperationCallbackError({
+      phase: input.phase,
+      operation: input.operation,
+      transaction: input.transaction,
+      transactionIndex: input.transactionIndex,
+      receipt: input.receipt,
+      cause,
+    });
+    callbackErrors.push(error);
+    try {
+      await onCallbackError?.(error);
+    } catch {
+      // The callback-error observer is also observational and must not alter execution.
+    }
   }
 }
 
@@ -463,6 +587,7 @@ export async function executePreparedOperation<
   options: OperationExecutionOptions<TSigner, TPrepared> = {}
 ): Promise<OperationReceiptFor<TPrepared>> {
   const receipts: OperationTransactionReceipt[] = [];
+  const callbackErrors: OperationCallbackError<TPrepared>[] = [];
   const signers = [
     ...new Set([
       ...(options.signerRegistry?.values() ?? []),
@@ -472,36 +597,73 @@ export async function executePreparedOperation<
   for (const [transactionIndex, transaction] of operation.plan.transactions.entries()) {
     try {
       validateTransactionSigners(transaction, host, options);
-      await options.onTransactionStart?.({ operation, transaction, transactionIndex });
-      const result = await host.transaction(transaction.instructions, {
-        wallet: options.wallet,
-        send: options.send,
-        errors: [...transaction.errors],
-        signers: signers.length > 0 ? signers : undefined,
-      });
-      const receipt: OperationTransactionReceipt = {
-        transactionIndex,
-        transactionName: transaction.name,
-        signature: result.signature,
-        slot: result.slot,
-      };
-      receipts.push(receipt);
-      await options.onTransactionSuccess?.({
-        operation,
-        transaction,
-        transactionIndex,
-        receipt,
-      });
     } catch (cause) {
       throw new OperationExecutionError({
         operation,
         failedTransaction: transaction,
         failedTransactionIndex: transactionIndex,
         completedReceipts: receipts,
+        callbackErrors,
+        outcome: {
+          status: 'not-submitted',
+          phase: 'build',
+          cause,
+        },
         cause,
       });
     }
+
+    const startEvent = { operation, transaction, transactionIndex };
+    await runOperationCallback({
+      phase: 'transaction-start',
+      ...startEvent,
+      callback: options.onTransactionStart
+        ? () => options.onTransactionStart!(startEvent)
+        : undefined,
+    }, callbackErrors, options.onCallbackError);
+
+    let result: { signature: string; slot?: number };
+    try {
+      result = await host.transaction(transaction.instructions, {
+        wallet: options.wallet,
+        send: options.send,
+        errors: [...transaction.errors],
+        signers: signers.length > 0 ? signers : undefined,
+        transactionTransport: options.transactionTransport,
+      });
+    } catch (cause) {
+      const normalized = normalizeTransactionError(cause, transaction.errors);
+      throw new OperationExecutionError({
+        operation,
+        failedTransaction: transaction,
+        failedTransactionIndex: transactionIndex,
+        completedReceipts: receipts,
+        callbackErrors,
+        outcome: getTransactionFailureOutcome(normalized) ?? undefined,
+        cause: normalized,
+      });
+    }
+
+    const receipt: OperationTransactionReceipt = {
+      transactionIndex,
+      transactionName: transaction.name,
+      signature: result.signature,
+      slot: result.slot,
+    };
+    receipts.push(receipt);
+    const successEvent = { operation, transaction, transactionIndex, receipt };
+    await runOperationCallback({
+      phase: 'transaction-success',
+      ...successEvent,
+      callback: options.onTransactionSuccess
+        ? () => options.onTransactionSuccess!(successEvent)
+        : undefined,
+    }, callbackErrors, options.onCallbackError);
   }
+
+  const callbackErrorResult = callbackErrors.length > 0
+    ? { callbackErrors: [...callbackErrors] }
+    : {};
 
   if (operation.kind === 'flow') {
     return {
@@ -513,6 +675,7 @@ export async function executePreparedOperation<
         `Operation '${operation.name}' signatures`
       ),
       transactions: nonEmpty(receipts, `Operation '${operation.name}' receipts`),
+      ...callbackErrorResult,
     } as OperationReceiptFor<TPrepared>;
   }
   return {
@@ -521,7 +684,27 @@ export async function executePreparedOperation<
     artifacts: operation.artifacts,
     signatures: [receipts[0]!.signature],
     transaction: receipts[0]!,
+    ...callbackErrorResult,
   } as unknown as OperationReceiptFor<TPrepared>;
+}
+
+/**
+ * Recursively unwrap operation context while retaining structured transaction outcomes.
+ */
+export function unwrapOperationExecutionError(
+  error: unknown
+): InstructionError | TransactionFailureOutcome | unknown {
+  if (error instanceof InstructionError) {
+    return error;
+  }
+  if (error instanceof TransactionExecutionError) {
+    return error.outcome;
+  }
+  if (error instanceof OperationExecutionError) {
+    const underlying = unwrapOperationExecutionError(error.cause);
+    return underlying instanceof InstructionError ? underlying : error.outcome;
+  }
+  return error;
 }
 
 function convertToJsonValue(
@@ -617,6 +800,40 @@ export function describePreparedOperation(
         data: Array.from(instruction.data),
       })),
     })),
+  };
+}
+
+/**
+ * Inspect one prepared instruction/transaction without signing or submission.
+ * Multi-transaction flows are intentionally unsupported.
+ */
+export async function inspectPreparedOperation(
+  wallet: WalletAdapter | undefined,
+  operation: PreparedOperation,
+  options?: TransactionInspectionOptions,
+  context?: WalletExecutionContext
+): Promise<OperationInspection> {
+  if (operation.plan.transactions.length !== 1) {
+    throw new Error(
+      `Cannot inspect operation '${operation.name}': multi-transaction operation inspection is not supported`
+    );
+  }
+  if (operation.kind === 'flow') {
+    throw new Error(`Cannot inspect flow '${operation.name}': flow inspection is not supported`);
+  }
+  if (!wallet?.inspectTransaction) {
+    throw new Error('Wallet adapter does not support unsigned transaction inspection');
+  }
+
+  const transaction = operation.plan.transactions[0]!;
+  const description = describePreparedOperation(operation);
+  const inspection = context
+    ? await wallet.inspectTransaction(transaction.instructions, options, context)
+    : await wallet.inspectTransaction(transaction.instructions, options);
+  return {
+    description,
+    transaction: inspection,
+    programError: parseInstructionError(inspection.error ?? inspection, transaction.errors),
   };
 }
 
