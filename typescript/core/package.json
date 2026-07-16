@@ -79,6 +79,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-typescript": "^11.0.0",
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.0.0",
