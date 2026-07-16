@@ -1212,10 +1212,19 @@ fn version_satisfies_range(current: &str, range: &str) -> bool {
     let Ok(current) = Version::parse(current) else {
         return false;
     };
-    let Ok(range) = VersionReq::parse(range) else {
+    let requirements = range.split("||").map(str::trim).collect::<Vec<_>>();
+    if requirements.is_empty()
+        || requirements
+            .iter()
+            .any(|requirement| requirement.is_empty())
+    {
         return false;
-    };
-    range.matches(&current)
+    }
+    requirements.iter().any(|requirement| {
+        VersionReq::parse(requirement)
+            .map(|range| range.matches(&current))
+            .unwrap_or(false)
+    })
 }
 
 fn discover_usearete_sdk_version(start_dir: &Path) -> Option<String> {
@@ -2592,6 +2601,10 @@ mod tests {
         assert!(version_satisfies_range("0.1.5", "^0.1.5"));
         assert!(version_satisfies_range("0.1.8", ">=0.1.5, <0.2.0"));
         assert!(!version_satisfies_range("0.2.0", ">=0.1.5, <0.2.0"));
+        assert!(version_satisfies_range("0.2.0", "^0.2.0 || ^0.3.0"));
+        assert!(version_satisfies_range("0.3.4", "^0.2.0 || ^0.3.0"));
+        assert!(!version_satisfies_range("0.4.0", "^0.2.0 || ^0.3.0"));
+        assert!(!version_satisfies_range("0.2.0", "^0.2.0 ||"));
     }
 
     #[test]
