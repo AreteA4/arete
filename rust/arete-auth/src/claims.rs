@@ -34,6 +34,24 @@ pub struct Limits {
     /// Maximum account addresses accepted in one HTTP batch read
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_http_batch_addresses: Option<u32>,
+    /// Maximum transaction inspection requests per minute
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_transaction_inspect_requests_per_minute: Option<u32>,
+    /// Maximum transaction submissions per minute
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_transaction_send_requests_per_minute: Option<u32>,
+    /// Maximum signature status requests per minute
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_transaction_status_requests_per_minute: Option<u32>,
+    /// Maximum encoded HTTP request body size for transaction routes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_transaction_request_bytes: Option<u32>,
+    /// Maximum decoded Solana message or transaction size
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_transaction_bytes: Option<u32>,
+    /// Maximum concurrent transaction operations for this subject
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_transaction_concurrency: Option<u32>,
 }
 
 /// Session token claims
@@ -245,6 +263,11 @@ pub struct AuthContext {
 }
 
 impl AuthContext {
+    /// Test an exact whitespace-delimited scope. Scopes never imply one another.
+    pub fn has_scope(&self, required: &str) -> bool {
+        self.scope.split_whitespace().any(|scope| scope == required)
+    }
+
     /// Create AuthContext from verified claims
     pub fn from_claims(claims: SessionClaims) -> Self {
         Self {
@@ -261,5 +284,53 @@ impl AuthContext {
             client_ip: claims.client_ip,
             jti: claims.jti,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scopes_are_exact_and_independent() {
+        let context = AuthContext::from_claims(
+            SessionClaims::builder("issuer", "subject", "audience")
+                .with_scope("read transaction:inspect transaction:send-extra")
+                .build(),
+        );
+
+        assert!(context.has_scope("read"));
+        assert!(context.has_scope("transaction:inspect"));
+        assert!(!context.has_scope("transaction:send"));
+        assert!(!context.has_scope("transaction"));
+    }
+
+    #[test]
+    fn old_limits_claims_remain_deserializable() {
+        let limits: Limits = serde_json::from_value(serde_json::json!({
+            "max_connections": 2
+        }))
+        .unwrap();
+
+        assert_eq!(limits.max_connections, Some(2));
+        assert_eq!(limits.max_transaction_bytes, None);
+    }
+
+    #[test]
+    fn transaction_limits_round_trip_additively() {
+        let limits = Limits {
+            max_transaction_inspect_requests_per_minute: Some(120),
+            max_transaction_send_requests_per_minute: Some(12),
+            max_transaction_status_requests_per_minute: Some(240),
+            max_transaction_request_bytes: Some(4096),
+            max_transaction_bytes: Some(1232),
+            max_transaction_concurrency: Some(4),
+            ..Limits::default()
+        };
+        let value = serde_json::to_value(&limits).unwrap();
+        let decoded: Limits = serde_json::from_value(value).unwrap();
+
+        assert_eq!(decoded.max_transaction_bytes, Some(1232));
+        assert_eq!(decoded.max_transaction_concurrency, Some(4));
     }
 }
