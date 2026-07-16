@@ -1,10 +1,37 @@
 export { AreteProvider, useAreteContext, useConnectionState, useView, useEntity } from './provider';
 export { useArete } from './stack';
+export type { UseAreteResult } from './stack';
 export { ZustandAdapter } from './zustand-adapter';
 export type { AreteStore } from './zustand-adapter';
 
-export { useInstructionMutation } from './hooks';
-export type { UseMutationOptions, UseMutationResult, MutationStatus } from './hooks';
+export { useAsyncRead, useInstructionMutation } from './hooks';
+export type {
+  AsyncReadContext,
+  AsyncReadKey,
+  MutationExecutionObserver,
+  MutationExecutor,
+  MutationLifecycleEvent,
+  MutationPhase,
+  MutationReconciliationContext,
+  MutationStatus,
+  UseAsyncReadOptions,
+  UseAsyncReadResult,
+  UseMutationOptions,
+  UseMutationResult,
+} from './hooks';
+export { useNativeBalance, useTokenBalance } from './chain-hooks';
+export type { BalanceHookOptions } from './chain-hooks';
+export {
+  DEFAULT_RECONCILIATION_TIMEOUT_MS,
+  reconcileProcessedSlot,
+  useReconcileProcessedSlot,
+} from './reconciliation';
+export type {
+  ProcessedSlotClient,
+  ProcessedSlotReconciliationOptions,
+  ProcessedSlotReconciliationResult,
+  ReconciliationRefresh,
+} from './reconciliation';
 
 export {
   ConnectionManager,
@@ -30,10 +57,16 @@ export {
   parseInstructionError,
   formatProgramError,
   InstructionError,
+  OperationCallbackError,
+  OperationExecutionError,
+  ProcessedSlotTimeoutError,
+  TransactionExecutionError,
   buildInstruction,
   executeInstruction,
   createInstructionHandler,
   createInstructionExecutor,
+  getTransactionFailureOutcome,
+  unwrapOperationExecutionError,
 } from '@usearete/sdk';
 
 export type {
@@ -93,6 +126,14 @@ export type {
   BuiltInstruction,
   BuiltAccountMeta,
   TransactionOptions,
+  TransactionFailureOutcome,
+  TransactionOutcome,
+  NativeBalanceInfo,
+  TokenBalanceInfo,
+  TokenBalanceInput,
+  ContextSlotOptions,
+  WaitForProcessedSlotOptions,
+  OperationTransactionReceipt,
   AuthConfig,
 } from '@usearete/sdk';
 

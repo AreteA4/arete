@@ -42,6 +42,13 @@ export type {
   TypedAccountReader,
   TypedQueryExecutor,
   TransactionOptions,
+  TransactionFailureOutcome,
+  TransactionOutcome,
+  NativeBalanceInfo,
+  TokenBalanceInfo,
+  TokenBalanceInput,
+  ContextSlotOptions,
+  WaitForProcessedSlotOptions,
   AuthConfig,
 } from '@usearete/sdk';
 

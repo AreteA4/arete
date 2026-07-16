@@ -1,8 +1,52 @@
 import { useEffect, useState, useCallback, useSyncExternalStore, useRef } from 'react';
 import { ViewDef, ViewHookOptions, ViewHookResult, ListParams, ListParamsBase, Schema } from './types';
-import type { ConnectedArete, StackDefinition } from '@usearete/sdk';
+import type {
+  ConnectedArete,
+  Frame,
+  SnapshotFrame,
+  StackDefinition,
+  Subscription,
+} from '@usearete/sdk';
 
 type AnyClient = ConnectedArete<StackDefinition>;
+
+function isSnapshotFrame(frame: Frame): frame is SnapshotFrame {
+  return frame.op === 'snapshot' && Array.isArray(frame.data);
+}
+
+function canonicalRecordJson(record: Record<string, string> | undefined): string | undefined {
+  if (!record) return undefined;
+  return JSON.stringify(
+    Object.fromEntries(Object.entries(record).sort(([left], [right]) => left.localeCompare(right)))
+  );
+}
+
+function isEmptySnapshotForSubscription(
+  frame: Frame,
+  subscription: Subscription
+): boolean {
+  if (
+    !isSnapshotFrame(frame)
+    || frame.entity !== subscription.view
+    || frame.complete === false
+  ) {
+    return false;
+  }
+
+  return frame.data.length === 0 && frame.key === subscription.key;
+}
+
+function onEmptySnapshot(
+  client: AnyClient,
+  subscription: Subscription,
+  callback: () => void
+): () => void {
+  return client.onFrame((frame) => {
+    if (isEmptySnapshotForSubscription(frame, subscription)) {
+      callback();
+    }
+  });
+}
 
 function shallowArrayEqual<T>(a: T[] | undefined, b: T[] | undefined): boolean {
   if (a === b) return true;
@@ -66,20 +110,32 @@ export function useStateView<T>(
   useEffect(() => {
     if (!enabled || !clientRef.current) return undefined;
 
+    const activeClient = clientRef.current;
+    const subscription: Subscription = {
+      view: viewDef.view,
+      key: keyString,
+      withSnapshot,
+      after,
+      snapshotLimit
+    };
+    let unsubscribeFrame = () => {};
     try {
-      const registry = clientRef.current.getSubscriptionRegistry();
-      const unsubscribe = registry.subscribe({ 
-        view: viewDef.view, 
-        key: keyString,
-        withSnapshot,
-        after,
-        snapshotLimit
-      });
+      const registry = activeClient.getSubscriptionRegistry();
+      if (withSnapshot !== false) {
+        unsubscribeFrame = onEmptySnapshot(activeClient, subscription, () => setIsLoading(false));
+      }
+      const unsubscribe = registry.subscribe(subscription);
+      setError(undefined);
       if (withSnapshot !== false) {
         setIsLoading(true);
       }
 
       return () => {
+        try {
+          unsubscribeFrame();
+        } catch (err) {
+          console.error('[Arete] Error removing view frame listener:', err);
+        }
         try {
           unsubscribe();
         } catch (err) {
@@ -87,6 +143,7 @@ export function useStateView<T>(
         }
       };
     } catch (err) {
+      unsubscribeFrame();
       setError(err instanceof Error ? err : new Error('Subscription failed'));
       setIsLoading(false);
       return undefined;
@@ -98,25 +155,18 @@ export function useStateView<T>(
 
     try {
       const registry = clientRef.current.getSubscriptionRegistry();
-      const unsubscribe = registry.subscribe({ 
+      registry.refresh({
         view: viewDef.view, 
         key: keyString,
         withSnapshot,
         after,
         snapshotLimit
       });
+      setError(undefined);
       const shouldLoad = withSnapshot ?? true;
       if (shouldLoad) {
         setIsLoading(true);
       }
-
-      setTimeout(() => {
-        try {
-          unsubscribe();
-        } catch (err) {
-          console.error('[Arete] Error during refresh unsubscribe:', err);
-        }
-      }, 0);
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Refresh failed'));
       setIsLoading(false);
@@ -131,15 +181,16 @@ export function useStateView<T>(
   const getSnapshot = useCallback(() => {
     if (!clientRef.current) return cachedSnapshotRef.current;
     const entity = keyString 
-      ? clientRef.current.store.get(viewDef.view, keyString)
-      : clientRef.current.store.getAll(viewDef.view)[0];
+      ? clientRef.current.store.getSync(viewDef.view, keyString)
+      : clientRef.current.store.getAllSync(viewDef.view)?.[0];
+    const availableEntity = entity ?? undefined;
     
-    const validated = entity && schema
+    const validated = availableEntity && schema
       ? (() => {
-          const parsed = schema.safeParse(entity);
+          const parsed = schema.safeParse(availableEntity);
           return parsed.success ? parsed.data : undefined;
         })()
-      : entity;
+      : availableEntity;
     
     if (validated !== cachedSnapshotRef.current) {
       cachedSnapshotRef.current = validated as T | undefined;
@@ -180,7 +231,7 @@ export function useListView<T>(
   const take = params?.take;
   const skip = params?.skip;
   const whereJson = params?.where ? JSON.stringify(params.where) : undefined;
-  const filtersJson = params?.filters ? JSON.stringify(params.filters) : undefined;
+  const filtersJson = canonicalRecordJson(params?.filters);
   const limit = params?.limit;
   const schema = params?.schema as Schema<T> | undefined;
   const withSnapshot = params?.withSnapshot;
@@ -190,23 +241,35 @@ export function useListView<T>(
   useEffect(() => {
     if (!enabled || !clientRef.current) return undefined;
 
+    const activeClient = clientRef.current;
+    const subscription: Subscription = {
+      view: viewDef.view,
+      key,
+      filters: params?.filters,
+      take,
+      skip,
+      withSnapshot,
+      after,
+      snapshotLimit
+    };
+    let unsubscribeFrame = () => {};
     try {
-      const registry = clientRef.current.getSubscriptionRegistry();
-      const unsubscribe = registry.subscribe({ 
-        view: viewDef.view, 
-        key, 
-        filters: params?.filters,
-        take,
-        skip,
-        withSnapshot,
-        after,
-        snapshotLimit
-      });
+      const registry = activeClient.getSubscriptionRegistry();
+      if (withSnapshot !== false) {
+        unsubscribeFrame = onEmptySnapshot(activeClient, subscription, () => setIsLoading(false));
+      }
+      const unsubscribe = registry.subscribe(subscription);
+      setError(undefined);
       if (withSnapshot !== false) {
         setIsLoading(true);
       }
 
       return () => {
+        try {
+          unsubscribeFrame();
+        } catch (err) {
+          console.error('[Arete] Error removing list view frame listener:', err);
+        }
         try {
           unsubscribe();
         } catch (err) {
@@ -214,6 +277,7 @@ export function useListView<T>(
         }
       };
     } catch (err) {
+      unsubscribeFrame();
       setError(err instanceof Error ? err : new Error('Subscription failed'));
       setIsLoading(false);
       return undefined;
@@ -225,7 +289,7 @@ export function useListView<T>(
 
     try {
       const registry = clientRef.current.getSubscriptionRegistry();
-      const unsubscribe = registry.subscribe({ 
+      registry.refresh({
         view: viewDef.view, 
         key, 
         filters: params?.filters,
@@ -235,18 +299,11 @@ export function useListView<T>(
         after,
         snapshotLimit
       });
+      setError(undefined);
       const shouldLoad = withSnapshot ?? true;
       if (shouldLoad) {
         setIsLoading(true);
       }
-
-      setTimeout(() => {
-        try {
-          unsubscribe();
-        } catch (err) {
-          console.error('[Arete] Error during list refresh unsubscribe:', err);
-        }
-      }, 0);
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Refresh failed'));
       setIsLoading(false);

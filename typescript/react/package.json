@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "type": "module",
   "description": "React SDK for the Arete Solana developer platform",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "module": "dist/index.esm.js",
   "types": "dist/index.d.ts",
   "repository": {
@@ -19,6 +19,7 @@
     "build": "rollup -c",
     "dev": "rollup -c -w",
     "test": "jest",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint src/**/*.ts",
     "prepublishOnly": "npm run build"
   },
@@ -45,6 +46,7 @@
     "@usearete/sdk": "^0.2.0"
   },
   "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.9",
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-typescript": "^11.0.0",
     "@types/jest": "^29.0.0",

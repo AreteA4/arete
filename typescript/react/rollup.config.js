@@ -1,5 +1,6 @@
 import typescript from '@rollup/plugin-typescript';
 import resolve from '@rollup/plugin-node-resolve';
+import commonjs from '@rollup/plugin-commonjs';
 import dts from 'rollup-plugin-dts';
 
 export default [
@@ -7,7 +8,7 @@ export default [
     input: 'src/index.ts',
     output: [
       {
-        file: 'dist/index.js',
+        file: 'dist/index.cjs',
         format: 'cjs',
         sourcemap: true,
       },
@@ -17,9 +18,10 @@ export default [
         sourcemap: true,
       },
     ],
-    external: ['react', 'zustand', 'zustand/middleware'],
+    external: ['@usearete/sdk', 'react', 'zustand', 'zustand/middleware'],
     plugins: [
-      resolve(),
+      resolve({ preferBuiltins: false }),
+      commonjs(),
       typescript({
         tsconfig: './tsconfig.json',
         declaration: false,
