@@ -160,6 +160,8 @@ docs/.astro
 
 # Examples - ignore lock files since they use local file: links
 examples/*/package-lock.json
+!examples/ore-react/package-lock.json
+!examples/ore-typescript/package-lock.json
 examples/pumpfun-server/
 .claude
 # Agent dirs
