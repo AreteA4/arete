@@ -13,6 +13,8 @@ pub use crate::http_server::HttpServerConfig;
 pub struct TransactionConfig {
     pub enabled: bool,
     pub rpc_url: Option<String>,
+    /// Development-only: allow relay requests when no auth plugin is configured.
+    pub allow_unauthenticated: bool,
     pub max_body_bytes: usize,
     pub max_transaction_bytes: usize,
     pub inspect_timeout: Duration,
@@ -35,6 +37,7 @@ impl Default for TransactionConfig {
         Self {
             enabled: false,
             rpc_url: None,
+            allow_unauthenticated: false,
             max_body_bytes: 4 * 1024,
             max_transaction_bytes: 1232,
             inspect_timeout: Duration::from_secs(10),
@@ -61,6 +64,8 @@ impl TransactionConfig {
         config.enabled = env_bool("ARETE_TRANSACTIONS_ENABLED")?.unwrap_or(false);
         config.rpc_url =
             first_nonempty(&["ARETE_TRANSACTION_RPC_URL", "SOLANA_RPC_URL", "RPC_URL"]);
+        config.allow_unauthenticated =
+            env_bool("ARETE_TRANSACTIONS_ALLOW_UNAUTHENTICATED")?.unwrap_or(false);
         config.max_body_bytes =
             env_parse("ARETE_TRANSACTION_MAX_BODY_BYTES")?.unwrap_or(config.max_body_bytes);
         config.max_transaction_bytes =

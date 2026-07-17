@@ -352,23 +352,44 @@ pub(crate) async fn handle(
         .response(&request_id);
     }
 
-    if let Some(context) = &auth {
-        if !context.has_scope(operation.scope()) {
-            #[cfg(feature = "otel")]
-            if let Some(metrics) = &state.metrics {
-                metrics.record_transaction_denial("scope");
+    match &auth {
+        Some(context) => {
+            if !context.has_scope(operation.scope()) {
+                #[cfg(feature = "otel")]
+                if let Some(metrics) = &state.metrics {
+                    metrics.record_transaction_denial("scope");
+                }
+                return TxError {
+                    status: StatusCode::FORBIDDEN,
+                    code: "insufficient_scope",
+                    message: format!("Required scope: {}", operation.scope()),
+                    retryable: false,
+                    submission_state: (operation == Operation::Send).then_some("not_submitted"),
+                    signature: None,
+                    details: None,
+                    upstream_attempted: false,
+                }
+                .response(&request_id);
             }
-            return TxError {
-                status: StatusCode::FORBIDDEN,
-                code: "insufficient_scope",
-                message: format!("Required scope: {}", operation.scope()),
-                retryable: false,
-                submission_state: (operation == Operation::Send).then_some("not_submitted"),
-                signature: None,
-                details: None,
-                upstream_attempted: false,
+        }
+        None => {
+            if !state.config.allow_unauthenticated {
+                #[cfg(feature = "otel")]
+                if let Some(metrics) = &state.metrics {
+                    metrics.record_transaction_denial("auth");
+                }
+                return TxError {
+                    status: StatusCode::UNAUTHORIZED,
+                    code: "authentication_required",
+                    message: "Transaction relay requires an auth plugin; set ARETE_TRANSACTIONS_ALLOW_UNAUTHENTICATED=true for development only".into(),
+                    retryable: false,
+                    submission_state: (operation == Operation::Send).then_some("not_submitted"),
+                    signature: None,
+                    details: None,
+                    upstream_attempted: false,
+                }
+                .response(&request_id);
             }
-            .response(&request_id);
         }
     }
 
@@ -1132,7 +1153,7 @@ fn trusted_client_ip(
     headers
         .get("x-forwarded-for")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
+        .and_then(|value| value.rsplit(',').next())
         .and_then(|value| value.trim().parse().ok())
         .unwrap_or_else(|| remote_addr.ip())
 }
@@ -1200,6 +1221,28 @@ mod tests {
             ..TransactionConfig::default()
         };
         TransactionState::new(config).unwrap()
+    }
+
+    #[test]
+    fn trusted_client_ip_uses_proxy_appended_address() {
+        let config = TransactionConfig {
+            trusted_proxy_cidrs: vec!["10.0.0.0/8".parse().unwrap()],
+            ..TransactionConfig::default()
+        };
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4, 5.6.7.8".parse().unwrap());
+
+        let proxy: SocketAddr = "10.1.2.3:9000".parse().unwrap();
+        assert_eq!(
+            trusted_client_ip(proxy, &headers, &config),
+            "5.6.7.8".parse::<IpAddr>().unwrap()
+        );
+
+        let direct: SocketAddr = "192.168.1.1:9000".parse().unwrap();
+        assert_eq!(
+            trusted_client_ip(direct, &headers, &config),
+            "192.168.1.1".parse::<IpAddr>().unwrap()
+        );
     }
 
     #[test]
