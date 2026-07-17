@@ -24,6 +24,7 @@ export default defineConfig({
             "agent-skills/setup-tools",
             "using-stacks/quickstart",
             "using-stacks/connect",
+            "using-stacks/transactions",
             "agent-skills/overview",
             "agent-skills/prompts",
             "agent-skills/tutorial-ore-dashboard",

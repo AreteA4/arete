@@ -45,6 +45,14 @@ pub struct Metrics {
     pub ws_connection_duration: Histogram<f64>,
     pub ws_subscriptions_active: UpDownCounter<i64>,
 
+    // Transaction HTTP metrics. Labels are restricted to fixed operations/outcomes.
+    pub transaction_requests_total: Counter<u64>,
+    pub transaction_request_latency: Histogram<f64>,
+    pub transaction_request_bytes: Histogram<u64>,
+    pub transaction_upstream_total: Counter<u64>,
+    pub transaction_inflight: UpDownCounter<i64>,
+    pub transaction_denials_total: Counter<u64>,
+
     // Projector metrics
     pub projector_mutations_processed: Counter<u64>,
     pub projector_frames_published: Counter<u64>,
@@ -132,6 +140,31 @@ impl Metrics {
         let ws_subscriptions_active = meter
             .i64_up_down_counter("arete.ws.subscriptions.active")
             .with_description("Number of active subscriptions by view")
+            .init();
+
+        let transaction_requests_total = meter
+            .u64_counter("arete.transaction.requests.total")
+            .with_description("Transaction HTTP requests by operation and result")
+            .init();
+        let transaction_request_latency = meter
+            .f64_histogram("arete.transaction.request.duration")
+            .with_description("Transaction HTTP request duration in milliseconds")
+            .init();
+        let transaction_request_bytes = meter
+            .u64_histogram("arete.transaction.request.bytes")
+            .with_description("Transaction HTTP request body size")
+            .init();
+        let transaction_upstream_total = meter
+            .u64_counter("arete.transaction.upstream.total")
+            .with_description("Transaction RPC calls by operation and outcome")
+            .init();
+        let transaction_inflight = meter
+            .i64_up_down_counter("arete.transaction.inflight")
+            .with_description("Transaction operations currently admitted")
+            .init();
+        let transaction_denials_total = meter
+            .u64_counter("arete.transaction.denials.total")
+            .with_description("Transaction requests denied by reason")
             .init();
 
         // Projector metrics
@@ -338,6 +371,12 @@ impl Metrics {
             ws_messages_sent,
             ws_connection_duration,
             ws_subscriptions_active,
+            transaction_requests_total,
+            transaction_request_latency,
+            transaction_request_bytes,
+            transaction_upstream_total,
+            transaction_inflight,
+            transaction_denials_total,
             projector_mutations_processed,
             projector_frames_published,
             projector_processing_latency,
@@ -380,6 +419,42 @@ impl Metrics {
     }
 
     // ==================== WebSocket Helpers ====================
+
+    pub fn record_transaction_request(
+        &self,
+        operation: &'static str,
+        result: &'static str,
+        latency_ms: f64,
+        bytes: u64,
+    ) {
+        let attrs = &[
+            KeyValue::new("operation", operation),
+            KeyValue::new("result", result),
+        ];
+        self.transaction_requests_total.add(1, attrs);
+        self.transaction_request_latency.record(latency_ms, attrs);
+        self.transaction_request_bytes.record(bytes, attrs);
+    }
+
+    pub fn record_transaction_upstream(&self, operation: &'static str, outcome: &'static str) {
+        self.transaction_upstream_total.add(
+            1,
+            &[
+                KeyValue::new("operation", operation),
+                KeyValue::new("outcome", outcome),
+            ],
+        );
+    }
+
+    pub fn record_transaction_inflight(&self, delta: i64, operation: &'static str) {
+        self.transaction_inflight
+            .add(delta, &[KeyValue::new("operation", operation)]);
+    }
+
+    pub fn record_transaction_denial(&self, reason: &'static str) {
+        self.transaction_denials_total
+            .add(1, &[KeyValue::new("reason", reason)]);
+    }
 
     /// Record a new WebSocket connection
     pub fn record_ws_connection(&self) {

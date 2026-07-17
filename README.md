@@ -18,6 +18,8 @@ Real-time streaming data pipelines for Solana - transform on-chain events into t
 | arete-idl | Rust | crates.io | IDL parsing and type system |
 | @usearete/sdk | TypeScript | npm | Pure TypeScript SDK (framework-agnostic) |
 | @usearete/react | TypeScript | npm | React SDK with hooks |
+| @usearete/adapter-kit | TypeScript | npm | Wallet adapter for `@solana/kit` |
+| @usearete/adapter-web3js | TypeScript | npm | Wallet adapter for `@solana/web3.js` |
 | arete-sdk | Python | PyPI | Python client SDK *(work in progress - not yet published)* |
 
 ## Quick Start
@@ -58,6 +60,7 @@ pip install arete-sdk
 - `cli/`: CLI tool for SDK generation
 - `typescript/core/`: Pure TypeScript SDK
 - `typescript/react/`: React SDK with hooks
+- `typescript/adapters/`: Wallet adapters for `@solana/kit` and `@solana/web3.js`
 - `python/arete-sdk/`: Python client SDK
 - `stacks/`: Stack implementations and local SDK generation config
 - `packages/`: Additional packages
@@ -157,7 +160,8 @@ arete/
 │   └── arete-server/   # WebSocket server
 ├── typescript/
 │   ├── core/            # Pure TypeScript SDK (@usearete/sdk)
-│   └── react/           # React SDK (@usearete/react)
+│   ├── react/           # React SDK (@usearete/react)
+│   └── adapters/        # Solana wallet adapters
 ├── python/arete-sdk/   # Python client SDK
 ├── stacks/              # Stack implementations and SDKs
 ├── packages/            # Additional packages

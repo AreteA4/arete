@@ -4,6 +4,7 @@ import { useAreteContext } from './provider';
 import { buildProgramHookInterfaces, type BuildProgramInterface } from './program-hooks';
 import { createStateViewHook, createListViewHook } from './view-hooks';
 import { useInstructionMutation } from './hooks';
+import { createClientCacheKey } from './client-key';
 import type {
   ConnectionState,
   ClientLookupOptions,
@@ -27,6 +28,7 @@ import type {
   QueriesInterface,
   StackQueryDefinition,
   StackDefinition as BaseStackDefinition,
+  StackConnectedExtensions,
   StackWithAttachedPrograms,
 } from '@usearete/sdk';
 
@@ -46,6 +48,12 @@ type StackPrograms<TStack> = TStack extends {
 }
   ? TPrograms
   : undefined;
+type ConnectedStack<
+  TStack extends StackDefinition,
+  TPrograms extends ProgramMap | undefined,
+> = ConnectedArete<ResolvedStack<TStack, TPrograms>>;
+type ConnectedField<TClient, TKey extends PropertyKey> =
+  TKey extends keyof TClient ? TClient[TKey] : undefined;
 
 type ViewHookForDef<TDef> = TDef extends ViewDef<infer T, 'state'>
   ? {
@@ -84,16 +92,21 @@ type BuildViewInterface<TViews extends Record<string, ViewGroup>> = {
   };
 };
 
-type StackClient<
+export type UseAreteResult<
   TStack extends StackDefinition,
   TPrograms extends ProgramMap | undefined,
 > = {
   views: BuildViewInterface<TStack['views']>;
   queries: QueriesInterface<StackQueries<ResolvedStack<TStack, TPrograms>>>;
-  programs: BuildProgramInterface<StackPrograms<ResolvedStack<TStack, TPrograms>>, ConnectedArete<ResolvedStack<TStack, TPrograms>>>;
-  chain: ChainClient;
-  zustandStore: UseBoundStore<StoreApi<AreteStore>>;
-  client: ConnectedArete<ResolvedStack<TStack, TPrograms>>;
+  programs: BuildProgramInterface<StackPrograms<ResolvedStack<TStack, TPrograms>>, ConnectedStack<TStack, TPrograms>>;
+  chain: ChainClient | null;
+  zustandStore: UseBoundStore<StoreApi<AreteStore>> | null;
+  client: ConnectedStack<TStack, TPrograms> | null;
+  read: ConnectedField<StackConnectedExtensions<ResolvedStack<TStack, TPrograms>>, 'read'> | null;
+  addresses: ConnectedField<StackConnectedExtensions<ResolvedStack<TStack, TPrograms>>, 'addresses'>;
+  constants: ConnectedField<StackConnectedExtensions<ResolvedStack<TStack, TPrograms>>, 'constants'>;
+  defaults: ConnectedField<StackConnectedExtensions<ResolvedStack<TStack, TPrograms>>, 'defaults'>;
+  math: ConnectedField<StackConnectedExtensions<ResolvedStack<TStack, TPrograms>>, 'math'>;
   connectionState: ConnectionState;
   isConnected: boolean;
   isLoading: boolean;
@@ -106,7 +119,7 @@ export function useArete<
 >(
   stack: TStack,
   options?: UseAreteOptions<TPrograms>
-): StackClient<TStack, TPrograms> {
+): UseAreteResult<TStack, TPrograms> {
   const { getOrCreateClient, getClient } = useAreteContext();
   const url = options?.url;
   const httpUrl = options?.httpUrl;
@@ -116,36 +129,57 @@ export function useArete<
     () => ({ url, httpUrl, transport, programs: attachedPrograms }) as ClientLookupOptions<TPrograms>,
     [url, httpUrl, transport, attachedPrograms]
   );
-  const [client, setClient] = useState<ConnectedArete<ResolvedStack<TStack, TPrograms>> | null>(
-    getClient(stack, lookupOptions) as ConnectedArete<ResolvedStack<TStack, TPrograms>> | null
-  );
-  const [isLoading, setIsLoading] = useState(!client);
+  const lookupKey = createClientCacheKey(stack, lookupOptions);
+  const initialClient = getClient(stack, lookupOptions) as ConnectedStack<TStack, TPrograms> | null;
+  const [clientState, setClientState] = useState<{
+    lookupKey: string | null;
+    client: ConnectedStack<TStack, TPrograms> | null;
+  }>(() => ({ lookupKey, client: initialClient }));
+  const client = clientState.lookupKey === lookupKey ? clientState.client : null;
+  const [isConnecting, setIsConnecting] = useState(!initialClient);
   const [error, setError] = useState<Error | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>(() =>
     client?.connectionState ?? 'disconnected'
   );
 
   useEffect(() => {
+    let active = true;
     const existingClient = getClient(stack, lookupOptions);
     if (existingClient) {
-      setClient(existingClient as ConnectedArete<ResolvedStack<TStack, TPrograms>>);
-      setIsLoading(false);
-      return;
+      setClientState({
+        lookupKey,
+        client: existingClient as ConnectedStack<TStack, TPrograms>,
+      });
+      setIsConnecting(false);
+      return () => {
+        active = false;
+      };
     }
 
-    setIsLoading(true);
+    setClientState({ lookupKey, client: null });
+    setIsConnecting(true);
     setError(null);
 
     getOrCreateClient(stack, lookupOptions)
       .then((newClient) => {
-        setClient(newClient as ConnectedArete<ResolvedStack<TStack, TPrograms>>);
-        setIsLoading(false);
+        if (active) {
+          setClientState({
+            lookupKey,
+            client: newClient as ConnectedStack<TStack, TPrograms>,
+          });
+          setIsConnecting(false);
+        }
       })
       .catch((err) => {
-        setError(err instanceof Error ? err : new Error(String(err)));
-        setIsLoading(false);
+        if (active) {
+          setError(err instanceof Error ? err : new Error(String(err)));
+          setIsConnecting(false);
+        }
       });
-  }, [stack, getOrCreateClient, getClient, lookupOptions]);
+    return () => {
+      active = false;
+    };
+  }, [stack, getOrCreateClient, getClient, lookupKey, lookupOptions]);
 
   useEffect(() => {
     if (!client) {
@@ -194,13 +228,22 @@ export function useArete<
   return {
     views: views as BuildViewInterface<TStack['views']>,
     queries: (client?.queries ?? {}) as QueriesInterface<StackQueries<ResolvedStack<TStack, TPrograms>>>,
-    programs: programs as BuildProgramInterface<StackPrograms<ResolvedStack<TStack, TPrograms>>, ConnectedArete<ResolvedStack<TStack, TPrograms>>>,
-    chain: client?.chain as ChainClient,
-    zustandStore: (client?.store as ZustandAdapter | undefined)?.store as UseBoundStore<StoreApi<AreteStore>>,
-    client: client!,
-    connectionState,
-    isConnected: connectionState === 'connected',
-    isLoading,
-    error
+    programs: programs as BuildProgramInterface<StackPrograms<ResolvedStack<TStack, TPrograms>>, ConnectedStack<TStack, TPrograms>>,
+    chain: client?.chain ?? null,
+    zustandStore: (client?.store as ZustandAdapter | undefined)?.store ?? null,
+    client,
+    read: (client as (ConnectedStack<TStack, TPrograms> & { read?: unknown }) | null)?.read as ConnectedField<StackConnectedExtensions<ResolvedStack<TStack, TPrograms>>, 'read'> ?? null,
+    addresses: ((client as (ConnectedStack<TStack, TPrograms> & { addresses?: unknown }) | null)?.addresses
+      ?? (stack as TStack & { addresses?: unknown }).addresses) as ConnectedField<StackConnectedExtensions<ResolvedStack<TStack, TPrograms>>, 'addresses'>,
+    constants: ((client as (ConnectedStack<TStack, TPrograms> & { constants?: unknown }) | null)?.constants
+      ?? (stack as TStack & { constants?: unknown }).constants) as ConnectedField<StackConnectedExtensions<ResolvedStack<TStack, TPrograms>>, 'constants'>,
+    defaults: ((client as (ConnectedStack<TStack, TPrograms> & { defaults?: unknown }) | null)?.defaults
+      ?? (stack as TStack & { defaults?: unknown }).defaults) as ConnectedField<StackConnectedExtensions<ResolvedStack<TStack, TPrograms>>, 'defaults'>,
+    math: ((client as (ConnectedStack<TStack, TPrograms> & { math?: unknown }) | null)?.math
+      ?? (stack as TStack & { math?: unknown }).math) as ConnectedField<StackConnectedExtensions<ResolvedStack<TStack, TPrograms>>, 'math'>,
+    connectionState: client ? connectionState : 'disconnected',
+    isConnected: Boolean(client) && connectionState === 'connected',
+    isLoading: clientState.lookupKey !== lookupKey || isConnecting,
+    error: clientState.lookupKey === lookupKey ? error : null
   };
 }

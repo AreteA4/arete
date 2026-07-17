@@ -14,8 +14,8 @@ import {
 } from './account-resolver';
 import { serializeInstructionData, type ArgSchema } from './serializer';
 import {
-  parseInstructionError,
-  InstructionError,
+  TransactionExecutionError,
+  normalizeTransactionError,
   type ErrorMetadata,
 } from './error-parser';
 
@@ -256,10 +256,24 @@ export async function executeInstruction(
   params: Record<string, unknown>,
   options: ExecuteOptions = {}
 ): Promise<ExecutionResult> {
-  const instruction = buildInstruction(handler, params, options);
+  let instruction: BuiltInstruction;
+  try {
+    instruction = buildInstruction(handler, params, options);
+  } catch (cause) {
+    throw new TransactionExecutionError({
+      status: 'not-submitted',
+      phase: 'build',
+      cause,
+    });
+  }
 
   if (!options.wallet) {
-    throw new Error('Wallet required to sign and send transaction');
+    const cause = new Error('Wallet required to sign and send transaction');
+    throw new TransactionExecutionError({
+      status: 'not-submitted',
+      phase: 'wallet',
+      cause,
+    });
   }
 
   const sendOptions: SendOptions = {
@@ -273,15 +287,7 @@ export async function executeInstruction(
     const result = await options.wallet.signAndSend([instruction], sendOptions);
     return { signature: result.signature, slot: result.slot };
   } catch (err) {
-    const programError = parseInstructionError(err, handler.errors);
-    if (programError) {
-      throw new InstructionError(
-        `${programError.name} (${programError.code}): ${programError.message}`,
-        programError,
-        err
-      );
-    }
-    throw err;
+    throw normalizeTransactionError(err, handler.errors);
   }
 }
 

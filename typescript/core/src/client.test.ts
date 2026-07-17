@@ -4,6 +4,32 @@ import { gzip } from 'pako';
 import { z } from 'zod';
 
 describe('Arete SDK', () => {
+  it('passes each connected client transaction transport to a shared wallet per invocation', async () => {
+    const { Arete } = await import('./index');
+    const transports: unknown[] = [];
+    const wallet = {
+      publicKey: 'wallet',
+      async signAndSend(_instructions: readonly unknown[], _options?: unknown, context?: { transactionTransport?: unknown }) {
+        transports.push(context?.transactionTransport);
+        return { signature: `sig-${transports.length}` };
+      },
+    };
+    const stack = (http: string) => ({
+      name: http, endpoints: { ws: '', http }, views: {},
+    } as const);
+    const first = await Arete.connect(stack('https://first.example'), {
+      transport: 'http', wallet,
+    });
+    const second = await Arete.connect(stack('https://second.example'), {
+      transport: 'http', wallet,
+    });
+
+    await first.transaction([]);
+    await second.transaction([]);
+    expect(transports).toEqual([first.transactions, second.transactions]);
+    expect(first.transactions).not.toBe(second.transactions);
+  });
+
   it('should export Arete class', async () => {
     const { Arete } = await import('./index');
     expect(Arete).toBeDefined();
@@ -30,6 +56,43 @@ describe('Arete SDK', () => {
     const sdk = await import('./index');
     expect('EntityStore' in sdk).toBe(false);
   });
+
+  it('waits for processed slots through the connected client after buffered storage flush', async () => {
+    const { Arete } = await import('./index');
+    const client = await Arete.connect({
+      name: 'processed-slot-demo',
+      endpoints: {
+        ws: 'wss://example.invalid',
+        http: 'https://example.invalid',
+      },
+      views: {},
+    } as const, {
+      autoReconnect: false,
+      flushIntervalMs: 100,
+    });
+    const processor = (client as unknown as {
+      processor: {
+        handleFrame(frame: unknown): void;
+        flush(): void;
+      };
+    }).processor;
+    const wait = client.waitForProcessedSlot(75, { timeoutMs: 100 });
+
+    processor.handleFrame({
+      mode: 'state',
+      entity: 'Board/state',
+      op: 'upsert',
+      key: 'board',
+      data: { round: 1 },
+      seq: '75:000000000001',
+    });
+    expect(client.processedSlot).toBeNull();
+    processor.flush();
+
+    await expect(wait).resolves.toBe(75n);
+    expect(client.processedSlot).toBe(75n);
+    expect(client.store.get('Board/state', 'board')).toEqual({ round: 1 });
+  });
 });
 
 describe('Frame parsing', () => {
@@ -52,6 +115,7 @@ describe('Frame parsing', () => {
       mode: 'list',
       entity: 'test/list',
       op: 'snapshot',
+      key: 'requested-key',
       data: [{ key: '1', data: { id: 1 } }],
     };
     const result = parseFrame(JSON.stringify(frame));
@@ -59,6 +123,7 @@ describe('Frame parsing', () => {
     expect(result.entity).toBe('test/list');
     expect(isSnapshotFrame(result)).toBe(true);
     if (isSnapshotFrame(result)) {
+      expect(result.key).toBe('requested-key');
       expect(result.data).toHaveLength(1);
       expect(result.data[0].key).toBe('1');
     }
@@ -86,6 +151,7 @@ describe('Frame parsing', () => {
     expect(result.entity).toBe('test/list');
     expect(isSnapshotFrame(result)).toBe(true);
     if (isSnapshotFrame(result)) {
+      expect(result.key).toBeUndefined();
       expect(result.data).toHaveLength(2);
       expect(result.data[0].key).toBe('1');
       expect(result.data[0].data).toEqual({ id: 1, name: 'Test Entity' });
@@ -377,6 +443,43 @@ describe('Arete instructions (namespaced stacks)', () => {
       signatures: ['sig-plan'],
       transactions: [{ transactionIndex: 0, transactionName: 'close-stage', signature: 'sig-plan', slot: 77 }],
     });
+  });
+
+  it('inspects prepared operations without signing and rejects flows', async () => {
+    const { createPreparedFlow, createPreparedInstruction } = await import('./index');
+    const client = await makeClient();
+    const signAndSend = vi.fn();
+    const inspectTransaction = vi.fn(async () => ({
+      feeLamports: 5000,
+      contextSlot: 88,
+      logs: [],
+    }));
+    const wallet = { publicKey: SIGNER, signAndSend, inspectTransaction };
+    client.setWallet(wallet);
+    const ix = client.programs.ore.raw.close.build({}, { wallet });
+    const prepared = createPreparedInstruction({
+      name: 'inspect-close',
+      instruction: ix,
+      artifacts: { close: true },
+    });
+
+    await expect(client.inspectOperation(prepared)).resolves.toMatchObject({
+      description: { kind: 'instruction', name: 'inspect-close' },
+      transaction: { feeLamports: 5000, contextSlot: 88 },
+      programError: null,
+    });
+    expect(signAndSend).not.toHaveBeenCalled();
+    expect(inspectTransaction).toHaveBeenCalledTimes(1);
+
+    const flow = createPreparedFlow({
+      name: 'inspect-flow',
+      artifacts: undefined,
+      transactions: [{ name: 'one-stage', instructions: [ix] }],
+    });
+    await expect(client.inspectOperation(flow)).rejects.toThrow(
+      "Cannot inspect flow 'inspect-flow': flow inspection is not supported"
+    );
+    expect(inspectTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('attaches stack extensions to the connected client without extra binding', async () => {
@@ -830,10 +933,23 @@ describe('Arete transport: http', () => {
 
   it('serves point reads and chain reads without opening a socket', async () => {
     const { Arete } = await import('./index');
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/chain/exists/addr-1')) {
         return new Response(JSON.stringify({ exists: true }), { status: 200 });
+      }
+      if (url.endsWith('/chain/native-balance')) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          address: 'addr-1',
+          minContextSlot: '9007199254740993',
+        });
+        return new Response(
+          JSON.stringify({
+            lamports: '9007199254740995',
+            contextSlot: '9007199254740997',
+          }),
+          { status: 200 }
+        );
       }
       if (url.endsWith('/chain/rent-exemption/82')) {
         return new Response(JSON.stringify({ lamports: 1461600 }), { status: 200 });
@@ -856,6 +972,12 @@ describe('Arete transport: http', () => {
     const client = await Arete.connect(HTTP_STACK, { transport: 'http', fetch: fetchMock as typeof fetch });
     expect(client.isConnected()).toBe(false);
     await expect(client.chain.exists('addr-1')).resolves.toBe(true);
+    await expect(
+      client.chain.nativeBalance('addr-1', { minContextSlot: 9_007_199_254_740_993n })
+    ).resolves.toEqual({
+      lamports: 9_007_199_254_740_995n,
+      contextSlot: 9_007_199_254_740_997n,
+    });
     await expect(client.chain.minimumBalanceForRentExemption(82)).resolves.toBe(1461600);
 
     const account = await client.chain.account('addr-1');

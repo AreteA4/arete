@@ -8,7 +8,8 @@
   "scripts": {
     "start": "npx tsx src/main.ts",
     "build": "tsc",
-    "dev": "npx tsx --watch src/main.ts"
+    "dev": "npx tsx --watch src/main.ts",
+    "test": "tsx --test src/ore-devex.test.ts"
   },
   "dependencies": {
     "@usearete/sdk": "0",

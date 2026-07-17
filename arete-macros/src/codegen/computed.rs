@@ -440,7 +440,11 @@ pub fn generate_computed_expr_code(expr: &ComputedExpr) -> TokenStream {
                 _ => quote! { 0i64 },
             };
             quote! {
-                #inner.and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64))).unwrap_or(#default_num)
+                #inner.and_then(|v| {
+                    v.as_i64()
+                        .or_else(|| v.as_u64().map(|u| u as i64))
+                        .or_else(|| v.as_str().and_then(|text| text.parse::<i64>().ok()))
+                }).unwrap_or(#default_num)
             }
         }
         ComputedExpr::Binary { op, left, right } => {
@@ -904,7 +908,11 @@ pub fn generate_computed_expr_code_with_cache(
                 _ => quote! { 0i64 },
             };
             quote! {
-                #inner_code.and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64))).unwrap_or(#default_num)
+                #inner_code.and_then(|v| {
+                    v.as_i64()
+                        .or_else(|| v.as_u64().map(|u| u as i64))
+                        .or_else(|| v.as_str().and_then(|text| text.parse::<i64>().ok()))
+                }).unwrap_or(#default_num)
             }
         }
         ComputedExpr::Some { value } => {

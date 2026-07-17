@@ -89,6 +89,9 @@ pub struct SnapshotFrame {
     #[serde(rename = "entity")]
     pub export: String,
     pub op: &'static str,
+    /// Subscription key that requested this snapshot. Omitted for keyless subscriptions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     pub data: Vec<SnapshotEntity>,
     /// Indicates whether this is the final snapshot batch.
     /// When `false`, more snapshot batches will follow.
@@ -234,6 +237,7 @@ mod tests {
             mode: Mode::List,
             export: "tokens/list".to_string(),
             op: "snapshot",
+            key: Some("owner-1".to_string()),
             data: vec![SnapshotEntity {
                 key: "abc".to_string(),
                 data: serde_json::json!({"id": "abc"}),
@@ -244,6 +248,7 @@ mod tests {
         let json = serde_json::to_value(&frame).unwrap();
         assert_eq!(json["complete"], false);
         assert_eq!(json["op"], "snapshot");
+        assert_eq!(json["key"], "owner-1");
     }
 
     #[test]
@@ -257,6 +262,8 @@ mod tests {
             export: String,
             #[allow(dead_code)]
             op: String,
+            #[serde(default)]
+            key: Option<String>,
             #[allow(dead_code)]
             data: Vec<SnapshotEntity>,
             #[serde(default = "super::default_complete")]
@@ -272,6 +279,7 @@ mod tests {
 
         let frame: TestSnapshotFrame = serde_json::from_value(json_without_complete).unwrap();
         assert!(frame.complete);
+        assert!(frame.key.is_none());
     }
 
     #[test]
@@ -280,6 +288,7 @@ mod tests {
             mode: Mode::List,
             export: "tokens/list".to_string(),
             op: "snapshot",
+            key: None,
             data: vec![],
             complete: false,
         };
@@ -288,12 +297,17 @@ mod tests {
             mode: Mode::List,
             export: "tokens/list".to_string(),
             op: "snapshot",
+            key: None,
             data: vec![],
             complete: true,
         };
 
         assert!(!first_batch.complete);
         assert!(final_batch.complete);
+        assert!(serde_json::to_value(final_batch)
+            .unwrap()
+            .get("key")
+            .is_none());
     }
 
     #[test]

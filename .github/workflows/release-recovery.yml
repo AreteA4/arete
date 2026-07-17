@@ -17,7 +17,7 @@ on:
         default: 1.97.0
         type: string
       publish:
-        description: Publish crates, upload assets, and publish missing npm wrappers
+        description: Publish crates, upload assets, and publish missing npm packages
         required: true
         default: false
         type: boolean
@@ -113,6 +113,8 @@ jobs:
           for package_json in \
             typescript/core/package.json \
             typescript/react/package.json \
+            typescript/adapters/kit/package.json \
+            typescript/adapters/web3js/package.json \
             packages/arete/package.json \
             packages/mcp/package.json; do
             if ! jq -e --arg version "$VERSION" '.version == $version' "$package_json" >/dev/null; then
@@ -139,6 +141,8 @@ jobs:
             "arete-auth-v$AUTH_VERSION"
             "arete-typescript-v$VERSION"
             "arete-react-v$VERSION"
+            "arete-adapter-kit-v$VERSION"
+            "arete-adapter-web3js-v$VERSION"
             "a4-npm-v$VERSION"
             "arete-mcp-npm-v$VERSION"
           )
@@ -156,6 +160,8 @@ jobs:
           NPM_PACKAGES=(
             '@usearete/sdk'
             '@usearete/react'
+            '@usearete/adapter-kit'
+            '@usearete/adapter-web3js'
             '@usearete/a4'
             '@usearete/mcp'
           )
@@ -173,7 +179,8 @@ jobs:
             case "$status" in
               200)
                 git_head="$(jq -r '.gitHead // empty' "$response_file")"
-                if [[ "$git_head" != "$RELEASE_SHA" && "$git_head" != "$SOURCE_SHA" ]]; then
+                # Recovery publishes from a staged directory without .git, so npm may omit gitHead.
+                if [[ -n "$git_head" && "$git_head" != "$RELEASE_SHA" && "$git_head" != "$SOURCE_SHA" ]]; then
                   echo "$package@$VERSION has unexpected npm gitHead: $git_head"
                   rm -f "$response_file"
                   exit 1
@@ -414,7 +421,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -449,10 +456,17 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: ./scripts/upload-release-asset.sh "a4-cli-v${VERSION}" "arete-templates-v${VERSION}.tar.gz"
 
-  publish-npm-wrappers:
-    name: Publish missing npm wrappers
+  publish-npm:
+    name: Publish missing npm packages
     if: ${{ inputs.publish }}
-    needs: [validate, publish-rust, build-binaries, publish-checksums, bundle-templates]
+    needs:
+      [
+        validate,
+        publish-rust,
+        build-binaries,
+        publish-checksums,
+        bundle-templates,
+      ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -462,12 +476,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: "20.18.0"
           registry-url: https://registry.npmjs.org
 
-      - name: Publish missing packages
+      - name: Publish missing packages in dependency order
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          ./scripts/publish-npm-package.sh packages/arete
-          ./scripts/publish-npm-package.sh packages/mcp
+        run: ./scripts/publish-npm-version.sh "${{ inputs.version }}"

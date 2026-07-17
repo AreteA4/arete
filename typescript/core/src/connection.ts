@@ -12,6 +12,12 @@ import type {
   WebSocketFactoryInit,
 } from './types';
 import { DEFAULT_CONFIG, AreteError, parseErrorCode, shouldRefreshToken } from './types';
+import {
+  incompatibleSubscriptionError,
+  normalizeSubscription,
+  subscriptionIdentityKey,
+  subscriptionOptionsKey,
+} from './subscription';
 
 export type FrameHandler = <T>(frame: Frame<T>) => void;
 
@@ -25,6 +31,7 @@ interface TokenEndpointResponse {
   token: string;
   expires_at?: number;
   expiresAt?: number;
+  scopes?: string[];
 }
 
 interface TokenEndpointErrorResponse {
@@ -153,8 +160,9 @@ export class ConnectionManager {
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private tokenRefreshTimeout: ReturnType<typeof setTimeout> | null = null;
   private tokenRefreshInFlight: Promise<void> | null = null;
+  private tokenRequestInFlight: Promise<string | undefined> | null = null;
   private currentState: ConnectionState = 'disconnected';
-  private subscriptionQueue: Subscription[] = [];
+  private subscriptionQueue: Map<string, Subscription> = new Map();
   private activeSubscriptions: Map<string, Subscription> = new Map();
 
   private frameHandlers: Set<FrameHandler> = new Set();
@@ -164,6 +172,8 @@ export class ConnectionManager {
   private authConfig?: AuthConfig;
   private currentToken?: string;
   private tokenExpiry?: number;
+  private tokenScopes = new Set<string>();
+  private requestedScopes = new Set<string>();
   private readonly hostedAreteUrl: boolean;
   private reconnectForTokenRefresh = false;
 
@@ -180,7 +190,9 @@ export class ConnectionManager {
     this.authConfig = config.auth;
 
     if (config.initialSubscriptions) {
-      this.subscriptionQueue.push(...config.initialSubscriptions);
+      for (const subscription of config.initialSubscriptions) {
+        this.addQueuedSubscription(subscription);
+      }
     }
   }
 
@@ -219,7 +231,7 @@ export class ConnectionManager {
     return strategy.kind === 'token-provider' || strategy.kind === 'token-endpoint';
   }
 
-  private updateTokenState(result: string | AuthTokenResult): string {
+  private updateTokenState(result: string | AuthTokenResult, requestedScopes: readonly string[]): string {
     const normalized = normalizeTokenResult(result);
     if (!normalized.token) {
       throw new AreteError(
@@ -231,6 +243,7 @@ export class ConnectionManager {
     this.currentToken = normalized.token;
     this.tokenExpiry = normalizeExpiryTimestamp(normalized.expiresAt, normalized.expires_at)
       ?? parseJwtExpiry(normalized.token);
+    this.tokenScopes = new Set(normalized.scopes ?? requestedScopes);
 
     if (this.isTokenExpired()) {
       throw new AreteError('Authentication token is expired', 'TOKEN_EXPIRED');
@@ -242,12 +255,54 @@ export class ConnectionManager {
   private clearTokenState(): void {
     this.currentToken = undefined;
     this.tokenExpiry = undefined;
+    this.tokenScopes.clear();
   }
 
-  private async getOrRefreshToken(forceRefresh = false): Promise<string | undefined> {
-    if (!forceRefresh && this.currentToken && !this.isTokenExpired()) {
+  private tokenCovers(scopes: readonly string[]): boolean {
+    return scopes.every((scope) => this.tokenScopes.has(scope));
+  }
+
+  private async getOrRefreshToken(
+    forceRefresh = false,
+    requiredScopes: readonly string[] = ['read']
+  ): Promise<string | undefined> {
+    for (const scope of requiredScopes) this.requestedScopes.add(scope);
+    if (!forceRefresh && this.currentToken && !this.isTokenExpired() && this.tokenCovers(requiredScopes)) {
       return this.currentToken;
     }
+
+    if (this.tokenRequestInFlight) {
+      await this.tokenRequestInFlight;
+      if (!this.currentToken) {
+        return undefined;
+      }
+      if (this.currentToken && !this.isTokenExpired() && this.tokenCovers(requiredScopes)) {
+        return this.currentToken;
+      }
+      throw new AreteError(
+        `Authentication token was not granted required scopes: ${requiredScopes.join(', ')}`,
+        'AUTH_REQUIRED'
+      );
+    }
+
+    this.tokenRequestInFlight = Promise.resolve().then(() =>
+      this.fetchAuthToken([...new Set([...this.tokenScopes, ...this.requestedScopes])])
+    );
+    try {
+      const token = await this.tokenRequestInFlight;
+      if (token && !this.tokenCovers(requiredScopes)) {
+        throw new AreteError(
+          `Authentication token was not granted required scopes: ${requiredScopes.join(', ')}`,
+          'AUTH_REQUIRED'
+        );
+      }
+      return token;
+    } finally {
+      this.tokenRequestInFlight = null;
+    }
+  }
+
+  private async fetchAuthToken(scopes: readonly string[]): Promise<string | undefined> {
 
     const strategy = this.getAuthStrategy();
 
@@ -262,10 +317,10 @@ export class ConnectionManager {
 
     switch (strategy.kind) {
       case 'static-token':
-        return this.updateTokenState(strategy.token);
+        return this.updateTokenState(strategy.token, scopes);
       case 'token-provider':
         try {
-          return this.updateTokenState(await strategy.getToken());
+          return this.updateTokenState(await strategy.getToken({ scopes }), scopes);
         } catch (error) {
           if (error instanceof AreteError) {
             throw error;
@@ -279,7 +334,8 @@ export class ConnectionManager {
       case 'token-endpoint':
         try {
           return this.updateTokenState(
-            await this.fetchTokenFromEndpoint(strategy.endpoint)
+            await this.fetchTokenFromEndpoint(strategy.endpoint, scopes),
+            scopes
           );
         } catch (error) {
           if (error instanceof AreteError) {
@@ -296,14 +352,16 @@ export class ConnectionManager {
     }
   }
 
-  private createTokenEndpointRequestBody(): Record<string, string> {
+  private createTokenEndpointRequestBody(scopes: readonly string[]): Record<string, string | readonly string[]> {
     return {
       websocket_url: this.websocketUrl ?? '',
+      scopes,
     };
   }
 
   private async fetchTokenFromEndpoint(
-    tokenEndpoint: string
+    tokenEndpoint: string,
+    scopes: readonly string[] = [...this.requestedScopes]
   ): Promise<TokenEndpointResponse> {
     const response = await fetch(tokenEndpoint, {
       method: 'POST',
@@ -315,7 +373,7 @@ export class ConnectionManager {
         'Content-Type': 'application/json',
       },
       credentials: this.authConfig?.tokenEndpointCredentials,
-      body: JSON.stringify(this.createTokenEndpointRequestBody()),
+      body: JSON.stringify(this.createTokenEndpointRequestBody(scopes)),
     });
 
     if (!response.ok) {
@@ -408,7 +466,7 @@ export class ConnectionManager {
     this.tokenRefreshInFlight = (async () => {
       const previousToken = this.currentToken;
       try {
-        await this.getOrRefreshToken(true);
+        await this.getOrRefreshToken(true, [...this.tokenScopes]);
         if (
           previousToken &&
           this.currentToken &&
@@ -541,8 +599,19 @@ export class ConnectionManager {
     return this.currentState;
   }
 
-  async getHttpAuthToken(forceRefresh = false): Promise<string | undefined> {
-    return this.getOrRefreshToken(forceRefresh);
+  async getHttpAuthToken(forceRefresh?: boolean): Promise<string | undefined>;
+  async getHttpAuthToken(requiredScopes?: readonly string[], forceRefresh?: boolean): Promise<string | undefined>;
+  async getHttpAuthToken(
+    requiredScopesOrForce: readonly string[] | boolean = ['read'],
+    forceRefresh = false
+  ): Promise<string | undefined> {
+    const requiredScopes = typeof requiredScopesOrForce === 'boolean'
+      ? ['read']
+      : requiredScopesOrForce;
+    const force = typeof requiredScopesOrForce === 'boolean'
+      ? requiredScopesOrForce
+      : forceRefresh;
+    return this.getOrRefreshToken(force, requiredScopes);
   }
 
   clearHttpAuthToken(): void {
@@ -604,7 +673,7 @@ export class ConnectionManager {
 
     let token: string | undefined;
     try {
-      token = await this.getOrRefreshToken();
+      token = await this.getOrRefreshToken(false, ['read']);
     } catch (error) {
       this.updateState(
         'error',
@@ -768,28 +837,40 @@ export class ConnectionManager {
   subscribe(subscription: Subscription): void {
     this.requireWebsocketUrl();
 
-    const subKey = this.makeSubKey(subscription);
+    const normalized = normalizeSubscription(subscription);
+    const subKey = subscriptionIdentityKey(normalized);
+    const existing = this.activeSubscriptions.get(subKey) ?? this.subscriptionQueue.get(subKey);
+
+    if (existing) {
+      if (subscriptionOptionsKey(existing) !== subscriptionOptionsKey(normalized)) {
+        throw incompatibleSubscriptionError(normalized);
+      }
+      return;
+    }
 
     if (this.currentState === 'connected' && this.ws?.readyState === WebSocket.OPEN) {
-      if (this.activeSubscriptions.has(subKey)) {
-        return;
+      const subMsg = { type: 'subscribe', ...normalized };
+      try {
+        this.ws.send(JSON.stringify(subMsg));
+      } catch (error) {
+        try {
+          const unsubMsg = { type: 'unsubscribe', view: normalized.view, key: normalized.key };
+          this.ws.send(JSON.stringify(unsubMsg));
+        } catch {
+          // The original send error is more useful; cleanup is best-effort.
+        }
+        throw error;
       }
-      const subMsg = { type: 'subscribe', ...subscription };
-      this.ws.send(JSON.stringify(subMsg));
-      this.activeSubscriptions.set(subKey, subscription);
+      this.activeSubscriptions.set(subKey, normalized);
     } else {
-      const alreadyQueued = this.subscriptionQueue.some(
-        (queuedSubscription) => this.makeSubKey(queuedSubscription) === subKey
-      );
-      if (!alreadyQueued) {
-        this.subscriptionQueue.push(subscription);
-      }
+      this.subscriptionQueue.set(subKey, normalized);
     }
   }
 
   unsubscribe(view: string, key?: string): void {
     const subscription: Subscription = { view, key };
-    const subKey = this.makeSubKey(subscription);
+    const subKey = subscriptionIdentityKey(subscription);
+    this.subscriptionQueue.delete(subKey);
 
     if (this.activeSubscriptions.has(subKey)) {
       this.activeSubscriptions.delete(subKey);
@@ -801,20 +882,37 @@ export class ConnectionManager {
     }
   }
 
+  refresh(subscription: Subscription): void {
+    this.requireWebsocketUrl();
+
+    const normalized = normalizeSubscription(subscription);
+    const subKey = subscriptionIdentityKey(normalized);
+    const existing = this.activeSubscriptions.get(subKey) ?? this.subscriptionQueue.get(subKey);
+
+    if (!existing) {
+      const key = normalized.key === undefined ? '*' : normalized.key;
+      throw new AreteError(
+        `Cannot refresh inactive subscription '${normalized.view}' with key '${key}'`,
+        'SUBSCRIPTION_NOT_FOUND'
+      );
+    }
+    if (subscriptionOptionsKey(existing) !== subscriptionOptionsKey(normalized)) {
+      throw incompatibleSubscriptionError(normalized);
+    }
+
+    this.unsubscribe(existing.view, existing.key);
+    this.subscribe(existing);
+  }
+
   isConnected(): boolean {
     return this.currentState === 'connected' && this.ws?.readyState === WebSocket.OPEN;
   }
 
-  private makeSubKey(subscription: Subscription): string {
-    return `${subscription.view}:${subscription.key ?? '*'}:${subscription.partition ?? ''}`;
-  }
-
   private flushSubscriptionQueue(): void {
-    while (this.subscriptionQueue.length > 0) {
-      const subscription = this.subscriptionQueue.shift();
-      if (subscription) {
-        this.subscribe(subscription);
-      }
+    const queuedSubscriptions = Array.from(this.subscriptionQueue.values());
+    this.subscriptionQueue.clear();
+    for (const subscription of queuedSubscriptions) {
+      this.subscribe(subscription);
     }
   }
 
@@ -824,6 +922,19 @@ export class ConnectionManager {
         const subMsg = { type: 'subscribe', ...subscription };
         this.ws.send(JSON.stringify(subMsg));
       }
+    }
+  }
+
+  private addQueuedSubscription(subscription: Subscription): void {
+    const normalized = normalizeSubscription(subscription);
+    const subKey = subscriptionIdentityKey(normalized);
+    const existing = this.subscriptionQueue.get(subKey);
+
+    if (existing && subscriptionOptionsKey(existing) !== subscriptionOptionsKey(normalized)) {
+      throw incompatibleSubscriptionError(normalized);
+    }
+    if (!existing) {
+      this.subscriptionQueue.set(subKey, normalized);
     }
   }
 

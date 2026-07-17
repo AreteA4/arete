@@ -468,6 +468,7 @@ mod tests {
                 max_bytes_per_minute: Some(10_000_000),
                 max_http_requests_per_minute: Some(300),
                 max_http_batch_addresses: Some(100),
+                ..Limits::default()
             })
             .build()
     }

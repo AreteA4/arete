@@ -62,6 +62,10 @@ Programs at `session.stacks.<name>.programs.<program>` and `session.programs.<na
 
 Use `session.chain` for generic Solana reads and `session.execute(prepared)` for any prepared semantic instruction, transaction, or flow.
 
+For transaction inspection and execution, connected sessions automatically use
+the authenticated Arete transaction transport. See [Transactions](/using-stacks/transactions/)
+for auto, direct, and custom transport modes, scopes, and safe failure handling.
+
 ### Semantic Prepare vs. Raw IDL
 
 Prefer semantic operations for application code. They accept normal camelCase objects, derive routine addresses, normalize values such as UI token amounts, and describe their cardinality through the namespace:

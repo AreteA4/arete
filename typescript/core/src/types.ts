@@ -97,6 +97,12 @@ export interface Subscription {
   snapshotLimit?: number;
 }
 
+/** Server-supported identity used to route subscribe and unsubscribe messages. */
+export type SubscriptionIdentity = Pick<Subscription, 'view' | 'key'>;
+
+/** Subscription behavior that must match before callers can share an identity. */
+export type SubscriptionOptions = Omit<Subscription, keyof SubscriptionIdentity>;
+
 export type SchemaResult<T> =
   | { success: true; data: T }
   | { success: false; error: unknown };
@@ -132,6 +138,11 @@ export interface AuthTokenResult {
   token: string;
   expiresAt?: number;
   expires_at?: number;
+  scopes?: readonly string[];
+}
+
+export interface AuthTokenRequest {
+  scopes: readonly string[];
 }
 
 export interface WebSocketFactoryInit {
@@ -143,7 +154,7 @@ export interface WebSocketFactoryInit {
  */
 export interface AuthConfig {
   /** Custom token provider function - called before each connection and during refresh */
-  getToken?: () => Promise<string | AuthTokenResult>;
+  getToken?: (request?: AuthTokenRequest) => Promise<string | AuthTokenResult>;
   /** Arete Cloud token endpoint URL */
   tokenEndpoint?: string;
   /** Publishable key for Arete Cloud */

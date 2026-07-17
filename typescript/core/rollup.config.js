@@ -1,7 +1,8 @@
 import typescript from '@rollup/plugin-typescript';
+import resolve from '@rollup/plugin-node-resolve';
 import dts from 'rollup-plugin-dts';
 
-const externalPackages = ['@noble/ed25519', 'express', 'next/server', 'pako'];
+const externalPackages = ['buffer', 'express', 'next/server', 'pako'];
 
 function isExternal(id) {
   return externalPackages.some(pkg => id === pkg || id.startsWith(`${pkg}/`));
@@ -9,6 +10,7 @@ function isExternal(id) {
 
 const baseConfig = {
   plugins: [
+    resolve(),
     typescript({
       tsconfig: './tsconfig.json',
       declaration: false,
@@ -40,7 +42,7 @@ export default [
     input: 'src/index.ts',
     output: [
       {
-        file: 'dist/index.js',
+        file: 'dist/index.cjs',
         format: 'cjs',
         sourcemap: true,
       },
@@ -67,7 +69,7 @@ export default [
       input: `src/ssr/${name}.ts`,
       output: [
         {
-          file: `dist/ssr/${name}.js`,
+          file: `dist/ssr/${name}.cjs`,
           format: 'cjs',
           sourcemap: true,
         },

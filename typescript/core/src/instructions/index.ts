@@ -7,6 +7,8 @@ export type {
   ConfirmationLevel,
   SendOptions,
   SendResult,
+  TransactionInspectionOptions,
+  TransactionInspectionResult,
 } from '../wallet/types';
 export type {
   AccountCategory,
@@ -31,8 +33,26 @@ export type { ArgSchema, ArgType, ArgStructField, EnumVariant } from './serializ
 export { serializeInstructionData } from './serializer';
 export type { CanonicalSeedType } from './seed-serializer';
 export { normalizeSeedType, serializeSeedValue } from './seed-serializer';
-export type { ProgramError, ErrorMetadata } from './error-parser';
-export { parseInstructionError, formatProgramError, InstructionError } from './error-parser';
+export type {
+  ProgramError,
+  ErrorMetadata,
+  TransactionFailureStatus,
+  TransactionFailurePhase,
+  ConfirmedTransactionOutcome,
+  NotSubmittedTransactionOutcome,
+  SubmittedUnknownTransactionOutcome,
+  ChainFailedTransactionOutcome,
+  TransactionFailureOutcome,
+  TransactionOutcome,
+} from './error-parser';
+export {
+  parseInstructionError,
+  formatProgramError,
+  InstructionError,
+  TransactionExecutionError,
+  getTransactionFailureOutcome,
+  normalizeTransactionError,
+} from './error-parser';
 export type { 
   InstructionHandler,
   InstructionHandlerConfig,

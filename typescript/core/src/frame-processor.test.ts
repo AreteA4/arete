@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import type { EntityFrame, SnapshotFrame, SubscribedFrame } from './frame';
-import { FrameProcessor } from './frame-processor';
+import { FrameProcessor, ProcessedSlotTimeoutError } from './frame-processor';
 import { SortedStorageDecorator } from './storage/sorted-decorator';
 import { MemoryAdapter } from './storage/memory-adapter';
 
@@ -52,6 +52,56 @@ const partialEntitySchema = z
   }));
 
 describe('FrameProcessor', () => {
+  it('resolves processed-slot waits only after buffered storage updates are flushed', async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = new SortedStorageDecorator(new MemoryAdapter());
+      const processor = new FrameProcessor(storage, { flushIntervalMs: 16 });
+      const wait = processor.waitForProcessedSlot(42, { timeoutMs: 100 });
+
+      processor.handleFrame({
+        mode: 'state',
+        entity: 'Board/state',
+        op: 'upsert',
+        key: 'board',
+        data: { round: 7 },
+        seq: '42:000000000001',
+      } satisfies EntityFrame);
+
+      expect(processor.getProcessedSlot()).toBeNull();
+      expect(storage.get('Board/state', 'board')).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(16);
+
+      await expect(wait).resolves.toBe(42n);
+      expect(processor.getProcessedSlot()).toBe(42n);
+      expect(storage.get('Board/state', 'board')).toEqual({ round: 7 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('supports processed-slot timeout and abort without changing processed state', async () => {
+    vi.useFakeTimers();
+    try {
+      const processor = new FrameProcessor(new MemoryAdapter());
+      const timedOut = processor.waitForProcessedSlot(10n, { timeoutMs: 5 });
+      const timedOutAssertion = expect(timedOut).rejects.toBeInstanceOf(
+        ProcessedSlotTimeoutError
+      );
+      const controller = new AbortController();
+      const aborted = processor.waitForProcessedSlot(11n, { signal: controller.signal });
+
+      controller.abort();
+      await expect(aborted).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.advanceTimersByTimeAsync(5);
+      await timedOutAssertion;
+      expect(processor.getProcessedSlot()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('stores canonical snapshot data and keeps seq as internal metadata', () => {
     const storage = new SortedStorageDecorator(new MemoryAdapter());
     const processor = new FrameProcessor(storage, {

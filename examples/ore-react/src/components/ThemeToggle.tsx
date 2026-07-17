@@ -5,8 +5,9 @@ export function ThemeToggle() {
 
   return (
     <button
+      type="button"
       onClick={toggleTheme}
-      className="p-2 rounded-full bg-white dark:bg-stone-800 shadow-sm hover:shadow-md transition-shadow"
+      className="grid min-h-11 min-w-11 place-items-center rounded-full bg-white shadow-sm transition-shadow hover:shadow-md dark:bg-stone-800 dark:ring-1 dark:ring-stone-700"
       aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
     >
       {theme === 'light' ? (

@@ -3040,7 +3040,7 @@ pub fn compile_stack_spec(
 
     // 4. Assemble `@usearete/sdk` imports based on what was actually emitted.
     let imports = assemble_sdk_imports(
-        stack_spec.pdas.values().any(|p| !p.is_empty()),
+        collect_emitted_pda_imports(&stack_spec.idls, &stack_spec.pdas),
         !idl_account_artifacts.account_type_names.is_empty(),
         &instructions_codegen,
     );
@@ -3057,13 +3057,19 @@ pub fn compile_stack_spec(
 /// Assemble the `zod` + `@usearete/sdk` import lines based on which runtime
 /// helpers the emitted code references.
 fn assemble_sdk_imports(
-    has_pdas: bool,
+    pda_imports: PdaImportUsage,
     has_account_reads: bool,
     instructions_codegen: &crate::typescript_instructions::InstructionsCodegen,
 ) -> String {
     let mut sdk_named: Vec<String> = Vec::new();
-    if has_pdas {
-        for helper in ["pda", "literal", "account", "arg", "bytes"] {
+    for (needed, helper) in [
+        (pda_imports.pda, "pda"),
+        (pda_imports.literal, "literal"),
+        (pda_imports.account, "account"),
+        (pda_imports.arg, "arg"),
+        (pda_imports.bytes, "bytes"),
+    ] {
+        if needed {
             sdk_named.push(helper.to_string());
         }
     }
@@ -3076,13 +3082,17 @@ fn assemble_sdk_imports(
     }
     if !instructions_codegen.stack_entries.is_empty() {
         sdk_named.push("buildInstruction".to_string());
+    }
+    if instructions_codegen.needs_build_options {
         sdk_named.push("type BuildOptions".to_string());
     }
     if instructions_codegen.needs_program_runtime_extensions {
         sdk_named.push("PROGRAM_OPERATION_EXTENSIONS".to_string());
-        sdk_named.push("type ProgramOperationContext".to_string());
         sdk_named.push("instructionOperation".to_string());
         sdk_named.push("createPreparedInstruction".to_string());
+    }
+    if instructions_codegen.needs_operation_context {
+        sdk_named.push("type ProgramOperationContext".to_string());
     }
     if instructions_codegen.needs_amount_input {
         sdk_named.push("type AmountInput".to_string());
@@ -3101,6 +3111,44 @@ fn assemble_sdk_imports(
             sdk_named.join(", ")
         )
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PdaImportUsage {
+    pda: bool,
+    literal: bool,
+    account: bool,
+    arg: bool,
+    bytes: bool,
+}
+
+fn collect_emitted_pda_imports(
+    idls: &[IdlSnapshot],
+    pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
+) -> PdaImportUsage {
+    let mut usage = PdaImportUsage::default();
+
+    for idl in idls {
+        let Some(program_pdas) = pdas
+            .get(&idl.name)
+            .or_else(|| pdas.get(&to_camel_case(&idl.name)))
+            .filter(|program_pdas| !program_pdas.is_empty())
+        else {
+            continue;
+        };
+
+        usage.pda = true;
+        for seed in program_pdas.values().flat_map(|pda| &pda.seeds) {
+            match seed {
+                PdaSeedDef::Literal { .. } => usage.literal = true,
+                PdaSeedDef::AccountRef { .. } => usage.account = true,
+                PdaSeedDef::ArgRef { .. } => usage.arg = true,
+                PdaSeedDef::Bytes { .. } => usage.bytes = true,
+            }
+        }
+    }
+
+    usage
 }
 
 /// Compile only the program-SDK surface of a stack spec — account types +
@@ -3161,7 +3209,7 @@ pub fn compile_program_modules(
     );
 
     let imports = assemble_sdk_imports(
-        stack_spec.pdas.values().any(|p| !p.is_empty()),
+        collect_emitted_pda_imports(&stack_spec.idls, &stack_spec.pdas),
         !idl_account_artifacts.account_type_names.is_empty(),
         &instructions_codegen,
     );
@@ -3647,7 +3695,12 @@ fn generate_program_pda_entries(
                 .join(", ");
 
             let pid = pda_def.program_id.as_deref().unwrap_or(default_program_id);
-            format!("{}{}: pda('{}', {}),", indent, pda_name, pid, seeds_str)
+            let rendered_seeds = if seeds_str.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", seeds_str)
+            };
+            format!("{}{}: pda('{}'{}),", indent, pda_name, pid, rendered_seeds)
         })
         .collect()
 }
@@ -3816,9 +3869,19 @@ fn generate_program_semantic_instructions_block(
         return None;
     }
 
+    let context_param = if instruction_entries
+        .iter()
+        .any(|entry| entry.uses_operation_context)
+    {
+        "context: ProgramOperationContext"
+    } else {
+        ""
+    };
+
     Some(format!(
-        "{indent}[PROGRAM_OPERATION_EXTENSIONS]: {{\n{indent}  createOperations(context: ProgramOperationContext) {{\n{indent}    return {{\n{indent}      instructions: {{\n{entries}\n{indent}      }},\n{indent}    }};\n{indent}  }},\n{indent}}},",
+        "{indent}[PROGRAM_OPERATION_EXTENSIONS]: {{\n{indent}  createOperations({context_param}) {{\n{indent}    return {{\n{indent}      instructions: {{\n{entries}\n{indent}      }},\n{indent}    }};\n{indent}  }},\n{indent}}},",
         indent = indent,
+        context_param = context_param,
         entries = entries.join("\n"),
     ))
 }
@@ -3874,6 +3937,53 @@ pub(crate) fn to_screaming_snake_case(s: &str) -> String {
 mod tests {
     use super::*;
 
+    fn program_only_test_spec(
+        pdas: BTreeMap<String, BTreeMap<String, PdaDefinition>>,
+        instructions: Vec<InstructionDef>,
+    ) -> SerializableStackSpec {
+        SerializableStackSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            stack_name: "DemoStream".to_string(),
+            program_ids: vec!["Prog111".to_string()],
+            idls: vec![IdlSnapshot {
+                name: "demo".to_string(),
+                program_id: Some("Prog111".to_string()),
+                version: "0.1.0".to_string(),
+                accounts: vec![],
+                instructions: vec![],
+                types: vec![],
+                events: vec![],
+                errors: vec![],
+                discriminant_size: 1,
+            }],
+            entities: vec![],
+            pdas,
+            instructions,
+            content_hash: None,
+        }
+    }
+
+    fn test_instruction(amount_hint: Option<InstructionAmountHint>) -> InstructionDef {
+        InstructionDef {
+            name: "deposit".to_string(),
+            discriminator: vec![9],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: amount_hint
+                .map(|amount_hint| InstructionArgDef {
+                    name: "amount".to_string(),
+                    arg_type: "u64".to_string(),
+                    docs: vec![],
+                    amount_hint: Some(amount_hint),
+                })
+                .into_iter()
+                .collect(),
+            errors: vec![],
+            program_id: Some("Prog111".to_string()),
+            docs: vec![],
+        }
+    }
+
     #[test]
     fn test_case_conversions() {
         assert_eq!(to_pascal_case("settlement_game"), "SettlementGame");
@@ -3907,6 +4017,120 @@ mod tests {
             "boolean"
         );
         assert_eq!(value_to_typescript_type(&serde_json::json!([])), "any[]");
+    }
+
+    #[test]
+    fn pda_imports_follow_emitted_seed_variants() {
+        let empty_seed_pdas = BTreeMap::from([(
+            "demo".to_string(),
+            BTreeMap::from([(
+                "singleton".to_string(),
+                PdaDefinition {
+                    name: "singleton".to_string(),
+                    seeds: vec![],
+                    program_id: None,
+                },
+            )]),
+        )]);
+        let output = compile_program_modules(program_only_test_spec(empty_seed_pdas, vec![]), None)
+            .expect("empty-seed PDA generation should succeed");
+        assert_eq!(
+            output.imports,
+            "import { z } from 'zod';\nimport { pda } from '@usearete/sdk';"
+        );
+        assert!(output
+            .stack_definition
+            .contains("singleton: pda('Prog111'),"));
+        assert!(!output.stack_definition.contains("pda('Prog111', )"));
+
+        let literal_account_pdas = BTreeMap::from([(
+            "demo".to_string(),
+            BTreeMap::from([(
+                "vault".to_string(),
+                PdaDefinition {
+                    name: "vault".to_string(),
+                    seeds: vec![
+                        PdaSeedDef::Literal {
+                            value: "vault".to_string(),
+                        },
+                        PdaSeedDef::AccountRef {
+                            account_name: "authority".to_string(),
+                        },
+                    ],
+                    program_id: None,
+                },
+            )]),
+        )]);
+        let output =
+            compile_program_modules(program_only_test_spec(literal_account_pdas, vec![]), None)
+                .expect("literal/account PDA generation should succeed");
+        assert_eq!(
+            output.imports,
+            "import { z } from 'zod';\nimport { pda, literal, account } from '@usearete/sdk';"
+        );
+
+        let arg_bytes_pdas = BTreeMap::from([(
+            "demo".to_string(),
+            BTreeMap::from([(
+                "position".to_string(),
+                PdaDefinition {
+                    name: "position".to_string(),
+                    seeds: vec![
+                        PdaSeedDef::ArgRef {
+                            arg_name: "roundId".to_string(),
+                            arg_type: Some("u64".to_string()),
+                        },
+                        PdaSeedDef::Bytes {
+                            value: vec![0, 255],
+                        },
+                    ],
+                    program_id: None,
+                },
+            )]),
+        )]);
+        let output = compile_program_modules(program_only_test_spec(arg_bytes_pdas, vec![]), None)
+            .expect("arg/bytes PDA generation should succeed");
+        assert_eq!(
+            output.imports,
+            "import { z } from 'zod';\nimport { pda, arg, bytes } from '@usearete/sdk';"
+        );
+    }
+
+    #[test]
+    fn raw_operations_omit_semantic_only_types_and_context() {
+        let output = compile_program_modules(
+            program_only_test_spec(BTreeMap::new(), vec![test_instruction(None)]),
+            None,
+        )
+        .expect("raw operation generation should succeed");
+        let file = output.full_file();
+
+        assert!(!output.imports.contains("BuildOptions"));
+        assert!(!output.imports.contains("ProgramOperationContext"));
+        assert!(file.contains("createOperations()"));
+        assert!(!file.contains("build?: BuildOptions;"));
+    }
+
+    #[test]
+    fn context_free_amount_operations_import_build_options_only() {
+        let output = compile_program_modules(
+            program_only_test_spec(
+                BTreeMap::new(),
+                vec![test_instruction(Some(InstructionAmountHint {
+                    decimals_source: AmountDecimalsSource::Constant { decimals: 9 },
+                }))],
+            ),
+            None,
+        )
+        .expect("constant amount operation generation should succeed");
+        let file = output.full_file();
+
+        assert!(output.imports.contains("type BuildOptions"));
+        assert!(output.imports.contains("toRawAmount"));
+        assert!(!output.imports.contains("ProgramOperationContext"));
+        assert!(file.contains("build?: BuildOptions;"));
+        assert!(file.contains("createOperations()"));
+        assert!(!file.contains("context.chain"));
     }
 
     #[test]
@@ -4598,12 +4822,21 @@ mod tests {
             "runtime extension import missing"
         );
         assert!(
+            output.imports.contains("type BuildOptions"),
+            "build options import missing"
+        );
+        assert!(
+            output.imports.contains("type ProgramOperationContext"),
+            "operation context import missing"
+        );
+        assert!(
             file.contains("resolveAmountToRaw"),
             "amount resolver import missing"
         );
         assert!(file.contains("export interface DepositSemanticParams"));
         assert!(file.contains("build?: BuildOptions;"));
         assert!(file.contains("[PROGRAM_OPERATION_EXTENSIONS]: {"));
+        assert!(file.contains("createOperations(context: ProgramOperationContext)"));
         assert!(file
             .contains("deposit: instructionOperation(async (params: DepositSemanticParams) => {"));
         assert!(file.contains("const { build, amountDecimals, ...rawParams } = params;"));

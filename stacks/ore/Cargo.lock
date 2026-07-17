@@ -103,6 +103,8 @@ checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 [[package]]
 name = "arete"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c15406868f4b9aa22ec2a09f9a95da42e64f51f3b2693930e7f4dfca019aec0a"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -131,6 +133,8 @@ dependencies = [
 [[package]]
 name = "arete-a4-sdk"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba395960c0ea5da0d696d7c9aca6e78897792517481d2248ca83103ba3e58ec7"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -151,6 +155,8 @@ dependencies = [
 [[package]]
 name = "arete-auth"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4195d62551c5193bd393ef24b925373557d2f542b0916bb00205f8fd37359279"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -170,6 +176,8 @@ dependencies = [
 [[package]]
 name = "arete-idl"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bdc3e8968a2d4f446e83f921ac6ef97144bf0d5a0f5a9ab777ae29f3a071a17"
 dependencies = [
  "bs58",
  "serde",
@@ -182,6 +190,8 @@ dependencies = [
 [[package]]
 name = "arete-interpreter"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "854fcecf7a8c8160f1bf4b1c0f34f1168b4d336cf7438624a8749ba92c6296f7"
 dependencies = [
  "arete-idl",
  "arete-macros",
@@ -209,6 +219,8 @@ dependencies = [
 [[package]]
 name = "arete-macros"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f1945d57d03ea651f41c8c48d88da95a4c9f5803ce5b4d0e4e18668f9d9a5cd"
 dependencies = [
  "arete-idl",
  "bs58",
@@ -224,6 +236,8 @@ dependencies = [
 [[package]]
 name = "arete-server"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3ba4c98ef8f2ccd3b96ee7dd4e604723d1ccec8dcf55e59f310d0ddc5069b3c"
 dependencies = [
  "anyhow",
  "arete-auth",

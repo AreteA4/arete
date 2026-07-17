@@ -2,6 +2,8 @@
 
 Pure TypeScript SDK for generated stack definitions, program SDKs, prepared operation execution, and chain reads.
 
+Connected clients expose the typed six-route transaction relay as `client.transactions`. Wallet adapters receive it per invocation from `client.transaction` and `client.inspectOperation`, so a shared wallet can safely serve multiple clients. Sessions expose `session.transactions` and accept a `transactions` override. HTTP `u64` fields are decimal strings on the wire and `bigint` in the SDK; sends are never automatically retried.
+
 ## Installation
 
 ```bash

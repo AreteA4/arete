@@ -29,6 +29,11 @@ jobs:
       mcp_release_created: ${{ steps.release.outputs['rust/arete-mcp--release_created'] }}
       idl_release_created: ${{ steps.release.outputs['arete-idl--release_created'] }}
       auth_release_created: ${{ steps.release.outputs['rust/arete-auth--release_created'] }}
+      core_version: ${{ steps.release.outputs['typescript/core--version'] }}
+      core_release_created: ${{ steps.release.outputs['typescript/core--release_created'] }}
+      react_release_created: ${{ steps.release.outputs['typescript/react--release_created'] }}
+      adapter_kit_release_created: ${{ steps.release.outputs['typescript/adapters/kit--release_created'] }}
+      adapter_web3js_release_created: ${{ steps.release.outputs['typescript/adapters/web3js--release_created'] }}
     steps:
       - uses: actions/checkout@v6
 
@@ -100,19 +105,23 @@ jobs:
     name: Publish to npm
     needs: release-please
     runs-on: ubuntu-latest
-    if: needs.release-please.outputs.releases_created == 'true'
+    if: >-
+      needs.release-please.outputs.core_release_created == 'true' ||
+      needs.release-please.outputs.react_release_created == 'true' ||
+      needs.release-please.outputs.adapter_kit_release_created == 'true' ||
+      needs.release-please.outputs.adapter_web3js_release_created == 'true'
     steps:
       - uses: actions/checkout@v6
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: "20.18.0"
+          registry-url: "https://registry.npmjs.org"
 
-      # Publish @usearete/sdk (core) first since react depends on it
+      # Build @usearete/sdk first so every downstream package uses this checkout.
       - name: Install core dependencies
-        run: npm install
+        run: npm ci
         working-directory: typescript/core
 
       - name: Build core
@@ -120,33 +129,80 @@ jobs:
         working-directory: typescript/core
 
       - name: Publish core
+        if: needs.release-please.outputs.core_release_created == 'true'
         run: ../../scripts/publish-npm-package.sh .
         working-directory: typescript/core
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      # Wait for npm registry to propagate
-      - name: Wait for npm propagation
-        run: sleep 30
+      - name: Wait for core registry propagation
+        if: needs.release-please.outputs.core_release_created == 'true'
+        env:
+          CORE_VERSION: ${{ needs.release-please.outputs.core_version }}
+        run: |
+          for attempt in {1..30}; do
+            published_version="$(npm view "@usearete/sdk@${CORE_VERSION}" version 2>/dev/null || true)"
+            if [[ "$published_version" == "$CORE_VERSION" ]]; then
+              echo "@usearete/sdk@${CORE_VERSION} is available"
+              exit 0
+            fi
+            echo "Waiting for @usearete/sdk@${CORE_VERSION} (attempt ${attempt}/30)"
+            sleep 10
+          done
+          echo "::error::@usearete/sdk@${CORE_VERSION} did not propagate within 5 minutes"
+          exit 1
+        shell: bash
 
-      # Publish @usearete/react (after core is published)
-      - name: Update react lockfile and install
-        run: npm install ../core --no-save
+      - name: Install React dependencies
+        if: needs.release-please.outputs.react_release_created == 'true'
+        run: npm install ../core --no-save --package-lock=false
         working-directory: typescript/react
 
       - name: Build react
+        if: needs.release-please.outputs.react_release_created == 'true'
         run: npm run build
         working-directory: typescript/react
 
       - name: Publish react
+        if: needs.release-please.outputs.react_release_created == 'true'
         run: ../../scripts/publish-npm-package.sh .
         working-directory: typescript/react
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      # Wait for npm registry to propagate
-      - name: Wait for npm propagation
-        run: sleep 30
+      - name: Install Kit adapter dependencies
+        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        run: npm install ../../core --no-save --package-lock=false
+        working-directory: typescript/adapters/kit
+
+      - name: Build Kit adapter
+        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        run: npm run build
+        working-directory: typescript/adapters/kit
+
+      - name: Publish Kit adapter
+        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        run: ../../../scripts/publish-npm-package.sh .
+        working-directory: typescript/adapters/kit
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Install web3.js adapter dependencies
+        if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
+        run: npm install ../../core --no-save --package-lock=false
+        working-directory: typescript/adapters/web3js
+
+      - name: Build web3.js adapter
+        if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
+        run: npm run build
+        working-directory: typescript/adapters/web3js
+
+      - name: Publish web3.js adapter
+        if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
+        run: ../../../scripts/publish-npm-package.sh .
+        working-directory: typescript/adapters/web3js
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   bundle-templates:
     name: Bundle CLI Templates
@@ -159,7 +215,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -173,7 +229,7 @@ jobs:
         run: |
           VERSION="${{ needs.release-please.outputs.cli_version }}"
           echo "Bundling templates for version ${VERSION}"
-          
+
           # Create tarball with only the template directories (excluding build artifacts)
           tar -czvf "arete-templates-v${VERSION}.tar.gz" \
             --sort=name \
@@ -417,7 +473,13 @@ jobs:
 
   publish-npm-cli:
     name: Publish CLI to npm
-    needs: [release-please, build-cli-binaries, publish-cli-checksums, bundle-templates]
+    needs:
+      [
+        release-please,
+        build-cli-binaries,
+        publish-cli-checksums,
+        bundle-templates,
+      ]
     runs-on: ubuntu-latest
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:
@@ -426,8 +488,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
 
       - name: Publish arete CLI wrapper
         run: ../../scripts/publish-npm-package.sh .
@@ -446,8 +508,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
 
       - name: Publish arete MCP wrapper
         run: ../../scripts/publish-npm-package.sh .

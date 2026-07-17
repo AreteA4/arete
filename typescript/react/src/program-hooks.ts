@@ -8,7 +8,12 @@ import type {
   TransactionOptions,
   TypedInstruction,
 } from '@usearete/sdk';
-import type { MutationExecutor, UseMutationResult } from './hooks/use-mutation';
+import type {
+  MutationExecutionObserver,
+  MutationExecutor,
+  UseMutationOptions,
+  UseMutationResult,
+} from './hooks/use-mutation';
 
 type OperationOptionsArg<TClient> = TClient extends { execute(prepared: PreparedOperation, options?: infer TOptions): Promise<unknown> }
   ? NonNullable<TOptions>
@@ -18,9 +23,15 @@ type RawOptionsArg<TClient> = TClient extends { transaction(instructions: readon
   ? NonNullable<TOptions>
   : Record<string, never>;
 
-type MutationHookFactory = <TParams, TResult, TOptions extends object>(
-  execute: MutationExecutor<TParams, TResult, TOptions>
-) => UseMutationResult<TParams, TResult, TOptions>;
+type MutationHookFactory = <
+  TParams,
+  TResult,
+  TOptions extends object,
+  TPrepared extends PreparedOperation = PreparedOperation,
+>(
+  execute: MutationExecutor<TParams, TResult, TOptions, TPrepared>,
+  options?: Partial<UseMutationOptions<TOptions, TResult, TPrepared>>
+) => UseMutationResult<TParams, TResult, TOptions, TPrepared>;
 
 type ConnectedOperationLike = {
   prepare(input: unknown): Promise<PreparedOperation>;
@@ -33,7 +44,9 @@ type ExecutionClient = {
 
 export type RawInstructionHookFor<THandler, TClient> = THandler extends TypedInstruction<infer P, infer E>
   ? {
-      useMutation: () => UseMutationResult<P, E, RawOptionsArg<TClient>>;
+      useMutation: (
+        options?: Partial<UseMutationOptions<RawOptionsArg<TClient>, E>>
+      ) => UseMutationResult<P, E, RawOptionsArg<TClient>>;
       execute: (input: P, options?: RawOptionsArg<TClient>) => Promise<E>;
       build: THandler['build'];
     }
@@ -43,7 +56,18 @@ export type OperationHookFor<TOperation, TClient> = TOperation extends {
   prepare(input: infer P): Promise<infer TPrepared extends PreparedOperation>;
 }
   ? {
-      useMutation: () => UseMutationResult<P, OperationReceiptFor<TPrepared>, OperationOptionsArg<TClient>>;
+      useMutation: (
+        options?: Partial<UseMutationOptions<
+          OperationOptionsArg<TClient>,
+          OperationReceiptFor<TPrepared>,
+          TPrepared
+        >>
+      ) => UseMutationResult<
+        P,
+        OperationReceiptFor<TPrepared>,
+        OperationOptionsArg<TClient>,
+        TPrepared
+      >;
       execute: (input: P, options?: OperationOptionsArg<TClient>) => Promise<OperationReceiptFor<TPrepared>>;
       prepare: TOperation['prepare'];
     }
@@ -87,17 +111,26 @@ function wrapRawInstruction<TParams, TResult, TClient extends ExecutionClient>(
   client: TClient | null,
   createMutationHook: MutationHookFactory,
 ): RawInstructionHookFor<TypedInstruction<TParams, TResult>, TClient> {
-  const execute = async (input: TParams, options?: RawOptionsArg<TClient>) => {
+  const execute = async (
+    input: TParams,
+    options?: RawOptionsArg<TClient>,
+    observer?: MutationExecutionObserver
+  ) => {
     if (!client) {
       throw new Error('Arete client is not connected');
     }
-    return client.transaction([instruction.build(input)], options as TransactionOptions);
+    const built = instruction.build(input);
+    observer?.onAwaitingWallet();
+    return client.transaction([built], options as TransactionOptions);
   };
 
   return {
     execute,
     build: instruction.build,
-    useMutation: () => createMutationHook(execute as MutationExecutor<TParams, TResult, RawOptionsArg<TClient>>),
+    useMutation: (options) => createMutationHook(
+      execute as MutationExecutor<TParams, TResult, RawOptionsArg<TClient>>,
+      options
+    ),
   } as RawInstructionHookFor<TypedInstruction<TParams, TResult>, TClient>;
 }
 
@@ -112,18 +145,28 @@ function wrapOperation<TOperation extends ConnectedOperationLike, TClient extend
   client: TClient | null,
   createMutationHook: MutationHookFactory,
 ): OperationHookFor<TOperation, TClient> {
-  const execute = async (input: Parameters<TOperation['prepare']>[0], options?: OperationOptionsArg<TClient>) => {
+  type TPrepared = Awaited<ReturnType<TOperation['prepare']>>;
+  const execute = async (
+    input: Parameters<TOperation['prepare']>[0],
+    options?: OperationOptionsArg<TClient>,
+    observer?: MutationExecutionObserver<TPrepared>
+  ) => {
     if (!client) {
       throw new Error('Arete client is not connected');
     }
-    const prepared = await operation.prepare(input);
+    const prepared = await operation.prepare(input) as TPrepared;
+    observer?.onPrepared(prepared);
+    observer?.onAwaitingWallet();
     return client.execute(prepared, options as OperationExecutionOptions);
   };
 
   return {
     prepare: operation.prepare.bind(operation),
     execute,
-    useMutation: () => createMutationHook(execute as MutationExecutor<any, any, OperationOptionsArg<TClient>>),
+    useMutation: (options) => createMutationHook(
+      execute as MutationExecutor<any, any, OperationOptionsArg<TClient>, TPrepared>,
+      options
+    ),
   } as OperationHookFor<TOperation, TClient>;
 }
 

@@ -1,0 +1,158 @@
+---
+title: Transaction Relay
+description: Configure and operate the purpose-built Arete transaction HTTP transport.
+sidebar:
+  order: 4
+---
+
+`arete-server` can expose a purpose-built Solana transaction transport on the same HTTP origin as stack reads. It is disabled by default, even when an RPC URL is configured.
+
+The relay provides six fixed routes. It is not a generic JSON-RPC proxy, and it never receives signing keys or signs transactions.
+
+## Enable the HTTP server
+
+The relay requires the server's HTTP listener:
+
+```rust
+use arete_server::Server;
+
+Server::builder()
+    .spec(my_stack::spec())
+    .websocket()
+    .bind("[::]:8877".parse()?)
+    .http()
+    .health_monitoring()
+    .start()
+    .await?;
+```
+
+Enable transaction routes through environment configuration:
+
+```bash
+ARETE_TRANSACTIONS_ENABLED=true \
+ARETE_TRANSACTION_RPC_URL=https://your-dedicated-solana-rpc.example \
+cargo run --release
+```
+
+Or configure them programmatically:
+
+```rust
+use arete_server::{Server, TransactionConfig};
+
+Server::builder()
+    .spec(my_stack::spec())
+    .websocket()
+    .http()
+    .transactions_config(TransactionConfig {
+        enabled: true,
+        rpc_url: Some(transaction_rpc_url),
+        ..TransactionConfig::default()
+    })
+    .start()
+    .await?;
+```
+
+## Routes and scopes
+
+| Route                                    | Required scope        | Solana RPC method      |
+| ---------------------------------------- | --------------------- | ---------------------- |
+| `POST /transactions/v1/latest-blockhash` | `transaction:inspect` | `getLatestBlockhash`   |
+| `POST /transactions/v1/fee`              | `transaction:inspect` | `getFeeForMessage`     |
+| `POST /transactions/v1/simulate`         | `transaction:inspect` | `simulateTransaction`  |
+| `POST /transactions/v1/signature-status` | `transaction:inspect` | `getSignatureStatuses` |
+| `POST /transactions/v1/block-height`     | `transaction:inspect` | `getBlockHeight`       |
+| `POST /transactions/v1/send`             | `transaction:send`    | `sendTransaction`      |
+
+Routes accept validated JSON schemas and reject unknown fields. Solana `u64` values are decimal strings over HTTP.
+
+## Authentication
+
+For production, configure `SignedSessionAuthPlugin` through the HTTP auth plugin boundary. Read, inspect, and send scopes are independent. A read-only token cannot inspect or submit transactions.
+
+Do not expose a production relay with development `allow_all` behavior. Self-hosted local development may deliberately omit the plugin when the listener is not publicly reachable.
+
+When running behind a trusted proxy, configure `ARETE_TRUSTED_PROXY_CIDRS`. Forwarded client IP headers are ignored unless the direct peer belongs to one of those networks.
+
+## Configuration reference
+
+| Variable                                        | Default | Purpose                                   |
+| ----------------------------------------------- | ------- | ----------------------------------------- |
+| `ARETE_TRANSACTIONS_ENABLED`                    | `false` | Expose transaction routes                 |
+| `ARETE_TRANSACTION_RPC_URL`                     | unset   | Preferred upstream transaction RPC        |
+| `SOLANA_RPC_URL` / `RPC_URL`                    | unset   | Legacy transaction RPC fallback           |
+| `ARETE_TRANSACTION_MAX_BODY_BYTES`              | `4096`  | Maximum JSON request body                 |
+| `ARETE_TRANSACTION_MAX_BYTES`                   | `1232`  | Maximum decoded message/transaction bytes |
+| `ARETE_TRANSACTION_INSPECT_TIMEOUT_MS`          | `10000` | Inspection upstream timeout               |
+| `ARETE_TRANSACTION_SEND_TIMEOUT_MS`             | `15000` | Submission upstream timeout               |
+| `ARETE_TRANSACTION_STATUS_TIMEOUT_MS`           | `10000` | Status/block-height timeout               |
+| `ARETE_TRANSACTION_INSPECT_CONCURRENCY`         | `64`    | Global inspect concurrency                |
+| `ARETE_TRANSACTION_SEND_CONCURRENCY`            | `16`    | Global send concurrency                   |
+| `ARETE_TRANSACTION_INSPECT_REQUESTS_PER_MINUTE` | `600`   | Server inspect clamp                      |
+| `ARETE_TRANSACTION_SEND_REQUESTS_PER_MINUTE`    | `60`    | Server send clamp                         |
+| `ARETE_TRANSACTION_STATUS_REQUESTS_PER_MINUTE`  | `600`   | Server status clamp                       |
+| `ARETE_TRUSTED_PROXY_CIDRS`                     | empty   | Comma-separated trusted proxy networks    |
+| `ARETE_TRANSACTION_USAGE_ENABLED`               | `false` | Enable transaction usage delivery         |
+| `ARETE_TRANSACTION_USAGE_ENDPOINT`              | unset   | Usage ingestion endpoint                  |
+| `ARETE_TRANSACTION_USAGE_TOKEN`                 | unset   | Usage ingestion bearer token              |
+| `ARETE_TRANSACTION_USAGE_SPOOL_CAPACITY`        | `1000`  | In-memory usage queue capacity            |
+
+Transaction traffic never falls back to `ARETE_READ_RPC_URL`. Use a dedicated provider credential when possible so read and transaction quotas are isolated.
+
+## Submission safety
+
+The send route:
+
+- accepts only bounded base64 wire transactions
+- requires nonzero signatures
+- derives the first transaction signature before contacting upstream
+- calls upstream `sendTransaction` once
+- forces provider `maxRetries: 0`
+- verifies that the provider returns the expected signature
+- marks timeout/transport uncertainty with the derived signature
+
+Clients must reconcile an ambiguous signature rather than resubmit it blindly.
+
+## Limits and scaling
+
+The server clamps request size, concurrency, and per-minute operation counts. Signed-session claims can impose lower limits per subject. Rate buckets and subject concurrency are process-local in V1.
+
+Keep a transaction-enabled deployment at one replica until admission state is externalized. Scaling replicas multiplies effective per-process limits.
+
+## Usage and observability
+
+Optional transaction usage delivery sends operation, result, identity, byte count, and latency metadata. It excludes transaction bytes, account lists, program logs, credentials, and full signatures.
+
+V1 uses a bounded in-memory queue with bounded retries. It is not a durable billing queue. Alert on queue saturation and failed delivery logs.
+
+With the `otel` feature, monitor:
+
+- `arete.transaction.requests.total`
+- `arete.transaction.request.duration`
+- `arete.transaction.request.bytes`
+- `arete.transaction.upstream.total`
+- `arete.transaction.inflight`
+- `arete.transaction.denials.total`
+
+## Operational checklist
+
+1. Use a dedicated HTTPS transaction RPC.
+2. Configure signed-session HTTP auth and exact scopes.
+3. Configure trusted proxy CIDRs correctly.
+4. Keep one replica in V1.
+5. Alert on upstream timeouts and ambiguous submissions.
+6. Alert on usage queue drops when usage tracking is enabled.
+7. Exercise a signed test transaction before enabling browser traffic.
+8. Preserve routes during rollback until issued transaction tokens expire.
+
+## Improvements still needed
+
+The most valuable follow-up work is:
+
+1. Durable, batched usage delivery with a dead-letter path.
+2. Shared rate/admission state for horizontal scaling.
+3. Configurable circuit breaking and provider failover for inspect/status calls only.
+4. A reusable transport conformance test suite.
+5. Validator-backed release tests and hosted browser canaries.
+6. Grafana dashboards and alerts for transaction-specific metrics.
+
+See [Using transactions](/using-stacks/transactions/) for application integration and error handling.

@@ -12,6 +12,7 @@ import { DEFAULT_FLUSH_INTERVAL_MS } from './types';
 import { ZustandAdapter } from './zustand-adapter';
 import { initializeConnectedClient, syncClientWallets } from './wallet-sync';
 import { createClientCacheKey } from './client-key';
+import { trackConnectingPromise } from './provider-cache';
 
 type AnyClient = ConnectedArete<StackDefinition>;
 type ProgramMap = Record<string, ProgramSdkDefinition>;
@@ -122,7 +123,11 @@ export function AreteProvider({
       return client;
     });
     
-    connectingRef.current.set(cacheKey, connectionPromise as unknown as Promise<AnyClient>);
+    trackConnectingPromise(
+      connectingRef.current,
+      cacheKey,
+      connectionPromise as unknown as Promise<AnyClient>
+    );
     return connectionPromise as unknown as Promise<ConnectedArete<ResolvedStack<TStack, TPrograms>>>;
   }, [config.autoConnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.fetch, config.validateFrames, config.auth, notifyClientChange]);
 

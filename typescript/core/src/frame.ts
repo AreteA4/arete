@@ -36,6 +36,8 @@ export interface SnapshotFrame<T = unknown> {
   mode: FrameMode;
   entity: string;
   op: 'snapshot';
+  /** Subscription key that requested this snapshot. Omitted for keyless subscriptions. */
+  key?: string;
   data: SnapshotEntity<T>[];
   /** Indicates if this is the final snapshot batch. When false, more batches will follow. */
   complete?: boolean;

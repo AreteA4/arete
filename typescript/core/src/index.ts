@@ -82,7 +82,25 @@ export type {
   MintAccountInfo,
   TokenAccountInfo,
   TokenBalanceInfo,
+  NativeBalanceInfo,
+  ContextSlotOptions,
+  TokenBalanceInput,
 } from './chain';
+
+export { createTransactionTransport, TransactionTransportError } from './transactions';
+export type {
+  TransactionTransport,
+  TransactionCommitment,
+  TransactionRequestContext,
+  LatestBlockhashResult,
+  TransactionFeeResult,
+  TransactionSimulationOptions,
+  TransactionSimulationResult,
+  TransactionSendOptions,
+  TransactionSendResult,
+  TransactionSignatureStatus,
+  TransactionTransportErrorBody,
+} from './transactions';
 
 export { chainAccountLoader } from './account-loader';
 export type { AccountLoader } from './account-loader';
@@ -118,7 +136,11 @@ export { ConnectionManager } from './connection';
 export { SubscriptionRegistry } from './subscription';
 
 export { FrameProcessor } from './frame-processor';
-export type { FrameProcessorConfig } from './frame-processor';
+export { ProcessedSlotTimeoutError } from './frame-processor';
+export type {
+  FrameProcessorConfig,
+  WaitForProcessedSlotOptions,
+} from './frame-processor';
 
 export type { StorageAdapter, UpdateCallback, RichUpdateCallback, StorageAdapterConfig, ViewSortConfig } from './storage/adapter';
 export { MemoryAdapter } from './storage/memory-adapter';
@@ -147,6 +169,8 @@ export type {
   ProgramSdkDefinition,
   ViewGroup,
   Subscription,
+  SubscriptionIdentity,
+  SubscriptionOptions,
   Schema,
   SchemaResult,
   WatchOptions,
@@ -154,6 +178,7 @@ export type {
   AreteConfig,
   AuthConfig,
   AuthTokenResult,
+  AuthTokenRequest,
   WebSocketFactoryInit,
   TypedViews,
   TypedViewGroup,
@@ -175,6 +200,8 @@ export type {
   JsonValue,
   JsonObject,
   PreparedOperationDescription,
+  OperationInspection,
+  OperationInspectionOptions,
   PreparedTransactionBody,
   OperationPlan,
   PreparedInstruction,
@@ -192,6 +219,7 @@ export type {
   OperationReceiptFor,
   OperationExecutionEvent,
   OperationExecutionSuccessEvent,
+  OperationCallbackPhase,
   OperationExecutionOptions,
   OperationExecutionHost,
 } from './operations';
@@ -206,6 +234,9 @@ export {
   appendFlowTransactions,
   prependFlowTransactionInstructions,
   executePreparedOperation,
+  inspectPreparedOperation,
+  unwrapOperationExecutionError,
+  OperationCallbackError,
   OperationExecutionError,
   toJsonValue,
   describePreparedOperation,
@@ -225,6 +256,9 @@ export type {
   ConfirmationLevel,
   SendOptions,
   SendResult,
+  TransactionInspectionOptions,
+  TransactionInspectionResult,
+  WalletExecutionContext,
 } from './wallet/types';
 
 // Instruction execution
@@ -241,6 +275,14 @@ export type {
   ArgType,
   ProgramError,
   ErrorMetadata,
+  TransactionFailureStatus,
+  TransactionFailurePhase,
+  ConfirmedTransactionOutcome,
+  NotSubmittedTransactionOutcome,
+  SubmittedUnknownTransactionOutcome,
+  ChainFailedTransactionOutcome,
+  TransactionFailureOutcome,
+  TransactionOutcome,
   InstructionHandler,
   InstructionHandlerConfig,
   BuildOptions,
@@ -266,6 +308,9 @@ export {
   parseInstructionError,
   formatProgramError,
   InstructionError,
+  TransactionExecutionError,
+  getTransactionFailureOutcome,
+  normalizeTransactionError,
   buildInstruction,
   executeInstruction,
   createInstructionHandler,

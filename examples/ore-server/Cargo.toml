@@ -21,3 +21,7 @@ dotenvy = "0.15"
 
 # TLS crypto provider for rustls (required by yellowstone-vixen/tonic)
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+[patch.crates-io]
+arete = { path = "../../arete" }
+arete-server = { path = "../../rust/arete-server" }

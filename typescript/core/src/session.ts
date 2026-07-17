@@ -18,6 +18,7 @@ import type {
   PreparedOperation,
 } from './operations';
 import { createSignerRegistry, type SignerRegistry } from './signer-registry';
+import type { TransactionTransport } from './transactions';
 
 /**
  * A session composes multiple stack and standalone-program SDK clients
@@ -77,6 +78,8 @@ export interface SessionOptions<
   wallet?: WalletAdapter;
   /** Canonical chain reader shared by the session when explicitly provided. */
   chain?: ChainClient;
+  /** Transaction transport override; defaults to the execution host's authenticated client. */
+  transactions?: TransactionTransport;
   auth?: AuthConfig;
   fetch?: typeof fetch;
   /** Default transport for all members ('ws' unless overridden). */
@@ -161,6 +164,7 @@ export interface Session<
   readonly wallet: WalletAdapter | undefined;
   readonly signerRegistry: SignerRegistry<any>;
   readonly chain: ChainClient;
+  readonly transactions: TransactionTransport;
   transaction(
     instructions: readonly BuiltInstruction[],
     options?: TransactionOptions
@@ -258,6 +262,7 @@ export async function createSession<
     ...connectedPrograms.map(([, client]) => client),
   ];
   const executionHost = memberClients[0]!;
+  const transactions = options?.transactions ?? executionHost.transactions;
 
   const stacks = Object.fromEntries(connectedStacks) as SessionStacks<TDef, TStackPrograms>;
   const explicitProgramKeys = new Set(connectedPrograms.map(([key]) => key));
@@ -311,12 +316,14 @@ export async function createSession<
     },
     signerRegistry,
     chain,
+    transactions,
     transaction(instructions, transactionOptions) {
       const defaults = options?.execution;
       const configuredSigners = transactionOptions?.signers ?? defaults?.signers;
       const signers = [...new Set([...signerRegistry.values(), ...(configuredSigners ?? [])])];
       return executionHost.transaction(instructions, {
         wallet: transactionOptions?.wallet ?? defaults?.wallet,
+        transactionTransport: transactionOptions?.transactionTransport ?? transactions,
         send: defaults?.send || transactionOptions?.send
           ? { ...(defaults?.send ?? {}), ...(transactionOptions?.send ?? {}) }
           : undefined,
@@ -332,6 +339,8 @@ export async function createSession<
       const configuredSigners = executionOptions?.signers ?? defaults?.signers;
       return executionHost.execute(prepared, {
         wallet: executionOptions?.wallet ?? defaults?.wallet,
+        transactionTransport:
+          executionOptions?.transactionTransport ?? defaults?.transactionTransport ?? transactions,
         send: defaults?.send || executionOptions?.send
           ? { ...(defaults?.send ?? {}), ...(executionOptions?.send ?? {}) }
           : undefined,
@@ -343,6 +352,8 @@ export async function createSession<
           executionOptions?.onTransactionStart ?? defaults?.onTransactionStart,
         onTransactionSuccess:
           executionOptions?.onTransactionSuccess ?? defaults?.onTransactionSuccess,
+        onCallbackError:
+          executionOptions?.onCallbackError ?? defaults?.onCallbackError,
       });
     },
     setWallet(nextWallet) {

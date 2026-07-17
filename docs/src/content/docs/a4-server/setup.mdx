@@ -147,6 +147,13 @@ a4-server = { version = "{{VERSION}}", features = ["otel"] }
 
 `a4-server` handles `SIGINT` and `SIGTERM` automatically, ensuring clean disconnection from the Yellowstone stream.
 
+### Transaction Relay
+
+To expose bounded transaction inspection and submission through the server's
+HTTP endpoint, follow [Transaction Relay](/a4-server/transaction-relay/). The
+relay is disabled by default and should use signed-session HTTP authentication
+in production.
+
 ### Resource Considerations
 
 The Yellowstone gRPC stream is bandwidth-intensive. Ensure your environment has:

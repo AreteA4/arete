@@ -17,7 +17,7 @@ Examples:
 Notes:
   - Copies only the npm package directories into a temporary repo snapshot.
   - Rewrites the staged package metadata to the target version.
-  - Publishes in dependency order: sdk -> react -> a4 -> mcp.
+  - Publishes in dependency order: sdk -> react -> adapters -> a4 -> mcp.
   - Skips packages that are already published at that exact version.
 EOF
 }
@@ -77,8 +77,10 @@ const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
 
 pkg.version = version;
 
-if (sdkDependency && pkg.dependencies && pkg.dependencies['@usearete/sdk']) {
-  pkg.dependencies['@usearete/sdk'] = sdkDependency;
+for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+  if (sdkDependency && pkg[section]?.['@usearete/sdk']) {
+    pkg[section]['@usearete/sdk'] = sdkDependency;
+  }
 }
 
 fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
@@ -105,8 +107,10 @@ lock.version = version;
 if (lock.packages && lock.packages['']) {
   lock.packages[''].version = version;
 
-  if (sdkDependency && lock.packages[''].dependencies && lock.packages[''].dependencies['@usearete/sdk']) {
-    lock.packages[''].dependencies['@usearete/sdk'] = sdkDependency;
+  for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+    if (sdkDependency && lock.packages[''][section]?.['@usearete/sdk']) {
+      lock.packages[''][section]['@usearete/sdk'] = sdkDependency;
+    }
   }
 }
 
@@ -173,10 +177,32 @@ publish_package() {
   )
 }
 
+wait_for_package() {
+  local package_name="$1"
+  local version="$2"
+
+  for attempt in {1..30}; do
+    local published_version
+    published_version="$(npm view "${package_name}@${version}" version 2>/dev/null || true)"
+    if [[ "$published_version" == "$version" ]]; then
+      echo "${package_name}@${version} is available"
+      return
+    fi
+
+    echo "Waiting for ${package_name}@${version} (attempt ${attempt}/30)"
+    sleep 10
+  done
+
+  echo "${package_name}@${version} did not propagate within 5 minutes"
+  exit 1
+}
+
 echo "Staging npm packages into $STAGING_DIR"
 
 copy_package_dir "$ROOT_DIR/typescript/core" "$STAGING_DIR/typescript/core"
 copy_package_dir "$ROOT_DIR/typescript/react" "$STAGING_DIR/typescript/react"
+copy_package_dir "$ROOT_DIR/typescript/adapters/kit" "$STAGING_DIR/typescript/adapters/kit"
+copy_package_dir "$ROOT_DIR/typescript/adapters/web3js" "$STAGING_DIR/typescript/adapters/web3js"
 copy_package_dir "$ROOT_DIR/packages/arete" "$STAGING_DIR/packages/arete"
 copy_package_dir "$ROOT_DIR/packages/mcp" "$STAGING_DIR/packages/mcp"
 
@@ -185,6 +211,12 @@ rewrite_package_lock "$STAGING_DIR/typescript/core/package-lock.json" "$VERSION"
 
 rewrite_package_json "$STAGING_DIR/typescript/react/package.json" "$VERSION" "^$VERSION"
 rewrite_package_lock "$STAGING_DIR/typescript/react/package-lock.json" "$VERSION" "^$VERSION"
+
+rewrite_package_json "$STAGING_DIR/typescript/adapters/kit/package.json" "$VERSION" "^$VERSION"
+rewrite_package_lock "$STAGING_DIR/typescript/adapters/kit/package-lock.json" "$VERSION" "^$VERSION"
+
+rewrite_package_json "$STAGING_DIR/typescript/adapters/web3js/package.json" "$VERSION" "^$VERSION"
+rewrite_package_lock "$STAGING_DIR/typescript/adapters/web3js/package-lock.json" "$VERSION" "^$VERSION"
 
 rewrite_package_json "$STAGING_DIR/packages/arete/package.json" "$VERSION"
 rewrite_package_json "$STAGING_DIR/packages/mcp/package.json" "$VERSION"
@@ -201,11 +233,12 @@ fi
 publish_package "$STAGING_DIR/typescript/core" "@usearete/sdk" "npm install"
 
 if [[ "$DRY_RUN" != "--dry-run" ]]; then
-  echo "Waiting 30 seconds for npm propagation"
-  sleep 30
+  wait_for_package "@usearete/sdk" "$VERSION"
 fi
 
-publish_package "$STAGING_DIR/typescript/react" "@usearete/react" "npm install ../core --no-save"
+publish_package "$STAGING_DIR/typescript/react" "@usearete/react" "npm install ../core --no-save --package-lock=false"
+publish_package "$STAGING_DIR/typescript/adapters/kit" "@usearete/adapter-kit" "npm install ../../core --no-save --package-lock=false"
+publish_package "$STAGING_DIR/typescript/adapters/web3js" "@usearete/adapter-web3js" "npm install ../../core --no-save --package-lock=false"
 publish_package "$STAGING_DIR/packages/arete" "@usearete/a4"
 publish_package "$STAGING_DIR/packages/mcp" "@usearete/mcp"
 

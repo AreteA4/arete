@@ -6,6 +6,34 @@ import { DEFAULT_MAX_ENTRIES_PER_VIEW } from './types';
 
 const INTERNAL_SEQ_FIELD = '__seq';
 
+export interface WaitForProcessedSlotOptions {
+  /** Reject if the requested slot has not been processed within this duration. */
+  timeoutMs?: number;
+  /** Abort this wait without affecting frame processing or the connection. */
+  signal?: AbortSignal;
+}
+
+export class ProcessedSlotTimeoutError extends Error {
+  readonly targetSlot: bigint;
+  readonly processedSlot: bigint | null;
+
+  constructor(targetSlot: bigint, processedSlot: bigint | null) {
+    super(`Timed out waiting for Arete to process slot ${targetSlot}`);
+    this.name = 'ProcessedSlotTimeoutError';
+    this.targetSlot = targetSlot;
+    this.processedSlot = processedSlot;
+  }
+}
+
+interface ProcessedSlotWaiter {
+  targetSlot: bigint;
+  resolve: (slot: bigint) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout> | null;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}
+
 export interface FrameProcessorConfig {
   maxEntriesPerView?: number | null;
   /**
@@ -119,6 +147,8 @@ export class FrameProcessor {
   private pendingUpdates: PendingUpdate[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private isProcessing = false;
+  private latestProcessedSlot: bigint | null = null;
+  private processedSlotWaiters = new Set<ProcessedSlotWaiter>();
 
   constructor(storage: StorageAdapter, config: FrameProcessorConfig = {}) {
     this.storage = storage;
@@ -272,6 +302,54 @@ export class FrameProcessor {
     this.flushPendingUpdates();
   }
 
+  getProcessedSlot(): bigint | null {
+    return this.latestProcessedSlot;
+  }
+
+  waitForProcessedSlot(
+    slot: number | bigint,
+    options: WaitForProcessedSlotOptions = {}
+  ): Promise<bigint> {
+    const targetSlot = this.normalizeSlot(slot);
+    if (this.latestProcessedSlot !== null && this.latestProcessedSlot >= targetSlot) {
+      return Promise.resolve(this.latestProcessedSlot);
+    }
+    if (options.signal?.aborted) {
+      return Promise.reject(this.createAbortError());
+    }
+    if (
+      options.timeoutMs !== undefined
+      && (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0)
+    ) {
+      return Promise.reject(new RangeError('timeoutMs must be a non-negative finite number'));
+    }
+
+    return new Promise<bigint>((resolve, reject) => {
+      const waiter: ProcessedSlotWaiter = {
+        targetSlot,
+        resolve,
+        reject,
+        timeout: null,
+        signal: options.signal,
+      };
+      const rejectWaiter = (error: Error) => {
+        this.removeProcessedSlotWaiter(waiter);
+        reject(error);
+      };
+
+      if (options.timeoutMs !== undefined) {
+        waiter.timeout = setTimeout(() => {
+          rejectWaiter(new ProcessedSlotTimeoutError(targetSlot, this.latestProcessedSlot));
+        }, options.timeoutMs);
+      }
+      if (options.signal) {
+        waiter.onAbort = () => rejectWaiter(this.createAbortError());
+        options.signal.addEventListener('abort', waiter.onAbort, { once: true });
+      }
+      this.processedSlotWaiters.add(waiter);
+    });
+  }
+
   /**
    * Clean up any pending timers. Call when disposing the processor.
    */
@@ -317,6 +395,10 @@ export class FrameProcessor {
       this.enforceMaxEntries(viewPath);
     });
 
+    for (const { frame } of batch) {
+      this.markFrameProcessed(frame);
+    }
+
     this.isProcessing = false;
   }
 
@@ -328,6 +410,79 @@ export class FrameProcessor {
     } else {
       this.handleEntityFrame(frame);
     }
+    this.markFrameProcessed(frame);
+  }
+
+  private normalizeSlot(slot: number | bigint): bigint {
+    if (typeof slot === 'number') {
+      if (!Number.isSafeInteger(slot) || slot < 0) {
+        throw new RangeError('slot must be a non-negative safe integer or bigint');
+      }
+      return BigInt(slot);
+    }
+    if (slot < 0n) {
+      throw new RangeError('slot must be non-negative');
+    }
+    return slot;
+  }
+
+  private slotFromSeq(seq: unknown): bigint | null {
+    if (typeof seq !== 'string') {
+      return null;
+    }
+    const slot = seq.split(':', 1)[0];
+    return slot && /^\d+$/.test(slot) ? BigInt(slot) : null;
+  }
+
+  private frameSlot(frame: Frame): bigint | null {
+    if (isSubscribedFrame(frame)) {
+      return null;
+    }
+    if (isSnapshotFrame(frame)) {
+      let latest: bigint | null = null;
+      for (const entity of frame.data) {
+        const slot = isObject(entity.data)
+          ? this.slotFromSeq(entity.data._seq)
+          : null;
+        if (slot !== null && (latest === null || slot > latest)) {
+          latest = slot;
+        }
+      }
+      return latest;
+    }
+    return this.slotFromSeq(frame.seq)
+      ?? (isObject(frame.data) ? this.slotFromSeq(frame.data._seq) : null);
+  }
+
+  private markFrameProcessed(frame: Frame): void {
+    const slot = this.frameSlot(frame);
+    if (slot === null || (this.latestProcessedSlot !== null && slot <= this.latestProcessedSlot)) {
+      return;
+    }
+
+    this.latestProcessedSlot = slot;
+    for (const waiter of [...this.processedSlotWaiters]) {
+      if (slot >= waiter.targetSlot) {
+        this.removeProcessedSlotWaiter(waiter);
+        waiter.resolve(slot);
+      }
+    }
+  }
+
+  private removeProcessedSlotWaiter(waiter: ProcessedSlotWaiter): void {
+    this.processedSlotWaiters.delete(waiter);
+    if (waiter.timeout !== null) {
+      clearTimeout(waiter.timeout);
+    }
+    if (waiter.signal && waiter.onAbort) {
+      waiter.signal.removeEventListener('abort', waiter.onAbort);
+    }
+  }
+
+  private createAbortError(): Error {
+    const error = new Error('Waiting for processed slot was aborted');
+    error.name = 'AbortError';
+    return error;
   }
 
   private processFrameWithoutEnforce<T>(frame: Frame<T>): string | null {

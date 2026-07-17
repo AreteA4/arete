@@ -1,6 +1,7 @@
 import type { AreteConfig } from './types';
 
 import { createClientCacheKey } from './client-key';
+import { trackConnectingPromise } from './provider-cache';
 import { initializeConnectedClient, syncClientWallets } from './wallet-sync';
 
 describe('provider wallet helpers', () => {
@@ -77,5 +78,18 @@ describe('provider wallet helpers', () => {
     const error = new Error('boom');
     onConnectionStateChange?.('error', error);
     expect(adapter.setConnectionState).toHaveBeenLastCalledWith('error');
+  });
+
+  it('removes rejected connection promises so a later attempt can reconnect', async () => {
+    const connecting = new Map<string, Promise<string>>();
+    const rejected = Promise.reject(new Error('connection failed'));
+    const rejection = expect(rejected).rejects.toThrow('connection failed');
+
+    trackConnectingPromise(connecting, 'stack', rejected);
+    expect(connecting.get('stack')).toBe(rejected);
+    await rejection;
+    await Promise.resolve();
+
+    expect(connecting.has('stack')).toBe(false);
   });
 });

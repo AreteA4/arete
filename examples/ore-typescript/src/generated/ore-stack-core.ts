@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { pda, literal, account, arg, bytes, programAccountRead, createInstructionHandler, type ErrorMetadata, buildInstruction, type BuildOptions, PROGRAM_OPERATION_EXTENSIONS, type ProgramOperationContext, instructionOperation, createPreparedInstruction } from '@usearete/sdk';
+import { pda, literal, account, programAccountRead, createInstructionHandler, type ErrorMetadata, buildInstruction, PROGRAM_OPERATION_EXTENSIONS, instructionOperation, createPreparedInstruction } from '@usearete/sdk';
 
 export interface OreRoundEntropy {
   entropyEndAt: bigint | null;
@@ -353,6 +353,120 @@ export const OreRoundCompletedSchema = z.object({
   state: value.state,
   treasury: value.treasury,
   oreMetadata: value.ore_metadata,
+}));
+
+export interface OreBoardId {
+  address: string | null;
+}
+
+export interface OreBoardState {
+  endSlot: bigint | null;
+  productionCostEma: bigint | null;
+  roundId: bigint | null;
+  startSlot: bigint | null;
+}
+
+export interface OreBoard {
+  id: OreBoardId;
+  state: OreBoardState;
+  boardSnapshot: Board | null;
+}
+
+export interface Board {
+  roundId: bigint;
+  startSlot: bigint;
+  endSlot: bigint;
+  productionCostEma: bigint;
+}
+
+export const BoardSchema = z.object({
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  start_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  production_cost_ema: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  roundId: value.round_id,
+  startSlot: value.start_slot,
+  endSlot: value.end_slot,
+  productionCostEma: value.production_cost_ema,
+}));
+
+export const BoardPatchSchema = z.object({
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  start_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  production_cost_ema: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+}).transform((value) => ({
+  ...(value.round_id !== undefined ? { roundId: value.round_id } : {}),
+  ...(value.start_slot !== undefined ? { startSlot: value.start_slot } : {}),
+  ...(value.end_slot !== undefined ? { endSlot: value.end_slot } : {}),
+  ...(value.production_cost_ema !== undefined ? { productionCostEma: value.production_cost_ema } : {}),
+}));
+
+export const OreBoardIdSchema = z.object({
+  address: z.string().nullable(),
+}).transform((value) => ({
+  address: value.address,
+}));
+
+export const OreBoardIdPatchSchema = z.object({
+  address: z.string().nullable().optional(),
+}).transform((value) => ({
+  ...(value.address !== undefined ? { address: value.address } : {}),
+}));
+
+export const OreBoardStateSchema = z.object({
+  end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  production_cost_ema: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  start_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+}).transform((value) => ({
+  endSlot: value.end_slot,
+  productionCostEma: value.production_cost_ema,
+  roundId: value.round_id,
+  startSlot: value.start_slot,
+}));
+
+export const OreBoardStatePatchSchema = z.object({
+  end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  production_cost_ema: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  start_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+}).transform((value) => ({
+  ...(value.end_slot !== undefined ? { endSlot: value.end_slot } : {}),
+  ...(value.production_cost_ema !== undefined ? { productionCostEma: value.production_cost_ema } : {}),
+  ...(value.round_id !== undefined ? { roundId: value.round_id } : {}),
+  ...(value.start_slot !== undefined ? { startSlot: value.start_slot } : {}),
+}));
+
+export const OreBoardSchema = z.object({
+  id: OreBoardIdSchema,
+  state: OreBoardStateSchema,
+  board_snapshot: BoardSchema.nullable(),
+}).transform((value) => ({
+  id: value.id,
+  state: value.state,
+  boardSnapshot: value.board_snapshot,
+}));
+
+export const OreBoardPatchSchema = z.object({
+  id: OreBoardIdPatchSchema.optional(),
+  state: OreBoardStatePatchSchema.optional(),
+  board_snapshot: BoardPatchSchema.nullable().optional(),
+}).transform((value) => ({
+  ...(value.id !== undefined ? { id: value.id } : {}),
+  ...(value.state !== undefined ? { state: value.state } : {}),
+  ...(value.board_snapshot !== undefined ? { boardSnapshot: value.board_snapshot } : {}),
+}));
+
+export const OreBoardCompletedSchema = z.object({
+  id: OreBoardIdSchema,
+  state: OreBoardStateSchema,
+  board_snapshot: BoardSchema.nullable(),
+}).transform((value) => ({
+  id: value.id,
+  state: value.state,
+  boardSnapshot: value.board_snapshot,
 }));
 
 export interface OreTreasuryId {
@@ -872,7 +986,7 @@ export interface OreAutomation {
   conditions: AutomationConditions;
 }
 
-export interface Board {
+export interface OreBoard2 {
   roundId: bigint;
   startSlot: bigint;
   endSlot: bigint;
@@ -1011,7 +1125,7 @@ export const OreAutomationSchema = z.object({
   conditions: value.conditions,
 }));
 
-export const BoardSchema = z.object({
+export const OreBoard2Schema = z.object({
   round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   start_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
@@ -1791,7 +1905,7 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
 // Stack Definition
 // ============================================================================
 
-/** Stack definition for OreStream with 3 entities */
+/** Stack definition for OreStream with 4 entities */
 export const ORE_STREAM_STACK_CORE = {
   name: 'ore-stream',
   endpoints: {
@@ -1803,6 +1917,10 @@ export const ORE_STREAM_STACK_CORE = {
       state: stateView<OreRound>('OreRound/state'),
       list: listView<OreRound>('OreRound/list'),
       latest: listView<OreRound>('OreRound/latest'),
+    },
+    OreBoard: {
+      state: stateView<OreBoard>('OreBoard/state'),
+      list: listView<OreBoard>('OreBoard/list'),
     },
     OreTreasury: {
       state: stateView<OreTreasury>('OreTreasury/state'),
@@ -1822,6 +1940,11 @@ export const ORE_STREAM_STACK_CORE = {
     Miner: MinerSchema,
     Numeric: NumericSchema,
     OreAutomation: OreAutomationSchema,
+    OreBoard2: OreBoard2Schema,
+    OreBoardCompleted: OreBoardCompletedSchema,
+    OreBoardId: OreBoardIdSchema,
+    OreBoard: OreBoardSchema,
+    OreBoardState: OreBoardStateSchema,
     OreMiner2: OreMiner2Schema,
     OreMinerAutomation: OreMinerAutomationSchema,
     OreMinerCompleted: OreMinerCompletedSchema,
@@ -1850,6 +1973,7 @@ export const ORE_STREAM_STACK_CORE = {
   },
   patchSchemas: {
     OreRound: OreRoundPatchSchema,
+    OreBoard: OreBoardPatchSchema,
     OreTreasury: OreTreasuryPatchSchema,
     OreMiner: OreMinerPatchSchema,
   },
@@ -1873,7 +1997,7 @@ export const ORE_STREAM_STACK_CORE = {
       },
       accounts: {
         Automation: programAccountRead<OreAutomation>({ account: 'Automation', path: '/programs/ore/accounts/Automation', schema: OreAutomationSchema }),
-        Board: programAccountRead<Board>({ account: 'Board', path: '/programs/ore/accounts/Board', schema: BoardSchema }),
+        Board: programAccountRead<OreBoard2>({ account: 'Board', path: '/programs/ore/accounts/Board', schema: OreBoard2Schema }),
         Config: programAccountRead<Config>({ account: 'Config', path: '/programs/ore/accounts/Config', schema: ConfigSchema }),
         Miner: programAccountRead<OreMiner2>({ account: 'Miner', path: '/programs/ore/accounts/Miner', schema: OreMiner2Schema }),
         Round: programAccountRead<Round>({ account: 'Round', path: '/programs/ore/accounts/Round', schema: RoundSchema }),
@@ -1896,7 +2020,7 @@ export const ORE_STREAM_STACK_CORE = {
         reloadSol: oreReloadSolInstruction,
       },
       [PROGRAM_OPERATION_EXTENSIONS]: {
-        createOperations(context: ProgramOperationContext) {
+        createOperations() {
           return {
             instructions: {
             automate: instructionOperation(async (params: OreAutomateParams) => {
@@ -2044,7 +2168,7 @@ export const ORE_STREAM_STACK_CORE = {
         sample: entropySampleInstruction,
       },
       [PROGRAM_OPERATION_EXTENSIONS]: {
-        createOperations(context: ProgramOperationContext) {
+        createOperations() {
           return {
             instructions: {
             open: instructionOperation(async (params: EntropyOpenParams) => {
@@ -2113,7 +2237,7 @@ export const ORE_STREAM_STACK_CORE = {
 export type OreStreamCoreStack = typeof ORE_STREAM_STACK_CORE;
 
 /** Entity types in this stack */
-export type OreStreamEntity = OreRound | OreTreasury | OreMiner;
+export type OreStreamEntity = OreRound | OreBoard | OreTreasury | OreMiner;
 
 /** Default export for convenience */
 export default ORE_STREAM_STACK_CORE;

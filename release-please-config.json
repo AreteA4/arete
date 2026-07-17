@@ -59,6 +59,14 @@
       "release-type": "node",
       "component": "arete-typescript"
     },
+    "typescript/adapters/kit": {
+      "release-type": "node",
+      "component": "arete-adapter-kit"
+    },
+    "typescript/adapters/web3js": {
+      "release-type": "node",
+      "component": "arete-adapter-web3js"
+    },
     "packages/arete": {
       "release-type": "node",
       "component": "a4-npm"
@@ -95,6 +103,8 @@
         "arete-server",
         "arete-react",
         "arete-typescript",
+        "arete-adapter-kit",
+        "arete-adapter-web3js",
         "a4-npm",
         "arete-mcp-npm"
       ]

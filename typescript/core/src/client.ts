@@ -13,7 +13,10 @@ import type {
 } from './types';
 import { AreteError, parseErrorCode, shouldRefreshToken } from './types';
 import { ConnectionManager } from './connection';
-import { FrameProcessor } from './frame-processor';
+import {
+  FrameProcessor,
+  type WaitForProcessedSlotOptions,
+} from './frame-processor';
 import { MemoryAdapter } from './storage/memory-adapter';
 import type { StorageAdapter } from './storage/adapter';
 import { SortedStorageDecorator } from './storage/sorted-decorator';
@@ -30,8 +33,8 @@ import type {
 import type { ErrorMetadata } from './instructions';
 import {
   buildInstruction,
-  parseInstructionError,
-  InstructionError,
+  normalizeTransactionError,
+  TransactionExecutionError,
 } from './instructions';
 import {
   applyConnectedStackExtensions,
@@ -41,11 +44,19 @@ import {
 } from './stack-extensions';
 import {
   executePreparedOperation,
+  inspectPreparedOperation,
   type OperationExecutionOptions,
+  type OperationInspection,
+  type OperationInspectionOptions,
   type OperationReceiptFor,
   type PreparedOperation,
 } from './operations';
 import { parseReadResponse } from './read';
+import {
+  createTransactionTransport,
+  type TransactionAuthScope,
+  type TransactionTransport,
+} from './transactions';
 
 type ProgramMap = Record<string, ProgramSdkDefinition>;
 
@@ -184,6 +195,7 @@ export interface AreteOptionsWithStorage<TStack extends StackDefinition> extends
 
 export interface TransactionOptions<TSigner = unknown> {
   wallet?: WalletAdapter;
+  transactionTransport?: TransactionTransport;
   send?: SendOptions;
   errors?: ErrorMetadata[];
   signers?: readonly TSigner[];
@@ -305,6 +317,7 @@ export class Arete<TStack extends StackDefinition> {
   private readonly _queries: QueriesInterface<TStack['queries']>;
   private readonly _programs: ProgramsInterface<TStack['programs']>;
   private readonly _chain: ChainClient;
+  private readonly _transactions: TransactionTransport;
   private readonly stack: TStack;
   private readonly httpBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -343,7 +356,24 @@ export class Arete<TStack extends StackDefinition> {
 
     this._views = createTypedViews(this.stack, this.storage, this.subscriptionRegistry);
     this._queries = this.buildQueries();
-    this._chain = createChainClient(this.httpBaseUrl, this.authenticatedFetch.bind(this) as typeof fetch);
+    this._chain = createChainClient(
+      this.httpBaseUrl,
+      ((input: RequestInfo | URL, init?: RequestInit) =>
+        this.authenticatedFetch(
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url,
+          init,
+          ['read']
+        )) as typeof fetch
+    );
+    this._transactions = createTransactionTransport(
+      this.httpBaseUrl,
+      (input, init, scope, requirePreDispatchMarker) =>
+        this.authenticatedFetch(input, init, [scope], requirePreDispatchMarker)
+    );
     this._programs = this.buildPrograms();
   }
 
@@ -485,14 +515,19 @@ export class Arete<TStack extends StackDefinition> {
       method: options?.method ?? 'GET',
       headers: options?.body === undefined ? undefined : { 'content-type': 'application/json' },
       body: options?.body === undefined ? undefined : JSON.stringify(options.body),
-    });
+    }, ['read']);
 
     return parseReadResponse<T>(response, path);
   }
 
-  private async authenticatedFetch(input: string, init?: RequestInit): Promise<Response> {
+  private async authenticatedFetch(
+    input: string,
+    init?: RequestInit,
+    requiredScopes: readonly (TransactionAuthScope | 'read')[] = ['read'],
+    requirePreDispatchMarker = false
+  ): Promise<Response> {
     const attempt = async (forceRefresh = false): Promise<Response> => {
-      const token = await this.connection.getHttpAuthToken(forceRefresh);
+      const token = await this.connection.getHttpAuthToken(requiredScopes, forceRefresh);
       const headers = new Headers(init?.headers ?? undefined);
       if (token) {
         headers.set('authorization', `Bearer ${token}`);
@@ -507,7 +542,12 @@ export class Arete<TStack extends StackDefinition> {
     if (!response.ok) {
       const wireErrorCode = response.headers.get('X-Error-Code');
       const errorCode = wireErrorCode ? parseErrorCode(wireErrorCode) : undefined;
-      if (errorCode && shouldRefreshToken(errorCode)) {
+      const explicitlyNotDispatched = response.headers.get('X-Arete-Upstream-Attempted') === 'false';
+      if (
+        errorCode
+        && shouldRefreshToken(errorCode)
+        && (!requirePreDispatchMarker || explicitlyNotDispatched)
+      ) {
         this.connection.clearHttpAuthToken();
         response = await attempt(true);
       }
@@ -602,6 +642,10 @@ export class Arete<TStack extends StackDefinition> {
     return this._chain;
   }
 
+  get transactions(): TransactionTransport {
+    return this._transactions;
+  }
+
   /** The default wallet adapter, if one was configured. */
   get wallet(): WalletAdapter | undefined {
     return this._wallet;
@@ -638,7 +682,12 @@ export class Arete<TStack extends StackDefinition> {
   ): Promise<ExecutionResult> {
     const wallet = options?.wallet ?? this._wallet;
     if (!wallet) {
-      throw new Error('Wallet required to sign and send transaction');
+      const cause = new Error('Wallet required to sign and send transaction');
+      throw new TransactionExecutionError({
+        status: 'not-submitted',
+        phase: 'wallet',
+        cause,
+      });
     }
     try {
       const sendOptions: SendOptions = {
@@ -647,18 +696,12 @@ export class Arete<TStack extends StackDefinition> {
       if (options?.signers !== undefined) {
         sendOptions.signers = options.signers;
       }
-      const result = await wallet.signAndSend(instructions, sendOptions);
+      const result = await wallet.signAndSend(instructions, sendOptions, {
+        transactionTransport: options?.transactionTransport ?? this._transactions,
+      });
       return { signature: result.signature, slot: result.slot };
     } catch (err) {
-      const programError = parseInstructionError(err, options?.errors ?? this.aggregateErrors());
-      if (programError) {
-        throw new InstructionError(
-          `${programError.name} (${programError.code}): ${programError.message}`,
-          programError,
-          err
-        );
-      }
-      throw err;
+      throw normalizeTransactionError(err, options?.errors ?? this.aggregateErrors());
     }
   }
 
@@ -673,6 +716,7 @@ export class Arete<TStack extends StackDefinition> {
         ? { ...(defaults?.send ?? {}), ...(options?.send ?? {}) }
         : undefined,
       signers: options?.signers ?? defaults?.signers,
+      transactionTransport: options?.transactionTransport ?? defaults?.transactionTransport,
       signerRegistry: options?.signerRegistry ?? defaults?.signerRegistry,
       availableSignerAddresses:
         options?.availableSignerAddresses ?? defaults?.availableSignerAddresses,
@@ -680,7 +724,22 @@ export class Arete<TStack extends StackDefinition> {
         options?.onTransactionStart ?? defaults?.onTransactionStart,
       onTransactionSuccess:
         options?.onTransactionSuccess ?? defaults?.onTransactionSuccess,
+      onCallbackError:
+        options?.onCallbackError ?? defaults?.onCallbackError,
     });
+  }
+
+  /** Inspect one prepared instruction/transaction without signing or submitting it. */
+  inspectOperation(
+    prepared: PreparedOperation,
+    options?: OperationInspectionOptions
+  ): Promise<OperationInspection> {
+    return inspectPreparedOperation(
+      options?.wallet ?? this._wallet,
+      prepared,
+      options?.inspect,
+      { transactionTransport: options?.transactionTransport ?? this._transactions }
+    );
   }
 
   /** Error metadata from every handler in the stack, deduped by code. */
@@ -716,6 +775,22 @@ export class Arete<TStack extends StackDefinition> {
 
   get store(): StorageAdapter {
     return this.storage;
+  }
+
+  /** Highest Solana slot whose streamed frame has been stored locally. */
+  get processedSlot(): bigint | null {
+    return this.processor.getProcessedSlot();
+  }
+
+  /**
+   * Wait until a frame at or beyond `slot` has been applied to local storage.
+   * Buffered frames satisfy the wait only after their storage batch is flushed.
+   */
+  waitForProcessedSlot(
+    slot: number | bigint,
+    options?: WaitForProcessedSlotOptions
+  ): Promise<bigint> {
+    return this.processor.waitForProcessedSlot(slot, options);
   }
 
   onConnectionStateChange(callback: ConnectionStateCallback): UnsubscribeFn {
