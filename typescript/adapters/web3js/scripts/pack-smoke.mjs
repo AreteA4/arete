@@ -72,8 +72,8 @@ try {
   if (packedManifest.dependencies?.bs58 !== '^6.0.0') {
     throw new Error('Packed adapter does not declare the tested bs58 dependency');
   }
-  if (packedManifest.dependencies?.['rpc-websockets'] !== '9.3.8') {
-    throw new Error('Packed adapter does not pin the CommonJS-compatible rpc-websockets release');
+  if (packedManifest.peerDependencies?.['rpc-websockets'] !== '9.3.4') {
+    throw new Error('Packed adapter does not require the CommonJS-compatible rpc-websockets release');
   }
   if (packedManifest.dependencies?.buffer !== undefined) {
     throw new Error('Packed adapter must not depend on the Node buffer polyfill');
