@@ -431,17 +431,11 @@ fn error_response(status: StatusCode, message: impl Into<String>) -> Response<Fu
     json_response(status, json!({ "error": message.into() }))
 }
 
-fn parse_min_context_slot(
-    value: Option<&str>,
-) -> std::result::Result<Option<u64>, Response<Full<Bytes>>> {
+fn parse_min_context_slot(value: Option<&str>) -> std::result::Result<Option<u64>, &'static str> {
     value
         .map(|slot| {
-            slot.parse::<u64>().map_err(|_| {
-                error_response(
-                    StatusCode::BAD_REQUEST,
-                    "minContextSlot must be a decimal u64 string",
-                )
-            })
+            slot.parse::<u64>()
+                .map_err(|_| "minContextSlot must be a decimal u64 string")
         })
         .transpose()
 }
@@ -601,7 +595,7 @@ async fn handle_chain_request(
                 let min_context_slot =
                     match parse_min_context_slot(body.min_context_slot.as_deref()) {
                         Ok(slot) => slot,
-                        Err(response) => return response,
+                        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
                     };
                 match rpc_get_native_balance(&rpc_client, rpc_url, &body.address, min_context_slot)
                     .await
@@ -705,7 +699,7 @@ async fn handle_chain_request(
                 let min_context_slot =
                     match parse_min_context_slot(body.min_context_slot.as_deref()) {
                         Ok(slot) => slot,
-                        Err(response) => return response,
+                        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
                     };
                 match rpc_get_token_balance(
                     &rpc_client,

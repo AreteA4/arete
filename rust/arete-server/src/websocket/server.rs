@@ -1344,15 +1344,12 @@ fn create_snapshot_batches(
 }
 
 async fn send_snapshot_batches(
-    client_id: Uuid,
+    ctx: &SubscriptionContext<'_>,
     entities: &[SnapshotEntity],
     mode: Mode,
     view_id: &str,
     key: Option<&str>,
-    client_manager: &ClientManager,
-    usage_emitter: &Option<Arc<dyn WebSocketUsageEmitter>>,
     batch_config: &SnapshotBatchConfig,
-    #[cfg(feature = "otel")] metrics: Option<&Arc<Metrics>>,
 ) -> Result<()> {
     let total = entities.len();
     let snapshot_frames = create_snapshot_batches(entities, mode, view_id, key, batch_config);
@@ -1364,24 +1361,25 @@ async fn send_snapshot_batches(
         if let Ok(json_payload) = serde_json::to_vec(&snapshot_frame) {
             let payload = maybe_compress(&json_payload);
             let payload_bytes = payload.as_bytes().len() as u64;
-            if client_manager
-                .send_compressed_async(client_id, payload)
+            if ctx
+                .client_manager
+                .send_compressed_async(ctx.client_id, payload)
                 .await
                 .is_err()
             {
                 return Err(anyhow::anyhow!("Failed to send snapshot batch"));
             }
             #[cfg(feature = "otel")]
-            if let Some(m) = metrics {
+            if let Some(m) = ctx.metrics.as_ref() {
                 m.record_ws_message_sent();
             }
 
-            let auth_context = client_manager.get_auth_context(client_id);
+            let auth_context = ctx.client_manager.get_auth_context(ctx.client_id);
             let (metering_key, subject, _, deployment_id) = usage_identity(auth_context.as_ref());
             emit_usage_event(
-                usage_emitter,
+                ctx.usage_emitter,
                 WebSocketUsageEvent::SnapshotSent {
-                    client_id: client_id.to_string(),
+                    client_id: ctx.client_id.to_string(),
                     deployment_id,
                     metering_key,
                     subject,
@@ -1396,7 +1394,7 @@ async fn send_snapshot_batches(
 
     debug!(
         "Sent {} snapshot batches ({} entities) for {} to client {}",
-        batch_count, total, view_id, client_id
+        batch_count, total, view_id, ctx.client_id
     );
 
     Ok(())
@@ -1529,53 +1527,43 @@ async fn attach_client_to_bus(
                     enforce_snapshot_limit(ctx, snapshot_entities.len())?;
                     let batch_config = ctx.entity_cache.snapshot_config();
                     send_snapshot_batches(
-                        ctx.client_id,
+                        ctx,
                         &snapshot_entities,
                         view_spec.mode,
                         view_id,
                         subscription.key.as_deref(),
-                        ctx.client_manager,
-                        ctx.usage_emitter,
                         &batch_config,
-                        #[cfg(feature = "otel")]
-                        ctx.metrics.as_ref(),
                     )
                     .await?;
                     rx.borrow_and_update();
-                } else {
-                    if !rx.borrow().is_empty() {
-                        let data = rx.borrow_and_update().clone();
-                        let data_len = data.len();
-                        if ctx
-                            .client_manager
-                            .send_to_client(ctx.client_id, data)
-                            .is_ok()
-                        {
-                            emit_update_sent_for_client(
-                                ctx.usage_emitter,
-                                ctx.client_manager,
-                                ctx.client_id,
-                                view_id,
-                                data_len,
-                            );
-                        }
-                    } else {
-                        let batch_config = ctx.entity_cache.snapshot_config();
-                        send_snapshot_batches(
-                            ctx.client_id,
-                            &[],
-                            view_spec.mode,
-                            view_id,
-                            subscription.key.as_deref(),
-                            ctx.client_manager,
+                } else if !rx.borrow().is_empty() {
+                    let data = rx.borrow_and_update().clone();
+                    let data_len = data.len();
+                    if ctx
+                        .client_manager
+                        .send_to_client(ctx.client_id, data)
+                        .is_ok()
+                    {
+                        emit_update_sent_for_client(
                             ctx.usage_emitter,
-                            &batch_config,
-                            #[cfg(feature = "otel")]
-                            ctx.metrics.as_ref(),
-                        )
-                        .await?;
-                        rx.borrow_and_update();
+                            ctx.client_manager,
+                            ctx.client_id,
+                            view_id,
+                            data_len,
+                        );
                     }
+                } else {
+                    let batch_config = ctx.entity_cache.snapshot_config();
+                    send_snapshot_batches(
+                        ctx,
+                        &[],
+                        view_spec.mode,
+                        view_id,
+                        subscription.key.as_deref(),
+                        &batch_config,
+                    )
+                    .await?;
+                    rx.borrow_and_update();
                 }
             } else {
                 info!(
@@ -1666,16 +1654,12 @@ async fn attach_client_to_bus(
                 enforce_snapshot_limit(ctx, snapshot_entities.len())?;
                 let batch_config = ctx.entity_cache.snapshot_config();
                 send_snapshot_batches(
-                    ctx.client_id,
+                    ctx,
                     &snapshot_entities,
                     view_spec.mode,
                     view_id,
                     subscription.key.as_deref(),
-                    ctx.client_manager,
-                    ctx.usage_emitter,
                     &batch_config,
-                    #[cfg(feature = "otel")]
-                    ctx.metrics.as_ref(),
                 )
                 .await?;
             } else {
@@ -1795,15 +1779,12 @@ async fn attach_derived_view_subscription_otel(
         enforce_snapshot_limit(ctx, snapshot_entities.len())?;
         let batch_config = ctx.entity_cache.snapshot_config();
         send_snapshot_batches(
-            ctx.client_id,
+            ctx,
             &snapshot_entities,
             view_spec.mode,
             view_id,
             subscription.key.as_deref(),
-            ctx.client_manager,
-            ctx.usage_emitter,
             &batch_config,
-            ctx.metrics.as_ref(),
         )
         .await?;
     }
@@ -1991,49 +1972,43 @@ async fn attach_client_to_bus(
                     enforce_snapshot_limit(ctx, snapshot_entities.len())?;
                     let batch_config = ctx.entity_cache.snapshot_config();
                     send_snapshot_batches(
-                        ctx.client_id,
+                        ctx,
                         &snapshot_entities,
                         view_spec.mode,
                         view_id,
                         subscription.key.as_deref(),
-                        ctx.client_manager,
-                        ctx.usage_emitter,
                         &batch_config,
                     )
                     .await?;
                     rx.borrow_and_update();
-                } else {
-                    if !rx.borrow().is_empty() {
-                        let data = rx.borrow_and_update().clone();
-                        let data_len = data.len();
-                        if ctx
-                            .client_manager
-                            .send_to_client(ctx.client_id, data)
-                            .is_ok()
-                        {
-                            emit_update_sent_for_client(
-                                ctx.usage_emitter,
-                                ctx.client_manager,
-                                ctx.client_id,
-                                view_id,
-                                data_len,
-                            );
-                        }
-                    } else {
-                        let batch_config = ctx.entity_cache.snapshot_config();
-                        send_snapshot_batches(
-                            ctx.client_id,
-                            &[],
-                            view_spec.mode,
-                            view_id,
-                            subscription.key.as_deref(),
-                            ctx.client_manager,
+                } else if !rx.borrow().is_empty() {
+                    let data = rx.borrow_and_update().clone();
+                    let data_len = data.len();
+                    if ctx
+                        .client_manager
+                        .send_to_client(ctx.client_id, data)
+                        .is_ok()
+                    {
+                        emit_update_sent_for_client(
                             ctx.usage_emitter,
-                            &batch_config,
-                        )
-                        .await?;
-                        rx.borrow_and_update();
+                            ctx.client_manager,
+                            ctx.client_id,
+                            view_id,
+                            data_len,
+                        );
                     }
+                } else {
+                    let batch_config = ctx.entity_cache.snapshot_config();
+                    send_snapshot_batches(
+                        ctx,
+                        &[],
+                        view_spec.mode,
+                        view_id,
+                        subscription.key.as_deref(),
+                        &batch_config,
+                    )
+                    .await?;
+                    rx.borrow_and_update();
                 }
             } else {
                 info!(
@@ -2120,13 +2095,11 @@ async fn attach_client_to_bus(
                 enforce_snapshot_limit(ctx, snapshot_entities.len())?;
                 let batch_config = ctx.entity_cache.snapshot_config();
                 send_snapshot_batches(
-                    ctx.client_id,
+                    ctx,
                     &snapshot_entities,
                     view_spec.mode,
                     view_id,
                     subscription.key.as_deref(),
-                    ctx.client_manager,
-                    ctx.usage_emitter,
                     &batch_config,
                 )
                 .await?;
@@ -2243,13 +2216,11 @@ async fn attach_derived_view_subscription(
         enforce_snapshot_limit(ctx, snapshot_entities.len())?;
         let batch_config = ctx.entity_cache.snapshot_config();
         send_snapshot_batches(
-            ctx.client_id,
+            ctx,
             &snapshot_entities,
             view_spec.mode,
             view_id,
             subscription.key.as_deref(),
-            ctx.client_manager,
-            ctx.usage_emitter,
             &batch_config,
         )
         .await?;
