@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ConnectionManager } from './connection';
+import { ConnectionManager, isHostedAreteEndpoint } from './connection';
 import { SubscriptionRegistry } from './subscription';
-import { AreteError } from './types';
+import { QueryStore } from './query-store';
+import { MemoryAdapter } from './storage/memory-adapter';
+import { AreteError, type Subscription, type SubscriptionQuery } from './types';
 
 function toBase64Url(value: string): string {
   return Buffer.from(value, 'utf-8')
@@ -16,6 +18,20 @@ function makeJwt(exp: number): string {
   const header = toBase64Url(JSON.stringify({ alg: 'none', typ: 'JWT' }));
   const payload = toBase64Url(JSON.stringify({ exp }));
   return `${header}.${payload}.signature`;
+}
+
+function subscription(
+  subscriptionId: string,
+  query: SubscriptionQuery,
+  snapshotEnabled = true
+): Subscription {
+  return {
+    type: 'subscribe',
+    protocolVersion: 2,
+    subscriptionId,
+    query,
+    snapshot: { enabled: snapshotEnabled },
+  };
 }
 
 function makeErrorResponse(
@@ -79,6 +95,16 @@ class FactoryWebSocket extends MockWebSocket {
     super(url);
   }
 }
+
+describe('hosted endpoint classification', () => {
+  it('recognizes hosted stack endpoints without accepting suffix lookalikes', () => {
+    expect(isHostedAreteEndpoint('wss://ore.stack.arete.run')).toBe(true);
+    expect(isHostedAreteEndpoint('https://ore.stack.arete.run')).toBe(true);
+    expect(isHostedAreteEndpoint('wss://stack.arete.run.example.com')).toBe(false);
+    expect(isHostedAreteEndpoint('ws://127.0.0.1:8877')).toBe(false);
+    expect(isHostedAreteEndpoint('not-a-url')).toBe(false);
+  });
+});
 
 describe('ConnectionManager auth', () => {
   beforeEach(() => {
@@ -272,6 +298,35 @@ describe('ConnectionManager auth', () => {
     });
   });
 
+  it('does not let an abandoned token refresh block refreshes after reconnecting', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-28T12:00:00Z'));
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const getToken = vi
+      .fn<[], Promise<{ token: string }>>()
+      .mockResolvedValueOnce({ token: makeJwt(nowSeconds + 61) })
+      .mockImplementationOnce(() => new Promise(() => undefined))
+      .mockResolvedValueOnce({ token: makeJwt(nowSeconds + 62) })
+      .mockResolvedValueOnce({ token: makeJwt(nowSeconds + 3600) });
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://refresh.stack.arete.run',
+      auth: { getToken },
+    });
+
+    await manager.connect();
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(getToken).toHaveBeenCalledTimes(2);
+
+    manager.disconnect();
+    await manager.connect();
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    expect(getToken).toHaveBeenCalledTimes(4);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(manager.getState()).toBe('connected');
+  });
+
   it('reuses and atomically upgrades the shared token scope cache', async () => {
     const getToken = vi.fn(async (request?: { scopes: readonly string[] }) => ({
       token: `token-${request?.scopes.join('+')}`,
@@ -406,99 +461,123 @@ describe('ConnectionManager auth', () => {
     const manager = new ConnectionManager({ websocketUrl: null });
 
     await expect(manager.connect()).rejects.toMatchObject({ code: 'WEBSOCKET_DISABLED' });
-    expect(() => manager.subscribe({ view: 'Thing/list' })).toThrowError(
+    expect(() => manager.subscribe(subscription('things:all', { view: 'Thing/list' }))).toThrowError(
       expect.objectContaining({ code: 'WEBSOCKET_DISABLED' })
     );
     expect(manager.isConnected()).toBe(false);
   });
 
-  it('preserves window options when reconnecting active subscriptions', async () => {
+  it('preserves the full v2 query and stable ID when reconnecting', async () => {
     const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+    const active = subscription('rounds:page-2', {
+      view: 'OreRound/latest',
+      take: 1,
+      skip: 2,
+    }, false);
 
     await manager.connect();
-    manager.subscribe({
-      view: 'OreRound/latest',
-      take: 1,
-      skip: 2,
-      withSnapshot: false,
-    });
+    manager.subscribe(active);
 
-    expect(JSON.parse(MockWebSocket.instances[0]!.sent[0]!)).toEqual({
-      type: 'subscribe',
-      view: 'OreRound/latest',
-      take: 1,
-      skip: 2,
-      withSnapshot: false,
-    });
+    expect(JSON.parse(MockWebSocket.instances[0]!.sent[0]!)).toEqual(active);
 
     manager.disconnect();
     await manager.connect();
 
-    expect(JSON.parse(MockWebSocket.instances[1]!.sent[0]!)).toEqual({
-      type: 'subscribe',
-      view: 'OreRound/latest',
-      take: 1,
-      skip: 2,
-      withSnapshot: false,
-    });
+    expect(JSON.parse(MockWebSocket.instances[1]!.sent[0]!)).toEqual(active);
   });
 
-  it('orders refresh unsubscribe before resubscribe and preserves exact options', async () => {
+  it('reports an established socket error as reconnecting rather than terminal', async () => {
     const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
-    const subscription = {
+    const states: string[] = [];
+    manager.onStateChange((state) => { states.push(state); });
+
+    await manager.connect();
+    MockWebSocket.instances[0]!.onerror?.();
+
+    expect(states.at(-1)).toBe('reconnecting');
+    manager.disconnect();
+  });
+
+  it('makes an unexpected close terminal when automatic reconnection is disabled', async () => {
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      autoReconnect: false,
+      reconnectIntervals: [0],
+    });
+
+    await manager.connect();
+    MockWebSocket.instances[0]!.close(1006, 'network lost');
+
+    expect(manager.getState()).toBe('error');
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    await manager.connect();
+    expect(manager.getState()).toBe('connected');
+    expect(MockWebSocket.instances).toHaveLength(2);
+    manager.disconnect();
+  });
+
+  it('orders refresh unsubscribe before resubscribe with the same opaque ID', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+    const active = subscription('miner:wallet', {
       view: 'OreMiner/state',
       key: 'wallet',
       filters: { status: 'open', owner: 'wallet' },
-      withSnapshot: true,
       after: '20:1',
       snapshotLimit: 1,
-    };
+    });
 
     await manager.connect();
-    manager.subscribe(subscription);
+    manager.subscribe(active);
     const ws = MockWebSocket.instances[0]!;
     ws.sent = [];
 
-    manager.refresh({
-      ...subscription,
-      filters: { owner: 'wallet', status: 'open' },
-    });
+    manager.refresh(active);
 
     expect(ws.sent.map((message) => JSON.parse(message))).toEqual([
-      { type: 'unsubscribe', view: 'OreMiner/state', key: 'wallet' },
-      {
-        type: 'subscribe',
-        view: 'OreMiner/state',
-        key: 'wallet',
-        filters: { owner: 'wallet', status: 'open' },
-        withSnapshot: true,
-        after: '20:1',
-        snapshotLimit: 1,
-      },
+      { type: 'unsubscribe', protocolVersion: 2, subscriptionId: 'miner:wallet' },
+      active,
     ]);
 
     manager.disconnect();
     await manager.connect();
-    expect(JSON.parse(MockWebSocket.instances[1]!.sent[0]!)).toEqual({
-      type: 'subscribe',
-      view: 'OreMiner/state',
-      key: 'wallet',
-      filters: { owner: 'wallet', status: 'open' },
-      withSnapshot: true,
-      after: '20:1',
-      snapshotLimit: 1,
-    });
+    expect(JSON.parse(MockWebSocket.instances[1]!.sent[0]!)).toEqual(active);
   });
 
-  it('rejects incompatible options for an active wire identity', async () => {
+  it('retains a refresh registration when the replacement send fails', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+    const active = subscription('miner:wallet', {
+      view: 'OreMiner/state',
+      key: 'wallet',
+    });
+
+    await manager.connect();
+    manager.subscribe(active);
+    const ws = MockWebSocket.instances[0]!;
+    ws.sent = [];
+    const send = vi.spyOn(ws, 'send');
+    send.mockImplementationOnce((data) => { ws.sent.push(data); });
+    send.mockImplementationOnce((data) => {
+      ws.sent.push(data);
+      throw new Error('refresh send failed');
+    });
+
+    expect(() => manager.refresh(active)).toThrowError('refresh send failed');
+
+    manager.disconnect();
+    await manager.connect();
+    expect(JSON.parse(MockWebSocket.instances[1]!.sent[0]!)).toEqual(active);
+  });
+
+  it('rejects reuse of an active opaque ID for a different query', async () => {
     const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
 
     await manager.connect();
-    manager.subscribe({ view: 'Position/list', key: 'position', take: 1 });
+    manager.subscribe(subscription('positions:window', { view: 'Position/list', take: 1 }));
 
     expect(() =>
-      manager.subscribe({ view: 'Position/list', key: 'position', take: 2 })
-    ).toThrowError(/incompatible options/);
+      manager.subscribe(subscription('positions:window', { view: 'Position/list', take: 2 }))
+    ).toThrowError(/already registered/);
     expect(MockWebSocket.instances[0]!.sent).toHaveLength(1);
   });
 
@@ -508,14 +587,14 @@ describe('ConnectionManager auth', () => {
     await manager.connect();
 
     expect(() =>
-      manager.refresh({ view: 'OreMiner/state', key: 'wallet' })
+      manager.refresh(subscription('miner:wallet', { view: 'OreMiner/state', key: 'wallet' }))
     ).toThrowError(/Cannot refresh inactive subscription/);
     expect(MockWebSocket.instances[0]!.sent).toHaveLength(0);
   });
 
   it('compensates for a subscribe send that throws after reaching the socket', async () => {
     const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
-    const registry = new SubscriptionRegistry(manager);
+    const registry = new SubscriptionRegistry(manager, new QueryStore(new MemoryAdapter()));
 
     await manager.connect();
     const ws = MockWebSocket.instances[0]!;
@@ -528,18 +607,25 @@ describe('ConnectionManager auth', () => {
       registry.subscribe({ view: 'OreMiner/state', key: 'wallet' })
     ).toThrowError(/socket send failed/);
     expect(ws.sent.map((message) => JSON.parse(message))).toEqual([
-      { type: 'subscribe', view: 'OreMiner/state', key: 'wallet' },
-      { type: 'unsubscribe', view: 'OreMiner/state', key: 'wallet' },
+      expect.objectContaining({
+        type: 'subscribe',
+        protocolVersion: 2,
+        query: { view: 'OreMiner/state', key: 'wallet' },
+      }),
+      expect.objectContaining({
+        type: 'unsubscribe',
+        protocolVersion: 2,
+      }),
     ]);
     expect(registry.getRefCount({ view: 'OreMiner/state', key: 'wallet' })).toBe(0);
     expect(registry.getActiveSubscriptions()).toEqual([]);
   });
 
-  it('does not send unsubscribe for an inactive wire identity', async () => {
+  it('does not send unsubscribe for an inactive subscription ID', async () => {
     const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
 
     await manager.connect();
-    manager.unsubscribe('OreMiner/state', 'wallet');
+    manager.unsubscribe('miner:not-active');
 
     expect(MockWebSocket.instances[0]!.sent).toHaveLength(0);
   });
@@ -547,11 +633,159 @@ describe('ConnectionManager auth', () => {
   it('removes queued subscriptions before they connect', async () => {
     const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
 
-    manager.subscribe({ view: 'OreMiner/state', key: 'wallet' });
-    manager.unsubscribe('OreMiner/state', 'wallet');
+    manager.subscribe(subscription('miner:wallet', { view: 'OreMiner/state', key: 'wallet' }));
+    manager.unsubscribe('miner:wallet');
     await manager.connect();
 
     expect(MockWebSocket.instances[0]!.sent).toHaveLength(0);
+  });
+
+  it('ignores callbacks and frames from a stale socket generation', async () => {
+    vi.useFakeTimers();
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      reconnectIntervals: [0],
+    });
+    const frameHandler = vi.fn();
+    manager.onFrame(frameHandler);
+
+    const firstConnect = manager.connect();
+    await vi.runAllTicks();
+    await firstConnect;
+    const oldSocket = MockWebSocket.instances[0]!;
+    const staleMessageHandler = oldSocket.onmessage!;
+    oldSocket.close(1006, 'network lost');
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.runAllTicks();
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    await staleMessageHandler({
+      data: JSON.stringify({
+        protocolVersion: 2,
+        subscriptionId: 'things:all',
+        mode: 'list',
+        entity: 'Thing/list',
+        op: 'upsert',
+        key: 'stale',
+        data: { id: 'stale' },
+      }),
+    });
+
+    expect(frameHandler).not.toHaveBeenCalled();
+  });
+
+  it('continues reconnecting when socket construction fails before onclose', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    function IntermittentWebSocket(url: string): MockWebSocket {
+      attempts++;
+      if (attempts === 2) throw new Error('constructor unavailable');
+      return new MockWebSocket(url);
+    }
+    Object.assign(IntermittentWebSocket, {
+      CONNECTING: MockWebSocket.CONNECTING,
+      OPEN: MockWebSocket.OPEN,
+      CLOSING: MockWebSocket.CLOSING,
+      CLOSED: MockWebSocket.CLOSED,
+    });
+    vi.stubGlobal('WebSocket', IntermittentWebSocket as unknown as typeof WebSocket);
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      reconnectIntervals: [0],
+    });
+    const states: string[] = [];
+    manager.onStateChange((state) => { states.push(state); });
+
+    const firstConnect = manager.connect();
+    await vi.runAllTicks();
+    await firstConnect;
+    MockWebSocket.instances[0]!.close(1006, 'network lost');
+
+    await vi.advanceTimersToNextTimerAsync();
+    await vi.runAllTicks();
+    await vi.advanceTimersToNextTimerAsync();
+    await vi.runAllTicks();
+
+    expect(attempts).toBe(3);
+    expect(manager.getState()).toBe('connected');
+    expect(states).not.toContain('error');
+  });
+
+  it('rejects an in-flight connection when disconnected before open', async () => {
+    const socket = {
+      readyState: MockWebSocket.CONNECTING,
+      onopen: null as (() => void) | null,
+      onmessage: null,
+      onerror: null,
+      onclose: null as ((event: { code: number; reason: string }) => void) | null,
+      send: vi.fn(),
+      close() {
+        this.readyState = MockWebSocket.CLOSED;
+        this.onclose?.({ code: 1000, reason: '' });
+      },
+    };
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      auth: { websocketFactory: () => socket as unknown as WebSocket },
+    });
+
+    const connecting = manager.connect();
+    await Promise.resolve();
+    manager.disconnect();
+
+    await expect(connecting).rejects.toMatchObject({ code: 'CONNECTION_CANCELLED' });
+    expect(manager.getState()).toBe('disconnected');
+  });
+
+  it('rejects an in-flight connection when disconnected during authentication', async () => {
+    const getToken = vi
+      .fn<[], Promise<string>>()
+      .mockImplementationOnce(() => new Promise<string>(() => undefined))
+      .mockResolvedValue('fresh-token');
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      auth: { getToken },
+    });
+
+    const connecting = manager.connect();
+    await Promise.resolve();
+    expect(getToken).toHaveBeenCalledOnce();
+    manager.disconnect();
+
+    await expect(connecting).rejects.toMatchObject({ code: 'CONNECTION_CANCELLED' });
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(manager.getState()).toBe('disconnected');
+
+    await manager.connect();
+    expect(getToken).toHaveBeenCalledTimes(2);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(manager.getState()).toBe('connected');
+  });
+
+  it('allows a connecting state handler to cancel the connection synchronously', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+    manager.onStateChange((state) => {
+      if (state === 'connecting') manager.disconnect();
+    });
+
+    await expect(manager.connect()).rejects.toMatchObject({ code: 'CONNECTION_CANCELLED' });
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(manager.getState()).toBe('disconnected');
+  });
+
+  it('allows a disconnected state handler to reconnect synchronously', async () => {
+    const manager = new ConnectionManager({ websocketUrl: 'ws://localhost:8878' });
+    await manager.connect();
+    let reconnecting: Promise<void> | undefined;
+    manager.onStateChange((state) => {
+      if (state === 'disconnected') reconnecting = manager.connect();
+    });
+
+    manager.disconnect();
+    await reconnecting;
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(manager.getState()).toBe('connected');
   });
 
   it('treats the legacy disabled sentinel URL as a null websocketUrl', async () => {

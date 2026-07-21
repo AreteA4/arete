@@ -3,6 +3,7 @@ import {
   parseUiAmountToRaw,
   formatRawToUi,
   toRawAmount,
+  safeToRawAmount,
   getMintDecimals,
   resolveAmount,
   resolveAmountToRaw,
@@ -73,6 +74,28 @@ describe('toRawAmount', () => {
   it('scales ui inputs', () => {
     expect(toRawAmount({ ui: 2 }, 6)).toBe(2_000_000n);
     expect(toRawAmount({ ui: '0.25' }, 8)).toBe(25_000_000n);
+  });
+});
+
+describe('safeToRawAmount', () => {
+  it('returns the same raw value without throwing for valid input', () => {
+    expect(safeToRawAmount({ ui: '1.25' }, 9)).toEqual({
+      success: true,
+      data: 1_250_000_000n,
+    });
+  });
+
+  it('returns invalid UI and raw inputs as failures', () => {
+    const invalidUi = safeToRawAmount({ ui: '1.2.3' }, 6);
+    const excessivePrecision = safeToRawAmount({ ui: '1.0000001' }, 6);
+    const invalidRaw = safeToRawAmount({ raw: 'not-an-integer' }, 6);
+
+    expect(invalidUi).toMatchObject({ success: false });
+    expect(excessivePrecision).toMatchObject({ success: false });
+    expect(invalidRaw).toMatchObject({ success: false });
+    if (!invalidUi.success) {
+      expect(invalidUi.error).toBeInstanceOf(Error);
+    }
   });
 });
 

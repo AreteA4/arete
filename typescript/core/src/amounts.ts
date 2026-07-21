@@ -1,4 +1,5 @@
 import type { ChainClient } from './chain';
+import type { SchemaResult } from './types';
 
 /**
  * A token amount expressed either in UI units (human decimal string/number)
@@ -60,6 +61,18 @@ export function toRawAmount(amount: AmountInput, decimals: number): bigint {
     return BigInt(amount.raw);
   }
   return parseUiAmountToRaw(amount.ui, decimals);
+}
+
+/** Convert an amount to raw units without throwing on invalid user input. */
+export function safeToRawAmount(
+  amount: AmountInput,
+  decimals: number
+): SchemaResult<bigint> {
+  try {
+    return { success: true, data: toRawAmount(amount, decimals) };
+  } catch (error) {
+    return { success: false, error };
+  }
 }
 
 /** Fetch a mint's decimals via the chain read endpoint, throwing when unavailable. */

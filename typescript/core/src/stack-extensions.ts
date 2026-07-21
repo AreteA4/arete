@@ -13,6 +13,33 @@ export const PROGRAM_OPERATION_EXTENSIONS = '__areteProgramOperationExtensions' 
 
 type EmptyRecord = Record<string, never>;
 
+/** Fixed arity, or `[required, total]` when a read has optional arguments. */
+export type ReadArgumentCount = number | readonly [required: number, total: number];
+
+type RequiredArgumentCount<
+  TArgs extends readonly unknown[],
+  TCount extends readonly unknown[] = [],
+> = TArgs extends readonly [infer THead, ...infer TTail]
+  ? undefined extends THead
+    ? TCount['length']
+    : RequiredArgumentCount<TTail, readonly [...TCount, unknown]>
+  : TCount['length'];
+
+type ReadArgumentCountFor<TRead> = TRead extends (...args: infer TArgs) => unknown
+  ? number extends Required<TArgs>['length']
+    ? ReadArgumentCount
+    : RequiredArgumentCount<TArgs> extends Required<TArgs>['length']
+      ? Required<TArgs>['length']
+      : readonly [
+          required: RequiredArgumentCount<TArgs>,
+          total: Required<TArgs>['length'],
+        ]
+  : never;
+
+export type ReadArgumentCounts<TRead = Record<string, unknown>> = {
+  readonly [K in keyof TRead]: ReadArgumentCountFor<TRead[K]>;
+};
+
 type MaybeField<TKey extends string, TValue> = [TValue] extends [never]
   ? {}
   : { readonly [K in TKey]: TValue };
@@ -354,6 +381,7 @@ export interface StackRuntimeExtensions<
   TFlows extends FlowOperationNamespace | EmptyRecord = EmptyRecord,
   TClient = unknown,
 > {
+  readonly readArgCounts?: ReadArgumentCounts<TRead>;
   readonly createRead?: (client: TClient) => TRead;
   readonly createFlows?: (client: TClient) => TFlows;
 }
@@ -413,9 +441,15 @@ export interface StackExtensionInput<
   readonly constants?: TConstants;
   readonly defaults?: TDefaults;
   readonly math?: TMath;
+  readonly readArgCounts?: ReadArgumentCounts<TRead>;
   readonly createRead?: (client: TClient) => TRead;
   readonly createFlows?: (client: TClient) => TFlows;
 }
+
+type ReadArgumentCountRequirement<TExtension> =
+  TExtension extends { readonly createRead: (...args: any[]) => infer TRead }
+    ? { readonly readArgCounts: ReadArgumentCounts<TRead> }
+    : {};
 
 export type StackExtensionClient<
   TBase extends StackDefinition,
@@ -431,7 +465,7 @@ export type StackExtensionClient<
 
 export function defineStackExtensions<TBase extends StackDefinition>() {
   return <
-    TExtension extends StackExtensionInput<
+    const TExtension extends StackExtensionInput<
       any,
       any,
       any,
@@ -441,7 +475,7 @@ export function defineStackExtensions<TBase extends StackDefinition>() {
       any
     >,
   >(
-    extensions: TExtension & {
+    extensions: TExtension & ReadArgumentCountRequirement<TExtension> & {
       readonly createRead?: (
         client: StackExtensionClient<TBase, any, any, any, any>
       ) => unknown;
@@ -457,7 +491,7 @@ export function extendStack<
   TExtension extends StackExtensionInput<any, any, any, any, any, any, any>,
 >(
   stack: TBase,
-  extensions: TExtension
+  extensions: TExtension & ReadArgumentCountRequirement<TExtension>
 ): ExtendedStackDefinition<
   TBase,
   MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
@@ -481,6 +515,12 @@ export function extendStack<
   if (baseRuntime || extensions.createRead || extensions.createFlows) {
     Object.defineProperty(extended, STACK_RUNTIME_EXTENSIONS, {
       value: {
+        readArgCounts: baseRuntime?.readArgCounts && extensions.readArgCounts
+          ? mergeNamespace(
+              baseRuntime.readArgCounts,
+              extensions.readArgCounts
+            ) as ReadArgumentCounts
+          : extensions.readArgCounts ?? baseRuntime?.readArgCounts,
         createRead: baseRuntime?.createRead && extensions.createRead
           ? (client: unknown) => mergeNamespace(
               baseRuntime.createRead!(client),
@@ -515,8 +555,8 @@ export function extendStack<
 
 export function getStackRuntimeExtensions<TStack extends StackDefinition>(
   stack: TStack
-): StackRuntimeExtensions | undefined {
-  return (stack as StackRuntimeExtensionCarrier)[STACK_RUNTIME_EXTENSIONS];
+): StackRuntimeExtensions<StackReadOf<TStack>> | undefined {
+  return (stack as StackRuntimeExtensionCarrier<StackReadOf<TStack>>)[STACK_RUNTIME_EXTENSIONS];
 }
 
 function defineClientField(target: object, key: string, value: unknown) {

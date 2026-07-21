@@ -13,10 +13,7 @@ import type {
 } from './types';
 import { DEFAULT_CONFIG, AreteError, parseErrorCode, shouldRefreshToken } from './types';
 import {
-  incompatibleSubscriptionError,
   normalizeSubscription,
-  subscriptionIdentityKey,
-  subscriptionOptionsKey,
 } from './subscription';
 
 export type FrameHandler = <T>(frame: Frame<T>) => void;
@@ -48,10 +45,12 @@ interface RefreshAuthResponseMessage {
 
 interface SocketIssueWireMessage {
   type: 'error';
-  error: string;
-  message: string;
+  protocolVersion?: 2;
+  subscriptionId?: string | null;
+  error?: string;
+  message?: string;
   code: string;
-  retryable: boolean;
+  retryable?: boolean;
   retry_after?: number;
   suggested_action?: string;
   docs_url?: string;
@@ -130,15 +129,16 @@ function isSocketIssueMessage(value: unknown): value is SocketIssueWireMessage {
 
   const candidate = value as Record<string, unknown>;
   return candidate['type'] === 'error'
-    && typeof candidate['message'] === 'string'
     && typeof candidate['code'] === 'string'
-    && typeof candidate['retryable'] === 'boolean'
-    && typeof candidate['fatal'] === 'boolean';
+    && typeof candidate['fatal'] === 'boolean'
+    && (candidate['message'] === undefined || typeof candidate['message'] === 'string')
+    && (candidate['error'] === undefined || typeof candidate['error'] === 'string')
+    && (candidate['retryable'] === undefined || typeof candidate['retryable'] === 'boolean');
 }
 
-function isHostedAreteWebsocketUrl(websocketUrl: string): boolean {
+export function isHostedAreteEndpoint(url: string): boolean {
   try {
-    return new URL(websocketUrl).hostname.toLowerCase().endsWith(HOSTED_WEBSOCKET_SUFFIX);
+    return new URL(url).hostname.toLowerCase().endsWith(HOSTED_WEBSOCKET_SUFFIX);
   } catch {
     return false;
   }
@@ -153,6 +153,7 @@ export const DISABLED_WEBSOCKET_URL = 'ws://127.0.0.1/__arete_disabled__';
 export class ConnectionManager {
   private ws: WebSocket | null = null;
   private websocketUrl: string | null;
+  private readonly autoReconnect: boolean;
   private reconnectIntervals: number[];
   private maxReconnectAttempts: number;
   private reconnectAttempts = 0;
@@ -164,6 +165,11 @@ export class ConnectionManager {
   private currentState: ConnectionState = 'disconnected';
   private subscriptionQueue: Map<string, Subscription> = new Map();
   private activeSubscriptions: Map<string, Subscription> = new Map();
+  private socketGeneration = 0;
+  private pendingConnect: {
+    generation: number;
+    reject: (error: AreteError) => void;
+  } | null = null;
 
   private frameHandlers: Set<FrameHandler> = new Set();
   private stateHandlers: Set<ConnectionStateCallback> = new Set();
@@ -183,7 +189,8 @@ export class ConnectionManager {
         ? config.websocketUrl
         : null;
     this.websocketUrl = websocketUrl;
-    this.hostedAreteUrl = websocketUrl !== null && isHostedAreteWebsocketUrl(websocketUrl);
+    this.hostedAreteUrl = websocketUrl !== null && isHostedAreteEndpoint(websocketUrl);
+    this.autoReconnect = config.autoReconnect ?? DEFAULT_CONFIG.autoReconnect;
     this.reconnectIntervals = config.reconnectIntervals ?? DEFAULT_CONFIG.reconnectIntervals;
     this.maxReconnectAttempts =
       config.maxReconnectAttempts ?? DEFAULT_CONFIG.maxReconnectAttempts;
@@ -285,11 +292,16 @@ export class ConnectionManager {
       );
     }
 
-    this.tokenRequestInFlight = Promise.resolve().then(() =>
-      this.fetchAuthToken([...new Set([...this.tokenScopes, ...this.requestedScopes])])
+    let request!: Promise<string | undefined>;
+    request = Promise.resolve().then(() =>
+      this.fetchAuthToken(
+        [...new Set([...this.tokenScopes, ...this.requestedScopes])],
+        () => this.tokenRequestInFlight === request
+      )
     );
+    this.tokenRequestInFlight = request;
     try {
-      const token = await this.tokenRequestInFlight;
+      const token = await request;
       if (token && !this.tokenCovers(requiredScopes)) {
         throw new AreteError(
           `Authentication token was not granted required scopes: ${requiredScopes.join(', ')}`,
@@ -298,13 +310,23 @@ export class ConnectionManager {
       }
       return token;
     } finally {
-      this.tokenRequestInFlight = null;
+      if (this.tokenRequestInFlight === request) {
+        this.tokenRequestInFlight = null;
+      }
     }
   }
 
-  private async fetchAuthToken(scopes: readonly string[]): Promise<string | undefined> {
+  private async fetchAuthToken(
+    scopes: readonly string[],
+    isCurrent: () => boolean
+  ): Promise<string | undefined> {
 
     const strategy = this.getAuthStrategy();
+    const requireCurrent = () => {
+      if (!isCurrent()) {
+        throw new AreteError('Authentication request was superseded', 'CONNECTION_CANCELLED');
+      }
+    };
 
     // For hosted Arete URLs, auth is required - fail early with clear message
     if (strategy.kind === 'none' && this.hostedAreteUrl) {
@@ -316,11 +338,15 @@ export class ConnectionManager {
     }
 
     switch (strategy.kind) {
-      case 'static-token':
+      case 'static-token': {
+        requireCurrent();
         return this.updateTokenState(strategy.token, scopes);
+      }
       case 'token-provider':
         try {
-          return this.updateTokenState(await strategy.getToken({ scopes }), scopes);
+          const result = await strategy.getToken({ scopes });
+          requireCurrent();
+          return this.updateTokenState(result, scopes);
         } catch (error) {
           if (error instanceof AreteError) {
             throw error;
@@ -333,8 +359,10 @@ export class ConnectionManager {
         }
       case 'token-endpoint':
         try {
+          const result = await this.fetchTokenFromEndpoint(strategy.endpoint, scopes);
+          requireCurrent();
           return this.updateTokenState(
-            await this.fetchTokenFromEndpoint(strategy.endpoint, scopes),
+            result,
             scopes
           );
         } catch (error) {
@@ -348,6 +376,7 @@ export class ConnectionManager {
           );
         }
       case 'none':
+        requireCurrent();
         return undefined;
     }
   }
@@ -463,7 +492,8 @@ export class ConnectionManager {
       return this.tokenRefreshInFlight;
     }
 
-    this.tokenRefreshInFlight = (async () => {
+    let refresh!: Promise<void>;
+    refresh = (async () => {
       const previousToken = this.currentToken;
       try {
         await this.getOrRefreshToken(true, [...this.tokenScopes]);
@@ -480,15 +510,22 @@ export class ConnectionManager {
             this.rotateConnectionForTokenRefresh();
           }
         }
-        this.scheduleTokenRefresh();
+        if (this.tokenRefreshInFlight === refresh) {
+          this.scheduleTokenRefresh();
+        }
       } catch {
-        this.scheduleTokenRefresh();
+        if (this.tokenRefreshInFlight === refresh) {
+          this.scheduleTokenRefresh();
+        }
       } finally {
-        this.tokenRefreshInFlight = null;
+        if (this.tokenRefreshInFlight === refresh) {
+          this.tokenRefreshInFlight = null;
+        }
       }
     })();
+    this.tokenRefreshInFlight = refresh;
 
-    return this.tokenRefreshInFlight;
+    return refresh;
   }
 
   private async sendInBandAuthRefresh(token: string): Promise<boolean> {
@@ -540,6 +577,15 @@ export class ConnectionManager {
 
   private rotateConnectionForTokenRefresh(): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.reconnectForTokenRefresh) {
+      return;
+    }
+
+    if (!this.autoReconnect) {
+      this.updateState(
+        'error',
+        'Token refresh requires a new connection, but automatic reconnection is disabled'
+      );
+      this.ws.close(1000, 'token refresh');
       return;
     }
 
@@ -641,14 +687,15 @@ export class ConnectionManager {
 
   private notifySocketIssue(message: SocketIssueWireMessage): SocketIssue {
     const issue: SocketIssue = {
-      error: message.error,
-      message: message.message,
+      error: message.error ?? message.code,
+      message: message.message ?? message.error ?? message.code,
       code: parseErrorCode(message.code),
-      retryable: message.retryable,
+      retryable: message.retryable ?? false,
       retryAfter: message.retry_after,
       suggestedAction: message.suggested_action,
       docsUrl: message.docs_url,
       fatal: message.fatal,
+      subscriptionId: message.subscriptionId,
     };
 
     for (const handler of this.socketIssueHandlers) {
@@ -658,7 +705,7 @@ export class ConnectionManager {
     return issue;
   }
 
-  async connect(): Promise<void> {
+  async connect(recovering = false): Promise<void> {
     this.requireWebsocketUrl();
 
     if (
@@ -669,35 +716,59 @@ export class ConnectionManager {
       return;
     }
 
-    this.updateState('connecting');
+    const generation = ++this.socketGeneration;
+    const cancellation = new Promise<never>((_resolve, reject) => {
+      this.pendingConnect = { generation, reject };
+    });
+    this.updateState(recovering ? 'reconnecting' : 'connecting');
+    if (generation !== this.socketGeneration) {
+      return cancellation;
+    }
 
     let token: string | undefined;
     try {
-      token = await this.getOrRefreshToken(false, ['read']);
+      token = await Promise.race([
+        this.getOrRefreshToken(false, ['read']),
+        cancellation,
+      ]);
     } catch (error) {
-      this.updateState(
-        'error',
-        error instanceof Error ? error.message : 'Failed to get token'
-      );
+      if (this.pendingConnect?.generation === generation) {
+        this.pendingConnect = null;
+      }
+      if (generation === this.socketGeneration) {
+        this.updateState(
+          recovering ? 'reconnecting' : 'error',
+          error instanceof Error ? error.message : 'Failed to get token'
+        );
+      }
       throw error;
+    }
+    if (generation !== this.socketGeneration) {
+      throw new AreteError('WebSocket connection attempt was superseded', 'CONNECTION_CANCELLED');
     }
 
     const wsUrl = this.buildAuthUrl(token);
 
-    return new Promise((resolve, reject) => {
+    const socketConnection = new Promise<void>((resolve, reject) => {
       let settled = false;
       const finish = (fn: () => void) => {
         if (settled) {
           return;
         }
         settled = true;
+        if (this.pendingConnect?.generation === generation) {
+          this.pendingConnect = null;
+        }
         fn();
       };
-
       try {
-        this.ws = this.createWebSocket(wsUrl, token);
+        const socket = this.createWebSocket(wsUrl, token);
+        this.ws = socket;
+        const isCurrentSocket = () =>
+          this.ws === socket && this.socketGeneration === generation;
 
-        this.ws.onopen = () => {
+        socket.onopen = () => {
+          if (!isCurrentSocket()) return;
           this.reconnectAttempts = 0;
           this.updateState('connected');
           this.startPingInterval();
@@ -707,7 +778,8 @@ export class ConnectionManager {
           finish(() => resolve());
         };
 
-        this.ws.onmessage = async (event) => {
+        socket.onmessage = async (event) => {
+          if (!isCurrentSocket()) return;
           try {
             let frame: Frame;
 
@@ -722,7 +794,15 @@ export class ConnectionManager {
                 return;
               }
               if (isSocketIssueMessage(parsed)) {
-                this.handleSocketIssueMessage(parsed);
+                if (parsed.protocolVersion === 2) {
+                  const issueFrame = parseFrame(JSON.stringify(parsed));
+                  if (isCurrentSocket()) this.notifyFrameHandlers(issueFrame);
+                  if (parsed.subscriptionId === null || parsed.fatal) {
+                    this.handleSocketIssueMessage(parsed);
+                  }
+                } else {
+                  this.handleSocketIssueMessage(parsed);
+                }
                 return;
               }
               frame = parseFrame(JSON.stringify(parsed));
@@ -733,22 +813,28 @@ export class ConnectionManager {
               );
             }
 
-            this.notifyFrameHandlers(frame);
+            if (isCurrentSocket()) this.notifyFrameHandlers(frame);
           } catch {
+            if (!isCurrentSocket()) return;
             this.updateState('error', 'Failed to parse frame from server');
           }
         };
 
-        this.ws.onerror = () => {
+        socket.onerror = () => {
+          if (!isCurrentSocket()) return;
           const error = new AreteError('WebSocket connection error', 'CONNECTION_ERROR');
           const wasConnecting = this.currentState === 'connecting';
-          this.updateState('error', error.message);
+          this.updateState(
+            wasConnecting || !this.autoReconnect ? 'error' : 'reconnecting',
+            error.message
+          );
           if (wasConnecting) {
             finish(() => reject(error));
           }
         };
 
-        this.ws.onclose = (event) => {
+        socket.onclose = (event) => {
+          if (!isCurrentSocket()) return;
           this.stopPingInterval();
           this.clearTokenRefreshTimeout();
           this.ws = null;
@@ -758,7 +844,7 @@ export class ConnectionManager {
               ? `${event.code}: ${event.reason}`
               : `code ${event.code}`;
             const errorMessage = `WebSocket closed before open (${detail})`;
-            this.updateState('error', errorMessage);
+            this.updateState(recovering ? 'reconnecting' : 'error', errorMessage);
             finish(() =>
               reject(new AreteError(errorMessage, 'CONNECTION_ERROR'))
             );
@@ -767,7 +853,14 @@ export class ConnectionManager {
 
           if (this.reconnectForTokenRefresh) {
             this.reconnectForTokenRefresh = false;
-            void this.connect().catch(() => {
+            if (!this.autoReconnect) {
+              this.updateState(
+                'error',
+                'WebSocket closed for token refresh and automatic reconnection is disabled'
+              );
+              return;
+            }
+            void this.connect(true).catch(() => {
               this.handleReconnect();
             });
             return;
@@ -786,8 +879,15 @@ export class ConnectionManager {
 
             if (isAuthError) {
               this.clearTokenState();
+              if (!this.autoReconnect) {
+                this.updateState(
+                  'error',
+                  `Authentication refresh requires reconnection, but automatic reconnection is disabled: ${closeReason || event.code}`
+                );
+                return;
+              }
               // Try to reconnect immediately with a fresh token
-              void this.connect().catch(() => {
+              void this.connect(true).catch(() => {
                 this.handleReconnect();
               });
               return;
@@ -806,7 +906,17 @@ export class ConnectionManager {
           }
 
           if (this.currentState !== 'disconnected') {
-            this.handleReconnect();
+            if (this.autoReconnect) {
+              this.handleReconnect();
+            } else {
+              const detail = event.reason
+                ? `${event.code}: ${event.reason}`
+                : `code ${event.code}`;
+              this.updateState(
+                'error',
+                `WebSocket closed (${detail}) and automatic reconnection is disabled`
+              );
+            }
           }
         };
       } catch (error) {
@@ -815,10 +925,11 @@ export class ConnectionManager {
           'CONNECTION_ERROR',
           error
         );
-        this.updateState('error', hsError.message);
-        reject(hsError);
+        this.updateState(recovering ? 'reconnecting' : 'error', hsError.message);
+        finish(() => reject(hsError));
       }
     });
+    return Promise.race([socketConnection, cancellation]);
   }
 
   disconnect(): void {
@@ -826,57 +937,71 @@ export class ConnectionManager {
     this.stopPingInterval();
     this.clearTokenRefreshTimeout();
     this.reconnectForTokenRefresh = false;
-    this.updateState('disconnected');
+    const pendingConnect = this.pendingConnect;
+    this.pendingConnect = null;
+    this.tokenRequestInFlight = null;
+    this.tokenRefreshInFlight = null;
+    this.socketGeneration++;
+    pendingConnect?.reject(
+      new AreteError('WebSocket connection attempt was cancelled', 'CONNECTION_CANCELLED')
+    );
 
     if (this.ws) {
-      this.ws.close();
+      const socket = this.ws;
       this.ws = null;
+      socket.close();
     }
+    this.updateState('disconnected');
   }
 
   subscribe(subscription: Subscription): void {
     this.requireWebsocketUrl();
 
     const normalized = normalizeSubscription(subscription);
-    const subKey = subscriptionIdentityKey(normalized);
-    const existing = this.activeSubscriptions.get(subKey) ?? this.subscriptionQueue.get(subKey);
+    const subscriptionId = normalized.subscriptionId;
+    const existing = this.activeSubscriptions.get(subscriptionId)
+      ?? this.subscriptionQueue.get(subscriptionId);
 
     if (existing) {
-      if (subscriptionOptionsKey(existing) !== subscriptionOptionsKey(normalized)) {
-        throw incompatibleSubscriptionError(normalized);
+      if (JSON.stringify(existing) !== JSON.stringify(normalized)) {
+        throw new AreteError(
+          `subscriptionId '${subscriptionId}' is already registered locally`,
+          'DUPLICATE_SUBSCRIPTION_ID'
+        );
       }
       return;
     }
 
     if (this.currentState === 'connected' && this.ws?.readyState === WebSocket.OPEN) {
-      const subMsg = { type: 'subscribe', ...normalized };
       try {
-        this.ws.send(JSON.stringify(subMsg));
+        this.ws.send(JSON.stringify(normalized));
       } catch (error) {
         try {
-          const unsubMsg = { type: 'unsubscribe', view: normalized.view, key: normalized.key };
+          const unsubMsg = {
+            type: 'unsubscribe',
+            protocolVersion: 2,
+            subscriptionId,
+          };
           this.ws.send(JSON.stringify(unsubMsg));
         } catch {
           // The original send error is more useful; cleanup is best-effort.
         }
         throw error;
       }
-      this.activeSubscriptions.set(subKey, normalized);
+      this.activeSubscriptions.set(subscriptionId, normalized);
     } else {
-      this.subscriptionQueue.set(subKey, normalized);
+      this.subscriptionQueue.set(subscriptionId, normalized);
     }
   }
 
-  unsubscribe(view: string, key?: string): void {
-    const subscription: Subscription = { view, key };
-    const subKey = subscriptionIdentityKey(subscription);
-    this.subscriptionQueue.delete(subKey);
+  unsubscribe(subscriptionId: string): void {
+    this.subscriptionQueue.delete(subscriptionId);
 
-    if (this.activeSubscriptions.has(subKey)) {
-      this.activeSubscriptions.delete(subKey);
+    if (this.activeSubscriptions.has(subscriptionId)) {
+      this.activeSubscriptions.delete(subscriptionId);
 
       if (this.ws?.readyState === WebSocket.OPEN) {
-        const unsubMsg = { type: 'unsubscribe', view, key };
+        const unsubMsg = { type: 'unsubscribe', protocolVersion: 2, subscriptionId };
         this.ws.send(JSON.stringify(unsubMsg));
       }
     }
@@ -886,22 +1011,32 @@ export class ConnectionManager {
     this.requireWebsocketUrl();
 
     const normalized = normalizeSubscription(subscription);
-    const subKey = subscriptionIdentityKey(normalized);
-    const existing = this.activeSubscriptions.get(subKey) ?? this.subscriptionQueue.get(subKey);
+    const subscriptionId = normalized.subscriptionId;
+    const existing = this.activeSubscriptions.get(subscriptionId)
+      ?? this.subscriptionQueue.get(subscriptionId);
 
     if (!existing) {
-      const key = normalized.key === undefined ? '*' : normalized.key;
       throw new AreteError(
-        `Cannot refresh inactive subscription '${normalized.view}' with key '${key}'`,
+        `Cannot refresh inactive subscription '${subscriptionId}'`,
         'SUBSCRIPTION_NOT_FOUND'
       );
     }
-    if (subscriptionOptionsKey(existing) !== subscriptionOptionsKey(normalized)) {
-      throw incompatibleSubscriptionError(normalized);
+    if (JSON.stringify(existing) !== JSON.stringify(normalized)) {
+      throw new AreteError('Cannot change a subscription while refreshing it', 'INVALID_SUBSCRIPTION');
     }
 
-    this.unsubscribe(existing.view, existing.key);
-    this.subscribe(existing);
+    try {
+      this.unsubscribe(subscriptionId);
+      this.subscribe(existing);
+    } catch (error) {
+      if (
+        !this.activeSubscriptions.has(subscriptionId)
+        && !this.subscriptionQueue.has(subscriptionId)
+      ) {
+        this.addQueuedSubscription(existing);
+      }
+      throw error;
+    }
   }
 
   isConnected(): boolean {
@@ -919,22 +1054,24 @@ export class ConnectionManager {
   private resubscribeActive(): void {
     for (const subscription of this.activeSubscriptions.values()) {
       if (this.ws?.readyState === WebSocket.OPEN) {
-        const subMsg = { type: 'subscribe', ...subscription };
-        this.ws.send(JSON.stringify(subMsg));
+        this.ws.send(JSON.stringify(subscription));
       }
     }
   }
 
   private addQueuedSubscription(subscription: Subscription): void {
     const normalized = normalizeSubscription(subscription);
-    const subKey = subscriptionIdentityKey(normalized);
-    const existing = this.subscriptionQueue.get(subKey);
+    const subscriptionId = normalized.subscriptionId;
+    const existing = this.subscriptionQueue.get(subscriptionId);
 
-    if (existing && subscriptionOptionsKey(existing) !== subscriptionOptionsKey(normalized)) {
-      throw incompatibleSubscriptionError(normalized);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(normalized)) {
+      throw new AreteError(
+        `subscriptionId '${subscriptionId}' is already queued`,
+        'DUPLICATE_SUBSCRIPTION_ID'
+      );
     }
     if (!existing) {
-      this.subscriptionQueue.set(subKey, normalized);
+      this.subscriptionQueue.set(subscriptionId, normalized);
     }
   }
 
@@ -952,6 +1089,10 @@ export class ConnectionManager {
   }
 
   private handleReconnect(): void {
+    if (!this.autoReconnect) {
+      this.updateState('error', 'Automatic reconnection is disabled');
+      return;
+    }
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       this.updateState(
         'error',
@@ -971,8 +1112,12 @@ export class ConnectionManager {
     this.reconnectAttempts++;
 
     this.reconnectTimeout = setTimeout(() => {
-      this.connect().catch(() => {
-        /* retry handled by onclose */
+      this.connect(true).catch(() => {
+        // Once a socket exists, its close event owns the next retry. Token
+        // acquisition and socket construction can fail before that point.
+        if (this.ws === null && this.currentState !== 'disconnected') {
+          this.handleReconnect();
+        }
       });
     }, delay);
   }

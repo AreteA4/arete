@@ -47,6 +47,7 @@ describe('extendStack', () => {
           artifacts: {},
         })),
       }),
+      readArgCounts: { ping: 0 },
       createRead: () => ({ ping: () => 'pong' }),
     });
 
@@ -63,16 +64,31 @@ describe('extendStack', () => {
     const first = extendStack(BASE_STACK, {
       addresses: { a: 1, shared: 'base' },
       constants: { one: true },
+      readArgCounts: { one: 0, shared: 0 },
       createRead: () => ({ one: 1, shared: 'base' }),
     });
     const second = extendStack(first, {
       addresses: { b: 2, shared: 'override' },
       constants: { two: true },
+      readArgCounts: { two: 0, shared: 0 },
       createRead: () => ({ two: 2, shared: 'override' }),
+    });
+    const third = extendStack(second, {
+      createFlows: () => ({}),
     });
 
     expect(second.addresses).toEqual({ a: 1, b: 2, shared: 'override' });
     expect(second.constants).toEqual({ one: true, two: true });
+    expect(getStackRuntimeExtensions(second)?.readArgCounts).toEqual({
+      one: 0,
+      two: 0,
+      shared: 0,
+    });
+    expect(getStackRuntimeExtensions(third)?.readArgCounts).toEqual({
+      one: 0,
+      two: 0,
+      shared: 0,
+    });
     expect(getStackRuntimeExtensions(second)?.createRead?.(null as never)).toEqual({
       one: 1,
       two: 2,
@@ -88,6 +104,7 @@ describe('applyConnectedStackExtensions', () => {
       constants: { closeMemo: 'memo' },
       defaults: { retries: 3 },
       math: { double: (value: number) => value * 2 },
+      readArgCounts: { echo: 0 },
       createFlows: () => ({
         close: flowOperation(async () => createPreparedFlow({
           name: 'close',
@@ -291,7 +308,11 @@ describe('extendPrograms', () => {
 
 describe('define extensions', () => {
   it('return their extension input unchanged at runtime', () => {
-    const stackInput = { addresses: { a: 1 }, createRead: () => ({ value: true }) };
+    const stackInput = {
+      addresses: { a: 1 },
+      readArgCounts: { value: 0 },
+      createRead: () => ({ value: true }),
+    };
     const programInput = {
       addresses: { a: 1 },
       constants: { p: true },
@@ -299,6 +320,22 @@ describe('define extensions', () => {
     };
     expect(defineStackExtensions<typeof BASE_STACK>()(stackInput)).toBe(stackInput);
     expect(defineProgramExtensions<typeof BASE_PROGRAM>()(programInput)).toBe(programInput);
+  });
+
+  it('requires argument metadata for every stack read', () => {
+    const define = defineStackExtensions<typeof BASE_STACK>();
+
+    // @ts-expect-error createRead requires static argument-count metadata.
+    define({ createRead: () => ({ ping: () => 'pong' }) });
+    // @ts-expect-error the metadata must cover every returned read.
+    define({ readArgCounts: {}, createRead: () => ({ ping: () => 'pong' }) });
+    // @ts-expect-error fixed read arity must match the function signature.
+    define({ readArgCounts: { ping: 0 }, createRead: () => ({ ping: (_value: string) => 'pong' }) });
+    // @ts-expect-error optional read arity must declare required and total counts.
+    define({
+      readArgCounts: { ping: 1 },
+      createRead: () => ({ ping: (_value: string, _limit?: number) => 'pong' }),
+    });
   });
 
   it('rejects operations placed in the wrong cardinality namespace', () => {

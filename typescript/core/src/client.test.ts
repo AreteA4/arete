@@ -38,8 +38,9 @@ describe('Arete SDK', () => {
   });
 
   it('should export ConnectionManager', async () => {
-    const { ConnectionManager } = await import('./index');
+    const { ConnectionManager, isHostedAreteEndpoint } = await import('./index');
     expect(ConnectionManager).toBeDefined();
+    expect(isHostedAreteEndpoint('wss://ore.stack.arete.run')).toBe(true);
   });
 
   it('should export MemoryAdapter', async () => {
@@ -67,7 +68,7 @@ describe('Arete SDK', () => {
       },
       views: {},
     } as const, {
-      autoReconnect: false,
+      autoConnect: false,
       flushIntervalMs: 100,
     });
     const processor = (client as unknown as {
@@ -93,11 +94,67 @@ describe('Arete SDK', () => {
     expect(client.processedSlot).toBe(75n);
     expect(client.store.get('Board/state', 'board')).toEqual({ round: 1 });
   });
+
+  it('composes execution callbacks with client defaults without changing confirmation', async () => {
+    const { Arete, createPreparedInstruction } = await import('./index');
+    const calls: string[] = [];
+    const client = await Arete.connect({
+      name: 'execution-callbacks',
+      endpoints: { ws: 'wss://example.invalid', http: 'https://example.invalid' },
+      views: {},
+    } as const, {
+      autoConnect: false,
+      wallet: {
+        publicKey: 'wallet',
+        async signAndSend() {
+          return { signature: 'callback-signature', slot: 12 };
+        },
+      },
+      execution: {
+        onTransactionStart: () => { calls.push('default:start'); },
+        onTransactionSuccess: () => {
+          calls.push('default:success');
+          throw new Error('default observer failed');
+        },
+        onCallbackError: () => { calls.push('default:error'); },
+      },
+    });
+    const prepared = createPreparedInstruction({
+      name: 'callback-demo',
+      instruction: {
+        programId: 'program',
+        keys: [],
+        data: new Uint8Array([1]),
+      },
+      artifacts: {},
+    });
+
+    const receipt = await client.execute(prepared, {
+      onTransactionStart: () => { calls.push('call:start'); },
+      onTransactionSuccess: () => { calls.push('call:success'); },
+      onCallbackError: () => { calls.push('call:error'); },
+    });
+
+    expect(calls).toEqual([
+      'default:start',
+      'call:start',
+      'default:success',
+      'call:success',
+      'default:error',
+      'call:error',
+    ]);
+    expect(receipt).toMatchObject({
+      signatures: ['callback-signature'],
+      callbackErrors: [expect.objectContaining({ cause: expect.any(Error) })],
+    });
+  });
 });
 
 describe('Frame parsing', () => {
   it('should parse uncompressed entity frames', () => {
     const frame = {
+      protocolVersion: 2,
+      subscriptionId: 'test:all',
       mode: 'list',
       entity: 'test/list',
       op: 'upsert',
@@ -112,11 +169,16 @@ describe('Frame parsing', () => {
 
   it('should parse uncompressed snapshot frames', () => {
     const frame = {
+      protocolVersion: 2,
+      subscriptionId: 'test:all',
+      snapshotId: 'snapshot-1',
+      authoritative: true,
       mode: 'list',
       entity: 'test/list',
       op: 'snapshot',
       key: 'requested-key',
       data: [{ key: '1', data: { id: 1 } }],
+      complete: true,
     };
     const result = parseFrame(JSON.stringify(frame));
     expect(result.op).toBe('snapshot');
@@ -131,6 +193,10 @@ describe('Frame parsing', () => {
 
   it('should decompress raw gzip binary frames', () => {
     const originalFrame = {
+      protocolVersion: 2,
+      subscriptionId: 'test:all',
+      snapshotId: 'snapshot-2',
+      authoritative: true,
       mode: 'list',
       entity: 'test/list',
       op: 'snapshot',
@@ -138,6 +204,7 @@ describe('Frame parsing', () => {
         { key: '1', data: { id: 1, name: 'Test Entity' } },
         { key: '2', data: { id: 2, name: 'Another Entity' } },
       ],
+      complete: true,
     };
 
     const jsonString = JSON.stringify(originalFrame);
@@ -196,8 +263,8 @@ describe('Arete instructions (namespaced stacks)', () => {
       },
     } as const;
 
-    // autoReconnect: false keeps the client fully offline.
-    return Arete.connect(stack, { autoReconnect: false });
+    // autoConnect: false keeps the client fully offline.
+    return Arete.connect(stack, { autoConnect: false });
   }
 
   it('mirrors per-program nesting and builds through the raw path', async () => {
@@ -248,7 +315,7 @@ describe('Arete instructions (namespaced stacks)', () => {
         programs: {},
       } as const,
       {
-        autoReconnect: false,
+        autoConnect: false,
         programs: {
           attached: attachedProgram,
         },
@@ -304,7 +371,7 @@ describe('Arete instructions (namespaced stacks)', () => {
           },
         } as const,
         {
-          autoReconnect: false,
+          autoConnect: false,
           programs: {
             ore: {
               name: 'ore-attached',
@@ -351,7 +418,7 @@ describe('Arete instructions (namespaced stacks)', () => {
         programs: {},
       } as const,
       {
-        autoReconnect: false,
+        autoConnect: false,
         programs: {
           attached: {
             name: 'attached',
@@ -524,6 +591,7 @@ describe('Arete instructions (namespaced stacks)', () => {
             close: flowOperation(async () => plan),
           };
         },
+        readArgCounts: { closeMemo: 0 },
         createRead(client) {
           return {
             closeMemo() {
@@ -534,7 +602,7 @@ describe('Arete instructions (namespaced stacks)', () => {
       }
     );
 
-    const client = await Arete.connect(stack, { autoReconnect: false });
+    const client = await Arete.connect(stack, { autoConnect: false });
     const wallet = {
       publicKey: SIGNER,
       async signAndSend(): Promise<{ signature: string; slot: number }> {
@@ -620,7 +688,7 @@ describe('Arete instructions (namespaced stacks)', () => {
       },
     } as const;
 
-    const client = await Arete.connect(stack, { autoReconnect: false });
+    const client = await Arete.connect(stack, { autoConnect: false });
 
     const wallet = {
       publicKey: SIGNER,
@@ -718,7 +786,7 @@ describe('Arete instructions (namespaced stacks)', () => {
       programs: { ore: extendProgram(base, extensions) },
     } as const;
 
-    const client = await Arete.connect(stack, { autoReconnect: false });
+    const client = await Arete.connect(stack, { autoConnect: false });
     const prepared = await client.programs.ore.instructions.closeViaContext.prepare({});
 
     expect(prepared.artifacts).toEqual({ source: 'base', vault: 'vault:alice' });
@@ -799,7 +867,7 @@ describe('Arete instructions (namespaced stacks)', () => {
       } as const;
 
       const client = await Arete.connect(stack, {
-        autoReconnect: false,
+        autoConnect: false,
         auth: {
           getToken: async () => ({ token: 'session-token', expiresAt: Math.floor(Date.now() / 1000) + 300 }),
         },
@@ -844,7 +912,7 @@ describe('Arete instructions (namespaced stacks)', () => {
     }
   });
 
-  it('allows HTTP-only clients when autoReconnect is disabled', async () => {
+  it('allows explicit HTTP-only clients', async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ exists: false }), { status: 200 }));
     globalThis.fetch = fetchMock as typeof fetch;
@@ -861,11 +929,44 @@ describe('Arete instructions (namespaced stacks)', () => {
         programs: {},
       } as const;
 
-      const client = await Arete.connect(stack, { autoReconnect: false });
+      const client = await Arete.connect(stack, { transport: 'http' });
       await expect(client.chain.exists('unused')).resolves.toBe(false);
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('separates initial connection from automatic reconnection policy', async () => {
+    const { Arete } = await import('./index');
+    const stack = {
+      name: 'manual-connect',
+      endpoints: {
+        ws: 'wss://example.invalid',
+        http: 'https://example.invalid',
+      },
+      views: {},
+    } as const;
+
+    const client = await Arete.connect(stack, {
+      autoConnect: false,
+      autoReconnect: true,
+    });
+
+    expect(client.connectionState).toBe('disconnected');
+    client.disconnect();
+  });
+
+  it('does not infer HTTP transport from disabled initial connection', async () => {
+    const { Arete } = await import('./index');
+    const stack = {
+      name: 'missing-websocket',
+      endpoints: { ws: '', http: 'https://example.invalid' },
+      views: {},
+    } as const;
+
+    await expect(Arete.connect(stack, { autoConnect: false })).rejects.toMatchObject({
+      code: 'INVALID_CONFIG',
+    });
   });
 
   it('throws structured HTTP read errors without conflating schema failures', async () => {

@@ -1,8 +1,15 @@
 import type { Frame, SnapshotFrame, EntityFrame, SubscribedFrame } from './frame';
-import { isSnapshotFrame, isSubscribedFrame } from './frame';
+import {
+  isEntityFrame,
+  isErrorFrame,
+  isSnapshotFrame,
+  isSubscribedFrame,
+  isUnsubscribedFrame,
+} from './frame';
 import type { StorageAdapter } from './storage/adapter';
-import type { RichUpdate, Schema } from './types';
+import type { RichUpdate, Schema, Update } from './types';
 import { DEFAULT_MAX_ENTRIES_PER_VIEW } from './types';
+import type { QueryStore } from './query-store';
 
 const INTERNAL_SEQ_FIELD = '__seq';
 
@@ -47,6 +54,19 @@ export interface FrameProcessorConfig {
   flushIntervalMs?: number;
   schemas?: Record<string, Schema<unknown>>;
   patchSchemas?: Record<string, Schema<unknown>>;
+  queryStore?: QueryStore;
+  /** Whether rejected frames should also be written to `console.warn`. */
+  warnOnValidationError?: boolean;
+  /** Receives structured details whenever a generated schema rejects a frame. */
+  onValidationError?: (diagnostic: FrameValidationDiagnostic) => void;
+}
+
+export interface FrameValidationDiagnostic {
+  readonly view: string;
+  readonly key?: string;
+  readonly seq?: string;
+  readonly operation: 'snapshot' | 'upsert' | 'patch';
+  readonly error: unknown;
 }
 
 interface PendingUpdate<T = unknown> {
@@ -144,6 +164,9 @@ export class FrameProcessor {
   private flushIntervalMs: number;
   private schemas?: Record<string, Schema<unknown>>;
   private patchSchemas?: Record<string, Schema<unknown>>;
+  private queryStore?: QueryStore;
+  private warnOnValidationError: boolean;
+  private onValidationError?: (diagnostic: FrameValidationDiagnostic) => void;
   private pendingUpdates: PendingUpdate[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private isProcessing = false;
@@ -158,6 +181,9 @@ export class FrameProcessor {
     this.flushIntervalMs = config.flushIntervalMs ?? 0;
     this.schemas = config.schemas;
     this.patchSchemas = config.patchSchemas;
+    this.queryStore = config.queryStore;
+    this.warnOnValidationError = config.warnOnValidationError ?? true;
+    this.onValidationError = config.onValidationError;
   }
 
   private getSchema(viewPath: string, patch = false): Schema<unknown> | null {
@@ -169,7 +195,12 @@ export class FrameProcessor {
     return schemas[entityKey] ?? null;
   }
 
-  private normalizeEntity<T>(viewPath: string, data: unknown, patch = false): T | null {
+  private normalizeEntity<T>(
+    viewPath: string,
+    data: unknown,
+    context: Omit<FrameValidationDiagnostic, 'view' | 'error'>,
+    patch = false
+  ): T | null {
     const fullSchema = this.getSchema(viewPath);
     const patchSchema = this.getSchema(viewPath, true);
     const schemas = patch
@@ -180,19 +211,32 @@ export class FrameProcessor {
     for (const schema of schemas) {
       if (!schema) continue;
 
-      const result = schema.safeParse(data);
-      if (result.success) {
-        return stripUndefinedProperties(result.data as T);
+      try {
+        const result = schema.safeParse(data);
+        if (result.success) {
+          return stripUndefinedProperties(result.data as T);
+        }
+        validationError = result.error;
+      } catch (error) {
+        validationError = error;
       }
-      validationError = result.error;
     }
 
     if (!fullSchema && !patchSchema) return data as T;
 
-    console.warn('[Arete] Frame validation failed:', {
+    const diagnostic: FrameValidationDiagnostic = {
       view: viewPath,
+      ...context,
       error: validationError,
-    });
+    };
+    try {
+      this.onValidationError?.(diagnostic);
+    } catch (callbackError) {
+      console.error('[Arete] Frame validation callback failed:', callbackError);
+    }
+    if (this.warnOnValidationError) {
+      console.warn('[Arete] Frame validation failed:', diagnostic);
+    }
     return null;
   }
 
@@ -265,8 +309,19 @@ export class FrameProcessor {
     return typeof seq === 'string' ? seq : undefined;
   }
 
-  private attachInternalSeq<T>(viewPath: string, data: T, seq?: string): T {
-    if (!seq || !this.hasSchema(viewPath) || !isObject(data)) {
+  private compareSeq(left: string, right: string): number {
+    const [leftSlot, leftIndex = ''] = left.split(':', 2);
+    const [rightSlot, rightIndex = ''] = right.split(':', 2);
+    if (/^\d+$/.test(leftSlot ?? '') && /^\d+$/.test(rightSlot ?? '')) {
+      const leftValue = BigInt(leftSlot!);
+      const rightValue = BigInt(rightSlot!);
+      if (leftValue !== rightValue) return leftValue < rightValue ? -1 : 1;
+    }
+    return leftIndex.localeCompare(rightIndex);
+  }
+
+  private attachInternalSeq<T>(_viewPath: string, data: T, seq?: string): T {
+    if (!seq || !isObject(data)) {
       return data;
     }
 
@@ -382,32 +437,38 @@ export class FrameProcessor {
     const batch = this.pendingUpdates;
     this.pendingUpdates = [];
 
-    const viewsToEnforce = new Set<string>();
+    try {
+      const viewsToEnforce = new Set<string>();
 
-    for (const { frame } of batch) {
-      const viewPath = this.processFrameWithoutEnforce(frame);
-      if (viewPath) {
-        viewsToEnforce.add(viewPath);
+      for (const { frame } of batch) {
+        const viewPath = this.processFrameWithoutEnforce(frame);
+        if (viewPath) {
+          viewsToEnforce.add(viewPath);
+        }
       }
+
+      viewsToEnforce.forEach((viewPath) => {
+        this.enforceMaxEntries(viewPath);
+      });
+
+      for (const { frame } of batch) {
+        this.markFrameProcessed(frame);
+      }
+    } finally {
+      this.isProcessing = false;
     }
-
-    viewsToEnforce.forEach((viewPath) => {
-      this.enforceMaxEntries(viewPath);
-    });
-
-    for (const { frame } of batch) {
-      this.markFrameProcessed(frame);
-    }
-
-    this.isProcessing = false;
   }
 
   private processFrame<T>(frame: Frame<T>): void {
-    if (isSubscribedFrame(frame)) {
+    if (isErrorFrame(frame)) {
+      this.queryStore?.failFrame(frame);
+    } else if (isUnsubscribedFrame(frame)) {
+      // Local lease state owns cancellation; the acknowledgement is informational.
+    } else if (isSubscribedFrame(frame)) {
       this.handleSubscribedFrame(frame);
     } else if (isSnapshotFrame(frame)) {
       this.handleSnapshotFrame(frame);
-    } else {
+    } else if (isEntityFrame(frame)) {
       this.handleEntityFrame(frame);
     }
     this.markFrameProcessed(frame);
@@ -435,7 +496,7 @@ export class FrameProcessor {
   }
 
   private frameSlot(frame: Frame): bigint | null {
-    if (isSubscribedFrame(frame)) {
+    if (isSubscribedFrame(frame) || isUnsubscribedFrame(frame) || isErrorFrame(frame)) {
       return null;
     }
     if (isSnapshotFrame(frame)) {
@@ -486,24 +547,37 @@ export class FrameProcessor {
   }
 
   private processFrameWithoutEnforce<T>(frame: Frame<T>): string | null {
-    if (isSubscribedFrame(frame)) {
+    if (isErrorFrame(frame)) {
+      this.queryStore?.failFrame(frame);
+      return null;
+    } else if (isUnsubscribedFrame(frame)) {
+      return null;
+    } else if (isSubscribedFrame(frame)) {
       this.handleSubscribedFrame(frame);
       return null;
     } else if (isSnapshotFrame(frame)) {
       this.handleSnapshotFrameWithoutEnforce(frame);
       return frame.entity;
-    } else {
+    } else if (isEntityFrame(frame)) {
       this.handleEntityFrameWithoutEnforce(frame);
       return frame.entity;
     }
+    return null;
   }
 
   private handleSubscribedFrame(frame: SubscribedFrame): void {
+    const viewPath = frame.query.view;
     if (this.storage.setViewConfig && frame.sort) {
-      this.storage.setViewConfig(frame.view, {
-        sort: this.normalizeSortConfig(frame.view, frame.sort),
+      this.storage.setViewConfig(viewPath, {
+        sort: this.normalizeSortConfig(viewPath, frame.sort),
       });
     }
+    this.queryStore?.acknowledge(
+      frame.subscriptionId,
+      frame.query,
+      frame.mode,
+      frame.sort ? this.normalizeSortConfig(viewPath, frame.sort) : undefined
+    );
   }
 
   private handleSnapshotFrame<T>(frame: SnapshotFrame<T>): void {
@@ -513,14 +587,20 @@ export class FrameProcessor {
 
   private handleSnapshotFrameWithoutEnforce<T>(frame: SnapshotFrame<T>): void {
     const viewPath = frame.entity;
+    const acceptedKeys: string[] = [];
 
     for (const entity of frame.data) {
-      const normalized = this.normalizeEntity<T>(viewPath, entity.data);
+      const normalized = this.normalizeEntity<T>(viewPath, entity.data, {
+        key: entity.key,
+        operation: 'snapshot',
+        seq: this.extractSeq(entity.data),
+      });
       if (normalized === null) {
         continue;
       }
 
       const nextValue = this.attachInternalSeq(viewPath, normalized, this.extractSeq(entity.data));
+      acceptedKeys.push(entity.key);
       const previousValue = this.storage.get<T>(viewPath, entity.key);
       this.storage.set(viewPath, entity.key, nextValue);
 
@@ -532,6 +612,7 @@ export class FrameProcessor {
 
       this.emitRichUpdate(viewPath, entity.key, previousValue, nextValue, 'upsert');
     }
+    this.queryStore?.stageSnapshot(frame, acceptedKeys);
   }
 
   private handleEntityFrame<T>(frame: EntityFrame<T>): void {
@@ -542,12 +623,35 @@ export class FrameProcessor {
   private handleEntityFrameWithoutEnforce<T>(frame: EntityFrame<T>): void {
     const viewPath = frame.entity;
     const previousValue = this.storage.get<T>(viewPath, frame.key);
+    const previousSequence = this.getInternalSeq(previousValue);
+    const duplicateOrStaleSequence = frame.seq !== undefined
+      && previousSequence !== undefined
+      && this.compareSeq(frame.seq, previousSequence) <= 0;
 
     switch (frame.op) {
-      case 'create':
       case 'upsert':
         {
-          const normalized = this.normalizeEntity<T>(viewPath, frame.data);
+          if (frame.data === null) break;
+          if (duplicateOrStaleSequence && previousValue !== null) {
+            const update: Update<T> = {
+              type: 'upsert',
+              key: frame.key,
+              data: previousValue,
+            };
+            this.queryStore?.applyLive(
+              frame.subscriptionId,
+              frame.key,
+              update,
+              this.createRichUpdate(frame.key, null, previousValue),
+              frame.seq
+            );
+            break;
+          }
+          const normalized = this.normalizeEntity<T>(viewPath, frame.data, {
+            key: frame.key,
+            operation: 'upsert',
+            seq: frame.seq ?? this.extractSeq(frame.data),
+          });
           if (normalized === null) {
             break;
           }
@@ -558,19 +662,52 @@ export class FrameProcessor {
             frame.seq ?? this.extractSeq(frame.data)
           );
           this.storage.set(viewPath, frame.key, nextValue);
-          this.storage.notifyUpdate(viewPath, frame.key, {
+          const update: Update<T> = {
             type: 'upsert',
             key: frame.key,
             data: nextValue,
-          });
-          this.emitRichUpdate(viewPath, frame.key, previousValue, nextValue, frame.op);
+          };
+          this.storage.notifyUpdate(viewPath, frame.key, update);
+          const richUpdate = this.createRichUpdate(
+            frame.key,
+            previousValue,
+            nextValue
+          );
+          this.storage.notifyRichUpdate(viewPath, frame.key, richUpdate);
+          this.queryStore?.applyLive(
+            frame.subscriptionId,
+            frame.key,
+            update,
+            richUpdate,
+            frame.seq ?? this.extractSeq(frame.data)
+          );
           break;
         }
 
       case 'patch': {
+        if (frame.data === null) break;
         const existing = this.storage.get<T>(viewPath, frame.key);
-        const normalizedPatch = this.normalizeEntity<Partial<T>>(viewPath, frame.data, true);
+        const normalizedPatch = this.normalizeEntity<Partial<T>>(viewPath, frame.data, {
+          key: frame.key,
+          operation: 'patch',
+          seq: frame.seq ?? this.extractSeq(frame.data),
+        }, true);
         if (normalizedPatch === null) {
+          break;
+        }
+        if (duplicateOrStaleSequence && existing !== null) {
+          const update: Update<T> = {
+            type: 'patch',
+            key: frame.key,
+            data: normalizedPatch,
+          };
+          this.queryStore?.applyLive(
+            frame.subscriptionId,
+            frame.key,
+            update,
+            this.createRichUpdate(frame.key, existing, existing, normalizedPatch),
+            frame.seq
+          );
           break;
         }
 
@@ -584,14 +721,36 @@ export class FrameProcessor {
           frame.seq ?? this.extractSeq(frame.data) ?? this.getInternalSeq(existing)
         );
         this.storage.set(viewPath, frame.key, nextValue);
-        this.storage.notifyUpdate(viewPath, frame.key, {
+        const update: Update<T> = {
           type: 'patch',
           key: frame.key,
           data: normalizedPatch,
-        });
-        this.emitRichUpdate(viewPath, frame.key, previousValue, nextValue, 'patch', normalizedPatch);
+        };
+        this.storage.notifyUpdate(viewPath, frame.key, update);
+        const richUpdate = this.createRichUpdate(
+          frame.key,
+          previousValue,
+          nextValue,
+          normalizedPatch
+        );
+        this.storage.notifyRichUpdate(viewPath, frame.key, richUpdate);
+        this.queryStore?.applyLive(
+          frame.subscriptionId,
+          frame.key,
+          update,
+          richUpdate,
+          frame.seq ?? this.extractSeq(frame.data)
+        );
         break;
       }
+
+      case 'remove':
+        this.queryStore?.applyLive(
+          frame.subscriptionId,
+          frame.key,
+          { type: 'remove', key: frame.key }
+        );
+        break;
 
       case 'delete':
         this.storage.delete(viewPath, frame.key);
@@ -603,6 +762,7 @@ export class FrameProcessor {
           const richUpdate: RichUpdate<T> = { type: 'deleted', key: frame.key, lastKnown: previousValue };
           this.storage.notifyRichUpdate(viewPath, frame.key, richUpdate);
         }
+        this.queryStore?.deleteGlobal(viewPath, frame.key, previousValue ?? undefined);
         break;
     }
   }
@@ -612,7 +772,7 @@ export class FrameProcessor {
     key: string,
     before: T | null,
     after: T,
-    _op: 'create' | 'upsert' | 'patch',
+    _op: 'upsert' | 'patch',
     patch?: unknown
   ): void {
     const richUpdate: RichUpdate<T> = before === null
@@ -622,12 +782,24 @@ export class FrameProcessor {
     this.storage.notifyRichUpdate(viewPath, key, richUpdate);
   }
 
+  private createRichUpdate<T>(
+    key: string,
+    before: T | null,
+    after: T,
+    patch?: unknown
+  ): RichUpdate<T> {
+    return before === null
+      ? { type: 'created', key, data: after }
+      : { type: 'updated', key, before, after, patch };
+  }
+
   private enforceMaxEntries(viewPath: string): void {
     if (this.maxEntriesPerView === null) return;
     if (!this.storage.evictOldest) return;
 
     while (this.storage.size(viewPath) > this.maxEntriesPerView) {
-      this.storage.evictOldest(viewPath);
+      const evicted = this.storage.evictOldest(viewPath);
+      if (evicted !== undefined) this.queryStore?.evict(viewPath, evicted);
     }
   }
 }

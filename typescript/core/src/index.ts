@@ -47,6 +47,8 @@ export type {
   ProgramOperations,
   ProgramOperationsOf,
   ProgramOperationContext,
+  ReadArgumentCount,
+  ReadArgumentCounts,
   StackConnectedExtensions,
   ConnectedStackClient,
 } from './stack-extensions';
@@ -118,12 +120,16 @@ export {
   parseUiAmountToRaw,
   formatRawToUi,
   toRawAmount,
+  safeToRawAmount,
   getMintDecimals,
   resolveAmount,
   resolveAmountToRaw,
   resolveAmountsToRaw,
 } from './amounts';
 export type { AmountInput } from './amounts';
+
+export { stringifyBigints } from './display';
+export type { StringifiedBigints } from './display';
 
 export {
   programAccountRead,
@@ -132,27 +138,59 @@ export {
   ReadRequestError,
 } from './read';
 
-export { ConnectionManager } from './connection';
-export { SubscriptionRegistry } from './subscription';
+export { ConnectionManager, isHostedAreteEndpoint } from './connection';
+export {
+  SubscriptionRegistry,
+  canonicalQueryKey,
+  createSubscriptionId,
+  normalizeSubscription,
+  normalizeSubscriptionQuery,
+  normalizeSubscriptionRequest,
+  validateSubscriptionId,
+} from './subscription';
+export { QueryStore } from './query-store';
 
 export { FrameProcessor } from './frame-processor';
 export { ProcessedSlotTimeoutError } from './frame-processor';
 export type {
   FrameProcessorConfig,
+  FrameValidationDiagnostic,
   WaitForProcessedSlotOptions,
 } from './frame-processor';
 
 export type { StorageAdapter, UpdateCallback, RichUpdateCallback, StorageAdapterConfig, ViewSortConfig } from './storage/adapter';
 export { MemoryAdapter } from './storage/memory-adapter';
 
-export { parseFrame, parseFrameFromBlob, isValidFrame, isSnapshotFrame, isSubscribedFrame, isEntityFrame } from './frame';
-export type { EntityFrame, SnapshotFrame, SnapshotEntity, SubscribedFrame, SortConfig, SortOrder, Frame, FrameMode, FrameOp } from './frame';
+export {
+  parseFrame,
+  parseFrameFromBlob,
+  isValidFrame,
+  isSnapshotFrame,
+  isSubscribedFrame,
+  isUnsubscribedFrame,
+  isErrorFrame,
+  isEntityFrame,
+} from './frame';
+export type {
+  EntityFrame,
+  SnapshotFrame,
+  SnapshotEntity,
+  SubscribedFrame,
+  UnsubscribedFrame,
+  ErrorFrame,
+  SortConfig,
+  SortOrder,
+  Frame,
+  FrameMode,
+  FrameOp,
+} from './frame';
 
 export { createUpdateStream, createEntityStream, createRichUpdateStream } from './stream';
 export {
   createTypedStateView,
   createTypedListView,
   createTypedViews,
+  serializeViewKey,
 } from './views';
 
 export type {
@@ -160,6 +198,9 @@ export type {
   Update,
   RichUpdate,
   ViewDef,
+  ViewKeyValue,
+  ViewKeyFields,
+  DefaultViewKey,
   StackDefinition,
   StackEndpoints,
   ReadTransportMethod,
@@ -169,8 +210,13 @@ export type {
   ProgramSdkDefinition,
   ViewGroup,
   Subscription,
+  SubscriptionQuery,
+  SubscriptionRequest,
+  SubscriptionSnapshotOptions,
   SubscriptionIdentity,
   SubscriptionOptions,
+  QueryLease,
+  QuerySnapshot,
   Schema,
   SchemaResult,
   WatchOptions,
