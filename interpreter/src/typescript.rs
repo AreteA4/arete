@@ -3422,16 +3422,16 @@ pub fn compile_program_modules(
     let unique_schemas: BTreeSet<String> =
         idl_account_artifacts.schema_names.iter().cloned().collect();
 
-    let stack_definition = generate_program_definitions(
-        stack_name,
-        &stack_spec.idls,
-        &stack_spec.pdas,
-        &stack_spec.program_ids,
-        &instructions_codegen.stack_entries,
-        &unique_schemas,
-        &idl_account_artifacts.account_type_names,
-        config.definition_hash.as_deref(),
-    );
+    let program_context = ProgramGenerationContext {
+        pdas: &stack_spec.pdas,
+        program_ids: &stack_spec.program_ids,
+        instruction_entries: &instructions_codegen.stack_entries,
+        schema_names: &unique_schemas,
+        account_type_names: &idl_account_artifacts.account_type_names,
+        definition_hash: config.definition_hash.as_deref(),
+    };
+    let stack_definition =
+        generate_program_definitions(stack_name, &stack_spec.idls, &program_context);
 
     let imports = assemble_sdk_imports(
         collect_emitted_pda_imports(&stack_spec.idls, &stack_spec.pdas),
@@ -3598,15 +3598,15 @@ fn generate_stack_definition_multi(
         )
     };
 
-    let programs_block = generate_programs_block(
-        idls,
+    let program_context = ProgramGenerationContext {
         pdas,
         program_ids,
         instruction_entries,
-        &unique_schemas,
+        schema_names: &unique_schemas,
         account_type_names,
-        config.definition_hash.as_deref(),
-    );
+        definition_hash: config.definition_hash.as_deref(),
+    };
+    let programs_block = generate_programs_block(idls, &program_context);
     let addresses_block = generate_stack_addresses_block(idls, pdas, program_ids);
 
     let entity_types: Vec<String> = entity_names.iter().map(|n| to_pascal_case(n)).collect();
@@ -3656,6 +3656,15 @@ export default {core_export_name};"#,
     ))
 }
 
+struct ProgramGenerationContext<'a> {
+    pdas: &'a BTreeMap<String, BTreeMap<String, PdaDefinition>>,
+    program_ids: &'a [String],
+    instruction_entries: &'a [crate::typescript_instructions::StackInstructionEntry],
+    schema_names: &'a BTreeSet<String>,
+    account_type_names: &'a BTreeMap<(String, String), String>,
+    definition_hash: Option<&'a str>,
+}
+
 /// Build one program's `{ name, programId, pdas?, accounts?, instructions? }`
 /// literal body. Sections are indented for nesting inside a stack const
 /// (`programs: { <key>: { ... } }`); callers emitting top-level program
@@ -3663,19 +3672,16 @@ export default {core_export_name};"#,
 fn generate_single_program_sections(
     idl: &IdlSnapshot,
     index: usize,
-    pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
-    program_ids: &[String],
-    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
-    schema_names: &BTreeSet<String>,
-    account_type_names: &BTreeMap<(String, String), String>,
-    definition_hash: Option<&str>,
+    context: &ProgramGenerationContext<'_>,
 ) -> (String, Vec<String>) {
     let program_key = to_camel_case(&idl.name);
-    let multi_program = program_ids.len() > 1
-        || instruction_entries
+    let multi_program = context.program_ids.len() > 1
+        || context
+            .instruction_entries
             .iter()
             .any(|entry| entry.program_key.is_some());
-    let program_id = program_ids
+    let program_id = context
+        .program_ids
         .get(index)
         .cloned()
         .or_else(|| idl.program_id.clone())
@@ -3683,7 +3689,8 @@ fn generate_single_program_sections(
 
     let instruction_entries_for_program: Vec<
         &crate::typescript_instructions::StackInstructionEntry,
-    > = instruction_entries
+    > = context
+        .instruction_entries
         .iter()
         .filter(|entry| {
             if multi_program {
@@ -3707,11 +3714,12 @@ fn generate_single_program_sections(
         .accounts
         .iter()
         .filter_map(|account| {
-            let type_name = account_type_names
+            let type_name = context
+                .account_type_names
                 .get(&(program_key.clone(), account.name.clone()))?
                 .clone();
             let schema_name = format!("{}Schema", type_name);
-            if !schema_names.contains(&schema_name) {
+            if !context.schema_names.contains(&schema_name) {
                 return None;
             }
             Some((account.name.clone(), type_name, schema_name))
@@ -3727,16 +3735,17 @@ fn generate_single_program_sections(
         })
         .collect();
 
-    let program_pdas = pdas
+    let program_pdas = context
+        .pdas
         .get(&idl.name)
-        .or_else(|| pdas.get(&program_key))
+        .or_else(|| context.pdas.get(&program_key))
         .filter(|program_pdas| !program_pdas.is_empty());
 
     let mut sections: Vec<String> = vec![
         format!("      name: '{}',", idl.name),
         format!("      programId: '{}',", program_id),
     ];
-    if let Some(definition_hash) = definition_hash {
+    if let Some(definition_hash) = context.definition_hash {
         sections.push(format!("      definitionHash: '{}',", definition_hash));
     }
 
@@ -3776,15 +3785,7 @@ fn generate_single_program_sections(
     (program_key, sections)
 }
 
-fn generate_programs_block(
-    idls: &[IdlSnapshot],
-    pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
-    program_ids: &[String],
-    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
-    schema_names: &BTreeSet<String>,
-    account_type_names: &BTreeMap<(String, String), String>,
-    definition_hash: Option<&str>,
-) -> String {
+fn generate_programs_block(idls: &[IdlSnapshot], context: &ProgramGenerationContext<'_>) -> String {
     if idls.is_empty() {
         return String::new();
     }
@@ -3792,16 +3793,7 @@ fn generate_programs_block(
     let mut program_blocks = Vec::new();
 
     for (index, idl) in idls.iter().enumerate() {
-        let (program_key, sections) = generate_single_program_sections(
-            idl,
-            index,
-            pdas,
-            program_ids,
-            instruction_entries,
-            schema_names,
-            account_type_names,
-            definition_hash,
-        );
+        let (program_key, sections) = generate_single_program_sections(idl, index, context);
 
         program_blocks.push(format!(
             "    {}: {{\n{}\n    }},",
@@ -3843,27 +3835,13 @@ fn dedent_lines(text: &str, spaces: usize) -> String {
 fn generate_program_definitions(
     stack_name: &str,
     idls: &[IdlSnapshot],
-    pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
-    program_ids: &[String],
-    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
-    schema_names: &BTreeSet<String>,
-    account_type_names: &BTreeMap<(String, String), String>,
-    definition_hash: Option<&str>,
+    context: &ProgramGenerationContext<'_>,
 ) -> String {
     let mut program_consts = Vec::new();
     let mut map_entries = Vec::new();
 
     for (index, idl) in idls.iter().enumerate() {
-        let (program_key, sections) = generate_single_program_sections(
-            idl,
-            index,
-            pdas,
-            program_ids,
-            instruction_entries,
-            schema_names,
-            account_type_names,
-            definition_hash,
-        );
+        let (program_key, sections) = generate_single_program_sections(idl, index, context);
         let const_name = to_screaming_snake_case(&idl.name);
         let body = dedent_lines(&sections.join("\n"), 4);
         program_consts.push(format!(
