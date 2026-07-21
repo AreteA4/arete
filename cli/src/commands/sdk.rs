@@ -1324,28 +1324,7 @@ fn update_hash_part(hasher: &mut Sha256, label: &str, value: &[u8]) {
 }
 
 fn sdk_generator_hash() -> String {
-    let mut hasher = Sha256::new();
-    for (name, source) in [
-        (
-            "cli/src/commands/sdk.rs",
-            include_bytes!("sdk.rs").as_slice(),
-        ),
-        (
-            "interpreter/src/typescript.rs",
-            include_bytes!("../../../interpreter/src/typescript.rs").as_slice(),
-        ),
-        (
-            "interpreter/src/typescript_instructions.rs",
-            include_bytes!("../../../interpreter/src/typescript_instructions.rs").as_slice(),
-        ),
-    ] {
-        update_hash_part(&mut hasher, name, source);
-    }
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{:02x}", byte))
-        .collect()
+    env!("ARETE_SDK_GENERATOR_SHA256").to_string()
 }
 
 fn extensions_artifact_hash(artifact: &ResolvedExtensionsArtifact) -> String {

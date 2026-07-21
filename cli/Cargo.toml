@@ -54,3 +54,6 @@ crossterm = { version = "0.28", optional = true }
 url = "2"
 sha2 = "0.10"
 semver = "1.0"
+
+[build-dependencies]
+sha2 = "0.10"
