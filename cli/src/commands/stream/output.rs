@@ -58,12 +58,12 @@ pub fn print_entity_update(
     out.writeln(&line)
 }
 
-/// Print an entity deletion as a single JSON line to stdout.
-pub fn print_delete(out: &mut StdoutWriter, view: &str, key: &str) -> Result<()> {
+/// Print an entity removal or deletion as a single JSON line to stdout.
+pub fn print_removal(out: &mut StdoutWriter, view: &str, key: &str, op: &str) -> Result<()> {
     let output = serde_json::json!({
         "view": view,
         "key": key,
-        "op": "delete",
+        "op": op,
         "data": null,
     });
     let line = serde_json::to_string(&output)?;

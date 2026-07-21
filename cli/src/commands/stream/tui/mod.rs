@@ -2,7 +2,7 @@ mod app;
 mod ui;
 
 use anyhow::Result;
-use arete_sdk::{parse_frame, try_parse_subscribed_frame, ClientMessage, Frame};
+use arete_sdk::{parse_server_message, ClientMessage, Frame, ServerMessage};
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
@@ -66,31 +66,19 @@ pub async fn run_tui(url: String, view: &str, args: &StreamArgs) -> Result<()> {
                 msg = ws_rx.next() => {
                     match msg {
                         Some(Ok(Message::Binary(bytes))) => {
-                            match parse_frame(&bytes) {
-                                Ok(frame) => {
+                            match parse_server_message(&bytes) {
+                                Ok(ServerMessage::Frame(frame)) => {
                                     if frame_tx.try_send(frame).is_err() {
                                         dropped_frames_ws.fetch_add(1, Ordering::Relaxed);
                                     }
                                 }
-                                Err(_) => {
-                                    // Subscribed frames have a different shape (no `entity` field)
-                                    if try_parse_subscribed_frame(&bytes).is_some() {
-                                        let subscribed = Frame {
-                                            mode: arete_sdk::Mode::List,
-                                            entity: String::new(),
-                                            op: "subscribed".to_string(),
-                                            key: String::new(),
-                                            data: serde_json::Value::Null,
-                                            append: Vec::new(),
-                                            seq: None,
-                                        };
-                                        let _ = frame_tx.try_send(subscribed);
-                                    }
-                                }
+                                Ok(ServerMessage::Error(_)) | Err(_) => {}
                             }
                         }
                         Some(Ok(Message::Text(text))) => {
-                            if let Ok(frame) = serde_json::from_str::<Frame>(&text) {
+                            if let Ok(ServerMessage::Frame(frame)) =
+                                parse_server_message(text.as_bytes())
+                            {
                                 if frame_tx.try_send(frame).is_err() {
                                     dropped_frames_ws.fetch_add(1, Ordering::Relaxed);
                                 }
