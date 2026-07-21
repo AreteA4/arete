@@ -42,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
         match update {
             Update::Upsert { key, data } => println!("Updated {}", key),
             Update::Patch { key, data } => println!("Patched {}", key),
+            Update::Remove { key } => println!("Left query {}", key),
             Update::Delete { key } => println!("Deleted {}", key),
         }
     }
@@ -141,6 +142,33 @@ async fn main() -> anyhow::Result<()> {
 
 All view types support `.watch()` for streaming updates.
 
+### Protocol v2 Queries
+
+Each stream builder creates an exact query with its own ordered membership. Filters, partitions, windows, cursors, and snapshot limits are sent to the server rather than applied to a shared local view cache:
+
+```rust
+let mut open_orders = Box::pin(
+    a4.views.order.list()
+        .watch()
+        .filter("state.status", "open")
+        .take(10)
+        .skip(20)
+        .partition("solana-mainnet")
+        .with_snapshot_limit(100),
+);
+
+while let Some(update) = open_orders.next().await {
+    match update {
+        Update::Upsert { key, data } => println!("upserted {key}: {data:?}"),
+        Update::Patch { key, data } => println!("patched {key}: {data:?}"),
+        Update::Remove { key } => println!("{key} left this query"),
+        Update::Delete { key } => println!("{key} was deleted globally"),
+    }
+}
+```
+
+Equivalent normalized queries share one wire subscription. The SDK retains its opaque subscription ID across reconnects, atomically replaces query membership after a complete authoritative snapshot, and sends `unsubscribe` when the final equivalent stream is dropped. `.after(cursor)` creates an incremental snapshot that merges without pruning; `.with_snapshot(false)` disables the initial snapshot.
+
 ## API Reference
 
 ### Arete Client
@@ -182,11 +210,12 @@ When streaming with `watch()`, you receive `Update<T>` variants:
 pub enum Update<T> {
     Upsert { key: String, data: T },  // Full entity update
     Patch { key: String, data: T },   // Partial update (merged)
-    Delete { key: String },           // Entity removed
+    Remove { key: String },           // Left this query's membership
+    Delete { key: String },           // Deleted from the source view
 }
 ```
 
-Helper methods: `key()`, `data()`, `is_delete()`, `has_data()`, `into_data()`, `into_key()`, `map(f)`
+Helper methods: `key()`, `data()`, `is_remove()`, `is_delete()`, `has_data()`, `into_data()`, `into_key()`, `map(f)`
 
 ### Rich Updates (Before/After Diffs)
 
@@ -196,9 +225,12 @@ For tracking changes over time, use `watch_rich()`:
 pub enum RichUpdate<T> {
     Created { key: String, data: T },
     Updated { key: String, before: T, after: T, patch: Option<Value> },
+    Removed { key: String, last_known: Option<T> },
     Deleted { key: String, last_known: Option<T> },
 }
 ```
+
+`Remove`/`Removed` is query-local: the entity still exists and may remain in another active query. `Delete`/`Deleted` is global to the source view.
 
 The `Updated` variant includes `patch` - the raw JSON of changed fields, useful for checking what specifically changed:
 

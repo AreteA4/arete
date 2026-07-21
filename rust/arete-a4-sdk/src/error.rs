@@ -4,8 +4,11 @@ use tokio_tungstenite::tungstenite::{self, http::Response};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocketIssue {
+    pub protocol_version: u8,
+    pub subscription_id: Option<String>,
     pub error: String,
     pub message: String,
+    pub wire_code: String,
     pub code: Option<AuthErrorCode>,
     pub retryable: bool,
     pub retry_after: Option<u64>,
@@ -17,42 +20,6 @@ pub struct SocketIssue {
 impl std::fmt::Display for SocketIssue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SocketIssuePayload {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub error: String,
-    pub message: String,
-    pub code: String,
-    pub retryable: bool,
-    #[serde(default)]
-    pub retry_after: Option<u64>,
-    #[serde(default)]
-    pub suggested_action: Option<String>,
-    #[serde(default)]
-    pub docs_url: Option<String>,
-    pub fatal: bool,
-}
-
-impl SocketIssuePayload {
-    pub fn is_socket_issue(&self) -> bool {
-        self.kind == "error"
-    }
-
-    pub fn into_socket_issue(self) -> SocketIssue {
-        SocketIssue {
-            error: self.error,
-            message: self.message,
-            code: AuthErrorCode::from_wire(&self.code),
-            retryable: self.retryable,
-            retry_after: self.retry_after,
-            suggested_action: self.suggested_action,
-            docs_url: self.docs_url,
-            fatal: self.fatal,
-        }
     }
 }
 
@@ -214,7 +181,7 @@ pub enum AreteError {
     },
 
     #[error("Socket issue: {0}")]
-    SocketIssue(SocketIssue),
+    SocketIssue(Box<SocketIssue>),
 
     #[error("JSON serialization error: {0}")]
     Serialization(String),
@@ -227,6 +194,12 @@ pub enum AreteError {
 
     #[error("Subscription failed: {0}")]
     SubscriptionFailed(String),
+
+    #[error("WebSocket protocol error: {message}")]
+    Protocol {
+        message: String,
+        subscription_id: Option<String>,
+    },
 
     #[error("Channel error: {0}")]
     ChannelError(String),
@@ -272,6 +245,7 @@ impl AreteError {
             | Self::Serialization(_)
             | Self::MaxReconnectAttempts(_)
             | Self::SubscriptionFailed(_)
+            | Self::Protocol { .. }
             | Self::ChannelError(_) => false,
         }
     }
@@ -350,7 +324,7 @@ impl AreteError {
     }
 
     pub(crate) fn from_socket_issue(issue: SocketIssue) -> Self {
-        Self::SocketIssue(issue)
+        Self::SocketIssue(Box::new(issue))
     }
 }
 
@@ -481,8 +455,11 @@ mod tests {
     #[test]
     fn socket_issue_error_uses_issue_retryability() {
         let error = AreteError::from_socket_issue(SocketIssue {
+            protocol_version: 2,
+            subscription_id: Some("rounds:latest".to_string()),
             error: "subscription-limit-exceeded".to_string(),
             message: "subscription limit exceeded".to_string(),
+            wire_code: "subscription-limit-exceeded".to_string(),
             code: Some(AuthErrorCode::SubscriptionLimitExceeded),
             retryable: false,
             retry_after: None,

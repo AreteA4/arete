@@ -200,11 +200,13 @@ async fn uses_bearer_transport_for_websocket_handshake() {
 async fn exposes_socket_issues_via_public_api() {
     let ws_server = spawn_socket_issue_server(json!({
         "type": "error",
+        "protocolVersion": 2,
+        "subscriptionId": "orders:open",
         "error": "subscription-limit-exceeded",
         "message": "Subscription limit exceeded",
         "code": "subscription-limit-exceeded",
         "retryable": false,
-        "suggested_action": "unsubscribe first",
+        "suggestedAction": "unsubscribe first",
         "fatal": false
     }))
     .await;
@@ -224,8 +226,11 @@ async fn exposes_socket_issues_via_public_api() {
     assert_eq!(
         issue,
         SocketIssue {
+            protocol_version: 2,
+            subscription_id: Some("orders:open".to_string()),
             error: "subscription-limit-exceeded".to_string(),
             message: "Subscription limit exceeded".to_string(),
+            wire_code: "subscription-limit-exceeded".to_string(),
             code: Some(arete_a4_sdk::AuthErrorCode::SubscriptionLimitExceeded),
             retryable: false,
             retry_after: None,
