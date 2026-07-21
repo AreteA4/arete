@@ -23,6 +23,7 @@ import oreDevex, {
   type PreparedOreInstruction,
   type QuoteAutomationFundingInput,
   type QuoteManualDeploymentInput,
+  type SolClaimPreview,
 } from './ore-devex.js';
 
 const addresses = oreDevex.addresses;
@@ -73,6 +74,12 @@ export interface ClaimAllSemanticInput
   bps?: number | bigint;
   includeSol?: boolean;
 }
+
+export type ClaimSolWithCheckpointInput = PrepareClaimSolInput & {
+  signer?: Address;
+  action: Exclude<SolClaimPreview['action'], 'none'>;
+  roundId?: bigint;
+};
 
 export type ManualDeploymentQuoteReadInput = Omit<
   QuoteManualDeploymentInput,
@@ -127,7 +134,13 @@ export const oreProgramExtensions = defineProgramExtensions<
     }
 
     async function resolveDeployInput(input: DeploySemanticInput) {
-      const roundId = input.roundId ?? (await getBoard(input.board)).roundId;
+      const boardRoundId = (await getBoard(input.board)).roundId;
+      if (input.roundId !== undefined && input.roundId !== boardRoundId) {
+        throw new Error(
+          `ORE round ${input.roundId} is stale; Board is currently on round ${boardRoundId}`,
+        );
+      }
+      const roundId = input.roundId ?? boardRoundId;
       const amountPerSquare = oreDevex.math.amounts.resolveSol(
         input.amountPerSquare,
       );
@@ -350,6 +363,45 @@ export const oreProgramExtensions = defineProgramExtensions<
       },
     );
 
+    const claimSolWithCheckpoint = transactionOperation(
+      async (input: ClaimSolWithCheckpointInput) => {
+        const operations = [];
+        let checkpointRoundId: bigint | null = null;
+        if (input.action !== 'claim') {
+          const resolved = await resolveCheckpointInput({
+            signer: input.signer ?? input.authority,
+            authority: input.authority,
+            roundId: input.roundId,
+          });
+          operations.push(
+            operationFromPrepared('checkpoint', resolved.prepared, {
+              authority: input.authority,
+              roundId: resolved.roundId,
+              round: addresses.round(resolved.roundId),
+            }),
+          );
+          checkpointRoundId = resolved.roundId;
+        }
+        if (input.action !== 'checkpoint') {
+          const prepared = oreDevex.prepare.claimSol(input);
+          operations.push(
+            operationFromPrepared('claimSol', prepared, {
+              authority: input.authority,
+            }),
+          );
+        }
+        return createPreparedTransaction({
+          name: 'claimSolWithCheckpoint',
+          operations,
+          artifacts: {
+            authority: input.authority,
+            checkpointIncluded: checkpointRoundId !== null,
+            checkpointRoundId,
+          },
+        });
+      },
+    );
+
     return {
       instructions: {
         mining: { deploy },
@@ -363,7 +415,7 @@ export const oreProgramExtensions = defineProgramExtensions<
       },
       transactions: {
         mining: { deployWithCheckpoint },
-        rewards: { claimAll },
+        rewards: { claimAll, claimSolWithCheckpoint },
       },
     };
   },
@@ -373,6 +425,23 @@ export default defineStackExtensions<typeof ORE_STREAM_STACK_CORE>()({
   addresses,
   constants,
   math,
+  readArgCounts: {
+    board: 0,
+    config: 0,
+    treasury: 0,
+    miner: 1,
+    automation: 1,
+    round: 1,
+    boardState: 0,
+    roundState: 1,
+    currentRound: 0,
+    miningContext: 1,
+    quoteManualDeployment: 1,
+    quoteAutomationFunding: 1,
+    claimPreview: [1, 2],
+    checkpointPreview: 1,
+    solClaimPreview: 1,
+  },
   createRead(client) {
     const program = client.programs.ore;
 

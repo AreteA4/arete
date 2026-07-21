@@ -369,6 +369,15 @@ pub mod ore_stream {
         #[map(ore_sdk::accounts::Miner::round_id, strategy = LastWrite)]
         pub round_id: Option<u64>,
 
+        #[map(ore_sdk::accounts::Miner::deployed, strategy = LastWrite)]
+        pub deployed_per_square: Option<Vec<u64>>,
+
+        #[computed(state.deployed_per_square.map(|x| x.ui_amount(9)))]
+        pub deployed_per_square_ui: Option<Vec<f64>>,
+
+        #[computed(state.deployed_per_square.sum().ui_amount(9))]
+        pub total_deployed: Option<f64>,
+
         #[map(ore_sdk::accounts::Miner::checkpoint_id, strategy = LastWrite)]
         pub checkpoint_id: Option<u64>,
 
@@ -451,6 +460,44 @@ mod tests {
                 .pointer("/state/total_deployed")
                 .and_then(|value| value.as_f64()),
             Some(1.5)
+        );
+        assert_eq!(
+            state.pointer("/state/deployed_per_square_ui"),
+            Some(&json!([1.0, 0.5]))
+        );
+    }
+
+    #[test]
+    fn miner_deployment_computes_ui_values() {
+        let mut state = json!({
+            "id": { "authority": "authority" },
+            "state": {
+                "round_id": "42",
+                "deployed_per_square": [1000000000, 250000000],
+            },
+            "rewards": {},
+            "automation": {},
+        });
+
+        ore_stream::ore_miner::evaluate_computed_fields(&mut state, Some(1), 0).unwrap();
+
+        assert_eq!(
+            state
+                .pointer("/state/deployed_per_square_ui/0")
+                .and_then(|value| value.as_f64()),
+            Some(1.0)
+        );
+        assert_eq!(
+            state
+                .pointer("/state/deployed_per_square_ui/1")
+                .and_then(|value| value.as_f64()),
+            Some(0.25)
+        );
+        assert_eq!(
+            state
+                .pointer("/state/total_deployed")
+                .and_then(|value| value.as_f64()),
+            Some(1.25)
         );
     }
 
@@ -566,25 +613,63 @@ mod tests {
     }
 
     #[test]
-    fn round_account_update_computes_total_deployed() {
+    fn treasury_account_keeps_its_embedded_address_key() {
         let bytecode = ore_stream::create_multi_entity_bytecode();
         let mut vm = VmContext::new();
+        let treasury_address = "45db2FSR4mcXdSVVZbKbwojU6uYDpMyhpEi7cC8nHaWG";
 
         vm.process_event(
             &bytecode,
             json!({
-                "__account_address": "11111111111111111111111111111111",
-                "id": 42,
-                "deployed": ["1000000000", "500000000"],
-                "top_miner": vec![0_u8; 32],
-                "rent_payer": vec![0_u8; 32],
-                "slot_hash": vec![0_u8; 32],
+                "__account_address": treasury_address,
+                "__resolved_primary_key": "round-address-from-shared-resolver",
+                "motherlode": 4_140_000_000_000_u64,
+                "total_refined": 0,
+                "total_unclaimed": 0,
             }),
-            "ore::RoundState",
-            Some(&UpdateContext::new_account(100, "round".to_string(), 1)),
+            "ore::TreasuryState",
+            Some(&UpdateContext::new_account(
+                100,
+                "treasury-update".to_string(),
+                1,
+            )),
             None,
         )
         .unwrap();
+
+        let treasury = vm.get_entity_state(2, &json!(treasury_address)).unwrap();
+        assert_eq!(
+            treasury
+                .pointer("/id/address")
+                .and_then(|value| value.as_str()),
+            Some(treasury_address)
+        );
+        assert!(vm
+            .get_entity_state(2, &json!("round-address-from-shared-resolver"))
+            .is_none());
+    }
+
+    #[test]
+    fn round_account_update_computes_total_deployed() {
+        let bytecode = ore_stream::create_multi_entity_bytecode();
+        let mut vm = VmContext::new();
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({
+                    "__account_address": "11111111111111111111111111111111",
+                    "id": 42,
+                    "deployed": ["1000000000", "500000000"],
+                    "top_miner": vec![0_u8; 32],
+                    "rent_payer": vec![0_u8; 32],
+                    "slot_hash": vec![0_u8; 32],
+                }),
+                "ore::RoundState",
+                Some(&UpdateContext::new_account(100, "round".to_string(), 1)),
+                None,
+            )
+            .unwrap();
 
         assert_eq!(
             vm.get_entity_state(0, &json!(42)).and_then(|state| {
@@ -593,6 +678,68 @@ mod tests {
                     .and_then(|value| value.as_f64())
             }),
             Some(1.5)
+        );
+        let round_state = vm.get_entity_state(0, &json!(42)).unwrap();
+        assert_eq!(
+            round_state.pointer("/state/deployed_per_square_ui"),
+            Some(&json!([1.0, 0.5]))
+        );
+        assert_eq!(
+            mutations[0].patch.pointer("/state/deployed_per_square_ui"),
+            Some(&json!([1.0, 0.5]))
+        );
+        assert_eq!(
+            mutations[0].patch.pointer("/state/total_deployed"),
+            Some(&json!(1.5))
+        );
+    }
+
+    #[test]
+    fn miner_account_update_computes_and_emits_deployment_ui_values() {
+        let bytecode = ore_stream::create_multi_entity_bytecode();
+        let mut vm = VmContext::new();
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({
+                    "__account_address": "11111111111111111111111111111111",
+                    "authority": vec![0_u8; 32],
+                    "round_id": 42,
+                    "deployed": ["1000000000", "500000000"],
+                }),
+                "ore::MinerState",
+                Some(&UpdateContext::new_account(100, "miner".to_string(), 1)),
+                None,
+            )
+            .unwrap();
+
+        let miner_state = vm
+            .get_entity_state(3, &json!("11111111111111111111111111111111"))
+            .unwrap();
+        assert_eq!(
+            miner_state.pointer("/state/deployed_per_square"),
+            Some(&json!(["1000000000", "500000000"]))
+        );
+        assert_eq!(
+            miner_state.pointer("/state/deployed_per_square_ui"),
+            Some(&json!([1.0, 0.5]))
+        );
+        assert_eq!(
+            miner_state.pointer("/state/total_deployed"),
+            Some(&json!(1.5))
+        );
+        assert_eq!(
+            mutations[0].patch.pointer("/state/deployed_per_square"),
+            Some(&json!(["1000000000", "500000000"]))
+        );
+        assert_eq!(
+            mutations[0].patch.pointer("/state/deployed_per_square_ui"),
+            Some(&json!([1.0, 0.5]))
+        );
+        assert_eq!(
+            mutations[0].patch.pointer("/state/total_deployed"),
+            Some(&json!(1.5))
         );
     }
 

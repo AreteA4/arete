@@ -199,6 +199,7 @@ export interface SolClaimPreview {
   checkpointedRewardsSol: bigint;
   unresolvedRewardsSol: bigint;
   totalClaimableSol: bigint;
+  totalClaimableSolUi: string;
   checkpoint: OreCheckpointPreview | null;
   action: 'none' | 'claim' | 'checkpoint' | 'checkpointAndClaim';
 }
@@ -238,6 +239,7 @@ export interface ManualDeploymentQuote {
   maximumDeploymentTransfer: bigint;
   unspentPrincipal: bigint;
   checkpointReserve: bigint;
+  checkpointReserveUi: string;
   maximumWalletDebit: bigint;
   hasActiveAutomation: boolean;
   requiresDisableBeforeDeployment: boolean;
@@ -447,6 +449,7 @@ export function quoteManualDeployment(
     maximumDeploymentTransfer,
     unspentPrincipal: input.totalPrincipal - maximumDeploymentTransfer,
     checkpointReserve: reserve,
+    checkpointReserveUi: formatSolAmount(reserve),
     maximumWalletDebit,
     hasActiveAutomation,
     requiresDisableBeforeDeployment: hasActiveAutomation,
@@ -855,10 +858,12 @@ export function previewSolClaim(input: {
   const action = requiresCheckpoint
     ? requiresClaim ? 'checkpointAndClaim' : 'checkpoint'
     : requiresClaim ? 'claim' : 'none';
+  const totalClaimableSol = input.checkpointedRewardsSol + unresolvedRewardsSol;
   return {
     checkpointedRewardsSol: input.checkpointedRewardsSol,
     unresolvedRewardsSol,
-    totalClaimableSol: input.checkpointedRewardsSol + unresolvedRewardsSol,
+    totalClaimableSol,
+    totalClaimableSolUi: formatSolAmount(totalClaimableSol),
     checkpoint,
     action,
   };

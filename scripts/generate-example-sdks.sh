@@ -22,6 +22,16 @@ if [[ -n "$CONFIG_PATH" ]]; then
 fi
 
 echo ""
+echo "Building local ORE stack AST"
+cargo clean --quiet --manifest-path "$ROOT_DIR/stacks/ore/Cargo.toml" --package ore-stack
+cargo build --quiet --locked --manifest-path "$ROOT_DIR/stacks/ore/Cargo.toml"
+
+ORE_AST_PATH="$ROOT_DIR/stacks/ore/.arete/OreStream.stack.json"
+if [[ ! -f "$ORE_AST_PATH" ]]; then
+    echo "Expected ORE stack AST was not generated: $ORE_AST_PATH" >&2
+    exit 1
+fi
+
 echo "Generating example SDKs from stack source: $STACK_ID"
 
 ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create "$STACK_ID" --ts \

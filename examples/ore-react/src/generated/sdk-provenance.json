@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "stack-ast",
+    "sha256": "84f4dca9b7c6be04a841f1f32b681318c68ea9653e101f395c9c77feb9f06918"
+  },
+  "generator": {
+    "name": "a4-cli",
+    "version": "0.2.0",
+    "sha256": "e1bcda0321ce408dd0b83ec92012c8ab523ec401f3dbd8143e05504b3ab9faee"
+  },
+  "extensions": {
+    "sha256": "34be5c62b2ba0db0e5b44f2d3d29e0b9ed9ffb96bc464e4daec7af6b8bcd842a"
+  },
+  "artifacts": [
+    "extensions.json",
+    "ore-devex.ts",
+    "ore-stack-core.ts",
+    "ore-stack-extensions.ts",
+    "ore-stack.ts"
+  ]
+}

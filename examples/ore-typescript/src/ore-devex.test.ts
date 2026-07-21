@@ -10,8 +10,8 @@ import {
   quoteManualDeployment,
   previewSolClaim,
   reverseBits64,
-} from './generated/ore-devex.js';
-import { ORE_STREAM_STACK } from './generated/ore-stack.js';
+  ORE_STREAM_STACK,
+} from './generated/ore-stack.js';
 
 function deployed(entries: ReadonlyArray<readonly [number, bigint]> = []): bigint[] {
   const amounts = Array<bigint>(25).fill(0n);
@@ -54,6 +54,7 @@ test('classifies the transaction needed to realize and claim SOL rewards', () =>
     checkpointedRewardsSol: 25n,
     unresolvedRewardsSol: 50n,
     totalClaimableSol: 75n,
+    totalClaimableSolUi: '0.000000075',
     checkpoint,
     action: 'checkpointAndClaim',
   });
@@ -96,6 +97,7 @@ test('quotes a first manual deploy with exact allocation and checkpoint reserve'
   assert.equal(quote.roundingRemainder, 1n);
   assert.equal(quote.maximumDeploymentTransfer, 10n);
   assert.equal(quote.checkpointReserve, 10_000n);
+  assert.equal(quote.checkpointReserveUi, '0.00001');
   assert.equal(quote.maximumWalletDebit, 10_010n);
   assert.equal(quote.includesNetworkFee, false);
   assert.equal(quote.includesAccountRent, false);
