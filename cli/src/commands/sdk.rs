@@ -115,6 +115,36 @@ struct TypeScriptLayout {
     core_path: PathBuf,
 }
 
+const SDK_PROVENANCE_FILE: &str = "sdk-provenance.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkProvenanceManifest {
+    schema_version: u32,
+    input: SdkProvenanceInput,
+    generator: SdkProvenanceGenerator,
+    extensions: Option<SdkProvenanceExtensions>,
+    artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SdkProvenanceInput {
+    kind: ExtensionsInputKind,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SdkProvenanceGenerator {
+    name: String,
+    version: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SdkProvenanceExtensions {
+    sha256: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct PackageVersionManifest {
     version: String,
@@ -1279,13 +1309,147 @@ fn print_pda_degradation_summary(
     }
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect()
+}
+
+fn update_hash_part(hasher: &mut Sha256, label: &str, value: &[u8]) {
+    hasher.update((label.len() as u64).to_be_bytes());
+    hasher.update(label.as_bytes());
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+fn sdk_generator_hash() -> String {
+    let mut hasher = Sha256::new();
+    for (name, source) in [
+        (
+            "cli/src/commands/sdk.rs",
+            include_bytes!("sdk.rs").as_slice(),
+        ),
+        (
+            "interpreter/src/typescript.rs",
+            include_bytes!("../../../interpreter/src/typescript.rs").as_slice(),
+        ),
+        (
+            "interpreter/src/typescript_instructions.rs",
+            include_bytes!("../../../interpreter/src/typescript_instructions.rs").as_slice(),
+        ),
+    ] {
+        update_hash_part(&mut hasher, name, source);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect()
+}
+
+fn extensions_artifact_hash(artifact: &ResolvedExtensionsArtifact) -> String {
+    let mut hasher = Sha256::new();
+    update_hash_part(&mut hasher, "entry", artifact.entry.as_bytes());
+    update_hash_part(
+        &mut hasher,
+        "input-kind",
+        artifact
+            .input_kind
+            .map(ExtensionsInputKind::as_manifest_value)
+            .unwrap_or("")
+            .as_bytes(),
+    );
+    update_hash_part(
+        &mut hasher,
+        "input-hash",
+        artifact.input_hash.as_deref().unwrap_or("").as_bytes(),
+    );
+    update_hash_part(
+        &mut hasher,
+        "sdk-range",
+        artifact.sdk_range.as_deref().unwrap_or("").as_bytes(),
+    );
+
+    let mut files = artifact.files.iter().collect::<Vec<_>>();
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    for file in files {
+        update_hash_part(&mut hasher, "file-path", file.path.as_bytes());
+        update_hash_part(&mut hasher, "file-contents", file.contents.as_bytes());
+    }
+
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect()
+}
+
+fn generated_artifact_name(path: &Path) -> Result<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("Invalid generated artifact path: {}", path.display()))
+}
+
+fn build_sdk_provenance_manifest(
+    layout: &TypeScriptLayout,
+    input_pin: &ResolvedExtensionsInputPin,
+    extensions: Option<&ResolvedExtensionsArtifact>,
+) -> Result<SdkProvenanceManifest> {
+    let mut artifacts = BTreeSet::from([
+        generated_artifact_name(&layout.core_path)?,
+        generated_artifact_name(&layout.entry_path)?,
+    ]);
+    if let Some(artifact) = extensions {
+        artifacts.insert("extensions.json".to_string());
+        for file in &artifact.files {
+            artifacts.insert(normalize_extension_relative_path(&file.path)?);
+        }
+    }
+
+    Ok(SdkProvenanceManifest {
+        schema_version: 1,
+        input: SdkProvenanceInput {
+            kind: input_pin.kind,
+            sha256: input_pin.hash.clone(),
+        },
+        generator: SdkProvenanceGenerator {
+            name: env!("CARGO_PKG_NAME").to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            sha256: sdk_generator_hash(),
+        },
+        extensions: extensions.map(|artifact| SdkProvenanceExtensions {
+            sha256: extensions_artifact_hash(artifact),
+        }),
+        artifacts: artifacts.into_iter().collect(),
+    })
+}
+
+fn write_sdk_provenance_manifest(
+    layout: &TypeScriptLayout,
+    input_pin: &ResolvedExtensionsInputPin,
+    extensions: Option<&ResolvedExtensionsArtifact>,
+) -> Result<()> {
+    let manifest = build_sdk_provenance_manifest(layout, input_pin, extensions)?;
+    let contents = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&manifest)
+            .context("Failed to serialize SDK provenance manifest")?
+    );
+    let path = layout.output_dir.join(SDK_PROVENANCE_FILE);
+    fs::write(&path, contents).with_context(|| {
+        format!(
+            "Failed to write SDK provenance manifest to {}",
+            path.display()
+        )
+    })
+}
+
 fn compute_idl_content_hash_from_value(idl_payload: &serde_json::Value) -> Result<String> {
     let json = serde_json::to_string(idl_payload)
         .context("Failed to serialize IDL payload for hashing")?;
-    Ok(Sha256::digest(json.as_bytes())
-        .iter()
-        .map(|byte| format!("{:02x}", byte))
-        .collect())
+    Ok(sha256_hex(json.as_bytes()))
 }
 
 fn stack_ast_input_pin(
@@ -1456,12 +1620,19 @@ fn render_typescript_stack_entry(
     layout: &TypeScriptLayout,
     stack_name: &str,
     extension_entry: Option<&str>,
+    extension_files: &[&str],
     program_extension_bindings: &[ProgramExtensionBinding],
 ) -> String {
     let export_name = format!("{}_STACK", to_screaming_snake_case(stack_name));
     let core_export_name = format!("{}_CORE", export_name);
     let type_name = format!("{}Stack", stack_name);
     let core_import = format!("./{}-core.js", layout.base_name);
+    let extension_exports = extension_files
+        .iter()
+        .filter_map(|path| path.strip_suffix(".ts"))
+        .map(|path| format!("export * from './{path}.js';"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     if let Some(extension_entry) = extension_entry {
         let extension_import = extension_entry
@@ -1476,6 +1647,7 @@ import {{ {core_export_name} }} from '{core_import}';
 import stackExtensions from './{extension_runtime_import}';
 
 export * from '{core_import}';
+{extension_exports}
 
 export const {export_name} = extendStack(
   {core_export_name},
@@ -1487,6 +1659,7 @@ export type {type_name} = typeof {export_name};
 export default {export_name};"#,
                 core_export_name = core_export_name,
                 core_import = core_import,
+                extension_exports = extension_exports,
                 extension_runtime_import = extension_runtime_import,
                 export_name = export_name,
                 type_name = type_name,
@@ -1510,6 +1683,7 @@ import {{ {core_export_name} }} from '{core_import}';
 import stackExtensions, {{ {named_imports} }} from './{extension_runtime_import}';
 
 export * from '{core_import}';
+{extension_exports}
 
 const CORE = {{
   ...{core_export_name},
@@ -1528,6 +1702,7 @@ export type {type_name} = typeof {export_name};
 export default {export_name};"#,
                 core_export_name = core_export_name,
                 core_import = core_import,
+                extension_exports = extension_exports,
                 named_imports = named_imports,
                 extension_runtime_import = extension_runtime_import,
                 program_extension_lines = program_extension_lines,
@@ -1797,6 +1972,7 @@ fn write_typescript_program_sdk(
             layout.entry_path.display()
         )
     })?;
+    write_sdk_provenance_manifest(&layout, extensions.input_pin, artifact.as_ref())?;
 
     Ok(())
 }
@@ -1920,6 +2096,7 @@ fn generate_typescript_sdk_from_source(
                 layout.entry_path.display()
             )
         })?;
+        write_sdk_provenance_manifest(&layout, &input_pin, artifact.as_ref())?;
     } else {
         let entity_count = stack_spec.entities.len();
         let total_views: usize = stack_spec.entities.iter().map(|e| e.views.len()).sum();
@@ -1986,11 +2163,22 @@ fn generate_typescript_sdk_from_source(
         if let Some(ref artifact) = artifact {
             stage_extensions_artifact(artifact, &layout.output_dir, &input_pin)?;
         }
+        let extension_files = artifact
+            .as_ref()
+            .map(|artifact| {
+                artifact
+                    .files
+                    .iter()
+                    .map(|file| file.path.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         let entry_contents = render_typescript_stack_entry(
             &layout,
             &stack_name,
             artifact.as_ref().map(|artifact| artifact.entry.as_str()),
+            &extension_files,
             artifact
                 .as_ref()
                 .map(|artifact| artifact.program_extension_bindings.as_slice())
@@ -2002,6 +2190,7 @@ fn generate_typescript_sdk_from_source(
                 layout.entry_path.display()
             )
         })?;
+        write_sdk_provenance_manifest(&layout, &input_pin, artifact.as_ref())?;
     }
 
     Ok(())
@@ -2288,6 +2477,94 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sdk_provenance_is_deterministic_and_contains_only_relative_artifact_names() {
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackAst,
+            hash: "input-hash".to_string(),
+        };
+        let artifact = test_artifact(ExtensionsInputKind::StackAst, "input-hash");
+        let first_layout = layout("ore");
+        let second_output = PathBuf::from("/another/checkout/generated");
+        let second_layout = TypeScriptLayout {
+            entry_path: second_output.join("ore.ts"),
+            core_path: second_output.join("ore-core.ts"),
+            output_dir: second_output,
+            base_name: "ore".to_string(),
+        };
+
+        let first = build_sdk_provenance_manifest(&first_layout, &input_pin, Some(&artifact))
+            .expect("provenance should build");
+        let second = build_sdk_provenance_manifest(&second_layout, &input_pin, Some(&artifact))
+            .expect("provenance should be path-independent");
+        let json = serde_json::to_string_pretty(&first).expect("provenance should serialize");
+
+        assert_eq!(first, second);
+        assert_eq!(first.input.sha256, "input-hash");
+        assert_eq!(first.generator.sha256.len(), 64);
+        assert_eq!(first.extensions.as_ref().unwrap().sha256.len(), 64);
+        assert_eq!(
+            first.artifacts,
+            vec!["extensions.json", "index.ts", "ore-core.ts", "ore.ts"]
+        );
+        assert!(!json.contains("/tmp/"));
+        assert!(!json.contains("/another/"));
+        assert!(!json.to_ascii_lowercase().contains("timestamp"));
+        assert!(!json.contains("createdAt"));
+    }
+
+    #[test]
+    fn sdk_provenance_generation_writes_stable_manifest() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-sdk-provenance-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        fs::create_dir_all(&output_dir).expect("temp output directory should be created");
+        let layout = TypeScriptLayout {
+            entry_path: output_dir.join("demo.ts"),
+            core_path: output_dir.join("demo-core.ts"),
+            output_dir: output_dir.clone(),
+            base_name: "demo".to_string(),
+        };
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::ProgramIdl,
+            hash: "idl-hash".to_string(),
+        };
+
+        write_sdk_provenance_manifest(&layout, &input_pin, None)
+            .expect("provenance should be written");
+        let first = fs::read_to_string(output_dir.join(SDK_PROVENANCE_FILE))
+            .expect("provenance should be readable");
+        write_sdk_provenance_manifest(&layout, &input_pin, None)
+            .expect("provenance should be reproducible");
+        let second = fs::read_to_string(output_dir.join(SDK_PROVENANCE_FILE))
+            .expect("provenance should still be readable");
+        let manifest: SdkProvenanceManifest =
+            serde_json::from_str(&first).expect("provenance should parse");
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert_eq!(first, second);
+        assert_eq!(manifest.input.kind, ExtensionsInputKind::ProgramIdl);
+        assert_eq!(manifest.extensions, None);
+        assert_eq!(manifest.artifacts, vec!["demo-core.ts", "demo.ts"]);
+        assert!(!first.contains(&output_dir.display().to_string()));
+    }
+
+    #[test]
+    fn extension_hash_is_independent_of_file_order() {
+        let mut first = test_artifact(ExtensionsInputKind::StackAst, "input-hash");
+        first.files.push(ResolvedExtensionsFile {
+            path: "helpers.ts".to_string(),
+            contents: "export const helper = true;".to_string(),
+        });
+        let mut second = first.clone();
+        second.files.reverse();
+
+        assert_eq!(
+            extensions_artifact_hash(&first),
+            extensions_artifact_hash(&second)
+        );
+    }
+
     fn registry_stack_install(
         name: &str,
         ast_payload: serde_json::Value,
@@ -2346,6 +2623,7 @@ mod tests {
             "OreAugmentedStream",
             None,
             &[],
+            &[],
         );
 
         assert!(rendered.contains(
@@ -2364,6 +2642,7 @@ mod tests {
             &layout("squads-v4-stream"),
             "SquadsV4Stream",
             Some("squads-v4-extensions.ts"),
+            &["squads-v4-extensions.ts"],
             &[],
         );
 
@@ -2371,6 +2650,7 @@ mod tests {
         assert!(rendered
             .contains("import { SQUADS_V4_STREAM_STACK_CORE } from './squads-v4-stream-core.js';"));
         assert!(rendered.contains("import stackExtensions from './squads-v4-extensions.js';"));
+        assert!(rendered.contains("export * from './squads-v4-extensions.js';"));
         assert!(rendered.contains("export const SQUADS_V4_STREAM_STACK = extendStack("));
         assert!(rendered.contains("export default SQUADS_V4_STREAM_STACK;"));
     }
@@ -2381,6 +2661,7 @@ mod tests {
             &layout("squads-v4-stream"),
             "SquadsV4Stream",
             Some("squads-v4-extensions.ts"),
+            &["squads-v4-devex.ts", "squads-v4-extensions.ts"],
             &[ProgramExtensionBinding {
                 export_name: "squadsProgramExtensions".to_string(),
                 program_key: "squadsMultisigProgram".to_string(),
@@ -2391,6 +2672,8 @@ mod tests {
         assert!(rendered.contains(
             "import stackExtensions, { squadsProgramExtensions } from './squads-v4-extensions.js';"
         ));
+        assert!(rendered.contains("export * from './squads-v4-devex.js';"));
+        assert!(rendered.contains("export * from './squads-v4-extensions.js';"));
         assert!(rendered.contains("const CORE = {"));
         assert!(
             rendered.contains("programs: extendPrograms(SQUADS_V4_STREAM_STACK_CORE.programs, {")
