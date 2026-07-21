@@ -1,0 +1,17 @@
+{
+  "name": "empty authoritative snapshot",
+  "server": [
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "state:missing",
+      "snapshotId": "snapshot-empty-1",
+      "authoritative": true,
+      "mode": "state",
+      "entity": "Thing/state",
+      "op": "snapshot",
+      "key": "missing",
+      "data": [],
+      "complete": true
+    }
+  ]
+}

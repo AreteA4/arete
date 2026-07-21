@@ -1,0 +1,24 @@
+{
+  "name": "exact match dot-path filters",
+  "client": [
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "orders:open-sol",
+      "query": {
+        "view": "Order/list",
+        "filters": { "state.status": "open", "market.symbol": "SOL" },
+        "take": 10,
+        "skip": 0
+      },
+      "snapshot": { "enabled": true }
+    }
+  ],
+  "matching": [
+    { "key": "one", "data": { "state": { "status": "open" }, "market": { "symbol": "SOL" } } }
+  ],
+  "notMatching": [
+    { "key": "two", "data": { "state": { "status": "OPEN" }, "market": { "symbol": "SOL" } } },
+    { "key": "three", "data": { "state": { "status": "open" }, "market": { "symbol": "sol" } } }
+  ]
+}

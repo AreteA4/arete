@@ -174,6 +174,12 @@ impl EntityCache {
             .and_then(|cache| cache.peek(key).cloned())
     }
 
+    /// Remove one entity after a source-wide delete.
+    pub async fn remove(&self, view_id: &str, key: &str) -> Option<Value> {
+        let mut caches = self.caches.write().await;
+        caches.get_mut(view_id).and_then(|cache| cache.pop(key))
+    }
+
     /// Get the number of cached entities for a view
     pub async fn len(&self, view_id: &str) -> usize {
         let caches = self.caches.read().await;
@@ -514,6 +520,17 @@ mod tests {
 
         let all = cache.get_all("tokens/list").await;
         assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn remove_is_scoped_to_one_entity() {
+        let cache = EntityCache::new();
+        cache.upsert("tokens/list", "one", json!({"id": 1})).await;
+        cache.upsert("tokens/list", "two", json!({"id": 2})).await;
+
+        assert_eq!(cache.remove("tokens/list", "one").await.unwrap()["id"], 1);
+        assert!(cache.get("tokens/list", "one").await.is_none());
+        assert!(cache.get("tokens/list", "two").await.is_some());
     }
 
     #[tokio::test]

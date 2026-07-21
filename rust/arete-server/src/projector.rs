@@ -2,7 +2,7 @@ use crate::bus::{BusManager, BusMessage};
 use crate::cache::EntityCache;
 use crate::mutation_batch::{MutationBatch, SlotContext};
 use crate::view::{ViewIndex, ViewSpec};
-use crate::websocket::frame::{apply_wire_format, Frame, Mode};
+use crate::websocket::frame::{apply_wire_format, Mode, SourceFrame};
 use arete_interpreter::CanonicalLog;
 use bytes::Bytes;
 use serde_json::Value;
@@ -172,7 +172,7 @@ impl Projector {
             // Extract _seq from the patch data to include in the frame
             let seq = slot_context.map(|ctx| ctx.to_seq_string());
 
-            let frame = Frame {
+            let frame = SourceFrame {
                 mode: spec.mode,
                 export: spec.id.clone(),
                 op: "patch",

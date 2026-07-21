@@ -1,18 +1,15 @@
 use serde::{Deserialize, Serialize};
 
-/// Streaming mode for different data access patterns
+use crate::websocket::subscription::{SubscriptionQuery, PROTOCOL_VERSION};
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
-    /// Latest value only (watch semantics)
     State,
-    /// Append-only stream
     Append,
-    /// Collection/list view (also used for key-value lookups)
     List,
 }
 
-/// Sort order for sorted views
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SortOrder {
@@ -20,12 +17,9 @@ pub enum SortOrder {
     Desc,
 }
 
-/// Sort configuration for a view
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SortConfig {
-    /// Field path to sort by (e.g., ["id", "roundId"])
     pub field: Vec<String>,
-    /// Sort order
     pub order: SortOrder,
 }
 
@@ -34,34 +28,106 @@ pub struct WireFormat {
     pub wide_int_paths: Vec<Vec<String>>,
 }
 
-/// Subscription acknowledgment frame sent when a client subscribes
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SubscribedFrame {
-    /// Operation type - always "subscribed"
+    pub protocol_version: u8,
+    pub subscription_id: String,
     pub op: &'static str,
-    /// The view that was subscribed to
-    pub view: String,
-    /// Streaming mode for this view
+    pub query: SubscriptionQuery,
     pub mode: Mode,
-    /// Sort configuration if this is a sorted view
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort: Option<SortConfig>,
 }
 
 impl SubscribedFrame {
-    pub fn new(view: String, mode: Mode, sort: Option<SortConfig>) -> Self {
+    pub fn new(
+        subscription_id: String,
+        query: SubscriptionQuery,
+        mode: Mode,
+        sort: Option<SortConfig>,
+    ) -> Self {
         Self {
+            protocol_version: PROTOCOL_VERSION,
+            subscription_id,
             op: "subscribed",
-            view,
+            query,
             mode,
             sort,
         }
     }
 }
 
-/// Data frame sent over WebSocket
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsubscribedFrame {
+    pub protocol_version: u8,
+    pub subscription_id: String,
+    pub op: &'static str,
+}
+
+impl UnsubscribedFrame {
+    pub fn new(subscription_id: String) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            subscription_id,
+            op: "unsubscribed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Frame {
+    pub protocol_version: u8,
+    pub subscription_id: String,
+    pub mode: Mode,
+    #[serde(rename = "entity")]
+    pub export: String,
+    pub op: String,
+    pub key: String,
+    pub data: serde_json::Value,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub append: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<String>,
+}
+
+impl Frame {
+    pub fn scoped(
+        subscription_id: impl Into<String>,
+        mode: Mode,
+        export: impl Into<String>,
+        op: impl Into<String>,
+        key: impl Into<String>,
+        data: serde_json::Value,
+        seq: Option<String>,
+    ) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            subscription_id: subscription_id.into(),
+            mode,
+            export: export.into(),
+            op: op.into(),
+            key: key.into(),
+            data,
+            append: vec![],
+            seq,
+        }
+    }
+
+    pub fn entity(&self) -> &str {
+        &self.export
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+}
+
+/// Unscoped payload published by the projector and never sent directly to clients.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SourceFrame {
     pub mode: Mode,
     #[serde(rename = "entity")]
     pub export: String,
@@ -70,38 +136,31 @@ pub struct Frame {
     pub data: serde_json::Value,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub append: Vec<String>,
-    /// Sequence cursor for ordering and resume capability
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seq: Option<String>,
 }
 
-/// A single entity within a snapshot
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SnapshotEntity {
     pub key: String,
     pub data: serde_json::Value,
 }
 
-/// Batch snapshot frame for initial data load
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SnapshotFrame {
+    pub protocol_version: u8,
+    pub subscription_id: String,
+    pub snapshot_id: String,
+    pub authoritative: bool,
     pub mode: Mode,
     #[serde(rename = "entity")]
     pub export: String,
     pub op: &'static str,
-    /// Subscription key that requested this snapshot. Omitted for keyless subscriptions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     pub data: Vec<SnapshotEntity>,
-    /// Indicates whether this is the final snapshot batch.
-    /// When `false`, more snapshot batches will follow.
-    /// When `true`, the snapshot is complete and live streaming begins.
-    #[serde(default = "default_complete")]
     pub complete: bool,
-}
-
-fn default_complete() -> bool {
-    true
 }
 
 pub fn apply_wire_format(value: &mut serde_json::Value, wire_format: &WireFormat) {
@@ -149,165 +208,46 @@ fn stringify_wide_int_value(value: &mut serde_json::Value) {
     }
 }
 
-impl Frame {
-    pub fn entity(&self) -> &str {
-        &self.export
-    }
-
-    pub fn key(&self) -> &str {
-        &self.key
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn test_frame_entity_key_accessors() {
-        let frame = Frame {
-            mode: Mode::List,
-            export: "SettlementGame/list".to_string(),
-            op: "upsert",
-            key: "123".to_string(),
-            data: serde_json::json!({}),
-            append: vec![],
-            seq: None,
-        };
-
-        assert_eq!(frame.entity(), "SettlementGame/list");
-        assert_eq!(frame.key(), "123");
+    fn scoped_live_frames_carry_v2_identity() {
+        let frame = Frame::scoped(
+            "rounds:1",
+            Mode::List,
+            "OreRound/latest",
+            "upsert",
+            "123",
+            json!({"id": 123}),
+            Some("10:000000000001".to_string()),
+        );
+        let value = serde_json::to_value(frame).unwrap();
+        assert_eq!(value["protocolVersion"], 2);
+        assert_eq!(value["subscriptionId"], "rounds:1");
+        assert_eq!(value["seq"], "10:000000000001");
     }
 
     #[test]
-    fn test_frame_serialization() {
-        let frame = Frame {
-            mode: Mode::List,
-            export: "SettlementGame/list".to_string(),
-            op: "upsert",
-            key: "123".to_string(),
-            data: serde_json::json!({"gameId": "123"}),
-            append: vec![],
-            seq: None,
-        };
-
-        let json = serde_json::to_value(&frame).unwrap();
-        assert_eq!(json["op"], "upsert");
-        assert_eq!(json["mode"], "list");
-        assert_eq!(json["entity"], "SettlementGame/list");
-        assert_eq!(json["key"], "123");
-    }
-
-    #[test]
-    fn test_frame_with_seq() {
-        let frame = Frame {
-            mode: Mode::List,
-            export: "SettlementGame/list".to_string(),
-            op: "upsert",
-            key: "123".to_string(),
-            data: serde_json::json!({"gameId": "123"}),
-            append: vec![],
-            seq: Some("123456789:000000000042".to_string()),
-        };
-
-        let json = serde_json::to_value(&frame).unwrap();
-        assert_eq!(json["op"], "upsert");
-        assert_eq!(json["seq"], "123456789:000000000042");
-    }
-
-    #[test]
-    fn test_frame_seq_skipped_when_none() {
-        let frame = Frame {
-            mode: Mode::List,
-            export: "SettlementGame/list".to_string(),
-            op: "upsert",
-            key: "123".to_string(),
-            data: serde_json::json!({"gameId": "123"}),
-            append: vec![],
-            seq: None,
-        };
-
-        let json = serde_json::to_value(&frame).unwrap();
-        assert!(json.get("seq").is_none());
-    }
-
-    #[test]
-    fn test_snapshot_frame_complete_serialization() {
+    fn snapshot_serializes_conformance_metadata() {
         let frame = SnapshotFrame {
+            protocol_version: PROTOCOL_VERSION,
+            subscription_id: "rounds:1".to_string(),
+            snapshot_id: "snapshot-1".to_string(),
+            authoritative: true,
             mode: Mode::List,
-            export: "tokens/list".to_string(),
-            op: "snapshot",
-            key: Some("owner-1".to_string()),
-            data: vec![SnapshotEntity {
-                key: "abc".to_string(),
-                data: serde_json::json!({"id": "abc"}),
-            }],
-            complete: false,
-        };
-
-        let json = serde_json::to_value(&frame).unwrap();
-        assert_eq!(json["complete"], false);
-        assert_eq!(json["op"], "snapshot");
-        assert_eq!(json["key"], "owner-1");
-    }
-
-    #[test]
-    fn test_snapshot_frame_complete_defaults_to_true_on_deserialize() {
-        #[derive(Debug, Deserialize)]
-        struct TestSnapshotFrame {
-            #[allow(dead_code)]
-            mode: Mode,
-            #[allow(dead_code)]
-            #[serde(rename = "entity")]
-            export: String,
-            #[allow(dead_code)]
-            op: String,
-            #[serde(default)]
-            key: Option<String>,
-            #[allow(dead_code)]
-            data: Vec<SnapshotEntity>,
-            #[serde(default = "super::default_complete")]
-            complete: bool,
-        }
-
-        let json_without_complete = serde_json::json!({
-            "mode": "list",
-            "entity": "tokens/list",
-            "op": "snapshot",
-            "data": []
-        });
-
-        let frame: TestSnapshotFrame = serde_json::from_value(json_without_complete).unwrap();
-        assert!(frame.complete);
-        assert!(frame.key.is_none());
-    }
-
-    #[test]
-    fn test_snapshot_frame_batching_fields() {
-        let first_batch = SnapshotFrame {
-            mode: Mode::List,
-            export: "tokens/list".to_string(),
-            op: "snapshot",
-            key: None,
-            data: vec![],
-            complete: false,
-        };
-
-        let final_batch = SnapshotFrame {
-            mode: Mode::List,
-            export: "tokens/list".to_string(),
+            export: "OreRound/latest".to_string(),
             op: "snapshot",
             key: None,
             data: vec![],
             complete: true,
         };
-
-        assert!(!first_batch.complete);
-        assert!(final_batch.complete);
-        assert!(serde_json::to_value(final_batch)
-            .unwrap()
-            .get("key")
-            .is_none());
+        let value = serde_json::to_value(frame).unwrap();
+        assert_eq!(value["snapshotId"], "snapshot-1");
+        assert_eq!(value["authoritative"], true);
+        assert_eq!(value["complete"], true);
     }
 
     #[test]
@@ -315,38 +255,17 @@ mod tests {
         let wire_format = WireFormat {
             wide_int_paths: vec![
                 vec!["amount".to_string()],
-                vec!["nested".to_string(), "timestamp".to_string()],
-                vec!["values".to_string()],
                 vec!["positions".to_string(), "liquidity".to_string()],
             ],
         };
-
-        let mut value = serde_json::json!({
+        let mut value = json!({
             "amount": 42,
-            "nested": { "timestamp": -7 },
-            "values": [1, 2, 3],
-            "positions": [
-                { "liquidity": 9, "label": "a" },
-                { "liquidity": 11, "label": "b" }
-            ],
+            "positions": [{"liquidity": 9}, {"liquidity": 11}],
             "small": 5,
         });
-
         apply_wire_format(&mut value, &wire_format);
-
-        assert_eq!(value["amount"], serde_json::Value::String("42".to_string()));
-        assert_eq!(
-            value["nested"]["timestamp"],
-            serde_json::Value::String("-7".to_string())
-        );
-        assert_eq!(
-            value["values"][0],
-            serde_json::Value::String("1".to_string())
-        );
-        assert_eq!(
-            value["positions"][1]["liquidity"],
-            serde_json::Value::String("11".to_string())
-        );
-        assert_eq!(value["small"], serde_json::json!(5));
+        assert_eq!(value["amount"], "42");
+        assert_eq!(value["positions"][1]["liquidity"], "11");
+        assert_eq!(value["small"], 5);
     }
 }

@@ -1,0 +1,16 @@
+{
+  "name": "source-wide deletion",
+  "meaning": "The entity no longer exists in the source view and must be deleted globally.",
+  "server": [
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "orders:all",
+      "mode": "list",
+      "entity": "Order/list",
+      "op": "delete",
+      "key": "order-7",
+      "data": null,
+      "seq": "31:000000000001"
+    }
+  ]
+}

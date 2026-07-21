@@ -14,12 +14,13 @@ pub use auth::{
 pub use client_manager::{ClientInfo, ClientManager, RateLimitConfig, SendError, WebSocketSender};
 pub use frame::{
     Frame, Mode, SnapshotEntity, SnapshotFrame, SortConfig, SortOrder, SubscribedFrame,
+    UnsubscribedFrame,
 };
 pub use rate_limiter::{RateLimitResult, RateLimitWindow, RateLimiterConfig, WebSocketRateLimiter};
 pub use server::WebSocketServer;
 pub use subscription::{
-    ClientMessage, RefreshAuthRequest, RefreshAuthResponse, SocketIssueMessage, Subscription,
-    Unsubscription,
+    ClientMessage, RefreshAuthRequest, RefreshAuthResponse, SnapshotOptions, SocketIssueMessage,
+    Subscription, SubscriptionQuery, Unsubscription, PROTOCOL_VERSION,
 };
 pub use usage::{
     ChannelUsageEmitter, HttpUsageEmitter, WebSocketUsageBatch, WebSocketUsageEmitter,

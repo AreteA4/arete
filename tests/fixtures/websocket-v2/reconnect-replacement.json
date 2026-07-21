@@ -1,0 +1,18 @@
+{
+  "name": "reconnect authoritative replacement",
+  "sessions": [
+    {
+      "connection": 1,
+      "subscriptionId": "rounds:latest",
+      "snapshotId": "snapshot-before-disconnect",
+      "authoritativeKeys": ["10", "9"]
+    },
+    {
+      "connection": 2,
+      "subscriptionId": "rounds:latest",
+      "snapshotId": "snapshot-after-reconnect",
+      "authoritativeKeys": ["11", "10"]
+    }
+  ],
+  "expected": "The completed authoritative snapshot on connection 2 replaces, rather than appends to, connection 1 state. Reusing an opaque ID on a new connection is valid."
+}

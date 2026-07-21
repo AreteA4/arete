@@ -1,0 +1,16 @@
+{
+  "name": "query-scoped removal",
+  "meaning": "The entity left this filter or window but still exists in the source view.",
+  "server": [
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "orders:open",
+      "mode": "list",
+      "entity": "Order/list",
+      "op": "remove",
+      "key": "order-7",
+      "data": null,
+      "seq": "30:000000000004"
+    }
+  ]
+}

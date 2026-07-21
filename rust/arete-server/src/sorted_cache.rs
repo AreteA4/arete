@@ -314,6 +314,22 @@ impl SortedViewCache {
             .collect()
     }
 
+    /// Get every entity in deterministic sort order for query-side filtering.
+    pub fn get_all_ordered(&mut self) -> Vec<(String, Value)> {
+        if self.cache_dirty {
+            self.rebuild_keys_cache();
+        }
+
+        self.keys_cache
+            .iter()
+            .filter_map(|key| {
+                self.entities
+                    .get(key)
+                    .map(|(_, value)| (key.clone(), value.clone()))
+            })
+            .collect()
+    }
+
     /// Compute deltas for a client with a specific window
     pub fn compute_window_deltas(
         &mut self,
@@ -487,6 +503,25 @@ mod tests {
 
         let window = cache.get_window(3, 3);
         assert_eq!(window[0].0, "e7");
+    }
+
+    #[test]
+    fn all_ordered_preserves_stable_sort_and_tie_breaking() {
+        let mut cache = SortedViewCache::new(
+            "test/latest".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+        cache.upsert("b".to_string(), json!({"score": 10}));
+        cache.upsert("a".to_string(), json!({"score": 10}));
+        cache.upsert("c".to_string(), json!({"score": 9}));
+
+        let keys: Vec<_> = cache
+            .get_all_ordered()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(keys, ["a", "b", "c"]);
     }
 
     #[test]

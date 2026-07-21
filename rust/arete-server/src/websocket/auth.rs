@@ -654,8 +654,6 @@ mod tests {
 
     #[tokio::test]
     async fn signed_session_plugin_denies_missing_token() {
-        use arete_auth::TokenSigner;
-
         let signing_key = arete_auth::SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
         let verifier =
@@ -1369,8 +1367,6 @@ mod tests {
 
     #[test]
     fn auth_error_code_default_retry_policies() {
-        use std::time::Duration;
-
         // Should refresh token
         assert!(matches!(
             AuthErrorCode::TokenExpired.default_retry_policy(),
@@ -1406,10 +1402,6 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_rejects_missing_token_with_proper_error() {
-        use tokio_tungstenite::tungstenite::http::StatusCode;
-
-        let plugin = AllowAllAuthPlugin;
-
         // Create a request without a token
         let request = Request::builder()
             .uri("/ws")
@@ -1613,11 +1605,8 @@ mod tests {
     // Test comprehensive error scenarios
     #[tokio::test]
     async fn comprehensive_auth_error_scenarios() {
-        use arete_auth::{KeyClass, SessionClaims, TokenSigner};
-
         let signing_key = arete_auth::SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
-        let signer = TokenSigner::new(signing_key, "test-issuer");
         let verifier =
             arete_auth::TokenVerifier::new(verifying_key, "test-issuer", "test-audience");
         let plugin = SignedSessionAuthPlugin::new(verifier);

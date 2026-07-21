@@ -1,0 +1,43 @@
+{
+  "name": "keyed state snapshot and live patch",
+  "client": [
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "state:wallet-a",
+      "query": { "view": "Miner/state", "key": "wallet-a" },
+      "snapshot": { "enabled": true }
+    }
+  ],
+  "server": [
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "state:wallet-a",
+      "op": "subscribed",
+      "query": { "view": "Miner/state", "key": "wallet-a" },
+      "mode": "state"
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "state:wallet-a",
+      "snapshotId": "snapshot-state-1",
+      "authoritative": true,
+      "mode": "state",
+      "entity": "Miner/state",
+      "op": "snapshot",
+      "key": "wallet-a",
+      "data": [{ "key": "wallet-a", "data": { "authority": "wallet-a", "score": 1 } }],
+      "complete": true
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "state:wallet-a",
+      "mode": "state",
+      "entity": "Miner/state",
+      "op": "patch",
+      "key": "wallet-a",
+      "data": { "score": 2 },
+      "seq": "20:000000000001"
+    }
+  ]
+}
