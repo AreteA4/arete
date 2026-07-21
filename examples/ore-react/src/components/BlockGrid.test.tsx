@@ -9,10 +9,7 @@ describe('BlockGrid accessibility', () => {
     const onToggle = vi.fn();
     render(
       <BlockGrid
-        deployedPerSquare={[]}
-        countPerSquare={[]}
         selected={[0]}
-        currentDeployment={[]}
         onToggle={onToggle}
       />,
     );
@@ -29,10 +26,7 @@ describe('BlockGrid accessibility', () => {
     const onToggle = vi.fn();
     render(
       <BlockGrid
-        deployedPerSquare={[]}
-        countPerSquare={[]}
         selected={[]}
-        currentDeployment={[]}
         onToggle={onToggle}
       />,
     );
@@ -44,12 +38,9 @@ describe('BlockGrid accessibility', () => {
   it('highlights candidate and finalized winning squares with full rings', () => {
     render(
       <BlockGrid
-        deployedPerSquare={[]}
-        countPerSquare={[]}
         preRevealWinningSquare={1}
         winningSquare={0}
         selected={[]}
-        currentDeployment={[]}
         onToggle={vi.fn()}
       />,
     );
@@ -61,12 +52,15 @@ describe('BlockGrid accessibility', () => {
   });
 
   it('fills positions confirmed on chain in blue', () => {
+    const deployedPerSquare = Array<number>(25).fill(0);
+    deployedPerSquare[0] = 9;
+    const myDeployment = Array<number>(25).fill(0);
+    myDeployment[0] = 1.25;
     render(
       <BlockGrid
-        deployedPerSquare={['9000000000']}
-        countPerSquare={[]}
+        deployedPerSquare={deployedPerSquare}
+        myDeployment={myDeployment}
         selected={[]}
-        currentDeployment={['1250000000']}
         onToggle={vi.fn()}
       />,
     );

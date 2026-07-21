@@ -1,43 +1,48 @@
-import { formatRawToUi } from '@usearete/sdk';
-import type { SquareIndex } from '../generated/ore-devex';
+import { SQUARE_COUNT, type SquareIndex } from '../generated/ore-stack';
 import { MinerIcon, SolanaIcon } from './icons';
 
 interface BlockGridProps {
-  deployedPerSquare: readonly string[];
-  countPerSquare: readonly string[];
+  /** UI-denominated SOL per square, shipped by the stack (`deployedPerSquareUi`). */
+  deployedPerSquare?: readonly number[];
+  /** Miner count per square. */
+  countPerSquare?: readonly number[];
+  /** Your UI-denominated SOL per square, shipped by `OreMiner.state`. */
+  myDeployment?: readonly number[];
   preRevealWinningSquare?: number;
   winningSquare?: number;
   selected: readonly SquareIndex[];
-  currentDeployment: readonly string[];
   onToggle: (square: SquareIndex) => void;
+}
+
+function formatUiSol(amount: number): string {
+  return amount === 0 ? '0' : amount.toFixed(4);
 }
 
 export function BlockGrid({
   deployedPerSquare,
   countPerSquare,
+  myDeployment,
   preRevealWinningSquare,
   winningSquare,
   selected,
-  currentDeployment,
   onToggle,
 }: BlockGridProps) {
   const selectedSet = new Set<number>(selected);
+
   return (
     <section className="ore-board-container min-h-0 w-full" aria-label="ORE mining board">
-      <div className="ore-board-grid grid grid-cols-5 gap-1.5 sm:gap-2" role="group" aria-label="ORE squares 1 through 25">
-        {Array.from({ length: 25 }, (_, index) => {
+      <div className="ore-board-grid grid grid-cols-5 gap-1.5 sm:gap-2" role="group" aria-label={`ORE squares 1 through ${SQUARE_COUNT}`}>
+        {Array.from({ length: SQUARE_COUNT }, (_, index) => {
           const square = index as SquareIndex;
           const isSelected = selectedSet.has(index);
-          const mine = BigInt(currentDeployment[index] ?? '0');
-          const isMine = mine > 0n;
+          const mine = myDeployment?.[index] ?? 0;
+          const isMine = mine > 0;
           const isCandidate = preRevealWinningSquare === index;
           const isWinner = winningSquare === index;
-          const deployed = BigInt(deployedPerSquare[index] ?? '0');
-          const miners = countPerSquare[index] ?? '0';
-          const deployedText = formatRawToUi(deployed, 9);
-          const mineText = formatRawToUi(mine, 9);
-          const displayedAmount = deployed === 0n ? '0' : Number(deployedText).toFixed(4);
-          const displayedMine = mine === 0n ? '0' : Number(mineText).toFixed(4);
+          const deployed = deployedPerSquare?.[index] ?? 0;
+          const miners = countPerSquare?.[index] ?? 0;
+          const deployedText = String(deployed);
+          const mineText = String(mine);
           const highlightClass = isWinner
             ? 'bg-emerald-50 outline outline-[3px] outline-offset-[-3px] outline-emerald-500 shadow-lg dark:bg-emerald-900/30 dark:outline-emerald-400'
             : isCandidate
@@ -75,12 +80,12 @@ export function BlockGrid({
                 {isMine && (
                   <span className="flex min-w-0 items-center gap-1 text-[8px] font-semibold tabular-nums text-sky-600 dark:text-sky-400 sm:text-xs lg:text-sm">
                     <SolanaIcon size={14} />
-                    <span className="min-w-0 truncate">{displayedMine}</span>
+                    <span className="min-w-0 truncate">{formatUiSol(mine)}</span>
                   </span>
                 )}
                 <span className="flex min-w-0 items-center gap-1 text-[8px] font-semibold tabular-nums text-stone-700 dark:text-stone-100 sm:text-xs lg:text-sm">
                   <SolanaIcon size={14} />
-                  <span className="min-w-0 truncate">{displayedAmount}</span>
+                  <span className="min-w-0 truncate">{formatUiSol(deployed)}</span>
                 </span>
               </span>
             </button>

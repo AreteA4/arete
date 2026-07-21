@@ -1,66 +1,169 @@
 # ORE React Example
 
-A mainnet-only example of reading and writing ORE with the generated Arete stack SDK. Transactions use the authenticated Arete HTTP transport by default; explicit direct Solana RPC remains available.
+The smallest useful ORE path is one provider, one explicit `useArete(stack)` call, and two keyed state views. The Board is authoritative for the active round, so subscribe to it first and use its `roundId` to key the Round subscription:
 
-## Architecture
+```tsx
+import { AreteProvider, useArete } from '@usearete/react';
+import { ORE_STREAM_STACK } from './generated/ore-stack';
 
-- `src/App.tsx` wires the wallet to adapter `auto` mode without constructing a Solana `Connection`. Direct mode mounts `ConnectionProvider` separately.
-- `src/components/OreDashboard.tsx` directly shows `useArete`, the live `OreRound/latest` view, wallet-keyed Miner subscriptions, generated quote/prepare calls, operation inspection, exact execution, and processed-slot reconciliation.
-- `src/components/BlockGrid.tsx` and `StatsPanel.tsx` are small presentational components for the board and current-round summary.
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error('VITE_ARETE_PUBLISHABLE_KEY is required');
 
-The board renders from `OreRound/latest`, so a fresh client immediately subscribes to live round updates without waiting for a Board account change. Wallet miners subscribe through `OreMiner/state`; positions are overlaid only when the miner and live round IDs match. Transaction review and approval separately read the raw Board account and clock before using the prepared operation.
+function CurrentRound() {
+  const arete = useArete(ORE_STREAM_STACK);
+  const board = arete.views.OreBoard.state.use({
+    address: arete.addresses.board(),
+  });
+  const roundId = board.data?.state.roundId ?? undefined;
+  const round = arete.views.OreRound.state.use(
+    roundId === undefined ? undefined : { roundId },
+  );
 
-## Local packages
+  return <p>Round {round.data?.id.roundId?.toString() ?? 'loading'}</p>;
+}
 
-Development dependencies intentionally use:
-
-```json
-"@usearete/sdk": "file:../../typescript/core",
-"@usearete/react": "file:../../typescript/react",
-"@usearete/adapter-web3js": "file:../../typescript/adapters/web3js"
+export default function App() {
+  return (
+    <AreteProvider
+      autoConnect
+      stack={ORE_STREAM_STACK}
+      auth={{ publishableKey }}
+    >
+      <CurrentRound />
+    </AreteProvider>
+  );
+}
 ```
 
-Build those packages before a clean install when their `dist/` directories are absent. Release automation rewrites these links to compatible semver versions.
+The stack remains on the provider so its endpoint overrides apply to matching calls. The provider cache shares one client and store for every equivalent stack/options pair, whether the stack is explicit or provider-default. Components repeat `useArete(ORE_STREAM_STACK)` intentionally so readers can see the data dependency without tracing provider configuration or ambient TypeScript registration.
 
-## Configuration
+## What to read
 
-Copy values from `.env.example` into an untracked `.env.local` as needed.
+1. `src/App.tsx` wires `AreteProvider` to a Wallet Standard wallet through `useSolanaWalletAdapter()` from `@usearete/adapter-web3js/react`.
+2. `src/components/RecentRounds.tsx` is the simplest consumer: one sorted list view with loading, error, empty, and populated states.
+3. `src/components/OreDashboard.tsx` follows Board to keyed Round, subscribes to Treasury and the connected wallet's Miner, and rolls resource status up with `summarizeStatuses`.
+4. `src/components/RewardsPanel.tsx` combines a wallet-keyed one-shot read with a composed claim transaction.
+5. `src/components/DeploymentPanel.tsx` is the advanced path: a debounced quote, generated transaction mutation, and explicit stream reconciliation targets.
+6. `src/components/ConnectionBadge.tsx` shows connection status, non-fatal `socketIssue` details, and manual retry.
+7. `src/components/BlockGrid.tsx` and `StatsPanel.tsx` are presentational components fed by stream data.
 
-- The generated production Arete WS/HTTP pair is used when no override is present.
-- `VITE_ARETE_WS_URL` and `VITE_ARETE_HTTP_URL` must be provided together.
-- HTTP derivation is allowed only with `VITE_DERIVE_ARETE_HTTP=true` and a WS override.
-- `VITE_TRANSACTION_TRANSPORT=auto` is the default and does not use a public Solana RPC.
-- `VITE_TRANSACTION_TRANSPORT=direct` requires `VITE_SOLANA_RPC_URL`; devnet, testnet, localhost, and loopback endpoints are rejected.
-- `VITE_ARETE_PUBLISHABLE_KEY` is optional and has no hardcoded fallback.
-- `VITE_SOLANA_EXPLORER_URL` is the transaction URL prefix.
+The application keeps the complete ORE UI around that path: a responsive 5x5 board, live statistics, recent-round history, wallet positions, SOL reward claims, manual deployment quotes and writes, connection recovery, and light/dark themes.
 
-## Wallet compatibility
+## Data authority
 
-The app installs only `@solana/wallet-adapter-react` and `@solana/wallet-adapter-react-ui`, which declare React `*` peer support and work with React 19. It intentionally avoids the large `@solana/wallet-adapter-wallets` bundle. Compatible Wallet Standard extensions are discovered automatically. Transactions require v0 `VersionedTransaction` signing; unsupported wallets are rejected by `@usearete/adapter-web3js` before submission.
+- `OreBoard/state`, keyed by `{ address }`, is the authoritative singleton for the current `roundId`.
+- `OreRound/state`, keyed by `{ roundId }`, supplies the board and statistics for that exact active round.
+- `OreRound/latest` is a sorted history view. `RecentRounds` uses it for the recent-round list, but it must not choose the active round because delivery timing can briefly differ from Board rollover timing.
+- `OreTreasury/state`, keyed by `{ address }`, is the singleton treasury (motherlode).
+- `OreMiner/state`, keyed by `{ authority }`, is disabled by passing `undefined` until a wallet connects. A miner deployment is displayed only when its snapshot `roundId` matches the Board round — that check is domain logic, not SDK plumbing.
 
-## Transaction safety
+Two guarantees make the app code short, and both are worth knowing:
 
-- One funded round prepares `deployWithCheckpoint`; the Board round is resolved again during preparation.
-- The generated `read.quoteManualDeployment` fetches raw Miner and Automation accounts before a connected wallet can review.
-- Active automation blocks manual deployment. Automation must be disabled and reconciled outside this canonical example.
-- A prepared operation is inspected without signing. Execution uses that exact object; a Board rollover invalidates a reviewed deploy.
-- No action retries or resubmits automatically.
-- The current round and raw Automation account are revalidated immediately before execution.
-- After confirmation, the app waits for Arete to process the confirmed slot and refreshes Board, Round, and Miner views.
-- Playwright sets `VITE_AUTOMATED_TEST_MODE=true`; the execute path refuses writes even if a browser wallet is present.
+1. **Keyed subscriptions and reads only expose data for the arguments you passed.** When a key or read argument changes, `data` is `undefined` (and `isLoading` true) until the fresh result arrives. Components never re-verify that returned data matches their inputs.
+2. **Hooks are safe to call before the client connects.** Views, reads, and mutation hooks all exist immediately, so no conditional hook calls are needed. Each view hook result carries a `status` (`'disabled' | 'connecting' | 'subscribing' | 'ready' | 'error'`) for precise loading UI.
 
-The compact quote copy reports generated principal allocation, rounding remainder, and checkpoint reserve. Inspection separately displays the RPC network fee estimate; account rent is not invented or estimated by the example.
+One constraint to know: streamed entities contain bigints, and React's dev-mode performance track `JSON.stringify`s changed props, which crashes on bigint arrays (fixed in React 19.3). The preferred fix is at the stack layer: ORE ships UI-denominated fields alongside raw values. Both Round and Miner expose `deployedPerSquareUi`, and Miner also exposes `totalDeployed`, so presentational components receive plain numbers while raw fields remain available for exact transaction logic.
 
-## Commands
+`OreDashboard`, `DeploymentPanel`, `RewardsPanel`, `RecentRounds`, and `ConnectionBadge` each call `useArete(ORE_STREAM_STACK)`. `AreteProvider` caches one connected client per stack and endpoint, so those calls share a single socket and subscription store — components can grab `useArete` wherever they need it instead of receiving props from a top-level owner. A retry removes that shared client for every consumer, exposes one connecting window, and then installs one replacement client.
+
+Components self-subscribe when they own an independent data need. `BlockGrid`
+and `StatsPanel` stay presentational because they render the same active Round
+already owned by `OreDashboard`; passing those values as props avoids duplicate
+domain joins without introducing a data layer.
+
+The app runs under React Strict Mode. The provider lifecycle is tested to leave
+one active shared client after Strict Mode's development mount cycle and to
+disconnect every superseded client.
+
+The full dashboard remains mounted during initial loading, connection or query failure, and reconnection. `OreDashboard` aggregates the connection, Board, active Round, Treasury, and Miner with `summarizeStatuses`, including which committed streams are being resynchronized; `RecentRounds` separately renders loading, error, empty, and populated history states.
+
+## Read and write boundaries
+
+`safeToRawAmount` turns the deployment form's decimal input into a discriminated success/error result before a quote is requested. `arete.read.quoteManualDeployment.use(input, { debounceMs: 300 })` is then a one-shot, argument-keyed preview. Imperative and hook reads share the `arete.read` namespace. The quote reads raw Miner and Automation accounts and calculates principal allocation, exclusions, and checkpoint reserve. Its detailed `status` distinguishes disabled, connecting, loading, refreshing, ready, and error states; `isPending`, `isReady`, and `isEmpty` cover common UI branches. It is not a reservation or a guarantee that the round will remain current.
+
+`deployWithCheckpoint.useMutation()` prepares the operation again before asking the wallet to sign. Preparation reads the raw Board account and rejects an explicit stale `roundId`. The app never retries or resubmits a transaction automatically.
+
+The mutation's `phase` field is its discriminated status — `'preparing' | 'awaiting-wallet' | 'submitted' | 'confirmed' | 'reconciling' | 'reconciled' | 'confirmed-unreconciled' | ...` — use it for busy labels; use `displayError` and `reconciliationError` for messages. When `canRetryReconciliation` is true, `retryReconciliation()` repeats only watermark/refresh work and never rebuilds, signs, or resubmits the transaction.
+
+After chain confirmation, generated program mutation hooks wait for the stack's processed-slot watermark by default. This proves that the stream has processed at least the confirmed receipt slot; it does not prove that every view changed. The `reconcile.refresh` option then refreshes targets — it accepts view hook objects, view/read hook results, or plain callbacks:
+
+```tsx
+reconcile: {
+  refresh: [
+    arete.views.OreBoard.state,   // refreshes the dashboard's active subscription
+    arete.views.OreRound.state,
+    arete.views.OreMiner.state,
+    quoteRead,                    // re-runs the one-shot read
+  ],
+},
+```
+
+View hook refresh targets resolve through the subscription registry: they refresh that view's *active* subscriptions (optionally narrowed with a key, e.g. `arete.views.OreRound.state.refresh({ roundId })`) and are a no-op when nothing is subscribed. That is why `DeploymentPanel` needs no subscriptions of its own. An active view refresh resolves after its next complete snapshot is committed; registration, send, snapshot, and timeout failures reject. A reconciliation failure leaves the transaction confirmed and reports `confirmed-unreconciled`; it does not roll back or fail the landed transaction. Both transaction panels retry reconciliation before allowing another submission.
+
+## Monorepo setup
+
+This example links the local core, React, and web3.js adapter packages. Build them before installing the app in a clean checkout:
 
 ```bash
+(cd typescript/core && npm ci && npm run build)
+(cd typescript/react && npm ci && npm install ../core --no-save --package-lock=false && npm run build)
+(cd typescript/adapters/web3js && npm ci && npm install ../../core --no-save --package-lock=false && npm run build)
+```
+
+## Run it
+
+Hosted Arete stacks require a publishable key so the platform can authenticate and rate-limit clients. Create `.env.local` with a key from [the Arete dashboard](https://arete.run/dashboard):
+
+```bash
+VITE_ARETE_PUBLISHABLE_KEY=hspk_...
+```
+
+```bash
+cd examples/ore-react
 npm install
 npm run dev
+```
+
+Open [localhost:5173](http://localhost:5173). Read-only viewing uses the hosted ORE stack at `wss://ore.stack.arete.run` without a wallet, but still requires the publishable key.
+
+Optional endpoint and authentication overrides go in an untracked `.env.local`. See `.env.example` for the complete list.
+
+## Generated SDK boundary
+
+Everything under `src/generated/` is generated output. Do not edit it by hand.
+
+The inputs are:
+
+- `stacks/ore/src/stack.rs` and its IDLs, compiled to `stacks/ore/.arete/OreStream.stack.json`
+- `stacks/ore/extensions/`, which adds ORE-specific reads, math, addresses, and semantic transactions
+- the monorepo CLI and TypeScript generator
+
+Regenerate every ORE example SDK from the repository root:
+
+```bash
+bash scripts/generate-example-sdks.sh
+```
+
+The script first builds the standalone ORE crate against this checkout's local Arete source, then generates React, TypeScript, and Rust outputs. `sdk-provenance.json` records the canonical stack AST hash, generator hash, extension hash, and artifact list. Generation is deterministic and CI runs it twice before accepting the committed output.
+
+After deploying ORE, compare the public deployment's AST and extension provenance without credentials:
+
+```bash
+bash scripts/check-ore-deployment-parity.sh
+```
+
+This parity check is intentionally post-deploy and is not part of normal pull-request CI.
+
+## Tests
+
+```bash
+npm run lint
 npm run typecheck
 npm test
 npm run build
 npm run test:e2e
-npm ls @usearete/sdk
 ```
 
-Unit/component tests use Vitest and React Testing Library. Playwright tests are disconnected/read-only and cover desktop, mobile, keyboard, reduced motion, touch targets, direct selection, and wallet prompting. Controlled mainnet smoke testing is intentionally manual and must use a disposable, tightly funded wallet.
+Playwright runs disconnected, read-only browser coverage. Any controlled mainnet write smoke test must remain manual and use a disposable, tightly funded wallet.
+
+Component tests mock `useArete` results to exercise ORE-specific rendering and transaction policy deterministically. Provider, subscription, keyed-view, read, and reconciliation lifecycle behavior is covered in `typescript/react/src/*test.ts`; use that controlled-client pattern when an application needs an integration test across the real provider boundary. Browser tests deliberately use unreachable local endpoints, so they verify disconnected production UI without depending on hosted data or credentials.

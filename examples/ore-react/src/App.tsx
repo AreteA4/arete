@@ -1,35 +1,26 @@
-import { useMemo, type ReactNode } from 'react';
-import { ConnectionProvider, WalletProvider, useConnection, useWallet } from '@solana/wallet-adapter-react';
+import { type ReactNode } from 'react';
+import { WalletProvider } from '@solana/wallet-adapter-react';
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
-import type { TransactionVersion, VersionedTransaction } from '@solana/web3.js';
-import { createWalletAdapter } from '@usearete/adapter-web3js';
+import { useSolanaWalletAdapter } from '@usearete/adapter-web3js/react';
 import { AreteProvider } from '@usearete/react';
-import { OreDashboard } from './components';
+import { OreDashboard } from './components/OreDashboard';
 import { appConfig } from './config';
+import { ORE_STREAM_STACK } from './generated/ore-stack';
 import { ThemeProvider } from './hooks/useTheme';
 
 import '@solana/wallet-adapter-react-ui/styles.css';
 
-function signerFromWallet(wallet: ReturnType<typeof useWallet>) {
-  if (!wallet.publicKey || !wallet.signTransaction) return undefined;
-  return {
-    publicKey: wallet.publicKey,
-    supportedTransactionVersions: wallet.wallet?.adapter.supportedTransactionVersions as
-      | ReadonlySet<TransactionVersion>
-      | null
-      | undefined,
-    signTransaction: (transaction: VersionedTransaction) =>
-      wallet.signTransaction!(transaction) as Promise<VersionedTransaction>,
-  };
-}
-
-function Provider({ wallet, children }: {
-  wallet: ReturnType<typeof createWalletAdapter> | undefined;
-  children: ReactNode;
-}) {
+// `useSolanaWalletAdapter` reads the wallet context, so the AreteProvider
+// lives one level below WalletProvider in this small shell. Keeping the stack
+// on the provider applies its endpoint overrides; components pass it explicitly
+// to `useArete(ORE_STREAM_STACK)` so their data dependency is visible locally.
+function AreteShell({ children }: { children: ReactNode }) {
+  const wallet = useSolanaWalletAdapter();
   return (
     <AreteProvider
       autoConnect
+      stack={ORE_STREAM_STACK}
+      stackOptions={appConfig.areteOptions}
       wallet={wallet}
       auth={appConfig.publishableKey ? { publishableKey: appConfig.publishableKey } : undefined}
     >
@@ -38,48 +29,30 @@ function Provider({ wallet, children }: {
   );
 }
 
-function AutoAreteWalletBridge({ children }: { children: ReactNode }) {
-  const wallet = useWallet();
-  const areteWallet = useMemo(() => {
-    const signer = signerFromWallet(wallet);
-    if (!signer) return undefined;
-    return createWalletAdapter({
-      transport: 'auto',
-      signer,
-    });
-  }, [wallet.publicKey, wallet.signTransaction, wallet.wallet]);
-  return <Provider wallet={areteWallet}>{children}</Provider>;
-}
-
-function DirectAreteWalletBridge({ children }: { children: ReactNode }) {
-  const { connection } = useConnection();
-  const wallet = useWallet();
-  const areteWallet = useMemo(() => {
-    const signer = signerFromWallet(wallet);
-    if (!signer) return undefined;
-    return createWalletAdapter({ connection, transport: 'direct', signer });
-  }, [connection, wallet.publicKey, wallet.signTransaction, wallet.wallet]);
-  return <Provider wallet={areteWallet}>{children}</Provider>;
-}
-
-function WalletShell({ children }: { children: ReactNode }) {
-  return (
-    <WalletProvider wallets={[]} autoConnect>
-      <WalletModalProvider>{children}</WalletModalProvider>
-    </WalletProvider>
-  );
-}
-
 export default function App() {
+  if (appConfig.configurationError) {
+    return (
+      <main className="grid min-h-dvh place-items-center bg-stone-100 p-6 font-sans text-stone-900">
+        <section className="max-w-lg rounded-2xl bg-white p-6 shadow-sm" role="alert">
+          <h1 className="text-lg font-semibold">Arete configuration required</h1>
+          <p className="mt-2 text-sm text-stone-600">{appConfig.configurationError}</p>
+          <p className="mt-3 text-sm text-stone-500">
+            Add the key to <code>.env.local</code>, then restart the development server.
+          </p>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <ThemeProvider>
-      {appConfig.transactionTransport === 'direct' ? (
-        <ConnectionProvider endpoint={appConfig.solanaRpcUrl!} config={{ commitment: 'confirmed' }}>
-          <WalletShell><DirectAreteWalletBridge><OreDashboard /></DirectAreteWalletBridge></WalletShell>
-        </ConnectionProvider>
-      ) : (
-        <WalletShell><AutoAreteWalletBridge><OreDashboard /></AutoAreteWalletBridge></WalletShell>
-      )}
+      <WalletProvider wallets={[]} autoConnect>
+        <WalletModalProvider>
+          <AreteShell>
+            <OreDashboard />
+          </AreteShell>
+        </WalletModalProvider>
+      </WalletProvider>
     </ThemeProvider>
   );
 }
