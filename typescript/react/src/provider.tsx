@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useRef, ReactNode, useSyncExternalStore, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useRef, ReactNode, useCallback } from 'react';
 import {
   Arete,
   type ConnectedArete,
@@ -26,6 +26,12 @@ interface ClientEntry {
   disconnect: () => void;
 }
 
+interface ClientChange {
+  cacheKey: string;
+  status: 'connecting' | 'connected' | 'error';
+  error?: Error;
+}
+
 interface AreteContextValue {
   getOrCreateClient: <
     TStack extends StackDefinition,
@@ -41,7 +47,14 @@ interface AreteContextValue {
     stack: TStack | undefined,
     options?: ClientLookupOptions<TPrograms>
   ) => ConnectedArete<ResolvedStack<TStack, TPrograms>> | null;
-  subscribeToClientChanges: (callback: () => void) => () => void;
+  retryClient: <
+    TStack extends StackDefinition,
+    TPrograms extends ProgramMap | undefined = undefined,
+  >(
+    stack: TStack,
+    options?: ClientLookupOptions<TPrograms>
+  ) => Promise<ConnectedArete<ResolvedStack<TStack, TPrograms>>>;
+  subscribeToClientChanges: (callback: (change?: ClientChange) => void) => () => void;
   config: AreteConfig;
 }
 
@@ -49,24 +62,23 @@ const AreteContext = createContext<AreteContextValue | null>(null);
 
 export function AreteProvider({
   children,
-  fallback = null,
   ...config
 }: AreteConfig & {
   children: ReactNode;
-  fallback?: ReactNode;
 }) {
   const clientsRef = useRef<Map<string, ClientEntry>>(new Map());
   const connectingRef = useRef<Map<string, Promise<AnyClient>>>(new Map());
-  const clientChangeListenersRef = useRef<Set<() => void>>(new Set());
+  const clientChangeListenersRef = useRef<Set<(change?: ClientChange) => void>>(new Set());
   const latestWalletRef = useRef(config.wallet);
+  const lifecycleRef = useRef({ active: true, generation: 0 });
 
   latestWalletRef.current = config.wallet;
   
-  const notifyClientChange = useCallback(() => {
-    clientChangeListenersRef.current.forEach(cb => { cb(); });
+  const notifyClientChange = useCallback((change?: ClientChange) => {
+    clientChangeListenersRef.current.forEach(cb => { cb(change); });
   }, []);
   
-  const subscribeToClientChanges = useCallback((callback: () => void) => {
+  const subscribeToClientChanges = useCallback((callback: (change?: ClientChange) => void) => {
     clientChangeListenersRef.current.add(callback);
     return () => {
       clientChangeListenersRef.current.delete(callback);
@@ -96,22 +108,34 @@ export function AreteProvider({
     }
 
     const adapter = new ZustandAdapter();
-    const connectionPromise = Arete.connect(stack, {
+    const lifecycleGeneration = lifecycleRef.current.generation;
+    let connectionPromise!: Promise<AnyClient>;
+    connectionPromise = Arete.connect(stack, {
       url: options?.url,
       httpUrl: options?.httpUrl,
       transport: options?.transport,
       programs: options?.programs,
       storage: adapter,
-      autoReconnect: config.autoConnect,
+      autoConnect: config.autoConnect,
+      autoReconnect: config.autoReconnect,
       reconnectIntervals: config.reconnectIntervals,
       maxReconnectAttempts: config.maxReconnectAttempts,
       maxEntriesPerView: config.maxEntriesPerView,
       flushIntervalMs: config.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS,
       fetch: config.fetch,
       validateFrames: config.validateFrames,
+      onFrameValidationError: config.onFrameValidationError,
       auth: config.auth,
       wallet: latestWalletRef.current,
     }).then((client) => {
+      const ownsAttempt = lifecycleRef.current.active
+        && lifecycleRef.current.generation === lifecycleGeneration
+        && connectingRef.current.get(cacheKey) === connectionPromise;
+      if (!ownsAttempt) {
+        client.disconnect();
+        throw new Error('Arete connection attempt was superseded');
+      }
+
       initializeConnectedClient(client, adapter, latestWalletRef.current);
 
       clientsRef.current.set(cacheKey, {
@@ -119,8 +143,20 @@ export function AreteProvider({
         disconnect: () => client.disconnect()
       });
       connectingRef.current.delete(cacheKey);
-      notifyClientChange();
-      return client;
+      notifyClientChange({ cacheKey, status: 'connected' });
+      return client as unknown as AnyClient;
+    }).catch((value) => {
+      const error = value instanceof Error ? value : new Error(String(value));
+      if (connectingRef.current.get(cacheKey) === connectionPromise) {
+        connectingRef.current.delete(cacheKey);
+        if (
+          lifecycleRef.current.active
+          && lifecycleRef.current.generation === lifecycleGeneration
+        ) {
+          notifyClientChange({ cacheKey, status: 'error', error });
+        }
+      }
+      throw error;
     });
     
     trackConnectingPromise(
@@ -128,8 +164,9 @@ export function AreteProvider({
       cacheKey,
       connectionPromise as unknown as Promise<AnyClient>
     );
+    notifyClientChange({ cacheKey, status: 'connecting' });
     return connectionPromise as unknown as Promise<ConnectedArete<ResolvedStack<TStack, TPrograms>>>;
-  }, [config.autoConnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.fetch, config.validateFrames, config.auth, notifyClientChange]);
+  }, [config.autoConnect, config.autoReconnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.fetch, config.validateFrames, config.onFrameValidationError, config.auth, notifyClientChange]);
 
   const getClient = useCallback(<
     TStack extends StackDefinition,
@@ -153,24 +190,50 @@ export function AreteProvider({
     return entry ? (entry.client as unknown as ConnectedArete<ResolvedStack<TStack, TPrograms>>) : null;
   }, []);
 
+  const retryClient = useCallback(<
+    TStack extends StackDefinition,
+    TPrograms extends ProgramMap | undefined = undefined,
+  >(
+    stack: TStack,
+    options?: ClientLookupOptions<TPrograms>
+  ): Promise<ConnectedArete<ResolvedStack<TStack, TPrograms>>> => {
+    const cacheKey = createClientCacheKey(stack, options);
+    if (!cacheKey) {
+      return Promise.reject(new Error('Stack is required to retry an Arete client'));
+    }
+    const existing = clientsRef.current.get(cacheKey);
+    if (existing) {
+      existing.disconnect();
+      clientsRef.current.delete(cacheKey);
+    }
+    return getOrCreateClient(stack, options);
+  }, [getOrCreateClient]);
+
   useEffect(() => {
     syncClientWallets(clientsRef.current.values(), config.wallet);
     notifyClientChange();
   }, [config.wallet, notifyClientChange]);
 
   useEffect(() => {
+    const lifecycle = lifecycleRef.current;
+    const clients = clientsRef.current;
+    const connecting = connectingRef.current;
+    lifecycle.active = true;
     return () => {
-      clientsRef.current.forEach((entry) => {
+      lifecycle.active = false;
+      lifecycle.generation++;
+      clients.forEach((entry) => {
         entry.disconnect();
       });
-      clientsRef.current.clear();
-      connectingRef.current.clear();
+      clients.clear();
+      connecting.clear();
     };
   }, []);
 
   const value: AreteContextValue = {
     getOrCreateClient,
     getClient,
+    retryClient,
     subscribeToClientChanges,
     config,
   };
@@ -230,47 +293,4 @@ export function useConnectionState(
   }, [getClient, subscribeToClientChanges, stack, options]);
   
   return state;
-}
-
-export function useView<T>(
-  stack: StackDefinition,
-  viewPath: string,
-  options?: ClientLookupOptions
-): T[] {
-  const { getClient } = useAreteContext();
-  const client = getClient(stack, options);
-  
-  return useSyncExternalStore(
-    (callback) => {
-      if (!client) return () => {};
-      return client.store.onUpdate(callback);
-    },
-    () => {
-      if (!client) return [];
-      const data = client.store.getAll(viewPath);
-      return data as T[];
-    }
-  );
-}
-
-export function useEntity<T>(
-  stack: StackDefinition,
-  viewPath: string,
-  key: string,
-  options?: ClientLookupOptions
-): T | null {
-  const { getClient } = useAreteContext();
-  const client = getClient(stack, options);
-  
-  return useSyncExternalStore(
-    (callback) => {
-      if (!client) return () => {};
-      return client.store.onUpdate(callback);
-    },
-    () => {
-      if (!client) return null;
-      const data = client.store.get(viewPath, key);
-      return data as T | null;
-    }
-  );
 }

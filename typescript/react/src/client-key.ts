@@ -17,6 +17,21 @@ function getObjectKey(value: object, prefix: string): string {
   return key;
 }
 
+/**
+ * Value key for an attached program map: two maps attaching the same programs
+ * (by name and program id) select the same client, even if the caller builds a
+ * fresh object every render. Falls back to object identity when a definition
+ * has neither a name nor a program id.
+ */
+function getProgramsKey(programs: ProgramMap): string {
+  const entries = Object.entries(programs)
+    .map(([name, definition]) => `${name}@${definition?.name ?? ''}:${definition?.programId ?? ''}`);
+  if (entries.some((entry) => entry.endsWith(':'))) {
+    return getObjectKey(programs as object, 'programs');
+  }
+  return entries.sort().join(',') || 'programs-empty';
+}
+
 export function createClientCacheKey<
   TStack extends StackDefinition,
   TPrograms extends ProgramMap | undefined = undefined,
@@ -34,7 +49,7 @@ export function createClientCacheKey<
     options?.url ?? stack.endpoints.ws,
     options?.httpUrl ?? stack.endpoints.http ?? '',
     options?.programs
-      ? getObjectKey(options.programs as object, 'programs')
+      ? getProgramsKey(options.programs)
       : 'programs-none',
   ].join(':');
 }
