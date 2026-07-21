@@ -60,6 +60,32 @@ const wallet = createWalletAdapter({
 });
 ```
 
+In a React app using `@solana/wallet-adapter-react`, the `./react` subpath does this bridging for you:
+
+```tsx
+import { useSolanaWalletAdapter } from '@usearete/adapter-web3js/react';
+import { AreteProvider } from '@usearete/react';
+import { APP_STREAM_STACK } from './generated/app-stack';
+
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error('VITE_ARETE_PUBLISHABLE_KEY is required');
+
+function Shell({ children }) {
+  const wallet = useSolanaWalletAdapter(); // undefined until a wallet connects
+  return (
+    <AreteProvider
+      stack={APP_STREAM_STACK}
+      auth={{ publishableKey }}
+      wallet={wallet}
+    >
+      {children}
+    </AreteProvider>
+  );
+}
+```
+
+Hosted browser access requires the publishable key even when the app is only reading data. A wallet is required for signed operations, not for read-only viewing. `autoConnect` is omitted because its default is `true`; it controls only the initial connection, while `autoReconnect` independently defaults to `true` for recovery after an established connection is lost.
+
 The wallet must be connected, expose a non-null `PublicKey`, and support transaction version `0`. If `supportedTransactionVersions` is `null` or excludes `0`, the adapter rejects before prompting or sending. If that property is omitted, the supplied `signTransaction` implementation is responsible for accepting v0 transactions.
 
 Raw Wallet Standard `solana:signTransaction` features operate on byte-array request and response objects; they do not directly satisfy this interface. Bridge those feature calls to web3.js `VersionedTransaction` serialization/deserialization, or use a wallet-adapter integration that already exposes `signTransaction`.

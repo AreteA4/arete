@@ -69,6 +69,12 @@ try {
   const packedManifest = JSON.parse(
     await readFile(join(consumerRoot, 'node_modules', '@usearete', 'adapter-web3js', 'package.json'), 'utf8')
   );
+  if (!packedManifest.exports?.['./react']) {
+    throw new Error('Packed adapter does not expose the ./react subpath');
+  }
+  for (const file of ['react.js', 'react.cjs', 'react.d.ts']) {
+    await readFile(join(consumerRoot, 'node_modules', '@usearete', 'adapter-web3js', 'dist', file), 'utf8');
+  }
   if (packedManifest.dependencies?.bs58 !== '^6.0.0') {
     throw new Error('Packed adapter does not declare the tested bs58 dependency');
   }
