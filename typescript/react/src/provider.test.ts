@@ -56,18 +56,31 @@ describe('provider wallet helpers', () => {
     );
   });
 
-  it('keys attached programs by value rather than map identity', () => {
-    const programsA = { ore: { name: 'ore' } };
-    const programsB = { ore: { name: 'ore' } };
-    const unnamedProgramsA = { ore: {} };
-    const unnamedProgramsB = { ore: {} };
+  it('keys attached programs by behavior while allowing fresh outer maps', () => {
+    const generatedProgramA = { name: 'ore', programId: 'ore-program', definitionHash: 'ore-v1' };
+    const generatedProgramB = { name: 'ore', programId: 'ore-program', definitionHash: 'ore-v1' };
+    const changedProgram = { name: 'ore', programId: 'ore-program', definitionHash: 'ore-v2' };
+    const anonymousProgramA = { definitionHash: 'anonymous-v1' };
+    const anonymousProgramB = { definitionHash: 'anonymous-v1' };
+    const manualProgram = { name: 'ore', rawInstructions: { mine: jest.fn() } };
 
     expect(createClientCacheKey(stack, { transport: 'http' })).not.toBe(createClientCacheKey(stack));
-    expect(createClientCacheKey(stack, { programs: programsA as never })).toBe(
-      createClientCacheKey(stack, { programs: programsB as never })
+    expect(createClientCacheKey(stack, { programs: { ore: generatedProgramA } as never })).toBe(
+      createClientCacheKey(stack, { programs: { ore: generatedProgramB } as never })
     );
-    expect(createClientCacheKey(stack, { programs: unnamedProgramsA as never })).toBe(
-      createClientCacheKey(stack, { programs: unnamedProgramsB as never })
+    expect(createClientCacheKey(stack, { programs: { ore: generatedProgramA } as never })).not.toBe(
+      createClientCacheKey(stack, { programs: { ore: changedProgram } as never })
+    );
+    expect(createClientCacheKey(stack, { programs: { anonymous: anonymousProgramA } as never })).toBe(
+      createClientCacheKey(stack, { programs: { anonymous: anonymousProgramB } as never })
+    );
+    expect(createClientCacheKey(stack, { programs: { ore: manualProgram } as never })).toBe(
+      createClientCacheKey(stack, { programs: { ore: manualProgram } as never })
+    );
+    expect(createClientCacheKey(stack, { programs: { ore: manualProgram } as never })).not.toBe(
+      createClientCacheKey(stack, {
+        programs: { ore: { name: 'ore', rawInstructions: manualProgram.rawInstructions } } as never,
+      })
     );
   });
 

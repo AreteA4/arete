@@ -3082,6 +3082,7 @@ pub struct TypeScriptStackConfig {
     pub export_const_name: String,
     pub url: Option<String>,
     pub extension_import: Option<String>,
+    pub definition_hash: Option<String>,
 }
 
 impl Default for TypeScriptStackConfig {
@@ -3092,6 +3093,7 @@ impl Default for TypeScriptStackConfig {
             export_const_name: "STACK".to_string(),
             url: None,
             extension_import: None,
+            definition_hash: None,
         }
     }
 }
@@ -3381,7 +3383,7 @@ pub fn compile_program_modules(
     stack_spec: SerializableStackSpec,
     config: Option<TypeScriptStackConfig>,
 ) -> Result<TypeScriptStackOutput, String> {
-    let _config = config.unwrap_or_default();
+    let config = config.unwrap_or_default();
     let stack_name = &stack_spec.stack_name;
 
     if stack_spec.idls.is_empty() {
@@ -3428,6 +3430,7 @@ pub fn compile_program_modules(
         &instructions_codegen.stack_entries,
         &unique_schemas,
         &idl_account_artifacts.account_type_names,
+        config.definition_hash.as_deref(),
     );
 
     let imports = assemble_sdk_imports(
@@ -3602,6 +3605,7 @@ fn generate_stack_definition_multi(
         instruction_entries,
         &unique_schemas,
         account_type_names,
+        config.definition_hash.as_deref(),
     );
     let addresses_block = generate_stack_addresses_block(idls, pdas, program_ids);
 
@@ -3664,6 +3668,7 @@ fn generate_single_program_sections(
     instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
     schema_names: &BTreeSet<String>,
     account_type_names: &BTreeMap<(String, String), String>,
+    definition_hash: Option<&str>,
 ) -> (String, Vec<String>) {
     let program_key = to_camel_case(&idl.name);
     let multi_program = program_ids.len() > 1
@@ -3731,6 +3736,9 @@ fn generate_single_program_sections(
         format!("      name: '{}',", idl.name),
         format!("      programId: '{}',", program_id),
     ];
+    if let Some(definition_hash) = definition_hash {
+        sections.push(format!("      definitionHash: '{}',", definition_hash));
+    }
 
     if let Some(program_pdas) = program_pdas {
         let pda_entries = generate_program_pda_entries(program_pdas, &program_id, "        ");
@@ -3775,6 +3783,7 @@ fn generate_programs_block(
     instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
     schema_names: &BTreeSet<String>,
     account_type_names: &BTreeMap<(String, String), String>,
+    definition_hash: Option<&str>,
 ) -> String {
     if idls.is_empty() {
         return String::new();
@@ -3791,6 +3800,7 @@ fn generate_programs_block(
             instruction_entries,
             schema_names,
             account_type_names,
+            definition_hash,
         );
 
         program_blocks.push(format!(
@@ -3838,6 +3848,7 @@ fn generate_program_definitions(
     instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
     schema_names: &BTreeSet<String>,
     account_type_names: &BTreeMap<(String, String), String>,
+    definition_hash: Option<&str>,
 ) -> String {
     let mut program_consts = Vec::new();
     let mut map_entries = Vec::new();
@@ -3851,6 +3862,7 @@ fn generate_program_definitions(
             instruction_entries,
             schema_names,
             account_type_names,
+            definition_hash,
         );
         let const_name = to_screaming_snake_case(&idl.name);
         let body = dedent_lines(&sections.join("\n"), 4);
@@ -4408,6 +4420,22 @@ mod tests {
             output.imports,
             "import { z } from 'zod';\nimport { pda, arg, bytes } from '@usearete/sdk';"
         );
+    }
+
+    #[test]
+    fn program_modules_emit_configured_definition_hash() {
+        let output = compile_program_modules(
+            program_only_test_spec(BTreeMap::new(), vec![]),
+            Some(TypeScriptStackConfig {
+                definition_hash: Some("definition-v1".to_string()),
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .expect("program definition generation should succeed");
+
+        assert!(output
+            .stack_definition
+            .contains("definitionHash: 'definition-v1',"));
     }
 
     #[test]

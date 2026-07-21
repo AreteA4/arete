@@ -2,6 +2,7 @@ import type { ProgramSdkDefinition, StackDefinition } from './types';
 import type { ClientLookupOptions } from './types';
 
 type ProgramMap = Record<string, ProgramSdkDefinition>;
+type CacheableProgramDefinition = ProgramSdkDefinition & { readonly definitionHash?: string };
 
 const objectKeys = new WeakMap<object, string>();
 let nextObjectKey = 0;
@@ -18,14 +19,17 @@ function getObjectKey(value: object, prefix: string): string {
 }
 
 /**
- * Value key for an attached program map: two maps attaching the same programs
- * (by name and program id) select the same client, even if the caller builds a
- * fresh object every render. The map key remains a stable identifier when a
- * definition has neither a name nor a program id.
+ * Generated programs share by their behavior fingerprint. Manual definitions
+ * fall back to object identity so definitions with unknown behavior never
+ * accidentally share a client.
  */
 function getProgramsKey(programs: ProgramMap): string {
   const entries = Object.entries(programs)
-    .map(([key, definition]) => [key, definition?.name ?? '', definition?.programId ?? ''])
+    .map(([key, definition]) => [
+      key,
+      (definition as CacheableProgramDefinition).definitionHash
+        ?? getObjectKey(definition as object, 'program'),
+    ])
     .sort(([left], [right]) => left.localeCompare(right));
   return entries.length > 0 ? JSON.stringify(entries) : 'programs-empty';
 }

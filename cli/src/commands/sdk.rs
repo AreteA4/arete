@@ -1327,6 +1327,26 @@ fn sdk_generator_hash() -> String {
     env!("ARETE_SDK_GENERATOR_SHA256").to_string()
 }
 
+fn program_definition_hash(input_pin: &ResolvedExtensionsInputPin) -> String {
+    let mut hasher = Sha256::new();
+    update_hash_part(
+        &mut hasher,
+        "input-kind",
+        input_pin.kind.as_manifest_value().as_bytes(),
+    );
+    update_hash_part(&mut hasher, "input-hash", input_pin.hash.as_bytes());
+    update_hash_part(
+        &mut hasher,
+        "generator-hash",
+        sdk_generator_hash().as_bytes(),
+    );
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect()
+}
+
 fn extensions_artifact_hash(artifact: &ResolvedExtensionsArtifact) -> String {
     let mut hasher = Sha256::new();
     update_hash_part(&mut hasher, "entry", artifact.entry.as_bytes());
@@ -1910,6 +1930,7 @@ fn write_typescript_program_sdk(
             export_const_name: "PROGRAMS".to_string(),
             url: None,
             extension_import: None,
+            definition_hash: Some(program_definition_hash(extensions.input_pin)),
         }),
     )
     .map_err(|e| anyhow::anyhow!("Failed to compile TypeScript: {}", e))?;
@@ -2029,6 +2050,7 @@ fn generate_typescript_sdk_from_source(
             export_const_name: "PROGRAMS".to_string(),
             url,
             extension_import: None,
+            definition_hash: Some(program_definition_hash(&input_pin)),
         };
 
         let output = arete_interpreter::typescript::compile_program_modules(
@@ -2104,6 +2126,7 @@ fn generate_typescript_sdk_from_source(
             export_const_name: "STACK".to_string(),
             url,
             extension_import: None,
+            definition_hash: Some(program_definition_hash(&input_pin)),
         };
 
         let output =

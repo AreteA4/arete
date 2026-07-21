@@ -27,6 +27,7 @@ const BASE_STACK = {
 const BASE_PROGRAM = {
   name: 'ore',
   programId: 'ore111111111111111111111111111111111111111',
+  definitionHash: 'ore-base',
   rawInstructions: {},
 } as const satisfies ProgramSdkDefinition;
 
@@ -154,6 +155,7 @@ describe('extendProgram', () => {
     });
 
     expect(extended.pdas).toEqual({ vault: 'vault-pda' });
+    expect((extended as ProgramSdkDefinition).definitionHash).toBeUndefined();
     expect(extended.addresses.vault()).toBe('VaultAddr');
     expect(extended.constants).toEqual({ AuthorityType: { MintTokens: 'AuthorityMintTokens' } });
     expect(extended.defaults.closeMemo).toBe('prepared-close');

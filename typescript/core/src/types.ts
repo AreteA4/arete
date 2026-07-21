@@ -68,6 +68,8 @@ export interface StackQueryDefinition<TParams = unknown, TResult = unknown> {
 export interface ProgramSdkDefinition {
   readonly name: string;
   readonly programId?: string;
+  /** Stable fingerprint of the generated program behavior used for client caching. */
+  readonly definitionHash?: string;
   readonly schemas?: Record<string, Schema<unknown>>;
   readonly pdas?: Record<string, unknown>;
   readonly accounts?: Record<string, ProgramAccountReadDefinition<unknown>>;

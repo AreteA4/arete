@@ -14,6 +14,12 @@ fn collect_files(
             collect_files(root, &entry?.path(), package_name, files)?;
         }
     } else if path.is_file() {
+        let is_rust_source =
+            path.extension().and_then(|extension| extension.to_str()) == Some("rs");
+        let is_manifest = path.file_name().and_then(|name| name.to_str()) == Some("Cargo.toml");
+        if !is_rust_source && !is_manifest {
+            return Ok(());
+        }
         let relative_path = path
             .strip_prefix(root)?
             .to_string_lossy()
