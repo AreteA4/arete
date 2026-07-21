@@ -4,11 +4,9 @@
 //! removes one. The registry is a `DashMap` so per-entry locking does not
 //! contend across tools running concurrently.
 //!
-//! Each connection owns one [`SharedStore`] (from `arete-sdk`) into which
-//! the ingest task applies every inbound `Frame`. The store is keyed by view
-//! internally, so a single connection can hold many subscribed views without
-//! needing a second WebSocket. Subscription bookkeeping (which `subscription_id`
-//! maps to which `(view, key)` on which connection) lives in
+//! Each connection owns one [`SharedStore`] (from `arete-sdk`). The SDK applies
+//! inbound protocol v2 frames directly and keeps normalized entities separate
+//! from exact query membership. Subscription bookkeeping lives in
 //! [`crate::subscriptions`].
 //!
 //! ## Subscribe/disconnect race safety
@@ -29,14 +27,8 @@ use arete_sdk::{
     AreteError, AuthConfig, ConnectionConfig, ConnectionManager, ConnectionState, SharedStore,
 };
 use dashmap::DashMap;
-use tokio::sync::{mpsc, RwLock};
-use tokio::task::JoinHandle;
+use tokio::sync::RwLock;
 use uuid::Uuid;
-
-/// Channel buffer for inbound frames. The ingest task drains this and applies
-/// each frame to the connection's `SharedStore`. 1024 gives ample headroom for
-/// burst snapshots without backpressuring the WebSocket reader.
-const FRAME_CHANNEL_CAPACITY: usize = 1024;
 
 /// Opaque identifier returned to the MCP client. Hex UUID v4.
 pub type ConnectionId = String;
@@ -54,20 +46,11 @@ pub struct ConnectionEntry {
     /// to wait for in-flight subscribes before sweeping. See module docs for
     /// the full race-safety argument.
     pub alive: Arc<RwLock<bool>>,
-    /// Background task that drains the frame channel and applies each frame
-    /// to `store`. Aborted on disconnect.
-    ingest_task: JoinHandle<()>,
 }
 
 impl ConnectionEntry {
     pub async fn state(&self) -> ConnectionState {
         self.manager.state().await
-    }
-}
-
-impl Drop for ConnectionEntry {
-    fn drop(&mut self) {
-        self.ingest_task.abort();
     }
 }
 
@@ -94,24 +77,11 @@ impl ConnectionRegistry {
             config.auth = Some(AuthConfig::default().with_publishable_key(key));
         }
 
-        let (frame_tx, mut frame_rx) = mpsc::channel(FRAME_CHANNEL_CAPACITY);
-        let manager = ConnectionManager::new(url.clone(), config, frame_tx).await?;
-
         // TODO(HYP-189): SDK's StoreConfig defaults to 10k entries/view.
         // Revisit per-subscription overrides once we have real agent usage data.
-        let store = Arc::new(SharedStore::new());
-        let store_for_task = store.clone();
-        let ingest_task = tokio::spawn(async move {
-            while let Some(frame) = frame_rx.recv().await {
-                tracing::debug!(
-                    "ingest: view={} op={} key={}",
-                    frame.entity,
-                    frame.op,
-                    frame.key
-                );
-                store_for_task.apply_frame(frame).await;
-            }
-        });
+        let store = SharedStore::new();
+        let manager = ConnectionManager::new(url.clone(), config, store.clone()).await?;
+        let store = Arc::new(store);
 
         let id = Uuid::new_v4().simple().to_string();
         let entry = Arc::new(ConnectionEntry {
@@ -120,7 +90,6 @@ impl ConnectionRegistry {
             manager,
             store,
             alive: Arc::new(RwLock::new(true)),
-            ingest_task,
         });
         self.inner.insert(id.clone(), entry);
         Ok(id)
@@ -152,10 +121,8 @@ impl ConnectionRegistry {
             *alive = false;
         }
 
-        // Step 3: stop the underlying WebSocket. The drop of the last Arc
-        // aborts the ingest task (see ConnectionEntry::drop). We still return
-        // the Arc so the caller can delay destruction until after the
-        // subscription sweep.
+        // Step 3: stop the underlying WebSocket. We still return the Arc so the
+        // caller can delay destruction until after the subscription sweep.
         entry.manager.disconnect().await;
         Some(entry)
     }

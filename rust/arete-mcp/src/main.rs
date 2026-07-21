@@ -106,6 +106,7 @@ mod lenient {
     }
 }
 
+use arete_sdk::{Subscription, SubscriptionQuery};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
@@ -383,17 +384,23 @@ impl AreteMcp {
             ));
         }
 
-        let entry = self.subscriptions.insert(
-            args.connection_id.clone(),
-            args.view.clone(),
-            args.key.clone(),
-        );
-
-        let mut sub = entry.to_sdk_subscription();
+        let subscription_id = self.subscriptions.next_id();
+        let mut query = SubscriptionQuery::new(&args.view);
+        query.key = args.key.clone();
+        let mut sub = Subscription::new(&subscription_id, query);
         if let Some(snap) = args.with_snapshot {
             sub = sub.with_snapshot(snap);
         }
-        conn.manager.subscribe(sub).await;
+        let lease = conn.manager.subscribe(sub).await.map_err(|error| {
+            McpError::internal_error(format!("failed to subscribe: {error}"), None)
+        })?;
+        let entry = self.subscriptions.insert(
+            subscription_id,
+            args.connection_id.clone(),
+            args.view.clone(),
+            args.key.clone(),
+            lease,
+        );
         // Guard explicitly dropped at end of scope; keeping it named ensures
         // the compiler won't reorder it before the dispatch.
         drop(alive_guard);
@@ -424,11 +431,7 @@ impl AreteMcp {
                 )
             })?;
 
-        if let Some(conn) = self.connections.get(&entry.connection_id) {
-            conn.manager
-                .unsubscribe(entry.to_sdk_unsubscription())
-                .await;
-        }
+        drop(entry);
         Ok(CallToolResult::success(vec![Content::text("unsubscribed")]))
     }
 
@@ -447,7 +450,8 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<QueryEntitiesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (store, view) = self.resolve_subscription(&args.subscription_id)?;
+        let (store, wire_subscription_id, view) =
+            self.resolve_subscription(&args.subscription_id)?;
 
         let mut compiled = Filter::parse(&args.r#where)
             .map_err(|e| McpError::invalid_params(format!("invalid where: {e}"), None))?;
@@ -463,10 +467,10 @@ impl AreteMcp {
 
         // Snapshot raw entries under the read lock, then filter/project outside
         // the lock to keep the critical section short.
-        let raw = store.all_raw(&view).await;
+        let raw: Vec<serde_json::Value> = store.list_for_subscription(&wire_subscription_id).await;
         let total_scanned = raw.len();
         let mut matched: Vec<serde_json::Value> = Vec::new();
-        for (_key, value) in raw {
+        for value in raw {
             if !compiled.is_empty() && !compiled.matches(&value) {
                 continue;
             }
@@ -497,8 +501,11 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<GetEntityArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (store, view) = self.resolve_subscription(&args.subscription_id)?;
-        let value: Option<serde_json::Value> = store.get(&view, &args.key).await;
+        let (store, wire_subscription_id, view) =
+            self.resolve_subscription(&args.subscription_id)?;
+        let value: Option<serde_json::Value> = store
+            .get_for_subscription(&wire_subscription_id, &args.key)
+            .await;
         let payload = serde_json::json!({
             "view": view,
             "key": args.key,
@@ -525,10 +532,11 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<ListEntitiesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (store, view) = self.resolve_subscription(&args.subscription_id)?;
-        let raw = store.all_raw(&view).await;
-        let total_cached = raw.len();
-        let keys: Vec<String> = raw.into_keys().take(QUERY_LIMIT_MAX).collect();
+        let (store, wire_subscription_id, view) =
+            self.resolve_subscription(&args.subscription_id)?;
+        let all_keys = store.keys_for_subscription(&wire_subscription_id).await;
+        let total_cached = all_keys.len();
+        let keys: Vec<String> = all_keys.into_iter().take(QUERY_LIMIT_MAX).collect();
         let truncated = total_cached > keys.len();
         let payload = serde_json::json!({
             "view": view,
@@ -542,22 +550,18 @@ impl AreteMcp {
         )]))
     }
 
-    #[tool(description = "Return up to N entities from a subscription's cache. \
-                          Order matches the view's sort config when configured, \
-                          otherwise hash order — not strict insertion recency.")]
+    #[tool(description = "Return up to N entities from a subscription's exact \
+                          ordered query membership.")]
     async fn get_recent(
         &self,
         Parameters(args): Parameters<GetRecentArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (store, view) = self.resolve_subscription(&args.subscription_id)?;
+        let (store, wire_subscription_id, view) =
+            self.resolve_subscription(&args.subscription_id)?;
         let n = args.n.min(QUERY_LIMIT_MAX);
-        let all: Vec<serde_json::Value> = store.list(&view).await;
-        // TODO(HYP-189): SharedStore exposes no native "last N inserted" view.
-        // For sorted views the tail is meaningful; for unsorted views it is
-        // hash order. If real usage needs strict recency, add a per-view ring
-        // buffer in the ingest task.
+        let all: Vec<serde_json::Value> = store.list_for_subscription(&wire_subscription_id).await;
         let total = all.len();
-        let recent: Vec<serde_json::Value> = all.into_iter().rev().take(n).collect();
+        let recent: Vec<serde_json::Value> = all.into_iter().take(n).collect();
         let payload = serde_json::json!({
             "view": view,
             "total_cached": total,
@@ -658,7 +662,7 @@ impl AreteMcp {
     fn resolve_subscription(
         &self,
         subscription_id: &str,
-    ) -> Result<(std::sync::Arc<arete_sdk::SharedStore>, String), McpError> {
+    ) -> Result<(std::sync::Arc<arete_sdk::SharedStore>, String, String), McpError> {
         let sub = self.subscriptions.get(subscription_id).ok_or_else(|| {
             McpError::invalid_params(format!("unknown subscription_id: {subscription_id}"), None)
         })?;
@@ -671,7 +675,11 @@ impl AreteMcp {
                 None,
             )
         })?;
-        Ok((conn.store.clone(), sub.view.clone()))
+        Ok((
+            conn.store.clone(),
+            sub.wire_subscription_id.clone(),
+            sub.view.clone(),
+        ))
     }
 }
 

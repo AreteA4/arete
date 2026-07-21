@@ -367,17 +367,17 @@ them in whatever README the agent has access to.
 
 ### Querying the cache
 
-Streamed entities land in an in-memory cache (the SDK's `SharedStore`, LRU
-with a 10k-entry-per-view default). Every query tool below reads from that
-cache and is bound to a `subscription_id` so the agent doesn't have to repeat
-view names.
+Streamed entities land in the SDK's `SharedStore`, which keeps normalized
+entities separate from protocol v2 query membership. Every query tool below
+reads the exact membership bound to its `subscription_id`, so keyed or
+windowed subscriptions cannot leak entities from another query on the same
+view. Equivalent subscriptions share one reference-counted wire subscription.
 
 - `get_entity({ subscription_id, key })` — fetch one entity by key.
 - `list_entities({ subscription_id })` — keys only (no values), to keep the
   response small even on 10k-entity views.
-- `get_recent({ subscription_id, n })` — up to N entities. Order matches the
-  view's sort config when configured, otherwise hash order — not strict
-  insertion recency.
+- `get_recent({ subscription_id, n })` — the first N entities in the
+  subscription's server-defined order.
 - `query_entities({ subscription_id, where?, filters?, select?, limit? })` —
   filter and project. Supports two filter inputs at once, ANDed together:
 
