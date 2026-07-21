@@ -160,10 +160,10 @@ pub struct Token {
 
 ```typescript
 // List - all tokens as array
-const { data: tokens } = stack.views.tokens.list.use();
+const { data: tokens } = stack.views.Token.list.use();
 
-// State - single token by key
-const { data: token } = stack.views.tokens.state.use({ key: mintAddress });
+// State - generated key object, with fields determined by the entity primary key
+const { data: token } = stack.views.Token.state.use({ mint: mintAddress });
 ```
 
 **Custom Views:** If you need different sorting, filtering, or aggregation logic, you can define custom views using the `#[view]` macro in your stack specification. This lets you create specialized access patterns beyond the default list and state views.
@@ -238,6 +238,13 @@ disconnected → connecting → connected → (reconnecting) → connected
 
 The SDK handles reconnection automatically. Your subscriptions resume when the connection is restored.
 
+Two similarly named options control different phases:
+
+- React `autoConnect` defaults to `true` and controls only whether `AreteProvider` starts the initial connection.
+- `autoReconnect` defaults to `true` in React and the core TypeScript SDK and controls only recovery after an established connection is lost.
+
+Disabling `autoConnect` does not disable later recovery for a connection your app establishes. Disabling `autoReconnect` does not suppress the initial connection.
+
 ---
 
 ## Type Safety
@@ -250,7 +257,7 @@ Arete provides end-to-end type safety:
 
 ```typescript
 // TypeScript knows token.mint is string, token.volume is bigint
-const { data: token } = stack.views.tokens.state.use({ key });
+const { data: token } = stack.views.Token.state.use({ mint });
 console.log(token.mint); // string
 console.log(token.volume); // bigint
 ```

@@ -21,7 +21,7 @@ If you're creating a custom data feed, see [Building Stacks → Environment Setu
 For Node.js, Vue, Svelte, or vanilla JS:
 
 ```bash
-npm install arete-typescript
+npm install @usearete/sdk
 ```
 
 Framework-agnostic with AsyncIterable-based streaming. No peer dependencies.
@@ -33,19 +33,17 @@ Framework-agnostic with AsyncIterable-based streaming. No peer dependencies.
 For React applications:
 
 ```bash
-npm install arete-react
+npm install @usearete/react @usearete/sdk zod
 ```
 
-**Peer dependencies:** `react` ^19.0.0, `zustand` ^4.0.0
+React is an application peer dependency. `zustand` is a normal dependency of `@usearete/react` and must not be installed separately. Generated stack files use the core SDK and Zod directly, so generated React consumers install all three packages shown above.
 
-```bash
-npm install react zustand
-```
+For hosted ORE browser apps, set `VITE_ARETE_PUBLISHABLE_KEY` and pass it to `AreteProvider` as `auth={{ publishableKey }}`. Read-only viewing requires authentication but does not require a wallet.
 
 :::note[Which package?]
 
-- **React/Next.js** → `arete-react`
-- **Everything else** → `arete-typescript`
+- **React/Next.js** → `@usearete/react`
+- **Everything else** → `@usearete/sdk`
   :::
 
 ---
@@ -96,7 +94,7 @@ cargo install a4-cli
 
 ## Troubleshooting
 
-| Issue                          | Solution                                   |
-| ------------------------------ | ------------------------------------------ |
-| `Cannot find module 'arete-*'` | Run `npm install` for the relevant package |
-| Peer dependency warnings       | Install `react` and `zustand` explicitly   |
+| Issue                              | Solution                                                  |
+| ---------------------------------- | --------------------------------------------------------- |
+| `Cannot find module '@usearete/*'` | Install the React, core SDK, and Zod packages shown above |
+| React peer dependency warning      | Install the React version required by your application    |

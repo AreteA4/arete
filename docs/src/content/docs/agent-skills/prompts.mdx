@@ -28,7 +28,7 @@ Build a React + Vite app that shows live ORE mining data. Display:
 - Countdown to round expiration
 - Connection status indicator
 
-Use Tailwind for styling.
+Install `@usearete/react @usearete/sdk zod` and do not install `zustand`. Generate the ORE stack, set `VITE_ARETE_PUBLISHABLE_KEY`, and pass the generated stack plus `auth={{ publishableKey }}` to `AreteProvider`. Read-only viewing needs authentication but no wallet. Follow `OreBoard.state` to keyed `OreRound.state` for the active round, use generated camelCase fields, and build recovery UI from connection `status`, `socketIssue`, and `retry()`. Use each view's full status fields for loading, empty, refreshing, and error states. Use Tailwind for styling.
 
 </CopyPrompt>
 
@@ -37,7 +37,7 @@ Use Tailwind for styling.
 ### ORE Round History Table
 
 <CopyPrompt>
-Build a React component that shows a table of historical ORE mining rounds. Columns: Round #, Motherlode, Total Miners, Deploy Count, Top Miner (truncated address), and whether the motherlode was hit. Sort by round descending. Add a filter for minimum motherlode amount.
+Build a React component that shows a table of historical ORE mining rounds from `OreRound.latest`. Use generated camelCase properties. Columns: Round #, Motherlode, Total Miners, Deploy Count, Top Miner (truncated address), and whether the motherlode was hit. Sort by round descending. Add a filter for minimum motherlode amount. This history view must not be used to choose the active Board round.
 </CopyPrompt>
 
 **What you should get:** A paginated or scrollable table showing historical ORE rounds with real-time updates as new rounds complete.
@@ -45,7 +45,7 @@ Build a React component that shows a table of historical ORE mining rounds. Colu
 ### Live ORE Grid Heatmap
 
 <CopyPrompt>
-Build a React component that visualizes the current ORE mining round as an interactive 5x5 grid heatmap. Use `OreRound.latest` to get the live round data. For each square, show the deployed SOL amount (`state.deployed_per_square_ui`) with color intensity based on the amount. Show miner counts per square (`state.count_per_square`) on hover. Include a countdown to round expiration using `state.estimated_expires_at_unix`. Highlight the winning square (`results.winning_square`) when the round completes.
+Build a React component that visualizes the current ORE mining round as an interactive 5x5 grid heatmap. Use `OreBoard.state` with `{ address: arete.addresses.board() }`, read `const roundId = board.data?.state.roundId`, then subscribe to `OreRound.state` with `roundId == null ? undefined : { roundId }`. Do not use `OreRound.latest` to choose the active round. For each square, show the deployed SOL amount (`state.deployedPerSquareUi`) with color intensity based on the amount. Show miner counts per square (`state.countPerSquare`) on hover. Include a countdown to round expiration using `state.estimatedExpiresAtUnix`. Highlight the winning square (`results.winningSquare`) when the round completes.
 </CopyPrompt>
 
 **What you should get:** A live-updating visual grid showing where miners are deploying SOL in the current round, with real-time countdown and win detection.

@@ -165,7 +165,7 @@ a4 up
 ```
 
 :::tip[Checkpoint]
-Copy the **WebSocket URL** from the output. You'll need it for the React app.
+Keep the deployment output for troubleshooting. The generated stack definition embeds the WebSocket and HTTP endpoints, so the React provider does not take a separate URL prop.
 :::
 
 ---
@@ -198,10 +198,12 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
 ### React: Set up your React app
 
 ```bash
-npx create-react-app my-ore-app --template typescript
+npm create vite@latest my-ore-app -- --template react-ts
 cd my-ore-app
-npm install arete-react zustand
+npm install @usearete/react @usearete/sdk zod
 ```
+
+`@usearete/react` carries `zustand` as a normal dependency; do not install it separately.
 
 Copy the generated SDK into your React app:
 
@@ -209,17 +211,27 @@ Copy the generated SDK into your React app:
 cp -r ../ore-stack/sdk ./src/ore-sdk
 ```
 
-### React: Configure the Provider
+### React: Configure authentication and the Provider
 
-Wrap your app in `AreteProvider` using the URL from `a4 up`.
+Hosted browser clients require a publishable key even for read-only viewing. A wallet is not required. Create `.env.local`:
+
+```bash
+VITE_ARETE_PUBLISHABLE_KEY=hspk_...
+```
+
+Wrap your app in `AreteProvider` with the generated stack and authentication. The stack already contains its deployment endpoints.
 
 ```tsx
 // src/index.tsx
-import { AreteProvider } from "arete-react";
+import { AreteProvider } from "@usearete/react";
+import { ORE_STREAM_STACK } from "./ore-sdk";
+
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error("VITE_ARETE_PUBLISHABLE_KEY is required");
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 root.render(
-  <AreteProvider websocketUrl="wss://<your-stack-name>.stack.arete.run">
+  <AreteProvider stack={ORE_STREAM_STACK} auth={{ publishableKey }}>
     <App />
   </AreteProvider>,
 );
@@ -229,44 +241,49 @@ root.render(
 
 ```tsx
 // src/App.tsx
-import { useArete } from "arete-react";
-import { OreStack } from "./ore-sdk";
+import { useArete } from "@usearete/react";
+import { ORE_STREAM_STACK } from "./ore-sdk";
 
 export default function App() {
-  const stack = useArete(OreStack);
-  const { data: rounds, isLoading } = stack.views.OreRound.latest.use({
+  const arete = useArete(ORE_STREAM_STACK);
+  const rounds = arete.views.OreRound.latest.use({
     take: 5,
   });
 
-  if (isLoading) return <div>Connecting to stream...</div>;
+  if (arete.status === "error") {
+    return <button onClick={() => void arete.retry()}>Reconnect</button>;
+  }
+  if (rounds.status === "connecting" || rounds.status === "subscribing") {
+    return <div>Connecting to stream...</div>;
+  }
+  if (rounds.status === "error") return <div>{rounds.error?.message}</div>;
+  if (rounds.isEmpty) return <div>No rounds yet.</div>;
 
   return (
     <div>
       <h1>Latest ORE Mining Rounds</h1>
-      {rounds?.map((round) => (
+      {arete.socketIssue && <p>{arete.socketIssue.message}</p>}
+      {rounds.isRefreshing && <p>Refreshing stream data...</p>}
+      {rounds.data?.map((round) => (
         <div
-          key={round.id.round_id}
+          key={round.id.roundId?.toString() ?? round.id.roundAddress ?? "unknown"}
           style={{
             padding: "1rem",
             border: "1px solid #ccc",
             margin: "0.5rem 0",
           }}
         >
-          <h3>Round #{round.id.round_id}</h3>
-          <p>Address: {round.id.round_address}</p>
+          <h3>Round #{round.id.roundId?.toString() ?? "unknown"}</h3>
+          <p>Address: {round.id.roundAddress ?? "unknown"}</p>
           <p>
-            Total Deployed: {round.state.total_deployed?.toLocaleString()}{" "}
-            lamports
+            Total Deployed: {round.state.totalDeployed?.toLocaleString()}{" "}
+            SOL
           </p>
           <p>
-            Total Winnings: {round.state.total_winnings?.toLocaleString()}{" "}
-            lamports
+            Total Winnings: {round.state.totalWinnings?.toLocaleString()}{" "}
+            SOL
           </p>
-          <p>Deploy Count: {round.metrics.deploy_count || 0}</p>
-          <p>
-            Total SOL Deployed:{" "}
-            {round.metrics.total_deployed_sol?.toLocaleString()} lamports
-          </p>
+          <p>Deploy Count: {round.metrics.deployCount?.toString() ?? "0"}</p>
         </div>
       ))}
     </div>
@@ -282,7 +299,7 @@ export default function App() {
 ```bash
 mkdir my-ore-app && cd my-ore-app
 npm init -y
-npm install arete-typescript typescript
+npm install @usearete/sdk zod typescript
 ```
 
 Copy the generated SDK:
@@ -295,15 +312,14 @@ cp -r ../ore-stack/sdk ./src/ore-sdk
 
 ```typescript
 // src/index.ts
-import { Arete } from "arete-typescript";
-import { OreStack, type OreRound } from "./ore-sdk";
+import { Arete } from "@usearete/sdk";
+import { ORE_STREAM_STACK } from "./ore-sdk";
 
 async function main() {
   // Connect to your deployed stack using the generated SDK
-  const a4 = await Arete.connect(
-    "wss://<your-stack-name>.stack.arete.run",
-    { stack: OreStack },
-  );
+  const a4 = await Arete.connect(ORE_STREAM_STACK, {
+    auth: { publishableKey: process.env.ARETE_PUBLISHABLE_KEY! },
+  });
 
   console.log("Connected! Streaming ORE rounds...\n");
 
@@ -311,15 +327,15 @@ async function main() {
   for await (const update of a4.views.OreRound.latest.watch()) {
     if (update.type === "upsert") {
       const round = update.data;
-      console.log(`Round #${round.id.round_id}:`);
-      console.log(`  Address: ${round.id.round_address}`);
+      console.log(`Round #${round.id.roundId}:`);
+      console.log(`  Address: ${round.id.roundAddress}`);
       console.log(
-        `  Total Deployed: ${round.state.total_deployed?.toLocaleString()} lamports`,
+        `  Total Deployed: ${round.state.totalDeployed?.toLocaleString()} SOL`,
       );
       console.log(
-        `  Total Winnings: ${round.state.total_winnings?.toLocaleString()} lamports`,
+        `  Total Winnings: ${round.state.totalWinnings?.toLocaleString()} SOL`,
       );
-      console.log(`  Deploy Count: ${round.metrics.deploy_count || 0}`);
+      console.log(`  Deploy Count: ${round.metrics.deployCount ?? 0}`);
       console.log("");
     }
   }
@@ -331,7 +347,7 @@ main().catch(console.error);
 ### TypeScript: Run your app
 
 ```bash
-npx tsx src/index.ts
+ARETE_PUBLISHABLE_KEY=hspk_... npx tsx src/index.ts
 ```
 
 </TabItem>

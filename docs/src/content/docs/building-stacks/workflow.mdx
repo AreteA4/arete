@@ -141,12 +141,21 @@ This creates a package containing the stack definition that tells the Arete clie
 <Tabs>
 <TabItem label="Connect from app — React">
 
+```bash
+npm install @usearete/react @usearete/sdk zod
+```
+
+`@usearete/react` installs `zustand` itself. Hosted browser connections require the publishable key shown below even for read-only use; a wallet is not required to view data.
+
 ```tsx
-import { AreteProvider, useArete } from "arete-react";
-import { ORE_STREAM_STACK } from "arete-stacks/ore"; // Generated in Step 4
+import { AreteProvider, useArete } from "@usearete/react";
+import { ORE_STREAM_STACK } from "./generated/ore-stack"; // Generated in Step 4
+
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error("VITE_ARETE_PUBLISHABLE_KEY is required");
 
 // Wrap your app
-<AreteProvider>
+<AreteProvider stack={ORE_STREAM_STACK} auth={{ publishableKey }}>
   <App />
 </AreteProvider>;
 
@@ -158,11 +167,17 @@ const { data: rounds } = stack.views.OreRound.list.use();
 </TabItem>
 <TabItem label="Connect from app — TypeScript">
 
-```typescript
-import { Arete } from "arete-typescript";
-import { ORE_STREAM_STACK } from "arete-stacks/ore"; // Generated in Step 4
+```bash
+npm install @usearete/sdk
+```
 
-const a4 = await Arete.connect(ORE_STREAM_STACK);
+```typescript
+import { Arete } from "@usearete/sdk";
+import { ORE_STREAM_STACK } from "./generated/ore-stack"; // Generated in Step 4
+
+const a4 = await Arete.connect(ORE_STREAM_STACK, {
+  auth: { publishableKey: process.env.ARETE_PUBLISHABLE_KEY! },
+});
 
 for await (const round of a4.views.OreRound.list.use()) {
   console.log("Round updated:", round);

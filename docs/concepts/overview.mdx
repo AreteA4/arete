@@ -69,7 +69,7 @@ Arete then:
 ┌─────────────────────────────────────────────────────────┐
 │                     YOUR APP                            │
 │                                                          │
-│   const { data } = stack.views.tokens.list.use()        │
+│   const { data } = arete.views.Token.list.use()         │
 │                                                          │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -145,23 +145,20 @@ pub struct Token {
 
 ### 5. Stacks
 
-A **stack** is the client-side interface to your deployed stream. It provides:
+A **stack** is the deployed data pipeline plus its generated client definition. Generate the TypeScript definition with the CLI rather than hand-writing view factories:
 
-- **Views** - Live data subscriptions
-- **Transactions** - Instruction builders
-- **Helpers** - Utility functions
+```bash
+a4 sdk create typescript my-tokens
+```
 
 ```typescript
-const TokenStack = defineStack({
-  name: 'my-tokens',
-  views: {
-    tokens: {
-      list: createListView<Token>('Token/list'),
-      state: createStateView<Token>('Token/state'),
-    }
-  }
-});
+import { Arete } from '@usearete/sdk';
+import { MY_TOKENS_STREAM_STACK } from './generated/my-tokens-stack';
+
+const tokens = await Arete.connect(MY_TOKENS_STREAM_STACK);
 ```
+
+Connected generated stacks expose typed views and, when defined, programs, reads, queries, addresses, constants, defaults, math, and flows.
 
 ---
 
@@ -205,10 +202,10 @@ Views define how you access entity data:
 
 ```typescript
 // List - all tokens as array
-const { data: tokens } = stack.views.tokens.list.use()
+const { data: tokens } = arete.views.Token.list.use()
 
-// State - single token by key
-const { data: token } = stack.views.tokens.state.use({ key: mintAddress })
+// State - generated key object
+const { data: token } = arete.views.Token.state.use({ mint: mintAddress })
 ```
 
 ---
@@ -223,9 +220,9 @@ Arete provides end-to-end type safety:
 
 ```typescript
 // TypeScript knows token.mint is string, token.volume is bigint
-const { data: token } = stack.views.tokens.state.use({ key })
-console.log(token.mint)    // string
-console.log(token.volume)  // bigint
+const { data: token } = arete.views.Token.state.use({ mint })
+console.log(token?.id.mint)             // string | undefined
+console.log(token?.trading.totalVolume) // bigint | undefined
 ```
 
 ---
@@ -246,7 +243,8 @@ console.log(token.volume)  // bigint
 ### TypeScript/React
 
 ```tsx
-const { data: tokens } = stack.views.tokens.list.use();
+const arete = useArete(MY_TOKENS_STREAM_STACK);
+const { data: tokens } = arete.views.Token.list.use();
 ```
 
 ### Rust

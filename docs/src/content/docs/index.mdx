@@ -69,38 +69,50 @@ Arete connects your app to live Solana blockchain data. Instead of polling RPCs 
 
 ## See It In Action
 
-Connect to the public ORE mining stack — a live feed of blockchain mining activity. No account required.
+Connect to the hosted ORE mining stack — a live feed of blockchain mining activity. Browser access requires a publishable key, but read-only viewing does not require a wallet.
 
 <Tabs>
 <TabItem label="React">
 ```tsx
-import { AreteProvider, useArete } from 'arete-react';
-import { ORE_STREAM_STACK } from 'arete-stacks/ore';
+import { AreteProvider, useArete } from '@usearete/react';
+import { ORE_STREAM_STACK } from './generated/ore-stack';
+
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error('VITE_ARETE_PUBLISHABLE_KEY is required');
 
 function App() {
   return (
-    <AreteProvider>
-      <LatestRounds />
+    <AreteProvider stack={ORE_STREAM_STACK} auth={{ publishableKey }}>
+      <CurrentRound />
     </AreteProvider>
   );
 }
 
-function LatestRounds() {
-  const { views, isConnected } = useArete(ORE_STREAM_STACK);
-  const { data: rounds, isLoading } = views.OreRound.latest.use({ take: 5 });
+function CurrentRound() {
+  const arete = useArete(ORE_STREAM_STACK);
+  const board = arete.views.OreBoard.state.use({
+    address: arete.addresses.board(),
+  });
+  const roundId = board.data?.state.roundId;
+  const round = arete.views.OreRound.state.use(
+    roundId == null ? undefined : { roundId },
+  );
 
-  if (isLoading) return <div>Connecting...</div>;
+  if (arete.status === 'error') {
+    return <button onClick={() => void arete.retry()}>Reconnect</button>;
+  }
+  if (board.status !== 'ready' || round.status !== 'ready') {
+    return <div>Connecting...</div>;
+  }
 
   return (
     <div>
-      <p>{isConnected ? "🟢 Live" : "Connecting..."}</p>
-      <ul>
-        {rounds?.map((round) => (
-          <li key={round.id?.round_id}>
-            Round #{round.id?.round_id} — Motherlode: {round.state?.motherlode}
-          </li>
-        ))}
-      </ul>
+      <p>{arete.status === 'connected' ? "🟢 Live" : arete.status}</p>
+      {arete.socketIssue && <p>{arete.socketIssue.message}</p>}
+      <p>
+        Round #{round.data?.id.roundId?.toString()} — Motherlode:{' '}
+        {round.data?.state.motherlode?.toString()}
+      </p>
     </div>
   );
 }
@@ -108,15 +120,20 @@ function LatestRounds() {
 </TabItem>
 <TabItem label="TypeScript">
 ```typescript
-import { Arete } from 'arete-typescript';
-import { ORE_STREAM_STACK } from 'arete-stacks/ore';
+import { Arete } from '@usearete/sdk';
+import { ORE_STREAM_STACK } from './generated/ore-stack';
+
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error('VITE_ARETE_PUBLISHABLE_KEY is required');
 
 // Connect using the stack (URL is embedded in the stack definition)
-const a4 = await Arete.connect(ORE_STREAM_STACK);
+const a4 = await Arete.connect(ORE_STREAM_STACK, {
+  auth: { publishableKey },
+});
 
 for await (const update of a4.views.OreRound.latest.watch({ take: 1 })) {
   if (update.type === 'upsert') {
-    console.log(`Round #${update.data.id?.round_id}`);
+    console.log(`Round #${update.data.id.roundId}`);
     console.log(`Motherlode: ${update.data.state?.motherlode}`);
   }
 }

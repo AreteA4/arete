@@ -140,7 +140,17 @@ a4 create my-app --template react-ore  # or typescript-ore, rust-ore
 </TabItem>
 </Tabs>
 
-That's it. You're streaming live Solana data.
+One final step is required for the browser template: configure hosted authentication.
+
+### Step 4: Add browser authentication
+
+The React template connects to the hosted ORE stack. Add a publishable key to `my-app/.env.local`:
+
+```bash
+VITE_ARETE_PUBLISHABLE_KEY=hspk_...
+```
+
+The template passes this value to `AreteProvider` as `auth={{ publishableKey }}`. Authentication is required for hosted read-only viewing; a wallet is not.
 
 ---
 
@@ -181,7 +191,7 @@ In the TypeScript SDK mental model, the generated ORE stack is a **cartridge** a
 | **typescript-ore** | `npx @usearete/a4 create my-app` | TypeScript CLI that streams ORE data to your terminal |
 | **rust-ore**       | `npx @usearete/a4 create my-app` | Rust + Tokio client streaming ORE round updates       |
 
-All templates connect to the public ORE stack at `wss://ore.stack.arete.run`.
+All templates connect to the hosted ORE stack at `wss://ore.stack.arete.run`. Hosted connections are authenticated even when the data is read-only.
 
 You can also specify the template directly:
 
@@ -196,19 +206,20 @@ npx @usearete/a4 create my-app --template react-ore
 <Tabs>
 <TabItem label="React Template">
 
-The React template uses `arete-react` with a pre-built stack definition:
+The React template uses `@usearete/react` with a generated stack definition:
 
 ```tsx
 // App.tsx
-import { AreteProvider } from "arete-react";
+import { AreteProvider } from "@usearete/react";
 import { OreDashboard } from "./components/OreDashboard";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
+
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error("VITE_ARETE_PUBLISHABLE_KEY is required");
 
 export default function App() {
   return (
-    <AreteProvider
-      websocketUrl="wss://ore.stack.arete.run"
-      autoConnect={true}
-    >
+    <AreteProvider stack={ORE_STREAM_STACK} auth={{ publishableKey }}>
       <OreDashboard />
     </AreteProvider>
   );
@@ -217,25 +228,35 @@ export default function App() {
 
 ```tsx
 // components/OreDashboard.tsx
-import { useArete } from "arete-react";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { useArete } from "@usearete/react";
+import { ORE_STREAM_STACK } from "../generated/ore-stack";
 
 export function OreDashboard() {
-  const { views, isConnected } = useArete(ORE_STREAM_STACK);
-  const { data: rounds } = views.OreRound.latest.use({ take: 5 });
+  const arete = useArete(ORE_STREAM_STACK);
+  const board = arete.views.OreBoard.state.use({
+    address: arete.addresses.board(),
+  });
+  const roundId = board.data?.state.roundId;
+  const round = arete.views.OreRound.state.use(
+    roundId == null ? undefined : { roundId },
+  );
 
   return (
     <div>
-      <p>{isConnected ? "Live" : "Connecting..."}</p>
-      {rounds?.map((round) => (
-        <div key={round.id?.round_id}>
-          Round #{round.id?.round_id} — Motherlode: {round.state?.motherlode}
-        </div>
-      ))}
+      <p>{arete.status === "connected" ? "Live" : arete.status}</p>
+      {arete.socketIssue && <p>{arete.socketIssue.message}</p>}
+      <p>
+        Round #{round.data?.id.roundId?.toString() ?? "..."} - Motherlode:{" "}
+        {round.data?.state.motherlode?.toString() ?? "..."}
+      </p>
     </div>
   );
 }
 ```
+
+ORE's Board account is the authority for the active round. `OreRound.latest` remains available for recent-round history, but the live board follows `OreBoard/state` to keyed `OreRound/state` during rollover.
+
+`autoConnect` is omitted because it defaults to `true` and controls only this initial connection. `autoReconnect` also defaults to `true`, independently, and controls recovery only after an established connection is lost.
 
 </TabItem>
 <TabItem label="TypeScript Template">
@@ -245,7 +266,7 @@ The TypeScript template uses `@usearete/sdk` with a generated stack and typed vi
 ```typescript
 // main.ts
 import { createSession } from "@usearete/sdk";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 
 const session = await createSession({
   stacks: { ore: ORE_STREAM_STACK },
@@ -253,8 +274,8 @@ const session = await createSession({
 
 for await (const update of session.stacks.ore.views.OreRound.latest.watch({ take: 1 })) {
   if (update.type === "upsert" || update.type === "patch") {
-    console.log(`Round #${update.data.id?.round_id}`);
-    console.log(`Motherlode: ${update.data.state?.motherlode}`);
+    console.log(`Round #${update.data.id.roundId}`);
+    console.log(`Motherlode: ${update.data.state.motherlode}`);
   }
 }
 ```

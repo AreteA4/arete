@@ -26,7 +26,7 @@ No peer dependencies. Works anywhere JavaScript runs.
 
 ```typescript
 import { createSession } from "@usearete/sdk";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 
 const session = await createSession({
   stacks: { ore: ORE_STREAM_STACK },
@@ -34,7 +34,7 @@ const session = await createSession({
 
 // Stream entities with full type safety
 for await (const round of session.stacks.ore.views.OreRound.latest.use()) {
-  console.log("Round:", round.id.round_id);
+  console.log("Round:", round.id.roundId);
 }
 ```
 
@@ -110,7 +110,7 @@ Each generated stack definition includes its endpoints, so inserting it into a s
 
 ```typescript
 import { createSession } from "@usearete/sdk";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 
 const session = await createSession({
   stacks: { ore: ORE_STREAM_STACK },
@@ -161,14 +161,21 @@ const ore = await Arete.connect(ORE_STREAM_STACK, {
 ```typescript
 const ore = await Arete.connect(ORE_STREAM_STACK, {
   maxEntriesPerView: 5000, // Limit entries per view (default: 10000)
+  autoConnect: true,       // Start the initial connection
+  autoReconnect: true,     // Recover after an established socket is lost
 });
 ```
 
-| Option              | Type             | Default     | Description                                                 |
-| ------------------- | ---------------- | ----------- | ----------------------------------------------------------- |
-| `url`               | `string`         | `stack.url` | Override the stack's default URL                            |
-| `maxEntriesPerView` | `number \| null` | `10000`     | Max entries per view before LRU eviction                    |
-| `validateFrames`    | `boolean`        | `false`     | Validate incoming frames against Zod schemas before storing |
+| Option                   | Type             | Default     | Description                                               |
+| ------------------------ | ---------------- | ----------- | --------------------------------------------------------- |
+| `url`                    | `string`         | `stack.url` | Override the stack's default URL                          |
+| `maxEntriesPerView`      | `number \| null` | `10000`     | Max entries per view before LRU eviction                  |
+| `autoConnect`            | `boolean`        | `true`      | Start the initial WebSocket connection                    |
+| `autoReconnect`          | `boolean`        | `true`      | Recover after an established WebSocket connection is lost |
+| `validateFrames`         | `boolean`        | `true`      | Log generated-schema frame rejections                     |
+| `onFrameValidationError` | `function`       | —           | Observe structured generated-schema frame rejections      |
+
+`autoConnect` and `autoReconnect` control separate lifecycle phases. Set `autoConnect: false` to create a disconnected client that the application connects later. Set `autoReconnect: false` when the application will handle a later connection loss itself.
 
 ### Connection State
 
@@ -215,8 +222,8 @@ By default, each entity in a stack exposes two views:
 | `list`    | List  | Collection of all entities                   |
 
 ```typescript
-// State view — get a specific round by address
-const round = await session.stacks.ore.views.OreRound.state.get(roundAddress);
+// State view — get a specific round with its generated key
+const round = await session.stacks.ore.views.OreRound.state.get({ roundId });
 
 // List view — get all rounds
 const rounds = await session.stacks.ore.views.OreRound.list.get();
@@ -231,7 +238,7 @@ Custom views are accessed the same way as default views:
 ```typescript
 // Custom list view defined in the ORE stack
 for await (const round of session.stacks.ore.views.OreRound.latest.use()) {
-  console.log("Recent round:", round.id.round_id);
+  console.log("Recent round:", round.id.roundId);
 }
 ```
 
@@ -246,7 +253,7 @@ Streaming methods return `AsyncIterable` and continuously emit data as entities 
 | Method         | Emits           | Use Case                                                       |
 | -------------- | --------------- | -------------------------------------------------------------- |
 | `.use()`       | `T`             | Simplest — just the current entity state after each change     |
-| `.watch()`     | `Update<T>`     | When you need to know the operation type (upsert/patch/delete) |
+| `.watch()`     | `Update<T>`     | When you need to know the operation type and membership change |
 | `.watchRich()` | `RichUpdate<T>` | When you need before/after comparison                          |
 
 ### `.use()` — Stream Merged Entities
@@ -256,13 +263,12 @@ The simplest streaming method. Emits the full merged entity after each change:
 ```typescript
 // List view — no key required
 for await (const round of session.stacks.ore.views.OreRound.latest.use()) {
-  console.log("Round:", round.id.round_id);
+  console.log("Round:", round.id.roundId);
   console.log("Motherlode:", round.state.motherlode);
 }
 
 // State view — key required
-const roundAddress = "So11111111111111111111111111111111111111112";
-for await (const round of session.stacks.ore.views.OreRound.state.use(roundAddress)) {
+for await (const round of session.stacks.ore.views.OreRound.state.use({ roundId })) {
   console.log("Round updated:", round.state.motherlode);
 }
 ```
@@ -270,8 +276,8 @@ for await (const round of session.stacks.ore.views.OreRound.state.use(roundAddre
 **Signatures:**
 
 ```typescript
-// State view
-use(key: string, options?: WatchOptions): AsyncIterable<T>
+// State view; key type is generated from the entity primary key
+use(key: TKey, options?: WatchOptions): AsyncIterable<T>
 
 // List view
 use(options?: WatchOptions): AsyncIterable<T>
@@ -290,6 +296,9 @@ for await (const update of session.stacks.ore.views.OreRound.latest.watch()) {
     case "patch":
       console.log("Partial update:", update.data);
       break;
+    case "remove":
+      console.log("Left this query:", update.key);
+      break;
     case "delete":
       console.log("Deleted:", update.key);
       break;
@@ -301,7 +310,7 @@ for await (const update of session.stacks.ore.views.OreRound.latest.watch()) {
 
 ```typescript
 // State view
-watch(key: string, options?: WatchOptions): AsyncIterable<Update<T>>
+watch(key: TKey, options?: WatchOptions): AsyncIterable<Update<T>>
 
 // List view
 watch(options?: WatchOptions): AsyncIterable<Update<T>>
@@ -313,7 +322,8 @@ watch(options?: WatchOptions): AsyncIterable<Update<T>>
 type Update<T> =
   | { type: "upsert"; key: string; data: T }        // Full entity create/replace
   | { type: "patch"; key: string; data: Partial<T> } // Partial update
-  | { type: "delete"; key: string };                 // Entity removed
+  | { type: "remove"; key: string }                  // Left this query only
+  | { type: "delete"; key: string };                 // Deleted from the source view
 ```
 
 ### `.watchRich()` — Stream with Before/After Diffs
@@ -329,8 +339,11 @@ for await (const update of session.stacks.ore.views.OreRound.latest.watchRich())
     case "updated":
       console.log(`Changed: ${update.before.state.motherlode} → ${update.after.state.motherlode}`);
       break;
+    case "removed":
+      console.log("Left this query:", update.lastKnown);
+      break;
     case "deleted":
-      console.log("Removed:", update.lastKnown);
+      console.log("Deleted:", update.lastKnown);
       break;
   }
 }
@@ -340,7 +353,7 @@ for await (const update of session.stacks.ore.views.OreRound.latest.watchRich())
 
 ```typescript
 // State view
-watchRich(key: string, options?: WatchOptions): AsyncIterable<RichUpdate<T>>
+watchRich(key: TKey, options?: WatchOptions): AsyncIterable<RichUpdate<T>>
 
 // List view
 watchRich(options?: WatchOptions): AsyncIterable<RichUpdate<T>>
@@ -352,6 +365,7 @@ watchRich(options?: WatchOptions): AsyncIterable<RichUpdate<T>>
 type RichUpdate<T> =
   | { type: "created"; key: string; data: T }
   | { type: "updated"; key: string; before: T; after: T; patch?: unknown }
+  | { type: "removed"; key: string; lastKnown?: T }
   | { type: "deleted"; key: string; lastKnown?: T };
 ```
 
@@ -376,9 +390,9 @@ const rounds = await session.stacks.ore.views.OreRound.latest.get();
 console.log(`Found ${rounds.length} rounds`);
 
 // State view — returns single entity or null
-const round = await session.stacks.ore.views.OreRound.state.get(roundAddress);
+const round = await session.stacks.ore.views.OreRound.state.get({ roundId });
 if (round) {
-  console.log("Round:", round.id.round_id);
+  console.log("Round:", round.id.roundId);
 }
 ```
 
@@ -386,7 +400,7 @@ if (round) {
 
 ```typescript
 // State view — returns single entity or null if not found
-get(key: string): Promise<T | null>
+get(key: TKey): Promise<T | null>
 
 // List view — returns array of all entities
 get(): Promise<T[]>
@@ -406,14 +420,14 @@ if (rounds) {
 }
 
 // State view
-const round = session.stacks.ore.views.OreRound.state.getSync(roundAddress);
+const round = session.stacks.ore.views.OreRound.state.getSync({ roundId });
 ```
 
 **Signatures:**
 
 ```typescript
 // State view — returns entity, null (not found), or undefined (not loaded)
-getSync(key: string): T | null | undefined
+getSync(key: TKey): T | null | undefined
 
 // List view — returns array or undefined (not loaded)
 getSync(): T[] | undefined
@@ -451,18 +465,34 @@ The streaming methods (`.use()`, `.watch()`, `.watchRich()`) accept options for 
 
 ```typescript
 interface WatchOptions {
-  take?: number;         // Limit number of entities
-  skip?: number;         // Skip first N entities
-  schema?: Schema<T>;    // Validate and filter entities with a Zod schema
+  partition?: string;                 // Exact _partition match
+  filters?: Record<string, unknown>;  // Server-side dot-path equality filters
+  take?: number;                      // Live query window size
+  skip?: number;                      // Live query window offset
+  withSnapshot?: boolean;             // Include initial snapshot (default true)
+  after?: string;                     // Incremental _seq cursor
+  snapshotLimit?: number;             // Initial snapshot row cap
+  schema?: Schema<T>;                 // Client-side schema validation
 }
 ```
+
+Every options object defines exact protocol v2 query membership. Different windows and filters on one view can coexist without leaking entities, while equivalent normalized queries share one reference-counted wire subscription:
+
+```typescript
+const rounds = session.stacks.ore.views.OreRound.latest;
+
+const firstPage = rounds.watch({ take: 10 });
+const secondPage = rounds.watch({ take: 10, skip: 10 });
+```
+
+After reconnect, a completed authoritative snapshot atomically replaces membership for its exact query. A query with `after` receives an incremental snapshot and merges without pruning.
 
 ### Limit Results
 
 ```typescript
 // Only receive the first 10 entities
 for await (const round of session.stacks.ore.views.OreRound.latest.use({ take: 10 })) {
-  console.log("Round:", round.id.round_id);
+  console.log("Round:", round.id.roundId);
 }
 ```
 
@@ -471,13 +501,26 @@ for await (const round of session.stacks.ore.views.OreRound.latest.use({ take: 1
 ```typescript
 // Skip first 20, take next 10
 for await (const round of session.stacks.ore.views.OreRound.latest.use({ skip: 20, take: 10 })) {
-  console.log("Round:", round.id.round_id);
+  console.log("Round:", round.id.roundId);
 }
 ```
 
 ### Server-Side Filtering
 
-For server-side filtering beyond pagination, use **custom views** defined in your stack. Custom views apply filters, sorting, and limits at the server level, reducing bandwidth before data reaches the client.
+Use exact-match dot-path filters for dynamic equality predicates:
+
+```typescript
+for await (const order of session.stacks.market.views.Order.list.use({
+  filters: { "state.status": "open", "market.symbol": "SOL" },
+  take: 10,
+})) {
+  console.log(order);
+}
+```
+
+Filtering is case-sensitive and type-sensitive. Filters run before `skip` and `take`. Use a **custom view** when filtering, sorting, or aggregation needs to be declared as part of the stack rather than supplied by each client.
+
+Filter keys are WebSocket wire-schema dot paths, so snake_case remains correct there. Generated TypeScript entity properties and generated state keys use camelCase.
 
 See [Filtering Feeds](/using-stacks/filtering-feeds/) for details on all filtering options, or [Stack Definitions](/building-stacks/stack-definitions/) for how to define custom views using the Rust DSL.
 
@@ -494,7 +537,7 @@ for await (const update of session.stacks.ore.views.OreRound.latest.watch()) {
   if (update.type === "upsert") {
     const round = update.data;
     if (round.state.motherlode && round.state.motherlode > 1_000_000_000) {
-      console.log("Found high-value round:", round.id.round_id);
+      console.log("Found high-value round:", round.id.roundId);
       break;
     }
   }
@@ -524,9 +567,9 @@ try {
 ```typescript
 for await (const update of session.stacks.ore.views.OreRound.latest.watch()) {
   if (update.type !== "upsert") continue;
-  if ((update.data.metrics.deploy_count ?? 0) < 100) continue;
+  if ((update.data.metrics.deployCount ?? 0) < 100) continue;
 
-  console.log("Active round:", update.data.id.round_id);
+  console.log("Active round:", update.data.id.roundId);
 }
 ```
 
@@ -538,28 +581,34 @@ Every stack ships with [Zod](https://zod.dev) schemas alongside its TypeScript i
 
 ### Frame Validation
 
-Enable `validateFrames` on connect to automatically drop malformed data before it enters your local store:
+Generated schemas always normalize and validate frames before storage. Invalid data is dropped and logged by default. Observe structured failures without scraping console output:
 
 ```typescript
 const ore = await Arete.connect(ORE_STREAM_STACK, {
-  validateFrames: true,
+  onFrameValidationError(diagnostic) {
+    console.error('Rejected Arete frame', diagnostic);
+  },
 });
 ```
+
+Set `validateFrames: false` to suppress the default warning while keeping normalization, rejection, and `onFrameValidationError` active.
 
 ### Query-Level Validation
 
 Pass a `schema` to `.use()` to filter out entities that don't match:
 
 ```typescript
-import { OreRoundCompletedSchema } from "arete-stacks/ore";
+import { OreRoundCompletedSchema } from "./generated/ore-stack";
 
-// Only emit rounds where every field is present
+// Only emit rounds where every field is present. Rejected entities are skipped.
 for await (const round of session.stacks.ore.views.OreRound.latest.use({
   schema: OreRoundCompletedSchema,
 })) {
-  console.log(round.id.round_id, round.state.motherlode);
+  console.log(round.id.roundId, round.state.motherlode);
 }
 ```
+
+React view hooks additionally support `onSchemaValidationError` when an application needs diagnostics for caller-supplied schema rejections.
 
 See [Schema Validation](/sdks/validation/) for the full guide on generated schemas, custom schemas, and the "Completed" schema pattern.
 
@@ -572,9 +621,9 @@ Arete can automatically enrich your entities with data that doesn't live on-chai
 ```typescript
 for await (const round of session.stacks.ore.views.OreRound.latest.use()) {
   // Token metadata is resolved automatically — no extra API calls
-  console.log(round.ore_metadata?.name);     // "Ore"
-  console.log(round.ore_metadata?.symbol);   // "ORE"
-  console.log(round.ore_metadata?.decimals); // 11
+  console.log(round.oreMetadata?.name);     // "Ore"
+  console.log(round.oreMetadata?.symbol);   // "ORE"
+  console.log(round.oreMetadata?.decimals); // 11
 }
 ```
 
@@ -584,11 +633,31 @@ See [Resolvers](/building-stacks/rust-dsl/resolvers/) for how to add resolved da
 
 ---
 
+## Amount Conversion
+
+`toRawAmount(input, decimals)` is convenient when invalid input should throw. Use `safeToRawAmount(input, decimals)` at user-input boundaries:
+
+```typescript
+import { safeToRawAmount } from "@usearete/sdk";
+
+const parsed = safeToRawAmount({ ui: amountText }, 9);
+if (!parsed.success) {
+  console.error(parsed.error);
+  return;
+}
+
+console.log(parsed.data); // bigint in raw base units
+```
+
+`safeToRawAmount` returns `{ success: true, data } | { success: false, error }` instead of throwing for invalid amount input. It is also re-exported by `@usearete/react`.
+
+---
+
 ## Error Handling
 
 ```typescript
 import { AreteError, createSession } from "@usearete/sdk";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 
 try {
   const session = await createSession({ stacks: { ore: ORE_STREAM_STACK } });
@@ -618,6 +687,8 @@ Creates the console that connects generated stacks and standalone programs. Prog
 - `options.signerRegistry` — Shared additional signers (optional)
 - `options.endpoints` — Shared HTTP and WebSocket fallback endpoints (optional)
 - `options.stacks` — Per-stack connection overrides (optional)
+- `options.stacks.<name>.autoConnect` — Per-stack initial connection control; defaults to `true` (optional)
+- `options.stacks.<name>.autoReconnect` — Per-stack post-connection recovery control; defaults to `true` (optional)
 
 At least one stack or program is required.
 
@@ -685,9 +756,14 @@ Options for streaming methods:
 
 ```typescript
 interface WatchOptions {
-  take?: number;         // Limit number of entities
-  skip?: number;         // Skip first N entities
-  schema?: Schema<T>;    // Validate and filter entities with a Zod schema
+  partition?: string;
+  filters?: Record<string, unknown>;
+  take?: number;
+  skip?: number;
+  withSnapshot?: boolean;
+  after?: string;
+  snapshotLimit?: number;
+  schema?: Schema<T>;
 }
 ```
 

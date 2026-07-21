@@ -232,15 +232,15 @@ To create views for your own Solana programs, you'll need to [build a stack](/bu
 
 The SDK provides three streaming methods with different levels of detail:
 
-| Method          | Returns         | Description                                             |
-| --------------- | --------------- | ------------------------------------------------------- |
-| `.listen()`     | `T`             | Merged entity directly (simplest - filters out deletes) |
-| `.watch()`      | `Update<T>`     | Upsert/Patch/Delete events                              |
-| `.watch_rich()` | `RichUpdate<T>` | Before/after diffs for tracking changes                 |
+| Method          | Returns         | Description                                           |
+| --------------- | --------------- | ----------------------------------------------------- |
+| `.listen()`     | `T`             | Merged entity directly (filters out removals/deletes) |
+| `.watch()`      | `Update<T>`     | Upsert/Patch/Remove/Delete events                     |
+| `.watch_rich()` | `RichUpdate<T>` | Before/after diffs for tracking changes               |
 
 ### Simple Streaming with `.listen()`
 
-The simplest API - emits merged entities directly, filtering out deletes:
+The simplest API - emits merged entities directly, filtering out removals and deletes:
 
 ```rust
 let mut stream = a4.views.ore_round.latest().listen();
@@ -252,7 +252,7 @@ while let Some(round) = stream.next().await {
 
 ### Watch with Event Types
 
-Stream all update types (upsert, patch, delete):
+Stream all update types (upsert, patch, remove, delete):
 
 ```rust
 let mut stream = a4.views.ore_round.latest().watch();
@@ -265,8 +265,11 @@ while let Some(update) = stream.next().await {
         Update::Patch { data, .. } => {
             println!("Patched round: {:?}", data.id.round_id);
         }
+        Update::Remove { key } => {
+            println!("Round left this query: {:?}", key);
+        }
         Update::Delete { key } => {
-            println!("Removed round: {:?}", key);
+            println!("Deleted round: {:?}", key);
         }
     }
 }
@@ -289,7 +292,10 @@ while let Some(update) = stream.next().await {
                 before.state.motherlode,
                 after.state.motherlode);
         }
-        RichUpdate::Deleted { key, last_known } => {
+        RichUpdate::Removed { key, .. } => {
+            println!("Left this query: {:?}", key);
+        }
+        RichUpdate::Deleted { key, .. } => {
             println!("Deleted: {:?}", key);
         }
     }
@@ -322,7 +328,22 @@ let mut stream = a4.views.ore_round.list().watch().skip(5).take(10);
 
 // Filter by field
 let mut stream = a4.views.ore_round.list().watch().filter("status", "active");
+
+// Select a partition and cap only the initial snapshot
+let mut stream = a4.views.ore_round.list()
+    .watch()
+    .partition("solana-mainnet")
+    .with_snapshot_limit(100);
+
+// Resume incrementally after an _seq cursor
+let mut stream = a4.views.ore_round.list()
+    .watch()
+    .after("1234:000000000010");
 ```
+
+Each builder defines exact protocol v2 query membership. Different windows and filters on the same view coexist independently. Equivalent normalized queries share one wire subscription, and dropping the final equivalent stream sends `unsubscribe`.
+
+The SDK keeps a stable opaque subscription ID across reconnects. A complete authoritative snapshot atomically replaces only that query's membership; an `after` snapshot is incremental and merges without pruning.
 
 ### Client-Side Filtering
 
@@ -430,11 +451,15 @@ Note: Sync methods return empty/None if data hasn't been loaded yet.
 
 ### Stream Builder Options
 
-| Method                | Description                  |
-| --------------------- | ---------------------------- |
-| `.take(n)`            | Server-side limit to N items |
-| `.skip(n)`            | Server-side offset           |
-| `.filter(key, value)` | Server-side filter           |
+| Method                    | Description                  |
+| ------------------------- | ---------------------------- |
+| `.take(n)`                | Server-side limit to N items |
+| `.skip(n)`                | Server-side offset           |
+| `.filter(key, value)`     | Server-side filter           |
+| `.partition(value)`       | Exact `_partition` match     |
+| `.with_snapshot(bool)`    | Enable the initial snapshot  |
+| `.after(cursor)`          | Incremental `_seq` cursor    |
+| `.with_snapshot_limit(n)` | Cap initial snapshot rows    |
 
 ---
 
@@ -446,11 +471,12 @@ When streaming with `watch()`, you receive `Update<T>` variants:
 pub enum Update<T> {
     Upsert { key: String, data: T },  // Full entity update
     Patch { key: String, data: T },   // Partial update (merged)
-    Delete { key: String },           // Entity removed
+    Remove { key: String },           // Left this query's membership
+    Delete { key: String },           // Deleted from the source view
 }
 ```
 
-Helper methods: `key()`, `data()`, `is_delete()`, `has_data()`, `into_data()`, `into_key()`, `map(f)`
+Helper methods: `key()`, `data()`, `is_remove()`, `is_delete()`, `has_data()`, `into_data()`, `into_key()`, `map(f)`
 
 ### Rich Updates (Before/After Diffs)
 
@@ -460,9 +486,12 @@ For tracking changes over time, use `watch_rich()`:
 pub enum RichUpdate<T> {
     Created { key: String, data: T },
     Updated { key: String, before: T, after: T, patch: Option<Value> },
+    Removed { key: String, last_known: Option<T> },
     Deleted { key: String, last_known: Option<T> },
 }
 ```
+
+`Remove`/`Removed` is query-local: the entity still exists and may remain in another active query. `Delete`/`Deleted` is global to the source view.
 
 The `Updated` variant includes `patch` - the raw JSON of changed fields, useful for checking what specifically changed:
 
@@ -681,8 +710,11 @@ async fn main() -> anyhow::Result<()> {
                     data.state.total_difficulty
                 );
             }
+            Update::Remove { key } => {
+                println!("[#{:03}] Round left this query: {:?}", update_count, key);
+            }
             Update::Delete { key } => {
-                println!("[#{:03}] Removed round: {:?}", update_count, key);
+                println!("[#{:03}] Deleted round: {:?}", update_count, key);
             }
         }
 
