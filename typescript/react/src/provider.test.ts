@@ -56,13 +56,18 @@ describe('provider wallet helpers', () => {
     );
   });
 
-  it('distinguishes cache keys by transport and attached program identity', () => {
+  it('keys attached programs by value rather than map identity', () => {
     const programsA = { ore: { name: 'ore' } };
     const programsB = { ore: { name: 'ore' } };
+    const unnamedProgramsA = { ore: {} };
+    const unnamedProgramsB = { ore: {} };
 
     expect(createClientCacheKey(stack, { transport: 'http' })).not.toBe(createClientCacheKey(stack));
-    expect(createClientCacheKey(stack, { programs: programsA as never })).not.toBe(
+    expect(createClientCacheKey(stack, { programs: programsA as never })).toBe(
       createClientCacheKey(stack, { programs: programsB as never })
+    );
+    expect(createClientCacheKey(stack, { programs: unnamedProgramsA as never })).toBe(
+      createClientCacheKey(stack, { programs: unnamedProgramsB as never })
     );
   });
 

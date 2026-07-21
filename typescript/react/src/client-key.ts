@@ -20,16 +20,14 @@ function getObjectKey(value: object, prefix: string): string {
 /**
  * Value key for an attached program map: two maps attaching the same programs
  * (by name and program id) select the same client, even if the caller builds a
- * fresh object every render. Falls back to object identity when a definition
- * has neither a name nor a program id.
+ * fresh object every render. The map key remains a stable identifier when a
+ * definition has neither a name nor a program id.
  */
 function getProgramsKey(programs: ProgramMap): string {
   const entries = Object.entries(programs)
-    .map(([name, definition]) => `${name}@${definition?.name ?? ''}:${definition?.programId ?? ''}`);
-  if (entries.some((entry) => entry.endsWith(':'))) {
-    return getObjectKey(programs as object, 'programs');
-  }
-  return entries.sort().join(',') || 'programs-empty';
+    .map(([key, definition]) => [key, definition?.name ?? '', definition?.programId ?? ''])
+    .sort(([left], [right]) => left.localeCompare(right));
+  return entries.length > 0 ? JSON.stringify(entries) : 'programs-empty';
 }
 
 export function createClientCacheKey<
