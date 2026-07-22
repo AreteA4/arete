@@ -117,18 +117,38 @@ describe('ConnectionManager auth', () => {
     vi.unstubAllGlobals();
   });
 
-  it('fails clearly when hosted auth metadata is missing', async () => {
-    const fetchMock = vi.fn();
+  it('mints an anonymous hosted session token when no publishable key is configured', async () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        token: makeJwt(nowSeconds + 300),
+        expires_at: nowSeconds + 300,
+      }),
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     const manager = new ConnectionManager({
       websocketUrl: 'wss://demo.stack.arete.run',
     });
 
-    await expect(manager.connect()).rejects.toMatchObject<Partial<AreteError>>({
-      code: 'AUTH_REQUIRED',
+    await manager.connect();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.arete.run/ws/sessions',
+      expect.objectContaining({ method: 'POST' })
+    );
+
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(requestInit.body))).toEqual({
+      websocket_url: 'wss://demo.stack.arete.run',
+      scopes: ['read'],
     });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(requestInit.headers).not.toMatchObject({
+      Authorization: expect.anything(),
+    });
+    expect(MockWebSocket.instances[0]?.url).toContain('hs_token=');
   });
 
   it('fetches a hosted session token when a publishable key is configured', async () => {

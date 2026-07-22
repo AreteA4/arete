@@ -208,8 +208,10 @@ export class ConnectionManager {
       return this.authConfig.tokenEndpoint;
     }
 
-    // Require publishableKey for hosted token endpoint
-    if (this.hostedAreteUrl && this.authConfig?.publishableKey) {
+    // Hosted stacks always mint through the Arete Cloud token endpoint.
+    // Without a publishable key the session is minted anonymously — the API
+    // rate limits by IP/origin and issues low-trust public limits instead.
+    if (this.hostedAreteUrl) {
       return DEFAULT_HOSTED_TOKEN_ENDPOINT;
     }
 
@@ -327,15 +329,6 @@ export class ConnectionManager {
         throw new AreteError('Authentication request was superseded', 'CONNECTION_CANCELLED');
       }
     };
-
-    // For hosted Arete URLs, auth is required - fail early with clear message
-    if (strategy.kind === 'none' && this.hostedAreteUrl) {
-      throw new AreteError(
-        'Arete authentication required. Please provide auth.publishableKey to AreteProvider. ' +
-        'Get your key from https://arete.run/dashboard',
-        'AUTH_REQUIRED'
-      );
-    }
 
     switch (strategy.kind) {
       case 'static-token': {
