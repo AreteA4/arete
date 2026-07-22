@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.2.0...arete-sdk-v0.3.0) (2026-07-22)
+
+
+### Features
+
+* add Rust SDK protocol v2 subscriptions ([79afc67](https://github.com/AreteA4/arete/commit/79afc677e32658a675f2512312dac81a36b37031))
+* add WebSocket v2 and reactive ORE stack workflows ([ce37702](https://github.com/AreteA4/arete/commit/ce3770249a0899dd0be37f47cac2deeaa4e58511))
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.1.5...arete-sdk-v0.2.0) (2026-07-13)
 
 

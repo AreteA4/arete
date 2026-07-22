@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.1.0...arete-auth-v0.2.0) (2026-07-22)
+
+
+### Features
+
+* add safe ORE transaction workflows ([5923c14](https://github.com/AreteA4/arete/commit/5923c1454d56c8e6b1f3a5a7b8765b863a581e03))
+* **auth:** add transaction scopes and resource limits ([71d269a](https://github.com/AreteA4/arete/commit/71d269a5b51c03e15545df2a80ebc3ff2de558bc))
+
 ## [0.1.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.0.1...arete-auth-v0.1.0) (2026-07-13)
 
 

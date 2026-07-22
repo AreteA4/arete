@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.2.0...arete-typescript-v0.3.0) (2026-07-22)
+
+
+### Features
+
+* add safe ORE transaction workflows ([5923c14](https://github.com/AreteA4/arete/commit/5923c1454d56c8e6b1f3a5a7b8765b863a581e03))
+* add TypeScript query-scoped subscriptions ([c23ac38](https://github.com/AreteA4/arete/commit/c23ac380485bf193cecb73ad31fac2600f3f4af5))
+* add WebSocket v2 and reactive ORE stack workflows ([ce37702](https://github.com/AreteA4/arete/commit/ce3770249a0899dd0be37f47cac2deeaa4e58511))
+* **sdk:** add authenticated transaction execution ([0f123fd](https://github.com/AreteA4/arete/commit/0f123fd7daa414a58e911905a9d4c2a4d19fd613))
+
+
+### Bug Fixes
+
+* distinguish program behavior in client cache ([d808abd](https://github.com/AreteA4/arete/commit/d808abd80d2574d258bd06b855e2dc633308ac54))
+* preserve subscription options on reconnect ([af30e9f](https://github.com/AreteA4/arete/commit/af30e9fd5c81c2c1bf99e1e3e580736bda7a528e))
+* **sdk:** bundle noble ed25519 for CommonJS ([b9c46b0](https://github.com/AreteA4/arete/commit/b9c46b01992810bb34bb3d8087c47ef2eb41e391))
+* **sdk:** preserve stream identity and canonical entity values ([76d0a7a](https://github.com/AreteA4/arete/commit/76d0a7a6b1708ee9f144cf9f7fea0d4fed548b2d))
+* stabilize ORE resolver and streaming updates ([1ebeb44](https://github.com/AreteA4/arete/commit/1ebeb44750e2d2745d5ec31016a6098a1ce04d2f))
+* validate sparse frames with patch schemas ([654a708](https://github.com/AreteA4/arete/commit/654a7080da0f173eef8a2da40d81a44fba4d1369))
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.1.5...arete-typescript-v0.2.0) (2026-07-13)
 
 

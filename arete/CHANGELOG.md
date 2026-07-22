@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-v0.2.0...arete-v0.3.0) (2026-07-22)
+
+
+### Bug Fixes
+
+* stabilize ORE resolver and streaming updates ([1ebeb44](https://github.com/AreteA4/arete/commit/1ebeb44750e2d2745d5ec31016a6098a1ce04d2f))
+* stabilize resolver execution for mapped account data ([1b70ae7](https://github.com/AreteA4/arete/commit/1b70ae75cd4d2a621603480c22b55e1f44c90181))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.2.0 to 0.3.0
+    * arete-macros bumped from 0.2.0 to 0.3.0
+    * arete-server bumped from 0.2.0 to 0.3.0
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-v0.1.5...arete-v0.2.0) (2026-07-13)
 
 

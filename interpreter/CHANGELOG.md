@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.2.0...arete-interpreter-v0.3.0) (2026-07-22)
+
+
+### Features
+
+* add safe ORE transaction workflows ([5923c14](https://github.com/AreteA4/arete/commit/5923c1454d56c8e6b1f3a5a7b8765b863a581e03))
+* add WebSocket v2 and reactive ORE stack workflows ([ce37702](https://github.com/AreteA4/arete/commit/ce3770249a0899dd0be37f47cac2deeaa4e58511))
+* harden ORE code generation and stack semantics ([159e2b0](https://github.com/AreteA4/arete/commit/159e2b0aec8e1f2ee35c7469ba601d3194118f6d))
+
+
+### Bug Fixes
+
+* distinguish program behavior in client cache ([d808abd](https://github.com/AreteA4/arete/commit/d808abd80d2574d258bd06b855e2dc633308ac54))
+* **interpreter:** emit only required TypeScript SDK helpers ([9964f5a](https://github.com/AreteA4/arete/commit/9964f5a8ec4805f50891eb990289909325761a2c))
+* stabilize ORE resolver and streaming updates ([1ebeb44](https://github.com/AreteA4/arete/commit/1ebeb44750e2d2745d5ec31016a6098a1ce04d2f))
+* stabilize resolver execution for mapped account data ([1b70ae7](https://github.com/AreteA4/arete/commit/1b70ae75cd4d2a621603480c22b55e1f44c90181))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.2.0 to 0.3.0
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.1.5...arete-interpreter-v0.2.0) (2026-07-13)
 
 

@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-server-v0.2.0...arete-server-v0.3.0) (2026-07-22)
+
+
+### Features
+
+* add safe ORE transaction workflows ([5923c14](https://github.com/AreteA4/arete/commit/5923c1454d56c8e6b1f3a5a7b8765b863a581e03))
+* add WebSocket v2 and reactive ORE stack workflows ([ce37702](https://github.com/AreteA4/arete/commit/ce3770249a0899dd0be37f47cac2deeaa4e58511))
+* enforce WebSocket v2 query subscriptions ([1435459](https://github.com/AreteA4/arete/commit/1435459a444d37c9cfd22ba8b8baa954e6bdf6a0))
+* **server:** add bounded Solana transaction relay ([d6ba182](https://github.com/AreteA4/arete/commit/d6ba182d96063641874e5e4948d8e2bc71b9d88f))
+
+
+### Bug Fixes
+
+* emit reordered derived window entries ([d1c36d5](https://github.com/AreteA4/arete/commit/d1c36d55d0e2a8bb3f4d90fe359a65fc9c25a48d))
+* preserve derived view ordering and deltas ([e0bfcc5](https://github.com/AreteA4/arete/commit/e0bfcc5bf7af19ad1b94362e41eb86cfeb109540))
+* **server:** fail closed on unauthenticated relay and spoofed XFF prefix ([f37097d](https://github.com/AreteA4/arete/commit/f37097dfa3e19dd2f62564c6c206f2c4a03366b6))
+* **server:** preserve identity on snapshot completion frames ([a1cf961](https://github.com/AreteA4/arete/commit/a1cf9610cbf48490cdfc9c3b1778fca6e6906fc4))
+* stabilize ORE resolver and streaming updates ([1ebeb44](https://github.com/AreteA4/arete/commit/1ebeb44750e2d2745d5ec31016a6098a1ce04d2f))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.2.0 to 0.3.0
+    * arete-auth bumped from 0.1.0 to 0.2.0
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-server-v0.1.5...arete-server-v0.2.0) (2026-07-13)
 
 
