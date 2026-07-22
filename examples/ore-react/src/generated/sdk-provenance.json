@@ -6,8 +6,8 @@
   },
   "generator": {
     "name": "a4-cli",
-    "version": "0.2.0",
-    "sha256": "0c2df551e2bfa372389320f5b14d4a0720fd56d66c577aeea0f1e04c9b69340d"
+    "version": "0.3.0",
+    "sha256": "4b4be2683c15540e85e2c0444ce4433b82e16f61d731013cd804e8e03c6da01a"
   },
   "extensions": {
     "sha256": "34be5c62b2ba0db0e5b44f2d3d29e0b9ed9ffb96bc464e4daec7af6b8bcd842a"
