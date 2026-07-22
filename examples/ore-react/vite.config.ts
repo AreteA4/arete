@@ -3,24 +3,6 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  resolve: {
-    alias: [
-      {
-        find: /^@usearete\/adapter-web3js\/react$/,
-        replacement: new URL(
-          '../../typescript/adapters/web3js/src/react.ts',
-          import.meta.url,
-        ).pathname,
-      },
-      {
-        find: /^@usearete\/adapter-web3js$/,
-        replacement: new URL(
-          '../../typescript/adapters/web3js/src/index.ts',
-          import.meta.url,
-        ).pathname,
-      },
-    ],
-  },
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],

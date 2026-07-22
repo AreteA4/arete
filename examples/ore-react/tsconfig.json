@@ -6,9 +6,6 @@
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
-    "paths": {
-      "@usearete/adapter-web3js": ["../../typescript/adapters/web3js/src/index.ts"]
-    },
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
