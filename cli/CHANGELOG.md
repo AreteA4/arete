@@ -6,6 +6,31 @@
 
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.2.0...a4-cli-v0.3.0) (2026-07-22)
+
+
+### Features
+
+* add safe ORE transaction workflows ([5923c14](https://github.com/AreteA4/arete/commit/5923c1454d56c8e6b1f3a5a7b8765b863a581e03))
+* add WebSocket v2 and reactive ORE stack workflows ([ce37702](https://github.com/AreteA4/arete/commit/ce3770249a0899dd0be37f47cac2deeaa4e58511))
+* emit reproducible SDK provenance manifests ([02a4f08](https://github.com/AreteA4/arete/commit/02a4f0811578a15e802eb45dfbde1d471951bfbc))
+* migrate CLI streams to WebSocket v2 ([44f800a](https://github.com/AreteA4/arete/commit/44f800a42fa1413cb3f798147c80220332d3374c))
+
+
+### Bug Fixes
+
+* **cli:** support OR expressions in extension SDK ranges ([912aaaa](https://github.com/AreteA4/arete/commit/912aaaa1d3691acea566731242f9d7c69e222b3a))
+* distinguish program behavior in client cache ([d808abd](https://github.com/AreteA4/arete/commit/d808abd80d2574d258bd06b855e2dc633308ac54))
+* include all SDK generator inputs in digest ([0dad126](https://github.com/AreteA4/arete/commit/0dad126bd8938a06a87296f235c38047ab6e5fa9))
+* resolve generator inputs in packaged CLI ([b6db155](https://github.com/AreteA4/arete/commit/b6db1557646f49c3b0f8c85b36a1d1915365c6d1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.2.0 to 0.3.0
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.1.5...a4-cli-v0.2.0) (2026-07-13)
 
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-react-v0.2.0...arete-react-v0.3.0) (2026-07-22)
+
+
+### Features
+
+* add reactive generated stack APIs ([d0c893e](https://github.com/AreteA4/arete/commit/d0c893e0f7adab70fbafcf16cc874518b1319bbd))
+* add safe ORE transaction workflows ([5923c14](https://github.com/AreteA4/arete/commit/5923c1454d56c8e6b1f3a5a7b8765b863a581e03))
+* add WebSocket v2 and reactive ORE stack workflows ([ce37702](https://github.com/AreteA4/arete/commit/ce3770249a0899dd0be37f47cac2deeaa4e58511))
+* **react:** expose transaction lifecycle and reconciliation ([0198ea4](https://github.com/AreteA4/arete/commit/0198ea4385eeea4663a9f15cbc9b708331ffbb4b))
+
+
+### Bug Fixes
+
+* distinguish program behavior in client cache ([d808abd](https://github.com/AreteA4/arete/commit/d808abd80d2574d258bd06b855e2dc633308ac54))
+* stabilize attached program client keys ([23dd68b](https://github.com/AreteA4/arete/commit/23dd68b061d1899b6c9d133970759107b95cde89))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @usearete/sdk bumped from ^0.2.0 to ^0.3.0
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-react-v0.1.5...arete-react-v0.2.0) (2026-07-13)
 
 

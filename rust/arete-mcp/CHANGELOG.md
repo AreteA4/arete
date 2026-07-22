@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.2.0...arete-mcp-v0.3.0) (2026-07-22)
+
+
+### Features
+
+* add WebSocket v2 and reactive ORE stack workflows ([ce37702](https://github.com/AreteA4/arete/commit/ce3770249a0899dd0be37f47cac2deeaa4e58511))
+
+
+### Bug Fixes
+
+* scope MCP cached reads to exact subscriptions ([4b1e51a](https://github.com/AreteA4/arete/commit/4b1e51a80ea72714f619d00fc1325c5ad9fa6d33))
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.1.5...arete-mcp-v0.2.0) (2026-07-13)
 
 

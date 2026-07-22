@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.2.0...arete-macros-v0.3.0) (2026-07-22)
+
+
+### Features
+
+* add safe ORE transaction workflows ([5923c14](https://github.com/AreteA4/arete/commit/5923c1454d56c8e6b1f3a5a7b8765b863a581e03))
+* add WebSocket v2 and reactive ORE stack workflows ([ce37702](https://github.com/AreteA4/arete/commit/ce3770249a0899dd0be37f47cac2deeaa4e58511))
+* harden ORE code generation and stack semantics ([159e2b0](https://github.com/AreteA4/arete/commit/159e2b0aec8e1f2ee35c7469ba601d3194118f6d))
+
+
+### Bug Fixes
+
+* **macros:** parse numeric strings in computed unwrap_or expressions ([77f9f43](https://github.com/AreteA4/arete/commit/77f9f43b47812d8d57997d94bfcda0ee2a88e772))
+* stabilize ORE resolver and streaming updates ([1ebeb44](https://github.com/AreteA4/arete/commit/1ebeb44750e2d2745d5ec31016a6098a1ce04d2f))
+* stabilize resolver execution for mapped account data ([1b70ae7](https://github.com/AreteA4/arete/commit/1b70ae75cd4d2a621603480c22b55e1f44c90181))
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.1.5...arete-macros-v0.2.0) (2026-07-13)
 
 
