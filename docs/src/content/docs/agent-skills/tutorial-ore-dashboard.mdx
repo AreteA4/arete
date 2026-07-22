@@ -30,7 +30,7 @@ Start by creating the basic project structure and installing dependencies.
 **Prompt:**
 
 <CopyPrompt>
-Create a new React + Vite + TypeScript project. Install these dependencies: arete-react, arete-stacks, tailwindcss. Set up Tailwind with the Vite plugin.
+Create a new React + Vite + TypeScript project. Install `@usearete/react`, `@usearete/sdk`, `zod`, and Tailwind CSS with its Vite plugin. Do not install `zustand`; `@usearete/react` carries it as a normal dependency. Run `a4 install ore --ts --output ./src/generated/ore-stack.ts --package-name @usearete/react` so the app uses the deployed ORE stack's generated types and extensions. Add `VITE_ARETE_PUBLISHABLE_KEY` to `.env.local` for hosted authentication and fail with a clear message if it is missing. Read-only viewing does not require a wallet.
 </CopyPrompt>
 
 ---
@@ -54,7 +54,7 @@ Set up the application shell with a connection status indicator.
 **Prompt:**
 
 <CopyPrompt>
-Create the main `App.tsx` with a `AreteProvider` (autoConnect={true}). Create an `OreDashboard` component that will hold our mining data display. Use a dark theme with tailwind (bg-gray-900, text-white). Add a header that says "ORE Mining Dashboard" with a connection status indicator.
+Create the main `App.tsx` with `AreteProvider` from `@usearete/react`. Import `ORE_STREAM_STACK`, pass it as the provider's `stack`, and pass `auth={{ publishableKey: import.meta.env.VITE_ARETE_PUBLISHABLE_KEY }}`. Do not pass a provider WebSocket URL because the generated stack embeds its endpoints. `autoConnect` defaults to true and controls only the initial connection; `autoReconnect` defaults to true and controls only recovery after an established connection is lost. Create an `OreDashboard` component with a dark Tailwind theme and a connection indicator based on `useArete(...).status`; surface `socketIssue` and provide a `retry()` action on connection failure.
 </CopyPrompt>
 
 ---
@@ -66,7 +66,7 @@ Connect to the live round view to show the current mining status.
 **Prompt:**
 
 <CopyPrompt>
-In the `OreDashboard` component, use the `useArete` hook with `ORE_STREAM_STACK` from `arete-stacks/ore`. Subscribe to the `OreRound.latest` view using `useOne()` to get the current round. Display: Round number (`id.round_id`), Motherlode amount (`state.motherlode`), Total miners (`state.total_miners`), Total deployed (`state.total_deployed`), and Deploy count (`metrics.deploy_count`). Format large numbers with commas.
+In `OreDashboard`, import `ORE_STREAM_STACK` from `./generated/ore-stack` and call `useArete(ORE_STREAM_STACK)`. Subscribe to `OreBoard.state` with `{ address: arete.addresses.board() }`, then pass its `state.roundId` to `OreRound.state.use({ roundId })`; pass `undefined` until Board loads. Use each view result's full `status`, `isPending`, `isReady`, `isEmpty`, `isRefreshing`, and `error` fields for accurate UI states. Display generated camelCase fields `id.roundId`, `state.motherlode`, `state.totalMiners`, `state.totalDeployed`, and `metrics.deployCount`. Explain that Board, not `OreRound.latest`, is authoritative for the active round.
 </CopyPrompt>
 
 ---
@@ -78,7 +78,7 @@ Include high-level stats about the ORE treasury.
 **Prompt:**
 
 <CopyPrompt>
-Add a section that shows the ORE treasury state. Use `OreTreasury.list` view with `useOne()`. Display: Total staked, Total refined, Total unclaimed, and Treasury balance. Put these in a grid of stat cards.
+Add a section that shows ORE treasury state. Subscribe to `OreTreasury.state` with `{ address: arete.addresses.treasury() }`. Display generated camelCase fields that exist in the returned entity, including `state.totalRefined`, `state.totalUnclaimed`, and `state.motherlode`, in a grid of stat cards.
 </CopyPrompt>
 
 ---
@@ -90,7 +90,7 @@ List previous rounds to show historical mining activity.
 **Prompt:**
 
 <CopyPrompt>
-Add a section below the stats that shows recent rounds in a table. Use `OreRound.list` view with `use()`. Show the last 10 rounds with columns: Round #, Motherlode, Miners, Deployed, Motherlode Hit (boolean as a checkmark or X). Sort by `round_id` descending in the component.
+Add a section below the stats that shows recent rounds in a table. Use `OreRound.latest.use({ take: 10 })`. Show columns for `id.roundId`, `state.motherlode`, `state.totalMiners`, `state.totalDeployed`, and `results.didHitMotherlode`. The view is already sorted by round ID descending; do not use it to choose the active board round.
 </CopyPrompt>
 
 ---

@@ -62,31 +62,108 @@ export interface MutationExecutionObserver<
   onCallbackError(error: unknown): void;
 }
 
+export type MutationReconcileFn<
+  TResult = unknown,
+  TPrepared extends PreparedOperation = PreparedOperation,
+> = (
+  context: MutationReconciliationContext<TResult, TPrepared>
+) => unknown | Promise<unknown>;
+
+/**
+ * Anything that can be refreshed after a mutation reconciles: a plain
+ * callback, or any hook result carrying a `refresh` method (view hooks from
+ * `arete.views.*` and read hooks from `arete.read.*`), so callers can write
+ * `reconcile: { refresh: [board, round, quoteRead] }` without extracting
+ * `.refresh` functions by hand.
+ */
+export type ReconciliationRefreshTarget =
+  | (() => unknown | Promise<unknown>)
+  | { readonly refresh: () => unknown | Promise<unknown> };
+
+/**
+ * Shorthand overrides for the default reconciliation injected into generated
+ * program hooks. Only valid when the hook-level default is a marked default
+ * reconciliation (see `createProcessedSlotReconciliation`).
+ */
+export interface MutationReconcileOverrides {
+  readonly refresh?:
+    | ReconciliationRefreshTarget
+    | readonly ReconciliationRefreshTarget[];
+  readonly timeoutMs?: number;
+}
+
 export type UseMutationOptions<
-  TOptions extends object = Record<string, never>,
+  TOptions extends object = Record<string, unknown>,
   TResult = unknown,
   TPrepared extends PreparedOperation = PreparedOperation,
 > = TOptions & {
+  onConfirmed?: (result: TResult) => void | Promise<void>;
   onSuccess?: (result: TResult) => void | Promise<void>;
   onError?: (error: Error) => void | Promise<void>;
-  reconcile?: (
-    context: MutationReconciliationContext<TResult, TPrepared>
-  ) => unknown | Promise<unknown>;
+  reconcile?:
+    | false
+    | MutationReconcileFn<TResult, TPrepared>
+    | MutationReconcileOverrides;
 };
+
+interface MarkedDefaultReconciliation<
+  TResult,
+  TPrepared extends PreparedOperation,
+> {
+  (
+    context: MutationReconciliationContext<TResult, TPrepared>
+  ): unknown | Promise<unknown>;
+  readonly areteDefaultReconciliation: true;
+  readonly shouldReconcile: (
+    context: MutationReconciliationContext<TResult, TPrepared>
+  ) => boolean;
+  readonly withOverrides: (
+    overrides: MutationReconcileOverrides
+  ) => MutationReconcileFn<TResult, TPrepared>;
+}
+
+function isMarkedDefaultReconciliation<
+  TResult,
+  TPrepared extends PreparedOperation,
+>(value: unknown): value is MarkedDefaultReconciliation<TResult, TPrepared> {
+  return (
+    typeof value === 'function'
+    && (value as { areteDefaultReconciliation?: unknown }).areteDefaultReconciliation === true
+    && typeof (value as { shouldReconcile?: unknown }).shouldReconcile === 'function'
+    && typeof (value as { withOverrides?: unknown }).withOverrides === 'function'
+  );
+}
 
 /**
  * Result of {@link useInstructionMutation}.
  *
- * The original convenience fields remain available. `failure` and `outcome`
- * describe chain execution only; callback and reconciliation failures never
- * replace a confirmed outcome.
+ * `phase` is the primary, discriminated status: it walks
+ * 'preparing' → 'awaiting-wallet' → 'submitted' → 'confirmed' →
+ * 'reconciling' → 'reconciled' on the happy path, and lands on
+ * 'confirmed-unreconciled', 'not-submitted', 'submitted-unknown', or
+ * 'chain-failed' otherwise. UIs should branch on `phase` for busy labels and
+ * on {@link UseMutationResult.displayError} /
+ * {@link UseMutationResult.reconciliationError} for messages.
+ *
+ * `failure` and `outcome` describe chain execution only; callback and
+ * reconciliation failures never replace a confirmed outcome.
  */
 export interface UseMutationResult<
   TParams = Record<string, unknown>,
   TResult = unknown,
-  TOptions extends object = Record<string, never>,
+  TOptions extends object = Record<string, unknown>,
   TPrepared extends PreparedOperation = PreparedOperation,
 > {
+  /** Event-handler form. Errors are recorded in mutation state and do not escape. */
+  mutate: (
+    args: TParams,
+    options?: Partial<UseMutationOptions<TOptions, TResult, TPrepared>>
+  ) => void;
+  /** Rejecting form for imperative composition. Equivalent to submit(). */
+  mutateAsync: (
+    args: TParams,
+    options?: Partial<UseMutationOptions<TOptions, TResult, TPrepared>>
+  ) => Promise<TResult>;
   submit: (
     args: TParams,
     options?: Partial<UseMutationOptions<TOptions, TResult, TPrepared>>
@@ -110,13 +187,19 @@ export interface UseMutationResult<
   isLoading: boolean;
   isConfirmed: boolean;
   isSubmittedUnknown: boolean;
+  isPreparing: boolean;
+  isAwaitingWallet: boolean;
+  isReconciling: boolean;
+  canRetryReconciliation: boolean;
+  /** Retry only post-confirmation stream reconciliation; never resubmits. */
+  retryReconciliation: () => Promise<void>;
   reset: () => void;
 }
 
 export type MutationExecutor<
   TParams = Record<string, unknown>,
   TResult = unknown,
-  TOptions extends object = Record<string, never>,
+  TOptions extends object = Record<string, unknown>,
   TPrepared extends PreparedOperation = PreparedOperation,
 > = {
   (
@@ -139,6 +222,16 @@ interface MutationState<TResult, TPrepared extends PreparedOperation> {
   completedReceipts: OperationTransactionReceipt[];
   callbackErrors: Error[];
   reconciliationError: Error | null;
+}
+
+interface ReconciliationRetryState<
+  TResult,
+  TPrepared extends PreparedOperation,
+> {
+  invocation: number;
+  reconcile: MutationReconcileFn<TResult, TPrepared>;
+  context: Omit<MutationReconciliationContext<TResult, TPrepared>, 'signal'>;
+  onSuccess?: (result: TResult) => void | Promise<void>;
 }
 
 function initialMutationState<
@@ -284,7 +377,7 @@ function unreconciledError(value: unknown): Error | null {
 export function useInstructionMutation<
   TParams = Record<string, unknown>,
   TResult = unknown,
-  TOptions extends object = Record<string, never>,
+  TOptions extends object = Record<string, unknown>,
   TPrepared extends PreparedOperation = PreparedOperation,
 >(
   execute: MutationExecutor<TParams, TResult, TOptions, TPrepared>,
@@ -295,6 +388,7 @@ export function useInstructionMutation<
   );
   const invocationRef = useRef(0);
   const reconciliationAbortRef = useRef<AbortController | null>(null);
+  const reconciliationRetryRef = useRef<ReconciliationRetryState<TResult, TPrepared> | null>(null);
   const defaultsRef = useRef(defaults);
 
   defaultsRef.current = defaults;
@@ -305,6 +399,7 @@ export function useInstructionMutation<
   ): Promise<TResult> => {
     const invocation = ++invocationRef.current;
     reconciliationAbortRef.current?.abort();
+    reconciliationRetryRef.current = null;
     const reconciliationAbort = new AbortController();
     reconciliationAbortRef.current = reconciliationAbort;
 
@@ -347,10 +442,12 @@ export function useInstructionMutation<
       ...(defaultsRef.current ?? {}),
       ...(options ?? {}),
     } as Partial<UseMutationOptions<TOptions, TResult, TPrepared>>;
+    const onConfirmed = mergedOptions.onConfirmed;
     const onSuccess = mergedOptions.onSuccess;
     const onError = mergedOptions.onError;
-    const reconcile = mergedOptions.reconcile;
+    const reconcileOption = mergedOptions.reconcile;
     const executionOptions = { ...mergedOptions } as Record<string, unknown>;
+    delete executionOptions.onConfirmed;
     delete executionOptions.onSuccess;
     delete executionOptions.onError;
     delete executionOptions.reconcile;
@@ -389,6 +486,22 @@ export function useInstructionMutation<
     };
 
     try {
+      let reconcile: MutationReconcileFn<TResult, TPrepared> | undefined;
+      if (reconcileOption === false || reconcileOption === undefined) {
+        reconcile = undefined;
+      } else if (typeof reconcileOption === 'function') {
+        reconcile = reconcileOption;
+      } else {
+        const hookDefault = defaultsRef.current?.reconcile;
+        if (isMarkedDefaultReconciliation<TResult, TPrepared>(hookDefault)) {
+          reconcile = hookDefault.withOverrides(reconcileOption);
+        } else {
+          throw new Error(
+            'reconcile option objects require a generated program hook with default reconciliation; pass a reconcile function instead'
+          );
+        }
+      }
+
       const result = await execute(args, executionOptions as TOptions, observer);
       const completedReceipts = receiptsFrom(result).length > 0
         ? receiptsFrom(result)
@@ -402,9 +515,36 @@ export function useInstructionMutation<
         ...observedCallbackErrors,
         ...callbackErrorsFrom(result),
       ]);
+      const reconciliationContext: MutationReconciliationContext<TResult, TPrepared> = {
+        result,
+        prepared,
+        signatures,
+        completedReceipts,
+        signal: reconciliationAbort.signal,
+      };
+      const shouldReconcile = Boolean(
+        reconcile
+        && (
+          !isMarkedDefaultReconciliation<TResult, TPrepared>(reconcile)
+          || reconcile.shouldReconcile(reconciliationContext)
+        )
+      );
+      if (invocation === invocationRef.current && reconcile && shouldReconcile) {
+        reconciliationRetryRef.current = {
+          invocation,
+          reconcile,
+          context: {
+            result,
+            prepared,
+            signatures,
+            completedReceipts,
+          },
+          onSuccess,
+        };
+      }
 
       setPhase('confirmed', {
-        status: 'success',
+        status: 'pending',
         result,
         outcome,
         prepared,
@@ -413,7 +553,56 @@ export function useInstructionMutation<
         callbackErrors,
       });
 
-      if (onSuccess) {
+      if (onConfirmed) {
+        try {
+          await onConfirmed(result);
+        } catch (value) {
+          const callbackError = normalizeThrown(value);
+          observedCallbackErrors.push(callbackError);
+          updateCurrent((current) => ({
+            ...current,
+            callbackErrors: uniqueErrors([...current.callbackErrors, callbackError]),
+          }));
+        }
+      }
+
+      if (reconciliationAbort.signal.aborted || invocation !== invocationRef.current) {
+        return result;
+      }
+
+      let reconciled = !shouldReconcile;
+      if (reconcile && shouldReconcile) {
+        setPhase('reconciling', { status: 'pending' });
+        try {
+          const reconciliationResult = await reconcile(reconciliationContext);
+          const error = unreconciledError(reconciliationResult);
+          if (error) {
+            setPhase('confirmed-unreconciled', {
+              status: 'pending',
+              reconciliationError: error,
+            });
+          } else {
+            reconciled = true;
+            if (reconciliationRetryRef.current?.invocation === invocation) {
+              reconciliationRetryRef.current = null;
+            }
+            setPhase('reconciled', { status: 'pending' });
+          }
+        } catch (value) {
+          const reconciliationError = normalizeThrown(value);
+          setPhase('confirmed-unreconciled', {
+            status: 'pending',
+            reconciliationError,
+          });
+        }
+      }
+
+      if (
+        reconciled
+        && onSuccess
+        && !reconciliationAbort.signal.aborted
+        && invocation === invocationRef.current
+      ) {
         try {
           await onSuccess(result);
         } catch (value) {
@@ -426,27 +615,7 @@ export function useInstructionMutation<
         }
       }
 
-      if (reconcile) {
-        setPhase('reconciling');
-        try {
-          const reconciliationResult = await reconcile({
-            result,
-            prepared,
-            signatures,
-            completedReceipts,
-            signal: reconciliationAbort.signal,
-          });
-          const error = unreconciledError(reconciliationResult);
-          if (error) {
-            setPhase('confirmed-unreconciled', { reconciliationError: error });
-          } else {
-            setPhase('reconciled');
-          }
-        } catch (value) {
-          const reconciliationError = normalizeThrown(value);
-          setPhase('confirmed-unreconciled', { reconciliationError });
-        }
-      }
+      updateCurrent((current) => ({ ...current, status: 'success' }));
 
       return result;
     } catch (value) {
@@ -471,7 +640,7 @@ export function useInstructionMutation<
       const displayError = displayErrorFor(error, failure);
 
       setPhase(phase, {
-        status: 'error',
+        status: 'pending',
         displayError,
         failure,
         outcome: failure,
@@ -495,6 +664,8 @@ export function useInstructionMutation<
         }
       }
 
+      updateCurrent((current) => ({ ...current, status: 'error' }));
+
       throw error;
     } finally {
       if (reconciliationAbortRef.current === reconciliationAbort) {
@@ -503,15 +674,109 @@ export function useInstructionMutation<
     }
   }, [execute]);
 
+  const retryReconciliation = useCallback(async (): Promise<void> => {
+    const pending = reconciliationRetryRef.current;
+    if (!pending) {
+      throw new Error('No failed reconciliation is available to retry');
+    }
+
+    const invocation = ++invocationRef.current;
+    reconciliationAbortRef.current?.abort();
+    const reconciliationAbort = new AbortController();
+    reconciliationAbortRef.current = reconciliationAbort;
+    setState((current) => ({
+      ...current,
+      status: 'pending',
+      phase: 'reconciling',
+      reconciliationError: null,
+      latestEvent: {
+        phase: 'reconciling',
+        prepared: pending.context.prepared,
+        result: pending.context.result,
+      },
+    }));
+
+    try {
+      const result = await pending.reconcile({
+        ...pending.context,
+        signal: reconciliationAbort.signal,
+      });
+      const error = unreconciledError(result);
+      if (error) throw error;
+      if (reconciliationAbort.signal.aborted || invocation !== invocationRef.current) return;
+
+      reconciliationRetryRef.current = null;
+      setState((current) => ({
+        ...current,
+        status: 'pending',
+        phase: 'reconciled',
+        reconciliationError: null,
+        latestEvent: {
+          phase: 'reconciled',
+          prepared: pending.context.prepared,
+          result: pending.context.result,
+        },
+      }));
+
+      if (pending.onSuccess) {
+        try {
+          await pending.onSuccess(pending.context.result);
+        } catch (value) {
+          const callbackError = normalizeThrown(value);
+          if (invocation === invocationRef.current) {
+            setState((current) => ({
+              ...current,
+              callbackErrors: uniqueErrors([...current.callbackErrors, callbackError]),
+            }));
+          }
+        }
+      }
+      if (invocation === invocationRef.current) {
+        setState((current) => ({ ...current, status: 'success' }));
+      }
+    } catch (value) {
+      const error = normalizeThrown(value);
+      if (!reconciliationAbort.signal.aborted && invocation === invocationRef.current) {
+        setState((current) => ({
+          ...current,
+          status: 'success',
+          phase: 'confirmed-unreconciled',
+          reconciliationError: error,
+          latestEvent: {
+            phase: 'confirmed-unreconciled',
+            prepared: pending.context.prepared,
+            result: pending.context.result,
+            error,
+          },
+        }));
+      }
+      throw error;
+    } finally {
+      if (reconciliationAbortRef.current === reconciliationAbort) {
+        reconciliationAbortRef.current = null;
+      }
+    }
+  }, []);
+
   const reset = useCallback(() => {
     invocationRef.current += 1;
     reconciliationAbortRef.current?.abort();
     reconciliationAbortRef.current = null;
+    reconciliationRetryRef.current = null;
     setState(initialMutationState<TResult, TPrepared>());
   }, []);
 
+  const mutate = useCallback((
+    args: TParams,
+    options?: Partial<UseMutationOptions<TOptions, TResult, TPrepared>>,
+  ): void => {
+    void submit(args, options).catch(() => undefined);
+  }, [submit]);
+
   const signature = state.signatures.length === 1 ? state.signatures[0]! : null;
   return {
+    mutate,
+    mutateAsync: submit,
     submit,
     status: state.status,
     phase: state.phase,
@@ -530,8 +795,14 @@ export function useInstructionMutation<
     callbackErrors: state.callbackErrors,
     reconciliationError: state.reconciliationError,
     isLoading: state.status === 'pending',
-    isConfirmed: state.status === 'success',
+    isConfirmed: state.outcome?.status === 'confirmed',
     isSubmittedUnknown: state.failure?.status === 'submitted-unknown',
+    isPreparing: state.phase === 'preparing',
+    isAwaitingWallet: state.phase === 'awaiting-wallet',
+    isReconciling: state.phase === 'reconciling',
+    canRetryReconciliation: state.phase === 'confirmed-unreconciled'
+      && reconciliationRetryRef.current !== null,
+    retryReconciliation,
     reset,
   };
 }

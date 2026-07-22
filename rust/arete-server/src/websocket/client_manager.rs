@@ -1,4 +1,3 @@
-use super::subscription::Subscription;
 use crate::compression::CompressedPayload;
 use crate::websocket::auth::{AuthContext, AuthDeny};
 use crate::websocket::rate_limiter::{RateLimitResult, WebSocketRateLimiter};
@@ -131,7 +130,6 @@ impl EgressTracker {
 #[derive(Debug)]
 pub struct ClientInfo {
     pub id: Uuid,
-    pub subscription: Option<Subscription>,
     pub last_seen: SystemTime,
     pub sender: mpsc::Sender<Message>,
     subscriptions: Arc<RwLock<HashMap<String, CancellationToken>>>,
@@ -154,7 +152,6 @@ impl ClientInfo {
     ) -> Self {
         Self {
             id,
-            subscription: None,
             last_seen: SystemTime::now(),
             sender,
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
@@ -210,34 +207,41 @@ impl ClientInfo {
         self.last_seen.elapsed().unwrap_or(Duration::MAX) > timeout
     }
 
-    pub async fn add_subscription(&self, sub_key: String, token: CancellationToken) -> bool {
+    pub async fn add_subscription(
+        &self,
+        subscription_id: String,
+        token: CancellationToken,
+    ) -> bool {
         let mut subs = self.subscriptions.write().await;
-        if let Some(old_token) = subs.insert(sub_key.clone(), token) {
-            old_token.cancel();
-            debug!("Replaced existing subscription: {}", sub_key);
-            false
-        } else {
-            true
+        match subs.entry(subscription_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(token);
+                true
+            }
+            std::collections::hash_map::Entry::Occupied(_) => false,
         }
     }
 
-    pub async fn remove_subscription(&self, sub_key: &str) -> bool {
+    pub async fn remove_subscription(&self, subscription_id: &str) -> bool {
         let mut subs = self.subscriptions.write().await;
-        if let Some(token) = subs.remove(sub_key) {
+        if let Some(token) = subs.remove(subscription_id) {
             token.cancel();
-            debug!("Cancelled subscription: {}", sub_key);
+            debug!("Cancelled subscription: {}", subscription_id);
             true
         } else {
-            debug!("Subscription not found for cancellation: {}", sub_key);
+            debug!(
+                "Subscription not found for cancellation: {}",
+                subscription_id
+            );
             false
         }
     }
 
     pub async fn cancel_all_subscriptions(&self) {
         let subs = self.subscriptions.read().await;
-        for (sub_key, token) in subs.iter() {
+        for (subscription_id, token) in subs.iter() {
             token.cancel();
-            debug!("Cancelled subscription on disconnect: {}", sub_key);
+            debug!("Cancelled subscription on disconnect: {}", subscription_id);
         }
     }
 
@@ -768,22 +772,6 @@ impl ClientManager {
             .map_err(|_| SendError::ClientDisconnected)
     }
 
-    /// Update the subscription for a client.
-    pub fn update_subscription(&self, client_id: Uuid, subscription: Subscription) -> bool {
-        if let Some(mut client) = self.clients.get_mut(&client_id) {
-            client.subscription = Some(subscription);
-            client.update_last_seen();
-            debug!("Updated subscription for client {}", client_id);
-            true
-        } else {
-            warn!(
-                "Failed to update subscription for unknown client {}",
-                client_id
-            );
-            false
-        }
-    }
-
     /// Update the last_seen timestamp for a client.
     pub fn update_client_last_seen(&self, client_id: Uuid) {
         if let Some(mut client) = self.clients.get_mut(&client_id) {
@@ -823,13 +811,6 @@ impl ClientManager {
         }
     }
 
-    /// Get the subscription for a client.
-    pub fn get_subscription(&self, client_id: Uuid) -> Option<Subscription> {
-        self.clients
-            .get(&client_id)
-            .and_then(|c| c.subscription.clone())
-    }
-
     /// Check if a client exists.
     pub fn has_client(&self, client_id: Uuid) -> bool {
         self.clients.contains_key(&client_id)
@@ -838,19 +819,19 @@ impl ClientManager {
     pub async fn add_client_subscription(
         &self,
         client_id: Uuid,
-        sub_key: String,
+        subscription_id: String,
         token: CancellationToken,
     ) -> bool {
         if let Some(client) = self.clients.get(&client_id) {
-            client.add_subscription(sub_key, token).await
+            client.add_subscription(subscription_id, token).await
         } else {
             false
         }
     }
 
-    pub async fn remove_client_subscription(&self, client_id: Uuid, sub_key: &str) -> bool {
+    pub async fn remove_client_subscription(&self, client_id: Uuid, subscription_id: &str) -> bool {
         if let Some(client) = self.clients.get(&client_id) {
-            client.remove_subscription(sub_key).await
+            client.remove_subscription(subscription_id).await
         } else {
             false
         }
@@ -1271,6 +1252,36 @@ mod tests {
         assert_eq!(client.record_inbound_message(), Some(1));
         assert_eq!(client.record_inbound_message(), Some(2));
         assert_eq!(client.record_inbound_message(), None);
+    }
+
+    #[tokio::test]
+    async fn duplicate_subscription_id_is_rejected_without_replacement() {
+        let (tx, _rx) = mpsc::channel(1);
+        let client = ClientInfo::new(
+            Uuid::new_v4(),
+            tx,
+            None,
+            create_test_socket_addr("127.0.0.1"),
+        );
+        let first = CancellationToken::new();
+        let duplicate = CancellationToken::new();
+
+        assert!(
+            client
+                .add_subscription("opaque-id".to_string(), first.clone())
+                .await
+        );
+        assert!(
+            !client
+                .add_subscription("opaque-id".to_string(), duplicate.clone())
+                .await
+        );
+        assert!(!first.is_cancelled());
+        assert!(!duplicate.is_cancelled());
+
+        assert!(client.remove_subscription("opaque-id").await);
+        assert!(first.is_cancelled());
+        assert!(!duplicate.is_cancelled());
     }
 
     #[tokio::test]

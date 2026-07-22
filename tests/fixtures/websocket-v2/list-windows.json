@@ -1,0 +1,23 @@
+{
+  "name": "two independent list windows",
+  "client": [
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "rounds:page-1",
+      "query": { "view": "Round/list", "take": 2, "skip": 0 },
+      "snapshot": { "enabled": true }
+    },
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "rounds:page-2",
+      "query": { "view": "Round/list", "take": 2, "skip": 2 },
+      "snapshot": { "enabled": true }
+    }
+  ],
+  "expectedKeys": {
+    "rounds:page-1": ["6", "5"],
+    "rounds:page-2": ["4", "3"]
+  }
+}

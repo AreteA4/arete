@@ -1,23 +1,17 @@
-use crate::frame::{
-    parse_snapshot_entities, Frame, Operation, SortConfig, SortOrder, SubscribedFrame,
-};
+use crate::error::AreteError;
+use crate::frame::{Mode, Operation, ServerFrame, SnapshotEntity, SortConfig, SortOrder};
+use crate::subscription::{canonical_subscription_identity, SnapshotOptions, SubscriptionQuery};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch, RwLock};
 
-/// Default maximum number of entries per view before LRU eviction kicks in.
-/// Set to 10,000 to provide a reasonable balance between memory usage and data retention.
 pub const DEFAULT_MAX_ENTRIES_PER_VIEW: usize = 10_000;
 
-/// Configuration for the SharedStore.
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
-    /// Maximum number of entries to keep per view. When exceeded, oldest entries
-    /// are evicted using LRU (Least Recently Used) strategy.
-    /// Set to `None` to disable size limiting (not recommended for long-running clients).
     pub max_entries_per_view: Option<usize>,
 }
 
@@ -29,89 +23,68 @@ impl Default for StoreConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SortKey {
-    sort_value: SortValue,
-    entity_key: String,
+#[derive(Debug, Default)]
+struct ViewData {
+    entities: HashMap<String, Value>,
+    access_order: VecDeque<String>,
 }
 
-impl PartialOrd for SortKey {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+impl ViewData {
+    fn insert(&mut self, key: String, value: Value) {
+        self.access_order.retain(|existing| existing != &key);
+        self.access_order.push_back(key.clone());
+        self.entities.insert(key, value);
+    }
+
+    fn remove(&mut self, key: &str) -> Option<Value> {
+        self.access_order.retain(|existing| existing != key);
+        self.entities.remove(key)
     }
 }
 
-impl Ord for SortKey {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.sort_value.cmp(&other.sort_value) {
-            Ordering::Equal => self.entity_key.cmp(&other.entity_key),
-            other => other,
-        }
-    }
+#[derive(Debug, Clone)]
+struct QueryData {
+    requested_identity: String,
+    effective_query: SubscriptionQuery,
+    snapshot_enabled: bool,
+    membership: Vec<String>,
+    mode: Option<Mode>,
+    sort: Option<SortConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SortValue {
-    Null,
-    Bool(bool),
-    Integer(i64),
-    String(String),
+#[derive(Debug)]
+struct SnapshotStage {
+    snapshot_id: String,
+    authoritative: bool,
+    mode: Mode,
+    entity: String,
+    key: Option<String>,
+    rows: Vec<SnapshotEntity>,
 }
 
-impl Ord for SortValue {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (SortValue::Null, SortValue::Null) => Ordering::Equal,
-            (SortValue::Null, _) => Ordering::Less,
-            (_, SortValue::Null) => Ordering::Greater,
-            (SortValue::Bool(a), SortValue::Bool(b)) => a.cmp(b),
-            (SortValue::Integer(a), SortValue::Integer(b)) => a.cmp(b),
-            (SortValue::String(a), SortValue::String(b)) => a.cmp(b),
-            (SortValue::Integer(_), SortValue::String(_)) => Ordering::Less,
-            (SortValue::String(_), SortValue::Integer(_)) => Ordering::Greater,
-            (SortValue::Bool(_), _) => Ordering::Less,
-            (_, SortValue::Bool(_)) => Ordering::Greater,
-        }
-    }
-}
-
-impl PartialOrd for SortValue {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-fn extract_sort_value(entity: &Value, field_path: &[String]) -> SortValue {
-    let mut current = entity;
-    for segment in field_path {
-        match current.get(segment) {
-            Some(v) => current = v,
-            None => return SortValue::Null,
-        }
-    }
-
-    match current {
-        Value::Null => SortValue::Null,
-        Value::Bool(b) => SortValue::Bool(*b),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                SortValue::Integer(i)
-            } else if let Some(f) = n.as_f64() {
-                SortValue::Integer(f as i64)
+impl SnapshotStage {
+    fn append(&mut self, rows: Vec<SnapshotEntity>) {
+        for row in rows {
+            if let Some(existing) = self
+                .rows
+                .iter_mut()
+                .find(|existing| existing.key == row.key)
+            {
+                existing.data = row.data;
             } else {
-                SortValue::Null
+                self.rows.push(row);
             }
         }
-        Value::String(s) => SortValue::String(s.clone()),
-        _ => SortValue::Null,
     }
 }
 
-struct ViewData {
-    entities: HashMap<String, serde_json::Value>,
-    access_order: VecDeque<String>,
-    sort_config: Option<SortConfig>,
-    sorted_keys: BTreeMap<SortKey, ()>,
+#[derive(Debug, Default)]
+struct StoreState {
+    views: HashMap<String, ViewData>,
+    queries: HashMap<String, QueryData>,
+    query_ids: HashMap<String, String>,
+    snapshots: HashMap<String, SnapshotStage>,
+    ready: HashSet<String>,
 }
 
 pub fn deep_merge_with_append(
@@ -126,7 +99,7 @@ pub fn deep_merge_with_append(
                 let field_path = if current_path.is_empty() {
                     key.clone()
                 } else {
-                    format!("{}.{}", current_path, key)
+                    format!("{current_path}.{key}")
                 };
                 match target_map.get_mut(key) {
                     Some(target_value) => {
@@ -138,189 +111,32 @@ pub fn deep_merge_with_append(
                 }
             }
         }
-        (Value::Array(target_arr), Value::Array(patch_arr))
-            if append_paths.contains(&current_path.to_string()) =>
+        (Value::Array(target_array), Value::Array(patch_array))
+            if append_paths.iter().any(|path| path == current_path) =>
         {
-            target_arr.extend(patch_arr.iter().cloned());
+            target_array.extend(patch_array.iter().cloned());
         }
-        (target, patch) => {
-            *target = patch.clone();
-        }
+        (target, patch) => *target = patch.clone(),
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct StoreUpdate {
+    pub subscription_id: String,
     pub view: String,
     pub key: String,
     pub operation: Operation,
-    pub data: Option<serde_json::Value>,
-    pub previous: Option<serde_json::Value>,
-    /// The raw patch data for Patch operations (before merging into full state).
-    /// This allows consumers to see exactly what fields changed without diffing.
-    pub patch: Option<serde_json::Value>,
+    pub data: Option<Value>,
+    pub previous: Option<Value>,
+    pub patch: Option<Value>,
 }
 
 pub struct SharedStore {
-    views: Arc<RwLock<HashMap<String, ViewData>>>,
-    view_configs: Arc<RwLock<HashMap<String, SortConfig>>>,
+    state: Arc<RwLock<StoreState>>,
     updates_tx: broadcast::Sender<StoreUpdate>,
-    ready_views: Arc<RwLock<HashSet<String>>>,
     ready_tx: watch::Sender<HashSet<String>>,
     ready_rx: watch::Receiver<HashSet<String>>,
     config: StoreConfig,
-}
-
-impl ViewData {
-    fn new() -> Self {
-        Self {
-            entities: HashMap::new(),
-            access_order: VecDeque::new(),
-            sort_config: None,
-            sorted_keys: BTreeMap::new(),
-        }
-    }
-
-    fn with_sort_config(sort_config: SortConfig) -> Self {
-        Self {
-            entities: HashMap::new(),
-            access_order: VecDeque::new(),
-            sort_config: Some(sort_config),
-            sorted_keys: BTreeMap::new(),
-        }
-    }
-
-    fn set_sort_config(&mut self, config: SortConfig) {
-        if self.sort_config.is_some() {
-            return;
-        }
-        self.sort_config = Some(config);
-        self.rebuild_sorted_keys();
-    }
-
-    fn rebuild_sorted_keys(&mut self) {
-        self.sorted_keys.clear();
-        if let Some(ref config) = self.sort_config {
-            for (key, value) in &self.entities {
-                let sort_value = extract_sort_value(value, &config.field);
-                let sort_key = SortKey {
-                    sort_value,
-                    entity_key: key.clone(),
-                };
-                self.sorted_keys.insert(sort_key, ());
-            }
-        }
-        self.access_order.clear();
-    }
-
-    fn touch(&mut self, key: &str) {
-        if self.sort_config.is_some() {
-            return;
-        }
-        self.access_order.retain(|k| k != key);
-        self.access_order.push_back(key.to_string());
-    }
-
-    fn insert(&mut self, key: String, value: serde_json::Value) {
-        if let Some(ref config) = self.sort_config {
-            if let Some(old_value) = self.entities.get(&key) {
-                let old_sort_value = extract_sort_value(old_value, &config.field);
-                let old_sort_key = SortKey {
-                    sort_value: old_sort_value,
-                    entity_key: key.clone(),
-                };
-                self.sorted_keys.remove(&old_sort_key);
-            }
-
-            let sort_value = extract_sort_value(&value, &config.field);
-            let sort_key = SortKey {
-                sort_value,
-                entity_key: key.clone(),
-            };
-            self.sorted_keys.insert(sort_key, ());
-        } else if !self.entities.contains_key(&key) {
-            self.access_order.push_back(key.clone());
-        } else {
-            self.touch(&key);
-        }
-        self.entities.insert(key, value);
-    }
-
-    fn remove(&mut self, key: &str) -> Option<serde_json::Value> {
-        if let Some(ref config) = self.sort_config {
-            if let Some(value) = self.entities.get(key) {
-                let sort_value = extract_sort_value(value, &config.field);
-                let sort_key = SortKey {
-                    sort_value,
-                    entity_key: key.to_string(),
-                };
-                self.sorted_keys.remove(&sort_key);
-            }
-        } else {
-            self.access_order.retain(|k| k != key);
-        }
-        self.entities.remove(key)
-    }
-
-    fn evict_oldest(&mut self) -> Option<String> {
-        if self.sort_config.is_some() {
-            if let Some((sort_key, _)) = self
-                .sorted_keys
-                .iter()
-                .next_back()
-                .map(|(k, v)| (k.clone(), *v))
-            {
-                self.sorted_keys.remove(&sort_key);
-                self.entities.remove(&sort_key.entity_key);
-                return Some(sort_key.entity_key);
-            }
-            return None;
-        }
-
-        if let Some(oldest_key) = self.access_order.pop_front() {
-            self.entities.remove(&oldest_key);
-            Some(oldest_key)
-        } else {
-            None
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.entities.len()
-    }
-
-    #[allow(dead_code)]
-    fn ordered_keys(&self) -> Vec<String> {
-        if let Some(ref config) = self.sort_config {
-            let keys: Vec<String> = self
-                .sorted_keys
-                .keys()
-                .map(|sk| sk.entity_key.clone())
-                .collect();
-            match config.order {
-                SortOrder::Asc => keys,
-                SortOrder::Desc => keys.into_iter().rev().collect(),
-            }
-        } else {
-            self.entities.keys().cloned().collect()
-        }
-    }
-
-    fn ordered_values(&self) -> Vec<serde_json::Value> {
-        if let Some(ref config) = self.sort_config {
-            let values: Vec<serde_json::Value> = self
-                .sorted_keys
-                .keys()
-                .filter_map(|sk| self.entities.get(&sk.entity_key).cloned())
-                .collect();
-            match config.order {
-                SortOrder::Asc => values,
-                SortOrder::Desc => values.into_iter().rev().collect(),
-            }
-        } else {
-            self.entities.values().cloned().collect()
-        }
-    }
 }
 
 impl SharedStore {
@@ -332,279 +148,751 @@ impl SharedStore {
         let (updates_tx, _) = broadcast::channel(1000);
         let (ready_tx, ready_rx) = watch::channel(HashSet::new());
         Self {
-            views: Arc::new(RwLock::new(HashMap::new())),
-            view_configs: Arc::new(RwLock::new(HashMap::new())),
+            state: Arc::new(RwLock::new(StoreState::default())),
             updates_tx,
-            ready_views: Arc::new(RwLock::new(HashSet::new())),
             ready_tx,
             ready_rx,
             config,
         }
     }
 
-    fn enforce_max_entries(&self, view_data: &mut ViewData) {
-        if let Some(max) = self.config.max_entries_per_view {
-            while view_data.len() > max {
-                if let Some(evicted_key) = view_data.evict_oldest() {
-                    tracing::debug!("evicted oldest entry: {}", evicted_key);
-                }
+    pub async fn register_subscription(
+        &self,
+        subscription_id: &str,
+        query: SubscriptionQuery,
+        snapshot_enabled: bool,
+    ) -> Result<(), AreteError> {
+        let identity = canonical_subscription_identity(
+            &query,
+            &SnapshotOptions {
+                enabled: snapshot_enabled,
+            },
+        )?;
+        let mut state = self.state.write().await;
+        if let Some(existing) = state.queries.get_mut(subscription_id) {
+            if existing.requested_identity != identity {
+                return Err(protocol_error(
+                    Some(subscription_id),
+                    "subscriptionId was reused for a different query",
+                ));
+            }
+            existing.snapshot_enabled = snapshot_enabled;
+            return Ok(());
+        }
+        state
+            .query_ids
+            .insert(identity.clone(), subscription_id.to_string());
+        state.queries.insert(
+            subscription_id.to_string(),
+            QueryData {
+                requested_identity: identity,
+                effective_query: query,
+                snapshot_enabled,
+                membership: Vec::new(),
+                mode: None,
+                sort: None,
+            },
+        );
+        Ok(())
+    }
+
+    pub async fn begin_refresh(&self, subscription_id: &str) {
+        self.state.write().await.snapshots.remove(subscription_id);
+    }
+
+    pub async fn unregister_subscription(&self, subscription_id: &str) {
+        let mut state = self.state.write().await;
+        if let Some(query) = state.queries.remove(subscription_id) {
+            state.query_ids.remove(&query.requested_identity);
+        }
+        state.snapshots.remove(subscription_id);
+        if state.ready.remove(subscription_id) {
+            let _ = self.ready_tx.send(state.ready.clone());
+        }
+    }
+
+    pub async fn apply_frame(&self, frame: ServerFrame) -> Result<(), AreteError> {
+        match frame {
+            ServerFrame::Subscribed {
+                subscription_id,
+                query,
+                mode,
+                sort,
+                ..
+            } => {
+                self.apply_subscribed(subscription_id, query, mode, sort)
+                    .await
+            }
+            ServerFrame::Unsubscribed {
+                subscription_id, ..
+            } => {
+                self.unregister_subscription(&subscription_id).await;
+                Ok(())
+            }
+            ServerFrame::Snapshot {
+                subscription_id,
+                snapshot_id,
+                authoritative,
+                mode,
+                entity,
+                key,
+                data,
+                complete,
+                ..
+            } => {
+                self.apply_snapshot(
+                    subscription_id,
+                    snapshot_id,
+                    authoritative,
+                    mode,
+                    entity,
+                    key,
+                    data,
+                    complete,
+                )
+                .await
+            }
+            ServerFrame::Upsert {
+                subscription_id,
+                entity,
+                key,
+                data,
+                ..
+            } => {
+                self.apply_live(
+                    subscription_id,
+                    entity,
+                    Operation::Upsert,
+                    key,
+                    data,
+                    vec![],
+                )
+                .await
+            }
+            ServerFrame::Patch {
+                subscription_id,
+                entity,
+                key,
+                data,
+                append,
+                ..
+            } => {
+                self.apply_live(subscription_id, entity, Operation::Patch, key, data, append)
+                    .await
+            }
+            ServerFrame::Remove {
+                subscription_id,
+                entity,
+                key,
+                data,
+                ..
+            } => {
+                self.apply_live(
+                    subscription_id,
+                    entity,
+                    Operation::Remove,
+                    key,
+                    data,
+                    vec![],
+                )
+                .await
+            }
+            ServerFrame::Delete {
+                subscription_id,
+                entity,
+                key,
+                data,
+                ..
+            } => {
+                self.apply_live(
+                    subscription_id,
+                    entity,
+                    Operation::Delete,
+                    key,
+                    data,
+                    vec![],
+                )
+                .await
             }
         }
     }
 
-    pub async fn apply_frame(&self, frame: Frame) {
-        let view_path = &frame.entity;
-        tracing::debug!(
-            "apply_frame: view={}, key={}, op={}",
-            view_path,
-            frame.key,
-            frame.op,
-        );
-
-        let operation = frame.operation();
-
-        if operation == Operation::Snapshot {
-            self.apply_snapshot(&frame).await;
-            return;
+    async fn apply_subscribed(
+        &self,
+        subscription_id: String,
+        query: SubscriptionQuery,
+        mode: Mode,
+        sort: Option<SortConfig>,
+    ) -> Result<(), AreteError> {
+        let mark_ready = {
+            let mut state = self.state.write().await;
+            let Some(active) = state.queries.get_mut(&subscription_id) else {
+                return Err(protocol_error(
+                    Some(&subscription_id),
+                    "received subscribed acknowledgement for an unknown subscriptionId",
+                ));
+            };
+            if active.effective_query.view != query.view {
+                return Err(protocol_error(
+                    Some(&subscription_id),
+                    "server acknowledgement changed query.view",
+                ));
+            }
+            active.effective_query = query;
+            active.mode = Some(mode);
+            active.sort = sort;
+            !active.snapshot_enabled
+        };
+        if mark_ready {
+            self.mark_subscription_ready(&subscription_id).await;
         }
+        Ok(())
+    }
 
-        let sort_config = self.view_configs.read().await.get(view_path).cloned();
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_snapshot(
+        &self,
+        subscription_id: String,
+        snapshot_id: String,
+        authoritative: bool,
+        mode: Mode,
+        entity: String,
+        key: Option<String>,
+        rows: Vec<SnapshotEntity>,
+        complete: bool,
+    ) -> Result<(), AreteError> {
+        let completed = {
+            let mut state = self.state.write().await;
+            let Some(query) = state.queries.get(&subscription_id) else {
+                return Err(protocol_error(
+                    Some(&subscription_id),
+                    "received snapshot for an unknown subscriptionId",
+                ));
+            };
+            if query.effective_query.view != entity {
+                return Err(protocol_error(
+                    Some(&subscription_id),
+                    "snapshot entity does not match the acknowledged query.view",
+                ));
+            }
 
-        let mut views = self.views.write().await;
-        let view_data = views.entry(view_path.to_string()).or_insert_with(|| {
-            if let Some(config) = sort_config {
-                ViewData::with_sort_config(config)
+            if let Some(stage) = state.snapshots.get(&subscription_id) {
+                if stage.snapshot_id != snapshot_id
+                    || stage.authoritative != authoritative
+                    || stage.mode != mode
+                    || stage.entity != entity
+                    || stage.key != key
+                {
+                    return Err(protocol_error(
+                        Some(&subscription_id),
+                        "snapshot batches changed identity or metadata before completion",
+                    ));
+                }
             } else {
-                ViewData::new()
+                state.snapshots.insert(
+                    subscription_id.clone(),
+                    SnapshotStage {
+                        snapshot_id,
+                        authoritative,
+                        mode,
+                        entity,
+                        key,
+                        rows: Vec::new(),
+                    },
+                );
             }
-        });
-
-        let previous = view_data.entities.get(&frame.key).cloned();
-
-        let (current, patch) = match operation {
-            Operation::Upsert | Operation::Create => {
-                view_data.insert(frame.key.clone(), frame.data.clone());
-                self.enforce_max_entries(view_data);
-                (Some(frame.data), None)
-            }
-            Operation::Patch => {
-                let raw_patch = frame.data.clone();
-                let entry = view_data
-                    .entities
-                    .entry(frame.key.clone())
-                    .or_insert_with(|| serde_json::json!({}));
-                deep_merge_with_append(entry, &frame.data, &frame.append, "");
-                let merged = entry.clone();
-                view_data.touch(&frame.key);
-                self.enforce_max_entries(view_data);
-                (Some(merged), Some(raw_patch))
-            }
-            Operation::Delete => {
-                view_data.remove(&frame.key);
-                (None, None)
-            }
-            Operation::Snapshot | Operation::Subscribed => unreachable!(),
+            state
+                .snapshots
+                .get_mut(&subscription_id)
+                .expect("snapshot stage inserted")
+                .append(rows);
+            complete.then(|| {
+                state
+                    .snapshots
+                    .remove(&subscription_id)
+                    .expect("completed snapshot stage exists")
+            })
         };
 
-        let _ = self.updates_tx.send(StoreUpdate {
-            view: view_path.to_string(),
-            key: frame.key,
-            operation,
-            data: current,
-            previous,
-            patch,
-        });
-
-        self.mark_view_ready(view_path).await;
+        if let Some(stage) = completed {
+            self.commit_snapshot(&subscription_id, stage).await?;
+        }
+        Ok(())
     }
 
-    async fn apply_snapshot(&self, frame: &Frame) {
-        let view_path = &frame.entity;
-        let snapshot_entities = parse_snapshot_entities(&frame.data);
+    async fn commit_snapshot(
+        &self,
+        subscription_id: &str,
+        stage: SnapshotStage,
+    ) -> Result<(), AreteError> {
+        let mut updates = Vec::new();
+        {
+            let mut state = self.state.write().await;
+            let old_membership = state
+                .queries
+                .get(subscription_id)
+                .ok_or_else(|| {
+                    protocol_error(
+                        Some(subscription_id),
+                        "subscription ended before its snapshot completed",
+                    )
+                })?
+                .membership
+                .clone();
 
-        tracing::debug!(
-            "apply_snapshot: view={}, count={}",
-            view_path,
-            snapshot_entities.len()
-        );
-
-        let sort_config = self.view_configs.read().await.get(view_path).cloned();
-
-        let mut views = self.views.write().await;
-        let view_data = views.entry(view_path.to_string()).or_insert_with(|| {
-            if let Some(config) = sort_config {
-                ViewData::with_sort_config(config)
-            } else {
-                ViewData::new()
+            let mut snapshot_keys = Vec::with_capacity(stage.rows.len());
+            for row in stage.rows {
+                snapshot_keys.push(row.key.clone());
+                let view = state.views.entry(stage.entity.clone()).or_default();
+                let previous = view.entities.get(&row.key).cloned();
+                view.insert(row.key.clone(), row.data.clone());
+                updates.push(StoreUpdate {
+                    subscription_id: subscription_id.to_string(),
+                    view: stage.entity.clone(),
+                    key: row.key,
+                    operation: Operation::Upsert,
+                    data: Some(row.data),
+                    previous,
+                    patch: None,
+                });
             }
-        });
 
-        for entity in snapshot_entities {
-            let previous = view_data.entities.get(&entity.key).cloned();
-            view_data.insert(entity.key.clone(), entity.data.clone());
+            let query = state
+                .queries
+                .get_mut(subscription_id)
+                .expect("query checked above");
+            if stage.authoritative {
+                query.membership = snapshot_keys.clone();
+            } else {
+                for key in snapshot_keys {
+                    if !query.membership.contains(&key) {
+                        query.membership.push(key);
+                    }
+                }
+            }
 
-            let _ = self.updates_tx.send(StoreUpdate {
-                view: view_path.to_string(),
-                key: entity.key,
-                operation: Operation::Upsert,
-                data: Some(entity.data),
-                previous,
-                patch: None,
-            });
+            if stage.authoritative {
+                let retained: HashSet<&str> = query.membership.iter().map(String::as_str).collect();
+                let removed: Vec<String> = old_membership
+                    .into_iter()
+                    .filter(|key| !retained.contains(key.as_str()))
+                    .collect();
+                for key in &removed {
+                    updates.push(StoreUpdate {
+                        subscription_id: subscription_id.to_string(),
+                        view: stage.entity.clone(),
+                        key: key.clone(),
+                        operation: Operation::Remove,
+                        data: None,
+                        previous: state
+                            .views
+                            .get(&stage.entity)
+                            .and_then(|view| view.entities.get(key).cloned()),
+                        patch: None,
+                    });
+                }
+                prune_unreferenced(&mut state, &stage.entity, &removed);
+            }
+            enforce_max_entries(&mut state, &stage.entity, self.config.max_entries_per_view);
         }
 
-        self.enforce_max_entries(view_data);
-        drop(views);
-        self.mark_view_ready(view_path).await;
+        for update in updates {
+            let _ = self.updates_tx.send(update);
+        }
+        self.mark_subscription_ready(subscription_id).await;
+        Ok(())
     }
 
-    pub async fn mark_view_ready(&self, view: &str) {
-        let mut ready = self.ready_views.write().await;
-        if ready.insert(view.to_string()) {
-            let _ = self.ready_tx.send(ready.clone());
+    async fn apply_live(
+        &self,
+        subscription_id: String,
+        entity: String,
+        operation: Operation,
+        key: String,
+        data: Value,
+        append: Vec<String>,
+    ) -> Result<(), AreteError> {
+        let mut updates = Vec::new();
+        {
+            let mut state = self.state.write().await;
+            let Some(query) = state.queries.get(&subscription_id) else {
+                return Err(protocol_error(
+                    Some(&subscription_id),
+                    "received live frame for an unknown subscriptionId",
+                ));
+            };
+            if query.effective_query.view != entity {
+                return Err(protocol_error(
+                    Some(&subscription_id),
+                    "live frame entity does not match the acknowledged query.view",
+                ));
+            }
+
+            match operation {
+                Operation::Upsert => {
+                    let view = state.views.entry(entity.clone()).or_default();
+                    let previous = view.entities.get(&key).cloned();
+                    view.insert(key.clone(), data.clone());
+                    let query = state
+                        .queries
+                        .get_mut(&subscription_id)
+                        .expect("query checked above");
+                    if !query.membership.contains(&key) {
+                        query.membership.insert(0, key.clone());
+                    }
+                    updates.push(StoreUpdate {
+                        subscription_id: subscription_id.clone(),
+                        view: entity.clone(),
+                        key,
+                        operation,
+                        data: Some(data),
+                        previous,
+                        patch: None,
+                    });
+                }
+                Operation::Patch => {
+                    let view = state.views.entry(entity.clone()).or_default();
+                    let previous = view.entities.get(&key).cloned();
+                    let entry = view
+                        .entities
+                        .entry(key.clone())
+                        .or_insert_with(|| Value::Object(Default::default()));
+                    deep_merge_with_append(entry, &data, &append, "");
+                    let merged = entry.clone();
+                    view.access_order.retain(|existing| existing != &key);
+                    view.access_order.push_back(key.clone());
+                    let query = state
+                        .queries
+                        .get_mut(&subscription_id)
+                        .expect("query checked above");
+                    if !query.membership.contains(&key) {
+                        query.membership.insert(0, key.clone());
+                    }
+                    updates.push(StoreUpdate {
+                        subscription_id: subscription_id.clone(),
+                        view: entity.clone(),
+                        key,
+                        operation,
+                        data: Some(merged),
+                        previous,
+                        patch: Some(data),
+                    });
+                }
+                Operation::Remove => {
+                    let query = state
+                        .queries
+                        .get_mut(&subscription_id)
+                        .expect("query checked above");
+                    query.membership.retain(|member| member != &key);
+                    updates.push(StoreUpdate {
+                        subscription_id: subscription_id.clone(),
+                        view: entity.clone(),
+                        key: key.clone(),
+                        operation,
+                        data: None,
+                        previous: state
+                            .views
+                            .get(&entity)
+                            .and_then(|view| view.entities.get(&key).cloned()),
+                        patch: None,
+                    });
+                }
+                Operation::Delete => {
+                    let previous = state
+                        .views
+                        .get_mut(&entity)
+                        .and_then(|view| view.remove(&key));
+                    let mut affected = Vec::new();
+                    for (id, query) in &mut state.queries {
+                        if query.effective_query.view == entity && query.membership.contains(&key) {
+                            query.membership.retain(|member| member != &key);
+                            affected.push(id.clone());
+                        }
+                    }
+                    if affected.is_empty() && previous.is_some() {
+                        affected.push(subscription_id.clone());
+                    }
+                    for id in affected {
+                        updates.push(StoreUpdate {
+                            subscription_id: id,
+                            view: entity.clone(),
+                            key: key.clone(),
+                            operation,
+                            data: None,
+                            previous: previous.clone(),
+                            patch: None,
+                        });
+                    }
+                }
+            }
+            state.ready.insert(subscription_id.clone());
+            enforce_max_entries(&mut state, &entity, self.config.max_entries_per_view);
+            let _ = self.ready_tx.send(state.ready.clone());
+        }
+        for update in updates {
+            let _ = self.updates_tx.send(update);
+        }
+        Ok(())
+    }
+
+    async fn mark_subscription_ready(&self, subscription_id: &str) {
+        let mut state = self.state.write().await;
+        if state.ready.insert(subscription_id.to_string()) {
+            let _ = self.ready_tx.send(state.ready.clone());
         }
     }
 
-    pub async fn wait_for_view_ready(&self, view: &str, timeout: std::time::Duration) -> bool {
-        if self.ready_views.read().await.contains(view) {
+    pub async fn wait_for_subscription_ready(
+        &self,
+        subscription_id: &str,
+        timeout: std::time::Duration,
+    ) -> bool {
+        if self.state.read().await.ready.contains(subscription_id) {
             return true;
         }
-
-        let mut rx = self.ready_rx.clone();
+        let mut receiver = self.ready_rx.clone();
         let deadline = tokio::time::Instant::now() + timeout;
-
         loop {
-            let timeout_remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if timeout_remaining.is_zero() {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
                 return false;
             }
-
             tokio::select! {
-                result = rx.changed() => {
-                    if result.is_err() {
+                changed = receiver.changed() => {
+                    if changed.is_err() {
                         return false;
                     }
-                    if rx.borrow().contains(view) {
+                    if receiver.borrow().contains(subscription_id) {
                         return true;
                     }
                 }
-                _ = tokio::time::sleep(timeout_remaining) => {
-                    return false;
-                }
+                _ = tokio::time::sleep(remaining) => return false,
             }
         }
     }
 
+    pub async fn get_for_subscription<T: DeserializeOwned>(
+        &self,
+        subscription_id: &str,
+        key: &str,
+    ) -> Option<T> {
+        let state = self.state.read().await;
+        let query = state.queries.get(subscription_id)?;
+        if !query.membership.iter().any(|member| member == key) {
+            return None;
+        }
+        state
+            .views
+            .get(&query.effective_query.view)?
+            .entities
+            .get(key)
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+    }
+
+    pub async fn list_for_subscription<T: DeserializeOwned>(
+        &self,
+        subscription_id: &str,
+    ) -> Vec<T> {
+        let state = self.state.read().await;
+        list_query_raw(&state, subscription_id)
+            .into_iter()
+            .filter_map(|value| serde_json::from_value(value).ok())
+            .collect()
+    }
+
+    pub async fn keys_for_subscription(&self, subscription_id: &str) -> Vec<String> {
+        self.state
+            .read()
+            .await
+            .queries
+            .get(subscription_id)
+            .map(|query| query.membership.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn get_for_query_sync<T: DeserializeOwned>(
+        &self,
+        query: &SubscriptionQuery,
+        key: &str,
+    ) -> Option<T> {
+        let identity = canonical_subscription_identity(query, &SnapshotOptions::default()).ok()?;
+        let state = self.state.try_read().ok()?;
+        let subscription_id = state.query_ids.get(&identity)?;
+        let query = state.queries.get(subscription_id)?;
+        if !query.membership.iter().any(|member| member == key) {
+            return None;
+        }
+        state
+            .views
+            .get(&query.effective_query.view)?
+            .entities
+            .get(key)
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+    }
+
+    pub fn list_for_query_sync<T: DeserializeOwned>(&self, query: &SubscriptionQuery) -> Vec<T> {
+        let Ok(identity) = canonical_subscription_identity(query, &SnapshotOptions::default())
+        else {
+            return Vec::new();
+        };
+        let Ok(state) = self.state.try_read() else {
+            return Vec::new();
+        };
+        let Some(subscription_id) = state.query_ids.get(&identity) else {
+            return Vec::new();
+        };
+        list_query_raw(&state, subscription_id)
+            .into_iter()
+            .filter_map(|value| serde_json::from_value(value).ok())
+            .collect()
+    }
+
     pub async fn get<T: DeserializeOwned>(&self, view: &str, key: &str) -> Option<T> {
-        let views = self.views.read().await;
-        views
+        self.state
+            .read()
+            .await
+            .views
             .get(view)?
             .entities
             .get(key)
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
     }
 
     pub async fn list<T: DeserializeOwned>(&self, view: &str) -> Vec<T> {
-        let views = self.views.read().await;
-        views
+        self.state
+            .read()
+            .await
+            .views
             .get(view)
-            .map(|view_data| {
-                view_data
-                    .ordered_values()
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value(v).ok())
+            .map(|view| {
+                view.entities
+                    .values()
+                    .cloned()
+                    .filter_map(|value| serde_json::from_value(value).ok())
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    pub async fn all_raw(&self, view: &str) -> HashMap<String, serde_json::Value> {
-        let views = self.views.read().await;
-        views
+    pub async fn all_raw(&self, view: &str) -> HashMap<String, Value> {
+        self.state
+            .read()
+            .await
+            .views
             .get(view)
-            .map(|view_data| view_data.entities.clone())
-            .unwrap_or_default()
-    }
-
-    /// Synchronously get a single entity by key.
-    ///
-    /// Returns `None` if the view doesn't exist or the key is not found.
-    /// This is a non-blocking operation using `try_read()`.
-    ///
-    /// Use this in synchronous contexts where you can't await.
-    /// If the lock is held by another task, returns `None`.
-    pub fn get_sync<T: DeserializeOwned>(&self, view: &str, key: &str) -> Option<T> {
-        let views = self.views.try_read().ok()?;
-        views
-            .get(view)?
-            .entities
-            .get(key)
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-    }
-
-    /// Synchronously get all entities from a view.
-    ///
-    /// Returns an empty vector if the view doesn't exist.
-    /// This is a non-blocking operation using `try_read()`.
-    ///
-    /// Use this in synchronous contexts where you can't await.
-    /// If the lock is held by another task, returns an empty vector.
-    pub fn list_sync<T: DeserializeOwned>(&self, view: &str) -> Vec<T> {
-        let Some(views) = self.views.try_read().ok() else {
-            return Vec::new();
-        };
-        views
-            .get(view)
-            .map(|view_data| {
-                view_data
-                    .ordered_values()
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value(v).ok())
-                    .collect()
-            })
+            .map(|view| view.entities.clone())
             .unwrap_or_default()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<StoreUpdate> {
         self.updates_tx.subscribe()
     }
+}
 
-    pub async fn apply_subscribed_frame(&self, frame: SubscribedFrame) {
-        let view_path = &frame.view;
-        tracing::debug!(
-            "apply_subscribed_frame: view={}, mode={:?}, sort={:?}",
-            view_path,
-            frame.mode,
-            frame.sort,
-        );
+fn list_query_raw(state: &StoreState, subscription_id: &str) -> Vec<Value> {
+    let Some(query) = state.queries.get(subscription_id) else {
+        return Vec::new();
+    };
+    let Some(view) = state.views.get(&query.effective_query.view) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(String, Value)> = query
+        .membership
+        .iter()
+        .filter_map(|key| {
+            view.entities
+                .get(key)
+                .cloned()
+                .map(|value| (key.clone(), value))
+        })
+        .collect();
+    if let Some(sort) = &query.sort {
+        rows.sort_by(|(left_key, left), (right_key, right)| {
+            let order =
+                compare_at_path(left, right, &sort.field).then_with(|| left_key.cmp(right_key));
+            match sort.order {
+                SortOrder::Asc => order,
+                SortOrder::Desc => order.reverse(),
+            }
+        });
+    }
+    rows.into_iter().map(|(_, value)| value).collect()
+}
 
-        if let Some(sort_config) = frame.sort {
-            self.view_configs
-                .write()
-                .await
-                .insert(view_path.to_string(), sort_config.clone());
+fn compare_at_path(left: &Value, right: &Value, path: &[String]) -> Ordering {
+    let left = value_at_path(left, path);
+    let right = value_at_path(right, path);
+    match (left, right) {
+        (Some(Value::Null) | None, Some(Value::Null) | None) => Ordering::Equal,
+        (Some(Value::Null) | None, _) => Ordering::Less,
+        (_, Some(Value::Null) | None) => Ordering::Greater,
+        (Some(Value::Bool(left)), Some(Value::Bool(right))) => left.cmp(right),
+        (Some(Value::Number(left)), Some(Value::Number(right))) => left
+            .as_f64()
+            .partial_cmp(&right.as_f64())
+            .unwrap_or(Ordering::Equal),
+        (Some(Value::String(left)), Some(Value::String(right))) => left.cmp(right),
+        (Some(left), Some(right)) => left.to_string().cmp(&right.to_string()),
+    }
+}
 
-            let mut views = self.views.write().await;
-            if let Some(view_data) = views.get_mut(view_path) {
-                view_data.set_sort_config(sort_config);
+fn value_at_path<'a>(value: &'a Value, path: &[String]) -> Option<&'a Value> {
+    path.iter()
+        .try_fold(value, |current, segment| current.get(segment))
+}
+
+fn prune_unreferenced(state: &mut StoreState, view: &str, candidates: &[String]) {
+    let referenced: HashSet<&str> = state
+        .queries
+        .values()
+        .filter(|query| query.effective_query.view == view)
+        .flat_map(|query| query.membership.iter().map(String::as_str))
+        .collect();
+    if let Some(view_data) = state.views.get_mut(view) {
+        for key in candidates {
+            if !referenced.contains(key.as_str()) {
+                view_data.remove(key);
             }
         }
     }
+}
 
-    pub async fn get_view_sort_config(&self, view: &str) -> Option<SortConfig> {
-        self.view_configs.read().await.get(view).cloned()
+fn enforce_max_entries(state: &mut StoreState, view: &str, max: Option<usize>) {
+    let Some(max) = max else {
+        return;
+    };
+    let referenced: HashSet<String> = state
+        .queries
+        .values()
+        .filter(|query| query.effective_query.view == view)
+        .flat_map(|query| query.membership.iter().cloned())
+        .collect();
+    let Some(view_data) = state.views.get_mut(view) else {
+        return;
+    };
+    while view_data.entities.len() > max {
+        let Some(index) = view_data
+            .access_order
+            .iter()
+            .position(|key| !referenced.contains(key))
+        else {
+            break;
+        };
+        let key = view_data
+            .access_order
+            .remove(index)
+            .expect("access order index exists");
+        view_data.entities.remove(&key);
     }
+}
 
-    pub async fn set_view_sort_config(&self, view: &str, config: SortConfig) {
-        self.view_configs
-            .write()
-            .await
-            .insert(view.to_string(), config.clone());
-
-        let mut views = self.views.write().await;
-        if let Some(view_data) = views.get_mut(view) {
-            view_data.set_sort_config(config);
-        }
+fn protocol_error(subscription_id: Option<&str>, message: &str) -> AreteError {
+    AreteError::Protocol {
+        message: message.to_string(),
+        subscription_id: subscription_id.map(str::to_string),
     }
 }
 
@@ -617,10 +905,8 @@ impl Default for SharedStore {
 impl Clone for SharedStore {
     fn clone(&self) -> Self {
         Self {
-            views: self.views.clone(),
-            view_configs: self.view_configs.clone(),
+            state: self.state.clone(),
             updates_tx: self.updates_tx.clone(),
-            ready_views: self.ready_views.clone(),
             ready_tx: self.ready_tx.clone(),
             ready_rx: self.ready_rx.clone(),
             config: self.config.clone(),

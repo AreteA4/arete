@@ -5,6 +5,7 @@ export { useAsyncRead, useInstructionMutation };
 export type {
   AsyncReadContext,
   AsyncReadKey,
+  AsyncReadStatus,
   UseAsyncReadOptions,
   UseAsyncReadResult,
 } from './use-async-read';
@@ -14,7 +15,10 @@ export type {
   MutationLifecycleEvent,
   MutationPhase,
   MutationReconciliationContext,
+  MutationReconcileFn,
+  MutationReconcileOverrides,
   MutationStatus,
+  ReconciliationRefreshTarget,
   UseMutationOptions,
   UseMutationResult,
 } from './use-mutation';

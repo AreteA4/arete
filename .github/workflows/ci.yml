@@ -97,6 +97,12 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Build standalone ORE stack
+        run: cargo build --manifest-path stacks/ore/Cargo.toml --locked
+
+      - name: Test standalone ORE stack
+        run: cargo test --manifest-path stacks/ore/Cargo.toml --locked
+
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
@@ -120,8 +126,22 @@ jobs:
       - name: Regenerate example SDKs
         run: bash ./scripts/generate-example-sdks.sh
 
-      - name: Check generated SDKs are committed
-        run: git diff --exit-code -- examples/ore-react/src/generated examples/ore-typescript/src/generated examples/ore-rust/src/generated
+      - name: Check generated SDKs and ORE AST are committed
+        run: |
+          if [[ -n "$(git status --porcelain -- stacks/ore/.arete examples/ore-react/src/generated examples/ore-typescript/src/generated examples/ore-rust/src/generated)" ]]; then
+            git status --short -- stacks/ore/.arete examples/ore-react/src/generated examples/ore-typescript/src/generated examples/ore-rust/src/generated
+            exit 1
+          fi
+
+      - name: Regenerate example SDKs a second time
+        run: bash ./scripts/generate-example-sdks.sh
+
+      - name: Check SDK generation is deterministic
+        run: |
+          if [[ -n "$(git status --porcelain -- stacks/ore/.arete examples/ore-react/src/generated examples/ore-typescript/src/generated examples/ore-rust/src/generated)" ]]; then
+            git status --short -- stacks/ore/.arete examples/ore-react/src/generated examples/ore-typescript/src/generated examples/ore-rust/src/generated
+            exit 1
+          fi
 
       - name: Install TypeScript example dependencies
         working-directory: examples/ore-typescript
@@ -173,6 +193,10 @@ jobs:
         working-directory: examples/ore-react
         run: npm run typecheck
 
+      - name: Lint
+        working-directory: examples/ore-react
+        run: npm run lint
+
       - name: Unit and component tests
         working-directory: examples/ore-react
         run: npm test
@@ -210,6 +234,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Test
         run: npm test
@@ -291,7 +318,15 @@ jobs:
 
       - name: Install dependencies
         working-directory: typescript/react
-        run: npm install ../core --no-save
+        run: npm ci && npm install ../core --no-save --package-lock=false
+
+      - name: Typecheck
+        working-directory: typescript/react
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: typescript/react
+        run: npm run lint
 
       - name: Build
         working-directory: typescript/react
@@ -300,6 +335,14 @@ jobs:
       - name: Test
         working-directory: typescript/react
         run: npm test
+
+      - name: Pack and public-export smoke
+        working-directory: typescript/react
+        run: |
+          npm pack --dry-run --json >/tmp/arete-react-pack.json
+          node --input-type=module -e "const sdk = await import('./dist/index.esm.js'); for (const name of ['AreteProvider', 'useArete', 'useAsyncRead', 'createProcessedSlotReconciliation', 'formatRawToUi', 'summarizeStatuses', 'isHostedAreteEndpoint']) { if (!(name in sdk)) throw new Error('Missing ESM export: ' + name); } for (const removed of ['useView', 'useEntity']) { if (removed in sdk) throw new Error('Removed ESM export still present: ' + removed); }"
+          node -e "const sdk = require('./dist/index.cjs'); for (const name of ['AreteProvider', 'useArete', 'useAsyncRead', 'createProcessedSlotReconciliation', 'formatRawToUi', 'summarizeStatuses', 'isHostedAreteEndpoint']) { if (!(name in sdk)) throw new Error('Missing CJS export: ' + name); } for (const removed of ['useView', 'useEntity']) { if (removed in sdk) throw new Error('Removed CJS export still present: ' + removed); }"
+          node -e "const plugin = require('./eslint-plugin.cjs'); if (!plugin.rules?.['fluent-hooks']) throw new Error('Missing fluent-hooks ESLint rule');"
 
   python:
     name: Python

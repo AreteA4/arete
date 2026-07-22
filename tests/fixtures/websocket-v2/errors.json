@@ -1,0 +1,49 @@
+{
+  "name": "protocol errors retain subscription identity",
+  "cases": [
+    {
+      "request": {
+        "type": "subscribe",
+        "protocolVersion": 1,
+        "subscriptionId": "bad-version",
+        "query": { "view": "Thing/list" }
+      },
+      "response": {
+        "type": "error",
+        "protocolVersion": 2,
+        "subscriptionId": "bad-version",
+        "code": "invalid-subscription",
+        "fatal": false
+      }
+    },
+    {
+      "request": {
+        "type": "subscribe",
+        "protocolVersion": 2,
+        "subscriptionId": "duplicate",
+        "query": { "view": "Thing/list" }
+      },
+      "response": {
+        "type": "error",
+        "protocolVersion": 2,
+        "subscriptionId": "duplicate",
+        "code": "duplicate-subscription-id",
+        "fatal": false
+      }
+    },
+    {
+      "request": {
+        "type": "unsubscribe",
+        "protocolVersion": 2,
+        "subscriptionId": "not-active"
+      },
+      "response": {
+        "type": "error",
+        "protocolVersion": 2,
+        "subscriptionId": "not-active",
+        "code": "unknown-subscription-id",
+        "fatal": false
+      }
+    }
+  ]
+}

@@ -104,12 +104,15 @@ INFO a4_server: Health monitoring enabled
 Once running, connect using any Arete SDK:
 
 ```typescript title="TypeScript"
-import { Arete } from "arete-react";
+import { Arete } from "@usearete/sdk";
+import { MY_STREAM_STACK } from "./generated/my-stream-stack";
 
-const stack = new Arete({
-  endpoint: "ws://localhost:8877",
+const stack = await Arete.connect(MY_STREAM_STACK, {
+  url: "ws://localhost:8877",
 });
 ```
+
+This local example assumes the server is explicitly configured for `allow_all`. Hosted browser deployments require a publishable key and should pass it through React as `<AreteProvider stack={MY_STREAM_STACK} auth={{ publishableKey }}>`.
 
 ```rust title="Rust"
 use a4_sdk::Arete;

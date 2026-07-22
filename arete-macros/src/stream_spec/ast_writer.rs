@@ -97,6 +97,7 @@ pub fn build_ast(
         sources_by_type,
         idls,
     ));
+    resolver_hooks_ast.sort_by(|left, right| left.account_type.cmp(&right.account_type));
     let instruction_hooks_ast = build_instruction_hooks_ast(
         pda_registrations,
         derive_from_mappings,

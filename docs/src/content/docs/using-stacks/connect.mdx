@@ -8,7 +8,7 @@ description: Add Arete to an existing project and stream live Solana data.
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 import Workflow from "../../../components/Workflow.astro";
 
-This page shows how to add Arete to an existing project and connect to a deployed stack. It uses the public **ORE mining stack** as the example — no account or API key required.
+This page shows how to add Arete to an existing project and connect to a deployed stack. It uses the hosted **ORE mining stack** as the example. Browser clients must authenticate with a publishable key; read-only viewing does not require a wallet.
 
 :::note[Does a stack exist for your program?]
 This guide is for connecting to a stack that's already deployed. If you want to stream data from your **own on-chain program**, you'll need to build a stack for it first — see [Build Your Own Stack](/building-stacks/workflow/).
@@ -30,40 +30,62 @@ If you're creating a new project and just want to see Arete working with the ORE
 ### React: Install
 
 ```bash
-npm install arete-react zustand
+npm install @usearete/react @usearete/sdk zod
+a4 install ore --ts \
+  --output ./src/generated/ore-stack.ts \
+  --package-name @usearete/react
+```
+
+Create `.env.local`:
+
+```bash
+VITE_ARETE_PUBLISHABLE_KEY=hspk_...
 ```
 
 ### React: Add to your app
 
 ```tsx
 // App.tsx
-import { AreteProvider, useArete } from "arete-react";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { AreteProvider, useArete } from "@usearete/react";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 
-function OreRounds() {
-  const { views, isConnected } = useArete(ORE_STREAM_STACK);
-  const { data: rounds, isLoading } = views.OreRound.latest.use({
-    take: 5,
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error("VITE_ARETE_PUBLISHABLE_KEY is required");
+
+function CurrentOreRound() {
+  const arete = useArete(ORE_STREAM_STACK);
+  const board = arete.views.OreBoard.state.use({
+    address: arete.addresses.board(),
   });
+  const roundId = board.data?.state.roundId;
+  const round = arete.views.OreRound.state.use(
+    roundId == null ? undefined : { roundId },
+  );
 
-  if (isLoading) return <div>Connecting...</div>;
+  if (arete.status === "error") {
+    return <button onClick={() => void arete.retry()}>Reconnect</button>;
+  }
+  if (board.status !== "ready" || round.status !== "ready") {
+    return <div>Connecting...</div>;
+  }
 
   return (
     <div>
-      <h1>Live ORE Mining Rounds {isConnected && "🟢"}</h1>
-      {rounds?.map((round) => (
-        <div key={round.id?.round_id}>
-          Round #{round.id?.round_id} — Motherlode: {round.state?.motherlode}
-        </div>
-      ))}
+      <h1>Live ORE Mining Round</h1>
+      <p>{arete.status === "connected" ? "Live" : arete.status}</p>
+      {arete.socketIssue && <p>{arete.socketIssue.message}</p>}
+      <p>
+        Round #{round.data?.id.roundId?.toString() ?? "..."} - Motherlode:{" "}
+        {round.data?.state.motherlode?.toString() ?? "..."}
+      </p>
     </div>
   );
 }
 
 export default function App() {
   return (
-    <AreteProvider websocketUrl="wss://ore.stack.arete.run">
-      <OreRounds />
+    <AreteProvider stack={ORE_STREAM_STACK} auth={{ publishableKey }}>
+      <CurrentOreRound />
     </AreteProvider>
   );
 }
@@ -82,6 +104,9 @@ npm run dev
 
 ```bash
 npm install @usearete/sdk
+a4 install ore --ts \
+  --output ./generated/ore-stack.ts \
+  --package-name @usearete/sdk
 ```
 
 ### TypeScript: Create a script
@@ -89,18 +114,19 @@ npm install @usearete/sdk
 ```typescript
 // stream.ts
 import { createSession } from "@usearete/sdk";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 
 async function main() {
-  const session = await createSession({
-    stacks: { ore: ORE_STREAM_STACK },
-  });
+  const session = await createSession(
+    { stacks: { ore: ORE_STREAM_STACK } },
+    { auth: { publishableKey: process.env.ARETE_PUBLISHABLE_KEY! } },
+  );
 
   for await (const update of session.stacks.ore.views.OreRound.latest.watch()) {
     if (update.type === "upsert") {
       const round = update.data;
-      console.log(`Round #${round.id?.round_id}`);
-      console.log(`  Motherlode: ${round.state?.motherlode}`);
+      console.log(`Round #${round.id.roundId}`);
+      console.log(`  Motherlode: ${round.state.motherlode}`);
     }
   }
 }
@@ -111,7 +137,7 @@ main().catch(console.error);
 ### TypeScript: Run it
 
 ```bash
-npx tsx stream.ts
+ARETE_PUBLISHABLE_KEY=hspk_... npx tsx stream.ts
 ```
 
 </TabItem>
@@ -156,20 +182,9 @@ cargo run
 </TabItem>
 <TabItem label="Browser (Raw WebSocket)">
 
-For quick inspection without any SDK, open your browser console and paste:
+Hosted WebSocket connections are authenticated with a short-lived token. A bare `new WebSocket("wss://ore.stack.arete.run")` call is not an unauthenticated shortcut. Browser applications should use `@usearete/react` with `auth={{ publishableKey }}` so the SDK performs the token exchange and refresh safely.
 
-```javascript
-const ws = new WebSocket("wss://ore.stack.arete.run");
-
-ws.onopen = () => {
-  ws.send(JSON.stringify({ type: "subscribe", view: "OreRound/latest" }));
-};
-
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  if (data.type === "upsert") console.log("Round update:", data.data);
-};
-```
+Use raw WebSocket code only against a self-hosted local server explicitly configured with `allow_all`, or after implementing the authenticated protocol described by your deployment.
 
 </TabItem>
 </Tabs>
@@ -195,7 +210,7 @@ You connected to a deployed Arete stack. The ORE stack watches the Solana blockc
   }
 ]} />
 
-The stack is public — just point your SDK at the WebSocket URL.
+The generated ORE definition contains the WebSocket and HTTP endpoints. The endpoint is publicly discoverable, but hosted connections still require authentication.
 
 ---
 
@@ -207,15 +222,16 @@ Insert cartridges under names you choose, then access them through `session.stac
 
 There are two ways to get a generated stack:
 
-**Pre-built for publicly deployed stacks (like ORE)** — We publish ready-to-use SDKs for both TypeScript and Rust:
+**Install a publicly deployed stack (like ORE)** - The CLI generates a deployment-pinned SDK and records its provenance:
 
 ```bash
-# TypeScript / React
-npm install arete-stacks
+a4 install ore --ts \
+  --output ./src/generated/ore-stack.ts \
+  --package-name @usearete/sdk
 ```
 
 ```typescript
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 ```
 
 ```toml
@@ -228,14 +244,15 @@ a4-stacks = "{{VERSION}}"
 use a4_stacks::ore::{OreStack, OreRound};
 ```
 
-**Generated from your own stack** — When you build a custom stack, use the CLI to generate an SDK for any language:
+**Generated from your own stack** - Build the stack AST first, then use the CLI to generate an SDK for any language:
 
 ```bash
-a4 sdk create typescript my-stack
-a4 sdk create rust my-stack
+cargo build
+a4 sdk create my-stack --ts
+a4 sdk create my-stack --rust
 ```
 
-Both approaches produce the same result: a generated stack definition that can be inserted into an Arete session.
+Both approaches produce a generated stack definition that can be inserted into an Arete session. Generated directories are output boundaries: edit the stack, IDL, or extension source and regenerate instead of hand-editing core, entry, extension copies, or `sdk-provenance.json`.
 
 For writes, prefer semantic `.prepare(...)` operations. They accept normal camelCase objects and derive or normalize protocol details before you call `session.execute(prepared)`. Use `program.raw.<idlInstruction>.build(...)` only as the exact IDL escape hatch; raw instruction names, account names, argument names, and nested objects preserve the IDL shape, including snake_case.
 

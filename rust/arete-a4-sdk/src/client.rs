@@ -3,14 +3,13 @@ use crate::config::{AreteConfig, ConnectionConfig};
 use crate::connection::{ConnectionManager, ConnectionState};
 use crate::entity::Stack;
 use crate::error::{AreteError, SocketIssue};
-use crate::frame::Frame;
 use crate::store::{SharedStore, StoreConfig};
 use crate::view::Views;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 
 /// Arete client with typed views access.
 ///
@@ -241,18 +240,8 @@ impl<S: Stack> AreteBuilder<S> {
             max_entries_per_view: config.max_entries_per_view,
         };
         let store = SharedStore::with_config(store_config);
-        let store_clone = store.clone();
-
-        let (frame_tx, mut frame_rx) = mpsc::channel::<Frame>(1000);
-
         let connection_config: ConnectionConfig = config.clone().into();
-        let connection = ConnectionManager::new(url, connection_config, frame_tx).await?;
-
-        tokio::spawn(async move {
-            while let Some(frame) = frame_rx.recv().await {
-                store_clone.apply_frame(frame).await;
-            }
-        });
+        let connection = ConnectionManager::new(url, connection_config, store.clone()).await?;
 
         let view_builder = crate::view::ViewBuilder::new(
             connection.clone(),

@@ -225,6 +225,12 @@ pub struct OreMinerRewards {
 pub struct OreMinerState {
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
     pub round_id: Option<Option<u64>>,
+    #[serde(default)]
+    pub deployed_per_square: Option<Option<Vec<serde_json::Value>>>,
+    #[serde(default)]
+    pub deployed_per_square_ui: Option<Option<Vec<serde_json::Value>>>,
+    #[serde(default)]
+    pub total_deployed: Option<Option<f64>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
     pub checkpoint_id: Option<Option<u64>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]

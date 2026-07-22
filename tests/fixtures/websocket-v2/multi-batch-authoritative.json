@@ -1,0 +1,30 @@
+{
+  "name": "multi-batch authoritative snapshot",
+  "server": [
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "things:all",
+      "snapshotId": "snapshot-things-1",
+      "authoritative": true,
+      "mode": "list",
+      "entity": "Thing/list",
+      "op": "snapshot",
+      "data": [
+        { "key": "three", "data": { "id": 3 } },
+        { "key": "two", "data": { "id": 2 } }
+      ],
+      "complete": false
+    },
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "things:all",
+      "snapshotId": "snapshot-things-1",
+      "authoritative": true,
+      "mode": "list",
+      "entity": "Thing/list",
+      "op": "snapshot",
+      "data": [{ "key": "one", "data": { "id": 1 } }],
+      "complete": true
+    }
+  ]
+}

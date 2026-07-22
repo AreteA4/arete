@@ -1,6 +1,17 @@
-export { AreteProvider, useAreteContext, useConnectionState, useView, useEntity } from './provider';
+export { AreteProvider, useAreteContext, useConnectionState } from './provider';
 export { useArete } from './stack';
-export type { UseAreteResult } from './stack';
+export type { UseAreteResult, AreteDefaultStackRegistry } from './stack';
+export { createAreteReact } from './bound-stack';
+export type { BoundAreteProviderProps } from './bound-stack';
+export { summarizeStatuses, summarizeViews } from './view-status';
+export type {
+  StatusSource,
+  SummarizedStatus,
+  SummarizedViewStatus,
+  ViewStatusSource,
+} from './view-status';
+export type { ReactReadInterface, ReadHookInterface } from './read-hooks';
+export type { ReadHookOptions } from './read-hooks';
 export { ZustandAdapter } from './zustand-adapter';
 export type { AreteStore } from './zustand-adapter';
 
@@ -8,12 +19,16 @@ export { useAsyncRead, useInstructionMutation } from './hooks';
 export type {
   AsyncReadContext,
   AsyncReadKey,
+  AsyncReadStatus,
   MutationExecutionObserver,
   MutationExecutor,
   MutationLifecycleEvent,
   MutationPhase,
   MutationReconciliationContext,
+  MutationReconcileFn,
+  MutationReconcileOverrides,
   MutationStatus,
+  ReconciliationRefreshTarget,
   UseAsyncReadOptions,
   UseAsyncReadResult,
   UseMutationOptions,
@@ -22,11 +37,13 @@ export type {
 export { useNativeBalance, useTokenBalance } from './chain-hooks';
 export type { BalanceHookOptions } from './chain-hooks';
 export {
+  createProcessedSlotReconciliation,
   DEFAULT_RECONCILIATION_TIMEOUT_MS,
   reconcileProcessedSlot,
   useReconcileProcessedSlot,
 } from './reconciliation';
 export type {
+  DefaultReconciliationFn,
   ProcessedSlotClient,
   ProcessedSlotReconciliationOptions,
   ProcessedSlotReconciliationResult,
@@ -35,16 +52,24 @@ export type {
 
 export {
   ConnectionManager,
+  isHostedAreteEndpoint,
   FrameProcessor,
   MemoryAdapter,
   Arete,
   ReadRequestError,
   SubscriptionRegistry,
+  QueryStore,
+  canonicalQueryKey,
+  normalizeSubscriptionQuery,
   withPrograms,
+  serializeViewKey,
   parseFrame,
   parseFrameFromBlob,
   isValidFrame,
   isSnapshotFrame,
+  isSubscribedFrame,
+  isUnsubscribedFrame,
+  isErrorFrame,
   AreteError,
   DEFAULT_CONFIG,
   DEFAULT_MAX_ENTRIES_PER_VIEW,
@@ -66,6 +91,10 @@ export {
   createInstructionHandler,
   createInstructionExecutor,
   getTransactionFailureOutcome,
+  formatRawToUi,
+  toRawAmount,
+  safeToRawAmount,
+  stringifyBigints,
   unwrapOperationExecutionError,
 } from '@usearete/sdk';
 
@@ -75,6 +104,7 @@ export type {
   RichUpdateCallback,
   StorageAdapterConfig,
   FrameProcessorConfig,
+  FrameValidationDiagnostic,
   ConnectOptions,
   AreteOptionsWithStorage,
   ConnectedArete,
@@ -83,6 +113,9 @@ export type {
   EntityFrame,
   SnapshotFrame,
   SnapshotEntity,
+  SubscribedFrame,
+  UnsubscribedFrame,
+  ErrorFrame,
   Frame,
   FrameMode,
   FrameOp,
@@ -90,6 +123,11 @@ export type {
   Update,
   RichUpdate,
   Subscription,
+  SubscriptionQuery,
+  SubscriptionRequest,
+  SubscriptionSnapshotOptions,
+  QueryLease,
+  QuerySnapshot,
   AreteOptions,
   WalletAdapter,
   WalletState,
@@ -135,6 +173,8 @@ export type {
   WaitForProcessedSlotOptions,
   OperationTransactionReceipt,
   AuthConfig,
+  SocketIssue,
+  StringifiedBigints,
 } from '@usearete/sdk';
 
 export type {
@@ -144,7 +184,13 @@ export type {
   ClientLookupOptions,
   UseAreteOptions,
   ViewHookOptions,
+  StateViewHookOptions,
+  ListViewHookOptions,
+  ListOneViewHookOptions,
   ViewHookResult,
+  ViewSchemaValidationDiagnostic,
+  ViewSchemaValidationErrorCallback,
+  ViewStatus,
   ListParams,
   ListParamsBase,
   ListParamsSingle,
@@ -155,5 +201,7 @@ export type {
   ViewMode,
   ViewDef,
   ViewGroup,
+  ViewKeyValue,
+  DefaultViewKey,
   Schema,
 } from './types';

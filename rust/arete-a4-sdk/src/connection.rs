@@ -4,11 +4,16 @@ use crate::auth::{
     TokenEndpointResponse, TokenTransport, MIN_REFRESH_DELAY_SECONDS,
 };
 use crate::config::ConnectionConfig;
-use crate::error::{AreteError, SocketIssue, SocketIssuePayload};
-use crate::frame::{parse_frame, Frame};
-use crate::subscription::{ClientMessage, Subscription, SubscriptionRegistry, Unsubscription};
+use crate::error::{AreteError, SocketIssue};
+use crate::frame::{parse_server_message, ProtocolErrorFrame, ServerMessage};
+use crate::store::SharedStore;
+use crate::subscription::{
+    ClientMessage, SnapshotOptions, Subscription, SubscriptionQuery, SubscriptionRegistry,
+    Unsubscription,
+};
 use futures_util::{SinkExt, StreamExt};
-use std::collections::HashMap;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -34,6 +39,7 @@ pub enum ConnectionState {
 
 pub enum ConnectionCommand {
     Subscribe(Subscription),
+    Release(String),
     Unsubscribe(Unsubscription),
     Disconnect,
 }
@@ -47,8 +53,10 @@ struct RefreshAuthResponseMessage {
 
 #[derive(Debug, Clone, Default)]
 pub struct SubscriptionOptions {
-    pub take: Option<u32>,
-    pub skip: Option<u32>,
+    pub partition: Option<String>,
+    pub filters: BTreeMap<String, Value>,
+    pub take: Option<usize>,
+    pub skip: Option<usize>,
     pub with_snapshot: Option<bool>,
     pub after: Option<String>,
     pub snapshot_limit: Option<usize>,
@@ -61,10 +69,11 @@ struct ConnectionManagerInner {
     subscriptions: Arc<RwLock<SubscriptionRegistry>>,
     #[allow(dead_code)]
     config: ConnectionConfig,
-    command_tx: mpsc::Sender<ConnectionCommand>,
+    command_tx: mpsc::UnboundedSender<ConnectionCommand>,
     last_error: Arc<RwLock<Option<Arc<AreteError>>>>,
     last_socket_issue: Arc<RwLock<Option<SocketIssue>>>,
     socket_issue_tx: broadcast::Sender<SocketIssue>,
+    store: SharedStore,
 }
 
 #[derive(Clone)]
@@ -72,13 +81,52 @@ pub struct ConnectionManager {
     inner: Arc<ConnectionManagerInner>,
 }
 
+pub struct SubscriptionLease {
+    subscription_id: String,
+    command_tx: mpsc::UnboundedSender<ConnectionCommand>,
+    released: bool,
+}
+
+impl SubscriptionLease {
+    pub fn subscription_id(&self) -> &str {
+        &self.subscription_id
+    }
+
+    pub fn release(mut self) {
+        self.release_inner();
+    }
+
+    fn release_inner(&mut self) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        if let Err(error) = self
+            .command_tx
+            .send(ConnectionCommand::Release(self.subscription_id.clone()))
+        {
+            tracing::warn!(
+                subscription_id = %self.subscription_id,
+                %error,
+                "failed to queue protocol v2 unsubscribe"
+            );
+        }
+    }
+}
+
+impl Drop for SubscriptionLease {
+    fn drop(&mut self) {
+        self.release_inner();
+    }
+}
+
 impl ConnectionManager {
     pub async fn new(
         url: String,
         config: ConnectionConfig,
-        frame_tx: mpsc::Sender<Frame>,
+        store: SharedStore,
     ) -> Result<Self, AreteError> {
-        let (command_tx, command_rx) = mpsc::channel(100);
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (initial_connect_tx, initial_connect_rx) = oneshot::channel();
         let state = Arc::new(RwLock::new(ConnectionState::Disconnected));
         let subscriptions = Arc::new(RwLock::new(SubscriptionRegistry::new()));
@@ -95,6 +143,7 @@ impl ConnectionManager {
             last_error: last_error.clone(),
             last_socket_issue: last_socket_issue.clone(),
             socket_issue_tx: socket_issue_tx.clone(),
+            store: store.clone(),
         };
 
         spawn_connection_loop(
@@ -102,7 +151,7 @@ impl ConnectionManager {
             state,
             subscriptions,
             config,
-            frame_tx,
+            store,
             command_rx,
             last_error,
             last_socket_issue,
@@ -139,7 +188,11 @@ impl ConnectionManager {
         self.inner.socket_issue_tx.subscribe()
     }
 
-    pub async fn ensure_subscription(&self, view: &str, key: Option<&str>) {
+    pub async fn ensure_subscription(
+        &self,
+        view: &str,
+        key: Option<&str>,
+    ) -> Result<SubscriptionLease, AreteError> {
         self.ensure_subscription_with_opts(view, key, SubscriptionOptions::default())
             .await
     }
@@ -149,50 +202,108 @@ impl ConnectionManager {
         view: &str,
         key: Option<&str>,
         opts: SubscriptionOptions,
-    ) {
-        let sub = Subscription {
-            view: view.to_string(),
-            key: key.map(|s| s.to_string()),
-            partition: None,
-            filters: None,
-            take: opts.take,
-            skip: opts.skip,
-            with_snapshot: opts.with_snapshot,
-            after: opts.after,
-            snapshot_limit: opts.snapshot_limit,
-        };
+    ) -> Result<SubscriptionLease, AreteError> {
+        let mut query = SubscriptionQuery::new(view);
+        query.key = key.map(str::to_string);
+        query.partition = opts.partition;
+        query.filters = opts.filters;
+        query.take = opts.take;
+        query.skip = opts.skip;
+        query.after = opts.after;
+        query.snapshot_limit = opts.snapshot_limit;
+        self.acquire_query(
+            query,
+            SnapshotOptions {
+                enabled: opts.with_snapshot.unwrap_or(true),
+            },
+        )
+        .await
+    }
 
-        if !self.inner.subscriptions.read().await.contains(&sub) {
-            let _ = self
+    pub async fn acquire_query(
+        &self,
+        query: SubscriptionQuery,
+        snapshot: SnapshotOptions,
+    ) -> Result<SubscriptionLease, AreteError> {
+        let (subscription, is_new) = self
+            .inner
+            .subscriptions
+            .write()
+            .await
+            .acquire(query, snapshot)?;
+        self.finish_acquire(subscription, is_new).await
+    }
+
+    pub async fn subscribe(
+        &self,
+        subscription: Subscription,
+    ) -> Result<SubscriptionLease, AreteError> {
+        let (subscription, is_new) = self
+            .inner
+            .subscriptions
+            .write()
+            .await
+            .acquire_explicit(subscription)?;
+        self.finish_acquire(subscription, is_new).await
+    }
+
+    async fn finish_acquire(
+        &self,
+        subscription: Subscription,
+        is_new: bool,
+    ) -> Result<SubscriptionLease, AreteError> {
+        if is_new {
+            if let Err(error) = self
+                .inner
+                .store
+                .register_subscription(
+                    &subscription.subscription_id,
+                    subscription.query.clone(),
+                    subscription.snapshot.enabled,
+                )
+                .await
+            {
+                self.inner
+                    .subscriptions
+                    .write()
+                    .await
+                    .remove(&subscription.subscription_id);
+                return Err(error);
+            }
+            if let Err(error) = self
                 .inner
                 .command_tx
-                .send(ConnectionCommand::Subscribe(sub))
-                .await;
+                .send(ConnectionCommand::Subscribe(subscription.clone()))
+            {
+                self.inner
+                    .subscriptions
+                    .write()
+                    .await
+                    .remove(&subscription.subscription_id);
+                self.inner
+                    .store
+                    .unregister_subscription(&subscription.subscription_id)
+                    .await;
+                return Err(AreteError::ChannelError(error.to_string()));
+            }
         }
+        Ok(SubscriptionLease {
+            subscription_id: subscription.subscription_id,
+            command_tx: self.inner.command_tx.clone(),
+            released: false,
+        })
     }
 
-    pub async fn subscribe(&self, sub: Subscription) {
-        let _ = self
-            .inner
+    pub async fn unsubscribe(&self, unsubscription: Unsubscription) -> Result<(), AreteError> {
+        unsubscription.validate()?;
+        self.inner
             .command_tx
-            .send(ConnectionCommand::Subscribe(sub))
-            .await;
-    }
-
-    pub async fn unsubscribe(&self, unsub: Unsubscription) {
-        let _ = self
-            .inner
-            .command_tx
-            .send(ConnectionCommand::Unsubscribe(unsub))
-            .await;
+            .send(ConnectionCommand::Unsubscribe(unsubscription))
+            .map_err(|error| AreteError::ChannelError(error.to_string()))
     }
 
     pub async fn disconnect(&self) {
-        let _ = self
-            .inner
-            .command_tx
-            .send(ConnectionCommand::Disconnect)
-            .await;
+        let _ = self.inner.command_tx.send(ConnectionCommand::Disconnect);
     }
 }
 
@@ -418,8 +529,8 @@ fn spawn_connection_loop(
     state: Arc<RwLock<ConnectionState>>,
     subscriptions: Arc<RwLock<SubscriptionRegistry>>,
     config: ConnectionConfig,
-    frame_tx: mpsc::Sender<Frame>,
-    mut command_rx: mpsc::Receiver<ConnectionCommand>,
+    store: SharedStore,
+    mut command_rx: mpsc::UnboundedReceiver<ConnectionCommand>,
     last_error: Arc<RwLock<Option<Arc<AreteError>>>>,
     last_socket_issue: Arc<RwLock<Option<SocketIssue>>>,
     socket_issue_tx: broadcast::Sender<SocketIssue>,
@@ -475,6 +586,7 @@ fn spawn_connection_loop(
                     let (mut ws_tx, mut ws_rx) = ws.split();
                     let subs = subscriptions.read().await.all();
                     for sub in subs {
+                        store.begin_refresh(&sub.subscription_id).await;
                         let client_msg = ClientMessage::Subscribe(sub);
                         if let Ok(msg) = serde_json::to_string(&client_msg) {
                             let _ = ws_tx.send(Message::Text(msg)).await;
@@ -490,31 +602,25 @@ fn spawn_connection_loop(
                             msg = ws_rx.next() => {
                                 match msg {
                                     Some(Ok(Message::Binary(bytes))) => {
-                                        if let Ok(frame) = parse_frame(&bytes) {
-                                            let _ = frame_tx.send(frame).await;
+                                        match process_server_payload(&bytes, &store).await {
+                                            Ok(Some(issue)) => {
+                                                record_socket_issue(&last_socket_issue, &socket_issue_tx, issue.clone()).await;
+                                                let error = AreteError::from_socket_issue(issue);
+                                                let is_fatal = error.socket_issue().is_some_and(|issue| issue.fatal);
+                                                set_last_error(&last_error, error).await;
+                                                if is_fatal {
+                                                    break;
+                                                }
+                                            }
+                                            Ok(None) => {}
+                                            Err(error) => {
+                                                set_last_error(&last_error, error).await;
+                                                break;
+                                            }
                                         }
                                     }
                                     Some(Ok(Message::Text(text))) => {
-                                        if let Some(issue) = parse_socket_issue_message(&text) {
-                                            record_socket_issue(&last_socket_issue, &socket_issue_tx, issue.clone()).await;
-
-                                            let error = AreteError::from_socket_issue(issue);
-                                            if error.should_refresh_token() && auth_state.has_refreshable_auth() {
-                                                auth_state.clear_cached_token();
-                                                force_token_refresh = true;
-                                                immediate_reconnect = true;
-                                            }
-
-                                            let is_fatal = error
-                                                .socket_issue()
-                                                .map(|issue| issue.fatal)
-                                                .unwrap_or(false);
-                                            set_last_error(&last_error, error).await;
-
-                                            if is_fatal {
-                                                break;
-                                            }
-                                        } else if let Some(refresh_response) = parse_refresh_auth_response(&text) {
+                                        if let Some(refresh_response) = parse_refresh_auth_response(&text) {
                                             if refresh_response.success {
                                                 if let Some(expires_at) = refresh_response.expires_at {
                                                     auth_state.token_expiry = Some(expires_at);
@@ -530,8 +636,28 @@ fn spawn_connection_loop(
                                                 set_last_error(&last_error, error).await;
                                                 break;
                                             }
-                                        } else if let Ok(frame) = serde_json::from_str::<Frame>(&text) {
-                                            let _ = frame_tx.send(frame).await;
+                                        } else {
+                                            match process_server_payload(text.as_bytes(), &store).await {
+                                                Ok(Some(issue)) => {
+                                                    record_socket_issue(&last_socket_issue, &socket_issue_tx, issue.clone()).await;
+                                                    let error = AreteError::from_socket_issue(issue);
+                                                    if error.should_refresh_token() && auth_state.has_refreshable_auth() {
+                                                        auth_state.clear_cached_token();
+                                                        force_token_refresh = true;
+                                                        immediate_reconnect = true;
+                                                    }
+                                                    let is_fatal = error.socket_issue().is_some_and(|issue| issue.fatal);
+                                                    set_last_error(&last_error, error).await;
+                                                    if is_fatal {
+                                                        break;
+                                                    }
+                                                }
+                                                Ok(None) => {}
+                                                Err(error) => {
+                                                    set_last_error(&last_error, error).await;
+                                                    break;
+                                                }
+                                            }
                                         }
                                     }
                                     Some(Ok(Message::Ping(payload))) => {
@@ -570,25 +696,24 @@ fn spawn_connection_loop(
                             cmd = command_rx.recv() => {
                                 match cmd {
                                     Some(ConnectionCommand::Subscribe(sub)) => {
-                                        subscriptions.write().await.add(sub.clone());
                                         let client_msg = ClientMessage::Subscribe(sub);
                                         if let Ok(msg) = serde_json::to_string(&client_msg) {
                                             let _ = ws_tx.send(Message::Text(msg)).await;
                                         }
                                     }
+                                    Some(ConnectionCommand::Release(subscription_id)) => {
+                                        let unsub = subscriptions.write().await.release(&subscription_id);
+                                        if let Some(unsub) = unsub {
+                                            store.unregister_subscription(&subscription_id).await;
+                                            let client_msg = ClientMessage::Unsubscribe(unsub);
+                                            if let Ok(msg) = serde_json::to_string(&client_msg) {
+                                                let _ = ws_tx.send(Message::Text(msg)).await;
+                                            }
+                                        }
+                                    }
                                     Some(ConnectionCommand::Unsubscribe(unsub)) => {
-                                        let sub = Subscription {
-                                            view: unsub.view.clone(),
-                                            key: unsub.key.clone(),
-                                            partition: None,
-                                            filters: None,
-                                            take: None,
-                                            skip: None,
-                                            with_snapshot: None,
-                                            after: None,
-                                            snapshot_limit: None,
-                                        };
-                                        subscriptions.write().await.remove(&sub);
+                                        subscriptions.write().await.remove(&unsub.subscription_id);
+                                        store.unregister_subscription(&unsub.subscription_id).await;
                                         let client_msg = ClientMessage::Unsubscribe(unsub);
                                         if let Ok(msg) = serde_json::to_string(&client_msg) {
                                             let _ = ws_tx.send(Message::Text(msg)).await;
@@ -665,7 +790,9 @@ fn spawn_connection_loop(
                     auth_state.clear_cached_token();
                     force_token_refresh = true;
                     immediate_reconnect = true;
-                } else if !error.should_retry() {
+                } else if !error.should_retry()
+                    && error.socket_issue().is_none_or(|issue| issue.fatal)
+                {
                     *state.write().await = ConnectionState::Error;
                     report_initial_failure(&mut initial_connect_tx, error.clone());
                     break;
@@ -788,12 +915,42 @@ fn current_unix_timestamp() -> u64 {
         .as_secs()
 }
 
-fn parse_socket_issue_message(text: &str) -> Option<SocketIssue> {
-    let payload = serde_json::from_str::<SocketIssuePayload>(text).ok()?;
-    if payload.is_socket_issue() {
-        Some(payload.into_socket_issue())
+async fn process_server_payload(
+    payload: &[u8],
+    store: &SharedStore,
+) -> Result<Option<SocketIssue>, AreteError> {
+    match parse_server_message(payload)? {
+        ServerMessage::Frame(frame) => {
+            store.apply_frame(frame).await?;
+            Ok(None)
+        }
+        ServerMessage::Error(error) => Ok(Some(protocol_error_to_socket_issue(error))),
+    }
+}
+
+fn protocol_error_to_socket_issue(error: ProtocolErrorFrame) -> SocketIssue {
+    let message = if error.message.is_empty() {
+        error.code.clone()
     } else {
-        None
+        error.message
+    };
+    let error_name = if error.error.is_empty() {
+        error.code.clone()
+    } else {
+        error.error
+    };
+    SocketIssue {
+        protocol_version: error.protocol_version,
+        subscription_id: error.subscription_id,
+        error: error_name,
+        message,
+        wire_code: error.code.clone(),
+        code: crate::error::AuthErrorCode::from_wire(&error.code),
+        retryable: error.retryable,
+        retry_after: error.retry_after,
+        suggested_action: error.suggested_action,
+        docs_url: error.docs_url,
+        fatal: error.fatal,
     }
 }
 

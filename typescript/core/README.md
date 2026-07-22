@@ -309,19 +309,77 @@ for await (const update of session.stacks.myStack.views.settlementGame.list.watc
 const game = await session.stacks.myStack.views.settlementGame.state.get('game-123');
 ```
 
+Every options object is a protocol v2 query with independent ordered membership. Different windows and filters on the same view can run concurrently, while equivalent normalized queries share one reference-counted wire subscription:
+
+```ts
+const rounds = session.stacks.ore.views.OreRound.latest;
+
+const firstPage = rounds.watch({ take: 10 });
+const secondPage = rounds.watch({ take: 10, skip: 10 });
+
+for await (const update of firstPage) {
+  if (update.type === 'remove') {
+    console.log(`${update.key} left the first-page window`);
+  }
+}
+```
+
+Completed authoritative snapshots replace membership for their exact query after reconnect. Cursor queries created with `after` receive incremental snapshots and merge without pruning.
+
+Low-level `QueryLease.refresh()` returns a `Promise<void>` that resolves after the refreshed subscription's next complete snapshot is committed. Registration, send, and subscription failures reject and are published on the lease's `QuerySnapshot.error`, with `isRefreshing` cleared. Subscriptions created with snapshots disabled resolve after the refresh request is sent.
+
+### Connection recovery
+
+`autoConnect` and `autoReconnect` default to `true` and control separate lifecycle phases. Set `autoConnect: false` to create a disconnected client that the application connects later. Set `autoReconnect: false` when the application wants to handle post-disconnect recovery itself:
+
+```ts
+const client = await Arete.connect(MY_STACK, {
+  autoConnect: false,
+  autoReconnect: false,
+});
+```
+
+The same independent options are available per stack member in `createSession(...)` and on React's `AreteProvider`.
+
+### Caller-supplied schema diagnostics
+
+Core view schemas continue to filter rejected entities. React view hooks additionally accept `onSchemaValidationError`, which reports `{ view, key?, entity, error }` without changing accepted data.
+
+## Safe amount parsing
+
+`toRawAmount(input, decimals)` throws when user input is invalid. Form and API boundaries can use `safeToRawAmount(input, decimals)` instead:
+
+```ts
+import { safeToRawAmount } from '@usearete/sdk';
+
+const result = safeToRawAmount({ ui: amountText }, 9);
+if (!result.success) {
+  console.error(result.error);
+  return;
+}
+
+console.log(result.data); // bigint in raw base units
+```
+
+It returns `{ success: true, data } | { success: false, error }` and never throws for an invalid amount input.
+
 ## Update Types
 
 ```ts
 type Update<T> =
   | { type: 'upsert'; key: string; data: T }
   | { type: 'patch'; key: string; data: Partial<T> }
+  | { type: 'remove'; key: string }
   | { type: 'delete'; key: string };
 
 type RichUpdate<T> =
   | { type: 'created'; key: string; data: T }
   | { type: 'updated'; key: string; before: T; after: T; patch?: unknown }
+  | { type: 'removed'; key: string; lastKnown?: T }
   | { type: 'deleted'; key: string; lastKnown?: T };
 ```
+
+`remove` means an entity left only this query's filter or window. `delete` means the source entity was deleted and is removed from every query for that view.
 
 ## License
 

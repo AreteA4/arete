@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use arete_sdk::{
-    deep_merge_with_append, parse_frame, parse_snapshot_entities, try_parse_subscribed_frame,
-    ClientMessage, Frame, Operation,
+    deep_merge_with_append, parse_server_message, ClientMessage, Frame, ServerMessage,
+    SnapshotEntity,
 };
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
@@ -26,7 +26,14 @@ struct StreamState {
     update_count: u64,
     entity_count: u64,
     recorder: Option<SnapshotRecorder>,
+    pending_snapshot: Option<PendingSnapshot>,
     out: output::StdoutWriter,
+}
+
+struct PendingSnapshot {
+    id: String,
+    authoritative: bool,
+    rows: Vec<SnapshotEntity>,
 }
 
 fn build_state(args: &StreamArgs, view: &str, url: &str) -> Result<StreamState> {
@@ -78,6 +85,7 @@ fn build_state(args: &StreamArgs, view: &str, url: &str) -> Result<StreamState> 
         update_count: 0,
         entity_count: 0,
         recorder,
+        pending_snapshot: None,
         out: output::StdoutWriter::new(),
     })
 }
@@ -142,48 +150,37 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     tokio::pin!(shutdown);
 
     let mut snapshot_complete = false;
-    // When --no-snapshot, treat as if snapshot was already received so
-    // snapshot_complete fires on the first live frame
-    let mut received_snapshot = args.no_snapshot;
 
     loop {
         tokio::select! {
             msg = ws_rx.next() => {
                 match msg {
                     Some(Ok(Message::Binary(bytes))) => {
-                        match parse_frame(&bytes) {
-                            Ok(frame) => {
-                                if frame.operation() == Operation::Subscribed {
-                                    eprintln!("Subscribed to {}", view);
-                                    continue;
-                                }
-                                let was_snapshot = frame.is_snapshot();
-                                if was_snapshot { received_snapshot = true; }
-                                maybe_emit_snapshot_complete(&mut state, view, &mut snapshot_complete, received_snapshot, was_snapshot)?;
-                                if process_frame(frame, view, &mut state)? {
+                        match parse_server_message(&bytes) {
+                            Ok(message) => {
+                                if handle_server_message(
+                                    message,
+                                    view,
+                                    &mut state,
+                                    &mut snapshot_complete,
+                                    args.no_snapshot,
+                                )? {
                                     break;
                                 }
                             }
-                            Err(e) => {
-                                if try_parse_subscribed_frame(&bytes).is_some() {
-                                    eprintln!("Subscribed to {}", view);
-                                } else {
-                                    eprintln!("Warning: failed to parse binary frame: {}", e);
-                                }
-                            }
+                            Err(e) => eprintln!("Warning: failed to parse binary frame: {}", e),
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        // Single-pass parse: try Frame directly, check for subscribed via operation()
-                        match serde_json::from_str::<Frame>(&text) {
-                            Ok(frame) if frame.operation() == Operation::Subscribed => {
-                                eprintln!("Subscribed to {}", view);
-                            }
-                            Ok(frame) => {
-                                let was_snapshot = frame.is_snapshot();
-                                if was_snapshot { received_snapshot = true; }
-                                maybe_emit_snapshot_complete(&mut state, view, &mut snapshot_complete, received_snapshot, was_snapshot)?;
-                                if process_frame(frame, view, &mut state)? {
+                        match parse_server_message(text.as_bytes()) {
+                            Ok(message) => {
+                                if handle_server_message(
+                                    message,
+                                    view,
+                                    &mut state,
+                                    &mut snapshot_complete,
+                                    args.no_snapshot,
+                                )? {
                                     break;
                                 }
                             }
@@ -237,17 +234,6 @@ pub async fn stream(url: String, view: &str, args: &StreamArgs) -> Result<()> {
     }
 
     if let OutputMode::NoDna = state.output_mode {
-        // Ensure snapshot_complete is emitted before disconnected if it wasn't already
-        if !snapshot_complete && received_snapshot {
-            output::emit_no_dna_event(
-                &mut state.out,
-                "snapshot_complete",
-                view,
-                &serde_json::json!({"entity_count": state.entity_count}),
-                state.update_count,
-                state.entity_count,
-            )?;
-        }
         output::emit_no_dna_event(
             &mut state.out,
             "disconnected",
@@ -281,21 +267,15 @@ pub async fn replay(player: SnapshotPlayer, view: &str, args: &StreamArgs) -> Re
     }
 
     let mut snapshot_complete = false;
-    let mut received_snapshot = args.no_snapshot;
 
     for snapshot_frame in &player.frames {
-        let was_snapshot = snapshot_frame.frame.is_snapshot();
-        if was_snapshot {
-            received_snapshot = true;
-        }
-        maybe_emit_snapshot_complete(
-            &mut state,
+        if handle_server_message(
+            ServerMessage::Frame(snapshot_frame.frame.clone()),
             view,
+            &mut state,
             &mut snapshot_complete,
-            received_snapshot,
-            was_snapshot,
-        )?;
-        if process_frame(snapshot_frame.frame.clone(), view, &mut state)? {
+            args.no_snapshot,
+        )? {
             break;
         }
     }
@@ -305,16 +285,6 @@ pub async fn replay(player: SnapshotPlayer, view: &str, args: &StreamArgs) -> Re
     }
 
     if let OutputMode::NoDna = state.output_mode {
-        if !snapshot_complete && received_snapshot {
-            output::emit_no_dna_event(
-                &mut state.out,
-                "snapshot_complete",
-                view,
-                &serde_json::json!({"entity_count": state.entity_count}),
-                state.update_count,
-                state.entity_count,
-            )?;
-        }
         output::emit_no_dna_event(
             &mut state.out,
             "disconnected",
@@ -386,28 +356,54 @@ fn output_history_if_requested(state: &StreamState, args: &StreamArgs) -> Result
     Ok(())
 }
 
-/// Emit snapshot_complete NoDna event if transitioning from snapshot to live frames.
-fn maybe_emit_snapshot_complete(
-    state: &mut StreamState,
+fn handle_server_message(
+    message: ServerMessage,
     view: &str,
+    state: &mut StreamState,
     snapshot_complete: &mut bool,
-    received_snapshot: bool,
-    was_snapshot: bool,
-) -> Result<()> {
-    if !was_snapshot && received_snapshot && !*snapshot_complete {
-        *snapshot_complete = true;
-        if let OutputMode::NoDna = state.output_mode {
-            output::emit_no_dna_event(
-                &mut state.out,
-                "snapshot_complete",
-                view,
-                &serde_json::json!({"entity_count": state.entity_count}),
-                state.update_count,
-                state.entity_count,
-            )?;
+    no_snapshot: bool,
+) -> Result<bool> {
+    match message {
+        ServerMessage::Error(error) => {
+            eprintln!("Server error [{}]: {}", error.code, error.message);
+            Ok(error.fatal)
+        }
+        ServerMessage::Frame(Frame::Subscribed { .. }) => {
+            eprintln!("Subscribed to {}", view);
+            Ok(false)
+        }
+        ServerMessage::Frame(Frame::Unsubscribed { .. }) => {
+            eprintln!("Unsubscribed from {}", view);
+            Ok(true)
+        }
+        ServerMessage::Frame(frame) => {
+            let completes_snapshot = matches!(&frame, Frame::Snapshot { complete: true, .. });
+            let first_live_without_snapshot = no_snapshot
+                && !*snapshot_complete
+                && matches!(
+                    &frame,
+                    Frame::Upsert { .. }
+                        | Frame::Patch { .. }
+                        | Frame::Remove { .. }
+                        | Frame::Delete { .. }
+                );
+            let stop = process_frame(frame, view, state)?;
+            if (completes_snapshot || first_live_without_snapshot) && !*snapshot_complete {
+                *snapshot_complete = true;
+                if let OutputMode::NoDna = state.output_mode {
+                    output::emit_no_dna_event(
+                        &mut state.out,
+                        "snapshot_complete",
+                        view,
+                        &serde_json::json!({"entity_count": state.entity_count}),
+                        state.update_count,
+                        state.entity_count,
+                    )?;
+                }
+            }
+            Ok(stop)
         }
     }
-    Ok(())
 }
 
 /// Process a frame. Returns true if the stream should end (--first matched).
@@ -417,21 +413,19 @@ fn process_frame(frame: Frame, view: &str, state: &mut StreamState) -> Result<bo
         recorder.record(&frame);
     }
 
-    let op = frame.operation();
-    let op_str = &frame.op;
+    let op = match &frame {
+        Frame::Snapshot { .. } => "snapshot",
+        Frame::Upsert { .. } => "upsert",
+        Frame::Patch { .. } => "patch",
+        Frame::Remove { .. } => "remove",
+        Frame::Delete { .. } => "delete",
+        Frame::Subscribed { .. } | Frame::Unsubscribed { .. } => return Ok(false),
+    };
 
     // Check if this op type is allowed by --ops (but always process snapshots
     // for entity state — just suppress their output)
     let ops_allowed = match &state.allowed_ops {
-        Some(allowed) => {
-            // Normalize create → upsert since they're semantically identical
-            let effective_op = match op {
-                Operation::Snapshot => "snapshot".to_string(),
-                Operation::Create => "upsert".to_string(),
-                _ => op_str.to_lowercase(),
-            };
-            allowed.contains(effective_op.as_str())
-        }
+        Some(allowed) => allowed.contains(op),
         None => true,
     };
 
@@ -442,7 +436,9 @@ fn process_frame(frame: Frame, view: &str, state: &mut StreamState) -> Result<bo
         // Note: in raw mode, --where filters against the raw frame.data which is
         // an array for snapshot frames. Field-level filters (e.g. --where "info.name=X")
         // will not match snapshot batch arrays — use merged mode for field filtering.
-        if !state.filter.is_empty() && !state.filter.matches(&frame.data) {
+        let raw = serde_json::to_value(&frame)?;
+        let data = raw.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        if !state.filter.is_empty() && !state.filter.matches(&data) {
             return Ok(false);
         }
         state.update_count += 1;
@@ -454,10 +450,57 @@ fn process_frame(frame: Frame, view: &str, state: &mut StreamState) -> Result<bo
         return Ok(state.first);
     }
 
-    match op {
-        Operation::Snapshot => {
-            let snapshot_entities = parse_snapshot_entities(&frame.data);
-            for entity in snapshot_entities {
+    match frame {
+        Frame::Snapshot {
+            snapshot_id,
+            authoritative,
+            data,
+            complete,
+            ..
+        } => {
+            let pending = state
+                .pending_snapshot
+                .get_or_insert_with(|| PendingSnapshot {
+                    id: snapshot_id.clone(),
+                    authoritative,
+                    rows: Vec::new(),
+                });
+            if pending.id != snapshot_id || pending.authoritative != authoritative {
+                anyhow::bail!("snapshot batches changed snapshotId or authoritative mode");
+            }
+            for row in data {
+                if let Some(existing) = pending.rows.iter_mut().find(|item| item.key == row.key) {
+                    *existing = row;
+                } else {
+                    pending.rows.push(row);
+                }
+            }
+            if !complete {
+                return Ok(false);
+            }
+
+            let snapshot = state
+                .pending_snapshot
+                .take()
+                .expect("snapshot stage exists");
+            if snapshot.authoritative {
+                let retained: HashSet<&str> =
+                    snapshot.rows.iter().map(|row| row.key.as_str()).collect();
+                let removed: Vec<String> = state
+                    .entities
+                    .keys()
+                    .filter(|key| !retained.contains(key.as_str()))
+                    .cloned()
+                    .collect();
+                for key in removed {
+                    state.entities.remove(&key);
+                    if let Some(store) = &mut state.store {
+                        store.remove(&key, "remove", None);
+                    }
+                }
+            }
+
+            for entity in snapshot.rows {
                 // Always populate entity state (needed for correct patch merging).
                 // entity_count is a running tally — NoDna entity_update events during
                 // snapshot delivery report the count at that point, not the final total.
@@ -475,75 +518,91 @@ fn process_frame(frame: Frame, view: &str, state: &mut StreamState) -> Result<bo
                     return Ok(true);
                 }
             }
+            state.entity_count = state.entities.len() as u64;
         }
-        Operation::Upsert | Operation::Create => {
-            state.entities.insert(frame.key.clone(), frame.data.clone());
+        Frame::Upsert { key, data, seq, .. } => {
+            state.entities.insert(key.clone(), data.clone());
             if let Some(store) = &mut state.store {
-                store.upsert(&frame.key, frame.data.clone(), op_str, frame.seq.clone());
+                store.upsert(&key, data.clone(), "upsert", seq);
             }
             state.entity_count = state.entities.len() as u64;
-            if ops_allowed && emit_entity(state, view, &frame.key, op_str, &frame.data)? {
+            if ops_allowed && emit_entity(state, view, &key, "upsert", &data)? {
                 return Ok(true);
             }
         }
-        Operation::Patch => {
+        Frame::Patch {
+            key,
+            data,
+            append,
+            seq,
+            ..
+        } => {
             if let Some(store) = &mut state.store {
-                store.patch(&frame.key, &frame.data, &frame.append, frame.seq.clone());
+                store.patch(&key, &data, &append, seq);
             }
             let entry = state
                 .entities
-                .entry(frame.key.clone())
+                .entry(key.clone())
                 .or_insert_with(|| serde_json::json!({}));
-            deep_merge_with_append(entry, &frame.data, &frame.append, "");
+            deep_merge_with_append(entry, &data, &append, "");
             let merged = entry.clone();
             state.entity_count = state.entities.len() as u64;
-            if ops_allowed && emit_entity(state, view, &frame.key, "patch", &merged)? {
+            if ops_allowed && emit_entity(state, view, &key, "patch", &merged)? {
                 return Ok(true);
             }
         }
-        Operation::Delete => {
-            // Note: if the entity was never seen (e.g. --no-snapshot), last_state is null
-            // and field-based --where filters will not match, silently dropping the delete.
-            let last_state = state
-                .entities
-                .remove(&frame.key)
-                .unwrap_or(serde_json::json!(null));
-            if let Some(store) = &mut state.store {
-                store.delete(&frame.key);
-            }
-            state.entity_count = state.entities.len() as u64;
-
-            if !ops_allowed {
-                return Ok(false);
-            }
-            if !state.filter.is_empty() && !state.filter.matches(&last_state) {
-                return Ok(false);
-            }
-
-            state.update_count += 1;
-            if state.count_only {
-                output::print_count(state.update_count)?;
-            } else {
-                match state.output_mode {
-                    OutputMode::NoDna => output::emit_no_dna_event(
-                        &mut state.out,
-                        "entity_update",
-                        view,
-                        &serde_json::json!({"key": frame.key, "op": "delete", "data": null}),
-                        state.update_count,
-                        state.entity_count,
-                    )?,
-                    _ => output::print_delete(&mut state.out, view, &frame.key)?,
-                }
-            }
-            if state.first {
-                return Ok(true);
-            }
+        Frame::Remove { key, seq, .. } => {
+            return process_removal(key, seq, "remove", view, state, ops_allowed)
         }
-        Operation::Subscribed => {}
+        Frame::Delete { key, seq, .. } => {
+            return process_removal(key, seq, "delete", view, state, ops_allowed)
+        }
+        Frame::Subscribed { .. } | Frame::Unsubscribed { .. } => {}
     }
 
     Ok(false)
+}
+
+fn process_removal(
+    key: String,
+    seq: Option<String>,
+    op: &str,
+    view: &str,
+    state: &mut StreamState,
+    ops_allowed: bool,
+) -> Result<bool> {
+    // If the entity was never seen (for example with --no-snapshot), field
+    // filters cannot evaluate its previous state and suppress the event.
+    let last_state = state
+        .entities
+        .remove(&key)
+        .unwrap_or(serde_json::Value::Null);
+    if let Some(store) = &mut state.store {
+        store.remove(&key, op, seq);
+    }
+    state.entity_count = state.entities.len() as u64;
+
+    if !ops_allowed || (!state.filter.is_empty() && !state.filter.matches(&last_state)) {
+        return Ok(false);
+    }
+
+    state.update_count += 1;
+    if state.count_only {
+        output::print_count(state.update_count)?;
+    } else {
+        match state.output_mode {
+            OutputMode::NoDna => output::emit_no_dna_event(
+                &mut state.out,
+                "entity_update",
+                view,
+                &serde_json::json!({"key": key, "op": op, "data": null}),
+                state.update_count,
+                state.entity_count,
+            )?,
+            _ => output::print_removal(&mut state.out, view, &key, op)?,
+        }
+    }
+    Ok(state.first)
 }
 
 /// Emit an entity through filter + select + output. Returns true if --first should trigger.
@@ -586,4 +645,109 @@ fn emit_entity(
     }
 
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arete_sdk::Mode;
+
+    fn state() -> StreamState {
+        StreamState {
+            entities: HashMap::new(),
+            store: None,
+            filter: Filter {
+                predicates: Vec::new(),
+            },
+            select_fields: None,
+            allowed_ops: Some(HashSet::new()),
+            output_mode: OutputMode::Merged,
+            first: false,
+            count_only: false,
+            update_count: 0,
+            entity_count: 0,
+            recorder: None,
+            pending_snapshot: None,
+            out: output::StdoutWriter::new(),
+        }
+    }
+
+    fn snapshot(id: &str, authoritative: bool, complete: bool, keys: &[&str]) -> Frame {
+        Frame::Snapshot {
+            protocol_version: 2,
+            subscription_id: "cli:test".to_string(),
+            snapshot_id: id.to_string(),
+            authoritative,
+            mode: Mode::List,
+            entity: "Thing/list".to_string(),
+            key: None,
+            data: keys
+                .iter()
+                .map(|key| SnapshotEntity {
+                    key: (*key).to_string(),
+                    data: serde_json::json!({"id": key}),
+                })
+                .collect(),
+            complete,
+        }
+    }
+
+    #[test]
+    fn stages_snapshot_batches_and_replaces_authoritative_membership() {
+        let mut state = state();
+
+        process_frame(
+            snapshot("initial", true, false, &["1", "2"]),
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+        assert!(state.entities.is_empty());
+
+        process_frame(
+            snapshot("initial", true, true, &["3"]),
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(state.entities.len(), 3);
+
+        process_frame(
+            snapshot("replacement", true, true, &["3"]),
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(
+            state.entities.keys().cloned().collect::<Vec<_>>(),
+            vec!["3".to_string()]
+        );
+    }
+
+    #[test]
+    fn remove_evicts_query_membership() {
+        let mut state = state();
+        process_frame(
+            snapshot("initial", true, true, &["1"]),
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+
+        process_frame(
+            Frame::Remove {
+                protocol_version: 2,
+                subscription_id: "cli:test".to_string(),
+                mode: Mode::List,
+                entity: "Thing/list".to_string(),
+                key: "1".to_string(),
+                data: serde_json::Value::Null,
+                seq: Some("2:1".to_string()),
+            },
+            "Thing/list",
+            &mut state,
+        )
+        .unwrap();
+        assert!(state.entities.is_empty());
+    }
 }

@@ -18,71 +18,82 @@ import {
   PumpfunTokenIdSchema,
   PumpfunTokenReservesSchema,
   PumpfunTokenCompletedSchema,
-} from "arete-stacks/pumpfun";
+} from "./generated/pumpfun-stack";
 ```
 
-Each entity gets two schema variants:
+Each entity gets schemas for complete frames, sparse patches, and completed-entity assertions:
 
-| Schema                        | Fields       | Use Case                          |
-| ----------------------------- | ------------ | --------------------------------- |
-| `PumpfunTokenSchema`          | All optional | Partial updates during streaming  |
-| `PumpfunTokenCompletedSchema` | All required | Asserting a fully-hydrated entity |
+| Schema                        | Use Case                                       |
+| ----------------------------- | ---------------------------------------------- |
+| `PumpfunTokenSchema`          | Complete frames and normalized stored entities |
+| `PumpfunTokenPatchSchema`     | Sparse patch frames                            |
+| `PumpfunTokenCompletedSchema` | Application-level completed-entity assertion   |
 
-The "Completed" variant is useful when you want to guarantee every field is present before rendering — for example, filtering out tokens that haven't received all their data yet.
+The "Completed" variant is useful when a stack distinguishes fully populated application entities from its normal stored shape. It may be identical to the base schema when every section is always present, and it does not remove field nullability unless the generated schema explicitly says so.
 
 ---
 
 ## Frame Validation
 
-Enable `validateFrames` when connecting to automatically validate every incoming WebSocket frame against the stack's schemas. Invalid frames are dropped with a console warning instead of corrupting your local store.
+Generated schemas always normalize and validate every incoming WebSocket frame before it reaches the typed store. Invalid frames are dropped with a console warning instead of corrupting local state.
 
 ### TypeScript (Core SDK)
 
 ```typescript
-import { Arete } from "arete-typescript";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { Arete } from "@usearete/sdk";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 
 const a4 = await Arete.connect(ORE_STREAM_STACK, {
-  validateFrames: true,
+  onFrameValidationError(diagnostic) {
+    console.error('Rejected Arete frame', diagnostic);
+  },
 });
 ```
 
 ### React
 
 ```tsx
-import { AreteProvider } from "arete-react";
+import { AreteProvider } from "@usearete/react";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
+
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error("VITE_ARETE_PUBLISHABLE_KEY is required");
 
 function App() {
   return (
-    <AreteProvider validateFrames>
+    <AreteProvider
+      stack={ORE_STREAM_STACK}
+      auth={{ publishableKey }}
+      onFrameValidationError={(diagnostic) => reportDiagnostic(diagnostic)}
+    >
       <Dashboard />
     </AreteProvider>
   );
 }
 ```
 
-When a frame fails validation, the SDK logs a warning with the view path and error details, then silently discards the update. Your application never sees malformed data.
+The diagnostic includes the view, entity key, sequence when available, operation, and schema error. The malformed update is never stored.
 
-:::tip[When to enable]
-Frame validation adds a small overhead per update. Enable it during development to catch data issues early, and in production if data integrity is critical for your use case.
+:::tip[Controlling warnings]
+Set `validateFrames: false` to suppress the default console warning while keeping schema normalization, rejection, and `onFrameValidationError` active.
 :::
 
 ---
 
 ## Query-Level Validation
 
-Pass a `schema` option to any streaming method to filter entities that don't match. This works on both the core SDK and the React hooks.
+Pass a `schema` option to any streaming method to filter entities that don't match. React hooks can also report caller-supplied schema rejections through a diagnostic callback.
 
 ### TypeScript (Core SDK)
 
-The `.use()` method accepts a `schema` in its options. Entities that fail validation are silently skipped:
+The `.use()` method accepts a `schema` in its options. Entities that fail validation are skipped:
 
 ```typescript
-import { Arete } from "arete-typescript";
+import { Arete } from "@usearete/sdk";
 import {
   ORE_STREAM_STACK,
   OreRoundCompletedSchema,
-} from "arete-stacks/ore";
+} from "./generated/ore-stack";
 
 const a4 = await Arete.connect(ORE_STREAM_STACK);
 
@@ -91,20 +102,20 @@ for await (const round of a4.views.OreRound.latest.use({
   schema: OreRoundCompletedSchema,
 })) {
   // round is guaranteed to have all fields populated
-  console.log(round.id.round_id, round.state.motherlode);
+  console.log(round.id.roundId, round.state.motherlode);
 }
 ```
 
 ### React Hooks
 
-Both `.use()` and `.useOne()` accept `schema` in their params. Entities that fail validation are filtered out of the results:
+Both `.use()` and `.useOne()` accept `schema` and `onSchemaValidationError` in their params. Entities that fail validation are filtered out of the results:
 
 ```tsx
-import { useArete } from "arete-react";
+import { useArete } from "@usearete/react";
 import {
   ORE_STREAM_STACK,
   OreRoundCompletedSchema,
-} from "arete-stacks/ore";
+} from "./generated/ore-stack";
 
 function FullyLoadedRounds() {
   const { views } = useArete(ORE_STREAM_STACK);
@@ -112,13 +123,16 @@ function FullyLoadedRounds() {
   // Only returns rounds where all fields are present
   const { data: rounds } = views.OreRound.latest.use({
     schema: OreRoundCompletedSchema,
+    onSchemaValidationError(diagnostic) {
+      reportDiagnostic(diagnostic);
+    },
   });
 
   return (
     <ul>
       {rounds?.map((round) => (
-        <li key={round.id.round_id}>
-          Round #{round.id.round_id} — {round.state.motherlode}
+        <li key={round.id.roundId?.toString() ?? "unknown"}>
+          Round #{round.id.roundId?.toString() ?? "unknown"} — {round.state.motherlode?.toString() ?? "unavailable"}
         </li>
       ))}
     </ul>
@@ -141,12 +155,12 @@ const TradableTokenSchema = z.object({
     mint: z.string(),
   }),
   reserves: z.object({
-    current_price_sol: z.number(),
-    market_cap_sol: z.number(),
+    currentPriceSol: z.number(),
+    marketCapSol: z.number(),
   }),
   trading: z.object({
-    total_volume: z.number(),
-    total_trades: z.number(),
+    totalVolume: z.number(),
+    totalTrades: z.number(),
   }),
 });
 
@@ -159,11 +173,26 @@ const { data: tokens } = views.PumpfunToken.list.use({
 for await (const token of a4.views.PumpfunToken.list.use({
   schema: TradableTokenSchema,
 })) {
-  console.log(token.id.mint, token.reserves.current_price_sol);
+  console.log(token.id.mint, token.reserves.currentPriceSol);
 }
 ```
 
-Any entity missing the required fields is silently excluded.
+Any entity missing the required fields is excluded.
+
+## Caller-Supplied Schema Diagnostics
+
+React's `onSchemaValidationError(diagnostic)` is scoped to the caller-supplied view schema. Its diagnostic has this shape:
+
+```typescript
+type SchemaValidationDiagnostic = {
+  view: string;
+  key?: string;
+  entity: unknown;
+  error: unknown;
+};
+```
+
+This callback is additive. Entities accepted by the schema continue through unchanged, and rejected entities remain excluded exactly as they were without the callback. It is separate from `onFrameValidationError`, which reports rejection by the generated wire-frame schemas before storage.
 
 ---
 

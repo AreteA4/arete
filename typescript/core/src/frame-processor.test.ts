@@ -242,9 +242,11 @@ describe('FrameProcessor', () => {
 
   it('rejects frames that fail both full and patch schemas', () => {
     const storage = new SortedStorageDecorator(new MemoryAdapter());
+    const onValidationError = vi.fn();
     const processor = new FrameProcessor(storage, {
       schemas: { SparseEntity: completeEntitySchema },
       patchSchemas: { SparseEntity: partialEntitySchema },
+      onValidationError,
     });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
@@ -261,7 +263,81 @@ describe('FrameProcessor', () => {
       '[Arete] Frame validation failed:',
       expect.objectContaining({ view: 'SparseEntity/list' }),
     );
+    expect(onValidationError).toHaveBeenCalledWith(expect.objectContaining({
+      view: 'SparseEntity/list',
+      key: 'invalid',
+      operation: 'upsert',
+    }));
     warnSpy.mockRestore();
+  });
+
+  it('reports rejected frames without logging when warnings are disabled', () => {
+    const onValidationError = vi.fn();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const processor = new FrameProcessor(new MemoryAdapter(), {
+      schemas: { SparseEntity: completeEntitySchema },
+      patchSchemas: { SparseEntity: partialEntitySchema },
+      warnOnValidationError: false,
+      onValidationError,
+    });
+
+    processor.handleFrame({
+      mode: 'list',
+      entity: 'SparseEntity/list',
+      op: 'upsert',
+      key: 'invalid',
+      seq: '9:000000000001',
+      data: { entity_id: 7 },
+    } satisfies EntityFrame);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(onValidationError).toHaveBeenCalledWith(expect.objectContaining({
+      key: 'invalid',
+      seq: '9:000000000001',
+    }));
+    warnSpy.mockRestore();
+  });
+
+  it('reports thrown schema transforms and continues a buffered batch', async () => {
+    vi.useFakeTimers();
+    try {
+      const onValidationError = vi.fn();
+      const storage = new MemoryAdapter();
+      const schema = z.object({ value: z.string() }).transform((value) => {
+        if (value.value === 'invalid') throw new Error('transform failed');
+        return value;
+      });
+      const processor = new FrameProcessor(storage, {
+        flushIntervalMs: 1,
+        schemas: { Item: schema },
+        warnOnValidationError: false,
+        onValidationError,
+      });
+
+      processor.handleFrame({
+        mode: 'list',
+        entity: 'Item/list',
+        op: 'upsert',
+        key: 'invalid',
+        data: { value: 'invalid' },
+      } satisfies EntityFrame);
+      processor.handleFrame({
+        mode: 'list',
+        entity: 'Item/list',
+        op: 'upsert',
+        key: 'valid',
+        data: { value: 'valid' },
+      } satisfies EntityFrame);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onValidationError).toHaveBeenCalledWith(expect.objectContaining({
+        key: 'invalid',
+        error: expect.objectContaining({ message: 'transform failed' }),
+      }));
+      expect(storage.get('Item/list', 'valid')).toEqual({ value: 'valid' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('normalizes patch payloads before merge and append-path handling', () => {
@@ -415,8 +491,10 @@ describe('FrameProcessor', () => {
     });
 
     const subscribed: SubscribedFrame = {
+      protocolVersion: 2,
+      subscriptionId: 'positions:all',
       op: 'subscribed',
-      view: 'TokenPosition/list',
+      query: { view: 'TokenPosition/list' },
       mode: 'list',
       sort: {
         field: ['_seq'],
@@ -454,8 +532,10 @@ describe('FrameProcessor', () => {
     });
 
     processor.handleFrame({
+      protocolVersion: 2,
+      subscriptionId: 'positions:all',
       op: 'subscribed',
-      view: 'TokenPosition/list',
+      query: { view: 'TokenPosition/list' },
       mode: 'list',
       sort: {
         field: ['total_deposit'],

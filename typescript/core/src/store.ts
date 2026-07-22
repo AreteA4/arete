@@ -282,7 +282,7 @@ export class EntityStore {
   }
 
   private handleSubscribedFrame(frame: SubscribedFrame): void {
-    const viewPath = frame.view;
+    const viewPath = frame.query.view;
     const config: ViewConfig = {};
 
     if (frame.sort) {
@@ -333,8 +333,8 @@ export class EntityStore {
     const previousValue = viewData.get(frame.key) as T | undefined;
 
     switch (frame.op) {
-      case 'create':
       case 'upsert':
+        if (frame.data === null) break;
         viewData.set(frame.key, frame.data);
         this.enforceMaxEntries(viewData);
         this.notifyUpdate(viewPath, frame.key, {
@@ -346,6 +346,7 @@ export class EntityStore {
         break;
 
       case 'patch': {
+        if (frame.data === null) break;
         const existing = viewData.get(frame.key);
         const appendPaths = frame.append ?? [];
         
@@ -363,6 +364,9 @@ export class EntityStore {
         this.notifyRichUpdate(viewPath, frame.key, previousValue, merged as T, 'patch', frame.data);
         break;
       }
+
+      case 'remove':
+        break;
 
       case 'delete':
         viewData.delete(frame.key);

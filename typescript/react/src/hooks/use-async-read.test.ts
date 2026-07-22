@@ -7,7 +7,11 @@ jest.mock('react', () => ({
 
 import { useEffect, useRef, useState } from 'react';
 
-import { useAsyncRead, type AsyncReadContext } from './use-async-read';
+import {
+  useAsyncRead,
+  type AsyncReadContext,
+  type UseAsyncReadOptions,
+} from './use-async-read';
 
 const mockUseState = useState as jest.Mock;
 const mockUseRef = useRef as jest.Mock;
@@ -15,7 +19,7 @@ const mockUseEffect = useEffect as jest.Mock;
 
 function renderRead<T>(
   read: (context: AsyncReadContext) => Promise<T>,
-  options?: { enabled?: boolean; initialData?: T }
+  options?: UseAsyncReadOptions<T>
 ) {
   let currentState: Record<string, unknown> = {};
   const cleanups: Array<() => void> = [];
@@ -43,6 +47,7 @@ function renderRead<T>(
 
 describe('useAsyncRead', () => {
   beforeEach(() => {
+    jest.useRealTimers();
     mockUseState.mockReset();
     mockUseRef.mockReset();
     mockUseRef.mockImplementation((value: unknown) => ({ current: value }));
@@ -93,6 +98,85 @@ describe('useAsyncRead', () => {
     });
   });
 
+  it('never exposes data fetched for different arguments', async () => {
+    let currentState: Record<string, unknown> | undefined;
+    mockUseState.mockImplementation((initial: unknown) => {
+      if (currentState === undefined) {
+        currentState = typeof initial === 'function'
+          ? (initial as () => Record<string, unknown>)()
+          : initial as Record<string, unknown>;
+      }
+      return [currentState, (update: unknown) => {
+        currentState = typeof update === 'function'
+          ? (update as (state: Record<string, unknown>) => Record<string, unknown>)(currentState)
+          : update as Record<string, unknown>;
+      }];
+    });
+
+    let resolveRead: ((value: string) => void) | undefined;
+    const read = jest.fn(() => new Promise<string>((resolve) => {
+      resolveRead = resolve;
+    }));
+
+    mockUseEffect.mockImplementation((effect: () => void | (() => void)) => {
+      effect();
+    });
+    const first = useAsyncRead('a', read);
+    expect(first.isLoading).toBe(true);
+    resolveRead!('result-a');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(currentState).toMatchObject({ data: 'result-a', isLoading: false });
+
+    // React renders with the new key before effects flush: the hook must not
+    // expose the previous key's data for even one frame.
+    mockUseEffect.mockImplementation(() => undefined);
+    const second = useAsyncRead('b', read);
+    expect(second.data).toBeUndefined();
+    expect(second.isLoading).toBe(true);
+
+    // Once the key-change effect commits, the new read starts.
+    mockUseEffect.mockImplementation((effect: () => void | (() => void)) => {
+      effect();
+    });
+    useAsyncRead('b', read);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not report ready while the same key becomes enabled', () => {
+    let currentState: Record<string, unknown> | undefined;
+    mockUseState.mockImplementation((initial: unknown) => {
+      if (currentState === undefined) {
+        currentState = typeof initial === 'function'
+          ? (initial as () => Record<string, unknown>)()
+          : initial as Record<string, unknown>;
+      }
+      return [currentState, (update: unknown) => {
+        currentState = typeof update === 'function'
+          ? (update as (state: Record<string, unknown>) => Record<string, unknown>)(currentState!)
+          : update as Record<string, unknown>;
+      }];
+    });
+    mockUseEffect.mockImplementation(() => undefined);
+    const read = jest.fn(async () => 'value');
+
+    const connecting = useAsyncRead('same-key', read, {
+      enabled: false,
+      disabledStatus: 'connecting',
+    });
+    expect(connecting).toMatchObject({
+      status: 'connecting',
+      isPending: true,
+      isReady: false,
+      isEmpty: false,
+    });
+
+    const enabled = useAsyncRead('same-key', read, { enabled: true });
+    expect(enabled.status).toBe('loading');
+    expect(enabled.isPending).toBe(true);
+    expect(enabled.isLoading).toBe(true);
+  });
+
   it('does not run while disabled and aborts an active read on unmount', async () => {
     const disabledRead = jest.fn(async () => 'unused');
     const disabled = renderRead(disabledRead, { enabled: false });
@@ -110,5 +194,18 @@ describe('useAsyncRead', () => {
     });
     active.unmount();
     expect(signal?.aborted).toBe(true);
+  });
+
+  it('debounces automatic reads while keeping refresh immediate', async () => {
+    jest.useFakeTimers();
+    const execute = jest.fn(async () => 'value');
+    const rendered = renderRead(execute, { debounceMs: 300 });
+
+    expect(execute).not.toHaveBeenCalled();
+    await expect(rendered.read.refresh()).resolves.toBe('value');
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(300);
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 });

@@ -73,9 +73,10 @@ pub use websocket::{
     AllowAllAuthPlugin, AuthContext, AuthDecision, AuthDeny, AuthErrorDetails, ChannelUsageEmitter,
     ClientInfo, ClientManager, ConnectionAuthRequest, ErrorResponse, Frame, HttpUsageEmitter, Mode,
     RateLimitConfig, RateLimitResult, RateLimiterConfig, RefreshAuthRequest, RefreshAuthResponse,
-    RetryPolicy, SignedSessionAuthPlugin, SocketIssueMessage, StaticTokenAuthPlugin, Subscription,
-    WebSocketAuthPlugin, WebSocketRateLimiter, WebSocketServer, WebSocketUsageBatch,
-    WebSocketUsageEmitter, WebSocketUsageEnvelope, WebSocketUsageEvent,
+    RetryPolicy, SignedSessionAuthPlugin, SnapshotOptions, SocketIssueMessage,
+    StaticTokenAuthPlugin, Subscription, SubscriptionQuery, WebSocketAuthPlugin,
+    WebSocketRateLimiter, WebSocketServer, WebSocketUsageBatch, WebSocketUsageEmitter,
+    WebSocketUsageEnvelope, WebSocketUsageEvent,
 };
 
 use anyhow::Result;

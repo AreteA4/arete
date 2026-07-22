@@ -30,22 +30,22 @@ When a new `OreRound` entity is created, Arete sees the `TokenMetadata` field, r
 
 ```typescript
 for await (const round of a4.views.OreRound.latest.use()) {
-  console.log(round.ore_metadata?.name);     // "Ore"
-  console.log(round.ore_metadata?.symbol);   // "ORE"
-  console.log(round.ore_metadata?.decimals); // 11
-  console.log(round.ore_metadata?.logo_uri); // "https://..."
+  console.log(round.oreMetadata?.name);    // "Ore"
+  console.log(round.oreMetadata?.symbol);  // "ORE"
+  console.log(round.oreMetadata?.decimals);// 11
+  console.log(round.oreMetadata?.logoUri); // "https://..."
 }
 ```
 
 ### TokenMetadata Fields
 
-| Field      | Type             | Description                       |
-| ---------- | ---------------- | --------------------------------- |
-| `mint`     | `string`         | The mint address (always present) |
-| `name`     | `string \| null` | Token name from on-chain metadata |
-| `symbol`   | `string \| null` | Token ticker symbol               |
-| `decimals` | `number \| null` | Number of decimal places          |
-| `logo_uri` | `string \| null` | URL to the token's logo image     |
+| Field      | Type             | Description                                           |
+| ---------- | ---------------- | ----------------------------------------------------- |
+| `mint`     | `string`         | The mint address (always present)                     |
+| `name`     | `string \| null` | Token name from on-chain metadata                     |
+| `symbol`   | `string \| null` | Token ticker symbol                                   |
+| `decimals` | `number \| null` | Number of decimal places                              |
+| `logoUri`  | `string \| null` | URL to the token's logo image in generated TypeScript |
 
 ### Generated TypeScript
 
@@ -58,7 +58,7 @@ export interface TokenMetadata {
   name?: string | null;
   symbol?: string | null;
   decimals?: number | null;
-  logo_uri?: string | null;
+  logoUri?: string | null;
 }
 
 export const TokenMetadataSchema = z.object({
@@ -66,7 +66,7 @@ export const TokenMetadataSchema = z.object({
   name: z.string().nullable().optional(),
   symbol: z.string().nullable().optional(),
   decimals: z.number().nullable().optional(),
-  logo_uri: z.string().nullable().optional(),
+  logoUri: z.string().nullable().optional(),
 });
 ```
 
@@ -99,11 +99,11 @@ pub struct OreRound {
 }
 ```
 
-On the client, `motherlode_ui` arrives as a ready-to-display number:
+On the client, `motherlodeUi` arrives as a ready-to-display number:
 
 ```typescript
 for await (const round of a4.views.OreRound.latest.use()) {
-  console.log(round.motherlode_ui); // 1.5 (human-readable ORE amount)
+  console.log(round.motherlodeUi); // 1.5 (human-readable ORE amount)
 }
 ```
 

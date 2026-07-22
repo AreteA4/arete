@@ -1,0 +1,32 @@
+{
+  "name": "incremental cursor snapshot",
+  "client": [
+    {
+      "type": "subscribe",
+      "protocolVersion": 2,
+      "subscriptionId": "orders:resume",
+      "query": {
+        "view": "Order/list",
+        "after": "40:000000000010",
+        "snapshotLimit": 100
+      },
+      "snapshot": { "enabled": true }
+    }
+  ],
+  "server": [
+    {
+      "protocolVersion": 2,
+      "subscriptionId": "orders:resume",
+      "snapshotId": "snapshot-resume-1",
+      "authoritative": false,
+      "mode": "list",
+      "entity": "Order/list",
+      "op": "snapshot",
+      "data": [
+        { "key": "order-11", "data": { "_seq": "40:000000000011" } },
+        { "key": "order-12", "data": { "_seq": "40:000000000012" } }
+      ],
+      "complete": true
+    }
+  ]
+}

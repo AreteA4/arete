@@ -1177,8 +1177,8 @@ impl<S> TypedCompiler<S> {
     ) -> Vec<OpCode> {
         let mut ops = Vec::new();
 
-        // First, try to load __resolved_primary_key from resolver
-        // This allows resolvers to override the key resolution
+        // Resolvers provide either a final key or an intermediate lookup key,
+        // depending on the handler strategy.
         let resolved_key_reg = 19; // Use a temp register
         ops.push(OpCode::LoadEventField {
             path: FieldPath::new(&["__resolved_primary_key"]),
@@ -1189,12 +1189,6 @@ impl<S> TypedCompiler<S> {
         // Now do the normal key resolution
         match resolution {
             KeyResolutionStrategy::Embedded { primary_field } => {
-                // Copy resolver result to key_reg (may be null)
-                ops.push(OpCode::CopyRegister {
-                    source: resolved_key_reg,
-                    dest: key_reg,
-                });
-
                 // Enhanced key resolution: check for auto-inheritance when primary_field is empty
                 let effective_primary_field = if primary_field.segments.is_empty() {
                     // Try to auto-detect primary field from account schema
@@ -1233,21 +1227,31 @@ impl<S> TypedCompiler<S> {
                             dest: transform_reg,
                             transformation: transform,
                         });
-                        // Use transformed value as key
-                        ops.push(OpCode::CopyRegisterIfNull {
+                        // A concrete embedded key belongs to this entity and
+                        // must win over a resolver result injected for another
+                        // handler consuming the same event.
+                        ops.push(OpCode::CopyRegister {
                             source: transform_reg,
                             dest: key_reg,
                         });
                     } else {
-                        // No transformation, use raw value
-                        ops.push(OpCode::CopyRegisterIfNull {
+                        // No transformation, use raw value.
+                        ops.push(OpCode::CopyRegister {
                             source: temp_reg,
                             dest: key_reg,
                         });
                     }
+                    ops.push(OpCode::CopyRegisterIfNull {
+                        source: resolved_key_reg,
+                        dest: key_reg,
+                    });
+                } else {
+                    // Resolver-only embedded handlers have no local key field.
+                    ops.push(OpCode::CopyRegister {
+                        source: resolved_key_reg,
+                        dest: key_reg,
+                    });
                 }
-                // If effective_primary_field is empty, key_reg will only contain __resolved_primary_key
-                // (loaded earlier at line 513-522), or remain null if resolver didn't set it
             }
             KeyResolutionStrategy::Lookup { primary_field } => {
                 let lookup_reg = 15;
@@ -2082,6 +2086,47 @@ mod tests {
         })
     }
 
+    fn embedded_account_key_spec() -> TypedStreamSpec<Value> {
+        TypedStreamSpec::from_serializable(SerializableStreamSpec {
+            ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
+            state_name: "OreTreasury".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.address".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![SerializableHandlerSpec {
+                source: SourceSpec::Source {
+                    program_id: None,
+                    discriminator: None,
+                    type_name: "ore::TreasuryState".to_string(),
+                    serialization: None,
+                    is_account: true,
+                },
+                key_resolution: KeyResolutionStrategy::Embedded {
+                    primary_field: FieldPath::new(&["__account_address"]),
+                },
+                mappings: vec![mapping(
+                    "id.address",
+                    &["__account_address"],
+                    PopulationStrategy::SetOnce,
+                )],
+                conditions: vec![],
+                emit: true,
+            }],
+            sections: vec![],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        })
+    }
+
     #[test]
     fn lookup_account_handler_uses_resolved_primary_key_when_hook_seeds_primary_key() {
         let bytecode = MultiEntityBytecode::from_single(
@@ -2141,5 +2186,32 @@ mod tests {
             .unwrap();
 
         assert!(mutations.is_empty());
+    }
+
+    #[test]
+    fn embedded_account_key_wins_over_an_unrelated_resolved_key() {
+        let bytecode = MultiEntityBytecode::from_single(
+            "OreTreasury".to_string(),
+            embedded_account_key_spec(),
+            0,
+        );
+        let mut vm = VmContext::new();
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({
+                    "__account_address": "treasury_pda",
+                    "__resolved_primary_key": "round_address",
+                }),
+                "ore::TreasuryState",
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].key, json!("treasury_pda"));
+        assert_eq!(mutations[0].patch["id"]["address"], json!("treasury_pda"));
     }
 }

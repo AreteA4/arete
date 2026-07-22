@@ -15,12 +15,14 @@ import { AreteError, parseErrorCode, shouldRefreshToken } from './types';
 import { ConnectionManager } from './connection';
 import {
   FrameProcessor,
+  type FrameValidationDiagnostic,
   type WaitForProcessedSlotOptions,
 } from './frame-processor';
 import { MemoryAdapter } from './storage/memory-adapter';
 import type { StorageAdapter } from './storage/adapter';
 import { SortedStorageDecorator } from './storage/sorted-decorator';
 import { SubscriptionRegistry } from './subscription';
+import { QueryStore } from './query-store';
 import { createTypedViews } from './views';
 import type { Frame } from './frame';
 import type { WalletAdapter, BuiltInstruction, SendOptions } from './wallet/types';
@@ -164,11 +166,21 @@ export interface ConnectOptions<TPrograms extends ProgramMap | undefined = undef
   transport?: 'ws' | 'http';
   storage?: StorageAdapter;
   maxEntriesPerView?: number | null;
+  /** Connect immediately when the client is created (defaults to true). */
+  autoConnect?: boolean;
+  /** Reconnect automatically after an established connection is lost (defaults to true). */
   autoReconnect?: boolean;
   reconnectIntervals?: number[];
   maxReconnectAttempts?: number;
   flushIntervalMs?: number;
+  /**
+   * Generated schemas are always applied to normalize typed entities. Set this
+   * to `false` to suppress console warnings for rejected frames while keeping
+   * schema normalization and `onFrameValidationError` active.
+   */
   validateFrames?: boolean;
+  /** Observe generated-schema rejections without scraping console warnings. */
+  onFrameValidationError?: (diagnostic: FrameValidationDiagnostic) => void;
   /** Authentication configuration */
   auth?: import('./types').AuthConfig;
   /** Default wallet adapter used for instruction execution (overridable per call). */
@@ -191,6 +203,7 @@ export interface AreteOptionsWithStorage<TStack extends StackDefinition> extends
   wallet?: WalletAdapter;
   fetch?: typeof fetch;
   execution?: OperationExecutionOptions<any>;
+  onFrameValidationError?: (diagnostic: FrameValidationDiagnostic) => void;
 }
 
 export interface TransactionOptions<TSigner = unknown> {
@@ -308,11 +321,37 @@ export type ConnectedArete<
   TExtensions = TStack,
 > = Arete<TStack> & StackConnectedExtensions<TExtensions>;
 
+function composeExecutionCallbacks<T>(
+  defaultCallback: ((value: T) => void | Promise<void>) | undefined,
+  callCallback: ((value: T) => void | Promise<void>) | undefined
+): ((value: T) => Promise<void>) | undefined {
+  if (!defaultCallback) {
+    return callCallback
+      ? async (value) => { await callCallback(value); }
+      : undefined;
+  }
+  if (!callCallback) {
+    return async (value) => { await defaultCallback(value); };
+  }
+  return async (value) => {
+    const errors: unknown[] = [];
+    for (const callback of [defaultCallback, callCallback]) {
+      try {
+        await callback(value);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) throw errors[0];
+  };
+}
+
 export class Arete<TStack extends StackDefinition> {
   private readonly connection: ConnectionManager;
   private readonly storage: StorageAdapter;
   private readonly processor: FrameProcessor;
   private readonly subscriptionRegistry: SubscriptionRegistry;
+  private readonly queryStore: QueryStore;
   private readonly _views: TypedViews<TStack['views']>;
   private readonly _queries: QueriesInterface<TStack['queries']>;
   private readonly _programs: ProgramsInterface<TStack['programs']>;
@@ -336,22 +375,30 @@ export class Arete<TStack extends StackDefinition> {
     this.httpBaseUrl = httpBaseUrl;
     this.fetchImpl = options.fetch ?? this.resolveFetchImpl();
     this.storage = new SortedStorageDecorator(options.storage ?? new MemoryAdapter());
+    this.queryStore = new QueryStore(this.storage);
     this.processor = new FrameProcessor(this.storage, {
       maxEntriesPerView: options.maxEntriesPerView,
       flushIntervalMs: options.flushIntervalMs,
       schemas: this.stack.schemas,
       patchSchemas: this.stack.patchSchemas,
+      queryStore: this.queryStore,
+      warnOnValidationError: options.validateFrames !== false,
+      onValidationError: options.onFrameValidationError,
     });
     this.connection = new ConnectionManager({
       websocketUrl: url,
+      autoReconnect: options.autoReconnect,
       reconnectIntervals: options.reconnectIntervals,
       maxReconnectAttempts: options.maxReconnectAttempts,
       auth: options.auth,
     });
-    this.subscriptionRegistry = new SubscriptionRegistry(this.connection);
+    this.subscriptionRegistry = new SubscriptionRegistry(this.connection, this.queryStore);
 
     this.connection.onFrame((frame: Frame) => {
       this.processor.handleFrame(frame);
+    });
+    this.connection.onStateChange((state) => {
+      this.subscriptionRegistry.handleConnectionState(state);
     });
 
     this._views = createTypedViews(this.stack, this.storage, this.subscriptionRegistry);
@@ -577,8 +624,8 @@ export class Arete<TStack extends StackDefinition> {
     options?: ConnectOptions<TPrograms>
   ): Promise<ConnectedArete<StackWithAttachedPrograms<T, TPrograms>, T>> {
     const requestedUrl = options?.url ?? stack.endpoints.ws;
-    const autoReconnect = options?.autoReconnect !== false;
-    const httpOnly = options?.transport === 'http' || (!requestedUrl && !autoReconnect);
+    const autoConnect = options?.autoConnect !== false;
+    const httpOnly = options?.transport === 'http';
     const url = httpOnly ? null : requestedUrl;
     const httpUrl =
       options?.httpUrl
@@ -604,10 +651,12 @@ export class Arete<TStack extends StackDefinition> {
       storage: options?.storage,
       maxEntriesPerView: options?.maxEntriesPerView,
       flushIntervalMs: options?.flushIntervalMs,
+      autoConnect: options?.autoConnect,
       autoReconnect: options?.autoReconnect,
       reconnectIntervals: options?.reconnectIntervals,
       maxReconnectAttempts: options?.maxReconnectAttempts,
       validateFrames: options?.validateFrames,
+      onFrameValidationError: options?.onFrameValidationError,
       auth: options?.auth,
       wallet: options?.wallet,
       fetch: options?.fetch,
@@ -616,7 +665,7 @@ export class Arete<TStack extends StackDefinition> {
 
     const client = new Arete(url, httpUrl, internalOptions);
 
-    if (!httpOnly && autoReconnect) {
+    if (!httpOnly && autoConnect) {
       await client.connection.connect();
     }
 
@@ -720,12 +769,18 @@ export class Arete<TStack extends StackDefinition> {
       signerRegistry: options?.signerRegistry ?? defaults?.signerRegistry,
       availableSignerAddresses:
         options?.availableSignerAddresses ?? defaults?.availableSignerAddresses,
-      onTransactionStart:
-        options?.onTransactionStart ?? defaults?.onTransactionStart,
-      onTransactionSuccess:
-        options?.onTransactionSuccess ?? defaults?.onTransactionSuccess,
-      onCallbackError:
-        options?.onCallbackError ?? defaults?.onCallbackError,
+      onTransactionStart: composeExecutionCallbacks(
+        defaults?.onTransactionStart,
+        options?.onTransactionStart
+      ),
+      onTransactionSuccess: composeExecutionCallbacks(
+        defaults?.onTransactionSuccess,
+        options?.onTransactionSuccess
+      ),
+      onCallbackError: composeExecutionCallbacks(
+        defaults?.onCallbackError,
+        options?.onCallbackError
+      ),
     });
   }
 
@@ -832,5 +887,9 @@ export class Arete<TStack extends StackDefinition> {
 
   getSubscriptionRegistry(): SubscriptionRegistry {
     return this.subscriptionRegistry;
+  }
+
+  getQueryStore(): QueryStore {
+    return this.queryStore;
   }
 }

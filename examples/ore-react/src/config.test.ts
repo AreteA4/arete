@@ -1,41 +1,73 @@
-import { describe, expect, it } from 'vitest';
-import { resolveConfig } from './config';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-describe('endpoint safety', () => {
-  it('uses the generated production Arete pair without a public RPC by default', () => {
-    const config = resolveConfig({});
-    expect(config.areteWsUrl).toBe('wss://ore.stack.arete.run');
-    expect(config.areteHttpUrl).toBe('https://ore.stack.arete.run');
-    expect(config.transactionTransport).toBe('auto');
-    expect(config.solanaRpcUrl).toBeUndefined();
-    expect(config.publishableKey).toBeUndefined();
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe('appConfig', () => {
+  it('requires a publishable key for the default hosted endpoints', async () => {
+    vi.resetModules();
+    const { appConfig } = await import('./config');
+    expect(appConfig.areteOptions).toBeUndefined();
+    expect(appConfig.publishableKey).toBeUndefined();
+    expect(appConfig.configurationError).toContain('VITE_ARETE_PUBLISHABLE_KEY');
   });
 
-  it('requires paired overrides unless derivation is explicit', () => {
-    expect(() => resolveConfig({ VITE_ARETE_WS_URL: 'wss://example.test' })).toThrow(/requires/);
-    expect(() => resolveConfig({ VITE_ARETE_HTTP_URL: 'https://example.test' })).toThrow(/requires/);
-    expect(resolveConfig({
-      VITE_ARETE_WS_URL: 'wss://example.test',
-      VITE_DERIVE_ARETE_HTTP: 'true',
-    }).areteHttpUrl).toBe('https://example.test');
-    expect(resolveConfig({
-      VITE_ARETE_WS_URL: 'wss://stream.example.test',
-      VITE_ARETE_HTTP_URL: 'https://read.example.test',
-    }).areteHttpUrl).toBe('https://read.example.test');
+  it('allows credential-free local endpoints', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_ARETE_WS_URL', 'ws://127.0.0.1:8877');
+    vi.stubEnv('VITE_ARETE_HTTP_URL', 'http://127.0.0.1:8877');
+    const { appConfig } = await import('./config');
+
+    expect(appConfig.publishableKey).toBeUndefined();
+    expect(appConfig.configurationError).toBeNull();
   });
 
-  it('rejects explicitly non-mainnet Solana endpoints', () => {
-    const direct = { VITE_TRANSACTION_TRANSPORT: 'direct' } as const;
-    expect(() => resolveConfig({ ...direct, VITE_SOLANA_RPC_URL: 'https://api.devnet.solana.com' })).toThrow(/mainnet/);
-    expect(() => resolveConfig({ ...direct, VITE_SOLANA_RPC_URL: 'http://127.0.0.1:8899' })).toThrow(/mainnet/);
-    expect(() => resolveConfig({ ...direct, VITE_SOLANA_RPC_URL: 'https://rpc.example.com?cluster=testnet' })).toThrow(/mainnet/);
+  it('does not let blank overrides or credentials bypass hosted authentication', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_ARETE_WS_URL', '  ');
+    vi.stubEnv('VITE_ARETE_HTTP_URL', '');
+    vi.stubEnv('VITE_ARETE_PUBLISHABLE_KEY', '   ');
+    const { appConfig } = await import('./config');
+
+    expect(appConfig.areteOptions).toBeUndefined();
+    expect(appConfig.publishableKey).toBeUndefined();
+    expect(appConfig.configurationError).toContain('VITE_ARETE_PUBLISHABLE_KEY');
   });
 
-  it('requires an explicit RPC only in direct mode', () => {
-    expect(() => resolveConfig({ VITE_TRANSACTION_TRANSPORT: 'direct' })).toThrow(/required/);
-    expect(resolveConfig({
-      VITE_TRANSACTION_TRANSPORT: 'direct',
-      VITE_SOLANA_RPC_URL: 'https://mainnet.rpc.example.com',
-    }).solanaRpcUrl).toBe('https://mainnet.rpc.example.com');
+  it('honours env overrides', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_ARETE_WS_URL', 'wss://example.test');
+    vi.stubEnv('VITE_ARETE_HTTP_URL', 'https://example.test');
+    vi.stubEnv('VITE_ARETE_PUBLISHABLE_KEY', 'pk_test');
+    const { appConfig } = await import('./config');
+    expect(appConfig.areteOptions).toEqual({
+      url: 'wss://example.test',
+      httpUrl: 'https://example.test',
+    });
+    expect(appConfig.publishableKey).toBe('pk_test');
+    expect(appConfig.configurationError).toBeNull();
+  });
+
+  it('rejects malformed endpoint overrides before connecting', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_ARETE_WS_URL', 'not-a-url');
+    vi.stubEnv('VITE_ARETE_HTTP_URL', 'ftp://example.test');
+    const { appConfig } = await import('./config');
+
+    expect(appConfig.configurationError).toBe(
+      'VITE_ARETE_WS_URL must be a valid URL.',
+    );
+  });
+
+  it('rejects endpoint overrides with the wrong protocol', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_ARETE_WS_URL', 'https://example.test');
+    vi.stubEnv('VITE_ARETE_HTTP_URL', 'wss://example.test');
+    const { appConfig } = await import('./config');
+
+    expect(appConfig.configurationError).toBe(
+      'VITE_ARETE_WS_URL must use ws: or wss:.',
+    );
   });
 });

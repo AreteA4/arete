@@ -1,4 +1,4 @@
-use arete_sdk::{parse_snapshot_entities, Frame, Operation};
+use arete_sdk::{Frame, SnapshotEntity};
 use ratatui::widgets::ListState;
 use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
@@ -164,6 +164,13 @@ pub struct App {
     stream_start: std::time::Instant,
     pub dropped_frames: std::sync::Arc<std::sync::atomic::AtomicU64>,
     filtered_cache: Option<Vec<String>>,
+    pending_snapshot: Option<PendingSnapshot>,
+}
+
+struct PendingSnapshot {
+    id: String,
+    authoritative: bool,
+    rows: Vec<SnapshotEntity>,
 }
 
 impl App {
@@ -203,6 +210,7 @@ impl App {
             stream_start: std::time::Instant::now(),
             dropped_frames,
             filtered_cache: None,
+            pending_snapshot: None,
         }
     }
 
@@ -233,6 +241,25 @@ impl App {
         }
     }
 
+    fn apply_removal(&mut self, key: String, seq: Option<String>, op: &str) {
+        let removed_pos = self.entity_keys.iter().position(|item| item == &key);
+        self.store.remove(&key, op, seq);
+        self.entity_key_set.remove(&key);
+        self.entity_keys.retain(|item| item != &key);
+        self.update_count += 1;
+        if let Some(pos) = removed_pos {
+            if pos < self.selected_index && self.selected_index > 0 {
+                self.selected_index -= 1;
+            }
+        }
+        if self.selected_index >= self.entity_keys.len() && !self.entity_keys.is_empty() {
+            self.selected_index = self.entity_keys.len() - 1;
+        }
+        self.history_position = 0;
+        self.history_anchor = None;
+        self.scroll_offset = 0;
+    }
+
     pub fn apply_frame(&mut self, frame: Frame) {
         // Invalidation is cheap (sets to None). The cache is only rebuilt once per
         // render tick in ensure_filtered_cache(), not per-frame, since we drain all
@@ -241,65 +268,108 @@ impl App {
 
         // Always collect raw frames so toggling on shows recent data
         let raw_frame = frame.clone();
-        let op = frame.operation();
+        match frame {
+            Frame::Snapshot {
+                snapshot_id,
+                authoritative,
+                data,
+                complete,
+                ..
+            } => {
+                let pending = self
+                    .pending_snapshot
+                    .get_or_insert_with(|| PendingSnapshot {
+                        id: snapshot_id.clone(),
+                        authoritative,
+                        rows: Vec::new(),
+                    });
+                if pending.id != snapshot_id || pending.authoritative != authoritative {
+                    self.set_status("Invalid snapshot batch sequence");
+                    self.pending_snapshot = None;
+                } else {
+                    for row in data {
+                        if let Some(existing) =
+                            pending.rows.iter_mut().find(|item| item.key == row.key)
+                        {
+                            *existing = row;
+                        } else {
+                            pending.rows.push(row);
+                        }
+                    }
+                }
 
-        match op {
-            Operation::Snapshot => {
-                let entities = parse_snapshot_entities(&frame.data);
-                let count = entities.len() as u64;
-                for entity in entities {
-                    self.store
-                        .upsert(&entity.key, entity.data, "snapshot", None);
-                    if self.entity_key_set.insert(entity.key.clone()) {
-                        self.entity_keys.push(entity.key);
+                if complete {
+                    let Some(snapshot) = self.pending_snapshot.take() else {
+                        self.raw_frames
+                            .push_back((std::time::Instant::now(), raw_frame.clone()));
+                        while self.raw_frames.len() > 1000 {
+                            self.raw_frames.pop_front();
+                        }
+                        return;
+                    };
+                    if snapshot.authoritative {
+                        let retained: HashSet<&str> =
+                            snapshot.rows.iter().map(|row| row.key.as_str()).collect();
+                        let removed: Vec<String> = self
+                            .entity_keys
+                            .iter()
+                            .filter(|key| !retained.contains(key.as_str()))
+                            .cloned()
+                            .collect();
+                        for key in removed {
+                            self.store.remove(&key, "remove", None);
+                            self.entity_key_set.remove(&key);
+                        }
+                        self.entity_keys
+                            .retain(|key| retained.contains(key.as_str()));
+                        if self.selected_index >= self.entity_keys.len()
+                            && !self.entity_keys.is_empty()
+                        {
+                            self.selected_index = self.entity_keys.len() - 1;
+                        }
                     }
+
+                    let count = snapshot.rows.len() as u64;
+                    for entity in snapshot.rows {
+                        self.store
+                            .upsert(&entity.key, entity.data, "snapshot", None);
+                        if self.entity_key_set.insert(entity.key.clone()) {
+                            self.entity_keys.push(entity.key);
+                        }
+                    }
+                    self.update_count += count;
                 }
-                self.update_count += count;
             }
-            Operation::Upsert | Operation::Create => {
-                let key = frame.key.clone();
-                let seq = frame.seq.clone();
+            Frame::Upsert { key, data, seq, .. } => {
                 let len_before = self.store.history_len(&key);
-                self.store.upsert(&key, frame.data, &frame.op, seq);
+                self.store.upsert(&key, data, "upsert", seq);
                 self.compensate_history_anchor(&key, len_before);
                 if self.entity_key_set.insert(key.clone()) {
                     self.entity_keys.push(key);
                 }
                 self.update_count += 1;
             }
-            Operation::Patch => {
-                let key = frame.key.clone();
-                let seq = frame.seq.clone();
+            Frame::Patch {
+                key,
+                data,
+                append,
+                seq,
+                ..
+            } => {
                 let len_before = self.store.history_len(&key);
-                self.store.patch(&key, &frame.data, &frame.append, seq);
+                self.store.patch(&key, &data, &append, seq);
                 self.compensate_history_anchor(&key, len_before);
                 if self.entity_key_set.insert(key.clone()) {
                     self.entity_keys.push(key);
                 }
                 self.update_count += 1;
             }
-            Operation::Delete => {
-                let deleted_pos = self.entity_keys.iter().position(|k| k == &frame.key);
-                self.store.delete(&frame.key);
-                self.entity_key_set.remove(&frame.key);
-                self.entity_keys.retain(|k| k != &frame.key);
-                self.update_count += 1;
-                // If deleted entity was before cursor, shift cursor back to preserve selection
-                if let Some(pos) = deleted_pos {
-                    if pos < self.selected_index && self.selected_index > 0 {
-                        self.selected_index -= 1;
-                    }
-                }
-                if self.selected_index >= self.entity_keys.len() && !self.entity_keys.is_empty() {
-                    self.selected_index = self.entity_keys.len() - 1;
-                }
-                self.history_position = 0;
-                self.history_anchor = None;
-                self.scroll_offset = 0;
-            }
-            Operation::Subscribed => {
+            Frame::Remove { key, seq, .. } => self.apply_removal(key, seq, "remove"),
+            Frame::Delete { key, seq, .. } => self.apply_removal(key, seq, "delete"),
+            Frame::Subscribed { .. } => {
                 self.set_status("Subscribed");
             }
+            Frame::Unsubscribed { .. } => self.set_status("Unsubscribed"),
         }
 
         self.raw_frames
@@ -633,17 +703,21 @@ impl App {
     pub fn selected_entity_data(&self) -> Option<String> {
         let key = self.selected_key()?;
 
-        // Raw mode: show the most recent raw frame for this entity key.
-        // Snapshot frames have key="" (entities are in data array), so fall back
-        // to showing the merged state with a note for snapshot-only entities.
+        // Raw mode: show the most recent raw frame containing this entity key.
         if self.show_raw {
-            if let Some((_, raw)) = self.raw_frames.iter().rev().find(|(_, f)| f.key == key) {
+            if let Some((_, raw)) = self.raw_frames.iter().rev().find(|(_, frame)| match frame {
+                Frame::Snapshot { data, .. } => data.iter().any(|row| row.key == key),
+                Frame::Upsert { key: frame_key, .. }
+                | Frame::Patch { key: frame_key, .. }
+                | Frame::Remove { key: frame_key, .. }
+                | Frame::Delete { key: frame_key, .. } => frame_key == &key,
+                Frame::Subscribed { .. } | Frame::Unsubscribed { .. } => false,
+            }) {
                 return Some(serde_json::to_string_pretty(raw).unwrap_or_default());
             }
-            // Entity was ingested via snapshot batch — no individual raw frame exists
             let record = self.store.get(&key)?;
             let fallback = serde_json::json!({
-                "_note": "Received via snapshot batch (no individual raw frame)",
+                "_note": "No raw frame retained for this entity",
                 "key": key,
                 "data": record.current,
             });

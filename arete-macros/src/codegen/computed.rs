@@ -837,19 +837,23 @@ pub fn generate_computed_expr_code_with_cache(
                                     let mapped: Vec<_> = arr
                                         .iter()
                                         .filter_map(|elem| {
-                                            elem.as_u64().and_then(|#param_ident| {
-                                                let result = #body_code;
-                                                arete::runtime::serde_json::to_value(result).ok()
-                                            })
+                                            elem.as_u64()
+                                                .or_else(|| elem.as_str().and_then(|text| text.parse::<u64>().ok()))
+                                                .and_then(|#param_ident| {
+                                                    let result = #body_code;
+                                                    arete::runtime::serde_json::to_value(result).ok()
+                                                })
                                         })
                                         .collect();
                                     arete::runtime::serde_json::to_value(mapped).ok()
                                 } else {
                                     // Handle single value
-                                    v.as_u64().and_then(|#param_ident| {
-                                        let result = #body_code;
-                                        arete::runtime::serde_json::to_value(result).ok()
-                                    })
+                                    v.as_u64()
+                                        .or_else(|| v.as_str().and_then(|text| text.parse::<u64>().ok()))
+                                        .and_then(|#param_ident| {
+                                            let result = #body_code;
+                                            arete::runtime::serde_json::to_value(result).ok()
+                                        })
                                 }
                             });
                             map_result

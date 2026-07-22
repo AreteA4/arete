@@ -100,6 +100,33 @@ The adapter performs these steps:
 
 The Web3.js adapter currently requires v0 wallet support and does not accept address lookup table accounts.
 
+## React mutations and reconciliation
+
+Generated program operations exposed by `useArete` have `.useMutation()` hooks. A semantic mutation prepares the operation before wallet approval, so protocol-specific preparation can re-read authoritative accounts and reject stale input.
+
+```tsx
+const arete = useArete(MY_STACK);
+const deposit = arete.programs.myProgram.transactions.deposit.useMutation();
+
+await deposit.submit(args, {
+  reconcile: {
+    refresh: [position, quote],
+  },
+});
+```
+
+In WebSocket mode, generated program mutations reconcile by default after chain confirmation. The hook waits for the stack's processed-slot watermark to reach the highest completed receipt slot, then refreshes the supplied hook results or runs supplied callbacks. This ordering prevents a confirmed mutation from settling before the stream has processed its slot.
+
+The boundary is intentionally narrow:
+
+- A processed-slot watermark does not guarantee that a particular entity changed.
+- One-shot quotes and reads do not refresh unless included in `reconcile.refresh` or refreshed manually.
+- A pre-submit quote is a preview, not a reservation. Preparation must revalidate authoritative accounts where staleness matters.
+- A reconciliation timeout produces `confirmed-unreconciled`; it does not undo, retry, or reject the confirmed chain result.
+- `onConfirmed` runs after chain confirmation. `onSuccess` runs after successful reconciliation, or immediately when reconciliation is disabled or skipped.
+
+Pass `reconcile: false` for confirmation-only behavior, `{ timeoutMs, refresh }` to customize the default, or a function to replace processed-slot reconciliation. HTTP-only mutations and results without a receipt slot skip the default.
+
 ## Raw instructions
 
 You can submit manually composed generated instructions through the same transport:

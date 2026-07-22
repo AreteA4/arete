@@ -64,6 +64,16 @@ describe('createSession', () => {
     await expect(createSession({})).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
   });
 
+  it('supports independent per-stack initial connection policy', async () => {
+    const session = await createSession(
+      { stacks: { squads: SQUADS_STACK } },
+      { stacks: { squads: { autoConnect: false, autoReconnect: true } } },
+    );
+
+    expect(session.stacks.squads.connectionState).toBe('disconnected');
+    session.close();
+  });
+
   it('uses an explicitly injected canonical chain client', async () => {
     const chain = { exists: vi.fn(async () => true) } as unknown as ChainClient;
     const session = await createSession(

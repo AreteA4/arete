@@ -1,15 +1,13 @@
 //! Subscription registry: tracks which views each connection is subscribed to.
 //!
-//! The SDK's `ConnectionManager` already multiplexes many subscriptions over
-//! a single WebSocket and dedupes them internally. This registry exists only
-//! to give the MCP layer stable opaque `subscription_id`s that map back to
-//! `(connection_id, view, key)` so query tools can look up the right cache.
-//!
-//! Per the v1 plan: snapshot only, no filters yet. Filter wiring lands in step 5.
+//! The SDK's `ConnectionManager` multiplexes subscriptions over one WebSocket
+//! and reference-counts equivalent protocol v2 queries. This registry keeps
+//! each SDK lease alive and maps MCP subscription IDs to the effective wire
+//! subscription ID used by exact query-membership reads.
 
 use std::sync::Arc;
 
-use arete_sdk::{Subscription, Unsubscription};
+use arete_sdk::SubscriptionLease;
 use dashmap::DashMap;
 use uuid::Uuid;
 
@@ -17,32 +15,13 @@ use crate::connections::ConnectionId;
 
 pub type SubscriptionId = String;
 
-#[derive(Clone)]
 pub struct SubscriptionEntry {
     pub id: SubscriptionId,
     pub connection_id: ConnectionId,
     pub view: String,
     pub key: Option<String>,
-}
-
-impl SubscriptionEntry {
-    /// Build the SDK Subscription this entry represents.
-    pub fn to_sdk_subscription(&self) -> Subscription {
-        let mut sub = Subscription::new(&self.view);
-        if let Some(k) = &self.key {
-            sub = sub.with_key(k);
-        }
-        sub
-    }
-
-    /// Build the SDK Unsubscription this entry represents.
-    pub fn to_sdk_unsubscription(&self) -> Unsubscription {
-        let mut un = Unsubscription::new(&self.view);
-        if let Some(k) = &self.key {
-            un = un.with_key(k);
-        }
-        un
-    }
+    pub wire_subscription_id: String,
+    _lease: SubscriptionLease,
 }
 
 #[derive(Clone, Default)]
@@ -55,21 +34,27 @@ impl SubscriptionRegistry {
         Self::default()
     }
 
-    /// Register a new subscription. The caller is responsible for actually
-    /// telling the `ConnectionManager` to subscribe — this only tracks the id
-    /// → (connection, view, key) mapping.
+    pub fn next_id(&self) -> SubscriptionId {
+        Uuid::new_v4().simple().to_string()
+    }
+
+    /// Register a subscribed SDK lease under its MCP-facing ID.
     pub fn insert(
         &self,
+        id: SubscriptionId,
         connection_id: ConnectionId,
         view: String,
         key: Option<String>,
+        lease: SubscriptionLease,
     ) -> Arc<SubscriptionEntry> {
-        let id = Uuid::new_v4().simple().to_string();
+        let wire_subscription_id = lease.subscription_id().to_string();
         let entry = Arc::new(SubscriptionEntry {
             id: id.clone(),
             connection_id,
             view,
             key,
+            wire_subscription_id,
+            _lease: lease,
         });
         self.inner.insert(id, entry.clone());
         entry

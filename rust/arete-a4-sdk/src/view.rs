@@ -36,7 +36,8 @@ use crate::stream::{EntityStream, KeyFilter, RichEntityStream, Update, UseStream
 use futures_util::Stream;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::collections::HashMap;
+use serde_json::Value;
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -64,13 +65,19 @@ where
     /// up to that many items. Use `.first()` on the result if you need
     /// a single item.
     pub async fn get(&self) -> Vec<T> {
-        self.connection
+        let Ok(lease) = self
+            .connection
             .ensure_subscription(&self.view_path, None)
+            .await
+        else {
+            return Vec::new();
+        };
+        self.store
+            .wait_for_subscription_ready(lease.subscription_id(), self.initial_data_timeout)
             .await;
         self.store
-            .wait_for_view_ready(&self.view_path, self.initial_data_timeout)
-            .await;
-        self.store.list::<T>(&self.view_path).await
+            .list_for_subscription::<T>(lease.subscription_id())
+            .await
     }
 
     /// Synchronously get all items from cached data.
@@ -78,10 +85,11 @@ where
     /// Returns cached data immediately without waiting for subscription.
     /// Returns empty vector if data not yet loaded or lock unavailable.
     pub fn get_sync(&self) -> Vec<T> {
-        self.store.list_sync::<T>(&self.view_path)
+        self.store
+            .list_for_query_sync::<T>(&crate::SubscriptionQuery::new(&self.view_path))
     }
 
-    /// Stream merged entities directly (simplest API - filters out deletes).
+    /// Stream merged entities directly (simplest API - filters out removals and deletes).
     ///
     /// Emits `T` after each change. Patches are merged to give full entity state.
     /// Deletes are filtered out. Use `.watch()` if you need delete notifications.
@@ -146,9 +154,10 @@ where
     store: SharedStore,
     view_path: String,
     key_filter: KeyFilter,
-    take: Option<u32>,
-    skip: Option<u32>,
-    filters: Option<HashMap<String, String>>,
+    partition: Option<String>,
+    take: Option<usize>,
+    skip: Option<usize>,
+    filters: BTreeMap<String, Value>,
     with_snapshot: Option<bool>,
     after: Option<String>,
     snapshot_limit: Option<usize>,
@@ -170,9 +179,10 @@ where
             store,
             view_path,
             key_filter,
+            partition: None,
             take: None,
             skip: None,
-            filters: None,
+            filters: BTreeMap::new(),
             with_snapshot: None,
             after: None,
             snapshot_limit: None,
@@ -181,22 +191,25 @@ where
     }
 
     /// Limit subscription to the top N items.
-    pub fn take(mut self, n: u32) -> Self {
+    pub fn take(mut self, n: usize) -> Self {
         self.take = Some(n);
         self
     }
 
     /// Skip the first N items.
-    pub fn skip(mut self, n: u32) -> Self {
+    pub fn skip(mut self, n: usize) -> Self {
         self.skip = Some(n);
         self
     }
 
     /// Add a server-side filter.
-    pub fn filter(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.filters
-            .get_or_insert_with(HashMap::new)
-            .insert(key.into(), value.into());
+    pub fn filter(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.filters.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn partition(mut self, partition: impl Into<String>) -> Self {
+        self.partition = Some(partition.into());
         self
     }
 
@@ -233,9 +246,10 @@ where
                 this.connection.clone(),
                 this.store.clone(),
                 this.view_path.clone(),
-                this.view_path.clone(),
                 this.key_filter.clone(),
                 None,
+                this.partition.clone(),
+                this.filters.clone(),
                 this.take,
                 this.skip,
                 this.with_snapshot,
@@ -257,9 +271,10 @@ where
     store: SharedStore,
     view_path: String,
     key_filter: KeyFilter,
-    take: Option<u32>,
-    skip: Option<u32>,
-    filters: Option<HashMap<String, String>>,
+    partition: Option<String>,
+    take: Option<usize>,
+    skip: Option<usize>,
+    filters: BTreeMap<String, Value>,
     with_snapshot: Option<bool>,
     after: Option<String>,
     snapshot_limit: Option<usize>,
@@ -281,9 +296,10 @@ where
             store,
             view_path,
             key_filter,
+            partition: None,
             take: None,
             skip: None,
-            filters: None,
+            filters: BTreeMap::new(),
             with_snapshot: None,
             after: None,
             snapshot_limit: None,
@@ -292,22 +308,25 @@ where
     }
 
     /// Limit subscription to the top N items.
-    pub fn take(mut self, n: u32) -> Self {
+    pub fn take(mut self, n: usize) -> Self {
         self.take = Some(n);
         self
     }
 
     /// Skip the first N items.
-    pub fn skip(mut self, n: u32) -> Self {
+    pub fn skip(mut self, n: usize) -> Self {
         self.skip = Some(n);
         self
     }
 
     /// Add a server-side filter.
-    pub fn filter(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.filters
-            .get_or_insert_with(HashMap::new)
-            .insert(key.into(), value.into());
+    pub fn filter(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.filters.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn partition(mut self, partition: impl Into<String>) -> Self {
+        self.partition = Some(partition.into());
         self
     }
 
@@ -334,10 +353,11 @@ where
         RichEntityStream::new_lazy_with_opts(
             self.connection,
             self.store,
-            self.view_path.clone(),
             self.view_path,
             self.key_filter,
             None,
+            self.partition,
+            self.filters,
             self.take,
             self.skip,
             self.with_snapshot,
@@ -361,9 +381,10 @@ where
                 this.connection.clone(),
                 this.store.clone(),
                 this.view_path.clone(),
-                this.view_path.clone(),
                 this.key_filter.clone(),
                 None,
+                this.partition.clone(),
+                this.filters.clone(),
                 this.take,
                 this.skip,
                 this.with_snapshot,
@@ -385,9 +406,10 @@ where
     store: SharedStore,
     view_path: String,
     key_filter: KeyFilter,
-    take: Option<u32>,
-    skip: Option<u32>,
-    filters: Option<HashMap<String, String>>,
+    partition: Option<String>,
+    take: Option<usize>,
+    skip: Option<usize>,
+    filters: BTreeMap<String, Value>,
     with_snapshot: Option<bool>,
     after: Option<String>,
     snapshot_limit: Option<usize>,
@@ -409,9 +431,10 @@ where
             store,
             view_path,
             key_filter,
+            partition: None,
             take: None,
             skip: None,
-            filters: None,
+            filters: BTreeMap::new(),
             with_snapshot: None,
             after: None,
             snapshot_limit: None,
@@ -419,20 +442,23 @@ where
         }
     }
 
-    pub fn take(mut self, n: u32) -> Self {
+    pub fn take(mut self, n: usize) -> Self {
         self.take = Some(n);
         self
     }
 
-    pub fn skip(mut self, n: u32) -> Self {
+    pub fn skip(mut self, n: usize) -> Self {
         self.skip = Some(n);
         self
     }
 
-    pub fn filter(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.filters
-            .get_or_insert_with(HashMap::new)
-            .insert(key.into(), value.into());
+    pub fn filter(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.filters.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn partition(mut self, partition: impl Into<String>) -> Self {
+        self.partition = Some(partition.into());
         self
     }
 
@@ -469,9 +495,10 @@ where
                 this.connection.clone(),
                 this.store.clone(),
                 this.view_path.clone(),
-                this.view_path.clone(),
                 this.key_filter.clone(),
                 None,
+                this.partition.clone(),
+                this.filters.clone(),
                 this.take,
                 this.skip,
                 this.with_snapshot,
@@ -569,21 +596,28 @@ where
 
     /// Get an entity by key.
     pub async fn get(&self, key: &str) -> Option<T> {
-        self.connection
+        let lease = self
+            .connection
             .ensure_subscription(&self.view_path, Some(key))
+            .await
+            .ok()?;
+        self.store
+            .wait_for_subscription_ready(lease.subscription_id(), self.initial_data_timeout)
             .await;
         self.store
-            .wait_for_view_ready(&self.view_path, self.initial_data_timeout)
-            .await;
-        self.store.get::<T>(&self.view_path, key).await
+            .get_for_subscription::<T>(lease.subscription_id(), key)
+            .await
     }
 
     /// Synchronously get an entity from cached data.
     pub fn get_sync(&self, key: &str) -> Option<T> {
-        self.store.get_sync::<T>(&self.view_path, key)
+        self.store.get_for_query_sync::<T>(
+            &crate::SubscriptionQuery::new(&self.view_path).with_key(key),
+            key,
+        )
     }
 
-    /// Stream merged entity values directly (simplest API - filters out deletes).
+    /// Stream merged entity values directly (simplest API - filters out removals and deletes).
     pub fn listen(&self, key: &str) -> UseStream<T>
     where
         T: Unpin,

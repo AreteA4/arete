@@ -231,6 +231,9 @@ pub struct WebSocketConfig {
     pub bind_address: SocketAddr,
 }
 
+/// The only wire protocol accepted by the WebSocket server.
+pub const WEBSOCKET_PROTOCOL_VERSION: u8 = crate::websocket::subscription::PROTOCOL_VERSION;
+
 impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {

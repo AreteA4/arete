@@ -66,6 +66,7 @@ export interface SessionMemberOptions<
   transport?: 'ws' | 'http';
   auth?: AuthConfig;
   storage?: StorageAdapter;
+  autoConnect?: boolean;
   autoReconnect?: boolean;
   programs?: TPrograms;
 }
@@ -179,7 +180,7 @@ export interface Session<
 
 type SessionConnectionMemberOptions = Pick<
   SessionMemberOptions<Record<string, ProgramSdkDefinition>>,
-  'url' | 'httpUrl' | 'transport' | 'auth' | 'storage' | 'autoReconnect'
+  'url' | 'httpUrl' | 'transport' | 'auth' | 'storage' | 'autoConnect' | 'autoReconnect'
 >;
 
 type SessionConnectionOptions = Pick<
@@ -204,6 +205,7 @@ function resolveMemberConnectOptions(
     transport,
     auth: member?.auth ?? options?.auth,
     storage: member?.storage,
+    autoConnect: member?.autoConnect,
     autoReconnect: member?.autoReconnect,
     wallet: options?.wallet,
     fetch: options?.fetch,

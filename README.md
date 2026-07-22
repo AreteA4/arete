@@ -38,8 +38,12 @@ npm install @usearete/sdk
 
 ### TypeScript / React
 ```bash
-npm install @usearete/react
+npm install @usearete/react @usearete/sdk zod
 ```
+
+Generated React consumers use the React hooks, core SDK types, and generated Zod schemas. `zustand` is a normal dependency of `@usearete/react`; applications do not install it separately.
+
+Hosted browser stacks require authentication. For the hosted ORE stack, set `VITE_ARETE_PUBLISHABLE_KEY` and pass it to the provider as `auth={{ publishableKey }}`. Read-only viewing does not require a wallet, but it does require the publishable key.
 
 ### Python
 > **Note:** The Python SDK is a work in progress and has not yet been published to PyPI.

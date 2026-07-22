@@ -22,6 +22,16 @@ if [[ -n "$CONFIG_PATH" ]]; then
 fi
 
 echo ""
+echo "Building local ORE stack AST"
+cargo clean --quiet --manifest-path "$ROOT_DIR/stacks/ore/Cargo.toml" --package ore-stack
+cargo build --quiet --locked --manifest-path "$ROOT_DIR/stacks/ore/Cargo.toml"
+
+ORE_AST_PATH="$ROOT_DIR/stacks/ore/.arete/OreStream.stack.json"
+if [[ ! -f "$ORE_AST_PATH" ]]; then
+    echo "Expected ORE stack AST was not generated: $ORE_AST_PATH" >&2
+    exit 1
+fi
+
 echo "Generating example SDKs from stack source: $STACK_ID"
 
 ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create "$STACK_ID" --ts \
@@ -34,8 +44,13 @@ ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create "$STACK_ID" --ts \
     --package-name "@usearete/sdk" \
     --extensions "$EXTENSIONS_PATH"
 
-rm -rf "$ROOT_DIR/examples/ore-rust/src/generated/ore"
+RUST_SDK_OUTPUT="$ROOT_DIR/examples/ore-rust/src/generated/ore"
+RUST_SDK_TMP="$(mktemp -d "${RUST_SDK_OUTPUT}.tmp.XXXXXX")"
+trap 'rm -rf "$RUST_SDK_TMP"' EXIT
 
 ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create "$STACK_ID" --rust \
-    --output "$ROOT_DIR/examples/ore-rust/src/generated/ore" \
+    --output "$RUST_SDK_TMP" \
     --module
+
+rm -rf "$RUST_SDK_OUTPUT"
+mv "$RUST_SDK_TMP" "$RUST_SDK_OUTPUT"

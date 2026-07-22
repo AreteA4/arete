@@ -37,7 +37,9 @@ import { useCallback, useRef, useState } from 'react';
 import {
   useInstructionMutation,
   type MutationExecutionObserver,
+  type UseMutationOptions,
 } from './use-mutation';
+import { createProcessedSlotReconciliation } from '../reconciliation';
 
 const mockUseState = useState as jest.Mock;
 const mockUseRef = useRef as jest.Mock;
@@ -48,7 +50,8 @@ function renderMutation<TParams, TResult>(
     args: TParams,
     options?: Record<string, never>,
     observer?: MutationExecutionObserver
-  ) => Promise<TResult>
+  ) => Promise<TResult>,
+  defaults?: Partial<UseMutationOptions<Record<string, never>, TResult>>
 ) {
   let currentState: Record<string, unknown> = {};
   const setState = jest.fn((update: unknown) => {
@@ -64,7 +67,7 @@ function renderMutation<TParams, TResult>(
   });
 
   return {
-    mutation: useInstructionMutation<TParams, TResult>(execute),
+    mutation: useInstructionMutation<TParams, TResult>(execute, defaults),
     state: () => currentState,
   };
 }
@@ -122,6 +125,71 @@ describe('useInstructionMutation', () => {
     });
   });
 
+  it('offers a non-throwing event form while preserving the rejecting form', async () => {
+    const failure = new Error('wallet unavailable');
+    const { mutation, state } = renderMutation(async (_args: undefined) => {
+      throw failure;
+    });
+
+    expect(() => mutation.mutate(undefined)).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(state()).toMatchObject({
+      status: 'error',
+      displayError: 'wallet unavailable',
+    });
+    await expect(mutation.mutateAsync(undefined)).rejects.toBe(failure);
+  });
+
+  it('remains pending until success callbacks settle', async () => {
+    let release!: () => void;
+    const callback = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { mutation, state } = renderMutation(async (_args: undefined) => ({
+      signature: 'sig',
+    }));
+
+    const pending = mutation.mutateAsync(undefined, {
+      onSuccess: () => callback,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(state()).toMatchObject({ status: 'pending', phase: 'confirmed' });
+    release();
+    await pending;
+    expect(state()).toMatchObject({ status: 'success', phase: 'confirmed' });
+  });
+
+  it('remains pending until retry success callbacks settle', async () => {
+    let attempts = 0;
+    let release!: () => void;
+    const callback = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { mutation, state } = renderMutation(async (_args: undefined) => ({
+      signature: 'sig',
+    }));
+
+    await mutation.mutateAsync(undefined, {
+      reconcile: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('stream unavailable');
+      },
+      onSuccess: () => callback,
+    });
+    const retry = mutation.retryReconciliation();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(state()).toMatchObject({ status: 'pending', phase: 'reconciled' });
+    release();
+    await retry;
+    expect(state()).toMatchObject({ status: 'success', phase: 'reconciled' });
+  });
+
   it('keeps submitted-unknown distinct from confirmed state', async () => {
     const error = Object.assign(new Error('confirmation timed out'), {
       outcome: {
@@ -171,14 +239,16 @@ describe('useInstructionMutation', () => {
   it('separates callback and reconciliation errors from confirmed execution', async () => {
     const callbackError = new Error('consumer callback failed');
     const reconciliationError = new Error('stream did not catch up');
+    const onSuccess = jest.fn();
     const { mutation, state } = renderMutation(async (_args: undefined) => ({
       signature: 'confirmed-signature',
     }));
 
     await expect(mutation.submit(undefined, {
-      onSuccess: () => {
+      onConfirmed: () => {
         throw callbackError;
       },
+      onSuccess,
       reconcile: async () => {
         throw reconciliationError;
       },
@@ -192,6 +262,7 @@ describe('useInstructionMutation', () => {
       reconciliationError,
       displayError: null,
     });
+    expect(onSuccess).not.toHaveBeenCalled();
   });
 
   it('treats an explicit confirmed-unreconciled result as post-confirmation state', async () => {
@@ -298,5 +369,104 @@ describe('useInstructionMutation', () => {
       completedReceipts: [receipt],
       outcome: { status: 'confirmed', slot: 55 },
     });
+  });
+
+  it('skips the reconciling phase when reconcile is false', async () => {
+    const client = { waitForProcessedSlot: jest.fn(async () => 11n) };
+    const { mutation, state } = renderMutation(
+      async (_args: undefined) => ({
+        transactions: [
+          { transactionIndex: 0, transactionName: 'deploy', signature: 'sig', slot: 10 },
+        ],
+      }),
+      { reconcile: createProcessedSlotReconciliation(client) as never },
+    );
+
+    await mutation.submit(undefined, { reconcile: false });
+    expect(state()).toMatchObject({ status: 'success', phase: 'confirmed' });
+    expect(client.waitForProcessedSlot).not.toHaveBeenCalled();
+  });
+
+  it('resolves per-call reconcile override objects against the marked default', async () => {
+    const client = { waitForProcessedSlot: jest.fn(async () => 11n) };
+    const refresh = jest.fn();
+    const { mutation, state } = renderMutation(
+      async (_args: undefined) => ({
+        transactions: [
+          { transactionIndex: 0, transactionName: 'deploy', signature: 'sig', slot: 10 },
+        ],
+      }),
+      { reconcile: createProcessedSlotReconciliation(client) as never },
+    );
+
+    await mutation.submit(undefined, { reconcile: { refresh } });
+    expect(state()).toMatchObject({ status: 'success', phase: 'reconciled' });
+    expect(client.waitForProcessedSlot).toHaveBeenCalledWith(10n, expect.objectContaining({
+      timeoutMs: 30_000,
+    }));
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it('skips default reconciliation when no receipt reports a slot', async () => {
+    const client = { waitForProcessedSlot: jest.fn(async () => 11n) };
+    const onSuccess = jest.fn();
+    const { mutation, state } = renderMutation(
+      async (_args: undefined) => ({ signature: 'sig' }),
+      { reconcile: createProcessedSlotReconciliation(client) as never, onSuccess },
+    );
+
+    await expect(mutation.submit(undefined)).resolves.toEqual({ signature: 'sig' });
+    expect(state()).toMatchObject({ status: 'success', phase: 'confirmed' });
+    expect(client.waitForProcessedSlot).not.toHaveBeenCalled();
+    expect(onSuccess).toHaveBeenCalledWith({ signature: 'sig' });
+  });
+
+  it('rejects reconcile override objects without a marked default reconciliation', async () => {
+    const { mutation, state } = renderMutation(async (_args: undefined) => ({
+      signature: 'sig',
+    }));
+
+    await expect(mutation.submit(undefined, { reconcile: { timeoutMs: 1 } })).rejects.toEqual(
+      expect.objectContaining({
+        message: expect.stringContaining('reconcile option objects require'),
+      })
+    );
+    expect(state()).toMatchObject({ status: 'error', phase: 'not-submitted' });
+  });
+
+  it('exposes phase booleans derived from the current phase', () => {
+    const cases = [
+      { phase: 'preparing', isPreparing: true, isAwaitingWallet: false, isReconciling: false },
+      { phase: 'awaiting-wallet', isPreparing: false, isAwaitingWallet: true, isReconciling: false },
+      { phase: 'reconciling', isPreparing: false, isAwaitingWallet: false, isReconciling: true },
+      { phase: 'reconciled', isPreparing: false, isAwaitingWallet: false, isReconciling: false },
+    ] as const;
+
+    for (const expected of cases) {
+      mockUseState.mockImplementationOnce(() => [{
+        status: 'pending',
+        phase: expected.phase,
+        latestEvent: null,
+        displayError: null,
+        failure: null,
+        outcome: null,
+        prepared: null,
+        result: undefined,
+        signatures: [],
+        completedReceipts: [],
+        callbackErrors: [],
+        reconciliationError: null,
+      }, jest.fn()]);
+      const mutation = useInstructionMutation(async () => ({}));
+      expect({
+        isPreparing: mutation.isPreparing,
+        isAwaitingWallet: mutation.isAwaitingWallet,
+        isReconciling: mutation.isReconciling,
+      }).toEqual({
+        isPreparing: expected.isPreparing,
+        isAwaitingWallet: expected.isAwaitingWallet,
+        isReconciling: expected.isReconciling,
+      });
+    }
   });
 });

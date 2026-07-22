@@ -1,11 +1,14 @@
+use crate::error::AreteError;
+use crate::subscription::{SubscriptionQuery, PROTOCOL_VERSION};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::Read;
 
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
 fn is_gzip(data: &[u8]) -> bool {
-    data.len() >= 2 && data[0] == GZIP_MAGIC[0] && data[1] == GZIP_MAGIC[1]
+    data.starts_with(&GZIP_MAGIC)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,142 +27,307 @@ pub enum SortOrder {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SortConfig {
     pub field: Vec<String>,
     pub order: SortOrder,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubscribedFrame {
-    pub op: String,
-    pub view: String,
-    pub mode: Mode,
-    #[serde(default)]
-    pub sort: Option<SortConfig>,
-}
-
-impl SubscribedFrame {
-    pub fn is_subscribed_frame(op: &str) -> bool {
-        op == "subscribed"
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Operation {
     Upsert,
     Patch,
+    Remove,
     Delete,
-    Create,
-    Snapshot,
-    Subscribed,
 }
 
-impl std::str::FromStr for Operation {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "upsert" => Operation::Upsert,
-            "patch" => Operation::Patch,
-            "delete" => Operation::Delete,
-            "create" => Operation::Create,
-            "snapshot" => Operation::Snapshot,
-            "subscribed" => Operation::Subscribed,
-            _ => Operation::Upsert,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Frame {
-    pub mode: Mode,
-    #[serde(rename = "entity")]
-    pub entity: String,
-    pub op: String,
-    #[serde(default)]
-    pub key: String,
-    pub data: serde_json::Value,
-    #[serde(default)]
-    pub append: Vec<String>,
-    /// Sequence cursor for ordering and resume capability
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub seq: Option<String>,
-}
-
-impl Frame {
-    pub fn entity_name(&self) -> &str {
-        &self.entity
-    }
-
-    pub fn operation(&self) -> Operation {
-        self.op.parse().unwrap()
-    }
-
-    pub fn is_snapshot(&self) -> bool {
-        self.op == "snapshot"
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SnapshotEntity {
     pub key: String,
-    pub data: serde_json::Value,
+    pub data: Value,
 }
 
-fn decompress_gzip(data: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(
+    tag = "op",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ServerFrame {
+    Subscribed {
+        protocol_version: u8,
+        subscription_id: String,
+        query: SubscriptionQuery,
+        mode: Mode,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sort: Option<SortConfig>,
+    },
+    Unsubscribed {
+        protocol_version: u8,
+        subscription_id: String,
+    },
+    Snapshot {
+        protocol_version: u8,
+        subscription_id: String,
+        snapshot_id: String,
+        authoritative: bool,
+        mode: Mode,
+        entity: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        data: Vec<SnapshotEntity>,
+        complete: bool,
+    },
+    Upsert {
+        protocol_version: u8,
+        subscription_id: String,
+        mode: Mode,
+        entity: String,
+        key: String,
+        data: Value,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        append: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<String>,
+    },
+    Patch {
+        protocol_version: u8,
+        subscription_id: String,
+        mode: Mode,
+        entity: String,
+        key: String,
+        data: Value,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        append: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<String>,
+    },
+    Remove {
+        protocol_version: u8,
+        subscription_id: String,
+        mode: Mode,
+        entity: String,
+        key: String,
+        data: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<String>,
+    },
+    Delete {
+        protocol_version: u8,
+        subscription_id: String,
+        mode: Mode,
+        entity: String,
+        key: String,
+        data: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<String>,
+    },
+}
+
+impl ServerFrame {
+    pub fn protocol_version(&self) -> u8 {
+        match self {
+            Self::Subscribed {
+                protocol_version, ..
+            }
+            | Self::Unsubscribed {
+                protocol_version, ..
+            }
+            | Self::Snapshot {
+                protocol_version, ..
+            }
+            | Self::Upsert {
+                protocol_version, ..
+            }
+            | Self::Patch {
+                protocol_version, ..
+            }
+            | Self::Remove {
+                protocol_version, ..
+            }
+            | Self::Delete {
+                protocol_version, ..
+            } => *protocol_version,
+        }
+    }
+
+    pub fn subscription_id(&self) -> &str {
+        match self {
+            Self::Subscribed {
+                subscription_id, ..
+            }
+            | Self::Unsubscribed {
+                subscription_id, ..
+            }
+            | Self::Snapshot {
+                subscription_id, ..
+            }
+            | Self::Upsert {
+                subscription_id, ..
+            }
+            | Self::Patch {
+                subscription_id, ..
+            }
+            | Self::Remove {
+                subscription_id, ..
+            }
+            | Self::Delete {
+                subscription_id, ..
+            } => subscription_id,
+        }
+    }
+}
+
+pub type Frame = ServerFrame;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProtocolErrorFrame {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub protocol_version: u8,
+    pub subscription_id: Option<String>,
+    #[serde(default)]
+    pub error: String,
+    #[serde(default)]
+    pub message: String,
+    pub code: String,
+    #[serde(default)]
+    pub retryable: bool,
+    #[serde(default)]
+    pub retry_after: Option<u64>,
+    #[serde(default)]
+    pub suggested_action: Option<String>,
+    #[serde(default)]
+    pub docs_url: Option<String>,
+    #[serde(default)]
+    pub fatal: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ServerMessage {
+    Frame(ServerFrame),
+    Error(ProtocolErrorFrame),
+}
+
+fn decompress(data: &[u8]) -> Result<Vec<u8>, AreteError> {
+    if !is_gzip(data) {
+        return Ok(data.to_vec());
+    }
     let mut decoder = GzDecoder::new(data);
-    let mut decompressed = String::new();
-    decoder.read_to_string(&mut decompressed)?;
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .map_err(|error| AreteError::Protocol {
+            message: format!("failed to decompress WebSocket frame: {error}"),
+            subscription_id: None,
+        })?;
     Ok(decompressed)
 }
 
-pub fn parse_frame(bytes: &[u8]) -> Result<Frame, serde_json::Error> {
-    if is_gzip(bytes) {
-        if let Ok(decompressed) = decompress_gzip(bytes) {
-            return serde_json::from_str(&decompressed);
-        }
-    }
+pub fn parse_server_message(bytes: &[u8]) -> Result<ServerMessage, AreteError> {
+    let bytes = decompress(bytes)?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| AreteError::Protocol {
+        message: format!("malformed WebSocket message: {error}"),
+        subscription_id: None,
+    })?;
+    let subscription_id = value
+        .get("subscriptionId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
 
-    let text = String::from_utf8_lossy(bytes);
-    serde_json::from_str(&text)
-}
-
-pub fn parse_snapshot_entities(data: &serde_json::Value) -> Vec<SnapshotEntity> {
-    match data {
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .filter_map(|v| serde_json::from_value(v.clone()).ok())
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-#[allow(dead_code)]
-pub fn parse_subscribed_frame(bytes: &[u8]) -> Result<SubscribedFrame, serde_json::Error> {
-    if is_gzip(bytes) {
-        if let Ok(decompressed) = decompress_gzip(bytes) {
-            return serde_json::from_str(&decompressed);
-        }
-    }
-
-    let text = String::from_utf8_lossy(bytes);
-    serde_json::from_str(&text)
-}
-
-#[allow(dead_code)]
-pub fn try_parse_subscribed_frame(bytes: &[u8]) -> Option<SubscribedFrame> {
-    let frame: serde_json::Value = if is_gzip(bytes) {
-        decompress_gzip(bytes)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())?
-    } else {
-        serde_json::from_slice(bytes).ok()?
+    let Some(version) = value.get("protocolVersion").and_then(Value::as_u64) else {
+        return Err(AreteError::Protocol {
+            message: "legacy WebSocket frame rejected: protocolVersion 2 and subscriptionId are required; migrate this client/server pair to protocol v2".to_string(),
+            subscription_id,
+        });
     };
+    if version != u64::from(PROTOCOL_VERSION) {
+        return Err(AreteError::Protocol {
+            message: format!(
+                "unsupported WebSocket protocol version {version}; the Rust SDK requires protocol v2"
+            ),
+            subscription_id,
+        });
+    }
 
-    if frame.get("op")?.as_str()? == "subscribed" {
-        serde_json::from_value(frame).ok()
-    } else {
-        None
+    if value.get("type").and_then(Value::as_str) == Some("error") {
+        let error: ProtocolErrorFrame =
+            serde_json::from_value(value).map_err(|error| AreteError::Protocol {
+                message: format!("invalid protocol v2 error envelope: {error}"),
+                subscription_id: subscription_id.clone(),
+            })?;
+        if error.kind != "error" {
+            return Err(AreteError::Protocol {
+                message: format!(
+                    "unknown WebSocket protocol v2 message type '{}'; expected 'error'",
+                    error.kind
+                ),
+                subscription_id,
+            });
+        }
+        return Ok(ServerMessage::Error(error));
+    }
+
+    let Some(operation) = value.get("op").and_then(Value::as_str).map(str::to_string) else {
+        let kind = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing>");
+        return Err(AreteError::Protocol {
+            message: format!(
+                "unknown WebSocket protocol v2 message type '{kind}'; expected a frame operation"
+            ),
+            subscription_id,
+        });
+    };
+    if !matches!(
+        operation.as_str(),
+        "subscribed" | "unsubscribed" | "snapshot" | "upsert" | "patch" | "remove" | "delete"
+    ) {
+        return Err(AreteError::Protocol {
+            message: format!(
+                "unknown WebSocket protocol v2 operation '{operation}'; legacy operations are not supported"
+            ),
+            subscription_id,
+        });
+    }
+
+    let frame: ServerFrame =
+        serde_json::from_value(value).map_err(|error| AreteError::Protocol {
+            message: format!("invalid protocol v2 '{operation}' frame: {error}"),
+            subscription_id,
+        })?;
+    Ok(ServerMessage::Frame(frame))
+}
+
+pub fn parse_frame(bytes: &[u8]) -> Result<ServerFrame, AreteError> {
+    match parse_server_message(bytes)? {
+        ServerMessage::Frame(frame) => Ok(frame),
+        ServerMessage::Error(error) => Err(AreteError::Protocol {
+            message: format!(
+                "server returned protocol error '{}': {}",
+                error.code, error.message
+            ),
+            subscription_id: error.subscription_id,
+        }),
+    }
+}
+
+pub fn parse_snapshot_entities(data: &Value) -> Vec<SnapshotEntity> {
+    data.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| serde_json::from_value(value.clone()).ok())
+        .collect()
+}
+
+pub fn try_parse_subscribed_frame(bytes: &[u8]) -> Option<ServerFrame> {
+    match parse_server_message(bytes).ok()? {
+        ServerMessage::Frame(frame @ ServerFrame::Subscribed { .. }) => Some(frame),
+        _ => None,
     }
 }
 
@@ -169,34 +337,42 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
     use std::io::Write;
 
-    #[test]
-    fn test_parse_uncompressed_frame() {
-        let frame_json = r#"{"mode":"list","entity":"test/list","op":"snapshot","key":"","data":[{"key":"1","data":{"id":1}}]}"#;
-        let frame = parse_frame(frame_json.as_bytes()).unwrap();
-        assert_eq!(frame.op, "snapshot");
-        assert_eq!(frame.entity, "test/list");
-    }
+    const FRAME: &str = r#"{"protocolVersion":2,"subscriptionId":"things","mode":"list","entity":"Thing/list","op":"upsert","key":"1","data":{"id":1}}"#;
 
     #[test]
-    fn test_parse_raw_gzip_frame() {
-        let original = r#"{"mode":"list","entity":"test/list","op":"snapshot","key":"","data":[{"key":"1","data":{"id":1}}]}"#;
+    fn parses_typed_v2_frame_and_gzip() {
+        assert!(matches!(
+            parse_frame(FRAME.as_bytes()).unwrap(),
+            ServerFrame::Upsert { ref key, .. } if key == "1"
+        ));
 
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-        encoder.write_all(original.as_bytes()).unwrap();
-        let compressed = encoder.finish().unwrap();
-
-        assert!(is_gzip(&compressed));
-
-        let frame = parse_frame(&compressed).unwrap();
-        assert_eq!(frame.op, "snapshot");
-        assert_eq!(frame.entity, "test/list");
+        encoder.write_all(FRAME.as_bytes()).unwrap();
+        assert!(matches!(
+            parse_frame(&encoder.finish().unwrap()).unwrap(),
+            ServerFrame::Upsert { .. }
+        ));
     }
 
     #[test]
-    fn test_gzip_magic_detection() {
-        assert!(is_gzip(&[0x1f, 0x8b, 0x08]));
-        assert!(!is_gzip(&[0x7b, 0x22]));
-        assert!(!is_gzip(&[0x1f]));
-        assert!(!is_gzip(&[]));
+    fn rejects_unknown_and_legacy_operations() {
+        let unknown = FRAME.replace("upsert", "create");
+        let error = parse_frame(unknown.as_bytes()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unknown WebSocket protocol v2 operation 'create'"));
+
+        let legacy = r#"{"mode":"list","entity":"Thing/list","op":"upsert","key":"1","data":{}}"#;
+        let error = parse_frame(legacy.as_bytes()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("migrate this client/server pair"));
+
+        let unknown_field = FRAME.replace(
+            r#""data":{"id":1}"#,
+            r#""data":{"id":1},"legacyView":"Thing/list""#,
+        );
+        let error = parse_frame(unknown_field.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
     }
 }

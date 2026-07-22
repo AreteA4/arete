@@ -69,6 +69,26 @@ pub struct TypeScriptCompiler<S> {
     already_emitted_types: HashSet<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateViewKeyDefinition {
+    field_name: String,
+    typescript_type: String,
+}
+
+impl StateViewKeyDefinition {
+    fn object_type(&self) -> String {
+        format!(
+            "{{ {}: {} }}",
+            render_ts_property_name_literal(&self.field_name),
+            self.typescript_type
+        )
+    }
+
+    fn fields_literal(&self) -> String {
+        format!("['{}']", escape_ts_single_quotes(&self.field_name))
+    }
+}
+
 impl<S> TypeScriptCompiler<S> {
     pub fn new(spec: TypedStreamSpec<S>, entity_name: String) -> Self {
         Self {
@@ -108,6 +128,17 @@ impl<S> TypeScriptCompiler<S> {
     }
 
     pub fn compile(&self) -> TypeScriptOutput {
+        self.try_compile()
+            .expect("TypeScript SDK generation failed")
+    }
+
+    pub fn try_compile(&self) -> Result<TypeScriptOutput, String> {
+        let state_view_key = state_view_key_definition(
+            &self.entity_name,
+            &self.spec.identity,
+            &self.spec.field_mappings,
+            &self.spec.sections,
+        )?;
         let imports = self.generate_imports();
         let interfaces = self.generate_interfaces();
         let schema_output = self.generate_schemas();
@@ -118,14 +149,14 @@ impl<S> TypeScriptCompiler<S> {
         } else {
             format!("{}\n\n{}", interfaces, schema_output.definitions)
         };
-        let stack_definition = self.generate_stack_definition();
+        let stack_definition = self.generate_stack_definition(&state_view_key);
 
-        TypeScriptOutput {
+        Ok(TypeScriptOutput {
             imports,
             interfaces: combined_interfaces,
             stack_definition,
             schema_names: schema_output.names,
-        }
+        })
     }
 
     fn generate_imports(&self) -> String {
@@ -133,28 +164,7 @@ impl<S> TypeScriptCompiler<S> {
     }
 
     fn generate_view_helpers(&self) -> String {
-        r#"// ============================================================================
-// View Definition Types (framework-agnostic)
-// ============================================================================
-
-/** View definition with embedded entity type */
-export interface ViewDef<T, TMode extends 'state' | 'list'> {
-  readonly mode: TMode;
-  readonly view: string;
-  /** Phantom field for type inference - not present at runtime */
-  readonly _entity?: T;
-}
-
-/** Helper to create typed state view definitions (keyed lookups) */
-function stateView<T>(view: string): ViewDef<T, 'state'> {
-  return { mode: 'state', view } as const;
-}
-
-/** Helper to create typed list view definitions (collections) */
-function listView<T>(view: string): ViewDef<T, 'list'> {
-  return { mode: 'list', view } as const;
-}"#
-        .to_string()
+        generate_view_helpers_static()
     }
 
     fn generate_interfaces(&self) -> String {
@@ -182,6 +192,10 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
 
         let builtin_interfaces = self.generate_builtin_resolver_interfaces();
         interfaces.extend(builtin_interfaces);
+
+        if self.should_emit_capture_wrapper() {
+            interfaces.push(self.generate_capture_wrapper_interface());
+        }
 
         if self.has_event_types() {
             interfaces.push(self.generate_event_wrapper_interface());
@@ -423,6 +437,14 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
             );
         }
 
+        if self.should_emit_capture_wrapper() {
+            push_schema(
+                "CaptureWrapperSchema".to_string(),
+                self.generate_capture_wrapper_schema(),
+                false,
+            );
+        }
+
         for (schema_name, definition) in self.generate_resolved_type_schemas(&patch_schema_types) {
             push_schema(schema_name, definition, true);
         }
@@ -513,6 +535,23 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
   slot: z.number().optional(),
   signature: z.string().optional(),
 });"#
+            .to_string()
+    }
+
+    fn generate_capture_wrapper_schema(&self) -> String {
+        r#"export const CaptureWrapperSchema = <T extends z.ZodTypeAny>(data: T) => z.object({
+  timestamp: z.number(),
+  account_address: z.string(),
+  data,
+  slot: z.number().optional(),
+  signature: z.string().optional(),
+}).transform((value) => ({
+  timestamp: value.timestamp,
+  accountAddress: value.account_address,
+  data: value.data,
+  ...(value.slot !== undefined ? { slot: value.slot } : {}),
+  ...(value.signature !== undefined ? { signature: value.signature } : {}),
+}));"#
             .to_string()
     }
 
@@ -1033,7 +1072,7 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
         names
     }
 
-    fn generate_stack_definition(&self) -> String {
+    fn generate_stack_definition(&self, state_view_key: &StateViewKeyDefinition) -> String {
         let stack_name = to_kebab_case(&self.entity_name);
         let entity_pascal = to_pascal_case(&self.entity_name);
         let export_name = format!(
@@ -1089,7 +1128,7 @@ export const {} = {{
 {}
   views: {{
     {}: {{
-      state: stateView<{}>('{}/state'),
+      state: stateView<{}, {}>('{}/state', {}),
       list: listView<{}>('{}/list'),{}
     }},
   }},{}{}
@@ -1107,7 +1146,9 @@ export default {};"#,
             url_line,
             self.entity_name,
             entity_pascal,
+            state_view_key.object_type(),
             self.entity_name,
+            state_view_key.fields_literal(),
             entity_pascal,
             self.entity_name,
             derived_views,
@@ -1212,6 +1253,8 @@ export default {};"#,
             let base_type = if resolved.is_event || (resolved.is_instruction && field_info.is_array)
             {
                 format!("EventWrapper<{}>", interface_name)
+            } else if resolved.is_account && self.is_capture_field(field_info) {
+                format!("CaptureWrapper<{}>", interface_name)
             } else {
                 interface_name
             };
@@ -1243,6 +1286,18 @@ export default {};"#,
             } else {
                 ts_type.to_string()
             };
+        }
+
+        // Arrays of scalar non-integer primitives (e.g. Vec<f64> display
+        // fields) map to the corresponding primitive array instead of any[].
+        if field_info.base_type == BaseType::Array && field_info.is_array {
+            if let Some(element) = field_info
+                .inner_type
+                .as_deref()
+                .and_then(typescript_scalar_array_element)
+            {
+                return format!("{}[]", element);
+            }
         }
 
         if field_info.base_type == BaseType::Any
@@ -1671,6 +1726,29 @@ export default {};"#,
         false
     }
 
+    fn has_capture_types(&self) -> bool {
+        self.spec
+            .sections
+            .iter()
+            .flat_map(|section| &section.fields)
+            .any(|field| self.is_capture_field(field))
+    }
+
+    fn should_emit_capture_wrapper(&self) -> bool {
+        self.has_capture_types() && !self.already_emitted_types.contains("CaptureWrapper")
+    }
+
+    fn is_capture_field(&self, field_info: &FieldTypeInfo) -> bool {
+        let raw_name = field_info.raw_field_name();
+        self.spec.handlers.iter().any(|handler| {
+            handler.mappings.iter().any(|mapping| {
+                matches!(&mapping.source, MappingSource::AsCapture { .. })
+                    && (mapping.target_path == field_info.field_name
+                        || mapping.target_path == raw_name)
+            })
+        })
+    }
+
     fn build_resolved_type_name_map(&self) -> HashMap<String, String> {
         let mut reserved_names = self.already_emitted_types.clone();
         reserved_names.insert(to_pascal_case(&self.entity_name));
@@ -1726,6 +1804,25 @@ export interface EventWrapper<T> {
   /** Unix timestamp when the event was processed */
   timestamp: number;
   /** The event-specific data */
+  data: T;
+  /** Optional blockchain slot number */
+  slot?: number;
+  /** Optional transaction signature */
+  signature?: string;
+}"#
+        .to_string()
+    }
+
+    fn generate_capture_wrapper_interface(&self) -> String {
+        r#"/**
+ * Wrapper for account data captured with context metadata.
+ */
+export interface CaptureWrapper<T> {
+  /** Unix timestamp when the account was captured */
+  timestamp: number;
+  /** Base58 account address */
+  accountAddress: string;
+  /** Captured account data */
   data: T;
   /** Optional blockchain slot number */
   slot?: number;
@@ -2498,6 +2595,29 @@ fn typescript_integer_type(
         .or_else(|| rust_type.and_then(typescript_integer_type_from_rust))
 }
 
+/// Map the element of a `Vec<T>` scalar array to its TypeScript primitive.
+/// Accepts both stored forms of the inner type (`"Vec < f64 >"` and the bare
+/// `"f64"`), returning `None` for non-scalar or non-array elements.
+fn typescript_scalar_array_element(inner_type: &str) -> Option<&'static str> {
+    let trimmed = inner_type.trim();
+    let element = trimmed
+        .strip_prefix("Vec <")
+        .and_then(|rest| rest.strip_suffix('>'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix("Vec<")
+                .and_then(|rest| rest.strip_suffix('>'))
+        })
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    match element {
+        "f32" | "f64" => Some("number"),
+        "bool" => Some("boolean"),
+        "String" | "&str" | "str" => Some("string"),
+        _ => None,
+    }
+}
+
 fn integer_kind_to_typescript(integer_kind: IntegerKind) -> &'static str {
     if integer_kind.is_bigint() {
         "bigint"
@@ -2526,6 +2646,15 @@ fn typescript_type_to_zod_static(ts_type: &str) -> String {
         if let Some(inner) = inner.strip_suffix('>') {
             return format!(
                 "EventWrapperSchema({})",
+                typescript_type_to_zod_static(inner)
+            );
+        }
+    }
+
+    if let Some(inner) = trimmed.strip_prefix("CaptureWrapper<") {
+        if let Some(inner) = inner.strip_suffix('>') {
+            return format!(
+                "CaptureWrapperSchema({})",
                 typescript_type_to_zod_static(inner)
             );
         }
@@ -2561,6 +2690,19 @@ fn typescript_type_to_zod_for_schema_static(
             return format!(
                 "EventWrapperSchema({})",
                 typescript_type_to_zod_for_schema_static(inner, mode, patch_schema_types)
+            );
+        }
+    }
+
+    if let Some(inner) = trimmed.strip_prefix("CaptureWrapper<") {
+        if let Some(inner) = inner.strip_suffix('>') {
+            return format!(
+                "CaptureWrapperSchema({})",
+                typescript_type_to_zod_for_schema_static(
+                    inner,
+                    SchemaMode::Canonical,
+                    patch_schema_types,
+                )
             );
         }
     }
@@ -2780,6 +2922,80 @@ fn is_root_section(name: &str) -> bool {
     name.eq_ignore_ascii_case("root")
 }
 
+fn state_view_key_definition(
+    entity_name: &str,
+    identity: &IdentitySpec,
+    field_mappings: &BTreeMap<String, FieldTypeInfo>,
+    sections: &[EntitySection],
+) -> Result<StateViewKeyDefinition, String> {
+    let mut seen = HashSet::new();
+    let distinct_keys: Vec<&str> = identity
+        .primary_keys
+        .iter()
+        .map(String::as_str)
+        .filter(|key| seen.insert(*key))
+        .collect();
+
+    if distinct_keys.len() > 1 {
+        return Err(format!(
+            "TypeScript SDK generation does not support composite state keys for entity '{}': distinct identity.primary_keys are [{}]",
+            entity_name,
+            distinct_keys.join(", ")
+        ));
+    }
+
+    let key_path = distinct_keys.first().copied().ok_or_else(|| {
+        format!(
+            "TypeScript SDK generation requires a primary key for entity '{}'",
+            entity_name
+        )
+    })?;
+    let key_leaf = key_path.rsplit('.').next().unwrap_or(key_path);
+    let field_info = field_mappings.get(key_path).or_else(|| {
+        sections.iter().find_map(|section| {
+            section.fields.iter().find(|field| {
+                field.raw_field_name() == key_path
+                    || field.raw_field_name() == key_leaf
+                    || field.field_name == key_path
+                    || field.field_name == key_leaf
+            })
+        })
+    });
+
+    let field_name = field_info
+        .map(FieldTypeInfo::canonical_field_name)
+        .unwrap_or_else(|| to_camel_case(key_leaf));
+    let typescript_type = match field_info {
+        Some(field) if field.is_array => {
+            return Err(format!(
+                "TypeScript SDK generation does not support array state key '{}' for entity '{}'",
+                key_path, entity_name
+            ));
+        }
+        Some(field) => match field.base_type {
+            BaseType::String | BaseType::Binary | BaseType::Pubkey => "string".to_string(),
+            BaseType::Integer | BaseType::Timestamp => field
+                .effective_integer_kind()
+                .map(integer_kind_to_typescript)
+                .unwrap_or("number")
+                .to_string(),
+            _ => {
+                return Err(format!(
+                    "TypeScript SDK generation does not support state key '{}' with type '{}' for entity '{}'",
+                    key_path, field.rust_type_name, entity_name
+                ));
+            }
+        },
+        // Legacy ASTs may omit field metadata; retain their existing string wire key.
+        None => "string".to_string(),
+    };
+
+    Ok(StateViewKeyDefinition {
+        field_name,
+        typescript_type,
+    })
+}
+
 fn is_builtin_resolver_type(type_name: &str) -> bool {
     crate::resolvers::is_resolver_output_type(type_name)
 }
@@ -2812,7 +3028,7 @@ where
     let compiler =
         TypeScriptCompiler::new(spec, entity_name).with_config(config.unwrap_or_default());
 
-    Ok(compiler.compile())
+    compiler.try_compile()
 }
 
 /// Write TypeScript output to a file
@@ -2856,7 +3072,7 @@ fn compile_serializable_spec_with_emitted(
         .with_config(config.unwrap_or_default())
         .with_already_emitted_types(already_emitted_types);
 
-    Ok(compiler.compile())
+    compiler.try_compile()
 }
 
 #[derive(Debug, Clone)]
@@ -2866,6 +3082,7 @@ pub struct TypeScriptStackConfig {
     pub export_const_name: String,
     pub url: Option<String>,
     pub extension_import: Option<String>,
+    pub definition_hash: Option<String>,
 }
 
 impl Default for TypeScriptStackConfig {
@@ -2876,6 +3093,7 @@ impl Default for TypeScriptStackConfig {
             export_const_name: "STACK".to_string(),
             url: None,
             extension_import: None,
+            definition_hash: None,
         }
     }
 }
@@ -2963,6 +3181,12 @@ pub fn compile_stack_spec(
             extract_emitted_enum_type_names(&output.interfaces, idl_for_check.as_ref());
         emitted_types.extend(emitted_enum_names);
         emitted_types.extend(builtin_type_names);
+        if output
+            .interfaces
+            .contains("export interface CaptureWrapper<T>")
+        {
+            emitted_types.insert("CaptureWrapper".to_string());
+        }
 
         // Only take the interfaces part (not the stack_definition — we generate our own)
         if !output.interfaces.is_empty() {
@@ -3036,7 +3260,7 @@ pub fn compile_stack_spec(
         &idl_account_artifacts.account_type_names,
         &instructions_codegen.stack_entries,
         &config,
-    );
+    )?;
 
     // 4. Assemble `@usearete/sdk` imports based on what was actually emitted.
     let imports = assemble_sdk_imports(
@@ -3159,7 +3383,7 @@ pub fn compile_program_modules(
     stack_spec: SerializableStackSpec,
     config: Option<TypeScriptStackConfig>,
 ) -> Result<TypeScriptStackOutput, String> {
-    let _config = config.unwrap_or_default();
+    let config = config.unwrap_or_default();
     let stack_name = &stack_spec.stack_name;
 
     if stack_spec.idls.is_empty() {
@@ -3198,15 +3422,16 @@ pub fn compile_program_modules(
     let unique_schemas: BTreeSet<String> =
         idl_account_artifacts.schema_names.iter().cloned().collect();
 
-    let stack_definition = generate_program_definitions(
-        stack_name,
-        &stack_spec.idls,
-        &stack_spec.pdas,
-        &stack_spec.program_ids,
-        &instructions_codegen.stack_entries,
-        &unique_schemas,
-        &idl_account_artifacts.account_type_names,
-    );
+    let program_context = ProgramGenerationContext {
+        pdas: &stack_spec.pdas,
+        program_ids: &stack_spec.program_ids,
+        instruction_entries: &instructions_codegen.stack_entries,
+        schema_names: &unique_schemas,
+        account_type_names: &idl_account_artifacts.account_type_names,
+        definition_hash: config.definition_hash.as_deref(),
+    };
+    let stack_definition =
+        generate_program_definitions(stack_name, &stack_spec.idls, &program_context);
 
     let imports = assemble_sdk_imports(
         collect_emitted_pda_imports(&stack_spec.idls, &stack_spec.pdas),
@@ -3267,7 +3492,7 @@ fn generate_stack_definition_multi(
     account_type_names: &BTreeMap<(String, String), String>,
     instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
     config: &TypeScriptStackConfig,
-) -> String {
+) -> Result<String, String> {
     let export_name = format!(
         "{}_{}",
         to_screaming_snake_case(stack_name),
@@ -3292,13 +3517,21 @@ fn generate_stack_definition_multi(
     for (i, entity_spec) in entities.iter().enumerate() {
         let entity_name = &entity_names[i];
         let entity_pascal = to_pascal_case(entity_name);
+        let state_view_key = state_view_key_definition(
+            entity_name,
+            &entity_spec.identity,
+            &entity_spec.field_mappings,
+            &entity_spec.sections,
+        )?;
 
         let mut view_entries = Vec::new();
 
         view_entries.push(format!(
-            "      state: stateView<{entity}>('{entity_name}/state'),",
+            "      state: stateView<{entity}, {key_type}>('{entity_name}/state', {key_fields}),",
             entity = entity_pascal,
-            entity_name = entity_name
+            entity_name = entity_name,
+            key_type = state_view_key.object_type(),
+            key_fields = state_view_key.fields_literal(),
         ));
 
         view_entries.push(format!(
@@ -3365,14 +3598,15 @@ fn generate_stack_definition_multi(
         )
     };
 
-    let programs_block = generate_programs_block(
-        idls,
+    let program_context = ProgramGenerationContext {
         pdas,
         program_ids,
         instruction_entries,
-        &unique_schemas,
+        schema_names: &unique_schemas,
         account_type_names,
-    );
+        definition_hash: config.definition_hash.as_deref(),
+    };
+    let programs_block = generate_programs_block(idls, &program_context);
     let addresses_block = generate_stack_addresses_block(idls, pdas, program_ids);
 
     let entity_types: Vec<String> = entity_names.iter().map(|n| to_pascal_case(n)).collect();
@@ -3395,7 +3629,7 @@ fn generate_stack_definition_multi(
         addresses_section = addresses_block,
     );
 
-    format!(
+    Ok(format!(
         r#"{view_helpers}
 
 // ============================================================================
@@ -3419,7 +3653,16 @@ export default {core_export_name};"#,
         core_export_name = core_export_name,
         stack_export = stack_export,
         entity_union = entity_types.join(" | "),
-    )
+    ))
+}
+
+struct ProgramGenerationContext<'a> {
+    pdas: &'a BTreeMap<String, BTreeMap<String, PdaDefinition>>,
+    program_ids: &'a [String],
+    instruction_entries: &'a [crate::typescript_instructions::StackInstructionEntry],
+    schema_names: &'a BTreeSet<String>,
+    account_type_names: &'a BTreeMap<(String, String), String>,
+    definition_hash: Option<&'a str>,
 }
 
 /// Build one program's `{ name, programId, pdas?, accounts?, instructions? }`
@@ -3429,18 +3672,16 @@ export default {core_export_name};"#,
 fn generate_single_program_sections(
     idl: &IdlSnapshot,
     index: usize,
-    pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
-    program_ids: &[String],
-    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
-    schema_names: &BTreeSet<String>,
-    account_type_names: &BTreeMap<(String, String), String>,
+    context: &ProgramGenerationContext<'_>,
 ) -> (String, Vec<String>) {
     let program_key = to_camel_case(&idl.name);
-    let multi_program = program_ids.len() > 1
-        || instruction_entries
+    let multi_program = context.program_ids.len() > 1
+        || context
+            .instruction_entries
             .iter()
             .any(|entry| entry.program_key.is_some());
-    let program_id = program_ids
+    let program_id = context
+        .program_ids
         .get(index)
         .cloned()
         .or_else(|| idl.program_id.clone())
@@ -3448,7 +3689,8 @@ fn generate_single_program_sections(
 
     let instruction_entries_for_program: Vec<
         &crate::typescript_instructions::StackInstructionEntry,
-    > = instruction_entries
+    > = context
+        .instruction_entries
         .iter()
         .filter(|entry| {
             if multi_program {
@@ -3472,11 +3714,12 @@ fn generate_single_program_sections(
         .accounts
         .iter()
         .filter_map(|account| {
-            let type_name = account_type_names
+            let type_name = context
+                .account_type_names
                 .get(&(program_key.clone(), account.name.clone()))?
                 .clone();
             let schema_name = format!("{}Schema", type_name);
-            if !schema_names.contains(&schema_name) {
+            if !context.schema_names.contains(&schema_name) {
                 return None;
             }
             Some((account.name.clone(), type_name, schema_name))
@@ -3492,15 +3735,19 @@ fn generate_single_program_sections(
         })
         .collect();
 
-    let program_pdas = pdas
+    let program_pdas = context
+        .pdas
         .get(&idl.name)
-        .or_else(|| pdas.get(&program_key))
+        .or_else(|| context.pdas.get(&program_key))
         .filter(|program_pdas| !program_pdas.is_empty());
 
     let mut sections: Vec<String> = vec![
         format!("      name: '{}',", idl.name),
         format!("      programId: '{}',", program_id),
     ];
+    if let Some(definition_hash) = context.definition_hash {
+        sections.push(format!("      definitionHash: '{}',", definition_hash));
+    }
 
     if let Some(program_pdas) = program_pdas {
         let pda_entries = generate_program_pda_entries(program_pdas, &program_id, "        ");
@@ -3538,14 +3785,7 @@ fn generate_single_program_sections(
     (program_key, sections)
 }
 
-fn generate_programs_block(
-    idls: &[IdlSnapshot],
-    pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
-    program_ids: &[String],
-    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
-    schema_names: &BTreeSet<String>,
-    account_type_names: &BTreeMap<(String, String), String>,
-) -> String {
+fn generate_programs_block(idls: &[IdlSnapshot], context: &ProgramGenerationContext<'_>) -> String {
     if idls.is_empty() {
         return String::new();
     }
@@ -3553,15 +3793,7 @@ fn generate_programs_block(
     let mut program_blocks = Vec::new();
 
     for (index, idl) in idls.iter().enumerate() {
-        let (program_key, sections) = generate_single_program_sections(
-            idl,
-            index,
-            pdas,
-            program_ids,
-            instruction_entries,
-            schema_names,
-            account_type_names,
-        );
+        let (program_key, sections) = generate_single_program_sections(idl, index, context);
 
         program_blocks.push(format!(
             "    {}: {{\n{}\n    }},",
@@ -3603,25 +3835,13 @@ fn dedent_lines(text: &str, spaces: usize) -> String {
 fn generate_program_definitions(
     stack_name: &str,
     idls: &[IdlSnapshot],
-    pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
-    program_ids: &[String],
-    instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
-    schema_names: &BTreeSet<String>,
-    account_type_names: &BTreeMap<(String, String), String>,
+    context: &ProgramGenerationContext<'_>,
 ) -> String {
     let mut program_consts = Vec::new();
     let mut map_entries = Vec::new();
 
     for (index, idl) in idls.iter().enumerate() {
-        let (program_key, sections) = generate_single_program_sections(
-            idl,
-            index,
-            pdas,
-            program_ids,
-            instruction_entries,
-            schema_names,
-            account_type_names,
-        );
+        let (program_key, sections) = generate_single_program_sections(idl, index, context);
         let const_name = to_screaming_snake_case(&idl.name);
         let body = dedent_lines(&sections.join("\n"), 4);
         program_consts.push(format!(
@@ -3901,17 +4121,28 @@ fn generate_view_helpers_static() -> String {
 // View Definition Types (framework-agnostic)
 // ============================================================================
 
-/** View definition with embedded entity type */
-export interface ViewDef<T, TMode extends 'state' | 'list'> {
+export type ViewKeyFields<TKey> = unknown extends TKey
+  ? readonly string[]
+  : TKey extends object
+    ? readonly Extract<keyof TKey, string>[]
+    : readonly string[];
+
+/** View definition with embedded entity and state-key types */
+export interface ViewDef<T, TMode extends 'state' | 'list', TKey = unknown> {
   readonly mode: TMode;
   readonly view: string;
+  readonly keyFields?: ViewKeyFields<TKey>;
   /** Phantom field for type inference - not present at runtime */
   readonly _entity?: T;
+  readonly _key?: TKey;
 }
 
 /** Helper to create typed state view definitions (keyed lookups) */
-function stateView<T>(view: string): ViewDef<T, 'state'> {
-  return { mode: 'state', view } as const;
+function stateView<T, TKey = unknown>(
+  view: string,
+  keyFields: ViewKeyFields<TKey>
+): ViewDef<T, 'state', TKey> {
+  return { mode: 'state', view, keyFields } as const;
 }
 
 /** Helper to create typed list view definitions (collections) */
@@ -3984,6 +4215,35 @@ mod tests {
         }
     }
 
+    fn state_key_test_spec(primary_keys: Vec<&str>) -> SerializableStreamSpec {
+        let round_id = FieldTypeInfo::new("round_id".to_string(), "u64".to_string());
+        SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: "OreRound".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: primary_keys.into_iter().map(str::to_string).collect(),
+                lookup_indexes: vec![],
+            },
+            handlers: vec![],
+            sections: vec![EntitySection {
+                name: "id".to_string(),
+                fields: vec![round_id.clone()],
+                is_nested_struct: false,
+                parent_field: None,
+            }],
+            field_mappings: BTreeMap::from([("id.round_id".to_string(), round_id)]),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        }
+    }
+
     #[test]
     fn test_case_conversions() {
         assert_eq!(to_pascal_case("settlement_game"), "SettlementGame");
@@ -4017,6 +4277,50 @@ mod tests {
             "boolean"
         );
         assert_eq!(value_to_typescript_type(&serde_json::json!([])), "any[]");
+    }
+
+    #[test]
+    fn test_typescript_scalar_array_element() {
+        assert_eq!(typescript_scalar_array_element("Vec < f64 >"), Some("number"));
+        assert_eq!(typescript_scalar_array_element("Vec<f32>"), Some("number"));
+        assert_eq!(typescript_scalar_array_element("f64"), Some("number"));
+        assert_eq!(typescript_scalar_array_element("Vec < bool >"), Some("boolean"));
+        assert_eq!(typescript_scalar_array_element("Vec < String >"), Some("string"));
+        assert_eq!(typescript_scalar_array_element("Vec < u64 >"), None);
+        assert_eq!(typescript_scalar_array_element("Vec < Pubkey >"), None);
+    }
+
+    #[test]
+    fn state_view_codegen_emits_exact_key_type_and_deduped_runtime_metadata() {
+        let output = compile_serializable_spec(
+            state_key_test_spec(vec!["id.round_id", "id.round_id"]),
+            "OreRound".to_string(),
+            None,
+        )
+        .expect("duplicate identical keys should compile");
+
+        assert!(output.stack_definition.contains(
+            "export interface ViewDef<T, TMode extends 'state' | 'list', TKey = unknown>"
+        ));
+        assert!(output.stack_definition.contains(
+            "state: stateView<OreRound, { roundId: bigint }>('OreRound/state', ['roundId'])"
+        ));
+        assert_eq!(output.stack_definition.matches("['roundId']").count(), 1);
+    }
+
+    #[test]
+    fn state_view_codegen_rejects_distinct_composite_keys() {
+        let mut spec = state_key_test_spec(vec!["id.round_id", "id.authority"]);
+        spec.field_mappings.insert(
+            "id.authority".to_string(),
+            FieldTypeInfo::new("authority".to_string(), "String".to_string()),
+        );
+
+        let error = compile_serializable_spec(spec, "OreRound".to_string(), None)
+            .expect_err("distinct composite keys must fail generation");
+
+        assert!(error.contains("does not support composite state keys"));
+        assert!(error.contains("id.round_id, id.authority"));
     }
 
     #[test]
@@ -4094,6 +4398,22 @@ mod tests {
             output.imports,
             "import { z } from 'zod';\nimport { pda, arg, bytes } from '@usearete/sdk';"
         );
+    }
+
+    #[test]
+    fn program_modules_emit_configured_definition_hash() {
+        let output = compile_program_modules(
+            program_only_test_spec(BTreeMap::new(), vec![]),
+            Some(TypeScriptStackConfig {
+                definition_hash: Some("definition-v1".to_string()),
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .expect("program definition generation should succeed");
+
+        assert!(output
+            .stack_definition
+            .contains("definitionHash: 'definition-v1',"));
     }
 
     #[test]
@@ -4278,6 +4598,128 @@ mod tests {
             "missing stack patch schema map:\n{}",
             file
         );
+    }
+
+    #[test]
+    fn captured_accounts_keep_the_runtime_envelope_and_full_inner_schema() {
+        let miner_snapshot = FieldTypeInfo {
+            field_name: "miner_snapshot".to_string(),
+            raw_name: Some("miner_snapshot".to_string()),
+            canonical_name: Some("minerSnapshot".to_string()),
+            rust_type_name: "Option<Miner>".to_string(),
+            base_type: BaseType::Object,
+            integer_kind: None,
+            is_optional: true,
+            is_array: false,
+            inner_type: Some("Miner".to_string()),
+            source_path: None,
+            resolved_type: Some(ResolvedStructType {
+                type_name: "Miner".to_string(),
+                fields: vec![
+                    ResolvedField {
+                        field_name: "deployed".to_string(),
+                        raw_name: Some("deployed".to_string()),
+                        canonical_name: Some("deployed".to_string()),
+                        field_type: "u64".to_string(),
+                        base_type: BaseType::Integer,
+                        integer_kind: Some(IntegerKind::U64),
+                        is_optional: false,
+                        is_array: true,
+                    },
+                    ResolvedField {
+                        field_name: "round_id".to_string(),
+                        raw_name: Some("round_id".to_string()),
+                        canonical_name: Some("roundId".to_string()),
+                        field_type: "u64".to_string(),
+                        base_type: BaseType::Integer,
+                        integer_kind: Some(IntegerKind::U64),
+                        is_optional: false,
+                        is_array: false,
+                    },
+                ],
+                is_instruction: false,
+                is_account: true,
+                is_event: false,
+                is_enum: false,
+                enum_variants: vec![],
+            }),
+            emit: true,
+        };
+        let spec = SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: "OreMiner".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.authority".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![SerializableHandlerSpec {
+                source: SourceSpec::Source {
+                    program_id: None,
+                    discriminator: None,
+                    type_name: "Miner".to_string(),
+                    serialization: None,
+                    is_account: true,
+                },
+                key_resolution: KeyResolutionStrategy::Embedded {
+                    primary_field: FieldPath::new(&["authority"]),
+                },
+                mappings: vec![SerializableFieldMapping {
+                    target_path: "miner_snapshot".to_string(),
+                    source: MappingSource::AsCapture {
+                        field_transforms: BTreeMap::new(),
+                    },
+                    transform: None,
+                    population: PopulationStrategy::LastWrite,
+                    condition: None,
+                    when: None,
+                    stop: None,
+                    emit: true,
+                }],
+                conditions: vec![],
+                emit: true,
+            }],
+            sections: vec![
+                EntitySection {
+                    name: "id".to_string(),
+                    fields: vec![FieldTypeInfo::new(
+                        "authority".to_string(),
+                        "String".to_string(),
+                    )],
+                    is_nested_struct: false,
+                    parent_field: None,
+                },
+                EntitySection {
+                    name: "root".to_string(),
+                    fields: vec![miner_snapshot],
+                    is_nested_struct: false,
+                    parent_field: None,
+                },
+            ],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            resolver_specs: vec![],
+            instruction_hooks: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        };
+
+        let output = compile_serializable_spec(spec, "OreMiner".to_string(), None)
+            .expect("captured account generation should succeed");
+        let file = output.full_file();
+
+        assert!(file.contains("minerSnapshot: CaptureWrapper<Miner> | null;"));
+        assert!(file.contains("export interface CaptureWrapper<T> {"));
+        assert!(file.contains("accountAddress: string;"));
+        assert!(file.contains("account_address: z.string(),"));
+        assert!(file.contains("accountAddress: value.account_address,"));
+        assert!(file.contains("miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable(),"));
+        assert!(file
+            .contains("miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable().optional(),"));
+        assert!(!file.contains("CaptureWrapperSchema(MinerPatchSchema)"));
     }
 
     #[test]
@@ -4738,6 +5180,41 @@ mod tests {
         assert!(
             !file.contains("extendStack"),
             "no extension wiring expected"
+        );
+    }
+
+    #[test]
+    fn golden_ore_stack_json_emits_typed_state_view_keys() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../stacks/ore/.arete/OreStream.stack.json"
+        );
+        let json = match std::fs::read_to_string(path) {
+            Ok(contents) => contents,
+            // Stack JSON is generated by the macro build; skip if not present.
+            Err(_) => return,
+        };
+        let spec: SerializableStackSpec =
+            serde_json::from_str(&json).expect("ore stack json should deserialize");
+
+        let output = compile_stack_spec(spec, None).expect("ore stack should compile");
+        let stack = output.stack_definition;
+
+        assert!(stack.contains(
+            "state: stateView<OreRound, { roundId: bigint }>('OreRound/state', ['roundId'])"
+        ));
+        assert!(stack.contains(
+            "state: stateView<OreBoard, { address: string }>('OreBoard/state', ['address'])"
+        ));
+        assert!(stack.contains(
+            "state: stateView<OreMiner, { authority: string }>('OreMiner/state', ['authority'])"
+        ));
+        assert_eq!(
+            stack.matches(
+                "state: stateView<OreMiner, { authority: string }>('OreMiner/state', ['authority'])"
+            )
+            .count(),
+            1
         );
     }
 

@@ -8,17 +8,29 @@ export type ConnectionState =
 export type Update<T> =
   | { type: 'upsert'; key: string; data: T }
   | { type: 'patch'; key: string; data: Partial<T> }
+  | { type: 'remove'; key: string }
   | { type: 'delete'; key: string };
 
 export type RichUpdate<T> =
   | { type: 'created'; key: string; data: T }
   | { type: 'updated'; key: string; before: T; after: T; patch?: unknown }
+  | { type: 'removed'; key: string; lastKnown?: T }
   | { type: 'deleted'; key: string; lastKnown?: T };
 
-export interface ViewDef<T, TMode extends 'state' | 'list'> {
+export type ViewKeyValue = string | number | bigint;
+
+export type ViewKeyFields<TKey> = unknown extends TKey
+  ? readonly string[]
+  : TKey extends object
+    ? readonly Extract<keyof TKey, string>[]
+    : readonly string[];
+
+export interface ViewDef<T, TMode extends 'state' | 'list', TKey = unknown> {
   readonly mode: TMode;
   readonly view: string;
+  readonly keyFields?: ViewKeyFields<TKey>;
   readonly _entity?: T;
+  readonly _key?: TKey;
 }
 
 export interface StackEndpoints {
@@ -56,6 +68,8 @@ export interface StackQueryDefinition<TParams = unknown, TResult = unknown> {
 export interface ProgramSdkDefinition {
   readonly name: string;
   readonly programId?: string;
+  /** Stable fingerprint of the generated program behavior used for client caching. */
+  readonly definitionHash?: string;
   readonly schemas?: Record<string, Schema<unknown>>;
   readonly pdas?: Record<string, unknown>;
   readonly accounts?: Record<string, ProgramAccountReadDefinition<unknown>>;
@@ -78,30 +92,64 @@ export interface StackDefinition {
 }
 
 export interface ViewGroup {
-  state?: ViewDef<unknown, 'state'>;
-  list?: ViewDef<unknown, 'list'>;
+  state?: ViewDef<any, 'state', any>;
+  list?: ViewDef<any, 'list'>;
 }
 
-export interface Subscription {
+export interface SubscriptionQuery {
   view: string;
   key?: string;
   partition?: string;
-  filters?: Record<string, string>;
+  filters?: Record<string, unknown>;
   take?: number;
   skip?: number;
-  /** Whether to include initial snapshot (defaults to true for backward compatibility) */
-  withSnapshot?: boolean;
-  /** Cursor for resuming from a specific point (_seq value) */
   after?: string;
-  /** Maximum number of entities to include in snapshot (pagination hint) */
   snapshotLimit?: number;
 }
 
-/** Server-supported identity used to route subscribe and unsubscribe messages. */
-export type SubscriptionIdentity = Pick<Subscription, 'view' | 'key'>;
+export interface SubscriptionSnapshotOptions {
+  enabled: boolean;
+}
 
-/** Subscription behavior that must match before callers can share an identity. */
-export type SubscriptionOptions = Omit<Subscription, keyof SubscriptionIdentity>;
+/** Protocol v2 wire subscription. The client-selected ID remains stable across reconnects. */
+export interface Subscription {
+  type: 'subscribe';
+  protocolVersion: 2;
+  subscriptionId: string;
+  query: SubscriptionQuery;
+  snapshot: SubscriptionSnapshotOptions;
+}
+
+export interface SubscriptionRequest {
+  query: SubscriptionQuery;
+  snapshot?: Partial<SubscriptionSnapshotOptions>;
+}
+
+/** Canonical query identity includes every server query field and snapshot behavior. */
+export type SubscriptionIdentity = SubscriptionRequest;
+
+export type SubscriptionOptions = SubscriptionSnapshotOptions;
+
+export interface QuerySnapshot<T = unknown> {
+  readonly subscriptionId: string;
+  readonly query: SubscriptionQuery;
+  readonly keys: readonly string[];
+  readonly data: readonly T[];
+  readonly isLoading: boolean;
+  readonly isRefreshing: boolean;
+  readonly error?: AreteError;
+}
+
+export interface QueryLease {
+  readonly subscription: Subscription;
+  readonly queryKey: string;
+  getSnapshot<T = unknown>(): QuerySnapshot<T>;
+  onChange(callback: () => void): UnsubscribeFn;
+  onUpdate<T = unknown>(callback: (update: Update<T>) => void): UnsubscribeFn;
+  onRichUpdate<T = unknown>(callback: (update: RichUpdate<T>) => void): UnsubscribeFn;
+  refresh(): Promise<void>;
+  release(): void;
+}
 
 export type SchemaResult<T> =
   | { success: true; data: T }
@@ -112,9 +160,10 @@ export interface Schema<T> {
 }
 
 export interface WatchOptions<TSchema = unknown> {
+  partition?: string;
   take?: number;
   skip?: number;
-  filters?: Record<string, string>;
+  filters?: Record<string, unknown>;
   schema?: Schema<TSchema>;
   /** Whether to include initial snapshot (defaults to true) */
   withSnapshot?: boolean;
@@ -126,6 +175,9 @@ export interface WatchOptions<TSchema = unknown> {
 
 export interface AreteOptions<TStack extends StackDefinition> {
   stack: TStack;
+  /** Connect immediately when the client is created (defaults to true). */
+  autoConnect?: boolean;
+  /** Reconnect automatically after an established connection is lost (defaults to true). */
   autoReconnect?: boolean;
   reconnectIntervals?: number[];
   maxReconnectAttempts?: number;
@@ -174,6 +226,8 @@ export interface AuthConfig {
 export interface AreteConfig {
   /** WebSocket endpoint. `null`/omitted disables the WebSocket transport (HTTP-only mode). */
   websocketUrl?: string | null;
+  /** Reconnect automatically after an established connection is lost (defaults to true). */
+  autoReconnect?: boolean;
   reconnectIntervals?: number[];
   maxReconnectAttempts?: number;
   initialSubscriptions?: Subscription[];
@@ -185,17 +239,19 @@ export interface AreteConfig {
 export interface SocketIssue {
   error: string;
   message: string;
-  code: AuthErrorCode;
+  code: string | AuthErrorCode;
   retryable: boolean;
   retryAfter?: number;
   suggestedAction?: string;
   docsUrl?: string;
   fatal: boolean;
+  subscriptionId?: string | null;
 }
 
 export const DEFAULT_CONFIG: Required<
-  Pick<AreteConfig, 'reconnectIntervals' | 'maxReconnectAttempts' | 'maxEntriesPerView'>
+  Pick<AreteConfig, 'autoReconnect' | 'reconnectIntervals' | 'maxReconnectAttempts' | 'maxEntriesPerView'>
 > = {
+  autoReconnect: true,
   reconnectIntervals: [1000, 2000, 4000, 8000, 16000],
   maxReconnectAttempts: 5,
   maxEntriesPerView: DEFAULT_MAX_ENTRIES_PER_VIEW,
@@ -280,27 +336,29 @@ export type TypedViews<TViews extends StackDefinition['views']> = {
 };
 
 export type TypedViewGroup<TGroup> = {
-  [K in keyof TGroup]: TGroup[K] extends ViewDef<infer T, 'state'>
-    ? TypedStateView<T>
+  [K in keyof TGroup]: TGroup[K] extends ViewDef<infer T, 'state', infer TKey>
+    ? TypedStateView<T, DefaultViewKey<TKey>>
     : TGroup[K] extends ViewDef<infer T, 'list'>
       ? TypedListView<T>
       : never;
 };
 
-export interface TypedStateView<T> {
-  use<TSchema = T>(key: string, options?: WatchOptions<TSchema>): AsyncIterable<TSchema>;
-  watch(key: string, options?: WatchOptions): AsyncIterable<Update<T>>;
-  watchRich(key: string, options?: WatchOptions): AsyncIterable<RichUpdate<T>>;
-  get(key: string): Promise<T | null>;
-  getSync(key: string): T | null | undefined;
+export type DefaultViewKey<TKey> = unknown extends TKey ? string : TKey;
+
+export interface TypedStateView<T, TKey = string> {
+  use<TSchema = T>(key: TKey, options?: WatchOptions<TSchema>): AsyncIterable<TSchema>;
+  watch(key: TKey, options?: WatchOptions): AsyncIterable<Update<T>>;
+  watchRich(key: TKey, options?: WatchOptions): AsyncIterable<RichUpdate<T>>;
+  get(key: TKey, options?: WatchOptions): Promise<T | null>;
+  getSync(key: TKey, options?: WatchOptions): T | null | undefined;
 }
 
 export interface TypedListView<T> {
   use<TSchema = T>(options?: WatchOptions<TSchema>): AsyncIterable<TSchema>;
   watch(options?: WatchOptions): AsyncIterable<Update<T>>;
   watchRich(options?: WatchOptions): AsyncIterable<RichUpdate<T>>;
-  get(): Promise<T[]>;
-  getSync(): T[] | undefined;
+  get(options?: WatchOptions): Promise<T[]>;
+  getSync(options?: WatchOptions): T[] | undefined;
 }
 
 export type SubscribeCallback<T> = (update: Update<T>) => void;

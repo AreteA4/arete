@@ -83,7 +83,7 @@ impl SnapshotRecorder {
             self.start_time.elapsed().as_millis() as u64
         };
         let header = SnapshotHeader {
-            version: 1,
+            version: 2,
             view: self.view.clone(),
             url: self.url.clone(),
             captured_at: self.start_timestamp.to_rfc3339(),
@@ -183,9 +183,9 @@ impl SnapshotPlayer {
         let file: SnapshotFile = serde_json::from_str(&contents)
             .with_context(|| format!("Failed to parse snapshot file: {}", path))?;
 
-        if file.header.version != 1 {
+        if file.header.version != 2 {
             anyhow::bail!(
-                "Unsupported snapshot version {} in {}. This CLI supports version 1.",
+                "Unsupported snapshot version {} in {}. This CLI supports protocol v2 snapshots (version 2).",
                 file.header.version,
                 path
             );

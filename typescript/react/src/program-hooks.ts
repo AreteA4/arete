@@ -14,14 +14,19 @@ import type {
   UseMutationOptions,
   UseMutationResult,
 } from './hooks/use-mutation';
+import { useInstructionMutation } from './hooks/use-mutation';
+import {
+  createProcessedSlotReconciliation,
+  type ProcessedSlotClient,
+} from './reconciliation';
 
 type OperationOptionsArg<TClient> = TClient extends { execute(prepared: PreparedOperation, options?: infer TOptions): Promise<unknown> }
   ? NonNullable<TOptions>
-  : Record<string, never>;
+  : Record<string, unknown>;
 
 type RawOptionsArg<TClient> = TClient extends { transaction(instructions: readonly unknown[], options?: infer TOptions): Promise<unknown> }
   ? NonNullable<TOptions>
-  : Record<string, never>;
+  : Record<string, unknown>;
 
 type MutationHookFactory = <
   TParams,
@@ -41,6 +46,55 @@ type ExecutionClient = {
   transaction(instructions: readonly unknown[], options?: unknown): Promise<unknown>;
   execute(prepared: PreparedOperation, options?: unknown): Promise<unknown>;
 };
+
+function composeCallbacks<T>(
+  observerCallback: ((value: T) => void) | undefined,
+  callerCallback: ((value: T) => void | Promise<void>) | undefined,
+): ((value: T) => Promise<void>) | undefined {
+  if (!observerCallback && !callerCallback) return undefined;
+  return async (value) => {
+    const errors: unknown[] = [];
+    for (const callback of [observerCallback, callerCallback]) {
+      if (!callback) continue;
+      try {
+        await callback(value);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) throw errors[0];
+  };
+}
+
+/**
+ * Wrap the mutation factory so every generated program hook reconciles against
+ * the stream by default: after confirmation, wait until the stack has
+ * processed the transaction's slot. Callers opt out per hook or per submit
+ * with `reconcile: false`, replace it with a function, or tweak it with a
+ * `{ refresh, timeoutMs }` shorthand object.
+ */
+function withDefaultReconciliation(
+  createMutationHook: MutationHookFactory,
+  client: (ExecutionClient & Partial<ProcessedSlotClient>) | null,
+): MutationHookFactory {
+  const defaultReconcile = client && typeof client.waitForProcessedSlot === 'function'
+    ? createProcessedSlotReconciliation(client as ProcessedSlotClient)
+    : undefined;
+  if (!defaultReconcile) {
+    return createMutationHook;
+  }
+  const factory: MutationHookFactory = (execute, options) => {
+    const callerReconcile = options?.reconcile;
+    let reconcile = callerReconcile;
+    if (callerReconcile !== false && typeof callerReconcile !== 'function') {
+      reconcile = (callerReconcile
+        ? defaultReconcile.withOverrides(callerReconcile)
+        : defaultReconcile) as typeof callerReconcile;
+    }
+    return createMutationHook(execute, { ...options, reconcile } as typeof options);
+  };
+  return factory;
+}
 
 export type RawInstructionHookFor<THandler, TClient> = THandler extends TypedInstruction<infer P, infer E>
   ? {
@@ -157,7 +211,22 @@ function wrapOperation<TOperation extends ConnectedOperationLike, TClient extend
     const prepared = await operation.prepare(input) as TPrepared;
     observer?.onPrepared(prepared);
     observer?.onAwaitingWallet();
-    return client.execute(prepared, options as OperationExecutionOptions);
+    const executionOptions = options as OperationExecutionOptions<unknown, TPrepared> | undefined;
+    return client.execute(prepared, {
+      ...(executionOptions ?? {}),
+      onTransactionStart: composeCallbacks(
+        observer ? (event) => observer.onTransactionStart(event) : undefined,
+        executionOptions?.onTransactionStart,
+      ),
+      onTransactionSuccess: composeCallbacks(
+        observer ? (event) => observer.onTransactionSuccess(event) : undefined,
+        executionOptions?.onTransactionSuccess,
+      ),
+      onCallbackError: composeCallbacks(
+        observer ? (error) => observer.onCallbackError(error) : undefined,
+        executionOptions?.onCallbackError,
+      ),
+    } satisfies OperationExecutionOptions<unknown, TPrepared>);
   };
 
   return {
@@ -198,15 +267,66 @@ function wrapMaybeOperationNamespace<TClient extends ExecutionClient>(
     : {};
 }
 
+const NOT_CONNECTED_ERROR = 'Arete client is not connected';
+
+function useDisconnectedMutation() {
+  return useInstructionMutation(async () => {
+    throw new Error(NOT_CONNECTED_ERROR);
+  });
+}
+
+/**
+ * Placeholder program hooks used before the client connects. Every namespace
+ * path resolves (so `arete.programs.ore.transactions.mining.deploy.useMutation()`
+ * is safe to call unconditionally) and every mutation hook keeps React state,
+ * but preparing, executing, or submitting throws "not connected" — matching
+ * what the real wrappers do. This lets components render their full tree
+ * while the stack is offline instead of gating on `arete.client`.
+ */
+export function buildDisconnectedProgramHooks(): Record<string, never> {
+  const notConnected = () => {
+    throw new Error(NOT_CONNECTED_ERROR);
+  };
+  const leaf = Object.assign(notConnected, {
+    prepare: notConnected,
+    execute: notConnected,
+    send: notConnected,
+    resolve: notConnected,
+    plan: notConnected,
+    build: notConnected,
+    stage: notConnected,
+    useMutation: () => useDisconnectedMutation(),
+  });
+  // eslint-disable-next-line prefer-const
+  let proxy: Record<string, never>;
+  proxy = new Proxy(leaf as unknown as Record<string, never>, {
+    get(target, property) {
+      if (typeof property === 'string' && !(property in target)) {
+        return proxy;
+      }
+      return Reflect.get(target, property);
+    },
+  }) as Record<string, never>;
+  return proxy;
+}
+
 export function buildProgramHookInterfaces<TClient extends ExecutionClient>(
   programs: ProgramsInterface<Record<string, ProgramSdkDefinition>> | undefined,
   client: TClient | null,
   createMutationHook: MutationHookFactory,
+  options: { defaultReconciliation?: boolean } = {},
 ): Record<string, ProgramHookInterface<ProgramSdkDefinition, TClient>> {
   const wrappedPrograms: Record<string, ProgramHookInterface<ProgramSdkDefinition, TClient>> = {};
   if (!programs) {
     return wrappedPrograms;
   }
+
+  const mutationHookFactory = options.defaultReconciliation === false
+    ? createMutationHook
+    : withDefaultReconciliation(
+        createMutationHook,
+        client as ExecutionClient & Partial<ProcessedSlotClient>,
+      );
 
   for (const [name, program] of Object.entries(programs)) {
     const raw: Record<string, unknown> = {};
@@ -214,7 +334,7 @@ export function buildProgramHookInterfaces<TClient extends ExecutionClient>(
       raw[instructionName] = wrapRawInstruction(
         instruction as TypedInstruction<Record<string, unknown>, unknown>,
         client,
-        createMutationHook,
+        mutationHookFactory,
       );
     }
 
@@ -230,9 +350,9 @@ export function buildProgramHookInterfaces<TClient extends ExecutionClient>(
       defaults: program.defaults,
       math: program.math,
       raw: raw as ProgramHookInterface<ProgramSdkDefinition, TClient>['raw'],
-      instructions: wrapMaybeOperationNamespace(program.instructions, client, createMutationHook) as ProgramHookInterface<ProgramSdkDefinition, TClient>['instructions'],
-      transactions: wrapMaybeOperationNamespace(program.transactions, client, createMutationHook) as ProgramHookInterface<ProgramSdkDefinition, TClient>['transactions'],
-      flows: wrapMaybeOperationNamespace(program.flows, client, createMutationHook) as ProgramHookInterface<ProgramSdkDefinition, TClient>['flows'],
+      instructions: wrapMaybeOperationNamespace(program.instructions, client, mutationHookFactory) as ProgramHookInterface<ProgramSdkDefinition, TClient>['instructions'],
+      transactions: wrapMaybeOperationNamespace(program.transactions, client, mutationHookFactory) as ProgramHookInterface<ProgramSdkDefinition, TClient>['transactions'],
+      flows: wrapMaybeOperationNamespace(program.flows, client, mutationHookFactory) as ProgramHookInterface<ProgramSdkDefinition, TClient>['flows'],
     };
   }
 

@@ -33,12 +33,13 @@ pub mod view;
 pub use auth::{AuthConfig, AuthToken, TokenTransport};
 pub use client::{Arete, AreteBuilder};
 pub use config::{AreteConfig, ConnectionConfig};
-pub use connection::{ConnectionManager, ConnectionState};
+pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
 pub use entity::Stack;
 pub use error::{AreteError, AuthErrorCode, SocketIssue};
 pub use frame::{
-    parse_frame, parse_snapshot_entities, try_parse_subscribed_frame, Frame, Mode, Operation,
-    SnapshotEntity,
+    parse_frame, parse_server_message, parse_snapshot_entities, try_parse_subscribed_frame, Frame,
+    Mode, Operation, ProtocolErrorFrame, ServerFrame, ServerMessage, SnapshotEntity, SortConfig,
+    SortOrder,
 };
 pub use store::{deep_merge_with_append, SharedStore, StoreConfig, StoreUpdate};
 pub use stream::{
@@ -46,7 +47,10 @@ pub use stream::{
     RichUpdate, Update, UseStream,
 };
 
-pub use subscription::{ClientMessage, Subscription, Unsubscription};
+pub use subscription::{
+    ClientMessage, SnapshotOptions, Subscription, SubscriptionQuery, Unsubscription,
+    MAX_SUBSCRIPTION_ID_BYTES, PROTOCOL_VERSION,
+};
 pub use view::{
     RichWatchBuilder, StateView, UseBuilder, ViewBuilder, ViewHandle, Views, WatchBuilder,
 };

@@ -40,7 +40,7 @@ export interface OreRoundState {
   closesAt: bigint | null;
   countPerSquare: bigint[] | null;
   deployedPerSquare: bigint[] | null;
-  deployedPerSquareUi: any[] | null;
+  deployedPerSquareUi: number[] | null;
   estimatedExpiresAtUnix: bigint | null;
   expiresAt: bigint | null;
   motherlode: number | null;
@@ -241,7 +241,7 @@ export const OreRoundStateSchema = z.object({
   closes_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
   count_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable(),
   deployed_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable(),
-  deployed_per_square_ui: z.array(z.any()).nullable(),
+  deployed_per_square_ui: z.array(z.number()).nullable(),
   estimated_expires_at_unix: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
   expires_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
   motherlode: z.number().nullable(),
@@ -267,7 +267,7 @@ export const OreRoundStatePatchSchema = z.object({
   closes_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   count_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable().optional(),
   deployed_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable().optional(),
-  deployed_per_square_ui: z.array(z.any()).nullable().optional(),
+  deployed_per_square_ui: z.array(z.number()).nullable().optional(),
   estimated_expires_at_unix: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   expires_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   motherlode: z.number().nullable().optional(),
@@ -369,7 +369,7 @@ export interface OreBoardState {
 export interface OreBoard {
   id: OreBoardId;
   state: OreBoardState;
-  boardSnapshot: Board | null;
+  boardSnapshot: CaptureWrapper<Board> | null;
 }
 
 export interface Board {
@@ -378,6 +378,36 @@ export interface Board {
   endSlot: bigint;
   productionCostEma: bigint;
 }
+
+/**
+ * Wrapper for account data captured with context metadata.
+ */
+export interface CaptureWrapper<T> {
+  /** Unix timestamp when the account was captured */
+  timestamp: number;
+  /** Base58 account address */
+  accountAddress: string;
+  /** Captured account data */
+  data: T;
+  /** Optional blockchain slot number */
+  slot?: number;
+  /** Optional transaction signature */
+  signature?: string;
+}
+
+export const CaptureWrapperSchema = <T extends z.ZodTypeAny>(data: T) => z.object({
+  timestamp: z.number(),
+  account_address: z.string(),
+  data,
+  slot: z.number().optional(),
+  signature: z.string().optional(),
+}).transform((value) => ({
+  timestamp: value.timestamp,
+  accountAddress: value.account_address,
+  data: value.data,
+  ...(value.slot !== undefined ? { slot: value.slot } : {}),
+  ...(value.signature !== undefined ? { signature: value.signature } : {}),
+}));
 
 export const BoardSchema = z.object({
   round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
@@ -442,7 +472,7 @@ export const OreBoardStatePatchSchema = z.object({
 export const OreBoardSchema = z.object({
   id: OreBoardIdSchema,
   state: OreBoardStateSchema,
-  board_snapshot: BoardSchema.nullable(),
+  board_snapshot: CaptureWrapperSchema(BoardSchema).nullable(),
 }).transform((value) => ({
   id: value.id,
   state: value.state,
@@ -452,7 +482,7 @@ export const OreBoardSchema = z.object({
 export const OreBoardPatchSchema = z.object({
   id: OreBoardIdPatchSchema.optional(),
   state: OreBoardStatePatchSchema.optional(),
-  board_snapshot: BoardPatchSchema.nullable().optional(),
+  board_snapshot: CaptureWrapperSchema(BoardSchema).nullable().optional(),
 }).transform((value) => ({
   ...(value.id !== undefined ? { id: value.id } : {}),
   ...(value.state !== undefined ? { state: value.state } : {}),
@@ -462,7 +492,7 @@ export const OreBoardPatchSchema = z.object({
 export const OreBoardCompletedSchema = z.object({
   id: OreBoardIdSchema,
   state: OreBoardStateSchema,
-  board_snapshot: BoardSchema.nullable(),
+  board_snapshot: CaptureWrapperSchema(BoardSchema).nullable(),
 }).transform((value) => ({
   id: value.id,
   state: value.state,
@@ -482,7 +512,7 @@ export interface OreTreasuryState {
 export interface OreTreasury {
   id: OreTreasuryId;
   state: OreTreasuryState;
-  treasurySnapshot: Treasury | null;
+  treasurySnapshot: CaptureWrapper<Treasury> | null;
 }
 
 export interface Treasury {
@@ -551,7 +581,7 @@ export const OreTreasuryStatePatchSchema = z.object({
 export const OreTreasurySchema = z.object({
   id: OreTreasuryIdSchema,
   state: OreTreasuryStateSchema,
-  treasury_snapshot: TreasurySchema.nullable(),
+  treasury_snapshot: CaptureWrapperSchema(TreasurySchema).nullable(),
 }).transform((value) => ({
   id: value.id,
   state: value.state,
@@ -561,7 +591,7 @@ export const OreTreasurySchema = z.object({
 export const OreTreasuryPatchSchema = z.object({
   id: OreTreasuryIdPatchSchema.optional(),
   state: OreTreasuryStatePatchSchema.optional(),
-  treasury_snapshot: TreasuryPatchSchema.nullable().optional(),
+  treasury_snapshot: CaptureWrapperSchema(TreasurySchema).nullable().optional(),
 }).transform((value) => ({
   ...(value.id !== undefined ? { id: value.id } : {}),
   ...(value.state !== undefined ? { state: value.state } : {}),
@@ -571,7 +601,7 @@ export const OreTreasuryPatchSchema = z.object({
 export const OreTreasuryCompletedSchema = z.object({
   id: OreTreasuryIdSchema,
   state: OreTreasuryStateSchema,
-  treasury_snapshot: TreasurySchema.nullable(),
+  treasury_snapshot: CaptureWrapperSchema(TreasurySchema).nullable(),
 }).transform((value) => ({
   id: value.id,
   state: value.state,
@@ -606,9 +636,12 @@ export interface OreMinerRewards {
 export interface OreMinerState {
   checkpointFee: bigint | null;
   checkpointId: bigint | null;
+  deployedPerSquare: bigint[] | null;
+  deployedPerSquareUi: number[] | null;
   lastClaimOreAt: bigint | null;
   lastClaimSolAt: bigint | null;
   roundId: bigint | null;
+  totalDeployed: number | null;
 }
 
 export interface OreMiner {
@@ -616,8 +649,8 @@ export interface OreMiner {
   id: OreMinerId;
   rewards: OreMinerRewards;
   state: OreMinerState;
-  minerSnapshot: Miner | null;
-  automationSnapshot: Automation | null;
+  minerSnapshot: CaptureWrapper<Miner> | null;
+  automationSnapshot: CaptureWrapper<Automation> | null;
 }
 
 export interface Miner {
@@ -873,29 +906,41 @@ export const OreMinerRewardsPatchSchema = z.object({
 export const OreMinerStateSchema = z.object({
   checkpoint_fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
   checkpoint_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  deployed_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable(),
+  deployed_per_square_ui: z.array(z.number()).nullable(),
   last_claim_ore_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
   last_claim_sol_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
   round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  total_deployed: z.number().nullable(),
 }).transform((value) => ({
   checkpointFee: value.checkpoint_fee,
   checkpointId: value.checkpoint_id,
+  deployedPerSquare: value.deployed_per_square,
+  deployedPerSquareUi: value.deployed_per_square_ui,
   lastClaimOreAt: value.last_claim_ore_at,
   lastClaimSolAt: value.last_claim_sol_at,
   roundId: value.round_id,
+  totalDeployed: value.total_deployed,
 }));
 
 export const OreMinerStatePatchSchema = z.object({
   checkpoint_fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   checkpoint_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  deployed_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable().optional(),
+  deployed_per_square_ui: z.array(z.number()).nullable().optional(),
   last_claim_ore_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   last_claim_sol_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
   round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  total_deployed: z.number().nullable().optional(),
 }).transform((value) => ({
   ...(value.checkpoint_fee !== undefined ? { checkpointFee: value.checkpoint_fee } : {}),
   ...(value.checkpoint_id !== undefined ? { checkpointId: value.checkpoint_id } : {}),
+  ...(value.deployed_per_square !== undefined ? { deployedPerSquare: value.deployed_per_square } : {}),
+  ...(value.deployed_per_square_ui !== undefined ? { deployedPerSquareUi: value.deployed_per_square_ui } : {}),
   ...(value.last_claim_ore_at !== undefined ? { lastClaimOreAt: value.last_claim_ore_at } : {}),
   ...(value.last_claim_sol_at !== undefined ? { lastClaimSolAt: value.last_claim_sol_at } : {}),
   ...(value.round_id !== undefined ? { roundId: value.round_id } : {}),
+  ...(value.total_deployed !== undefined ? { totalDeployed: value.total_deployed } : {}),
 }));
 
 export const OreMinerSchema = z.object({
@@ -903,8 +948,8 @@ export const OreMinerSchema = z.object({
   id: OreMinerIdSchema,
   rewards: OreMinerRewardsSchema,
   state: OreMinerStateSchema,
-  miner_snapshot: MinerSchema.nullable(),
-  automation_snapshot: AutomationSchema.nullable(),
+  miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable(),
+  automation_snapshot: CaptureWrapperSchema(AutomationSchema).nullable(),
 }).transform((value) => ({
   automation: value.automation,
   id: value.id,
@@ -919,8 +964,8 @@ export const OreMinerPatchSchema = z.object({
   id: OreMinerIdPatchSchema.optional(),
   rewards: OreMinerRewardsPatchSchema.optional(),
   state: OreMinerStatePatchSchema.optional(),
-  miner_snapshot: MinerPatchSchema.nullable().optional(),
-  automation_snapshot: AutomationPatchSchema.nullable().optional(),
+  miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable().optional(),
+  automation_snapshot: CaptureWrapperSchema(AutomationSchema).nullable().optional(),
 }).transform((value) => ({
   ...(value.automation !== undefined ? { automation: value.automation } : {}),
   ...(value.id !== undefined ? { id: value.id } : {}),
@@ -935,8 +980,8 @@ export const OreMinerCompletedSchema = z.object({
   id: OreMinerIdSchema,
   rewards: OreMinerRewardsSchema,
   state: OreMinerStateSchema,
-  miner_snapshot: MinerSchema.nullable(),
-  automation_snapshot: AutomationSchema.nullable(),
+  miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable(),
+  automation_snapshot: CaptureWrapperSchema(AutomationSchema).nullable(),
 }).transform((value) => ({
   automation: value.automation,
   id: value.id,
@@ -1883,17 +1928,28 @@ export const entropySampleInstruction = createInstructionHandler<EntropySamplePa
 // View Definition Types (framework-agnostic)
 // ============================================================================
 
-/** View definition with embedded entity type */
-export interface ViewDef<T, TMode extends 'state' | 'list'> {
+export type ViewKeyFields<TKey> = unknown extends TKey
+  ? readonly string[]
+  : TKey extends object
+    ? readonly Extract<keyof TKey, string>[]
+    : readonly string[];
+
+/** View definition with embedded entity and state-key types */
+export interface ViewDef<T, TMode extends 'state' | 'list', TKey = unknown> {
   readonly mode: TMode;
   readonly view: string;
+  readonly keyFields?: ViewKeyFields<TKey>;
   /** Phantom field for type inference - not present at runtime */
   readonly _entity?: T;
+  readonly _key?: TKey;
 }
 
 /** Helper to create typed state view definitions (keyed lookups) */
-function stateView<T>(view: string): ViewDef<T, 'state'> {
-  return { mode: 'state', view } as const;
+function stateView<T, TKey = unknown>(
+  view: string,
+  keyFields: ViewKeyFields<TKey>
+): ViewDef<T, 'state', TKey> {
+  return { mode: 'state', view, keyFields } as const;
 }
 
 /** Helper to create typed list view definitions (collections) */
@@ -1914,20 +1970,20 @@ export const ORE_STREAM_STACK_CORE = {
   },
   views: {
     OreRound: {
-      state: stateView<OreRound>('OreRound/state'),
+      state: stateView<OreRound, { roundId: bigint }>('OreRound/state', ['roundId']),
       list: listView<OreRound>('OreRound/list'),
       latest: listView<OreRound>('OreRound/latest'),
     },
     OreBoard: {
-      state: stateView<OreBoard>('OreBoard/state'),
+      state: stateView<OreBoard, { address: string }>('OreBoard/state', ['address']),
       list: listView<OreBoard>('OreBoard/list'),
     },
     OreTreasury: {
-      state: stateView<OreTreasury>('OreTreasury/state'),
+      state: stateView<OreTreasury, { address: string }>('OreTreasury/state', ['address']),
       list: listView<OreTreasury>('OreTreasury/list'),
     },
     OreMiner: {
-      state: stateView<OreMiner>('OreMiner/state'),
+      state: stateView<OreMiner, { authority: string }>('OreMiner/state', ['authority']),
       list: listView<OreMiner>('OreMiner/list'),
     },
   },
@@ -1981,6 +2037,7 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+      definitionHash: '0d7a7e5d82ef7665b47bd2e56d28f1a764b8b16bcbc97ad3f7ffeeb12748cc20',
       pdas: {
         automation: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('automation'), account('authority')),
         board: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('board')),
@@ -2157,6 +2214,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
+      definitionHash: '0d7a7e5d82ef7665b47bd2e56d28f1a764b8b16bcbc97ad3f7ffeeb12748cc20',
       accounts: {
         Var: programAccountRead<Var>({ account: 'Var', path: '/programs/entropy/accounts/Var', schema: VarSchema }),
       },

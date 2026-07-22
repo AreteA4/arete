@@ -4,678 +4,421 @@ sidebar:
   order: 1
 ---
 
-The `arete-react` SDK provides hooks and providers for building live Solana applications with React. It's built on top of `arete-typescript` and adds React-specific features like automatic re-rendering, connection state management, and data transformation.
+`@usearete/react` adds provider-managed connections and React hooks to the framework-agnostic [`@usearete/sdk`](/sdks/typescript/) client.
 
-:::tip[Not using React?]
-See the [TypeScript SDK](/sdks/typescript/) for the framework-agnostic core SDK.
-:::
-
----
-
-## Quick Start
-
-```tsx
-import { AreteProvider, useArete } from "arete-react";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
-
-function App() {
-  return (
-    <AreteProvider>
-      <Dashboard />
-    </AreteProvider>
-  );
-}
-
-function Dashboard() {
-  const { views, isConnected } = useArete(ORE_STREAM_STACK);
-  const { data: rounds, isLoading } = views.OreRound.latest.use();
-
-  if (isLoading) return <p>Loading...</p>;
-
-  return (
-    <div>
-      <p>{isConnected ? "🟢 Live" : "Connecting..."}</p>
-      <ul>
-        {rounds?.map((round) => (
-          <li key={round.id?.round_id}>Round #{round.id?.round_id}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-```
-
----
-
-## Installation
+## Install
 
 ```bash
-npm install arete-react zustand
+npm install @usearete/react @usearete/sdk zod
 ```
 
-### Peer Dependencies
+React remains an application peer dependency. `@usearete/react` carries `zustand` as a normal dependency, so do not install `zustand` separately. Generated stack files import core SDK types and Zod schemas directly, which is why generated React consumers install all three packages above.
 
-The SDK requires:
+Arete's fluent `.use()`, `.useOne()`, and `.useMutation()` methods are React
+hooks. Standard Hooks linting cannot identify deeply nested member calls, so
+`@usearete/react/eslint-plugin.cjs` exports an `arete/fluent-hooks` rule for
+flat ESLint configurations. Enable it alongside the standard
+`react-hooks/rules-of-hooks` rule. The React ORE template includes this setup.
 
-- **React** (v19.0.0+)
-- **Zustand** (v4.0.0+) — Used for internal state management
+```js
+// eslint.config.js
+import areteHooks from '@usearete/react/eslint-plugin.cjs';
 
----
-
-## Project Setup
-
-### 1. Wrap Your App with the Provider
-
-```tsx
-// src/main.tsx
-import React from "react";
-import ReactDOM from "react-dom/client";
-import { AreteProvider } from "arete-react";
-import App from "./App";
-
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <AreteProvider>
-      <App />
-    </AreteProvider>
-  </React.StrictMode>,
-);
+export default [{
+  plugins: { arete: areteHooks },
+  rules: { 'arete/fluent-hooks': 'error' },
+}];
 ```
 
-The provider manages connections to stacks. Each stack definition includes its own URL, so the provider doesn't need a URL prop.
-
-#### Provider Props
-
-| Prop                | Type             | Default | Description                              |
-| ------------------- | ---------------- | ------- | ---------------------------------------- |
-| `websocketUrl`      | `string`         | -       | Override URL for all stacks (optional)   |
-| `autoConnect`       | `boolean`        | `true`  | Auto-connect on mount                    |
-| `maxEntriesPerView` | `number \| null` | `10000` | Max entries per view before LRU eviction |
-
----
-
-### 2. Import Your Stack Definition
-
-You have two options for stack definitions:
-
-**Option A: Use curated Arete feeds**
-
-Install the `arete-stacks` package for pre-built, typed definitions of popular Solana programs:
+An application also needs a generated stack definition. Install the deployed public ORE stack into your source tree with the CLI:
 
 ```bash
-npm install arete-stacks
+a4 install ore --ts \
+  --output ./src/generated/ore-stack.ts \
+  --package-name @usearete/react
 ```
 
-```typescript
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
-```
+The generated entry point exports `ORE_STREAM_STACK`, entity types, schemas, program instructions, semantic transactions, addresses, reads, and ORE extensions. Commit generated output, but do not edit it by hand.
 
-Each stack includes its default URL (e.g., `wss://ore.stack.arete.run`).
+## Minimal setup
 
-**Option B: Generate from your own stack**
-
-If you've [built your own stack](/building-stacks/workflow/), generate a typed SDK using the CLI:
-
-```bash
-a4 sdk create typescript my-stack
-```
-
-```typescript
-import { MY_STACK } from "./stack";
-```
-
-See [CLI Commands](/cli/commands/) for all `a4 sdk create` options.
-
----
-
-## Using Views
-
-### useArete Hook
-
-Access your stack's typed interface:
+Wrap the application once, then call `useArete` with the generated stack. The stack contains its default WebSocket and HTTP endpoints, so no URL prop is required.
 
 ```tsx
-import { useArete } from "arete-react";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { AreteProvider, useArete } from '@usearete/react';
+import { ORE_STREAM_STACK } from './generated/ore-stack';
 
-function RoundList() {
-  const { views } = useArete(ORE_STREAM_STACK);
-  const { data: rounds, isLoading, error } = views.OreRound.list.use();
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error('VITE_ARETE_PUBLISHABLE_KEY is required');
 
-  if (isLoading) return <p>Loading...</p>;
-  if (error) return <p>Error: {error.message}</p>;
-
-  return (
-    <div>
-      {rounds?.map((round) => (
-        <div key={round.id?.round_id}>
-          Round #{round.id?.round_id} — {round.state?.motherlode}
-        </div>
-      ))}
-    </div>
-  );
-}
-```
-
-### List View: All Entities
-
-```tsx
-function RoundList() {
-  const { views } = useArete(ORE_STREAM_STACK);
-  const { data: rounds, isLoading, error } = views.OreRound.list.use();
-
-  if (isLoading) return <div>Connecting...</div>;
-  if (error) return <div>Error: {error.message}</div>;
-
-  return (
-    <ul>
-      {rounds?.map((round) => (
-        <li key={round.id?.round_id}>
-          Round #{round.id?.round_id} — Motherlode: {round.state?.motherlode}
-        </li>
-      ))}
-    </ul>
-  );
-}
-```
-
-### State View: Single Entity
-
-```tsx
-function RoundDetail({ roundAddress }: { roundAddress: string }) {
-  const { views } = useArete(ORE_STREAM_STACK);
-  const { data: round, isLoading } = views.OreRound.state.use({
-    key: roundAddress,
+function CurrentRound() {
+  const arete = useArete(ORE_STREAM_STACK);
+  const board = arete.views.OreBoard.state.use({
+    address: arete.addresses.board(),
   });
+  const roundId = board.data?.state.roundId;
+  const round = arete.views.OreRound.state.use(
+    roundId == null ? undefined : { roundId },
+  );
 
-  if (isLoading) return <div>Loading...</div>;
-  if (!round) return <div>Round not found</div>;
+  if (arete.status === 'error') {
+    return <button onClick={() => void arete.retry()}>Reconnect</button>;
+  }
+  if (board.status !== 'ready' || round.status !== 'ready') return <p>Connecting...</p>;
+  return <p>Round {round.data?.id.roundId?.toString() ?? 'unavailable'}</p>;
+}
 
+export default function App() {
   return (
-    <div>
-      <h2>Round #{round.id?.round_id}</h2>
-      <p>Motherlode: {round.state?.motherlode}</p>
-      <p>Total Deployed: {round.state?.total_deployed}</p>
-    </div>
+    <AreteProvider autoConnect stack={ORE_STREAM_STACK} auth={{ publishableKey }}>
+      <CurrentRound />
+    </AreteProvider>
   );
 }
 ```
 
----
+For ORE, `OreBoard/state` is authoritative for the active `roundId`. `OreRound/latest` is a sorted recent-round list, not an active-round pointer. Following Board to keyed Round avoids showing a stale or future round during rollover.
 
-## View Options
+## Generated names and keys
 
-### Single Item Query
+Generated TypeScript uses camelCase even though stack JSON and raw view paths use snake_case:
+
+| Generated API        | Correct shape                     |
+| -------------------- | --------------------------------- |
+| Board state key      | `{ address: string }`             |
+| Round state key      | `{ roundId: bigint }`             |
+| Miner state key      | `{ authority: string }`           |
+| Round ID field       | `round.id.roundId`                |
+| Deployed SOL field   | `round.state.totalDeployed`       |
+| Per-square SOL field | `round.state.deployedPerSquareUi` |
+| Winning square field | `round.results.winningSquare`     |
+
+The server view identifiers remain `OreBoard/state`, `OreRound/state`, `OreRound/latest`, and `OreMiner/state`. Use the generated object paths rather than spelling those protocol identifiers in application code.
+
+Hosted Arete stacks require a publishable key for authentication and rate limiting. Local servers configured with `allow_all` may omit `auth`.
+
+Read-only ORE viewing does not require a wallet, but hosted browser access is still authenticated with `VITE_ARETE_PUBLISHABLE_KEY` as shown above.
+
+## Provider
+
+`AreteProvider` owns connected clients and their stores. Supported provider props are:
+
+| Prop                     | Purpose                                                          |
+| ------------------------ | ---------------------------------------------------------------- |
+| `stack`                  | Default stack for argument-less `useArete()` calls               |
+| `stackOptions`           | Default lookup options for the provider stack                    |
+| `autoConnect`            | Start the initial connection; defaults to `true`                 |
+| `autoReconnect`          | Recover an established connection after loss; defaults to `true` |
+| `wallet`                 | Wallet adapter used by generated program operations              |
+| `auth`                   | Authentication options such as `publishableKey`                  |
+| `fetch`                  | Custom fetch implementation                                      |
+| `validateFrames`         | Set false to silence rejected-frame warnings                     |
+| `onFrameValidationError` | Observe structured generated-schema rejections                   |
+| `reconnectIntervals`     | Reconnect delays in milliseconds                                 |
+| `maxReconnectAttempts`   | Reconnect attempt limit                                          |
+| `maxEntriesPerView`      | Per-view store limit, or `null` for unlimited                    |
+| `flushIntervalMs`        | Store update batching interval                                   |
+
+`autoConnect` and `autoReconnect` control separate lifecycle phases. Setting `autoConnect={false}` does not disable automatic recovery for a connection the app later establishes, but `canRetry` remains false because provider-owned replacement attempts would also stay disconnected; use the client lifecycle directly. Setting `autoReconnect={false}` does not prevent the provider's initial connection.
+
+Provider connection settings are captured when a shared client is created.
+Changing them does not mutate an existing client; call `retry()` to replace it
+using the latest provider configuration. Wallet updates are synchronized to
+existing clients in place.
+
+With a default stack declared, components call `useArete()` with no arguments:
 
 ```tsx
-const { views } = useArete(MY_STACK);
+<AreteProvider autoConnect stack={MY_STACK} stackOptions={{ url: 'ws://localhost:8877' }}>
+  <App />
+</AreteProvider>
 
-// Get only one item with type-safe return (T | undefined instead of T[])
-const { data: latestToken } = views.tokens.list.use({ take: 1 });
-// data: Token | undefined
+// Anywhere below — fully typed once the stack is registered:
+const arete = useArete();
+```
 
-// Or use the dedicated useOne method
-const { data: latestToken } = views.tokens.list.useOne();
-// data: Token | undefined
+Passing that same stack explicitly also keeps its provider options, so local
+endpoint overrides still apply: `useArete(MY_STACK)`. Per-call options take
+precedence, and a different explicit stack does not inherit these defaults.
 
-// useOne with filters
-const { data: topToken } = views.tokens.list.useOne({
-  where: { volume: { gte: 10000 } },
+Register the stack type once so argument-less calls are typed:
+
+```ts
+declare module '@usearete/react' {
+  interface AreteDefaultStackRegistry {
+    defaultStack: MyStack;
+  }
+}
+```
+
+Endpoint overrides can still go on the hook call, and always win:
+
+```tsx
+const arete = useArete(MY_STACK, {
+  url: 'ws://localhost:8877',
+  httpUrl: 'http://localhost:8877',
 });
 ```
 
-### Filtering
+`useArete` options are `url`, `httpUrl`, `transport`, and `programs`. Keep a supplied `programs` object stable with a module constant or `useMemo`.
 
-The SDK supports both server-side and client-side filtering:
+### Shared calls
 
-**Server-side** options reduce data sent over the wire:
+Sibling components may each call `useArete(MY_STACK)` instead of threading one large result object through props. Calls with the same stack object and connection options share one provider-managed client and store. Concurrent initial calls also share the same connection attempt.
+
+Changing the stack or attached-program object identity intentionally produces a different cache key. Keep generated stack imports at module scope.
+
+### Stack-bound React API
+
+Single-stack apps can avoid both repeated constants and ambient module augmentation by binding the React API once:
 
 ```tsx
-const { views } = useArete(ORE_STREAM_STACK);
-const { data: rounds } = views.OreRound.list.use({
-  take: 10,  // Limit to 10 entities from server
-  skip: 20,  // Skip first 20 (for pagination)
-});
+import { createAreteReact } from '@usearete/react';
+import { ORE_STREAM_STACK } from './generated/ore-stack';
+
+export const {
+  Provider: OreProvider,
+  useArete: useOre,
+} = createAreteReact(ORE_STREAM_STACK);
 ```
 
-For advanced server-side filtering, use [custom views](/using-stacks/filtering-feeds/#server-side-filtering) defined in your stack.
+`useOre()` carries the generated stack type directly and remains explicit at each consumer. Keep the generic `AreteProvider` and `useArete(stack)` API for multi-stack applications.
 
-**Client-side** filtering happens after data is received. Use `where` with comparison operators:
+## `useArete` result
+
+The hook returns:
+
+- `views`: generated state, list, and custom view hooks
+- `programs`: generated raw instructions and semantic operation hooks
+- `queries`: stack-level HTTP queries
+- `read`: callable one-shot extension reads with `.use(...args, options?)` React hooks
+- `reads`: deprecated alias of `read`
+- `chain`: generic Solana reads
+- `addresses`, `constants`, `defaults`, and `math`: generated extension surfaces
+- `client`: connected low-level client, or `null` while connecting
+- `status`: preferred connection state for UI, including initial client creation and failed attempts
+- `connectionState`, `isConnected`, `isLoading`, `canRetry`, and `error`
+- `socketIssue`: the latest structured WebSocket issue
+- `retry()`: a deduplicated manual connection retry
+
+Program and read hooks can be called unconditionally while the client is connecting. Submitting a disconnected mutation rejects with `Arete client is not connected`.
+
+## Views
+
+### Lists and custom views
 
 ```tsx
-const { views } = useArete(ORE_STREAM_STACK);
-const { data: highValueRounds } = views.OreRound.list.use({
-  where: {
-    // Supported operators: gte, lte, gt, lt, or exact match
-    motherlode: { gte: 1000000 },  // Greater than or equal
-    difficulty: { lt: 50 },        // Less than
-  },
-  limit: 10,  // Keep only first 10 matching results
-});
+const arete = useArete(ORE_STREAM_STACK);
+
+const recent = arete.views.OreRound.latest.use({ take: 10 });
+const newest = arete.views.OreRound.latest.useOne();
+const allMiners = arete.views.OreMiner.list.use();
 ```
 
-| Operator  | Description           |
-| --------- | --------------------- |
-| `gte`     | Greater than or equal |
-| `gt`      | Greater than          |
-| `lte`     | Less than or equal    |
-| `lt`      | Less than             |
-| _(value)_ | Exact match           |
+List views return arrays. `.useOne()` and `.use({ take: 1 })` return one entity or `undefined`.
+
+Each parameter set is an independent protocol v2 query. Windows and filters on the same view do not share membership, while equivalent normalized queries share one reference-counted wire subscription:
 
 ```tsx
-// Exact match example
-const { views } = useArete(ORE_STREAM_STACK);
-const { data } = views.OreRound.list.use({
-  where: { status: "active" },  // Exact equality
-});
+const firstPage = arete.views.OreRound.latest.use({ take: 10 });
+const secondPage = arete.views.OreRound.latest.use({ take: 10, skip: 10 });
 ```
 
-### Conditional Subscription
+During reconnect, each hook keeps its committed data and reports `isRefreshing: true`. A completed authoritative snapshot atomically replaces membership for only that query, including when the new result is empty.
+
+### State views
+
+State views require their generated key object:
 
 ```tsx
-const { views } = useArete(ORE_STREAM_STACK);
-// Only subscribe when we have a valid address
-const { data: round } = views.OreRound.state.use(
-  { key: roundAddress },
-  { enabled: !!roundAddress },
+const round = arete.views.OreRound.state.use({ roundId: 335000n });
+const miner = arete.views.OreMiner.state.use(
+  authority ? { authority } : undefined,
 );
 ```
 
-### Initial Data
+Pass `undefined` or `null` to disable a state subscription. A disabled hook returns `data: undefined` and `isLoading: false`; this is the normal wallet-disconnected pattern.
+
+### Hook options and results
+
+Put list query configuration in the first params object: server-side `key`, `partition`, `take`, `skip`, `filters`, `after`, `withSnapshot`, and `snapshotLimit`, plus client-side `schema` and `onSchemaValidationError`. Keep `enabled` and `initialData` in the second options object. For compatibility, query fields present in the second argument are used when absent from params; params take precedence when both are supplied.
+
+When a caller-supplied schema rejects an entity, `onSchemaValidationError(diagnostic)` receives `{ view, key?, entity, error }`. The callback adds observability only: accepted entities still pass through unchanged, and rejected entities remain excluded.
+
+Every view hook returns a discriminated result. Checking `status` and
+`isEmpty` narrows `data` and `error`:
+
+```ts
+if (round.status === 'error') {
+  console.error(round.error); // Error
+} else if (round.status === 'ready' && !round.isEmpty) {
+  console.log(round.data.id.roundId); // entity, not undefined
+}
+```
+
+`status` separates "the client has not connected yet" (`connecting`) from "subscribed, waiting for the first frame" (`subscribing`). `isPending` covers both, `isReady` marks a usable ready result, and `isEmpty` identifies a ready hook with no state entity or list entries. Errors may retain previously committed data, but `isReady` becomes false.
+
+`initialData` is trusted as immediately usable ready data. State hooks accept one entity, list hooks accept an entity array, and `useOne` accepts one entity. The first live store update or completed empty snapshot replaces it. An empty list settles as `[]`; an absent state entity settles as `undefined`. Do not seed transaction-authorizing data unless the application is willing to trust that seed.
+
+`await result.refresh()` resolves after the refreshed subscription's next complete snapshot is committed. Registration, send, and subscription failures reject, clear `isRefreshing`, and are exposed through `error`. A view refresh with no active matching subscription is a no-op.
+
+The view hook objects themselves are also refresh targets. They refresh that view's active subscriptions — keyed by argument for state views, all active subscriptions when omitted — and are a no-op when nothing is subscribed:
 
 ```tsx
-const { views } = useArete(ORE_STREAM_STACK);
-// Show placeholder while connecting
-const { data: rounds } = views.OreRound.list.use({}, { initialData: [] });
+await arete.views.OreRound.state.refresh({ roundId });
+await arete.views.OreRound.state.refresh();
+await arete.views.OreRound.latest.refresh();
 ```
 
-### View Hook Parameters
+To aggregate connection, view, and read results into loading, refreshing, and error status, use `summarizeStatuses`:
 
-The `.use()` method accepts two arguments: params and options.
-
-#### List Params
-
-| Param   | Type     | Side   | Description                         |
-| ------- | -------- | ------ | ----------------------------------- |
-| `take`  | `number` | Server | Limit entities returned from server |
-| `skip`  | `number` | Server | Skip first N entities (pagination)  |
-| `where` | `object` | Client | Filter with comparison operators    |
-| `limit` | `number` | Client | Max results to keep after filtering |
-
-```typescript
-const { views } = useArete(ORE_STREAM_STACK);
-const { data } = views.OreRound.list.use({
-  take: 50,                                // Server sends max 50
-  skip: 0,                                 // Start from beginning
-  where: { motherlode: { gte: 100000 } },  // Filter locally
-  limit: 10,                               // Keep first 10 matches
-});
+```tsx
+const streams = summarizeStatuses({ Board: board, Round: round, Miner: authority && miner });
+// streams.loading → ['Board'], streams.errors → ['Treasury: socket closed']
+// streams.refreshing → ['Round'] while committed data is being resynchronized
 ```
 
-#### View Hook Options
+Falsy entries are skipped, which makes `authority && miner` the idiomatic way to gate a wallet-dependent source.
 
-```typescript
-const { views } = useArete(MY_STACK);
-const { data } = views.tokens.list.use(
-  { limit: 10 }, // Params
+## One-shot reads
+
+Stack extensions can expose HTTP or RPC-backed reads. React wraps each function with an argument-keyed hook:
+
+```tsx
+const preview = arete.read.solClaimPreview.use(authority);
+const quote = arete.read.quoteManualDeployment.use(
+  input,
+  { debounceMs: 300 },
+);
+```
+
+The read runs again when its arguments change and exposes `data`, `error`, `status`, `isPending`, `isReady`, `isEmpty`, `isLoading`, `isRefreshing`, and `refresh()`. Status is `'disabled' | 'connecting' | 'loading' | 'ready' | 'refreshing' | 'error'`. It is disabled while any required argument is `null` or `undefined`. Use `.use(...args, { debounceMs, initialData })` for React-only behavior with options last; debounce applies to automatic argument changes, while `refresh()` always runs immediately. When options follow an omitted optional read argument, pass `undefined` in that argument's position. The same function remains callable for imperative access: `await arete.read.solClaimPreview(authority)`. The old `arete.reads` namespace remains as a deprecated alias.
+
+ORE's `quoteManualDeployment` reads current raw Miner and Automation accounts and computes an allocation preview. A quote is not a reservation and does not guarantee the Board will stay on the same round. Transaction preparation re-reads the raw Board account and rejects a stale explicit `roundId` before wallet approval.
+
+## Mutations
+
+Generated raw instructions and semantic operations expose `.useMutation()`:
+
+```tsx
+const deploy = arete.programs.ore.transactions.mining
+  .deployWithCheckpoint
+  .useMutation();
+
+await deploy.submit(
   {
-    enabled: true, // Enable/disable subscription
-    initialData: [], // Initial data before first response
+    signer: authority,
+    roundId,
+    squares,
+    amountPerSquare,
+  },
+  {
+    reconcile: {
+      refresh: [
+        arete.views.OreBoard.state,
+        arete.views.OreRound.state,
+        arete.views.OreMiner.state,
+        quote,
+      ],
+    },
   },
 );
 ```
 
-### View Hook Return Value
+Use `mutation.mutate(args, options)` from click and submit handlers when the
+hook's `displayError` state owns failure presentation. Use the rejecting
+`mutation.mutateAsync(args, options)` or `mutation.submit(args, options)` for
+imperative workflows that await or compose the result.
 
-| Property    | Type                    | Description                    |
-| ----------- | ----------------------- | ------------------------------ |
-| `data`      | `T \| T[] \| undefined` | Current view data              |
-| `isLoading` | `boolean`               | True until first data received |
-| `error`     | `Error \| undefined`    | Subscription error if any      |
-| `refresh`   | `() => void`            | Manually trigger refresh       |
+`refresh` accepts view hook objects (which refresh that view's active subscriptions), view and read hook results, and plain callbacks — so a component that only writes does not need its own subscriptions just to refresh them.
 
----
+The mutation prepares the operation, asks the wallet to sign, submits once, and tracks transaction receipts. Each generated operation callback updates `completedReceipts`, `signatures`, and the `submitted` phase before the final operation receipt resolves. Arete does not receive the wallet's private key. The SDK does not automatically retry an ambiguous submission.
 
-## Connection State
+Useful result fields include `phase`, `status`, `prepared`, `result`, `signatures`, `completedReceipts`, `displayError`, `failure`, `reconciliationError`, `isPreparing`, `isAwaitingWallet`, and `isReconciling`.
 
-The `useArete` hook returns connection state directly:
+See [Transactions](/using-stacks/transactions/) for transport, inspection, and failure-outcome details.
 
-```tsx
-import { useArete } from "arete-react";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+### Parse form amounts without throwing
 
-function ConnectionStatus() {
-  const { connectionState, isConnected } = useArete(ORE_STREAM_STACK);
-
-  const statusColors = {
-    connected: "green",
-    connecting: "yellow",
-    reconnecting: "orange",
-    disconnected: "gray",
-    error: "red",
-  };
-
-  return (
-    <div style={{ color: statusColors[connectionState] }}>
-      {isConnected ? "Live" : connectionState}
-    </div>
-  );
-}
-```
-
-### useArete Return Values
-
-| Property          | Type              | Description                                      |
-| ----------------- | ----------------- | ------------------------------------------------ |
-| `views`           | `object`          | Typed view accessors                             |
-| `connectionState` | `ConnectionState` | Current WebSocket state                          |
-| `isConnected`     | `boolean`         | Convenience: `true` when `state === 'connected'` |
-| `isLoading`       | `boolean`         | `true` until client is ready                     |
-| `error`           | `Error \| null`   | Connection error if any                          |
-| `client`          | `Arete`           | Low-level client instance                        |
-
-### Connection States
-
-| State          | Description                     |
-| -------------- | ------------------------------- |
-| `disconnected` | Not connected                   |
-| `connecting`   | Establishing connection         |
-| `connected`    | Active and healthy              |
-| `reconnecting` | Auto-reconnecting after failure |
-| `error`        | Connection failed               |
-
-### Standalone useConnectionState Hook
-
-For cases where you need connection state outside of a component using `useArete`, you can use the standalone hook:
+`safeToRawAmount(input, decimals)` is re-exported by `@usearete/react`. Use it at form boundaries when invalid user input should become UI state rather than an exception:
 
 ```tsx
-import { useConnectionState } from "arete-react";
+import { safeToRawAmount } from '@usearete/react';
 
-function GlobalConnectionIndicator() {
-  const state = useConnectionState();
-  return <div>{state}</div>;
+const parsed = safeToRawAmount({ ui: amountText }, 9);
+if (!parsed.success) {
+  setAmountError(String(parsed.error));
+  return;
 }
+
+const rawAmount = parsed.data;
 ```
 
-:::note
-`useConnectionState()` without arguments returns the state of the single active client. If you have multiple stacks, pass the stack definition: `useConnectionState(MY_STACK)`.
-:::
+It returns `{ success: true, data } | { success: false, error }`. Use the throwing `toRawAmount` variant when invalid input is a programmer error.
 
----
+## Stream reconciliation
 
-## API Reference
+Generated program mutation hooks reconcile by default in WebSocket mode:
 
-### `useArete(stackDefinition, options?)`
+1. The transaction confirms on Solana.
+2. The hook finds the highest slot in its completed receipts.
+3. It waits up to 30 seconds for the connected stack's processed-slot watermark to reach that slot.
+4. It refreshes the supplied hook results and waits for view snapshots and one-shot reads to complete.
 
-Returns a typed interface to your stack's views, along with connection state.
+The watermark proves the stack processed at least that slot. It does not guarantee that every entity changed or that a one-shot read reran; include the view hook objects, hook results, or reads that need refresh.
 
-```typescript
-const { views, connectionState, isConnected, isLoading, error, client } = useArete(ORE_STREAM_STACK);
-
-// Access views
-views.OreRound.list.use()
-views.OreRound.state.use({ key })
-views.OreRound.latest.use()
-
-// Check connection
-if (isConnected) {
-  console.log('Live!');
-}
-```
-
-#### Options
-
-| Option | Type     | Description                      |
-| ------ | -------- | -------------------------------- |
-| `url`  | `string` | Override the stack's default URL |
-
-```typescript
-// Connect to local development server
-const { views, isConnected } = useArete(ORE_STREAM_STACK, {
-  url: "ws://localhost:8878"
+```tsx
+deploy.submit(args, { reconcile: false });
+deploy.submit(args, { reconcile: { timeoutMs: 10_000 } });
+deploy.submit(args, { reconcile: { refresh: preview.refresh } });
+deploy.submit(args, {
+  reconcile: async (context) => {
+    // A custom function replaces default processed-slot reconciliation.
+  },
 });
 ```
 
-### `useConnectionState(stack?)`
+`onConfirmed` runs after chain confirmation. `onSuccess` runs after successful reconciliation, or immediately when reconciliation is disabled or skipped. A reconciliation timeout, refresh failure, or refreshed snapshot timeout settles as `confirmed-unreconciled`, is exposed through `reconciliationError`, and does not reject or roll back the confirmed transaction result.
 
-Standalone hook for connection state. Prefer using `connectionState` from `useArete` when possible.
+Call `retryReconciliation()` after a `confirmed-unreconciled` result to repeat only processed-slot and refresh work. The hook reuses the confirmed receipts and original refresh targets; it never rebuilds, signs, or resubmits the transaction. `canRetryReconciliation` indicates when that recovery is available.
 
-```typescript
-// Without argument: returns state of single active client
-const state = useConnectionState();
+HTTP-only mutations and results without receipt slots skip default stream reconciliation.
 
-// With stack: returns state for specific stack
-const state = useConnectionState(ORE_STREAM_STACK);
+## Generated boundary
 
-// Returns: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'
+A stack build produces `.arete/<Stack>.stack.json`; SDK generation consumes that AST. The generated directory can contain:
+
+- `<stack>-core.ts`: generated entities, schemas, views, and program modules
+- `<stack>.ts`: public entry point and extension wiring
+- extension artifacts copied from the stack's extension source
+- `sdk-provenance.json`: canonical input, generator, extension, and artifact hashes
+
+Regenerate after changing a stack, IDL, extension, or generator. For this monorepo's ORE examples:
+
+```bash
+bash scripts/generate-example-sdks.sh
 ```
 
-### `AreteProvider`
+That command rebuilds `stacks/ore/.arete/OreStream.stack.json` from local Arete source before emitting all example SDKs. CI runs generation twice and rejects AST, provenance, or artifact drift.
 
-Wrap your application to initialize the SDK:
+## Migration from 0.3 to next
 
-```tsx
-<AreteProvider
-  autoConnect={true}
-  maxEntriesPerView={10000}
->
-  <YourApp />
-</AreteProvider>
-```
+- Legacy low-level `useView` and `useEntity` hooks are removed; generated `arete.views.<Entity>.<view>.use(...)` hooks are the supported subscription API.
+- Connection failures now report `status: 'error'`; use `canRetry` to decide when to show a retry action.
+- Mutation hooks add non-throwing `mutate()` for event handlers and keep rejecting `mutateAsync()` / `submit()` for imperative composition.
 
-To override the URL for all stacks (e.g., for local development):
+## Migration from 0.2 to 0.3
 
-```tsx
-<AreteProvider websocketUrl="ws://localhost:8878">
-  <YourApp />
-</AreteProvider>
-```
+- Install and import `@usearete/react`; legacy unscoped package examples are obsolete.
+- Remove the legacy provider-level WebSocket URL prop. Use generated endpoints or `useArete(stack, { url, httpUrl })`.
+- Pass generated state key objects such as `{ roundId }`, `{ authority }`, or `{ address }`. Zero-argument state subscriptions are no longer supported.
+- Pass `undefined` or `null` to disable a state hook. Disabled hooks now report `isLoading: false`.
+- Use generated camelCase fields such as `roundId`, `totalDeployed`, and `oreMetadata`, not wire-format snake_case.
+- Generated program mutations now reconcile against the stream by default. Pass `reconcile: false` for confirmation-only behavior.
+- Use `onConfirmed` for work that must happen after chain confirmation even if reconciliation later times out; reserve `onSuccess` for reconciled success.
+- One-shot extension reads expose imperative calls and hooks together under `arete.read.<name>`; `arete.reads` remains a deprecated alias.
+- Repeated `useArete` calls share a client when their stack and option identities match. Remove component-local connection ownership workarounds.
 
-### View `.useOne()`
+## Low-level exports
 
-A convenience method for fetching a single item from a list view with proper typing.
-
-```typescript
-const { views } = useArete(MY_STACK);
-const { data } = views.tokens.list.useOne();
-// data: Token | undefined (not Token[])
-```
-
-Equivalent to `.use({ take: 1 })` but with a cleaner API and explicit intent.
-
----
-
-## Complete Example
-
-A full React component combining everything:
-
-```tsx
-// src/App.tsx
-import { useArete } from "arete-react";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
-
-function OreDashboard() {
-  const { views, connectionState, isConnected } = useArete(ORE_STREAM_STACK);
-
-  const {
-    data: rounds,
-    isLoading,
-    error,
-  } = views.OreRound.latest.use({
-    take: 5,
-  });
-
-  return (
-    <div className="app">
-      <header>
-        <h1>Live ORE Mining Rounds</h1>
-        <span className={`status ${connectionState}`}>
-          {isConnected ? "Live" : connectionState}
-        </span>
-      </header>
-
-      <main>
-        {isLoading && <p>Connecting to stream...</p>}
-        {error && <p className="error">Error: {error.message}</p>}
-
-        {rounds && (
-          <>
-            <p>{rounds.length} rounds streaming</p>
-            <div className="round-grid">
-              {rounds.map((round) => (
-                <div key={round.id?.round_id} className="round-card">
-                  <h3>Round #{round.id?.round_id}</h3>
-                  <p className="motherlode">{round.state?.motherlode}</p>
-                  <p className="deployed">
-                    Total Deployed: {round.state?.total_deployed}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </main>
-    </div>
-  );
-}
-
-export default OreDashboard;
-```
-
----
-
-## Schema Validation
-
-Every stack ships with Zod schemas that you can use to filter entities at the hook level. Pass a `schema` to `.use()` or `.useOne()` — entities that fail validation are silently excluded from results.
-
-### Filter with Generated Schemas
-
-Use the "Completed" schema variant to only render entities where all fields are present:
-
-```tsx
-import { useArete } from "arete-react";
-import {
-  ORE_STREAM_STACK,
-  OreRoundCompletedSchema,
-} from "arete-stacks/ore";
-
-function FullyLoadedRounds() {
-  const { views } = useArete(ORE_STREAM_STACK);
-
-  const { data: rounds } = views.OreRound.latest.use({
-    schema: OreRoundCompletedSchema,
-  });
-
-  return (
-    <ul>
-      {rounds?.map((round) => (
-        <li key={round.id.round_id}>
-          Round #{round.id.round_id} — {round.state.motherlode}
-        </li>
-      ))}
-    </ul>
-  );
-}
-```
-
-### Filter with Custom Schemas
-
-Define your own Zod schema to validate only the fields your component needs:
-
-```tsx
-import { z } from "zod";
-import { useArete } from "arete-react";
-import { PUMPFUN_STREAM_STACK } from "arete-stacks/pumpfun";
-
-const TradableTokenSchema = z.object({
-  id: z.object({ mint: z.string() }),
-  reserves: z.object({ current_price_sol: z.number() }),
-  trading: z.object({ total_volume: z.number() }),
-});
-
-function TokenList() {
-  const { views } = useArete(PUMPFUN_STREAM_STACK);
-
-  // Only tokens with price and volume data
-  const { data: tokens } = views.PumpfunToken.list.use({
-    schema: TradableTokenSchema,
-  });
-
-  return (
-    <ul>
-      {tokens?.map((token) => (
-        <li key={token.id.mint}>
-          {token.reserves.current_price_sol} SOL — Vol: {token.trading.total_volume}
-        </li>
-      ))}
-    </ul>
-  );
-}
-```
-
-See [Schema Validation](/sdks/validation/) for the full guide on frame validation, generated schemas, and the `Schema<T>` interface.
-
----
-
-## Resolved Data
-
-Stacks can include data resolved server-side that doesn't live on-chain. For example, the ORE stack enriches rounds with token metadata (name, symbol, decimals) — no extra API calls needed:
-
-```tsx
-function RoundWithMetadata() {
-  const { views } = useArete(ORE_STREAM_STACK);
-  const { data: round } = views.OreRound.latest.useOne();
-
-  return (
-    <div>
-      <p>Token: {round?.ore_metadata?.name} ({round?.ore_metadata?.symbol})</p>
-      <p>Decimals: {round?.ore_metadata?.decimals}</p>
-    </div>
-  );
-}
-```
-
-Resolved data arrives as part of the entity alongside on-chain fields. See [Resolvers](/building-stacks/rust-dsl/resolvers/) for details on how resolved data works.
-
----
-
-## Accessing Core SDK
-
-The React SDK re-exports everything from `arete-typescript`. Access low-level APIs when needed:
-
-```typescript
-// Import core features from React SDK
-import { Arete, ConnectionManager } from "arete-react";
-```
-
----
-
-## Choosing Between SDKs
-
-| Use Case                 | Recommended SDK    |
-| ------------------------ | ------------------ |
-| React/Next.js apps       | `arete-react`      |
-| Vue, Svelte, Solid, etc. | `arete-typescript` |
-| Node.js backend/scripts  | `arete-typescript` |
-| Custom state management  | `arete-typescript` |
-| Need React hooks         | `arete-react`      |
-| Maximum control          | `arete-typescript` |
-
----
-
-## Troubleshooting
-
-| Issue                         | Solution                                                                   |
-| ----------------------------- | -------------------------------------------------------------------------- |
-| "WebSocket connection failed" | Check your connection to `wss://ore.stack.arete.run`                       |
-| Data not updating             | Verify the view path matches the stack entity name (e.g., `OreRound/list`) |
-| TypeScript errors             | Ensure your interface matches the stack's data shape                       |
-
----
-
-## Next Steps
-
-- [Schema Validation](/sdks/validation/) — Zod schemas for runtime validation and filtering
-- [TypeScript SDK](/sdks/typescript/) — Use Arete without React
-- [Resolvers](/building-stacks/rust-dsl/resolvers/) — Enrich entities with token metadata and computed fields
-- [Build Your Own Stack](/building-stacks/workflow) — Create custom data streams
+`@usearete/react` exports `useConnectionState`, `useAreteContext`, `useAsyncRead`, `useInstructionMutation`, reconciliation helpers, and selected core SDK APIs and types. Generated view hooks are the supported React subscription API. The package is not a complete mirror of `@usearete/sdk`; import the core package directly for the full low-level surface.

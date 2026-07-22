@@ -171,8 +171,12 @@ let auth_plugin = SignedSessionAuthPlugin::new_with_async_verifier(verifier);
 2. **Configure your SDK client** to fetch tokens from the auth server:
 
 ```typescript
-const client = createClient({
-  websocketUrl: 'ws://your-server:8080',
+import { Arete } from '@usearete/sdk';
+import { APP_STREAM_STACK } from './generated/app-stack';
+
+const client = await Arete.connect(APP_STREAM_STACK, {
+  url: 'ws://your-server:8080',
+  httpUrl: 'http://your-server:8080',
   auth: {
     tokenEndpoint: 'http://auth-server:8080/ws/sessions',
     publishableKey: 'hspk_your_publishable_key',

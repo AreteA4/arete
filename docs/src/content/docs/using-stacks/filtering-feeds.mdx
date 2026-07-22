@@ -19,7 +19,8 @@ All Arete SDKs support these parameters when subscribing to feeds:
 | --------- | -------- | ------------------------------------------- |
 | `take`    | `number` | Maximum number of entities to return        |
 | `skip`    | `number` | Number of entities to skip (for pagination) |
-| `key`     | `string` | Entity key for state view subscriptions     |
+
+State subscriptions use a separate generated key object whose fields match the entity primary key.
 
 ### Pagination
 
@@ -29,8 +30,8 @@ Use `take` and `skip` to paginate through large datasets:
 <TabItem label="Pagination — React">
 
 ```typescript
-import { useArete } from "arete-react";
-import { TOKEN_STACK } from "arete-stacks/token";
+import { useArete } from "@usearete/react";
+import { TOKEN_STACK } from "./generated/token-stack";
 
 function TokenList() {
   const a4 = useArete(TOKEN_STACK);
@@ -56,12 +57,13 @@ function TokenList() {
 <TabItem label="Pagination — TypeScript">
 
 ```typescript
-import { Arete } from "arete-typescript";
-import { TOKEN_STACK } from "arete-stacks/token";
+import { createSession } from "@usearete/sdk";
+import { TOKEN_STACK } from "./generated/token-stack";
 
-const a4 = await Arete.connect("wss://token.stack.arete.run", {
-  stack: TOKEN_STACK,
+const session = await createSession({
+  stacks: { token: TOKEN_STACK },
 });
+const a4 = session.stacks.token;
 
 // Get first 10 entities
 for await (const token of a4.views.Token.list.use({ take: 10 })) {
@@ -117,7 +119,7 @@ For state views, pass the entity key to subscribe to a specific entity:
 <TabItem label="State view — React">
 
 ```typescript
-const { data: token } = a4.views.Token.state.use(tokenAddress);
+const { data: token } = a4.views.Token.state.use({ mint: tokenAddress });
 ```
 
 </TabItem>
@@ -203,41 +205,44 @@ Custom views appear alongside the default views in your SDK:
 <TabItem label="Custom views — React">
 
 ```typescript
-import { useArete } from "arete-react";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { useArete } from "@usearete/react";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 
 function LatestRounds() {
   const a4 = useArete(ORE_STREAM_STACK);
 
   // Default views
   const { data: allRounds } = a4.views.OreRound.list.use();
-  const { data: round } = a4.views.OreRound.state.use(roundAddress);
+  const { data: round } = a4.views.OreRound.state.use({ roundId });
 
-  // Custom view - sorted by round_id desc
+  // Custom history view - sorted by round ID descending
   const { data: latestRounds } = a4.views.OreRound.latest.use();
 
-  return <div>{latestRounds?.map(r => <Round key={r.id.round_id} round={r} />)}</div>;
+  return <div>{latestRounds?.map(r => <Round key={r.id.roundId?.toString()} round={r} />)}</div>;
 }
 ```
+
+`OreRound/latest` is appropriate for history. Follow `OreBoard/state` to keyed `OreRound/state` when selecting ORE's active round.
 
 </TabItem>
 <TabItem label="Custom views — TypeScript">
 
 ```typescript
-import { Arete } from "arete-typescript";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { createSession } from "@usearete/sdk";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 
-const a4 = await Arete.connect("wss://ore.stack.arete.run", {
-  stack: ORE_STREAM_STACK,
+const session = await createSession({
+  stacks: { ore: ORE_STREAM_STACK },
 });
+const a4 = session.stacks.ore;
 
 // Default views
 const allRounds = await a4.views.OreRound.list.get();
 const round = await a4.views.OreRound.state.get(roundAddress);
 
-// Custom view - sorted by round_id desc
+// Custom view - sorted by round ID descending
 for await (const round of a4.views.OreRound.latest.use()) {
-  console.log("Round:", round.id.round_id);
+  console.log("Round:", round.id.roundId);
 }
 ```
 
@@ -280,7 +285,7 @@ pub struct Token {
 ```typescript
 // Get top 10 tokens by volume
 for await (const token of a4.views.Token.topByVolume.use()) {
-  console.log(token.id.mint, token.metrics.total_volume);
+  console.log(token.id.mint, token.metrics.totalVolume);
 }
 ```
 
@@ -295,37 +300,23 @@ If you need dynamic filtering that changes at runtime, apply filters client-side
 <Tabs>
 <TabItem label="Client-side filter — React">
 
-The React SDK provides a `where` clause for declarative client-side filtering:
+Use standard JavaScript to derive a filtered list from the streamed query result:
 
 ```typescript
-import { useArete } from "arete-react";
-import { TOKEN_STACK } from "arete-stacks/token";
+import { useArete } from "@usearete/react";
+import { TOKEN_STACK } from "./generated/token-stack";
 
 function HighVolumeTokens() {
   const a4 = useArete(TOKEN_STACK);
 
-  // Client-side filtering with where clause
-  const { data: tokens } = a4.views.Token.list.use({
-    where: {
-      volume: { gte: 10000 },
-      price: { lte: 100 }
-    },
-    limit: 20,  // Client-side limit
-  });
+  const stream = a4.views.Token.list.use({ take: 100 });
+  const tokens = (stream.data ?? [])
+    .filter(token => token.metrics.volume >= 10000 && token.metrics.price <= 100)
+    .slice(0, 20);
 
   return <TokenList tokens={tokens} />;
 }
 ```
-
-**Supported `where` operators:**
-
-| Operator  | Description           |
-| --------- | --------------------- |
-| `gte`     | Greater than or equal |
-| `lte`     | Less than or equal    |
-| `gt`      | Greater than          |
-| `lt`      | Less than             |
-| _(value)_ | Exact match           |
 
 </TabItem>
 <TabItem label="Client-side filter — TypeScript">
@@ -333,19 +324,20 @@ function HighVolumeTokens() {
 Filter data as it streams using standard JavaScript:
 
 ```typescript
-import { Arete } from "arete-typescript";
-import { ORE_STREAM_STACK } from "arete-stacks/ore";
+import { createSession } from "@usearete/sdk";
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
 
-const a4 = await Arete.connect("wss://ore.stack.arete.run", {
-  stack: ORE_STREAM_STACK,
+const session = await createSession({
+  stacks: { ore: ORE_STREAM_STACK },
 });
+const a4 = session.stacks.ore;
 
 // Filter in the streaming loop
 for await (const round of a4.views.OreRound.latest.use()) {
   // Skip rounds below threshold
   if ((round.state.motherlode ?? 0) < 1_000_000_000) continue;
 
-  console.log("High-value round:", round.id.round_id);
+  console.log("High-value round:", round.id.roundId);
 }
 ```
 

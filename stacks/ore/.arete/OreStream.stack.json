@@ -6912,6 +6912,23 @@
               "population": "LastWrite"
             },
             {
+              "target_path": "state.deployed_per_square",
+              "source": {
+                "FromSource": {
+                  "path": {
+                    "segments": [
+                      "deployed"
+                    ],
+                    "offsets": null
+                  },
+                  "default": null,
+                  "transform": null
+                }
+              },
+              "transform": null,
+              "population": "LastWrite"
+            },
+            {
               "target_path": "state.checkpoint_id",
               "source": {
                 "FromSource": {
@@ -7138,6 +7155,43 @@
               "is_optional": true,
               "is_array": false,
               "inner_type": "u64",
+              "source_path": null,
+              "resolved_type": null
+            },
+            {
+              "field_name": "deployed_per_square",
+              "raw_name": "deployed_per_square",
+              "canonical_name": "deployedPerSquare",
+              "rust_type_name": "Option < Vec < u64 > >",
+              "base_type": "Array",
+              "integer_kind": "U64",
+              "is_optional": true,
+              "is_array": true,
+              "inner_type": "Vec < u64 >",
+              "source_path": null,
+              "resolved_type": null
+            },
+            {
+              "field_name": "deployed_per_square_ui",
+              "raw_name": "deployed_per_square_ui",
+              "canonical_name": "deployedPerSquareUi",
+              "rust_type_name": "Option < Vec < f64 > >",
+              "base_type": "Array",
+              "is_optional": true,
+              "is_array": true,
+              "inner_type": "Vec < f64 >",
+              "source_path": null,
+              "resolved_type": null
+            },
+            {
+              "field_name": "total_deployed",
+              "raw_name": "total_deployed",
+              "canonical_name": "totalDeployed",
+              "rust_type_name": "Option < f64 >",
+              "base_type": "Float",
+              "is_optional": true,
+              "is_array": false,
+              "inner_type": "f64",
               "source_path": null,
               "resolved_type": null
             },
@@ -8167,6 +8221,31 @@
           "source_path": null,
           "resolved_type": null
         },
+        "state.deployed_per_square": {
+          "field_name": "deployed_per_square",
+          "raw_name": "deployed_per_square",
+          "canonical_name": "deployedPerSquare",
+          "rust_type_name": "Option < Vec < u64 > >",
+          "base_type": "Array",
+          "integer_kind": "U64",
+          "is_optional": true,
+          "is_array": true,
+          "inner_type": "Vec < u64 >",
+          "source_path": null,
+          "resolved_type": null
+        },
+        "state.deployed_per_square_ui": {
+          "field_name": "deployed_per_square_ui",
+          "raw_name": "deployed_per_square_ui",
+          "canonical_name": "deployedPerSquareUi",
+          "rust_type_name": "Option < Vec < f64 > >",
+          "base_type": "Array",
+          "is_optional": true,
+          "is_array": true,
+          "inner_type": "Vec < f64 >",
+          "source_path": null,
+          "resolved_type": null
+        },
         "state.last_claim_ore_at": {
           "field_name": "last_claim_ore_at",
           "raw_name": "last_claim_ore_at",
@@ -8205,6 +8284,18 @@
           "inner_type": "u64",
           "source_path": null,
           "resolved_type": null
+        },
+        "state.total_deployed": {
+          "field_name": "state.total_deployed",
+          "raw_name": "state.total_deployed",
+          "canonical_name": "stateTotalDeployed",
+          "rust_type_name": "Option < f64 >",
+          "base_type": "Any",
+          "is_optional": true,
+          "is_array": false,
+          "inner_type": "TokenUiAmount",
+          "source_path": null,
+          "resolved_type": null
         }
       },
       "resolver_hooks": [
@@ -8233,9 +8324,80 @@
       ],
       "instruction_hooks": [],
       "resolver_specs": [],
-      "computed_fields": [],
-      "computed_field_specs": [],
-      "content_hash": "c675dce303911c951ba6776daa68590556e1d2843fad14eb0147a6e1320a845b",
+      "computed_fields": [
+        "state.deployed_per_square_ui",
+        "state.total_deployed"
+      ],
+      "computed_field_specs": [
+        {
+          "target_path": "state.deployed_per_square_ui",
+          "expression": {
+            "MethodCall": {
+              "expr": {
+                "FieldRef": {
+                  "path": "state.deployed_per_square"
+                }
+              },
+              "method": "map",
+              "args": [
+                {
+                  "Closure": {
+                    "param": "x",
+                    "body": {
+                      "ResolverComputed": {
+                        "resolver": "TokenMetadata",
+                        "method": "ui_amount",
+                        "args": [
+                          {
+                            "Var": {
+                              "name": "x"
+                            }
+                          },
+                          {
+                            "Literal": {
+                              "value": 9
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "result_type": "Option < Vec < f64 > >"
+        },
+        {
+          "target_path": "state.total_deployed",
+          "expression": {
+            "ResolverComputed": {
+              "resolver": "TokenMetadata",
+              "method": "ui_amount",
+              "args": [
+                {
+                  "MethodCall": {
+                    "expr": {
+                      "FieldRef": {
+                        "path": "state.deployed_per_square"
+                      }
+                    },
+                    "method": "sum",
+                    "args": []
+                  }
+                },
+                {
+                  "Literal": {
+                    "value": 9
+                  }
+                }
+              ]
+            }
+          },
+          "result_type": "Option < f64 >"
+        }
+      ],
+      "content_hash": "85f8c2ef57e3b20bb945e940f63ead23e06fd77dbf884b14fd496178e15543c9",
       "views": []
     }
   ],
@@ -9887,5 +10049,5 @@
       ]
     }
   ],
-  "content_hash": "11d0687994f00e4086ce9f25abe0913e081eb84256a5c2e1725ebb3b906b6b41"
+  "content_hash": "84f4dca9b7c6be04a841f1f32b681318c68ea9653e101f395c9c77feb9f06918"
 }

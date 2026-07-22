@@ -44,6 +44,7 @@ pub struct Metrics {
     pub ws_messages_sent: Counter<u64>,
     pub ws_connection_duration: Histogram<f64>,
     pub ws_subscriptions_active: UpDownCounter<i64>,
+    pub ws_protocol_errors: Counter<u64>,
 
     // Transaction HTTP metrics. Labels are restricted to fixed operations/outcomes.
     pub transaction_requests_total: Counter<u64>,
@@ -140,6 +141,11 @@ impl Metrics {
         let ws_subscriptions_active = meter
             .i64_up_down_counter("arete.ws.subscriptions.active")
             .with_description("Number of active subscriptions by view")
+            .init();
+
+        let ws_protocol_errors = meter
+            .u64_counter("arete.ws.protocol.errors")
+            .with_description("WebSocket protocol v2 errors by stable error code")
             .init();
 
         let transaction_requests_total = meter
@@ -371,6 +377,7 @@ impl Metrics {
             ws_messages_sent,
             ws_connection_duration,
             ws_subscriptions_active,
+            ws_protocol_errors,
             transaction_requests_total,
             transaction_request_latency,
             transaction_request_bytes,
@@ -540,6 +547,12 @@ impl Metrics {
                 KeyValue::new("metering_key", metering_key.to_string()),
             ],
         );
+    }
+
+    /// Record a rejected protocol message. Error codes are bounded server constants.
+    pub fn record_ws_protocol_error(&self, code: &str) {
+        self.ws_protocol_errors
+            .add(1, &[KeyValue::new("code", code.to_string())]);
     }
 
     // ==================== Projector Helpers ====================

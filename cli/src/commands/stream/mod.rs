@@ -8,7 +8,7 @@ mod token;
 mod tui;
 
 use anyhow::{bail, Context, Result};
-use arete_sdk::Subscription;
+use arete_sdk::{Subscription, SubscriptionQuery};
 use clap::Args;
 
 use crate::config::AreteConfig;
@@ -52,9 +52,9 @@ pub struct StreamArgs {
     #[arg(long)]
     pub first: bool,
 
-    /// Filter by operation type (comma-separated: snapshot,upsert,patch,delete).
-    /// "upsert" also matches "create". Snapshot entities are always tracked for
-    /// state merging but only emitted when "snapshot" is in the allowed set
+    /// Filter by operation type (comma-separated: snapshot,upsert,patch,remove,delete).
+    /// Snapshot entities are always tracked for state merging but only emitted
+    /// when "snapshot" is in the allowed set.
     #[arg(long)]
     pub ops: Option<String>,
 
@@ -62,11 +62,11 @@ pub struct StreamArgs {
     #[arg(long)]
     pub count: bool,
 
-    /// Max entities in snapshot
+    /// Maximum size of the live query window
     #[arg(long)]
     pub take: Option<u32>,
 
-    /// Skip N entities in snapshot
+    /// Skip N matching entities in the live query window
     #[arg(long)]
     pub skip: Option<u32>,
 
@@ -186,23 +186,21 @@ pub fn run(args: StreamArgs, config_path: &str) -> Result<()> {
 }
 
 pub fn build_subscription(view: &str, args: &StreamArgs) -> Subscription {
-    let mut sub = Subscription::new(view);
+    let mut query = SubscriptionQuery::new(view);
     if let Some(key) = &args.key {
-        sub = sub.with_key(key.clone());
+        query = query.with_key(key);
     }
     if let Some(take) = args.take {
-        sub = sub.with_take(take);
+        query = query.with_take(take as usize);
     }
     if let Some(skip) = args.skip {
-        sub = sub.with_skip(skip);
-    }
-    if args.no_snapshot {
-        sub = sub.with_snapshot(false);
+        query = query.with_skip(skip as usize);
     }
     if let Some(after) = &args.after {
-        sub = sub.after(after.clone());
+        query = query.after(after);
     }
-    sub
+    Subscription::new(format!("a4-cli:{}", uuid::Uuid::new_v4().simple()), query)
+        .with_snapshot(!args.no_snapshot)
 }
 
 fn validate_ws_url(url: &str) -> Result<()> {

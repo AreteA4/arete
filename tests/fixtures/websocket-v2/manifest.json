@@ -1,0 +1,15 @@
+{
+  "protocolVersion": 2,
+  "fixtures": [
+    "keyed-state.json",
+    "list-windows.json",
+    "filters.json",
+    "multi-batch-authoritative.json",
+    "empty-snapshot.json",
+    "remove.json",
+    "delete.json",
+    "incremental-snapshot.json",
+    "reconnect-replacement.json",
+    "errors.json"
+  ]
+}
