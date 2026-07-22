@@ -5,12 +5,12 @@ afterEach(() => {
 });
 
 describe('appConfig', () => {
-  it('requires a publishable key for the default hosted endpoints', async () => {
+  it('allows anonymous usage for the default hosted endpoints', async () => {
     vi.resetModules();
     const { appConfig } = await import('./config');
     expect(appConfig.areteOptions).toBeUndefined();
     expect(appConfig.publishableKey).toBeUndefined();
-    expect(appConfig.configurationError).toContain('VITE_ARETE_PUBLISHABLE_KEY');
+    expect(appConfig.configurationError).toBeNull();
   });
 
   it('allows credential-free local endpoints', async () => {
@@ -23,7 +23,7 @@ describe('appConfig', () => {
     expect(appConfig.configurationError).toBeNull();
   });
 
-  it('does not let blank overrides or credentials bypass hosted authentication', async () => {
+  it('treats blank overrides and credentials as unset', async () => {
     vi.resetModules();
     vi.stubEnv('VITE_ARETE_WS_URL', '  ');
     vi.stubEnv('VITE_ARETE_HTTP_URL', '');
@@ -32,7 +32,7 @@ describe('appConfig', () => {
 
     expect(appConfig.areteOptions).toBeUndefined();
     expect(appConfig.publishableKey).toBeUndefined();
-    expect(appConfig.configurationError).toContain('VITE_ARETE_PUBLISHABLE_KEY');
+    expect(appConfig.configurationError).toBeNull();
   });
 
   it('honours env overrides', async () => {

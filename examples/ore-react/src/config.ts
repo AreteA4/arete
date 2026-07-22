@@ -1,5 +1,3 @@
-import { isHostedAreteEndpoint } from '@usearete/react';
-
 const env = import.meta.env;
 
 function optionalEnv(value: string | undefined): string | undefined {
@@ -27,8 +25,6 @@ function validateEndpoint(
   }
 }
 
-const requiresPublishableKey = (wsUrl === undefined || isHostedAreteEndpoint(wsUrl))
-  || (httpUrl === undefined || isHostedAreteEndpoint(httpUrl));
 const endpointError = validateEndpoint('VITE_ARETE_WS_URL', wsUrl, ['ws:', 'wss:'])
   ?? validateEndpoint('VITE_ARETE_HTTP_URL', httpUrl, ['http:', 'https:']);
 
@@ -39,11 +35,13 @@ export const appConfig = {
    * development or automated tests.
    */
   areteOptions: wsUrl || httpUrl ? { url: wsUrl, httpUrl } : undefined,
+  /**
+   * Optional publishable key. Without one the app mints anonymous hosted
+   * sessions that share low-trust limits per IP/origin; providing a key
+   * attributes usage to that key's own quota instead.
+   */
   publishableKey,
-  configurationError: endpointError
-    ?? (requiresPublishableKey && !publishableKey
-      ? 'Set VITE_ARETE_PUBLISHABLE_KEY to connect to the hosted ORE stack.'
-      : null),
+  configurationError: endpointError,
 };
 
 export function transactionExplorerUrl(signature: string): string {

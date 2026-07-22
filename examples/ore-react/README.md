@@ -6,8 +6,9 @@ The smallest useful ORE path is one provider, one explicit `useArete(stack)` cal
 import { AreteProvider, useArete } from '@usearete/react';
 import { ORE_STREAM_STACK } from './generated/ore-stack';
 
+// Optional: without a key the app connects anonymously with shared
+// low-trust limits; a key attributes usage to your own quota.
 const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
-if (!publishableKey) throw new Error('VITE_ARETE_PUBLISHABLE_KEY is required');
 
 function CurrentRound() {
   const arete = useArete(ORE_STREAM_STACK);
@@ -27,7 +28,7 @@ export default function App() {
     <AreteProvider
       autoConnect
       stack={ORE_STREAM_STACK}
-      auth={{ publishableKey }}
+      auth={publishableKey ? { publishableKey } : undefined}
     >
       <CurrentRound />
     </AreteProvider>
@@ -112,19 +113,19 @@ This example links the local core, React, and web3.js adapter packages. Build th
 
 ## Run it
 
-Hosted Arete stacks require a publishable key so the platform can authenticate and rate-limit clients. Create `.env.local` with a key from [the Arete dashboard](https://arete.run/dashboard):
-
-```bash
-VITE_ARETE_PUBLISHABLE_KEY=hspk_...
-```
-
 ```bash
 cd examples/ore-react
 npm install
 npm run dev
 ```
 
-Open [localhost:5173](http://localhost:5173). Read-only viewing uses the hosted ORE stack at `wss://ore.stack.arete.run` without a wallet, but still requires the publishable key.
+Open [localhost:5173](http://localhost:5173). Read-only viewing uses the hosted ORE stack at `wss://ore.stack.arete.run` without a wallet or credentials — the app mints anonymous sessions that share low-trust rate limits per IP/origin.
+
+To attribute usage to your own quota instead of the shared anonymous limits, create `.env.local` with a publishable key from [the Arete dashboard](https://arete.run/dashboard):
+
+```bash
+VITE_ARETE_PUBLISHABLE_KEY=hspk_...
+```
 
 Optional endpoint and authentication overrides go in an untracked `.env.local`. See `.env.example` for the complete list.
 

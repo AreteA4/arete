@@ -37,7 +37,7 @@ export default function App() {
           <h1 className="text-lg font-semibold">Arete configuration required</h1>
           <p className="mt-2 text-sm text-stone-600">{appConfig.configurationError}</p>
           <p className="mt-3 text-sm text-stone-500">
-            Add the key to <code>.env.local</code>, then restart the development server.
+            Fix the override in <code>.env.local</code>, then restart the development server.
           </p>
         </section>
       </main>
