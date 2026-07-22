@@ -70,6 +70,43 @@ fn update_hash_part(hasher: &mut Sha256, label: &str, value: &[u8]) {
     hasher.update(value);
 }
 
+fn strip_local_dependency_versions(value: &mut toml::Value) {
+    match value {
+        toml::Value::Table(table) => {
+            if table.contains_key("path") {
+                table.remove("version");
+            }
+            for (_, value) in table.iter_mut() {
+                strip_local_dependency_versions(value);
+            }
+        }
+        toml::Value::Array(values) => {
+            for value in values {
+                strip_local_dependency_versions(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn hash_contents(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let contents = fs::read(path)?;
+    if path.file_name().and_then(|name| name.to_str()) != Some("Cargo.toml") {
+        return Ok(contents);
+    }
+
+    // Release-only version changes do not alter generator behavior.
+    let mut manifest = std::str::from_utf8(&contents)?.parse::<toml::Value>()?;
+    if let Some(package) = manifest
+        .get_mut("package")
+        .and_then(toml::Value::as_table_mut)
+    {
+        package.remove("version");
+    }
+    strip_local_dependency_versions(&mut manifest);
+    Ok(toml::to_string(&manifest)?.into_bytes())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let metadata_output = Command::new(std::env::var("CARGO")?)
@@ -107,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut hasher = Sha256::new();
     for (label, path) in files {
-        update_hash_part(&mut hasher, &label, &fs::read(path)?);
+        update_hash_part(&mut hasher, &label, &hash_contents(&path)?);
     }
 
     let hash = hasher

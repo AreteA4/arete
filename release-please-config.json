@@ -1,10 +1,33 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "bump-minor-pre-major": true,
+  "always-update": true,
   "packages": {
     "arete": {
       "release-type": "rust",
-      "component": "arete"
+      "component": "arete",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/arete/Cargo.toml",
+          "jsonpath": "$['dependencies']['arete-sdk']['version']"
+        },
+        {
+          "type": "toml",
+          "path": "/stacks/ore/Cargo.toml",
+          "jsonpath": "$['dependencies']['arete']['version']"
+        },
+        {
+          "type": "toml",
+          "path": "/stacks/ore/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == \"arete\" || @.name.value == \"arete-a4-sdk\" || @.name.value == \"arete-interpreter\" || @.name.value == \"arete-macros\" || @.name.value == \"arete-server\")].version"
+        },
+        {
+          "type": "toml",
+          "path": "/examples/ore-server/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == \"arete\" || @.name.value == \"arete-a4-sdk\" || @.name.value == \"arete-interpreter\" || @.name.value == \"arete-macros\" || @.name.value == \"arete-server\")].version"
+        }
+      ]
     },
     "interpreter": {
       "release-type": "rust",
@@ -16,7 +39,24 @@
     },
     "cli": {
       "release-type": "rust",
-      "component": "a4-cli"
+      "component": "a4-cli",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/cli/Cargo.toml",
+          "jsonpath": "$['dependencies']['arete-sdk']['version']"
+        },
+        {
+          "type": "json",
+          "path": "/examples/ore-react/src/generated/sdk-provenance.json",
+          "jsonpath": "$.generator.version"
+        },
+        {
+          "type": "json",
+          "path": "/examples/ore-typescript/src/generated/sdk-provenance.json",
+          "jsonpath": "$.generator.version"
+        }
+      ]
     },
     "rust/arete-auth": {
       "release-type": "rust",
@@ -28,22 +68,8 @@
     },
     "rust/arete-mcp": {
       "release-type": "rust",
-      "component": "arete-mcp"
-    },
-    "rust/arete-a4-sdk": {
-      "release-type": "rust",
-      "component": "arete-sdk",
+      "component": "arete-mcp",
       "extra-files": [
-        {
-          "type": "toml",
-          "path": "/arete/Cargo.toml",
-          "jsonpath": "$['dependencies']['arete-sdk']['version']"
-        },
-        {
-          "type": "toml",
-          "path": "/cli/Cargo.toml",
-          "jsonpath": "$['dependencies']['arete-sdk']['version']"
-        },
         {
           "type": "toml",
           "path": "/rust/arete-mcp/Cargo.toml",
@@ -51,9 +77,20 @@
         }
       ]
     },
+    "rust/arete-a4-sdk": {
+      "release-type": "rust",
+      "component": "arete-sdk"
+    },
     "typescript/react": {
       "release-type": "node",
-      "component": "arete-react"
+      "component": "arete-react",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$['packages']['']['dependencies']['@usearete/sdk']"
+        }
+      ]
     },
     "typescript/core": {
       "release-type": "node",
@@ -61,11 +98,35 @@
     },
     "typescript/adapters/kit": {
       "release-type": "node",
-      "component": "arete-adapter-kit"
+      "component": "arete-adapter-kit",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$['packages']['']['devDependencies']['@usearete/sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$['packages']['']['peerDependencies']['@usearete/sdk']"
+        }
+      ]
     },
     "typescript/adapters/web3js": {
       "release-type": "node",
-      "component": "arete-adapter-web3js"
+      "component": "arete-adapter-web3js",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$['packages']['']['devDependencies']['@usearete/sdk']"
+        },
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$['packages']['']['peerDependencies']['@usearete/sdk']"
+        }
+      ]
     },
     "packages/arete": {
       "release-type": "node",
