@@ -13,6 +13,10 @@ env:
   CARGO_TERM_COLOR: always
   GH_REPO: ${{ github.repository }}
 
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
@@ -34,6 +38,8 @@ jobs:
       react_release_created: ${{ steps.release.outputs['typescript/react--release_created'] }}
       adapter_kit_release_created: ${{ steps.release.outputs['typescript/adapters/kit--release_created'] }}
       adapter_web3js_release_created: ${{ steps.release.outputs['typescript/adapters/web3js--release_created'] }}
+      prs_created: ${{ steps.release.outputs.prs_created }}
+      pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: actions/checkout@v6
 
@@ -49,6 +55,48 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  sync-release-pr:
+    name: Synchronize Release PR
+    needs: release-please
+    if: needs.release-please.outputs.prs_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Synchronize release PR artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PR: ${{ needs.release-please.outputs.pr }}
+        run: |
+          RELEASE_BRANCH="$(node -e 'process.stdout.write(JSON.parse(process.env.RELEASE_PR).headBranchName)')"
+          git fetch origin "$RELEASE_BRANCH"
+          git switch --detach "origin/$RELEASE_BRANCH"
+
+          bash ./scripts/sync-release-artifacts.sh
+
+          if git diff --quiet; then
+            echo "Release artifacts are already synchronized"
+          else
+            git diff --check
+            bash ./scripts/check-lockfile-sync.sh
+            cargo metadata --locked --format-version 1 > /dev/null
+            cargo metadata --manifest-path stacks/ore/Cargo.toml --locked --format-version 1 > /dev/null
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -u
+            git commit -m "chore: synchronize release artifacts"
+            git push origin "HEAD:$RELEASE_BRANCH"
+          fi
+
+          gh workflow run ci.yml --ref "$RELEASE_BRANCH"
 
   publish-rust:
     name: Publish Rust Crates to crates.io
