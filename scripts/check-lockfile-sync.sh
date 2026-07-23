@@ -14,6 +14,7 @@ while IFS= read -r lockfile; do
   if ! node - "$manifest" "$lockfile" <<'EOF'
 const [manifestPath, lockPath] = process.argv.slice(2);
 const fs = require('fs');
+const path = require('path');
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
 const root = lock.packages?.[''] ?? {};
@@ -27,6 +28,18 @@ for (const section of sections) {
       problems.push(`${section}.${name}: missing from lockfile root (package.json has "${spec}")`);
     } else if (lockDeps[name] !== spec) {
       problems.push(`${section}.${name}: package.json "${spec}" != lockfile "${lockDeps[name]}"`);
+    }
+
+    const installed = lock.packages?.[`node_modules/${name}`];
+    const linkedPackage = installed?.link && lock.packages?.[installed.resolved];
+    const linkedManifestPath = installed?.link
+      ? path.resolve(path.dirname(lockPath), installed.resolved, 'package.json')
+      : null;
+    if (linkedPackage && fs.existsSync(linkedManifestPath)) {
+      const linkedManifest = JSON.parse(fs.readFileSync(linkedManifestPath, 'utf8'));
+      if (linkedPackage.version !== linkedManifest.version) {
+        problems.push(`${section}.${name}: linked lockfile version "${linkedPackage.version}" != package version "${linkedManifest.version}"`);
+      }
     }
   }
   for (const name of Object.keys(lockDeps)) {
