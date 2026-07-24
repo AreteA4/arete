@@ -17,6 +17,7 @@ import type {
   StateViewHookOptions,
   ViewDef,
   ViewHookResult,
+  ViewSchemaFilterWarning,
   ViewSchemaValidationDiagnostic,
   ViewSchemaValidationErrorCallback,
   ViewStatus,
@@ -24,6 +25,8 @@ import type {
 
 type AnyClient = ConnectedArete<StackDefinition>;
 const noop = () => {};
+const developmentEnvironment =
+  typeof process === 'undefined' || process.env?.NODE_ENV !== 'production';
 
 interface QueryHookState<T> {
   client: AnyClient | null;
@@ -205,15 +208,34 @@ function useProjectedData<T>(
   }
   const projection = cache.current;
   useEffect(() => {
+    if (projection.diagnostics.length === 0) return;
     const callback = callbackRef.current;
-    if (!callback) return;
-    for (const diagnostic of projection.diagnostics) {
-      try {
-        callback(diagnostic);
-      } catch (error) {
-        console.error('[Arete] View schema validation callback failed:', error);
+    if (callback) {
+      for (const diagnostic of projection.diagnostics) {
+        try {
+          callback(diagnostic);
+        } catch (error) {
+          console.error('[Arete] View schema validation callback failed:', error);
+        }
       }
+      return;
     }
+    if (!developmentEnvironment) return;
+    const view = snapshot.query.view;
+    const singleKey = snapshot.keys.length === 1 ? snapshot.keys[0] : undefined;
+    const warning: ViewSchemaFilterWarning = {
+      view,
+      ...(singleKey === undefined ? {} : { key: singleKey }),
+      rejectedCount: projection.diagnostics.length,
+      diagnostics: projection.diagnostics,
+    };
+    console.warn(
+      `[Arete] View schema filtered ${projection.diagnostics.length} entit${projection.diagnostics.length === 1 ? 'y' : 'ies'} from ${view}. Pass onSchemaValidationError to inspect or suppress this warning.`,
+      warning,
+    );
+  // The projection object changes whenever snapshot/schema changes and carries
+  // the diagnostic context used here.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projection]);
   return projection.value;
 }

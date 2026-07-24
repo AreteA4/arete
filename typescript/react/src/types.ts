@@ -151,6 +151,13 @@ export interface ViewSchemaValidationDiagnostic {
   readonly error: unknown;
 }
 
+export interface ViewSchemaFilterWarning {
+  readonly view: string;
+  readonly key?: string;
+  readonly rejectedCount: number;
+  readonly diagnostics: readonly ViewSchemaValidationDiagnostic[];
+}
+
 export type ViewSchemaValidationErrorCallback = (
   diagnostic: ViewSchemaValidationDiagnostic
 ) => void;
@@ -159,7 +166,7 @@ interface ViewHookSharedOptions<TSchema = unknown> {
   enabled?: boolean;
   /** Schema used to validate and project cached entities. Rejected entities are excluded. */
   schema?: Schema<TSchema>;
-  /** Observe entities rejected by the caller-supplied schema. */
+  /** Observe entities rejected by the caller-supplied schema and suppress the development warning. */
   onSchemaValidationError?: ViewSchemaValidationErrorCallback;
   /** Whether to include initial snapshot (defaults to true) */
   withSnapshot?: boolean;
@@ -261,7 +268,7 @@ export interface ListParamsBase<TSchema = unknown> {
   skip?: number;
   /** Schema to validate/filter entities. Only entities passing safeParse will be returned. */
   schema?: Schema<TSchema>;
-  /** Observe entities rejected by the caller-supplied schema. */
+  /** Observe entities rejected by the caller-supplied schema and suppress the development warning. */
   onSchemaValidationError?: ViewSchemaValidationErrorCallback;
   /** Whether to include initial snapshot (defaults to true) */
   withSnapshot?: boolean;
