@@ -759,8 +759,16 @@ impl<S> TypeScriptCompiler<S> {
             } else {
                 base_schema
             };
+            let nullable_keys_can_be_absent = matches!(mode, SchemaMode::Canonical);
             let schema = if required || matches!(field.presence, FieldPresence::Required) {
-                with_nullable
+                if field.nullable && nullable_keys_can_be_absent {
+                    // Nullable entity fields are projected with LastWrite semantics and may be
+                    // absent until a value exists. Keep them nullable and key-optional in
+                    // completed schemas so partial hydration never rejects the entity.
+                    format!("{}.optional()", with_nullable)
+                } else {
+                    with_nullable
+                }
             } else {
                 format!("{}.optional()", with_nullable)
             };
@@ -4716,7 +4724,7 @@ mod tests {
         assert!(file.contains("accountAddress: string;"));
         assert!(file.contains("account_address: z.string(),"));
         assert!(file.contains("accountAddress: value.account_address,"));
-        assert!(file.contains("miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable(),"));
+        assert!(file.contains("miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable().optional(),"));
         assert!(file
             .contains("miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable().optional(),"));
         assert!(!file.contains("CaptureWrapperSchema(MinerPatchSchema)"));
@@ -4860,8 +4868,8 @@ mod tests {
             file
         );
         assert!(
-            file.contains("expires_at_slot_hash: z.string().nullable(),"),
-            "missing localized raw schema field:\n{}",
+            file.contains("expires_at_slot_hash: z.string().nullable().optional(),"),
+            "missing localized canonical schema field:\n{}",
             file
         );
         assert!(
@@ -4877,6 +4885,46 @@ mod tests {
         assert!(
             file.contains("...(value.expires_at_slot_hash !== undefined ? { expiresAtSlotHash: value.expires_at_slot_hash } : {}),"),
             "missing localized sparse transform:\n{}",
+            file
+        );
+    }
+
+    #[test]
+    fn test_streamed_completed_schema_allows_unwritten_nullable_fields() {
+        let mut optional_count = FieldTypeInfo::new("count".to_string(), "u64".to_string());
+        optional_count.is_optional = true;
+        let spec = SerializableStreamSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            state_name: "OreRound".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.round_id".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![],
+            sections: vec![EntitySection {
+                name: "state".to_string(),
+                fields: vec![optional_count],
+                is_nested_struct: false,
+                parent_field: None,
+            }],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            resolver_specs: vec![],
+            instruction_hooks: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        };
+
+        let output =
+            compile_serializable_spec(spec, "OreRound".to_string(), None).expect("should compile");
+        let file = output.full_file();
+        assert!(
+            file.contains("count: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),"),
+            "completed schema should allow absent nullable fields:\n{}",
             file
         );
     }
