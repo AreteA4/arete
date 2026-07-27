@@ -1,5 +1,6 @@
 //! Hosted-stack WebSocket session tokens (`hs_token`), matching `arete-sdk` behavior.
 
+use std::io::ErrorKind;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -8,6 +9,20 @@ use url::Url;
 
 use crate::api_client::ApiClient;
 use crate::config;
+
+/// True when credentials are simply absent (no file / no key for URL).
+/// Parse, permission, and path errors must not be treated as "no key".
+fn is_absent_api_key(err: &anyhow::Error) -> bool {
+    if err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == ErrorKind::NotFound)
+    }) {
+        return true;
+    }
+    err.chain()
+        .any(|cause| cause.to_string().contains("No API key found for API URL"))
+}
 
 /// Host suffix for Arete Cloud WebSocket endpoints (see `arete_sdk::auth`).
 const HOSTED_SUFFIX: &str = ".stack.arete.run";
@@ -87,7 +102,15 @@ pub fn ensure_hosted_ws_token(url: String) -> Result<String> {
         return Ok(url);
     }
 
-    let api_key = ApiClient::load_api_key().ok();
+    let api_key = match ApiClient::load_api_key() {
+        Ok(key) => Some(key),
+        Err(err) if is_absent_api_key(&err) => None,
+        Err(err) => {
+            return Err(err).context(
+                "Failed to load stored API credentials; fix ~/.arete/credentials.toml or run `a4 auth login`",
+            );
+        }
+    };
 
     let base = config::get_api_url(None);
     let endpoint = format!("{}/ws/sessions", base.trim_end_matches('/'));
