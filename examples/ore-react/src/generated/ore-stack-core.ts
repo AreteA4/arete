@@ -2037,7 +2037,7 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      definitionHash: '0920b54b8d670046fc97c03cd0085be772f1f3898702f6552d0aabf58d5a1ca6',
+      definitionHash: '2a918259db992c3d84b04f9d101f7eafec3fb8feb608bb09412719754caedadb',
       pdas: {
         automation: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('automation'), account('authority')),
         board: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('board')),
@@ -2214,7 +2214,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      definitionHash: '0920b54b8d670046fc97c03cd0085be772f1f3898702f6552d0aabf58d5a1ca6',
+      definitionHash: '2a918259db992c3d84b04f9d101f7eafec3fb8feb608bb09412719754caedadb',
       accounts: {
         Var: programAccountRead<Var>({ account: 'Var', path: '/programs/entropy/accounts/Var', schema: VarSchema }),
       },
