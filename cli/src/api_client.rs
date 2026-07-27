@@ -2,7 +2,34 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+fn ensure_no_dangling_symlink(path: &Path) -> Result<()> {
+    for candidate in path.ancestors() {
+        match fs::symlink_metadata(candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                fs::metadata(candidate).with_context(|| {
+                    format!(
+                        "Credentials path contains a dangling symlink: {}",
+                        candidate.display()
+                    )
+                })?;
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to inspect credentials path component {}",
+                        candidate.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Production API URL (used by default in release builds)
 #[cfg(not(feature = "local"))]
@@ -976,19 +1003,15 @@ impl ApiClient {
         Ok(())
     }
 
-    /// Load API key for a specific URL (new URL-based format)
-    pub fn load_api_key_for_url(api_url: &str) -> Result<String> {
-        let path = Self::credentials_path()?;
-        let content = fs::read_to_string(&path).context("Failed to read credentials file")?;
-
+    fn parse_api_key(content: &str, api_url: &str) -> Result<Option<String>> {
         let creds: toml::Value =
-            toml::from_str(&content).context("Failed to parse credentials file")?;
+            toml::from_str(content).context("Failed to parse credentials file")?;
 
         // Try new format first: [keys] table with URL mapping
         if let Some(keys) = creds.get("keys").and_then(|k| k.as_table()) {
             // Look for exact match first
             if let Some(key) = keys.get(api_url).and_then(|v| v.as_str()) {
-                return Ok(key.to_string());
+                return Ok(Some(key.to_string()));
             }
 
             // For localhost URLs, try to match any localhost URL
@@ -996,7 +1019,7 @@ impl ApiClient {
                 for (url, key_value) in keys.iter() {
                     if url.contains("localhost") || url.contains("127.0.0.1") {
                         if let Some(key) = key_value.as_str() {
-                            return Ok(key.to_string());
+                            return Ok(Some(key.to_string()));
                         }
                     }
                 }
@@ -1010,16 +1033,42 @@ impl ApiClient {
         }
 
         let legacy: LegacyCredentials =
-            toml::from_str(&content).context("Failed to parse credentials file")?;
+            toml::from_str(content).context("Failed to parse credentials file")?;
 
         if let Some(key) = legacy.api_key {
-            return Ok(key);
+            return Ok(Some(key));
         }
 
-        anyhow::bail!(
-            "No API key found for API URL: {}. Run 'a4 auth login' first.",
-            api_url
-        )
+        Ok(None)
+    }
+
+    /// Load API key for a specific URL (new URL-based format)
+    pub fn load_api_key_for_url(api_url: &str) -> Result<String> {
+        Self::load_optional_api_key_for_url(api_url)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No API key found for API URL: {}. Run 'a4 auth login' first.",
+                api_url
+            )
+        })
+    }
+
+    /// Load an API key when credentials are genuinely absent.
+    ///
+    /// Broken credential paths remain errors instead of silently becoming
+    /// anonymous access.
+    pub fn load_optional_api_key_for_url(api_url: &str) -> Result<Option<String>> {
+        let path = Self::credentials_path()?;
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                ensure_no_dangling_symlink(&path)?;
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(error).context("Failed to read credentials file");
+            }
+        };
+        Self::parse_api_key(&content, api_url)
     }
 
     /// Load API key for the current configured URL
@@ -1028,6 +1077,13 @@ impl ApiClient {
         let base_url =
             std::env::var("ARETE_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
         Self::load_api_key_for_url(&base_url)
+    }
+
+    /// Load an optional API key for the current configured URL.
+    pub fn load_optional_api_key() -> Result<Option<String>> {
+        let base_url =
+            std::env::var("ARETE_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
+        Self::load_optional_api_key_for_url(&base_url)
     }
 
     pub fn list_credentials() -> Result<Vec<(String, String)>> {
@@ -1102,5 +1158,41 @@ impl ApiClient {
             fs::remove_file(&path).context("Failed to delete credentials file")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::ensure_no_dangling_symlink;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn dangling_credentials_symlink_is_not_treated_as_missing() {
+        let root =
+            std::env::temp_dir().join(format!("a4-dangling-credentials-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let credentials = root.join("credentials.toml");
+        symlink(root.join("missing.toml"), &credentials).unwrap();
+
+        let error = ensure_no_dangling_symlink(&credentials).unwrap_err();
+
+        assert!(error.to_string().contains("dangling symlink"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn dangling_parent_symlink_is_not_treated_as_missing() {
+        let root =
+            std::env::temp_dir().join(format!("a4-dangling-credentials-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let credentials_dir = root.join(".arete");
+        symlink(root.join("missing-dir"), &credentials_dir).unwrap();
+
+        let error =
+            ensure_no_dangling_symlink(&credentials_dir.join("credentials.toml")).unwrap_err();
+
+        assert!(error.to_string().contains("dangling symlink"));
+        fs::remove_dir_all(root).unwrap();
     }
 }
