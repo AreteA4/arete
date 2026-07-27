@@ -76,16 +76,19 @@ pub fn hosted_url_needs_token(url: &str) -> bool {
     !u.query_pairs().any(|(k, _)| k == "hs_token")
 }
 
-/// For `*.stack.arete.run` URLs without `hs_token`, mint a session using `a4 auth login` credentials.
+/// For `*.stack.arete.run` URLs without `hs_token`, mint a session token.
+///
+/// Uses `a4 auth login` credentials when available. Without stored credentials
+/// the mint is attempted anonymously: the API allows keyless sessions for
+/// public-tier stacks (read-only scope, IP/origin rate limits, short expiry),
+/// matching `@usearete/sdk` behavior. Private/global stacks still require auth.
 pub fn ensure_hosted_ws_token(url: String) -> Result<String> {
     if !hosted_url_needs_token(&url) {
         return Ok(url);
     }
 
-    let api_key = ApiClient::load_api_key().context(
-        "Hosted Arete streams require a WebSocket session token.\n\
-         • Run `a4 auth login`, then retry; the CLI will mint a token automatically.\n\
-         • Or pass `--url` with `?hs_token=...` from POST `https://api.arete.run/ws/sessions` (or your `ARETE_API_URL`).",
+    let api_key = ApiClient::load_optional_api_key().context(
+        "Failed to load stored API credentials; fix ~/.arete/credentials.toml or run `a4 auth login`",
     )?;
 
     let base = config::get_api_url(None);
@@ -95,18 +98,35 @@ pub fn ensure_hosted_ws_token(url: String) -> Result<String> {
         .timeout(Duration::from_secs(10))
         .build()
         .context("Failed to build HTTP client for token mint")?;
-    let response = client
-        .post(&endpoint)
-        .header("Authorization", format!("Bearer {}", api_key.trim()))
-        .json(&MintBody {
-            websocket_url: url.as_str(),
-        })
+    let mut request = client.post(&endpoint).json(&MintBody {
+        websocket_url: url.as_str(),
+    });
+    if let Some(key) = api_key.as_deref() {
+        request = request.header("Authorization", format!("Bearer {}", key.trim()));
+    }
+    let response = request
         .send()
         .with_context(|| format!("Failed to reach token endpoint {}", endpoint))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().unwrap_or_default();
+        if api_key.is_none()
+            && matches!(
+                status,
+                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+            )
+        {
+            bail!(
+                "This hosted stream requires authentication ({}): {}.\n\
+                 • Run `a4 auth login`, then retry; the CLI will mint a token automatically.\n\
+                 • Anonymous access is only available for public stacks.\n\
+                 • Or pass `--url` with `?hs_token=...` from POST `{}`.",
+                status,
+                body.trim(),
+                endpoint
+            );
+        }
         bail!(
             "Token mint failed ({}): {}.\n\
              Fix your API key (`a4 auth login`) or permissions for this stack.",
