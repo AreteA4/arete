@@ -10,7 +10,6 @@ use quote::quote;
 use syn::spanned::Spanned;
 use syn::{Item, ItemMod};
 
-use crate::ast::writer::{extract_instructions_from_idl, extract_pdas_from_idl};
 use crate::ast::SerializableStackSpec;
 use crate::codegen::generate_multi_entity_builder;
 use crate::diagnostic::{idl_error_to_syn, internal_codegen_error, parse_generated_items};
@@ -35,6 +34,30 @@ struct IdlInfo {
     program_name: String,
     sdk_module_name: String,
     parser_module_name: String,
+    identity: arete_hash::OssProgramIdentityV1,
+}
+
+fn build_idl_info(idl_bytes: &[u8], multiple_idls: bool) -> Result<IdlInfo, arete_hash::HashError> {
+    let document = arete_hash::CanonicalIdlDocument::parse(idl_bytes, None)?;
+    let idl = document.parsed_idl().clone();
+    let program_id = document.program_id().to_string();
+    let identity = arete_hash::OssProgramIdentityV1::from_document(&document)?;
+    let program_name = idl.get_name().to_string();
+    let sdk_module_name = format!("{}_sdk", program_name);
+    let parser_module_name = if multiple_idls {
+        format!("{}_parsers", program_name)
+    } else {
+        "parsers".to_string()
+    };
+
+    Ok(IdlInfo {
+        idl,
+        program_id,
+        program_name,
+        sdk_module_name,
+        parser_module_name,
+        identity,
+    })
 }
 
 pub fn process_idl_spec(
@@ -48,42 +71,31 @@ pub fn process_idl_spec(
     for idl_path in idl_paths {
         let full_path = std::path::Path::new(&manifest_dir).join(idl_path);
 
-        let idl = match idl_parser::parse_idl_file(&full_path) {
-            Ok(idl) => idl,
+        let idl_bytes = match std::fs::read(&full_path) {
+            Ok(bytes) => bytes,
             Err(e) => {
                 return Err(idl_error_to_syn(
                     module.ident.span(),
                     arete_idl::error::IdlSearchError::ParseError {
                         path: idl_path.clone(),
-                        source: e,
+                        source: e.to_string(),
                     },
                 ));
             }
         };
-
-        let program_id = idl
-            .address
-            .as_ref()
-            .or_else(|| idl.metadata.as_ref().and_then(|m| m.address.as_ref()))
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "11111111111111111111111111111111".to_string());
-
-        let program_name = idl.get_name().to_string();
-        let sdk_module_name = format!("{}_sdk", program_name);
-
-        let parser_module_name = if idl_paths.len() == 1 {
-            "parsers".to_string()
-        } else {
-            format!("{}_parsers", program_name)
+        let info = match build_idl_info(&idl_bytes, idl_paths.len() > 1) {
+            Ok(info) => info,
+            Err(error) => {
+                return Err(idl_error_to_syn(
+                    module.ident.span(),
+                    arete_idl::error::IdlSearchError::ParseError {
+                        path: idl_path.clone(),
+                        source: error.to_string(),
+                    },
+                ));
+            }
         };
-
-        idl_infos.push(IdlInfo {
-            idl,
-            program_id,
-            program_name,
-            sdk_module_name,
-            parser_module_name,
-        });
+        idl_infos.push(info);
     }
 
     let primary = &idl_infos[0];
@@ -105,6 +117,50 @@ pub fn process_idl_spec(
     }
 
     let stack_name = to_pascal_case(&module.ident.to_string());
+
+    let program_specs_json: Vec<syn::LitStr> = idl_infos
+        .iter()
+        .map(|info| {
+            serde_json::to_string(&info.identity.program_spec)
+                .map(|json| syn::LitStr::new(&json, module.ident.span()))
+                .map_err(|error| {
+                    internal_codegen_error(
+                        module.ident.span(),
+                        format!("failed to serialize ProgramSpecV1: {error}"),
+                    )
+                })
+        })
+        .collect::<syn::Result<_>>()?;
+    let program_spec_hashes: Vec<syn::LitStr> = idl_infos
+        .iter()
+        .map(|info| {
+            syn::LitStr::new(
+                &info.identity.program_spec_hash.to_string(),
+                module.ident.span(),
+            )
+        })
+        .collect();
+    let release_hashes: Vec<syn::LitStr> = idl_infos
+        .iter()
+        .map(|info| syn::LitStr::new(&info.identity.release_hash.to_string(), module.ident.span()))
+        .collect();
+    let identity_constants = quote! {
+        #[doc(hidden)]
+        pub const __ARETE_PROGRAM_SPECS_V1_JSON: &[&str] = &[#(#program_specs_json),*];
+        #[doc(hidden)]
+        pub const __ARETE_PROGRAM_SPEC_HASHES_V1: &[&str] = &[#(#program_spec_hashes),*];
+        #[doc(hidden)]
+        pub const __ARETE_OSS_PROGRAM_RELEASE_HASHES_V1: &[&str] = &[#(#release_hashes),*];
+    };
+    if let Some((_brace, items)) = &mut module.content {
+        for item in parse_generated_items(
+            identity_constants,
+            module.ident.span(),
+            "authoritative program identities",
+        )? {
+            items.push(item);
+        }
+    }
 
     let mut section_structs = HashMap::new();
     let mut entity_structs = Vec::new();
@@ -409,10 +465,14 @@ pub fn process_idl_spec(
                 items.push(gen_item);
             }
 
-            let entity_asts: Vec<crate::ast::SerializableStreamSpec> = all_outputs
+            let mut entity_asts: Vec<crate::ast::SerializableStreamSpec> = all_outputs
                 .iter()
                 .filter_map(|result| result.ast_spec.clone())
                 .collect();
+            for entity in &mut entity_asts {
+                entity.idl = None;
+                entity.normalize_event_names();
+            }
 
             let all_program_ids: Vec<String> = idl_infos
                 .iter()
@@ -422,10 +482,19 @@ pub fn process_idl_spec(
             let all_idl_snapshots: Vec<_> = idl_infos
                 .iter()
                 .map(|info| {
-                    let mut snapshot = crate::ast::writer::convert_idl_to_snapshot(&info.idl);
-                    snapshot.program_id = Some(info.program_id.clone());
+                    let mut snapshot = info.identity.program_spec.idl_snapshot.snapshot.clone();
+                    // The macro's legacy stack AST stored Steel's value only in
+                    // `discriminator`. Keep that wire projection, and therefore
+                    // its bare content_hash, unchanged.
+                    for instruction in &mut snapshot.instructions {
+                        instruction.discriminant = None;
+                    }
                     snapshot
                 })
+                .collect();
+            let all_program_specs: Vec<arete_hash::ProgramSpecV1> = idl_infos
+                .iter()
+                .map(|info| info.identity.program_spec.clone())
                 .collect();
 
             let idl_map: HashMap<String, idl_parser::IdlSpec> = idl_infos
@@ -457,15 +526,29 @@ pub fn process_idl_spec(
                 BTreeMap::new();
             let mut all_instructions: Vec<crate::ast::InstructionDef> = Vec::new();
             for info in &idl_infos {
-                let mut pdas = extract_pdas_from_idl(&info.idl);
+                let mut pdas: BTreeMap<String, crate::ast::PdaDefinition> =
+                    transcode_program_projection(info.identity.program_spec.pdas.clone())?;
                 if let Some(manual) = manual_pdas_by_program.get(&info.program_name) {
                     for (k, v) in manual {
                         pdas.insert(k.clone(), v.clone());
                     }
                 }
-                let flat_pdas: BTreeMap<String, crate::ast::PdaDefinition> =
-                    pdas.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                let instructions = extract_instructions_from_idl(&info.idl, &flat_pdas);
+                let mut instructions: Vec<crate::ast::InstructionDef> =
+                    transcode_program_projection(info.identity.program_spec.instructions.clone())?;
+                for account in instructions
+                    .iter_mut()
+                    .flat_map(|instruction| &mut instruction.accounts)
+                {
+                    if matches!(
+                        account.resolution,
+                        crate::ast::AccountResolution::UserProvided
+                    ) && pdas.contains_key(&account.name)
+                    {
+                        account.resolution = crate::ast::AccountResolution::PdaRef {
+                            pda_name: account.name.clone(),
+                        };
+                    }
+                }
                 all_pdas.insert(info.program_name.clone(), pdas);
                 all_instructions.extend(instructions);
             }
@@ -475,15 +558,10 @@ pub fn process_idl_spec(
                 stack_name: stack_name.clone(),
                 program_ids: all_program_ids,
                 idls: all_idl_snapshots,
-                entities: entity_asts
-                    .into_iter()
-                    .map(|mut e| {
-                        e.idl = None;
-                        e
-                    })
-                    .collect(),
-                pdas: all_pdas,
-                instructions: all_instructions,
+                program_specs: all_program_specs.clone(),
+                entities: entity_asts.clone(),
+                pdas: all_pdas.clone(),
+                instructions: all_instructions.clone(),
                 content_hash: None,
             };
             stack_spec.normalize_event_names();
@@ -506,6 +584,19 @@ pub fn process_idl_spec(
                 syn::Error::new(
                     module.ident.span(),
                     format!("Failed to write stack AST: {e}"),
+                )
+            })?;
+            crate::ast::writer::write_public_artifacts(
+                &stack_name,
+                &all_program_specs,
+                &entity_asts,
+                &all_pdas,
+                &all_instructions,
+            )
+            .map_err(|e| {
+                syn::Error::new(
+                    module.ident.span(),
+                    format!("Failed to write public stack artifacts: {e}"),
                 )
             })?;
 
@@ -544,9 +635,11 @@ pub fn process_idl_spec(
                             &info.idl,
                             info.program_id.as_str(),
                             info.parser_module_name.as_str(),
+                            &info.identity,
                         )
                     })
                     .collect::<Vec<_>>(),
+                true,
             );
             for gen_item in
                 parse_generated_items(spec_function, module.ident.span(), "IDL spec function")?
@@ -555,6 +648,9 @@ pub fn process_idl_spec(
             }
         }
     } else if let Some((_brace, items)) = &mut module.content {
+        items.retain(
+            |item| !matches!(item, Item::Macro(item_macro) if item_macro.mac.path.is_ident("pdas")),
+        );
         for sdk_tokens in &all_sdk_tokens {
             for gen_item in
                 parse_generated_items(sdk_tokens.clone(), module.ident.span(), "IDL SDK module")?
@@ -572,11 +668,166 @@ pub fn process_idl_spec(
                 items.push(gen_item);
             }
         }
+
+        let all_program_ids = idl_infos
+            .iter()
+            .map(|info| info.program_id.clone())
+            .collect();
+        let all_idl_snapshots = idl_infos
+            .iter()
+            .map(|info| {
+                let mut snapshot = info.identity.program_spec.idl_snapshot.snapshot.clone();
+                for instruction in &mut snapshot.instructions {
+                    instruction.discriminant = None;
+                }
+                snapshot
+            })
+            .collect();
+        let all_program_specs: Vec<arete_hash::ProgramSpecV1> = idl_infos
+            .iter()
+            .map(|info| info.identity.program_spec.clone())
+            .collect();
+        let all_pdas = idl_infos
+            .iter()
+            .map(|info| {
+                transcode_program_projection(info.identity.program_spec.pdas.clone())
+                    .map(|pdas| (info.program_name.clone(), pdas))
+            })
+            .collect::<syn::Result<BTreeMap<_, _>>>()?;
+        let all_instructions: Vec<crate::ast::InstructionDef> = idl_infos
+            .iter()
+            .map(|info| {
+                transcode_program_projection::<_, Vec<crate::ast::InstructionDef>>(
+                    info.identity.program_spec.instructions.clone(),
+                )
+            })
+            .collect::<syn::Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        let stack_spec = SerializableStackSpec {
+            ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
+            stack_name: stack_name.clone(),
+            program_ids: all_program_ids,
+            idls: all_idl_snapshots,
+            program_specs: all_program_specs.clone(),
+            entities: Vec::new(),
+            pdas: all_pdas.clone(),
+            instructions: all_instructions.clone(),
+            content_hash: None,
+        }
+        .try_with_content_hash()
+        .map_err(|error| {
+            internal_codegen_error(
+                module.ident.span(),
+                format!("failed to serialize program-only stack spec for hashing: {error}"),
+            )
+        })?;
+
+        crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name).map_err(|error| {
+            syn::Error::new(
+                module.ident.span(),
+                format!("Failed to write compatibility program stack AST: {error}"),
+            )
+        })?;
+        crate::ast::writer::write_public_artifacts(
+            &stack_name,
+            &all_program_specs,
+            &[],
+            &all_pdas,
+            &all_instructions,
+        )
+        .map_err(|error| {
+            syn::Error::new(
+                module.ident.span(),
+                format!("Failed to write authoritative program artifacts: {error}"),
+            )
+        })?;
+
+        let spec_function = idl_vixen_gen::generate_multi_idl_spec_function(
+            &idl_infos
+                .iter()
+                .map(|info| {
+                    (
+                        &info.idl,
+                        info.program_id.as_str(),
+                        info.parser_module_name.as_str(),
+                        &info.identity,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            false,
+        );
+        for gen_item in parse_generated_items(
+            spec_function,
+            module.ident.span(),
+            "program-only spec function",
+        )? {
+            items.push(gen_item);
+        }
     }
 
     Ok(quote! {
         #module
     })
+}
+
+fn transcode_program_projection<T, U>(value: T) -> syn::Result<U>
+where
+    T: serde::Serialize,
+    U: serde::de::DeserializeOwned,
+{
+    let value = serde_json::to_value(value).map_err(|error| {
+        internal_codegen_error(
+            proc_macro2::Span::call_site(),
+            format!("failed to serialize shared ProgramSpec projection: {error}"),
+        )
+    })?;
+    serde_json::from_value(value).map_err(|error| {
+        internal_codegen_error(
+            proc_macro2::Span::call_site(),
+            format!("shared ProgramSpec projection does not match legacy AST: {error}"),
+        )
+    })
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn macro_identity_derivation_matches_checked_in_vector() {
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../../../test-vectors/hash-v1.json"))
+                .expect("vector corpus");
+        let vector = corpus["idlVectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|vector| vector["id"] == "idl-primary")
+            .expect("primary IDL vector");
+        let info = build_idl_info(vector["input"]["data"].as_str().unwrap().as_bytes(), false)
+            .expect("macro IDL identity");
+
+        assert_eq!(
+            info.identity.program_spec_hash.to_string(),
+            vector["expected"]["programSpecIdentity"]["hashId"]
+        );
+        assert_eq!(
+            info.identity.release_hash.to_string(),
+            vector["expected"]["ossReleaseIdentity"]["hashId"]
+        );
+        let legacy_snapshot = crate::ast::writer::convert_idl_to_snapshot(&info.idl);
+        let mut shared_legacy_projection = info.identity.program_spec.idl_snapshot.snapshot.clone();
+        for instruction in &mut shared_legacy_projection.instructions {
+            instruction.discriminant = None;
+        }
+        assert_eq!(
+            serde_json::to_value(legacy_snapshot).unwrap(),
+            serde_json::to_value(shared_legacy_projection).unwrap()
+        );
+        assert_eq!(info.parser_module_name, "parsers");
+    }
 }
 
 fn collect_register_from_specs(

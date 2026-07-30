@@ -94,6 +94,7 @@ fn cargo_check_output_with_files(
 
 fn minimal_idl() -> &'static str {
     r#"{
+  "address": "Test111111111111111111111111111111111111111",
   "name": "fake",
   "instructions": [
     {
@@ -130,6 +131,7 @@ fn minimal_idl() -> &'static str {
 
 fn minimal_event_idl() -> &'static str {
     r#"{
+  "address": "Test111111111111111111111111111111111111111",
   "name": "fake",
   "instructions": [],
   "accounts": [

@@ -47,6 +47,7 @@ fn main() {}
     .replace("__MODULE_BODY__", module_body);
 
     let minimal_idl = r#"{
+  "address": "Test111111111111111111111111111111111111111",
   "name": "ore",
   "instructions": [],
   "accounts": [],

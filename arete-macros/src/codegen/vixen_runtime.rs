@@ -1551,7 +1551,7 @@ pub fn generate_spec_function(
     state_enum_name: &str,
     instruction_enum_name: &str,
     program_name: &str,
-    account_names: &[String],
+    _account_names: &[String],
     config: &RuntimeGenConfig,
 ) -> TokenStream {
     let _state_enum = format_ident!("{}", state_enum_name);
@@ -1590,18 +1590,8 @@ pub fn generate_spec_function(
     let managed_grpc_helpers = generate_managed_grpc_helpers();
     let slot_scheduler_task = generate_slot_scheduler_task();
     let slot_subscription_task = generate_slot_subscription_task();
-    let program_account_reader = generate_program_account_reader_fn(&[PipelineInfo {
-        parser_module_name: "parsers".to_string(),
-        program_name: program_name.to_string(),
-        program_id: String::new(),
-        state_enum_name: state_enum_name.to_string(),
-        instruction_enum_name: instruction_enum_name.to_string(),
-        account_names: account_names.to_vec(),
-    }]);
-
     quote! {
         #managed_grpc_helpers
-        #program_account_reader
 
         pub fn spec() -> arete::runtime::arete_server::Spec {
             let bytecode = create_multi_entity_bytecode();
@@ -1610,7 +1600,6 @@ pub fn generate_spec_function(
             arete::runtime::arete_server::Spec::new(bytecode, program_id)
                 .with_entity_specs(get_entity_specs())
                 .with_parser_setup(create_parser_setup())
-                .with_program_account_reader(create_program_account_reader())
                 #views_call
         }
 
@@ -2708,6 +2697,10 @@ pub struct PipelineInfo {
     pub state_enum_name: String,
     pub instruction_enum_name: String,
     pub account_names: Vec<String>,
+    pub program_spec_hash: String,
+    pub idl_content_hash: String,
+    pub normalized_idl_hash: String,
+    pub program_release_hash: String,
 }
 
 fn to_camel_case(value: &str) -> String {
@@ -2730,21 +2723,24 @@ fn to_camel_case(value: &str) -> String {
     result
 }
 
-fn generate_program_account_reader_fn(pipelines: &[PipelineInfo]) -> TokenStream {
-    let arms: Vec<TokenStream> = pipelines
+fn generate_program_runtime_definitions_fn(pipelines: &[PipelineInfo]) -> TokenStream {
+    let definitions: Vec<TokenStream> = pipelines
         .iter()
-        .flat_map(|pipeline| {
+        .map(|pipeline| {
             let parser_mod = format_ident!("{}", pipeline.parser_module_name);
             let state_enum = format_ident!("{}", pipeline.state_enum_name);
             let program_key = to_camel_case(&pipeline.program_name);
-
-            pipeline.account_names.iter().map(move |account_name| {
+            let program_id = &pipeline.program_id;
+            let program_spec_hash = &pipeline.program_spec_hash;
+            let idl_content_hash = &pipeline.idl_content_hash;
+            let normalized_idl_hash = &pipeline.normalized_idl_hash;
+            let program_release_hash = &pipeline.program_release_hash;
+            let arms = pipeline.account_names.iter().map(|account_name| {
                 let variant = format_ident!("{}", account_name);
                 let account_name_lit = account_name.clone();
                 let program_key_lit = program_key.clone();
-                let program_name_lit = pipeline.program_name.clone();
                 quote! {
-                    (#program_key_lit, #account_name_lit) | (#program_name_lit, #account_name_lit) => {
+                    #account_name_lit => {
                         let decoded = #parser_mod::#state_enum::try_unpack(data).map_err(|error| {
                             arete::runtime::anyhow::anyhow!(
                                 "Failed to decode {}.{} account bytes: {}",
@@ -2763,22 +2759,51 @@ fn generate_program_account_reader_fn(pipelines: &[PipelineInfo]) -> TokenStream
                         }
                     }
                 }
-            })
+            });
+            quote! {
+                {
+                    let account_reader: arete::runtime::arete_server::ProgramAccountReaderFn =
+                        Arc::new(|account, data| match account {
+                            #(#arms,)*
+                            _ => Err(arete::runtime::anyhow::anyhow!(
+                                "program account reader not implemented for {}.{}",
+                                #program_key,
+                                account
+                            )),
+                        });
+                    arete::runtime::arete_server::ProgramRuntimeDefinition {
+                        program_id: #program_id.to_string(),
+                        program_spec_hash: #program_spec_hash.parse().expect("valid generated program spec hash"),
+                        idl_content_hash: #idl_content_hash.parse().expect("valid generated IDL content hash"),
+                        normalized_idl_hash: #normalized_idl_hash.parse().expect("valid generated normalized IDL hash"),
+                        program_release_hash: #program_release_hash.parse().expect("valid generated program release hash"),
+                        account_reader,
+                    }
+                }
+            }
         })
         .collect();
 
     quote! {
-        fn create_program_account_reader() -> arete::runtime::arete_server::ProgramAccountReaderFn {
+        fn create_program_runtime_definitions() -> Vec<arete::runtime::arete_server::ProgramRuntimeDefinition> {
             use std::sync::Arc;
+            vec![#(#definitions),*]
+        }
+    }
+}
 
-            Arc::new(|program, account, data| match (program, account) {
-                #(#arms,)*
-                _ => Err(arete::runtime::anyhow::anyhow!(
-                    "program account reader not implemented for {}.{}",
-                    program,
-                    account
-                )),
-            })
+pub fn generate_program_only_spec_function(pipelines: &[PipelineInfo]) -> TokenStream {
+    let primary_program_id = &pipelines[0].program_id;
+    let program_runtime_definitions = generate_program_runtime_definitions_fn(pipelines);
+
+    quote! {
+        #program_runtime_definitions
+
+        pub fn spec() -> arete::runtime::arete_server::Spec {
+            let bytecode = arete::runtime::arete_interpreter::compiler::MultiEntityBytecode::new()
+                .build();
+            arete::runtime::arete_server::Spec::new(bytecode, #primary_program_id)
+                .with_program_runtime_definitions(create_program_runtime_definitions())
         }
     }
 }
@@ -2876,11 +2901,11 @@ pub fn generate_multi_pipeline_spec_function(
     let managed_grpc_helpers = generate_managed_grpc_helpers();
     let slot_scheduler_task = generate_slot_scheduler_task();
     let slot_subscription_task = generate_slot_subscription_task();
-    let program_account_reader = generate_program_account_reader_fn(pipelines);
+    let program_runtime_definitions = generate_program_runtime_definitions_fn(pipelines);
 
     quote! {
         #managed_grpc_helpers
-        #program_account_reader
+        #program_runtime_definitions
 
         pub fn spec() -> arete::runtime::arete_server::Spec {
             let bytecode = create_multi_entity_bytecode();
@@ -2889,7 +2914,7 @@ pub fn generate_multi_pipeline_spec_function(
             arete::runtime::arete_server::Spec::new(bytecode, program_id)
                 .with_entity_specs(get_entity_specs())
                 .with_parser_setup(create_parser_setup())
-                .with_program_account_reader(create_program_account_reader())
+                .with_program_runtime_definitions(create_program_runtime_definitions())
                 #views_call
         }
 

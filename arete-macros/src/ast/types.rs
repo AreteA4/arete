@@ -310,7 +310,7 @@ pub enum UnaryOp {
 /// circular dependency between proc-macro crates and their output crates.
 /// When bumping this version, you MUST also update the constant in the
 /// interpreter crate. A test in versioned.rs verifies they stay in sync.
-pub const CURRENT_AST_VERSION: &str = "0.0.4";
+pub const CURRENT_AST_VERSION: &str = "0.0.5";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableStreamSpec {
@@ -1038,6 +1038,9 @@ pub struct SerializableStackSpec {
     pub program_ids: Vec<String>,
     #[serde(default)]
     pub idls: Vec<IdlSnapshot>,
+    /// Exact public program specifications, in the same order as `program_ids` and `idls`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub program_specs: Vec<arete_hash::ProgramSpecV1>,
     pub entities: Vec<SerializableStreamSpec>,
     /// Outer key = program name, inner key = PDA name
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

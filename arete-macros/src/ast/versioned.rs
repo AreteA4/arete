@@ -27,7 +27,7 @@ use super::types::{SerializableStackSpec, SerializableStreamSpec, CURRENT_AST_VE
 
 /// Older versions this build can still deserialize directly (all changes
 /// since were additive with serde defaults).
-const COMPATIBLE_AST_VERSIONS: &[&str] = &["0.0.1", "0.0.2", "0.0.3"];
+const COMPATIBLE_AST_VERSIONS: &[&str] = &["0.0.1", "0.0.2", "0.0.3", "0.0.4"];
 
 /// Error type for versioned AST loading failures.
 // Not yet used within this crate, but part of public API for future use
@@ -189,6 +189,8 @@ pub enum VersionedStackSpec {
     V3(SerializableStackSpec),
     #[serde(rename = "0.0.4")]
     V4(SerializableStackSpec),
+    #[serde(rename = "0.0.5")]
+    V5(SerializableStackSpec),
 }
 
 impl VersionedStackSpec {
@@ -204,7 +206,8 @@ impl VersionedStackSpec {
             VersionedStackSpec::V1(spec)
             | VersionedStackSpec::V2(spec)
             | VersionedStackSpec::V3(spec)
-            | VersionedStackSpec::V4(spec) => spec,
+            | VersionedStackSpec::V4(spec)
+            | VersionedStackSpec::V5(spec) => spec,
         }
     }
 }
@@ -233,6 +236,8 @@ pub enum VersionedStreamSpec {
     V3(SerializableStreamSpec),
     #[serde(rename = "0.0.4")]
     V4(SerializableStreamSpec),
+    #[serde(rename = "0.0.5")]
+    V5(SerializableStreamSpec),
 }
 
 impl VersionedStreamSpec {
@@ -248,7 +253,8 @@ impl VersionedStreamSpec {
             VersionedStreamSpec::V1(spec)
             | VersionedStreamSpec::V2(spec)
             | VersionedStreamSpec::V3(spec)
-            | VersionedStreamSpec::V4(spec) => spec,
+            | VersionedStreamSpec::V4(spec)
+            | VersionedStreamSpec::V5(spec) => spec,
         }
     }
 }
