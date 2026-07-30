@@ -336,6 +336,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "arete-auth",
+ "arete-hash",
  "arete-interpreter",
  "async-trait",
  "base64 0.22.1",
