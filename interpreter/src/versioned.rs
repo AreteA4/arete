@@ -78,35 +78,18 @@ impl std::error::Error for VersionedLoadError {}
 /// let spec = load_stack_spec(&json)?;
 /// ```
 pub fn load_stack_spec(json: &str) -> Result<SerializableStackSpec, VersionedLoadError> {
-    // Parse raw JSON to detect version
-    let raw: Value =
-        serde_json::from_str(json).map_err(|e| VersionedLoadError::InvalidJson(e.to_string()))?;
-
-    // Extract version - default to "0.0.1" if not present (backwards compatibility)
-    let version = raw
-        .get("ast_version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("0.0.1");
-
-    // Route to appropriate deserializer based on version. Compatible older
-    // versions deserialize directly: every change since them is additive with
-    // serde defaults, so no migration step is required.
-    match version {
-        v if v == CURRENT_AST_VERSION || COMPATIBLE_AST_VERSIONS.contains(&v) => {
-            serde_json::from_value::<SerializableStackSpec>(raw)
-                .map(|mut spec| {
-                    // Normalize so round-tripped specs carry the current version.
-                    spec.ast_version = CURRENT_AST_VERSION.to_string();
-                    spec
-                })
-                .map_err(|e| VersionedLoadError::InvalidStructure(e.to_string()))
-        }
-        // Add migration arms for structurally-incompatible old versions here.
-        _ => {
-            // Unknown version
-            Err(VersionedLoadError::UnsupportedVersion(version.to_string()))
-        }
-    }
+    let loaded =
+        arete_artifacts::load_legacy_stack_value(json.as_bytes()).map_err(|error| match error {
+            arete_artifacts::ArtifactError::UnsupportedVersion { version, .. } => {
+                VersionedLoadError::UnsupportedVersion(version)
+            }
+            arete_artifacts::ArtifactError::InvalidJson(message) => {
+                VersionedLoadError::InvalidJson(message)
+            }
+            other => VersionedLoadError::InvalidStructure(other.to_string()),
+        })?;
+    serde_json::from_value::<SerializableStackSpec>(loaded.artifact)
+        .map_err(|error| VersionedLoadError::InvalidStructure(error.to_string()))
 }
 
 /// Load a stream spec from JSON with automatic version detection and migration.
@@ -172,6 +155,10 @@ pub enum VersionedStackSpec {
     V2(SerializableStackSpec),
     #[serde(rename = "0.0.3")]
     V3(SerializableStackSpec),
+    #[serde(rename = "0.0.4")]
+    V4(SerializableStackSpec),
+    #[serde(rename = "0.0.5")]
+    V5(SerializableStackSpec),
 }
 
 impl VersionedStackSpec {
@@ -184,7 +171,9 @@ impl VersionedStackSpec {
         match self {
             VersionedStackSpec::V1(spec)
             | VersionedStackSpec::V2(spec)
-            | VersionedStackSpec::V3(spec) => spec,
+            | VersionedStackSpec::V3(spec)
+            | VersionedStackSpec::V4(spec)
+            | VersionedStackSpec::V5(spec) => spec,
         }
     }
 }
@@ -209,6 +198,10 @@ pub enum VersionedStreamSpec {
     V2(SerializableStreamSpec),
     #[serde(rename = "0.0.3")]
     V3(SerializableStreamSpec),
+    #[serde(rename = "0.0.4")]
+    V4(SerializableStreamSpec),
+    #[serde(rename = "0.0.5")]
+    V5(SerializableStreamSpec),
 }
 
 impl VersionedStreamSpec {
@@ -221,7 +214,9 @@ impl VersionedStreamSpec {
         match self {
             VersionedStreamSpec::V1(spec)
             | VersionedStreamSpec::V2(spec)
-            | VersionedStreamSpec::V3(spec) => spec,
+            | VersionedStreamSpec::V3(spec)
+            | VersionedStreamSpec::V4(spec)
+            | VersionedStreamSpec::V5(spec) => spec,
         }
     }
 }

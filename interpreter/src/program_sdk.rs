@@ -1,12 +1,9 @@
 use crate::ast::{
-    idl_type_snapshot_to_rust_string, AccountResolution, AmountDecimalsSource, IdlAccountSnapshot,
+    idl_type_snapshot_to_rust_string, AccountResolution, AmountDecimalsSource,
     IdlArrayElementSnapshot, IdlArrayTypeSnapshot, IdlDefinedInnerSnapshot, IdlDefinedTypeSnapshot,
-    IdlEnumVariantFieldSnapshot, IdlEnumVariantSnapshot, IdlErrorSnapshot, IdlEventSnapshot,
-    IdlFieldSnapshot, IdlHashMapTypeSnapshot, IdlInstructionAccountSnapshot,
-    IdlInstructionSnapshot, IdlOptionTypeSnapshot, IdlSerializationSnapshot, IdlSnapshot,
-    IdlTypeDefKindSnapshot, IdlTypeDefSnapshot, IdlTypeSnapshot, IdlVecTypeSnapshot,
-    InstructionAccountDef, InstructionAmountHint, InstructionArgDef, InstructionDef, PdaDefinition,
-    PdaSeedDef, SerializableStackSpec, CURRENT_AST_VERSION,
+    IdlHashMapTypeSnapshot, IdlOptionTypeSnapshot, IdlSnapshot, IdlTypeSnapshot,
+    IdlVecTypeSnapshot, InstructionAccountDef, InstructionAmountHint, InstructionArgDef,
+    InstructionDef, PdaDefinition, PdaSeedDef, SerializableStackSpec, CURRENT_AST_VERSION,
 };
 use arete_idl as idl_parser;
 use std::collections::BTreeMap;
@@ -51,10 +48,73 @@ pub fn build_program_only_stack_spec_from_idl(
     idl: &idl_parser::IdlSpec,
     stack_name: &str,
 ) -> SerializableStackSpec {
-    let snapshot = convert_idl_to_snapshot(idl);
-    let program_id = snapshot.program_id.clone();
-    let pdas = extract_pdas_from_idl(idl);
-    let instructions = extract_instructions_from_idl(idl, &pdas);
+    let program_spec = build_program_spec_v1_from_idl(idl)
+        .expect("IDL program identity must be valid for ProgramSpecV1");
+    build_program_only_stack_spec_from_program_spec(program_spec, stack_name)
+}
+
+pub fn build_program_spec_v1_from_idl(
+    idl: &idl_parser::IdlSpec,
+) -> Result<arete_hash::ProgramSpecV1, arete_hash::HashError> {
+    arete_hash::build_program_spec_v1_from_idl(idl, None)
+}
+
+pub fn build_program_spec_v1_from_idl_bytes(
+    bytes: &[u8],
+    explicit_program_id: Option<&str>,
+) -> Result<arete_hash::ProgramSpecV1, arete_hash::HashError> {
+    arete_hash::build_program_spec_v1_from_bytes(bytes, explicit_program_id)
+}
+
+pub fn build_oss_program_identity_v1_from_idl(
+    idl: &idl_parser::IdlSpec,
+) -> Result<arete_hash::OssProgramIdentityV1, arete_hash::HashError> {
+    arete_hash::OssProgramIdentityV1::new(build_program_spec_v1_from_idl(idl)?)
+}
+
+pub fn build_oss_program_identity_v1_from_idl_bytes(
+    bytes: &[u8],
+    explicit_program_id: Option<&str>,
+) -> Result<arete_hash::OssProgramIdentityV1, arete_hash::HashError> {
+    arete_hash::build_oss_program_identity_v1_from_bytes(bytes, explicit_program_id)
+}
+
+pub fn build_program_only_stack_spec_from_idl_bytes(
+    bytes: &[u8],
+    explicit_program_id: Option<&str>,
+    stack_name: &str,
+) -> Result<SerializableStackSpec, arete_hash::HashError> {
+    let program_spec = build_program_spec_v1_from_idl_bytes(bytes, explicit_program_id)?;
+    Ok(build_program_only_stack_spec_from_program_spec(
+        program_spec,
+        stack_name,
+    ))
+}
+
+pub fn build_program_only_stack_spec_from_program_spec(
+    program_spec: arete_hash::ProgramSpecV1,
+    stack_name: &str,
+) -> SerializableStackSpec {
+    build_program_only_stack_spec_from_program_spec_ref(&program_spec, stack_name)
+}
+
+pub fn build_program_only_stack_spec_from_identity(
+    identity: &arete_hash::OssProgramIdentityV1,
+    stack_name: &str,
+) -> SerializableStackSpec {
+    build_program_only_stack_spec_from_program_spec_ref(&identity.program_spec, stack_name)
+}
+
+fn build_program_only_stack_spec_from_program_spec_ref(
+    program_spec: &arete_hash::ProgramSpecV1,
+    stack_name: &str,
+) -> SerializableStackSpec {
+    let snapshot = program_spec.idl_snapshot.clone().into_legacy_snapshot();
+    let program_id = Some(program_spec.program_id.clone());
+    let pdas: BTreeMap<String, PdaDefinition> =
+        transcode_program_projection(program_spec.pdas.clone());
+    let instructions: Vec<InstructionDef> =
+        transcode_program_projection(program_spec.instructions.clone());
 
     let mut grouped_pdas = BTreeMap::new();
     if !pdas.is_empty() {
@@ -66,6 +126,7 @@ pub fn build_program_only_stack_spec_from_idl(
         stack_name: stack_name.to_string(),
         program_ids: program_id.into_iter().collect(),
         idls: vec![snapshot],
+        program_specs: vec![program_spec.clone()],
         entities: vec![],
         pdas: grouped_pdas,
         instructions,
@@ -74,208 +135,19 @@ pub fn build_program_only_stack_spec_from_idl(
     .with_content_hash()
 }
 
+fn transcode_program_projection<T, U>(value: T) -> U
+where
+    T: serde::Serialize,
+    U: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(
+        serde_json::to_value(value).expect("shared ProgramSpec projection must serialize"),
+    )
+    .expect("shared ProgramSpec projection must match the legacy AST adapter")
+}
+
 pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
-    let mut types: Vec<IdlTypeDefSnapshot> = idl
-        .types
-        .iter()
-        .map(|typedef| IdlTypeDefSnapshot {
-            name: typedef.name.clone(),
-            docs: typedef.docs.clone(),
-            serialization: typedef.serialization.as_ref().map(|s| match s {
-                idl_parser::IdlSerialization::Borsh => IdlSerializationSnapshot::Borsh,
-                idl_parser::IdlSerialization::Bytemuck => IdlSerializationSnapshot::Bytemuck,
-                idl_parser::IdlSerialization::BytemuckUnsafe => {
-                    IdlSerializationSnapshot::BytemuckUnsafe
-                }
-            }),
-            type_def: match &typedef.type_def {
-                idl_parser::IdlTypeDefKind::Struct { kind, fields } => {
-                    IdlTypeDefKindSnapshot::Struct {
-                        kind: kind.clone(),
-                        fields: fields
-                            .iter()
-                            .map(|field| IdlFieldSnapshot {
-                                name: field.name.clone(),
-                                type_: convert_idl_type(&field.type_),
-                                amount_hint: field.amount_hint.clone(),
-                            })
-                            .collect(),
-                    }
-                }
-                idl_parser::IdlTypeDefKind::TupleStruct { kind, fields } => {
-                    IdlTypeDefKindSnapshot::TupleStruct {
-                        kind: kind.clone(),
-                        fields: fields.iter().map(convert_idl_type).collect(),
-                    }
-                }
-                idl_parser::IdlTypeDefKind::Enum { kind, variants } => {
-                    IdlTypeDefKindSnapshot::Enum {
-                        kind: kind.clone(),
-                        variants: variants.iter().map(convert_enum_variant).collect(),
-                    }
-                }
-            },
-        })
-        .collect();
-
-    for account in &idl.accounts {
-        if types.iter().any(|typedef| typedef.name == account.name) {
-            continue;
-        }
-
-        if let Some(type_def) = &account.type_def {
-            let snapshot_type = match type_def {
-                idl_parser::IdlTypeDefKind::Struct { kind, fields } => {
-                    IdlTypeDefKindSnapshot::Struct {
-                        kind: kind.clone(),
-                        fields: fields
-                            .iter()
-                            .map(|field| IdlFieldSnapshot {
-                                name: field.name.clone(),
-                                type_: convert_idl_type(&field.type_),
-                                amount_hint: field.amount_hint.clone(),
-                            })
-                            .collect(),
-                    }
-                }
-                idl_parser::IdlTypeDefKind::TupleStruct { kind, fields } => {
-                    IdlTypeDefKindSnapshot::TupleStruct {
-                        kind: kind.clone(),
-                        fields: fields.iter().map(convert_idl_type).collect(),
-                    }
-                }
-                idl_parser::IdlTypeDefKind::Enum { kind, variants } => {
-                    IdlTypeDefKindSnapshot::Enum {
-                        kind: kind.clone(),
-                        variants: variants.iter().map(convert_enum_variant).collect(),
-                    }
-                }
-            };
-            types.push(IdlTypeDefSnapshot {
-                name: account.name.clone(),
-                docs: account.docs.clone(),
-                serialization: None,
-                type_def: snapshot_type,
-            });
-        }
-    }
-
-    let uses_steel_discriminant = idl.instructions.iter().any(|instruction| {
-        instruction.discriminant.is_some() && instruction.discriminator.is_empty()
-    });
-    let discriminant_size = if uses_steel_discriminant { 1 } else { 8 };
-    let program_id = idl.address.clone().or_else(|| {
-        idl.metadata
-            .as_ref()
-            .and_then(|metadata| metadata.address.clone())
-    });
-
-    IdlSnapshot {
-        name: idl.get_name().to_string(),
-        program_id: program_id.clone(),
-        version: idl.get_version().to_string(),
-        accounts: idl
-            .accounts
-            .iter()
-            .map(|account| {
-                let serialization = idl
-                    .types
-                    .iter()
-                    .find(|typedef| typedef.name == account.name)
-                    .and_then(|typedef| typedef.serialization.as_ref())
-                    .map(|serialization| match serialization {
-                        idl_parser::IdlSerialization::Borsh => IdlSerializationSnapshot::Borsh,
-                        idl_parser::IdlSerialization::Bytemuck => {
-                            IdlSerializationSnapshot::Bytemuck
-                        }
-                        idl_parser::IdlSerialization::BytemuckUnsafe => {
-                            IdlSerializationSnapshot::BytemuckUnsafe
-                        }
-                    });
-
-                IdlAccountSnapshot {
-                    name: account.name.clone(),
-                    discriminator: account.get_discriminator(),
-                    docs: account.docs.clone(),
-                    serialization,
-                    fields: account.type_def.as_ref().map_or_else(Vec::new, |type_def| {
-                        match type_def {
-                            idl_parser::IdlTypeDefKind::Struct { fields, .. } => fields
-                                .iter()
-                                .map(|field| IdlFieldSnapshot {
-                                    name: field.name.clone(),
-                                    type_: convert_idl_type(&field.type_),
-                                    amount_hint: field.amount_hint.clone(),
-                                })
-                                .collect(),
-                            _ => Vec::new(),
-                        }
-                    }),
-                    type_def: None,
-                }
-            })
-            .collect(),
-        instructions: idl
-            .instructions
-            .iter()
-            .map(|instruction| IdlInstructionSnapshot {
-                name: instruction.name.clone(),
-                discriminator: instruction.get_discriminator(),
-                discriminant: instruction.discriminant.clone(),
-                docs: instruction.docs.clone(),
-                accounts: instruction
-                    .flattened_accounts()
-                    .iter()
-                    .map(|account| IdlInstructionAccountSnapshot {
-                        name: account.name.clone(),
-                        writable: account.is_mut,
-                        signer: account.is_signer,
-                        optional: account.optional,
-                        address: account.address.clone(),
-                        docs: account.docs.clone(),
-                    })
-                    .collect(),
-                args: instruction
-                    .args
-                    .iter()
-                    .map(|arg| IdlFieldSnapshot {
-                        name: arg.name.clone(),
-                        type_: convert_idl_type(&arg.type_),
-                        amount_hint: arg.amount_hint.clone(),
-                    })
-                    .collect(),
-            })
-            .collect(),
-        types,
-        events: idl
-            .events
-            .iter()
-            .map(|event| IdlEventSnapshot {
-                name: event.name.clone(),
-                discriminator: event.get_discriminator(),
-                docs: event.docs.clone(),
-                fields: event
-                    .fields
-                    .iter()
-                    .map(|field| IdlFieldSnapshot {
-                        name: field.name.clone(),
-                        type_: convert_idl_type(&field.type_),
-                        amount_hint: field.amount_hint.clone(),
-                    })
-                    .collect(),
-            })
-            .collect(),
-        errors: idl
-            .errors
-            .iter()
-            .map(|error| IdlErrorSnapshot {
-                code: error.code,
-                name: error.name.clone(),
-                msg: error.msg.clone(),
-            })
-            .collect(),
-        discriminant_size,
-    }
+    arete_idl::normalize_idl_snapshot(idl)
 }
 
 pub fn extract_pdas_from_idl(idl: &idl_parser::IdlSpec) -> BTreeMap<String, PdaDefinition> {
@@ -422,28 +294,6 @@ fn convert_amount_hint(hint: &idl_parser::IdlAmountHint) -> InstructionAmountHin
                 }
             }
         },
-    }
-}
-
-fn convert_enum_variant(variant: &idl_parser::IdlEnumVariant) -> IdlEnumVariantSnapshot {
-    IdlEnumVariantSnapshot {
-        name: variant.name.clone(),
-        fields: variant
-            .fields
-            .iter()
-            .map(|field| match field {
-                idl_parser::IdlEnumVariantField::Named(named) => {
-                    IdlEnumVariantFieldSnapshot::Named(IdlFieldSnapshot {
-                        name: named.name.clone(),
-                        type_: convert_idl_type(&named.type_),
-                        amount_hint: named.amount_hint.clone(),
-                    })
-                }
-                idl_parser::IdlEnumVariantField::Tuple(tuple) => {
-                    IdlEnumVariantFieldSnapshot::Tuple(convert_idl_type(tuple))
-                }
-            })
-            .collect(),
     }
 }
 
@@ -709,5 +559,48 @@ mod tests {
             })
         );
         assert!(spec.idls[0].instructions[0].args[0].amount_hint.is_some());
+    }
+
+    #[test]
+    fn derives_the_checked_in_program_and_release_identities() {
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../../test-vectors/hash-v1.json"))
+                .expect("vector corpus");
+        let vector = corpus["idlVectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|vector| vector["id"] == "idl-primary")
+            .expect("primary IDL vector");
+        let source = vector["input"]["data"].as_str().unwrap().as_bytes();
+
+        let identity = build_oss_program_identity_v1_from_idl_bytes(source, None)
+            .expect("interpreter identity");
+        let stack_spec = build_program_only_stack_spec_from_identity(&identity, "Demo");
+
+        assert_eq!(
+            identity.program_spec_hash.to_string(),
+            vector["expected"]["programSpecIdentity"]["hashId"]
+        );
+        assert_eq!(
+            identity.release_hash.to_string(),
+            vector["expected"]["ossReleaseIdentity"]["hashId"]
+        );
+        assert_eq!(stack_spec.content_hash.as_deref().unwrap().len(), 64);
+        assert_eq!(stack_spec.program_specs.len(), 1);
+        assert_eq!(
+            stack_spec.program_specs[0].hash().unwrap(),
+            identity.program_spec_hash
+        );
+        assert!(stack_spec
+            .content_hash
+            .as_deref()
+            .unwrap()
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+        assert_eq!(
+            stack_spec.content_hash.as_deref(),
+            Some(stack_spec.compute_content_hash().as_str())
+        );
     }
 }

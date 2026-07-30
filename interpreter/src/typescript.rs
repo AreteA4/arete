@@ -3083,14 +3083,71 @@ fn compile_serializable_spec_with_emitted(
     compiler.try_compile()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeScriptProgramDefinitionMetadata {
+    pub program_id: String,
+    pub sdk_definition_hash: Option<String>,
+    pub program_spec_hash: String,
+    pub idl_content_hash: String,
+    pub normalized_idl_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeScriptProgramReleaseReference {
+    pub program_release_hash: String,
+    pub program_spec_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeScriptProgramReadBinding {
+    pub endpoint: String,
+    pub program_read_binding_id: String,
+    pub auth: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeScriptProgramReadTransport {
+    LocalHttp,
+    HostedBinding(TypeScriptProgramReadBinding),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeScriptProgramConfig {
+    pub definition: TypeScriptProgramDefinitionMetadata,
+    pub release: TypeScriptProgramReleaseReference,
+    pub transport: TypeScriptProgramReadTransport,
+}
+
+impl From<&arete_hash::OssProgramIdentityV1> for TypeScriptProgramConfig {
+    fn from(identity: &arete_hash::OssProgramIdentityV1) -> Self {
+        Self {
+            definition: TypeScriptProgramDefinitionMetadata {
+                program_id: identity.program_spec.program_id.clone(),
+                sdk_definition_hash: None,
+                program_spec_hash: identity.program_spec_hash.to_string(),
+                idl_content_hash: identity.program_spec.idl_content_hash.to_string(),
+                normalized_idl_hash: identity.program_spec.normalized_idl_hash.to_string(),
+            },
+            release: TypeScriptProgramReleaseReference {
+                program_release_hash: identity.release_hash.to_string(),
+                program_spec_hash: identity.program_spec_hash.to_string(),
+            },
+            transport: TypeScriptProgramReadTransport::LocalHttp,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeScriptStackConfig {
     pub package_name: String,
     pub generate_helpers: bool,
     pub export_const_name: String,
-    pub url: Option<String>,
+    pub websocket_url: Option<String>,
+    pub http_url: Option<String>,
     pub extension_import: Option<String>,
-    pub definition_hash: Option<String>,
+    /// Hosted metadata in exact AST program order. Local generation derives this from
+    /// `SerializableStackSpec::program_specs` instead.
+    pub programs: Option<Vec<TypeScriptProgramConfig>>,
 }
 
 impl Default for TypeScriptStackConfig {
@@ -3099,9 +3156,10 @@ impl Default for TypeScriptStackConfig {
             package_name: "@usearete/react".to_string(),
             generate_helpers: true,
             export_const_name: "STACK".to_string(),
-            url: None,
+            websocket_url: None,
+            http_url: None,
             extension_import: None,
-            definition_hash: None,
+            programs: None,
         }
     }
 }
@@ -3115,6 +3173,55 @@ pub struct TypeScriptStackOutput {
     /// user-provided accounts). Callers should surface these to the user.
     pub warnings: Vec<String>,
     /// Structured PDA degradations for summary reporting.
+    pub pda_degradations: Vec<crate::typescript_instructions::PdaDegradation>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TypeScriptLiveEndpoints {
+    pub websocket_url: Option<String>,
+    pub http_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeScriptCompositionConfig {
+    pub stack: TypeScriptStackConfig,
+    pub live_endpoints: BTreeMap<String, TypeScriptLiveEndpoints>,
+    pub live_module_imports: BTreeMap<String, String>,
+    pub program_module_imports: BTreeMap<String, String>,
+}
+
+impl Default for TypeScriptCompositionConfig {
+    fn default() -> Self {
+        Self {
+            stack: TypeScriptStackConfig::default(),
+            live_endpoints: BTreeMap::new(),
+            live_module_imports: BTreeMap::new(),
+            program_module_imports: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeScriptAliasedStackOutput {
+    pub alias: String,
+    pub module_name: String,
+    pub output: TypeScriptStackOutput,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeScriptProgramCollectionOutput {
+    pub module_name: String,
+    pub output: TypeScriptStackOutput,
+    pub members: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeScriptCompositionOutput {
+    pub name: String,
+    pub live_stacks: Vec<TypeScriptAliasedStackOutput>,
+    pub program_collection: Option<TypeScriptProgramCollectionOutput>,
+    pub session_definition: String,
+    pub warnings: Vec<String>,
     pub pda_degradations: Vec<crate::typescript_instructions::PdaDegradation>,
 }
 
@@ -3134,6 +3241,189 @@ impl TypeScriptStackOutput {
     }
 }
 
+fn resolve_program_configs(
+    stack_spec: &SerializableStackSpec,
+    configured: Option<&[TypeScriptProgramConfig]>,
+    allow_view_only: bool,
+) -> Result<Vec<TypeScriptProgramConfig>, String> {
+    if stack_spec.idls.is_empty() {
+        if stack_spec.program_specs.is_empty()
+            && configured.map_or(true, |programs| programs.is_empty())
+        {
+            return Ok(Vec::new());
+        }
+        return Err(format!(
+            "Stack '{}' has program metadata but no ordered IDL list",
+            stack_spec.stack_name
+        ));
+    }
+
+    if stack_spec.program_specs.is_empty() {
+        let view_only = stack_spec.program_ids.is_empty()
+            && stack_spec.instructions.is_empty()
+            && stack_spec.pdas.is_empty()
+            && stack_spec
+                .idls
+                .iter()
+                .all(|idl| idl.accounts.is_empty() && idl.instructions.is_empty());
+        if allow_view_only && view_only && configured.map_or(true, |programs| programs.is_empty()) {
+            return Ok(Vec::new());
+        }
+        return Err(format!(
+            "Stack '{}' uses program SDK/account definitions but its AST has no exact public ProgramSpecV1 values. Regenerate the .stack.json with the current arete-macros before generating an SDK.",
+            stack_spec.stack_name
+        ));
+    }
+
+    let expected = stack_spec.idls.len();
+    if stack_spec.program_ids.len() != expected || stack_spec.program_specs.len() != expected {
+        return Err(format!(
+            "Stack '{}' program metadata is not aligned: program_ids={}, idls={}, program_specs={}. Regenerate the .stack.json with the current arete-macros.",
+            stack_spec.stack_name,
+            stack_spec.program_ids.len(),
+            stack_spec.idls.len(),
+            stack_spec.program_specs.len(),
+        ));
+    }
+
+    let mut exact_definitions = Vec::with_capacity(expected);
+    let mut program_keys = BTreeSet::new();
+    for (index, ((program_id, idl), program_spec)) in stack_spec
+        .program_ids
+        .iter()
+        .zip(&stack_spec.idls)
+        .zip(&stack_spec.program_specs)
+        .enumerate()
+    {
+        program_spec.validate().map_err(|error| {
+            format!(
+                "Stack '{}' program_specs[{index}] is invalid: {error}",
+                stack_spec.stack_name
+            )
+        })?;
+        if program_id != &program_spec.program_id {
+            return Err(format!(
+                "Stack '{}' program ID mismatch at index {index}: program_ids has '{}', ProgramSpecV1 has '{}'",
+                stack_spec.stack_name, program_id, program_spec.program_id
+            ));
+        }
+        if idl.program_id.as_deref() != Some(program_spec.program_id.as_str()) {
+            return Err(format!(
+                "Stack '{}' IDL program ID mismatch at index {index}: expected '{}'",
+                stack_spec.stack_name, program_spec.program_id
+            ));
+        }
+        if idl.name != program_spec.idl_snapshot.snapshot.name {
+            return Err(format!(
+                "Stack '{}' IDL/ProgramSpec name mismatch at index {index}: '{}' != '{}'",
+                stack_spec.stack_name, idl.name, program_spec.idl_snapshot.snapshot.name
+            ));
+        }
+        let program_key = to_camel_case(&idl.name);
+        if !program_keys.insert(program_key.clone()) {
+            return Err(format!(
+                "Stack '{}' has an ambiguous duplicate generated program key '{}'",
+                stack_spec.stack_name, program_key
+            ));
+        }
+        exact_definitions.push(TypeScriptProgramDefinitionMetadata {
+            program_id: program_spec.program_id.clone(),
+            sdk_definition_hash: None,
+            program_spec_hash: program_spec
+                .hash()
+                .map_err(|error| {
+                    format!(
+                        "Stack '{}' could not hash ProgramSpecV1 at index {index}: {error}",
+                        stack_spec.stack_name
+                    )
+                })?
+                .to_string(),
+            idl_content_hash: program_spec.idl_content_hash.to_string(),
+            normalized_idl_hash: program_spec.normalized_idl_hash.to_string(),
+        });
+    }
+
+    let Some(configured) = configured else {
+        return stack_spec
+            .program_specs
+            .iter()
+            .enumerate()
+            .map(|(index, program_spec)| {
+                arete_hash::OssProgramIdentityV1::new(program_spec.clone())
+                    .map(|identity| TypeScriptProgramConfig::from(&identity))
+                    .map_err(|error| {
+                        format!(
+                            "Stack '{}' could not derive the OSS release for program index {index}: {error}",
+                            stack_spec.stack_name
+                        )
+                    })
+            })
+            .collect();
+    };
+    if configured.len() != expected {
+        return Err(format!(
+            "Stack '{}' hosted descriptor count mismatch: expected {expected}, received {}",
+            stack_spec.stack_name,
+            configured.len()
+        ));
+    }
+
+    for (index, (hosted, exact)) in configured.iter().zip(&exact_definitions).enumerate() {
+        if hosted.definition.program_id != exact.program_id {
+            return Err(format!(
+                "Stack '{}' hosted descriptor program ID mismatch at index {index}: expected '{}', received '{}'",
+                stack_spec.stack_name,
+                exact.program_id,
+                hosted.definition.program_id
+            ));
+        }
+        if hosted.definition.program_spec_hash != exact.program_spec_hash {
+            return Err(format!(
+                "Stack '{}' hosted descriptor programSpecHash mismatch at index {index}: expected '{}', received '{}'",
+                stack_spec.stack_name,
+                exact.program_spec_hash,
+                hosted.definition.program_spec_hash
+            ));
+        }
+        if hosted.definition.idl_content_hash != exact.idl_content_hash
+            || hosted.definition.normalized_idl_hash != exact.normalized_idl_hash
+        {
+            return Err(format!(
+                "Stack '{}' hosted descriptor definition hashes mismatch at index {index}",
+                stack_spec.stack_name
+            ));
+        }
+        if hosted.release.program_spec_hash != hosted.definition.program_spec_hash {
+            return Err(format!(
+                "Stack '{}' hosted descriptor release programSpecHash mismatch at index {index}",
+                stack_spec.stack_name
+            ));
+        }
+        if let TypeScriptProgramReadTransport::HostedBinding(binding) = &hosted.transport {
+            let target_kind = binding
+                .auth
+                .get("targetKind")
+                .and_then(serde_json::Value::as_str);
+            let session_endpoint = binding
+                .auth
+                .get("sessionEndpoint")
+                .and_then(serde_json::Value::as_str);
+            if binding.endpoint.trim().is_empty()
+                || binding.program_read_binding_id.trim().is_empty()
+                || target_kind != Some("program-read-binding")
+                || session_endpoint.map_or(true, |value| value.trim().is_empty())
+            {
+                return Err(format!(
+                    "Stack '{}' hosted descriptor binding is incomplete at index {index}",
+                    stack_spec.stack_name
+                ));
+            }
+        }
+    }
+
+    Ok(configured.to_vec())
+}
+
 /// Compile a full SerializableStackSpec (multi-entity) into a single TypeScript file.
 ///
 /// Generates:
@@ -3144,7 +3434,16 @@ pub fn compile_stack_spec(
     stack_spec: SerializableStackSpec,
     config: Option<TypeScriptStackConfig>,
 ) -> Result<TypeScriptStackOutput, String> {
+    compile_stack_spec_with_view_selection(stack_spec, config, false)
+}
+
+fn compile_stack_spec_with_view_selection(
+    stack_spec: SerializableStackSpec,
+    config: Option<TypeScriptStackConfig>,
+    exact_views: bool,
+) -> Result<TypeScriptStackOutput, String> {
     let config = config.unwrap_or_default();
+    let program_configs = resolve_program_configs(&stack_spec, config.programs.as_deref(), true)?;
     let stack_name = &stack_spec.stack_name;
     let stack_kebab = to_kebab_case(stack_name);
 
@@ -3168,7 +3467,7 @@ pub fn compile_stack_spec(
             generate_helpers: false,
             interface_prefix: String::new(),
             export_const_name: config.export_const_name.clone(),
-            url: config.url.clone(),
+            url: config.websocket_url.clone(),
         };
 
         // Collect builtin type names before spec is consumed
@@ -3267,7 +3566,9 @@ pub fn compile_stack_spec(
         &schema_names,
         &idl_account_artifacts.account_type_names,
         &instructions_codegen.stack_entries,
+        &program_configs,
         &config,
+        exact_views,
     )?;
 
     // 4. Assemble `@usearete/sdk` imports based on what was actually emitted.
@@ -3284,6 +3585,427 @@ pub fn compile_stack_spec(
         warnings: instructions_codegen.warnings,
         pda_degradations: instructions_codegen.pda_degradations,
     })
+}
+
+/// Compile a stack model whose `views` have already been projected by a
+/// StackManifest selected-view allowlist.
+pub fn compile_stack_spec_with_exact_views(
+    stack_spec: SerializableStackSpec,
+    config: Option<TypeScriptStackConfig>,
+) -> Result<TypeScriptStackOutput, String> {
+    compile_stack_spec_with_view_selection(stack_spec, config, true)
+}
+
+/// Compile an explicit StackManifest and its exact public dependencies.
+pub fn compile_public_artifacts(
+    programs: &[arete_artifacts::ProgramSpecArtifact],
+    live_spec: &arete_artifacts::LiveSpecArtifact,
+    manifest: &arete_artifacts::StackManifestArtifact,
+    config: Option<TypeScriptStackConfig>,
+) -> Result<TypeScriptStackOutput, String> {
+    let stack_spec =
+        crate::public_artifacts::stack_spec_from_artifacts(programs, live_spec, manifest)?;
+    compile_stack_spec(stack_spec, config)
+}
+
+/// Compile typed V2 public artifacts through the current single-live generator.
+pub fn compile_public_artifacts_v2(
+    programs: &[arete_artifacts::ProgramSpecArtifact],
+    live_spec: &arete_artifacts::LiveSpecArtifactV2,
+    manifest: &arete_artifacts::StackManifestArtifactV2,
+    config: Option<TypeScriptStackConfig>,
+) -> Result<TypeScriptStackOutput, String> {
+    let stack_spec =
+        crate::public_artifacts::stack_spec_from_artifacts_v2(programs, live_spec, manifest)?;
+    compile_stack_spec_with_view_selection(stack_spec, config, true)
+}
+
+/// Compile each aliased LiveSpec into an independent module and generate a
+/// manifest-level `createSession` definition that preserves exact alias keys.
+pub fn compile_composed_public_artifacts_v2(
+    programs: &[arete_artifacts::ProgramSpecArtifact],
+    live_specs: &[(String, arete_artifacts::LiveSpecArtifactV2)],
+    manifest: &arete_artifacts::StackManifestArtifactV2,
+    config: Option<TypeScriptCompositionConfig>,
+) -> Result<TypeScriptCompositionOutput, String> {
+    let composed =
+        crate::public_artifacts::stack_specs_from_artifacts_v2(programs, live_specs, manifest)?;
+    if composed.live_specs.is_empty() {
+        return Err(
+            "TypeScript session generation requires at least one aliased LiveSpec".to_string(),
+        );
+    }
+    let config = config.unwrap_or_default();
+    let live_aliases = composed
+        .live_specs
+        .iter()
+        .map(|live| live.alias.as_str())
+        .collect::<BTreeSet<_>>();
+    if let Some(alias) = config
+        .live_module_imports
+        .keys()
+        .find(|alias| !live_aliases.contains(alias.as_str()))
+    {
+        return Err(format!(
+            "composition module import references unknown LiveSpec alias '{alias}'"
+        ));
+    }
+    let mut outputs = Vec::with_capacity(composed.live_specs.len());
+    let mut warnings = Vec::new();
+    let mut pda_degradations = Vec::new();
+
+    let live_program_hashes = live_specs
+        .iter()
+        .flat_map(|(_, live)| &live.payload.programs)
+        .map(|requirement| requirement.program_spec_hash.to_string())
+        .collect::<BTreeSet<_>>();
+    let independent_programs = programs
+        .iter()
+        .filter(|program| !live_program_hashes.contains(&program.artifact_hash.to_string()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let independent_program_keys = independent_programs
+        .iter()
+        .map(|program| {
+            let source = to_camel_case(&program.payload.idl_snapshot.snapshot.name);
+            composition_program_key(program, &source)
+        })
+        .collect::<BTreeSet<_>>();
+    if let Some(alias) = config
+        .program_module_imports
+        .keys()
+        .find(|alias| !independent_program_keys.contains(alias.as_str()))
+    {
+        return Err(format!(
+            "composition program module import references unknown independent program alias '{alias}'"
+        ));
+    }
+    let program_collection = if independent_programs.is_empty() {
+        None
+    } else {
+        let program_stack = crate::public_artifacts::stack_spec_from_program_artifacts(
+            format!("{}Programs", composed.name),
+            &independent_programs,
+        )?;
+        let mut program_config = config.stack.clone();
+        program_config.websocket_url = None;
+        program_config.http_url = None;
+        program_config.programs =
+            subset_program_configs(&program_stack, config.stack.programs.as_deref())?;
+        let output =
+            compile_stack_spec_with_view_selection(program_stack, Some(program_config), true)?;
+        warnings.extend(output.warnings.iter().cloned());
+        pda_degradations.extend(output.pda_degradations.iter().cloned());
+        Some(TypeScriptProgramCollectionOutput {
+            module_name: format!("{}-programs", to_kebab_case(&composed.name)),
+            output,
+            members: independent_programs
+                .iter()
+                .map(|program| {
+                    let source = to_camel_case(&program.payload.idl_snapshot.snapshot.name);
+                    let public = composition_program_key(program, &source);
+                    (public, source)
+                })
+                .collect(),
+        })
+    };
+
+    let mut promoted_programs = Vec::new();
+    let mut promoted_hashes = BTreeMap::<String, String>::new();
+    for live in composed.live_specs {
+        let mut stack_config = config.stack.clone();
+        if let Some(endpoints) = config.live_endpoints.get(&live.alias) {
+            stack_config.websocket_url = endpoints.websocket_url.clone();
+            stack_config.http_url = endpoints.http_url.clone();
+        } else {
+            stack_config.websocket_url = None;
+            stack_config.http_url = None;
+        }
+        stack_config.programs =
+            subset_program_configs(&live.stack_spec, config.stack.programs.as_deref())?;
+        for program in &live.stack_spec.program_specs {
+            let source = to_camel_case(&program.idl_snapshot.snapshot.name);
+            let hash = program
+                .hash()
+                .map_err(|error| error.to_string())?
+                .to_string();
+            if let Some(existing_hash) = promoted_hashes.get(&source) {
+                if existing_hash != &hash {
+                    return Err(format!(
+                        "composition programs use duplicate generated key '{source}' for different ProgramSpecs"
+                    ));
+                }
+                continue;
+            }
+            promoted_hashes.insert(source.clone(), hash);
+            promoted_programs.push((source.clone(), live.alias.clone(), source));
+        }
+        let module_name = typescript_module_name(&live.alias);
+        let output =
+            compile_stack_spec_with_view_selection(live.stack_spec, Some(stack_config), true)?;
+        warnings.extend(output.warnings.iter().cloned());
+        pda_degradations.extend(output.pda_degradations.iter().cloned());
+        outputs.push(TypeScriptAliasedStackOutput {
+            alias: live.alias,
+            module_name,
+            output,
+        });
+    }
+
+    let session_definition = generate_session_definition(
+        &composed.name,
+        &outputs,
+        &promoted_programs,
+        program_collection.as_ref(),
+        &config.live_module_imports,
+        &config.program_module_imports,
+    );
+    Ok(TypeScriptCompositionOutput {
+        name: composed.name,
+        live_stacks: outputs,
+        program_collection,
+        session_definition,
+        warnings,
+        pda_degradations,
+    })
+}
+
+fn subset_program_configs(
+    stack_spec: &SerializableStackSpec,
+    configured: Option<&[TypeScriptProgramConfig]>,
+) -> Result<Option<Vec<TypeScriptProgramConfig>>, String> {
+    let Some(configured) = configured else {
+        return Ok(None);
+    };
+    let by_hash = configured
+        .iter()
+        .map(|program| {
+            (
+                program.definition.program_spec_hash.as_str(),
+                program.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    stack_spec
+        .program_specs
+        .iter()
+        .map(|program| {
+            let hash = program
+                .hash()
+                .map_err(|error| error.to_string())?
+                .to_string();
+            by_hash.get(hash.as_str()).cloned().ok_or_else(|| {
+                format!("missing configured program descriptor for ProgramSpec {hash}")
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+fn generate_session_definition(
+    manifest_name: &str,
+    live_stacks: &[TypeScriptAliasedStackOutput],
+    promoted_programs: &[(String, String, String)],
+    program_collection: Option<&TypeScriptProgramCollectionOutput>,
+    live_module_imports: &BTreeMap<String, String>,
+    program_module_imports: &BTreeMap<String, String>,
+) -> String {
+    let manifest_pascal = safe_pascal_identifier(manifest_name);
+    let definition_name = format!(
+        "{}_SESSION_DEFINITION",
+        to_screaming_snake_case(&manifest_pascal)
+    );
+    let imports = live_stacks
+        .iter()
+        .map(|live| {
+            let import = live_module_imports
+                .get(&live.alias)
+                .cloned()
+                .unwrap_or_else(|| format!("./{}.js", live.module_name));
+            format!(
+                "import {}Stack from '{}';",
+                safe_pascal_identifier(&live.alias),
+                import
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let program_import = program_collection
+        .map(|programs| {
+            format!(
+                "import {manifest_pascal}Programs from './{}.js';",
+                programs.module_name
+            )
+        })
+        .unwrap_or_default();
+    let program_module_import_lines = program_module_imports
+        .iter()
+        .map(|(alias, import)| {
+            format!(
+                "import {}Program from '{}';",
+                safe_pascal_identifier(alias),
+                import
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let program_members = program_collection
+        .map(|programs| {
+            let definitions = programs
+                .members
+                .iter()
+                .map(|(public, source)| {
+                    let value = if program_module_imports.contains_key(public) {
+                        format!("{}Program", safe_pascal_identifier(public))
+                    } else {
+                        format!(
+                            "{manifest_pascal}Programs.programs.{}",
+                            typescript_property_key(source)
+                        )
+                    };
+                    format!("    {}: {value},", typescript_property_key(public))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let reads = programs
+                .members
+                .iter()
+                .map(|(public, source)| {
+                    format!(
+                        "    {}: {manifest_pascal}Programs.programReads.{},",
+                        typescript_property_key(public),
+                        typescript_property_key(source)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (definitions, reads)
+        })
+        .unwrap_or_default();
+    let promoted_definitions = promoted_programs
+        .iter()
+        .map(|(public, live_alias, source)| {
+            format!(
+                "    {}: {}Stack.programs.{},",
+                typescript_property_key(public),
+                safe_pascal_identifier(live_alias),
+                typescript_property_key(source)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let promoted_reads = promoted_programs
+        .iter()
+        .map(|(public, live_alias, source)| {
+            format!(
+                "    {}: {}Stack.programReads.{},",
+                typescript_property_key(public),
+                safe_pascal_identifier(live_alias),
+                typescript_property_key(source)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let definitions = [promoted_definitions, program_members.0]
+        .into_iter()
+        .filter(|members| !members.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let reads = [promoted_reads, program_members.1]
+        .into_iter()
+        .filter(|members| !members.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let program_members =
+        format!("  programs: {{\n{definitions}\n  }},\n  programReads: {{\n{reads}\n  }},");
+    let members = live_stacks
+        .iter()
+        .map(|live| {
+            format!(
+                "    {}: {}Stack,",
+                typescript_property_key(&live.alias),
+                safe_pascal_identifier(&live.alias)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"import {{ createSession, type CompositionSessionOptions }} from '@usearete/sdk';
+{imports}
+{program_import}
+{program_module_import_lines}
+
+export const {definition_name} = {{
+  mode: 'composition',
+  stacks: {{
+{members}
+  }},
+{program_members}
+}} as const;
+
+export type {manifest_pascal}SessionDefinition = typeof {definition_name};
+export const {manifest_screaming}_SDK = {definition_name};
+export type {manifest_pascal}Sdk = {manifest_pascal}SessionDefinition;
+
+export function create{manifest_pascal}Session(
+  options: CompositionSessionOptions<{manifest_pascal}SessionDefinition>
+) {{
+  return createSession({definition_name}, options);
+}}
+"#,
+        imports = imports,
+        program_import = program_import,
+        program_module_import_lines = program_module_import_lines,
+        definition_name = definition_name,
+        members = members,
+        program_members = program_members,
+        manifest_pascal = manifest_pascal,
+        manifest_screaming = to_screaming_snake_case(&manifest_pascal),
+    )
+}
+
+fn safe_pascal_identifier(value: &str) -> String {
+    let mut output = value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .map(to_pascal_case)
+        .collect::<String>();
+    if output.is_empty() {
+        output.push_str("Manifest");
+    }
+    if output
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_digit())
+    {
+        output.insert(0, 'A');
+    }
+    output
+}
+
+fn typescript_module_name(alias: &str) -> String {
+    let module = alias
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    format!("{module}-stack")
+}
+
+fn composition_program_key(
+    program: &arete_artifacts::ProgramSpecArtifact,
+    generated_key: &str,
+) -> String {
+    match program.payload.program_id.as_str() {
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" => "splToken".to_string(),
+        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL" => "splAta".to_string(),
+        _ => generated_key.to_string(),
+    }
 }
 
 /// Assemble the `zod` + `@usearete/sdk` import lines based on which runtime
@@ -3392,6 +4114,7 @@ pub fn compile_program_modules(
     config: Option<TypeScriptStackConfig>,
 ) -> Result<TypeScriptStackOutput, String> {
     let config = config.unwrap_or_default();
+    let program_configs = resolve_program_configs(&stack_spec, config.programs.as_deref(), false)?;
     let stack_name = &stack_spec.stack_name;
 
     if stack_spec.idls.is_empty() {
@@ -3436,7 +4159,7 @@ pub fn compile_program_modules(
         instruction_entries: &instructions_codegen.stack_entries,
         schema_names: &unique_schemas,
         account_type_names: &idl_account_artifacts.account_type_names,
-        definition_hash: config.definition_hash.as_deref(),
+        programs: &program_configs,
     };
     let stack_definition =
         generate_program_definitions(stack_name, &stack_spec.idls, &program_context);
@@ -3454,6 +4177,16 @@ pub fn compile_program_modules(
         warnings: instructions_codegen.warnings,
         pda_degradations: instructions_codegen.pda_degradations,
     })
+}
+
+/// Compile standalone program SDK modules directly from ProgramSpec artifacts.
+pub fn compile_program_artifacts(
+    name: impl Into<String>,
+    programs: &[arete_artifacts::ProgramSpecArtifact],
+    config: Option<TypeScriptStackConfig>,
+) -> Result<TypeScriptStackOutput, String> {
+    let stack_spec = crate::public_artifacts::stack_spec_from_program_artifacts(name, programs)?;
+    compile_program_modules(stack_spec, config)
 }
 
 /// Write stack-level TypeScript output to a file
@@ -3499,7 +4232,9 @@ fn generate_stack_definition_multi(
     schema_names: &[String],
     account_type_names: &BTreeMap<(String, String), String>,
     instruction_entries: &[crate::typescript_instructions::StackInstructionEntry],
+    program_configs: &[TypeScriptProgramConfig],
     config: &TypeScriptStackConfig,
+    exact_views: bool,
 ) -> Result<String, String> {
     let export_name = format!(
         "{}_{}",
@@ -3510,43 +4245,63 @@ fn generate_stack_definition_multi(
 
     let view_helpers = generate_view_helpers_static();
 
-    let endpoints_block = match &config.url {
-        Some(url) => format!(
-            "  endpoints: {{\n    ws: '{}',\n    http: '{}',\n  }},",
-            url,
-            derive_http_url(url)
-        ),
-        None => "  endpoints: {\n    ws: '', // TODO: Set after first deployment or pass useArete(..., { url })\n    http: '', // TODO: Set after first deployment or pass useArete(..., { httpUrl })\n  },"
+    let websocket_endpoint = match &config.websocket_url {
+        Some(url) => format!("    ws: '{}',", url),
+        None => "    ws: '', // TODO: Set after first deployment or pass useArete(..., { url })"
             .to_string(),
     };
+    let http_endpoint = match &config.http_url {
+        Some(url) => format!("    http: '{}',", url),
+        None => {
+            "    http: '', // TODO: Set after first deployment or pass useArete(..., { httpUrl })"
+                .to_string()
+        }
+    };
+    let endpoints_block = format!(
+        "  endpoints: {{\n{}\n{}\n  }},",
+        websocket_endpoint, http_endpoint
+    );
 
     // Generate views block for each entity
     let mut entity_view_blocks = Vec::new();
     for (i, entity_spec) in entities.iter().enumerate() {
         let entity_name = &entity_names[i];
         let entity_pascal = to_pascal_case(entity_name);
-        let state_view_key = state_view_key_definition(
-            entity_name,
-            &entity_spec.identity,
-            &entity_spec.field_mappings,
-            &entity_spec.sections,
-        )?;
-
         let mut view_entries = Vec::new();
 
-        view_entries.push(format!(
-            "      state: stateView<{entity}, {key_type}>('{entity_name}/state', {key_fields}),",
-            entity = entity_pascal,
-            entity_name = entity_name,
-            key_type = state_view_key.object_type(),
-            key_fields = state_view_key.fields_literal(),
-        ));
+        if !exact_views
+            || entity_spec
+                .views
+                .iter()
+                .any(|view| view.id == format!("{entity_name}/state"))
+        {
+            let state_view_key = state_view_key_definition(
+                entity_name,
+                &entity_spec.identity,
+                &entity_spec.field_mappings,
+                &entity_spec.sections,
+            )?;
+            view_entries.push(format!(
+                "      state: stateView<{entity}, {key_type}>('{entity_name}/state', {key_fields}),",
+                entity = entity_pascal,
+                entity_name = entity_name,
+                key_type = state_view_key.object_type(),
+                key_fields = state_view_key.fields_literal(),
+            ));
+        }
 
-        view_entries.push(format!(
-            "      list: listView<{entity}>('{entity_name}/list'),",
-            entity = entity_pascal,
-            entity_name = entity_name
-        ));
+        if !exact_views
+            || entity_spec
+                .views
+                .iter()
+                .any(|view| view.id == format!("{entity_name}/list"))
+        {
+            view_entries.push(format!(
+                "      list: listView<{entity}>('{entity_name}/list'),",
+                entity = entity_pascal,
+                entity_name = entity_name
+            ));
+        }
 
         for view in &entity_spec.views {
             if !view.id.ends_with("/state")
@@ -3556,18 +4311,20 @@ fn generate_stack_definition_multi(
                 let view_name = view.id.split('/').nth(1).unwrap_or("unknown");
                 view_entries.push(format!(
                     "      {}: listView<{entity}>('{}'),",
-                    view_name,
+                    typescript_property_key(view_name),
                     view.id,
                     entity = entity_pascal
                 ));
             }
         }
 
-        entity_view_blocks.push(format!(
-            "    {}: {{\n{}\n    }},",
-            entity_name,
-            view_entries.join("\n")
-        ));
+        if !view_entries.is_empty() {
+            entity_view_blocks.push(format!(
+                "    {}: {{\n{}\n    }},",
+                typescript_property_key(entity_name),
+                view_entries.join("\n")
+            ));
+        }
     }
 
     let views_body = entity_view_blocks.join("\n");
@@ -3612,9 +4369,10 @@ fn generate_stack_definition_multi(
         instruction_entries,
         schema_names: &unique_schemas,
         account_type_names,
-        definition_hash: config.definition_hash.as_deref(),
+        programs: program_configs,
     };
     let programs_block = generate_programs_block(idls, &program_context);
+    let program_reads_block = generate_program_reads_block(idls, &program_context);
     let addresses_block = generate_stack_addresses_block(idls, pdas, program_ids);
 
     let entity_types: Vec<String> = entity_names.iter().map(|n| to_pascal_case(n)).collect();
@@ -3625,7 +4383,7 @@ fn generate_stack_definition_multi(
 {endpoints_block}
   views: {{
 {views_body}
-  }},{schemas_section}{patch_schemas_section}{programs_section}{addresses_section}
+  }},{schemas_section}{patch_schemas_section}{programs_section}{program_reads_section}{addresses_section}
 }} as const;"#,
         core_export_name = core_export_name,
         stack_kebab = stack_kebab,
@@ -3634,6 +4392,7 @@ fn generate_stack_definition_multi(
         schemas_section = schemas_block,
         patch_schemas_section = patch_schemas_block,
         programs_section = programs_block,
+        program_reads_section = program_reads_block,
         addresses_section = addresses_block,
     );
 
@@ -3660,8 +4419,26 @@ export default {core_export_name};"#,
         entity_count = entities.len(),
         core_export_name = core_export_name,
         stack_export = stack_export,
-        entity_union = entity_types.join(" | "),
+        entity_union = if entity_types.is_empty() {
+            "never".to_string()
+        } else {
+            entity_types.join(" | ")
+        },
     ))
+}
+
+fn typescript_property_key(value: &str) -> String {
+    let mut characters = value.chars();
+    let valid = characters
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || matches!(character, '_' | '$'))
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '$'));
+    if valid {
+        value.to_string()
+    } else {
+        serde_json::to_string(value).expect("string property serialization cannot fail")
+    }
 }
 
 struct ProgramGenerationContext<'a> {
@@ -3670,7 +4447,7 @@ struct ProgramGenerationContext<'a> {
     instruction_entries: &'a [crate::typescript_instructions::StackInstructionEntry],
     schema_names: &'a BTreeSet<String>,
     account_type_names: &'a BTreeMap<(String, String), String>,
-    definition_hash: Option<&'a str>,
+    programs: &'a [TypeScriptProgramConfig],
 }
 
 /// Build one program's `{ name, programId, pdas?, accounts?, instructions? }`
@@ -3683,6 +4460,7 @@ fn generate_single_program_sections(
     context: &ProgramGenerationContext<'_>,
 ) -> (String, Vec<String>) {
     let program_key = to_camel_case(&idl.name);
+    let metadata = &context.programs[index];
     let multi_program = context.program_ids.len() > 1
         || context
             .instruction_entries
@@ -3734,11 +4512,10 @@ fn generate_single_program_sections(
         })
         .map(|account| {
             format!(
-                "        {account_name}: programAccountRead<{type_name}>({{ account: '{account_name}', path: '/programs/{program}/accounts/{account_name}', schema: {schema_name} }}),",
+                "        {account_name}: programAccountRead<{type_name}>({{ account: '{account_name}', schema: {schema_name} }}),",
                 account_name = account.0,
                 type_name = account.1,
                 schema_name = account.2,
-                program = program_key,
             )
         })
         .collect();
@@ -3753,9 +4530,23 @@ fn generate_single_program_sections(
         format!("      name: '{}',", idl.name),
         format!("      programId: '{}',", program_id),
     ];
-    if let Some(definition_hash) = context.definition_hash {
-        sections.push(format!("      definitionHash: '{}',", definition_hash));
+    if let Some(definition_hash) = &metadata.definition.sdk_definition_hash {
+        sections.push(format!("      sdkDefinitionHash: '{}',", definition_hash));
     }
+    sections.extend([
+        format!(
+            "      programSpecHash: '{}',",
+            metadata.definition.program_spec_hash
+        ),
+        format!(
+            "      idlContentHash: '{}',",
+            metadata.definition.idl_content_hash
+        ),
+        format!(
+            "      normalizedIdlHash: '{}',",
+            metadata.definition.normalized_idl_hash
+        ),
+    ]);
 
     if let Some(program_pdas) = program_pdas {
         let pda_entries = generate_program_pda_entries(program_pdas, &program_id, "        ");
@@ -3794,7 +4585,7 @@ fn generate_single_program_sections(
 }
 
 fn generate_programs_block(idls: &[IdlSnapshot], context: &ProgramGenerationContext<'_>) -> String {
-    if idls.is_empty() {
+    if idls.is_empty() || context.programs.is_empty() {
         return String::new();
     }
 
@@ -3815,6 +4606,53 @@ fn generate_programs_block(idls: &[IdlSnapshot], context: &ProgramGenerationCont
     }
 
     format!("\n  programs: {{\n{}\n  }},", program_blocks.join("\n"))
+}
+
+fn generate_program_read_sections(metadata: &TypeScriptProgramConfig, indent: &str) -> Vec<String> {
+    let mut sections = vec![format!(
+        "{indent}release: {{ programReleaseHash: {release_hash}, programSpecHash: {spec_hash} }},",
+        release_hash = serde_json::to_string(&metadata.release.program_release_hash)
+            .expect("program release hash must serialize"),
+        spec_hash = serde_json::to_string(&metadata.release.program_spec_hash)
+            .expect("program spec hash must serialize"),
+    )];
+    sections.push(match &metadata.transport {
+        TypeScriptProgramReadTransport::LocalHttp => format!(
+            "{indent}transport: {{ kind: 'local-http', endpointSource: 'connect-http-url' }},"
+        ),
+        TypeScriptProgramReadTransport::HostedBinding(binding) => format!(
+            "{indent}transport: {{ kind: 'hosted-binding', binding: {{ endpoint: {endpoint}, programReadBindingId: {binding_id}, auth: {auth} }} }},",
+            endpoint = serde_json::to_string(&binding.endpoint)
+                .expect("program endpoint must serialize"),
+            binding_id = serde_json::to_string(&binding.program_read_binding_id)
+                .expect("program binding ID must serialize"),
+            auth = serde_json::to_string(&binding.auth)
+                .expect("program auth metadata must serialize"),
+        ),
+    });
+    sections
+}
+
+fn generate_program_reads_block(
+    idls: &[IdlSnapshot],
+    context: &ProgramGenerationContext<'_>,
+) -> String {
+    if idls.is_empty() || context.programs.is_empty() {
+        return String::new();
+    }
+
+    let entries = idls
+        .iter()
+        .zip(context.programs)
+        .map(|(idl, metadata)| {
+            format!(
+                "    {}: {{\n{}\n    }},",
+                to_camel_case(&idl.name),
+                generate_program_read_sections(metadata, "      ").join("\n")
+            )
+        })
+        .collect::<Vec<_>>();
+    format!("\n  programReads: {{\n{}\n  }},", entries.join("\n"))
 }
 
 /// Strip up to `spaces` leading spaces from every line.
@@ -3847,6 +4685,8 @@ fn generate_program_definitions(
 ) -> String {
     let mut program_consts = Vec::new();
     let mut map_entries = Vec::new();
+    let mut program_read_consts = Vec::new();
+    let mut read_map_entries = Vec::new();
 
     for (index, idl) in idls.iter().enumerate() {
         let (program_key, sections) = generate_single_program_sections(idl, index, context);
@@ -3859,9 +4699,20 @@ fn generate_program_definitions(
             body = body,
         ));
         map_entries.push(format!("  {}: {},", program_key, const_name));
+        let read_const_name = format!("{}_READ", const_name);
+        let read_body = dedent_lines(
+            &generate_program_read_sections(&context.programs[index], "    ").join("\n"),
+            4,
+        );
+        program_read_consts.push(format!(
+            "/** Release and explicit read transport for '{name}' */\nexport const {read_const_name} = {{\n{read_body}\n}} as const;",
+            name = idl.name,
+        ));
+        read_map_entries.push(format!("  {}: {},", program_key, read_const_name));
     }
 
     let map_name = format!("{}_PROGRAMS", to_screaming_snake_case(stack_name));
+    let reads_map_name = format!("{}_PROGRAM_READS", to_screaming_snake_case(stack_name));
     let type_name = format!("{}Programs", to_pascal_case(stack_name));
 
     format!(
@@ -3871,18 +4722,28 @@ fn generate_program_definitions(
 
 {program_consts}
 
-    /** All programs from the {stack_name} stack, ready for createSession({{ programs: ... }}) */
+{program_read_consts}
+
+/** All portable programs from the {stack_name} stack */
 export const {map_name} = {{
 {map_entries}
+}} as const;
+
+/** Parallel release/read metadata keyed identically to {map_name} */
+export const {reads_map_name} = {{
+{read_map_entries}
 }} as const;
 
 export type {type_name} = typeof {map_name};
 
 export default {map_name};"#,
         program_consts = program_consts.join("\n\n"),
+        program_read_consts = program_read_consts.join("\n\n"),
         stack_name = stack_name,
         map_name = map_name,
         map_entries = map_entries.join("\n"),
+        reads_map_name = reads_map_name,
+        read_map_entries = read_map_entries.join("\n"),
         type_name = type_name,
     )
 }
@@ -4114,16 +4975,6 @@ fn generate_program_semantic_instructions_block(
     ))
 }
 
-fn derive_http_url(ws_url: &str) -> String {
-    if ws_url.starts_with("wss://") {
-        ws_url.replacen("wss://", "https://", 1)
-    } else if ws_url.starts_with("ws://") {
-        ws_url.replacen("ws://", "http://", 1)
-    } else {
-        ws_url.to_string()
-    }
-}
-
 fn generate_view_helpers_static() -> String {
     r#"// ============================================================================
 // View Definition Types (framework-agnostic)
@@ -4176,25 +5027,75 @@ pub(crate) fn to_screaming_snake_case(s: &str) -> String {
 mod tests {
     use super::*;
 
+    fn demo_program_spec() -> arete_hash::ProgramSpecV1 {
+        arete_hash::build_program_spec_v1_from_bytes(
+            br#"{
+              "address":"Prog111",
+              "version":"0.1.0",
+              "name":"demo",
+              "instructions":[],
+              "accounts":[],
+              "types":[],
+              "events":[],
+              "errors":[]
+            }"#,
+            None,
+        )
+        .expect("test ProgramSpecV1")
+    }
+
+    fn named_program_spec(name: &str, program_id: &str) -> arete_hash::ProgramSpecV1 {
+        arete_hash::build_program_spec_v1_from_bytes(
+            format!(
+                r#"{{
+                  "address":"{program_id}",
+                  "version":"0.1.0",
+                  "name":"{name}",
+                  "instructions":[],
+                  "accounts":[],
+                  "types":[],
+                  "events":[],
+                  "errors":[]
+                }}"#
+            )
+            .as_bytes(),
+            None,
+        )
+        .expect("named test ProgramSpecV1")
+    }
+
+    fn two_program_test_spec() -> SerializableStackSpec {
+        let specs = vec![
+            named_program_spec("second_program", "Program222"),
+            named_program_spec("first_program", "Program111"),
+        ];
+        SerializableStackSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            stack_name: "OrderedStream".to_string(),
+            program_ids: specs.iter().map(|spec| spec.program_id.clone()).collect(),
+            idls: specs
+                .iter()
+                .map(|spec| spec.idl_snapshot.snapshot.clone())
+                .collect(),
+            program_specs: specs,
+            entities: vec![],
+            pdas: BTreeMap::new(),
+            instructions: vec![],
+            content_hash: None,
+        }
+    }
+
     fn program_only_test_spec(
         pdas: BTreeMap<String, BTreeMap<String, PdaDefinition>>,
         instructions: Vec<InstructionDef>,
     ) -> SerializableStackSpec {
+        let program_spec = demo_program_spec();
         SerializableStackSpec {
             ast_version: CURRENT_AST_VERSION.to_string(),
             stack_name: "DemoStream".to_string(),
             program_ids: vec!["Prog111".to_string()],
-            idls: vec![IdlSnapshot {
-                name: "demo".to_string(),
-                program_id: Some("Prog111".to_string()),
-                version: "0.1.0".to_string(),
-                accounts: vec![],
-                instructions: vec![],
-                types: vec![],
-                events: vec![],
-                errors: vec![],
-                discriminant_size: 1,
-            }],
+            idls: vec![program_spec.idl_snapshot.snapshot.clone()],
+            program_specs: vec![program_spec],
             entities: vec![],
             pdas,
             instructions,
@@ -4252,10 +5153,79 @@ mod tests {
         }
     }
 
+    fn endpoint_test_spec() -> SerializableStackSpec {
+        SerializableStackSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            stack_name: "EndpointStream".to_string(),
+            program_ids: vec![],
+            idls: vec![],
+            program_specs: vec![],
+            entities: vec![state_key_test_spec(vec!["id.round_id"])],
+            pdas: BTreeMap::new(),
+            instructions: vec![],
+            content_hash: None,
+        }
+    }
+
     #[test]
     fn test_case_conversions() {
         assert_eq!(to_pascal_case("settlement_game"), "SettlementGame");
         assert_eq!(to_kebab_case("SettlementGame"), "settlement-game");
+    }
+
+    #[test]
+    fn local_stack_codegen_is_endpointless_by_default() {
+        let output = compile_stack_spec(endpoint_test_spec(), None)
+            .expect("local stack generation should succeed");
+
+        assert!(output.stack_definition.contains(
+            "  endpoints: {\n    ws: '', // TODO: Set after first deployment or pass useArete(..., { url })\n    http: '', // TODO: Set after first deployment or pass useArete(..., { httpUrl })\n  },"
+        ));
+    }
+
+    #[test]
+    fn stack_codegen_emits_independent_endpoints_exactly() {
+        let websocket_url = "wss://stream.example.test/ws/v2?tenant=endpoint";
+        let http_url = "https://reads.unrelated.test/api/arete/v3";
+        let output = compile_stack_spec(
+            endpoint_test_spec(),
+            Some(TypeScriptStackConfig {
+                websocket_url: Some(websocket_url.to_string()),
+                http_url: Some(http_url.to_string()),
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .expect("configured stack generation should succeed");
+
+        assert!(output.stack_definition.contains(&format!(
+            "  endpoints: {{\n    ws: '{}',\n    http: '{}',\n  }},",
+            websocket_url, http_url
+        )));
+        assert!(!output
+            .stack_definition
+            .contains("https://stream.example.test/ws/v2"));
+    }
+
+    #[test]
+    fn explicit_local_websocket_does_not_derive_http() {
+        let output = compile_stack_spec(
+            endpoint_test_spec(),
+            Some(TypeScriptStackConfig {
+                websocket_url: Some("ws://127.0.0.1:8878/socket".to_string()),
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .expect("configured local stack generation should succeed");
+
+        assert!(output
+            .stack_definition
+            .contains("    ws: 'ws://127.0.0.1:8878/socket',"));
+        assert!(output.stack_definition.contains(
+            "    http: '', // TODO: Set after first deployment or pass useArete(..., { httpUrl })"
+        ));
+        assert!(!output
+            .stack_definition
+            .contains("http://127.0.0.1:8878/socket"));
     }
 
     #[test]
@@ -4289,11 +5259,20 @@ mod tests {
 
     #[test]
     fn test_typescript_scalar_array_element() {
-        assert_eq!(typescript_scalar_array_element("Vec < f64 >"), Some("number"));
+        assert_eq!(
+            typescript_scalar_array_element("Vec < f64 >"),
+            Some("number")
+        );
         assert_eq!(typescript_scalar_array_element("Vec<f32>"), Some("number"));
         assert_eq!(typescript_scalar_array_element("f64"), Some("number"));
-        assert_eq!(typescript_scalar_array_element("Vec < bool >"), Some("boolean"));
-        assert_eq!(typescript_scalar_array_element("Vec < String >"), Some("string"));
+        assert_eq!(
+            typescript_scalar_array_element("Vec < bool >"),
+            Some("boolean")
+        );
+        assert_eq!(
+            typescript_scalar_array_element("Vec < String >"),
+            Some("string")
+        );
         assert_eq!(typescript_scalar_array_element("Vec < u64 >"), None);
         assert_eq!(typescript_scalar_array_element("Vec < Pubkey >"), None);
     }
@@ -4409,11 +5388,16 @@ mod tests {
     }
 
     #[test]
-    fn program_modules_emit_configured_definition_hash() {
+    fn program_modules_emit_configured_sdk_definition_hash() {
+        let stack_spec = program_only_test_spec(BTreeMap::new(), vec![]);
+        let mut program = TypeScriptProgramConfig::from(
+            &arete_hash::OssProgramIdentityV1::new(stack_spec.program_specs[0].clone()).unwrap(),
+        );
+        program.definition.sdk_definition_hash = Some("definition-v1".to_string());
         let output = compile_program_modules(
-            program_only_test_spec(BTreeMap::new(), vec![]),
+            stack_spec,
             Some(TypeScriptStackConfig {
-                definition_hash: Some("definition-v1".to_string()),
+                programs: Some(vec![program]),
                 ..TypeScriptStackConfig::default()
             }),
         )
@@ -4421,7 +5405,202 @@ mod tests {
 
         assert!(output
             .stack_definition
-            .contains("definitionHash: 'definition-v1',"));
+            .contains("sdkDefinitionHash: 'definition-v1',"));
+    }
+
+    #[test]
+    fn program_modules_separate_portable_definition_from_release_reference() {
+        let mut stack_spec = program_only_test_spec(BTreeMap::new(), vec![]);
+        let mut local = TypeScriptProgramConfig::from(
+            &arete_hash::OssProgramIdentityV1::new(stack_spec.program_specs[0].clone()).unwrap(),
+        );
+        local.definition.sdk_definition_hash = Some("portable-definition".to_string());
+        let hosted_release = "arete:h1:program-release:sha256:hosted";
+        let output = compile_program_modules(
+            stack_spec.clone(),
+            Some(TypeScriptStackConfig {
+                programs: Some(vec![TypeScriptProgramConfig {
+                    release: TypeScriptProgramReleaseReference {
+                        program_release_hash: hosted_release.to_string(),
+                        program_spec_hash: local.definition.program_spec_hash.clone(),
+                    },
+                    ..local.clone()
+                }]),
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .expect("program definition generation should succeed");
+        let definition = output.stack_definition;
+
+        assert!(definition.contains("sdkDefinitionHash: 'portable-definition',"));
+        assert!(definition.contains(&format!(
+            "programSpecHash: '{}',",
+            local.definition.program_spec_hash
+        )));
+        let programs = definition
+            .split("/** Release and explicit read transport")
+            .next()
+            .unwrap();
+        assert!(!programs.contains("programReleaseHash"));
+        assert!(!programs.contains("decoderEngineId"));
+        assert!(definition.contains(&format!("programReleaseHash: \"{hosted_release}\"")));
+        assert!(!definition.contains("decoderEngineId"));
+        stack_spec.program_specs.clear();
+        assert!(compile_program_modules(stack_spec, None)
+            .unwrap_err()
+            .contains("Regenerate the .stack.json"));
+    }
+
+    #[test]
+    fn program_account_codegen_is_semantic_and_release_lives_in_program_reads() {
+        let identity = crate::program_sdk::build_oss_program_identity_v1_from_idl_bytes(
+            include_bytes!("../../arete-macros/tests/fixtures/nested-computed.idl.json"),
+            None,
+        )
+        .expect("fixture identity");
+        let stack_spec =
+            crate::program_sdk::build_program_only_stack_spec_from_identity(&identity, "Presale");
+        let output = compile_program_modules(stack_spec, None).expect("program SDK generation");
+
+        assert!(output.stack_definition.contains(
+            "programAccountRead<Presale>({ account: 'Presale', schema: PresaleSchema })"
+        ));
+        assert!(!output.stack_definition.contains("path:"));
+        assert!(output.stack_definition.contains(&format!(
+            "programReleaseHash: \"{}\"",
+            identity.release_hash
+        )));
+        assert!(output
+            .stack_definition
+            .contains("transport: { kind: 'local-http', endpointSource: 'connect-http-url' }"));
+        assert!(!output.stack_definition.contains("path:"));
+    }
+
+    #[test]
+    fn legacy_account_reader_ast_without_exact_program_specs_fails_closed() {
+        let identity = crate::program_sdk::build_oss_program_identity_v1_from_idl_bytes(
+            include_bytes!("../../arete-macros/tests/fixtures/nested-computed.idl.json"),
+            None,
+        )
+        .expect("fixture identity");
+        let mut stack_spec =
+            crate::program_sdk::build_program_only_stack_spec_from_identity(&identity, "Presale");
+        assert!(!stack_spec.idls[0].accounts.is_empty());
+        stack_spec.program_specs.clear();
+
+        let error = compile_program_modules(stack_spec, None).unwrap_err();
+        assert!(error.contains("no exact public ProgramSpecV1 values"));
+        assert!(error.contains("Regenerate the .stack.json"));
+    }
+
+    #[test]
+    fn hosted_program_configs_preserve_order_releases_endpoints_and_auth() {
+        let stack_spec = two_program_test_spec();
+        let programs = stack_spec
+            .program_specs
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| {
+                let identity = arete_hash::OssProgramIdentityV1::new(spec.clone()).unwrap();
+                let mut config = TypeScriptProgramConfig::from(&identity);
+                config.release.program_release_hash = format!("hosted-release-{index}");
+                let binding_id = format!("prb_{index:032}");
+                config.transport =
+                    TypeScriptProgramReadTransport::HostedBinding(TypeScriptProgramReadBinding {
+                        endpoint: format!("https://reads.example.test/exact/{index}/"),
+                        program_read_binding_id: binding_id.clone(),
+                        auth: serde_json::json!({
+                            "targetKind": "program-read-binding",
+                            "targetId": binding_id,
+                            "sessionEndpoint": format!("https://auth.example.test/{index}"),
+                            "index": index
+                        }),
+                    });
+                config
+            })
+            .collect::<Vec<_>>();
+
+        let output = compile_stack_spec(
+            stack_spec,
+            Some(TypeScriptStackConfig {
+                programs: Some(programs),
+                ..Default::default()
+            }),
+        )
+        .expect("ordered hosted descriptors should compile");
+        let generated = output.stack_definition;
+        let portable = generated
+            .split("  programs: {")
+            .nth(1)
+            .expect("portable programs block")
+            .split("  programReads: {")
+            .next()
+            .expect("portable programs block end");
+        let reads = generated
+            .split("  programReads: {")
+            .nth(1)
+            .expect("parallel program reads block");
+
+        assert!(portable.find("secondProgram:").unwrap() < portable.find("firstProgram:").unwrap());
+        assert!(!portable.contains("programReleaseHash"));
+        assert!(!portable.contains("endpoint"));
+        assert!(reads.find("secondProgram:").unwrap() < reads.find("firstProgram:").unwrap());
+        assert!(reads.contains("programReleaseHash: \"hosted-release-0\""));
+        assert!(reads.contains("programReleaseHash: \"hosted-release-1\""));
+        assert!(reads.contains("kind: 'hosted-binding'"));
+        assert!(reads.contains("endpoint: \"https://reads.example.test/exact/0/\""));
+        assert!(reads.contains("programReadBindingId: \"prb_00000000000000000000000000000001\""));
+        assert!(reads.contains(
+            "auth: {\"index\":0,\"sessionEndpoint\":\"https://auth.example.test/0\",\"targetId\":\"prb_00000000000000000000000000000000\",\"targetKind\":\"program-read-binding\"}"
+        ));
+    }
+
+    #[test]
+    fn hosted_program_config_mismatches_fail_by_index_without_name_fallback() {
+        let stack_spec = two_program_test_spec();
+        let local = stack_spec
+            .program_specs
+            .iter()
+            .map(|spec| {
+                TypeScriptProgramConfig::from(
+                    &arete_hash::OssProgramIdentityV1::new(spec.clone()).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let count_error = compile_program_modules(
+            stack_spec.clone(),
+            Some(TypeScriptStackConfig {
+                programs: Some(vec![local[0].clone()]),
+                ..Default::default()
+            }),
+        )
+        .unwrap_err();
+        assert!(count_error.contains("descriptor count mismatch"));
+
+        let mut swapped = local.clone();
+        swapped.swap(0, 1);
+        let order_error = compile_program_modules(
+            stack_spec.clone(),
+            Some(TypeScriptStackConfig {
+                programs: Some(swapped),
+                ..Default::default()
+            }),
+        )
+        .unwrap_err();
+        assert!(order_error.contains("program ID mismatch at index 0"));
+
+        let mut bad_hash = local;
+        bad_hash[1].definition.program_spec_hash = "wrong-spec".to_string();
+        let hash_error = compile_program_modules(
+            stack_spec,
+            Some(TypeScriptStackConfig {
+                programs: Some(bad_hash),
+                ..Default::default()
+            }),
+        )
+        .unwrap_err();
+        assert!(hash_error.contains("programSpecHash mismatch at index 1"));
     }
 
     #[test]
@@ -4724,7 +5903,8 @@ mod tests {
         assert!(file.contains("accountAddress: string;"));
         assert!(file.contains("account_address: z.string(),"));
         assert!(file.contains("accountAddress: value.account_address,"));
-        assert!(file.contains("miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable().optional(),"));
+        assert!(file
+            .contains("miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable().optional(),"));
         assert!(file
             .contains("miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable().optional(),"));
         assert!(!file.contains("CaptureWrapperSchema(MinerPatchSchema)"));
@@ -5141,6 +6321,7 @@ mod tests {
             stack_name: "Subscriptions".to_string(),
             program_ids: vec![],
             idls: vec![idl_snapshot],
+            program_specs: vec![],
             entities: vec![make_entity("Plan"), make_entity("Subscription")],
             pdas: BTreeMap::new(),
             instructions: vec![],
@@ -5186,6 +6367,12 @@ mod tests {
         let mut spec: SerializableStackSpec =
             serde_json::from_str(&json).expect("ore stack json should deserialize");
 
+        if spec.program_specs.is_empty() {
+            let error = compile_program_modules(spec, None).unwrap_err();
+            assert!(error.contains("Regenerate the .stack.json"));
+            return;
+        }
+
         // Program-only emission must not depend on entities at all.
         spec.entities.clear();
 
@@ -5210,7 +6397,8 @@ mod tests {
         assert!(file.contains("  ore: ORE,"));
         assert!(file.contains("  entropy: ENTROPY,"));
         assert!(file.contains("export default ORE_STREAM_PROGRAMS;"));
-        assert!(file.contains("ready for createSession({ programs: ... })"));
+        assert!(file.contains("All portable programs from the OreStream stack"));
+        assert!(file.contains("export const ORE_STREAM_PROGRAM_READS = {"));
 
         // Program bodies keep the full SDK surface...
         assert!(file.contains("createInstructionHandler"));
@@ -5244,6 +6432,12 @@ mod tests {
         };
         let spec: SerializableStackSpec =
             serde_json::from_str(&json).expect("ore stack json should deserialize");
+
+        if spec.program_specs.is_empty() {
+            let error = compile_stack_spec(spec, None).unwrap_err();
+            assert!(error.contains("Regenerate the .stack.json"));
+            return;
+        }
 
         let output = compile_stack_spec(spec, None).expect("ore stack should compile");
         let stack = output.stack_definition;
@@ -5301,6 +6495,7 @@ mod tests {
                 errors: vec![],
                 discriminant_size: 1,
             }],
+            program_specs: vec![demo_program_spec()],
             entities: vec![],
             pdas: BTreeMap::new(),
             instructions: vec![InstructionDef {
@@ -5382,6 +6577,12 @@ mod tests {
         };
         let spec: SerializableStackSpec =
             serde_json::from_str(&json).expect("ore stack json should deserialize");
+
+        if spec.program_specs.is_empty() {
+            let error = compile_stack_spec(spec, None).unwrap_err();
+            assert!(error.contains("Regenerate the .stack.json"));
+            return;
+        }
 
         let output = compile_stack_spec(spec, None).expect("stack compilation should succeed");
         let file = output.full_file();
@@ -5712,6 +6913,7 @@ mod tests {
             stack_name: "Empty".to_string(),
             program_ids: vec![],
             idls: vec![],
+            program_specs: vec![],
             entities: vec![],
             pdas: BTreeMap::new(),
             instructions: vec![],

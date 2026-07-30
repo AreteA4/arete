@@ -14,12 +14,13 @@ pub use arete_idl::snapshot::*;
 // 0.0.2: enum variants may carry `fields` (data-carrying enum variants).
 // 0.0.3: field metadata may carry integer-kind and raw/canonical name hints.
 // 0.0.4: instruction args may carry amount-hint metadata.
+// 0.0.5: stack specs may carry exact ordered public ProgramSpecV1 values.
 // Additive over 0.0.1 — every older file deserializes unchanged.
-pub const CURRENT_AST_VERSION: &str = "0.0.4";
+pub const CURRENT_AST_VERSION: &str = "0.0.5";
 
 /// Older versions this build can still deserialize directly (all changes
 /// since were additive with serde defaults).
-pub const COMPATIBLE_AST_VERSIONS: &[&str] = &["0.0.1", "0.0.2", "0.0.3"];
+pub const COMPATIBLE_AST_VERSIONS: &[&str] = &["0.0.1", "0.0.2", "0.0.3", "0.0.4"];
 
 fn default_ast_version() -> String {
     CURRENT_AST_VERSION.to_string()
@@ -1530,6 +1531,9 @@ pub struct SerializableStackSpec {
     /// IDL snapshots (one per program)
     #[serde(default)]
     pub idls: Vec<IdlSnapshot>,
+    /// Exact public program specifications, in the same order as `program_ids` and `idls`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub program_specs: Vec<arete_hash::ProgramSpecV1>,
     /// All entity specifications in this stack
     pub entities: Vec<SerializableStreamSpec>,
     /// PDA registry - defines all PDAs for the stack, grouped by program name
@@ -1661,6 +1665,7 @@ mod tests {
             stack_name: "PumpStack".to_string(),
             program_ids: vec![],
             idls: vec![],
+            program_specs: vec![],
             entities: vec![legacy_stream_spec()],
             pdas: Default::default(),
             instructions: vec![],
