@@ -42,6 +42,7 @@ pub mod materialized_view;
 #[cfg(feature = "otel")]
 pub mod metrics;
 pub mod mutation_batch;
+pub mod program_runtime;
 pub mod projector;
 pub mod runtime;
 pub mod sorted_cache;
@@ -49,12 +50,16 @@ pub mod telemetry;
 pub mod view;
 pub mod websocket;
 
-pub use arete_auth::{AsyncVerifier, KeyLoader, Limits, TokenVerifier, VerifyingKey};
+pub use arete_auth::{
+    AsyncVerifier, KeyLoader, Limits, SolanaGatewayAuthorization, SolanaGatewayAuthorizationError,
+    SolanaGatewayScope, TargetKind, TokenVerifier, VerifyingKey, SCOPE_READ,
+    SCOPE_TRANSACTION_INSPECT, SCOPE_TRANSACTION_SEND, SOLANA_GATEWAY_AUDIENCE,
+};
 pub use bus::{BusManager, BusMessage};
 pub use cache::{EntityCache, EntityCacheConfig};
 pub use config::{
-    HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, ServerConfig,
-    TransactionConfig, WebSocketConfig, YellowstoneConfig,
+    HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, RuntimePlan,
+    ServerConfig, TransactionConfig, WebSocketConfig, YellowstoneConfig,
 };
 pub use health::{HealthMonitor, SlotTracker, StreamStatus};
 pub use http_health::HttpHealthServer;
@@ -63,6 +68,10 @@ pub use materialized_view::{MaterializedView, MaterializedViewRegistry, ViewEffe
 #[cfg(feature = "otel")]
 pub use metrics::Metrics;
 pub use mutation_batch::{EventContext, MutationBatch, SlotContext};
+pub use program_runtime::{
+    IdlContentHash, NormalizedIdlHash, ProgramAccountReaderFn, ProgramReleaseHash,
+    ProgramRuntimeCatalog, ProgramRuntimeDefinition, ProgramSpecHash,
+};
 pub use projector::Projector;
 pub use runtime::Runtime;
 pub use telemetry::{init as init_telemetry, TelemetryConfig};
@@ -95,16 +104,13 @@ pub type ParserSetupFn = Arc<
         + Sync,
 >;
 
-pub type ProgramAccountReaderFn =
-    Arc<dyn Fn(&str, &str, &[u8]) -> Result<serde_json::Value> + Send + Sync>;
-
 /// Specification for a Arete server
 /// Contains bytecode, parsers, and program information
 pub struct Spec {
     pub bytecode: arete_interpreter::compiler::MultiEntityBytecode,
     pub program_ids: Vec<String>,
     pub parser_setup: Option<ParserSetupFn>,
-    pub program_account_reader: Option<ProgramAccountReaderFn>,
+    pub program_runtime_definitions: Vec<ProgramRuntimeDefinition>,
     pub entity_specs: Vec<arete_interpreter::ast::SerializableStreamSpec>,
     pub views: Vec<ViewDef>,
 }
@@ -118,7 +124,7 @@ impl Spec {
             bytecode,
             program_ids: vec![program_id.into()],
             parser_setup: None,
-            program_account_reader: None,
+            program_runtime_definitions: Vec::new(),
             entity_specs: Vec::new(),
             views: Vec::new(),
         }
@@ -129,8 +135,16 @@ impl Spec {
         self
     }
 
-    pub fn with_program_account_reader(mut self, reader: ProgramAccountReaderFn) -> Self {
-        self.program_account_reader = Some(reader);
+    pub fn with_program_runtime_definitions(
+        mut self,
+        definitions: Vec<ProgramRuntimeDefinition>,
+    ) -> Self {
+        for definition in &definitions {
+            if !self.program_ids.contains(&definition.program_id) {
+                self.program_ids.push(definition.program_id.clone());
+            }
+        }
+        self.program_runtime_definitions = definitions;
         self
     }
 
@@ -155,6 +169,78 @@ impl Server {
     /// Create a new server builder
     pub fn builder() -> ServerBuilder {
         ServerBuilder::new()
+    }
+
+    /// Build a standalone HTTP gateway without stack or live-stream capabilities.
+    pub fn solana_gateway(target_id: impl Into<String>) -> SolanaGatewayBuilder {
+        SolanaGatewayBuilder::new(target_id.into())
+    }
+}
+
+/// Constrained builder for health, chain reads, and fixed transaction routes.
+///
+/// The final runtime plan is fixed when `build` or `start` is called. This
+/// builder intentionally has no Spec, WebSocket, stack-query, program-read, or
+/// live-runtime configuration surface.
+pub struct SolanaGatewayBuilder {
+    inner: ServerBuilder,
+}
+
+impl SolanaGatewayBuilder {
+    fn new(target_id: String) -> Self {
+        let mut inner = ServerBuilder::new();
+        inner.config.http_health = Some(HttpHealthConfig::default());
+        inner.config.runtime_plan = RuntimePlan::solana_gateway();
+        inner.config.solana_gateway_target_id = Some(target_id);
+        Self { inner }
+    }
+
+    /// Set the gateway HTTP bind address.
+    pub fn bind(mut self, addr: impl Into<SocketAddr>) -> Self {
+        self.inner.config.http_health = Some(HttpHealthConfig::new(addr));
+        self
+    }
+
+    /// Set the auth plugin for chain and transaction requests.
+    pub fn auth_plugin(mut self, plugin: Arc<dyn WebSocketAuthPlugin>) -> Self {
+        self.inner.http_auth_plugin = Some(plugin);
+        self
+    }
+
+    /// Configure the existing fixed `/transactions/v1/*` handlers.
+    pub fn transactions_config(mut self, config: TransactionConfig) -> Self {
+        self.inner.config.transactions = Some(config);
+        self
+    }
+
+    fn finalize(mut self) -> Result<ServerBuilder> {
+        if self
+            .inner
+            .config
+            .solana_gateway_target_id
+            .as_deref()
+            .is_none_or(|target_id| target_id.trim().is_empty())
+        {
+            anyhow::bail!("the Solana gateway target ID must not be empty");
+        }
+        if let Some(config) = self.inner.config.transactions.as_ref() {
+            config.validate()?;
+            if !config.enabled {
+                anyhow::bail!("Solana gateway transaction configuration must be enabled");
+            }
+        }
+        self.inner.config.runtime_plan = RuntimePlan::solana_gateway();
+        Ok(self.inner)
+    }
+
+    /// Build the reusable runtime without starting it.
+    pub fn build(self) -> Result<Runtime> {
+        self.finalize()?.build()
+    }
+
+    /// Start the gateway and wait for shutdown.
+    pub async fn start(self) -> Result<()> {
+        self.finalize()?.start().await
     }
 }
 
@@ -212,12 +298,16 @@ impl ServerBuilder {
     /// Enable WebSocket server with default configuration
     pub fn websocket(mut self) -> Self {
         self.config.websocket = Some(WebSocketConfig::default());
+        self.config.runtime_plan.websocket = true;
+        self.config.runtime_plan.live_runtime = true;
         self
     }
 
     /// Configure WebSocket server
     pub fn websocket_config(mut self, config: WebSocketConfig) -> Self {
         self.config.websocket = Some(config);
+        self.config.runtime_plan.websocket = true;
+        self.config.runtime_plan.live_runtime = true;
         self
     }
 
@@ -265,24 +355,29 @@ impl ServerBuilder {
         } else {
             self.config.websocket = Some(WebSocketConfig::new(addr.into()));
         }
+        self.config.runtime_plan.websocket = true;
+        self.config.runtime_plan.live_runtime = true;
         self
     }
 
     /// Configure Yellowstone gRPC connection
     pub fn yellowstone(mut self, config: YellowstoneConfig) -> Self {
         self.config.yellowstone = Some(config);
+        self.config.runtime_plan.live_runtime = true;
         self
     }
 
     /// Enable health monitoring with default configuration
     pub fn health_monitoring(mut self) -> Self {
         self.config.health = Some(HealthConfig::default());
+        self.config.runtime_plan.health = true;
         self
     }
 
     /// Configure health monitoring
     pub fn health_config(mut self, config: HealthConfig) -> Self {
         self.config.health = Some(config);
+        self.config.runtime_plan.health = true;
         self
     }
 
@@ -303,18 +398,64 @@ impl ServerBuilder {
     /// This serves health endpoints plus stack-scoped HTTP reads.
     pub fn http(mut self) -> Self {
         self.config.http_health = Some(HttpHealthConfig::default());
+        self.config.runtime_plan.health = true;
+        self.config.runtime_plan.chain_reads = true;
+        self.config.runtime_plan.program_reads = true;
+        self.config.runtime_plan.stack_queries = true;
         self
     }
 
     /// Configure the HTTP server.
     pub fn http_config(mut self, config: crate::http_server::HttpServerConfig) -> Self {
         self.config.http_health = Some(config);
+        self.config.runtime_plan.health = true;
+        self.config.runtime_plan.chain_reads = true;
+        self.config.runtime_plan.program_reads = true;
+        self.config.runtime_plan.stack_queries = true;
         self
     }
 
     /// Configure and explicitly enable the fixed transaction HTTP routes.
     pub fn transactions_config(mut self, config: TransactionConfig) -> Self {
+        self.config.runtime_plan.transactions = config.enabled;
         self.config.transactions = Some(config);
+        self
+    }
+
+    /// Replace the inferred capability set with an explicit runtime plan.
+    pub fn runtime_plan(mut self, plan: RuntimePlan) -> Self {
+        self.config.runtime_plan = plan;
+        self
+    }
+
+    /// Enable only health and release-pinned program reads over HTTP.
+    pub fn program_reads(mut self) -> Self {
+        if self.config.http_health.is_none() {
+            self.config.http_health = Some(HttpHealthConfig::default());
+        }
+        self.config.runtime_plan.health = true;
+        self.config.runtime_plan.program_reads = true;
+        self
+    }
+
+    pub fn chain_reads(mut self) -> Self {
+        if self.config.http_health.is_none() {
+            self.config.http_health = Some(HttpHealthConfig::default());
+        }
+        self.config.runtime_plan.chain_reads = true;
+        self
+    }
+
+    pub fn stack_queries(mut self) -> Self {
+        if self.config.http_health.is_none() {
+            self.config.http_health = Some(HttpHealthConfig::default());
+        }
+        self.config.runtime_plan.stack_queries = true;
+        self
+    }
+
+    pub fn live_runtime(mut self) -> Self {
+        self.config.runtime_plan.live_runtime = true;
         self
     }
 
@@ -325,6 +466,10 @@ impl ServerBuilder {
         } else {
             self.config.http_health = Some(HttpHealthConfig::new(addr.into()));
         }
+        self.config.runtime_plan.health = true;
+        self.config.runtime_plan.chain_reads = true;
+        self.config.runtime_plan.program_reads = true;
+        self.config.runtime_plan.stack_queries = true;
         self
     }
 
@@ -377,7 +522,7 @@ impl ServerBuilder {
         }
 
         if let Some(spec) = self.spec {
-            runtime = runtime.with_spec(spec);
+            runtime = runtime.with_spec(spec)?;
         }
 
         runtime.run().await
@@ -507,7 +652,7 @@ impl ServerBuilder {
         }
 
         if let Some(spec) = self.spec {
-            runtime = runtime.with_spec(spec);
+            runtime = runtime.with_spec(spec)?;
         }
         Ok(runtime)
     }
@@ -532,5 +677,89 @@ mod tests {
             spec.program_ids.first().map(String::as_str),
             Some("test_program")
         );
+    }
+
+    #[test]
+    fn http_without_websocket_has_a_read_only_runtime_plan() {
+        let builder = Server::builder().http();
+        assert!(builder.config.runtime_plan.program_reads);
+        assert!(!builder.config.runtime_plan.live_runtime_enabled());
+    }
+
+    #[test]
+    fn websocket_and_http_preserve_all_in_one_runtime_behavior() {
+        let builder = Server::builder().websocket().http();
+        assert!(builder.config.runtime_plan.websocket);
+        assert!(builder.config.runtime_plan.live_runtime_enabled());
+    }
+
+    #[test]
+    fn explicit_hosted_plan_disables_program_reads_after_http_helpers() {
+        let plan = RuntimePlan {
+            health: true,
+            chain_reads: true,
+            program_reads: false,
+            stack_queries: true,
+            transactions: true,
+            websocket: true,
+            live_runtime: true,
+        };
+        let builder = Server::builder()
+            .websocket()
+            .http_health()
+            .health_bind("[::]:8081".parse::<SocketAddr>().unwrap())
+            .runtime_plan(plan);
+
+        assert_eq!(builder.config.runtime_plan, plan);
+    }
+
+    #[test]
+    fn solana_gateway_builder_excludes_stack_and_live_capabilities() {
+        let builder = Server::solana_gateway("gateway-us-east-1");
+
+        assert_eq!(
+            builder.inner.config.runtime_plan,
+            RuntimePlan::solana_gateway()
+        );
+        assert!(builder.inner.config.http_health.is_some());
+        assert_eq!(
+            builder.inner.config.solana_gateway_target_id.as_deref(),
+            Some("gateway-us-east-1")
+        );
+        assert!(builder.inner.config.websocket.is_none());
+        assert!(builder.inner.config.yellowstone.is_none());
+        assert!(builder.inner.spec.is_none());
+        assert!(builder.inner.views.is_none());
+        assert!(builder.inner.materialized_views.is_none());
+        assert!(!builder.inner.config.runtime_plan.websocket);
+        assert!(!builder.inner.config.runtime_plan.live_runtime_enabled());
+        assert!(!builder.inner.config.runtime_plan.stack_queries);
+        assert!(!builder.inner.config.runtime_plan.program_reads);
+    }
+
+    #[test]
+    fn solana_gateway_builder_rejects_invalid_gateway_configuration() {
+        assert!(Server::solana_gateway("").build().is_err());
+        assert!(Server::solana_gateway("gateway-us-east-1")
+            .transactions_config(TransactionConfig::default())
+            .build()
+            .is_err());
+    }
+
+    #[test]
+    fn builder_rejects_mismatched_program_release_definitions() {
+        let bytecode = arete_interpreter::compiler::MultiEntityBytecode::new().build();
+        let definition = ProgramRuntimeDefinition {
+            program_id: "Program111".to_string(),
+            program_spec_hash: ProgramSpecHash::from_digest([1; 32]),
+            idl_content_hash: IdlContentHash::from_digest([2; 32]),
+            normalized_idl_hash: NormalizedIdlHash::from_digest([3; 32]),
+            program_release_hash: ProgramReleaseHash::from_digest([4; 32]),
+            account_reader: Arc::new(|_, _| Ok(serde_json::Value::Null)),
+        };
+        let spec =
+            Spec::new(bytecode, "Program111").with_program_runtime_definitions(vec![definition]);
+
+        assert!(Server::builder().spec(spec).build().is_err());
     }
 }

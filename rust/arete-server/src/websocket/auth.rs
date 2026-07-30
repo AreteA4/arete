@@ -309,9 +309,14 @@ impl WebSocketAuthPlugin for AllowAllAuthPlugin {
         let context = AuthContext {
             subject: "anonymous".to_string(),
             issuer: "allow-all".to_string(),
+            audience: "allow-all".to_string(),
             key_class: arete_auth::KeyClass::Secret,
             metering_key: "dev".to_string(),
             deployment_id: None,
+            target_kind: None,
+            target_id: None,
+            program_id: None,
+            program_release_hash: None,
             expires_at: u64::MAX, // Never expires
             scope: "read write".to_string(),
             limits: Default::default(),
@@ -369,9 +374,14 @@ impl WebSocketAuthPlugin for StaticTokenAuthPlugin {
             let context = AuthContext {
                 subject: format!("static:{}", &token[..token.len().min(8)]),
                 issuer: "static-token".to_string(),
+                audience: "static-token".to_string(),
                 key_class: arete_auth::KeyClass::Secret,
                 metering_key: token.to_string(),
                 deployment_id: None,
+                target_kind: None,
+                target_id: None,
+                program_id: None,
+                program_release_hash: None,
                 expires_at: u64::MAX, // Static tokens don't expire
                 scope: "read".to_string(),
                 limits: Default::default(),

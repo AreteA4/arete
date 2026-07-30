@@ -1,5 +1,9 @@
 use crate::http::transactions::{self, TransactionState};
-use crate::{config::TransactionConfig, health::HealthMonitor, ProgramAccountReaderFn};
+use crate::{
+    config::{RuntimePlan, TransactionConfig},
+    health::HealthMonitor,
+    ProgramRuntimeCatalog, ProgramRuntimeDefinition,
+};
 use anyhow::Result;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
@@ -27,6 +31,7 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 
 use crate::websocket::auth::{AuthDecision, AuthDeny, ConnectionAuthRequest, WebSocketAuthPlugin};
+use arete_auth::SCOPE_READ;
 
 /// Configuration for the HTTP health server
 #[derive(Clone, Debug)]
@@ -53,21 +58,25 @@ impl HttpHealthConfig {
 #[derive(Clone)]
 struct HttpRequestState {
     health_monitor: Arc<Option<HealthMonitor>>,
+    runtime_plan: RuntimePlan,
     rpc_url: Arc<Option<String>>,
     rpc_client: Client,
-    program_account_reader: Arc<Option<ProgramAccountReaderFn>>,
+    program_runtime_catalog: Arc<ProgramRuntimeCatalog>,
     auth_plugin: Arc<Option<Arc<dyn WebSocketAuthPlugin>>>,
     limit_state: Arc<HttpLimitState>,
     transaction_state: Arc<Option<TransactionState>>,
+    solana_gateway_target_id: Arc<Option<String>>,
 }
 
 /// HTTP server that exposes health endpoints
 pub struct HttpHealthServer {
     bind_addr: SocketAddr,
     health_monitor: Option<HealthMonitor>,
-    program_account_reader: Option<ProgramAccountReaderFn>,
+    runtime_plan: RuntimePlan,
+    program_runtime_catalog: ProgramRuntimeCatalog,
     auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     transaction_config: Option<TransactionConfig>,
+    solana_gateway_target_id: Option<String>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<crate::metrics::Metrics>>,
 }
@@ -77,9 +86,11 @@ impl HttpHealthServer {
         Self {
             bind_addr,
             health_monitor: None,
-            program_account_reader: None,
+            runtime_plan: RuntimePlan::http(),
+            program_runtime_catalog: ProgramRuntimeCatalog::default(),
             auth_plugin: None,
             transaction_config: None,
+            solana_gateway_target_id: None,
             #[cfg(feature = "otel")]
             metrics: None,
         }
@@ -90,8 +101,13 @@ impl HttpHealthServer {
         self
     }
 
-    pub fn with_program_account_reader(mut self, reader: ProgramAccountReaderFn) -> Self {
-        self.program_account_reader = Some(reader);
+    pub fn with_runtime_plan(mut self, runtime_plan: RuntimePlan) -> Self {
+        self.runtime_plan = runtime_plan;
+        self
+    }
+
+    pub fn with_program_runtime_catalog(mut self, catalog: ProgramRuntimeCatalog) -> Self {
+        self.program_runtime_catalog = catalog;
         self
     }
 
@@ -101,7 +117,13 @@ impl HttpHealthServer {
     }
 
     pub fn with_transaction_config(mut self, config: TransactionConfig) -> Self {
+        self.runtime_plan.transactions = config.enabled;
         self.transaction_config = Some(config);
+        self
+    }
+
+    pub fn with_solana_gateway_target(mut self, target_id: impl Into<String>) -> Self {
+        self.solana_gateway_target_id = Some(target_id.into());
         self
     }
 
@@ -126,12 +148,14 @@ impl HttpHealthServer {
         let transaction_state = transaction_state.map(|state| state.with_metrics(self.metrics));
         let request_state = HttpRequestState {
             health_monitor: Arc::new(self.health_monitor),
+            runtime_plan: self.runtime_plan,
             rpc_url: Arc::new(resolve_rpc_url()),
             rpc_client: Client::builder().build()?,
-            program_account_reader: Arc::new(self.program_account_reader),
+            program_runtime_catalog: Arc::new(self.program_runtime_catalog),
             auth_plugin: Arc::new(self.auth_plugin),
             limit_state: Arc::new(HttpLimitState::default()),
             transaction_state: Arc::new(transaction_state),
+            solana_gateway_target_id: Arc::new(self.solana_gateway_target_id),
         };
 
         loop {
@@ -191,7 +215,7 @@ fn with_cors(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
     headers.insert(
         ACCESS_CONTROL_EXPOSE_HEADERS,
         HeaderValue::from_static(
-            "Retry-After, X-Error-Code, X-Request-Id, X-Arete-Upstream-Attempted",
+            "Retry-After, X-Error-Code, X-Request-Id, X-Arete-Upstream-Attempted, X-Arete-Program-Release-Hash, X-Arete-Idl-Content-Hash, X-Arete-Account-Address, X-Arete-Account-Exists",
         ),
     );
     headers.insert(ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("86400"));
@@ -205,17 +229,19 @@ async fn handle_request_inner(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let HttpRequestState {
         health_monitor,
+        runtime_plan,
         rpc_url,
         rpc_client,
-        program_account_reader,
+        program_runtime_catalog,
         auth_plugin,
         limit_state,
         transaction_state,
+        solana_gateway_target_id,
     } = state;
     let path = req.uri().path().to_string();
 
     match path.as_str() {
-        "/health" | "/healthz" => {
+        "/health" | "/healthz" if runtime_plan.health => {
             // Basic health check - server is running
             Ok(Response::builder()
                 .status(StatusCode::OK)
@@ -223,7 +249,7 @@ async fn handle_request_inner(
                 .body(Full::new(Bytes::from("OK")))
                 .unwrap())
         }
-        "/ready" | "/readiness" => {
+        "/ready" | "/readiness" if runtime_plan.health => {
             // Readiness check - check if stream is healthy
             if let Some(monitor) = health_monitor.as_ref() {
                 if monitor.is_healthy().await {
@@ -248,7 +274,7 @@ async fn handle_request_inner(
                     .unwrap())
             }
         }
-        "/status" => {
+        "/status" if runtime_plan.health => {
             // Detailed status endpoint
             if let Some(monitor) = health_monitor.as_ref() {
                 let status = monitor.status().await;
@@ -286,7 +312,7 @@ async fn handle_request_inner(
                     .unwrap())
             }
         }
-        _ if path.starts_with("/transactions/") => {
+        _ if runtime_plan.transactions && path.starts_with("/transactions/") => {
             let Some(transaction_state) = transaction_state.as_ref() else {
                 return Ok(error_response(StatusCode::NOT_FOUND, "Not Found"));
             };
@@ -298,6 +324,7 @@ async fn handle_request_inner(
                 &limit_state,
                 None,
                 false,
+                solana_gateway_target_id.as_deref(),
             )
             .await
             {
@@ -309,14 +336,15 @@ async fn handle_request_inner(
                     .await,
             )
         }
-        _ if path.starts_with("/chain/") => {
+        _ if runtime_plan.chain_reads && path.starts_with("/chain/") => {
             let auth_context = match authorize_http_request(
                 remote_addr,
                 &req,
                 auth_plugin.as_ref().as_ref(),
                 &limit_state,
-                Some("read"),
+                Some(SCOPE_READ),
                 true,
+                solana_gateway_target_id.as_deref(),
             )
             .await
             {
@@ -325,14 +353,20 @@ async fn handle_request_inner(
             };
             Ok(handle_chain_request(req, path.as_str(), rpc_url, rpc_client, auth_context).await)
         }
-        _ if path.starts_with("/programs/") => {
+        _ if path.starts_with("/v1/releases/") => {
+            if !runtime_plan.program_reads {
+                return Ok(program_read_error_response(
+                    ProgramReadError::ProgramReadsDisabled,
+                ));
+            }
             let auth_context = match authorize_http_request(
                 remote_addr,
                 &req,
                 auth_plugin.as_ref().as_ref(),
                 &limit_state,
-                Some("read"),
+                Some(SCOPE_READ),
                 true,
+                None,
             )
             .await
             {
@@ -344,7 +378,7 @@ async fn handle_request_inner(
                 path.as_str(),
                 rpc_url,
                 rpc_client,
-                program_account_reader,
+                program_runtime_catalog,
                 auth_context,
             )
             .await)
@@ -473,6 +507,7 @@ async fn authorize_http_request(
     limit_state: &HttpLimitState,
     required_scope: Option<&str>,
     enforce_read_limits: bool,
+    solana_gateway_target_id: Option<&str>,
 ) -> std::result::Result<Option<crate::websocket::auth::AuthContext>, Response<Full<Bytes>>> {
     let Some(plugin) = auth_plugin else {
         return Ok(None);
@@ -486,6 +521,28 @@ async fn authorize_http_request(
         AuthDecision::Allow(context) => context,
         AuthDecision::Deny(deny) => return Err(auth_deny_response(&deny)),
     };
+
+    if let Some(target_id) = solana_gateway_target_id {
+        if let Err(error) =
+            arete_auth::SolanaGatewayAuthorization::validate_target(&context, target_id)
+        {
+            return Err(Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .header("Content-Type", "application/json")
+                .header("X-Error-Code", "invalid_gateway_target")
+                .body(Full::new(Bytes::from(
+                    json!({
+                        "error": "invalid_gateway_target",
+                        "message": error.to_string(),
+                        "code": "invalid_gateway_target",
+                        "retryable": false,
+                        "fatal": true
+                    })
+                    .to_string(),
+                )))
+                .expect("valid gateway target error response"));
+        }
+    }
 
     if let Some(required_scope) = required_scope {
         if !context.has_scope(required_scope) {
@@ -726,95 +783,360 @@ async fn handle_program_account_request(
     path: &str,
     rpc_url: Arc<Option<String>>,
     rpc_client: Client,
-    program_account_reader: Arc<Option<ProgramAccountReaderFn>>,
+    program_runtime_catalog: Arc<ProgramRuntimeCatalog>,
     auth_context: Option<crate::websocket::auth::AuthContext>,
 ) -> Response<Full<Bytes>> {
+    let route = match ProgramReadRoute::parse(req.method(), path) {
+        Ok(route) => route,
+        Err(error) => return program_read_error_response(error),
+    };
+    let release_hash = match route.release_hash.parse() {
+        Ok(release_hash) => release_hash,
+        Err(_) => return program_read_error_response(ProgramReadError::InvalidReleaseHash),
+    };
+    let Some(definition) = program_runtime_catalog.get(&release_hash).cloned() else {
+        return program_read_error_response(ProgramReadError::ReleaseNotFound);
+    };
     let Some(rpc_url) = rpc_url.as_ref() else {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "No RPC URL configured for program account reads",
-        );
-    };
-    let Some(reader) = program_account_reader.as_ref() else {
-        return error_response(
-            StatusCode::NOT_IMPLEMENTED,
-            "Program account reader is not configured",
+        return with_release_metadata(
+            program_read_error_response(ProgramReadError::RpcNotConfigured),
+            &definition,
+            None,
+            None,
         );
     };
 
-    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    if segments.len() < 4
-        || segments.first() != Some(&"programs")
-        || segments.get(2) != Some(&"accounts")
-    {
-        return error_response(StatusCode::NOT_FOUND, "Not Found");
-    }
-    let program = segments[1];
-    let account = segments[3];
-
-    match (req.method().as_str(), segments.len()) {
-        ("GET", 5) => {
-            let address = segments[4];
-            match rpc_get_account_info(&rpc_client, rpc_url, address).await {
-                Ok(value) if value.is_null() => json_response(StatusCode::OK, Value::Null),
-                Ok(value) => match decode_account_bytes(&value)
-                    .and_then(|data| reader(program, account, &data).ok())
-                {
-                    Some(parsed) => json_response(StatusCode::OK, parsed),
-                    None => {
-                        error_response(StatusCode::BAD_REQUEST, "Unable to parse requested account")
-                    }
-                },
-                Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
-            }
-        }
-        ("GET", 6) if segments[5] == "exists" => {
-            let address = segments[4];
-            match rpc_get_account_info(&rpc_client, rpc_url, address).await {
-                Ok(value) => json_response(StatusCode::OK, json!({ "exists": !value.is_null() })),
-                Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
-            }
-        }
-        ("POST", 4) => match read_json_body::<AddressesBody>(req).await {
-            Ok(body) => {
-                if let Some(limit) = auth_context
-                    .as_ref()
-                    .and_then(|ctx| ctx.limits.max_http_batch_addresses)
-                {
-                    if body.addresses.len() > limit as usize {
-                        return auth_deny_response(&AuthDeny::rate_limited(
-                            Duration::from_secs(60),
-                            &format!(
-                                "http batch reads ({} addresses > {})",
-                                body.addresses.len(),
-                                limit
-                            ),
-                        ));
-                    }
+    match route.operation {
+        ProgramReadOperation::Fetch { address } => {
+            let account_value = match rpc_get_account_info(&rpc_client, rpc_url, &address).await {
+                Ok(value) => value,
+                Err(error) => {
+                    error!("Program account RPC read failed: {}", error);
+                    return with_release_metadata(
+                        program_read_error_response(ProgramReadError::RpcFailed),
+                        &definition,
+                        Some(&address),
+                        None,
+                    );
                 }
+            };
+            match decode_release_account(&definition, &route.account, &account_value).await {
+                AccountReadOutcome::Missing => with_release_metadata(
+                    json_response(StatusCode::OK, Value::Null),
+                    &definition,
+                    Some(&address),
+                    Some(false),
+                ),
+                AccountReadOutcome::Value(value) => with_release_metadata(
+                    json_response(StatusCode::OK, value),
+                    &definition,
+                    Some(&address),
+                    Some(true),
+                ),
+                AccountReadOutcome::Error(error) => with_release_metadata(
+                    program_read_error_response(error),
+                    &definition,
+                    Some(&address),
+                    Some(true),
+                ),
+            }
+        }
+        ProgramReadOperation::Exists { address } => {
+            let account_value = match rpc_get_account_info(&rpc_client, rpc_url, &address).await {
+                Ok(value) => value,
+                Err(error) => {
+                    error!("Program account existence RPC read failed: {}", error);
+                    return with_release_metadata(
+                        program_read_error_response(ProgramReadError::RpcFailed),
+                        &definition,
+                        Some(&address),
+                        None,
+                    );
+                }
+            };
+            let exists = !account_value.is_null();
+            if exists && !account_owner_matches(&definition, &account_value) {
+                return with_release_metadata(
+                    program_read_error_response(ProgramReadError::AccountOwnerMismatch),
+                    &definition,
+                    Some(&address),
+                    Some(true),
+                );
+            }
+            with_release_metadata(
+                json_response(StatusCode::OK, json!({ "exists": exists })),
+                &definition,
+                Some(&address),
+                Some(exists),
+            )
+        }
+        ProgramReadOperation::Batch => {
+            let body = match read_json_body::<AddressesBody>(req).await {
+                Ok(body) => body,
+                Err(_) => return program_read_error_response(ProgramReadError::InvalidRequest),
+            };
+            let configured_limit = auth_context
+                .as_ref()
+                .and_then(|ctx| ctx.limits.max_http_batch_addresses)
+                .map(|limit| limit as usize)
+                .unwrap_or(MAX_PROGRAM_BATCH_ADDRESSES)
+                .min(MAX_PROGRAM_BATCH_ADDRESSES);
+            if body.addresses.len() > configured_limit {
+                return with_release_metadata(
+                    program_read_error_response(ProgramReadError::BatchLimitExceeded),
+                    &definition,
+                    None,
+                    None,
+                );
+            }
+            if body.addresses.is_empty() {
+                return with_release_metadata(
+                    json_response(StatusCode::OK, json!({ "items": [] })),
+                    &definition,
+                    None,
+                    None,
+                );
+            }
+
+            let values =
                 match rpc_get_multiple_accounts(&rpc_client, rpc_url, &body.addresses).await {
-                    Ok(values) => {
-                        let parsed: Vec<Value> = values
-                            .iter()
-                            .map(|value| {
-                                if value.is_null() {
-                                    Value::Null
-                                } else if let Some(data) = decode_account_bytes(value) {
-                                    reader(program, account, &data).unwrap_or(Value::Null)
-                                } else {
-                                    Value::Null
-                                }
-                            })
-                            .collect();
-                        json_response(StatusCode::OK, Value::Array(parsed))
+                    Ok(values) if values.len() == body.addresses.len() => values,
+                    Ok(_) => {
+                        return with_release_metadata(
+                            program_read_error_response(ProgramReadError::RpcResponseInvalid),
+                            &definition,
+                            None,
+                            None,
+                        )
                     }
-                    Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                    Err(error) => {
+                        error!("Program account batch RPC read failed: {}", error);
+                        return with_release_metadata(
+                            program_read_error_response(ProgramReadError::RpcFailed),
+                            &definition,
+                            None,
+                            None,
+                        );
+                    }
+                };
+
+            let outcomes = futures_util::future::join_all(
+                values
+                    .iter()
+                    .map(|value| decode_release_account(&definition, &route.account, value)),
+            )
+            .await;
+            let mut items = Vec::with_capacity(outcomes.len());
+            for (address, outcome) in body.addresses.iter().zip(outcomes) {
+                let item = match outcome {
+                    AccountReadOutcome::Missing => {
+                        json!({ "address": address, "status": "missing" })
+                    }
+                    AccountReadOutcome::Value(value) => {
+                        json!({ "address": address, "status": "ok", "value": value })
+                    }
+                    AccountReadOutcome::Error(error) => json!({
+                        "address": address,
+                        "status": "error",
+                        "error": { "code": error.code() }
+                    }),
+                };
+                items.push(item);
+            }
+            with_release_metadata(
+                json_response(StatusCode::OK, json!({ "items": items })),
+                &definition,
+                None,
+                None,
+            )
+        }
+    }
+}
+
+const MAX_PROGRAM_BATCH_ADDRESSES: usize = 100;
+const MAX_PROGRAM_ACCOUNT_BYTES: usize = 10 * 1024 * 1024;
+const PROGRAM_DECODE_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProgramReadError {
+    NotFound,
+    ProgramReadsDisabled,
+    InvalidReleaseHash,
+    ReleaseNotFound,
+    InvalidRequest,
+    BatchLimitExceeded,
+    RpcNotConfigured,
+    RpcFailed,
+    RpcResponseInvalid,
+    AccountOwnerMismatch,
+    AccountDataInvalid,
+    AccountDataTooLarge,
+    AccountDecodeFailed,
+    AccountDecodeTimeout,
+}
+
+impl ProgramReadError {
+    fn code(self) -> &'static str {
+        match self {
+            Self::NotFound => "NOT_FOUND",
+            Self::ProgramReadsDisabled => "PROGRAM_READS_DISABLED",
+            Self::InvalidReleaseHash => "INVALID_PROGRAM_RELEASE_HASH",
+            Self::ReleaseNotFound => "PROGRAM_RELEASE_NOT_FOUND",
+            Self::InvalidRequest => "INVALID_REQUEST",
+            Self::BatchLimitExceeded => "BATCH_LIMIT_EXCEEDED",
+            Self::RpcNotConfigured => "READ_RPC_NOT_CONFIGURED",
+            Self::RpcFailed => "RPC_REQUEST_FAILED",
+            Self::RpcResponseInvalid => "RPC_RESPONSE_INVALID",
+            Self::AccountOwnerMismatch => "ACCOUNT_OWNER_MISMATCH",
+            Self::AccountDataInvalid => "ACCOUNT_DATA_INVALID",
+            Self::AccountDataTooLarge => "ACCOUNT_DATA_TOO_LARGE",
+            Self::AccountDecodeFailed => "ACCOUNT_DECODE_FAILED",
+            Self::AccountDecodeTimeout => "ACCOUNT_DECODE_TIMEOUT",
+        }
+    }
+
+    fn status(self) -> StatusCode {
+        match self {
+            Self::NotFound | Self::ReleaseNotFound => StatusCode::NOT_FOUND,
+            Self::InvalidReleaseHash | Self::InvalidRequest => StatusCode::BAD_REQUEST,
+            Self::BatchLimitExceeded | Self::AccountDataTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::ProgramReadsDisabled | Self::RpcNotConfigured => StatusCode::SERVICE_UNAVAILABLE,
+            Self::RpcFailed | Self::RpcResponseInvalid | Self::AccountDataInvalid => {
+                StatusCode::BAD_GATEWAY
+            }
+            Self::AccountOwnerMismatch | Self::AccountDecodeFailed => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            Self::AccountDecodeTimeout => StatusCode::GATEWAY_TIMEOUT,
+        }
+    }
+}
+
+fn program_read_error_response(error: ProgramReadError) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(error.status())
+        .header("Content-Type", "application/json")
+        .header("X-Error-Code", error.code())
+        .body(Full::new(Bytes::from(
+            json!({ "error": { "code": error.code() } }).to_string(),
+        )))
+        .expect("valid program read error response")
+}
+
+#[derive(Debug)]
+struct ProgramReadRoute {
+    release_hash: String,
+    account: String,
+    operation: ProgramReadOperation,
+}
+
+#[derive(Debug)]
+enum ProgramReadOperation {
+    Fetch { address: String },
+    Batch,
+    Exists { address: String },
+}
+
+impl ProgramReadRoute {
+    fn parse(method: &Method, path: &str) -> std::result::Result<Self, ProgramReadError> {
+        let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        if segments.len() < 5
+            || segments[0] != "v1"
+            || segments[1] != "releases"
+            || segments[2].is_empty()
+            || segments[3] != "accounts"
+            || segments[4].is_empty()
+        {
+            return Err(ProgramReadError::NotFound);
+        }
+        let operation = match (method, segments.as_slice()) {
+            (&Method::POST, [_, _, _, _, _]) => ProgramReadOperation::Batch,
+            (&Method::GET, [_, _, _, _, _, address]) if !address.is_empty() => {
+                ProgramReadOperation::Fetch {
+                    address: (*address).to_string(),
                 }
             }
-            Err(response) => response,
-        },
-        _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
+            (&Method::GET, [_, _, _, _, _, address, "exists"]) if !address.is_empty() => {
+                ProgramReadOperation::Exists {
+                    address: (*address).to_string(),
+                }
+            }
+            _ => return Err(ProgramReadError::NotFound),
+        };
+        Ok(Self {
+            release_hash: segments[2].to_string(),
+            account: segments[4].to_string(),
+            operation,
+        })
     }
+}
+
+enum AccountReadOutcome {
+    Missing,
+    Value(Value),
+    Error(ProgramReadError),
+}
+
+fn account_owner_matches(definition: &ProgramRuntimeDefinition, value: &Value) -> bool {
+    value.get("owner").and_then(Value::as_str) == Some(definition.program_id.as_str())
+}
+
+async fn decode_release_account(
+    definition: &ProgramRuntimeDefinition,
+    account: &str,
+    value: &Value,
+) -> AccountReadOutcome {
+    if value.is_null() {
+        return AccountReadOutcome::Missing;
+    }
+    if !account_owner_matches(definition, value) {
+        return AccountReadOutcome::Error(ProgramReadError::AccountOwnerMismatch);
+    }
+    let data = match decode_account_bytes(value) {
+        Some(data) => data,
+        None => return AccountReadOutcome::Error(ProgramReadError::AccountDataInvalid),
+    };
+    if data.len() > MAX_PROGRAM_ACCOUNT_BYTES {
+        return AccountReadOutcome::Error(ProgramReadError::AccountDataTooLarge);
+    }
+
+    let reader = definition.account_reader.clone();
+    let account = account.to_string();
+    let decode = tokio::task::spawn_blocking(move || reader(&account, &data));
+    match tokio::time::timeout(PROGRAM_DECODE_TIMEOUT, decode).await {
+        Ok(Ok(Ok(value))) => AccountReadOutcome::Value(value),
+        Ok(Ok(Err(_))) | Ok(Err(_)) => {
+            AccountReadOutcome::Error(ProgramReadError::AccountDecodeFailed)
+        }
+        Err(_) => AccountReadOutcome::Error(ProgramReadError::AccountDecodeTimeout),
+    }
+}
+
+fn with_release_metadata(
+    mut response: Response<Full<Bytes>>,
+    definition: &ProgramRuntimeDefinition,
+    address: Option<&str>,
+    exists: Option<bool>,
+) -> Response<Full<Bytes>> {
+    let headers = response.headers_mut();
+    if let Ok(value) = HeaderValue::from_str(&definition.program_release_hash.to_string()) {
+        headers.insert("X-Arete-Program-Release-Hash", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&definition.idl_content_hash.to_string()) {
+        headers.insert("X-Arete-Idl-Content-Hash", value);
+    }
+    if let Some(address) = address {
+        if let Ok(value) = HeaderValue::from_str(address) {
+            headers.insert("X-Arete-Account-Address", value);
+        }
+    }
+    if let Some(exists) = exists {
+        headers.insert(
+            "X-Arete-Account-Exists",
+            HeaderValue::from_static(if exists { "true" } else { "false" }),
+        );
+    }
+    response
 }
 
 async fn rpc_call(
@@ -1169,5 +1491,115 @@ mod tests {
             parse_min_context_slot(token.min_context_slot.as_deref()).unwrap(),
             Some(9_007_199_254_740_999)
         );
+    }
+
+    fn runtime_definition(reader: crate::ProgramAccountReaderFn) -> ProgramRuntimeDefinition {
+        let program_spec_hash = crate::ProgramSpecHash::from_digest([1; 32]);
+        let idl_content_hash = crate::IdlContentHash::from_digest([2; 32]);
+        let normalized_idl_hash = crate::NormalizedIdlHash::from_digest([3; 32]);
+        let program_release_hash = arete_hash::OssGeneratedProgramReleaseV1::new(
+            "Program111",
+            program_spec_hash,
+            idl_content_hash,
+            normalized_idl_hash,
+        )
+        .hash()
+        .unwrap();
+        ProgramRuntimeDefinition {
+            program_id: "Program111".to_string(),
+            program_spec_hash,
+            idl_content_hash,
+            normalized_idl_hash,
+            program_release_hash,
+            account_reader: reader,
+        }
+    }
+
+    #[test]
+    fn release_routes_are_exact_and_legacy_program_routes_are_not_accepted() {
+        let hash = crate::ProgramReleaseHash::from_digest([4; 32]);
+        let fetch_path = format!("/v1/releases/{hash}/accounts/Vault/address");
+        let exists_path = format!("{fetch_path}/exists");
+        let batch_path = format!("/v1/releases/{hash}/accounts/Vault");
+
+        assert!(matches!(
+            ProgramReadRoute::parse(&Method::GET, &fetch_path)
+                .unwrap()
+                .operation,
+            ProgramReadOperation::Fetch { .. }
+        ));
+        assert!(matches!(
+            ProgramReadRoute::parse(&Method::GET, &exists_path)
+                .unwrap()
+                .operation,
+            ProgramReadOperation::Exists { .. }
+        ));
+        assert!(matches!(
+            ProgramReadRoute::parse(&Method::POST, &batch_path)
+                .unwrap()
+                .operation,
+            ProgramReadOperation::Batch
+        ));
+        assert_eq!(
+            ProgramReadRoute::parse(&Method::GET, "/programs/demo/accounts/Vault/address")
+                .unwrap_err(),
+            ProgramReadError::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_mismatch_is_rejected_before_decoder_execution() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let called = Arc::new(AtomicBool::new(false));
+        let called_by_reader = called.clone();
+        let definition = runtime_definition(Arc::new(move |_, _| {
+            called_by_reader.store(true, Ordering::SeqCst);
+            Ok(json!({ "decoded": true }))
+        }));
+        let value = json!({
+            "owner": "DifferentProgram",
+            "data": [BASE64_STANDARD.encode([1, 2, 3]), "base64"]
+        });
+
+        assert!(matches!(
+            decode_release_account(&definition, "Vault", &value).await,
+            AccountReadOutcome::Error(ProgramReadError::AccountOwnerMismatch)
+        ));
+        assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn decode_failures_remain_typed_errors_and_metadata_is_public_only() {
+        let definition = runtime_definition(Arc::new(|_, _| anyhow::bail!("private diagnostic")));
+        let value = json!({
+            "owner": "Program111",
+            "data": [BASE64_STANDARD.encode([1, 2, 3]), "base64"]
+        });
+        assert!(matches!(
+            decode_release_account(&definition, "Vault", &value).await,
+            AccountReadOutcome::Error(ProgramReadError::AccountDecodeFailed)
+        ));
+
+        let response = with_release_metadata(
+            program_read_error_response(ProgramReadError::AccountDecodeFailed),
+            &definition,
+            Some("address"),
+            Some(true),
+        );
+        assert_eq!(response.headers()["X-Error-Code"], "ACCOUNT_DECODE_FAILED");
+        assert_eq!(
+            response.headers()["X-Arete-Program-Release-Hash"],
+            definition.program_release_hash.to_string()
+        );
+        assert_eq!(
+            response.headers()["X-Arete-Idl-Content-Hash"],
+            definition.idl_content_hash.to_string()
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert_eq!(body, r#"{"error":{"code":"ACCOUNT_DECODE_FAILED"}}"#);
+        assert!(!body.contains("private diagnostic"));
+        assert!(!body.contains("decoder"));
     }
 }

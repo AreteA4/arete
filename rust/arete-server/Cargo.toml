@@ -26,6 +26,7 @@ bytes = "1.0"
 
 # Interpreter library
 arete-interpreter = { version = "0.3.0", path = "../../interpreter" }
+arete-hash = { version = "0.1.0", path = "../../arete-hash" }
 
 # Auth library
 arete-auth = { version = "0.2.0", path = "../arete-auth" }

@@ -8,6 +8,55 @@ pub use crate::health::HealthConfig;
 pub use crate::http_health::HttpHealthConfig;
 pub use crate::http_server::HttpServerConfig;
 
+/// Runtime capabilities selected for one server process.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RuntimePlan {
+    pub health: bool,
+    pub chain_reads: bool,
+    pub program_reads: bool,
+    pub stack_queries: bool,
+    pub transactions: bool,
+    pub websocket: bool,
+    pub live_runtime: bool,
+}
+
+impl RuntimePlan {
+    /// Health, chain reads, and fixed transaction routes only.
+    pub const fn solana_gateway() -> Self {
+        Self {
+            health: true,
+            chain_reads: true,
+            program_reads: false,
+            stack_queries: false,
+            transactions: true,
+            websocket: false,
+            live_runtime: false,
+        }
+    }
+
+    pub fn http() -> Self {
+        Self {
+            health: true,
+            chain_reads: true,
+            program_reads: true,
+            stack_queries: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn program_reads() -> Self {
+        Self {
+            health: true,
+            program_reads: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn live_runtime_enabled(self) -> bool {
+        self.live_runtime || self.websocket
+    }
+}
+
 /// Explicit configuration for the fixed transaction relay routes.
 #[derive(Clone, Debug)]
 pub struct TransactionConfig {
@@ -274,12 +323,14 @@ impl YellowstoneConfig {
 /// Main server configuration
 #[derive(Clone, Debug, Default)]
 pub struct ServerConfig {
+    pub runtime_plan: RuntimePlan,
     pub websocket: Option<WebSocketConfig>,
     pub yellowstone: Option<YellowstoneConfig>,
     pub health: Option<HealthConfig>,
     pub http_health: Option<HttpHealthConfig>,
     pub reconnection: Option<ReconnectionConfig>,
     pub transactions: Option<TransactionConfig>,
+    pub solana_gateway_target_id: Option<String>,
 }
 
 impl ServerConfig {
@@ -289,21 +340,29 @@ impl ServerConfig {
 
     pub fn with_websocket(mut self, config: WebSocketConfig) -> Self {
         self.websocket = Some(config);
+        self.runtime_plan.websocket = true;
+        self.runtime_plan.live_runtime = true;
         self
     }
 
     pub fn with_yellowstone(mut self, config: YellowstoneConfig) -> Self {
         self.yellowstone = Some(config);
+        self.runtime_plan.live_runtime = true;
         self
     }
 
     pub fn with_health(mut self, config: HealthConfig) -> Self {
         self.health = Some(config);
+        self.runtime_plan.health = true;
         self
     }
 
     pub fn with_http_health(mut self, config: HttpHealthConfig) -> Self {
         self.http_health = Some(config);
+        self.runtime_plan.health = true;
+        self.runtime_plan.chain_reads = true;
+        self.runtime_plan.program_reads = true;
+        self.runtime_plan.stack_queries = true;
         self
     }
 
@@ -313,7 +372,13 @@ impl ServerConfig {
     }
 
     pub fn with_transactions(mut self, config: TransactionConfig) -> Self {
+        self.runtime_plan.transactions = config.enabled;
         self.transactions = Some(config);
+        self
+    }
+
+    pub fn with_runtime_plan(mut self, runtime_plan: RuntimePlan) -> Self {
+        self.runtime_plan = runtime_plan;
         self
     }
 }

@@ -2,7 +2,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use arete_auth::AuthContext;
+use arete_auth::{AuthContext, SCOPE_TRANSACTION_INSPECT, SCOPE_TRANSACTION_SEND};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use dashmap::DashMap;
@@ -132,9 +132,9 @@ impl Operation {
 
     fn scope(self) -> &'static str {
         if self == Self::Send {
-            "transaction:send"
+            SCOPE_TRANSACTION_SEND
         } else {
-            "transaction:inspect"
+            SCOPE_TRANSACTION_INSPECT
         }
     }
 
@@ -1252,6 +1252,8 @@ mod tests {
             Some(Operation::Send)
         );
         assert_eq!(Operation::from_path("/transactions/v1/get-anything"), None);
+        assert_eq!(Operation::Send.scope(), "transaction:send");
+        assert_eq!(Operation::Simulate.scope(), "transaction:inspect");
     }
 
     #[test]
