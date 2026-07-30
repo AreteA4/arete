@@ -853,19 +853,10 @@ pub struct RustStackConfig {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RustCompositionConfig {
     pub stack: RustStackConfig,
     pub live_urls: BTreeMap<String, String>,
-}
-
-impl Default for RustCompositionConfig {
-    fn default() -> Self {
-        Self {
-            stack: RustStackConfig::default(),
-            live_urls: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

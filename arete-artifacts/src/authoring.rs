@@ -257,7 +257,7 @@ pub fn normalize_live_spec_v1(
         .payload
         .entities
         .iter()
-        .map(|entity| transcode(entity))
+        .map(transcode)
         .collect::<Result<Vec<PortableEntity>, _>>()?;
     let (pdas, instructions) = match &live.payload.legacy_program_extensions {
         Some(extensions) => (

@@ -250,6 +250,7 @@ pub struct ErrorResponse {
 
 /// Authentication decision with optional auth context
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)] // Keep the public plugin return type allocation-free.
 pub enum AuthDecision {
     /// Connection is authorized with the given context
     Allow(AuthContext),

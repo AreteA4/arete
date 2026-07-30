@@ -193,7 +193,7 @@ pub fn digest_decoder_fixture_public_value_v1<T: Serialize>(
 }
 
 fn validate_account_data_hex(value: &str) -> Result<(), HashError> {
-    if value.len() % 2 != 0
+    if !value.len().is_multiple_of(2)
         || !value
             .as_bytes()
             .iter()

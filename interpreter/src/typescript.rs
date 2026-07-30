@@ -3182,23 +3182,12 @@ pub struct TypeScriptLiveEndpoints {
     pub http_url: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TypeScriptCompositionConfig {
     pub stack: TypeScriptStackConfig,
     pub live_endpoints: BTreeMap<String, TypeScriptLiveEndpoints>,
     pub live_module_imports: BTreeMap<String, String>,
     pub program_module_imports: BTreeMap<String, String>,
-}
-
-impl Default for TypeScriptCompositionConfig {
-    fn default() -> Self {
-        Self {
-            stack: TypeScriptStackConfig::default(),
-            live_endpoints: BTreeMap::new(),
-            live_module_imports: BTreeMap::new(),
-            program_module_imports: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -3248,7 +3237,7 @@ fn resolve_program_configs(
 ) -> Result<Vec<TypeScriptProgramConfig>, String> {
     if stack_spec.idls.is_empty() {
         if stack_spec.program_specs.is_empty()
-            && configured.map_or(true, |programs| programs.is_empty())
+            && configured.is_none_or(|programs| programs.is_empty())
         {
             return Ok(Vec::new());
         }
@@ -3266,7 +3255,7 @@ fn resolve_program_configs(
                 .idls
                 .iter()
                 .all(|idl| idl.accounts.is_empty() && idl.instructions.is_empty());
-        if allow_view_only && view_only && configured.map_or(true, |programs| programs.is_empty()) {
+        if allow_view_only && view_only && configured.is_none_or(|programs| programs.is_empty()) {
             return Ok(Vec::new());
         }
         return Err(format!(
@@ -3411,7 +3400,7 @@ fn resolve_program_configs(
             if binding.endpoint.trim().is_empty()
                 || binding.program_read_binding_id.trim().is_empty()
                 || target_kind != Some("program-read-binding")
-                || session_endpoint.map_or(true, |value| value.trim().is_empty())
+                || session_endpoint.is_none_or(|value| value.trim().is_empty())
             {
                 return Err(format!(
                     "Stack '{}' hosted descriptor binding is incomplete at index {index}",

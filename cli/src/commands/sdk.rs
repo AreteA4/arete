@@ -164,6 +164,7 @@ const SDK_PROVENANCE_FILE: &str = "sdk-provenance.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Retained to validate and migrate legacy provenance manifests.
 struct SdkProvenanceManifestV1 {
     schema_version: u32,
     input: SdkProvenanceInputV1,
@@ -173,12 +174,14 @@ struct SdkProvenanceManifestV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct SdkProvenanceInputV1 {
     kind: ExtensionsInputKind,
     sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct SdkProvenanceGeneratorV1 {
     name: String,
     version: String,
@@ -186,6 +189,7 @@ struct SdkProvenanceGeneratorV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct SdkProvenanceExtensionsV1 {
     sha256: String,
 }
@@ -225,6 +229,7 @@ struct SdkProvenanceExtensionsV2 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 enum SdkProvenanceManifest {
     V1(SdkProvenanceManifestV1),
     V2(SdkProvenanceManifestV2),
@@ -1978,6 +1983,7 @@ fn validate_provenance_input_pin(input_pin: &ResolvedExtensionsInputPin) -> Resu
     Ok(())
 }
 
+#[allow(dead_code)]
 fn parse_sdk_provenance_manifest(contents: &str) -> Result<SdkProvenanceManifest> {
     serde_json::from_str(contents).context("Failed to parse SDK provenance manifest")
 }
@@ -2119,7 +2125,7 @@ fn typescript_program_config_from_registry(
             .is_err()
         || target_kind != Some("program-read-binding")
         || target_id != Some(binding.program_read_binding_id.as_str())
-        || session_endpoint.map_or(true, |value| value.trim().is_empty())
+        || session_endpoint.is_none_or(|value| value.trim().is_empty())
         || endpoint
             .as_ref()
             .is_none_or(|value| !secure_or_loopback(value))
@@ -3007,6 +3013,7 @@ fn generate_typescript_program_sdk_from_install(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_typescript_sdk_from_source(
     source: &ResolvedStackSource,
     output_path: &Path,
@@ -3420,6 +3427,7 @@ fn load_stack_spec_from_json(
     Ok(stack_spec)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_rust(
     config_path: &str,
     stack_name: Option<&str>,

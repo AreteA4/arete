@@ -67,7 +67,7 @@ pub fn write_public_artifacts(
 ) -> Result<(), arete_artifacts::ArtifactError> {
     let entities = entity_specs
         .iter()
-        .map(|entity| transcode_artifact_projection(entity))
+        .map(transcode_artifact_projection)
         .collect::<Result<Vec<arete_artifacts::PortableEntity>, _>>()?;
     let mut input =
         arete_artifacts::StackAuthoringV2::new(stack_name, program_specs.to_vec(), entities);

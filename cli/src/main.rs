@@ -206,6 +206,7 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // Clap owns this short-lived command value.
 enum SdkCommands {
     /// Create SDK from a stack
     Create(SdkCreateArgs),

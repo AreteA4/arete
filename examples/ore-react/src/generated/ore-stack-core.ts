@@ -1931,8 +1931,8 @@ export const entropySampleInstruction = createInstructionHandler<EntropySamplePa
 export type ViewKeyFields<TKey> = unknown extends TKey
   ? readonly string[]
   : TKey extends object
-  ? readonly Extract<keyof TKey, string>[]
-  : readonly string[];
+    ? readonly Extract<keyof TKey, string>[]
+    : readonly string[];
 
 /** View definition with embedded entity and state-key types */
 export interface ViewDef<T, TMode extends 'state' | 'list', TKey = unknown> {
@@ -2037,7 +2037,7 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:737284f3b97ec2a9f2ffceb28fe6f20e530dde3f735781457dc61590709971ae',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:e2e299bbd3e464f718f94cba2c8ff4143eb65edf022f8b8b78bccaef8690a339',
       programSpecHash: 'arete:h1:program-spec:sha256:e09807977d6fa86ef1d0a11b747e7e8147a394178fc35cf8f1d3e13140399cf2',
       idlContentHash: 'arete:h1:idl-content:sha256:ddd66054beab80ddfdd504097ff5f1040dc046eab91cd396cf3f04f69878dfca',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:815e9674705c9938e6793fb19ade1501bcd5ec9b73453fc3d149963a0d7965c5',
@@ -2083,132 +2083,132 @@ export const ORE_STREAM_STACK_CORE = {
         createOperations() {
           return {
             instructions: {
-              automate: instructionOperation(async (params: OreAutomateParams) => {
-                const instruction = buildInstruction(oreAutomateInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'automate',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreAutomateInstruction.errors,
-                });
-              }),
-              checkpoint: instructionOperation(async (params: OreCheckpointParams) => {
-                const instruction = buildInstruction(oreCheckpointInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'checkpoint',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreCheckpointInstruction.errors,
-                });
-              }),
-              claimSol: instructionOperation(async (params: OreClaimSolParams) => {
-                const instruction = buildInstruction(oreClaimSolInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'claimSol',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreClaimSolInstruction.errors,
-                });
-              }),
-              claimOre: instructionOperation(async (params: OreClaimOreParams) => {
-                const instruction = buildInstruction(oreClaimOreInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'claimOre',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreClaimOreInstruction.errors,
-                });
-              }),
-              close: instructionOperation(async (params: OreCloseParams) => {
-                const instruction = buildInstruction(oreCloseInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'close',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreCloseInstruction.errors,
-                });
-              }),
-              deploy: instructionOperation(async (params: OreDeployParams) => {
-                const instruction = buildInstruction(oreDeployInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'deploy',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreDeployInstruction.errors,
-                });
-              }),
-              log: instructionOperation(async (params: OreLogParams) => {
-                const instruction = buildInstruction(oreLogInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'log',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreLogInstruction.errors,
-                });
-              }),
-              reset: instructionOperation(async (params: OreResetParams) => {
-                const instruction = buildInstruction(oreResetInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'reset',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreResetInstruction.errors,
-                });
-              }),
-              buyback: instructionOperation(async (params: OreBuybackParams) => {
-                const instruction = buildInstruction(oreBuybackInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'buyback',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreBuybackInstruction.errors,
-                });
-              }),
-              bury: instructionOperation(async (params: OreBuryParams) => {
-                const instruction = buildInstruction(oreBuryInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'bury',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreBuryInstruction.errors,
-                });
-              }),
-              wrap: instructionOperation(async (params: OreWrapParams) => {
-                const instruction = buildInstruction(oreWrapInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'wrap',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreWrapInstruction.errors,
-                });
-              }),
-              setAdmin: instructionOperation(async (params: OreSetAdminParams) => {
-                const instruction = buildInstruction(oreSetAdminInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'setAdmin',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreSetAdminInstruction.errors,
-                });
-              }),
-              newVar: instructionOperation(async (params: OreNewVarParams) => {
-                const instruction = buildInstruction(oreNewVarInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'newVar',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreNewVarInstruction.errors,
-                });
-              }),
-              reloadSol: instructionOperation(async (params: OreReloadSolParams) => {
-                const instruction = buildInstruction(oreReloadSolInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'reloadSol',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: oreReloadSolInstruction.errors,
-                });
-              }),
+            automate: instructionOperation(async (params: OreAutomateParams) => {
+              const instruction = buildInstruction(oreAutomateInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'automate',
+                instruction,
+                artifacts: { instruction },
+                errors: oreAutomateInstruction.errors,
+              });
+            }),
+            checkpoint: instructionOperation(async (params: OreCheckpointParams) => {
+              const instruction = buildInstruction(oreCheckpointInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'checkpoint',
+                instruction,
+                artifacts: { instruction },
+                errors: oreCheckpointInstruction.errors,
+              });
+            }),
+            claimSol: instructionOperation(async (params: OreClaimSolParams) => {
+              const instruction = buildInstruction(oreClaimSolInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'claimSol',
+                instruction,
+                artifacts: { instruction },
+                errors: oreClaimSolInstruction.errors,
+              });
+            }),
+            claimOre: instructionOperation(async (params: OreClaimOreParams) => {
+              const instruction = buildInstruction(oreClaimOreInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'claimOre',
+                instruction,
+                artifacts: { instruction },
+                errors: oreClaimOreInstruction.errors,
+              });
+            }),
+            close: instructionOperation(async (params: OreCloseParams) => {
+              const instruction = buildInstruction(oreCloseInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'close',
+                instruction,
+                artifacts: { instruction },
+                errors: oreCloseInstruction.errors,
+              });
+            }),
+            deploy: instructionOperation(async (params: OreDeployParams) => {
+              const instruction = buildInstruction(oreDeployInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'deploy',
+                instruction,
+                artifacts: { instruction },
+                errors: oreDeployInstruction.errors,
+              });
+            }),
+            log: instructionOperation(async (params: OreLogParams) => {
+              const instruction = buildInstruction(oreLogInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'log',
+                instruction,
+                artifacts: { instruction },
+                errors: oreLogInstruction.errors,
+              });
+            }),
+            reset: instructionOperation(async (params: OreResetParams) => {
+              const instruction = buildInstruction(oreResetInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'reset',
+                instruction,
+                artifacts: { instruction },
+                errors: oreResetInstruction.errors,
+              });
+            }),
+            buyback: instructionOperation(async (params: OreBuybackParams) => {
+              const instruction = buildInstruction(oreBuybackInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'buyback',
+                instruction,
+                artifacts: { instruction },
+                errors: oreBuybackInstruction.errors,
+              });
+            }),
+            bury: instructionOperation(async (params: OreBuryParams) => {
+              const instruction = buildInstruction(oreBuryInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'bury',
+                instruction,
+                artifacts: { instruction },
+                errors: oreBuryInstruction.errors,
+              });
+            }),
+            wrap: instructionOperation(async (params: OreWrapParams) => {
+              const instruction = buildInstruction(oreWrapInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'wrap',
+                instruction,
+                artifacts: { instruction },
+                errors: oreWrapInstruction.errors,
+              });
+            }),
+            setAdmin: instructionOperation(async (params: OreSetAdminParams) => {
+              const instruction = buildInstruction(oreSetAdminInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'setAdmin',
+                instruction,
+                artifacts: { instruction },
+                errors: oreSetAdminInstruction.errors,
+              });
+            }),
+            newVar: instructionOperation(async (params: OreNewVarParams) => {
+              const instruction = buildInstruction(oreNewVarInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'newVar',
+                instruction,
+                artifacts: { instruction },
+                errors: oreNewVarInstruction.errors,
+              });
+            }),
+            reloadSol: instructionOperation(async (params: OreReloadSolParams) => {
+              const instruction = buildInstruction(oreReloadSolInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'reloadSol',
+                instruction,
+                artifacts: { instruction },
+                errors: oreReloadSolInstruction.errors,
+              });
+            }),
             },
           };
         },
@@ -2217,7 +2217,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:c21311052bec40689c62a97ebabcdb0df4c5ff82d44353c818cdf071e7dba0be',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:dd4eb062d87744c7a8697f8db17d5a5329193b305cff851058e8872949dfdcca',
       programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
       idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',
@@ -2235,51 +2235,51 @@ export const ORE_STREAM_STACK_CORE = {
         createOperations() {
           return {
             instructions: {
-              open: instructionOperation(async (params: EntropyOpenParams) => {
-                const instruction = buildInstruction(entropyOpenInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'open',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: entropyOpenInstruction.errors,
-                });
-              }),
-              close: instructionOperation(async (params: EntropyCloseParams) => {
-                const instruction = buildInstruction(entropyCloseInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'close',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: entropyCloseInstruction.errors,
-                });
-              }),
-              next: instructionOperation(async (params: EntropyNextParams) => {
-                const instruction = buildInstruction(entropyNextInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'next',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: entropyNextInstruction.errors,
-                });
-              }),
-              reveal: instructionOperation(async (params: EntropyRevealParams) => {
-                const instruction = buildInstruction(entropyRevealInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'reveal',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: entropyRevealInstruction.errors,
-                });
-              }),
-              sample: instructionOperation(async (params: EntropySampleParams) => {
-                const instruction = buildInstruction(entropySampleInstruction, params as unknown as Record<string, unknown>);
-                return createPreparedInstruction({
-                  name: 'sample',
-                  instruction,
-                  artifacts: { instruction },
-                  errors: entropySampleInstruction.errors,
-                });
-              }),
+            open: instructionOperation(async (params: EntropyOpenParams) => {
+              const instruction = buildInstruction(entropyOpenInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'open',
+                instruction,
+                artifacts: { instruction },
+                errors: entropyOpenInstruction.errors,
+              });
+            }),
+            close: instructionOperation(async (params: EntropyCloseParams) => {
+              const instruction = buildInstruction(entropyCloseInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'close',
+                instruction,
+                artifacts: { instruction },
+                errors: entropyCloseInstruction.errors,
+              });
+            }),
+            next: instructionOperation(async (params: EntropyNextParams) => {
+              const instruction = buildInstruction(entropyNextInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'next',
+                instruction,
+                artifacts: { instruction },
+                errors: entropyNextInstruction.errors,
+              });
+            }),
+            reveal: instructionOperation(async (params: EntropyRevealParams) => {
+              const instruction = buildInstruction(entropyRevealInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'reveal',
+                instruction,
+                artifacts: { instruction },
+                errors: entropyRevealInstruction.errors,
+              });
+            }),
+            sample: instructionOperation(async (params: EntropySampleParams) => {
+              const instruction = buildInstruction(entropySampleInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'sample',
+                instruction,
+                artifacts: { instruction },
+                errors: entropySampleInstruction.errors,
+              });
+            }),
             },
           };
         },
