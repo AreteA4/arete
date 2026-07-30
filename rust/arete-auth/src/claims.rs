@@ -10,6 +10,18 @@ pub enum KeyClass {
     Publishable,
 }
 
+/// Kind of resource targeted by a signed session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetKind {
+    /// A legacy stack deployment.
+    Deployment,
+    /// A hosted program-read binding.
+    ProgramReadBinding,
+    /// A regional Solana RPC gateway binding.
+    SolanaGatewayBinding,
+}
+
 /// Resource limits for a session
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Limits {
@@ -78,6 +90,26 @@ pub struct SessionClaims {
     /// Deployment ID (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<String>,
+    /// Typed resource target (optional for legacy deployment tokens)
+    #[serde(
+        default,
+        rename = "targetKind",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub target_kind: Option<TargetKind>,
+    /// Public target identifier (optional for legacy deployment tokens)
+    #[serde(default, rename = "targetId", skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+    /// Program allowed by this token
+    #[serde(default, rename = "programId", skip_serializing_if = "Option::is_none")]
+    pub program_id: Option<String>,
+    /// Exact immutable program release allowed by this token
+    #[serde(
+        default,
+        rename = "programReleaseHash",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub program_release_hash: Option<String>,
     /// Origin binding (optional, defense-in-depth)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
@@ -105,6 +137,31 @@ impl SessionClaims {
         SessionClaimsBuilder::new(iss, sub, aud)
     }
 
+    /// Create claims for one exact program-read binding, program, and release.
+    pub fn program_read_builder(
+        iss: impl Into<String>,
+        sub: impl Into<String>,
+        target_id: impl Into<String>,
+        program_id: impl Into<String>,
+        program_release_hash: impl Into<String>,
+    ) -> SessionClaimsBuilder {
+        SessionClaimsBuilder::new(iss, sub, crate::PROGRAM_READ_AUDIENCE).with_program_read_binding(
+            target_id,
+            program_id,
+            program_release_hash,
+        )
+    }
+
+    /// Create claims for one regional Solana gateway binding.
+    pub fn solana_gateway_builder(
+        iss: impl Into<String>,
+        sub: impl Into<String>,
+        target_id: impl Into<String>,
+    ) -> SessionClaimsBuilder {
+        SessionClaimsBuilder::new(iss, sub, crate::SOLANA_GATEWAY_AUDIENCE)
+            .with_solana_gateway_binding(target_id)
+    }
+
     /// Check if the token is expired
     pub fn is_expired(&self, now: u64) -> bool {
         self.exp <= now
@@ -128,6 +185,10 @@ pub struct SessionClaimsBuilder {
     scope: String,
     metering_key: String,
     deployment_id: Option<String>,
+    target_kind: Option<TargetKind>,
+    target_id: Option<String>,
+    program_id: Option<String>,
+    program_release_hash: Option<String>,
     origin: Option<String>,
     client_ip: Option<String>,
     limits: Option<Limits>,
@@ -151,9 +212,13 @@ impl SessionClaimsBuilder {
             nbf: now,
             exp: now + crate::DEFAULT_SESSION_TTL_SECONDS,
             jti: uuid::Uuid::new_v4().to_string(),
-            scope: "read".to_string(),
+            scope: crate::SCOPE_READ.to_string(),
             metering_key: String::new(),
             deployment_id: None,
+            target_kind: None,
+            target_id: None,
+            program_id: None,
+            program_release_hash: None,
             origin: None,
             client_ip: None,
             limits: None,
@@ -179,6 +244,50 @@ impl SessionClaimsBuilder {
 
     pub fn with_deployment_id(mut self, id: impl Into<String>) -> Self {
         self.deployment_id = Some(id.into());
+        self
+    }
+
+    /// Bind claims to a typed target.
+    pub fn with_target(mut self, kind: TargetKind, id: impl Into<String>) -> Self {
+        self.target_kind = Some(kind);
+        self.target_id = Some(id.into());
+        self
+    }
+
+    /// Allow reads for a program.
+    pub fn with_program_id(mut self, program_id: impl Into<String>) -> Self {
+        self.program_id = Some(program_id.into());
+        self
+    }
+
+    /// Restrict reads to one immutable program release.
+    pub fn with_program_release_hash(mut self, hash: impl Into<String>) -> Self {
+        self.program_release_hash = Some(hash.into());
+        self
+    }
+
+    /// Configure an exact program-read target and its immutable release.
+    pub fn with_program_read_binding(
+        mut self,
+        target_id: impl Into<String>,
+        program_id: impl Into<String>,
+        program_release_hash: impl Into<String>,
+    ) -> Self {
+        self.aud = crate::PROGRAM_READ_AUDIENCE.to_string();
+        self.scope = crate::SCOPE_READ.to_string();
+        self.target_kind = Some(TargetKind::ProgramReadBinding);
+        self.target_id = Some(target_id.into());
+        self.program_id = Some(program_id.into());
+        self.program_release_hash = Some(program_release_hash.into());
+        self
+    }
+
+    /// Configure a typed regional Solana gateway target.
+    pub fn with_solana_gateway_binding(mut self, target_id: impl Into<String>) -> Self {
+        self.aud = crate::SOLANA_GATEWAY_AUDIENCE.to_string();
+        self.scope = crate::SCOPE_READ.to_string();
+        self.target_kind = Some(TargetKind::SolanaGatewayBinding);
+        self.target_id = Some(target_id.into());
         self
     }
 
@@ -224,6 +333,10 @@ impl SessionClaimsBuilder {
             scope: self.scope,
             metering_key: self.metering_key,
             deployment_id: self.deployment_id,
+            target_kind: self.target_kind,
+            target_id: self.target_id,
+            program_id: self.program_id,
+            program_release_hash: self.program_release_hash,
             origin: self.origin,
             client_ip: self.client_ip,
             limits: self.limits,
@@ -240,12 +353,22 @@ pub struct AuthContext {
     pub subject: String,
     /// Issuer
     pub issuer: String,
+    /// Verified JWT audience
+    pub audience: String,
     /// Key class (secret vs publishable)
     pub key_class: KeyClass,
     /// Metering key for usage attribution
     pub metering_key: String,
     /// Deployment ID binding
     pub deployment_id: Option<String>,
+    /// Typed resource target
+    pub target_kind: Option<TargetKind>,
+    /// Public target identifier
+    pub target_id: Option<String>,
+    /// Program allowed by the token
+    pub program_id: Option<String>,
+    /// Exact immutable program release allowed by the token
+    pub program_release_hash: Option<String>,
     /// Token expiration time
     pub expires_at: u64,
     /// Granted scope
@@ -273,9 +396,14 @@ impl AuthContext {
         Self {
             subject: claims.sub,
             issuer: claims.iss,
+            audience: claims.aud,
             key_class: claims.key_class,
             metering_key: claims.metering_key,
             deployment_id: claims.deployment_id,
+            target_kind: claims.target_kind,
+            target_id: claims.target_id,
+            program_id: claims.program_id,
+            program_release_hash: claims.program_release_hash,
             expires_at: claims.exp,
             scope: claims.scope,
             limits: claims.limits.unwrap_or_default(),
@@ -332,5 +460,50 @@ mod tests {
 
         assert_eq!(decoded.max_transaction_bytes, Some(1232));
         assert_eq!(decoded.max_transaction_concurrency, Some(4));
+    }
+
+    #[test]
+    fn program_read_claims_use_camel_case_fields() {
+        let claims = SessionClaims::program_read_builder(
+            "issuer",
+            "subject",
+            "binding-1",
+            "program-1",
+            "release-1",
+        )
+        .build();
+        let value = serde_json::to_value(claims).unwrap();
+
+        assert_eq!(value["aud"], crate::PROGRAM_READ_AUDIENCE);
+        assert_eq!(value["targetKind"], "program-read-binding");
+        assert_eq!(value["targetId"], "binding-1");
+        assert_eq!(value["programId"], "program-1");
+        assert_eq!(value["programReleaseHash"], "release-1");
+        assert!(value.get("target_kind").is_none());
+    }
+
+    #[test]
+    fn gateway_claims_use_stable_audience_target_and_default_scope() {
+        let claims =
+            SessionClaims::solana_gateway_builder("issuer", "subject", "gateway-us-east-1").build();
+        let value = serde_json::to_value(claims).unwrap();
+
+        assert_eq!(value["aud"], crate::SOLANA_GATEWAY_AUDIENCE);
+        assert_eq!(value["targetKind"], "solana-gateway-binding");
+        assert_eq!(value["targetId"], "gateway-us-east-1");
+        assert_eq!(value["scope"], crate::SCOPE_READ);
+    }
+
+    #[test]
+    fn legacy_deployment_claims_remain_untyped() {
+        let claims = SessionClaims::builder("issuer", "subject", "deployment-1")
+            .with_deployment_id("deployment-1")
+            .build();
+        let value = serde_json::to_value(&claims).unwrap();
+        let decoded: SessionClaims = serde_json::from_value(value.clone()).unwrap();
+
+        assert_eq!(decoded.deployment_id.as_deref(), Some("deployment-1"));
+        assert_eq!(decoded.target_kind, None);
+        assert!(value.get("targetKind").is_none());
     }
 }
