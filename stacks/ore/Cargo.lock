@@ -149,6 +149,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "arete-artifacts"
+version = "0.1.0"
+dependencies = [
+ "arete-hash",
+ "arete-idl",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "arete-auth"
 version = "0.2.0"
 dependencies = [
@@ -168,6 +179,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "arete-hash"
+version = "0.1.0"
+dependencies = [
+ "arete-idl",
+ "bs58",
+ "hex",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "arete-idl"
 version = "0.1.0"
 dependencies = [
@@ -183,6 +208,8 @@ dependencies = [
 name = "arete-interpreter"
 version = "0.3.0"
 dependencies = [
+ "arete-artifacts",
+ "arete-hash",
  "arete-idl",
  "arete-macros",
  "bs58",
@@ -210,6 +237,8 @@ dependencies = [
 name = "arete-macros"
 version = "0.3.0"
 dependencies = [
+ "arete-artifacts",
+ "arete-hash",
  "arete-idl",
  "bs58",
  "hex",
@@ -227,6 +256,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "arete-auth",
+ "arete-hash",
  "arete-interpreter",
  "async-trait",
  "base64 0.22.1",
@@ -2699,6 +2729,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a50f4cf475b65d88e057964e0e9bb1f0aa9bbb2036dc65c64596b42932536984"
 
 [[package]]
+name = "ryu-js"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
+
+[[package]]
 name = "schannel"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2793,6 +2829,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_json_canonicalizer"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe52319a927259afbfa5180c5157cd8167edfd3e8c254f9558c7fef44c5649f2"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
