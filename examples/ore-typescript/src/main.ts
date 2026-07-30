@@ -29,7 +29,10 @@ function printTreasury(treasury: OreTreasuryWithId) {
 }
 
 async function main() {
-  const a4 = await Arete.connect(ORE_STREAM_STACK, { url: 'http://localhost:8878' });
+  const a4 = await Arete.connect(ORE_STREAM_STACK, {
+    url: 'ws://localhost:8878',
+    httpUrl: 'http://localhost:8081',
+  });
 
   console.log('--- Streaming OreRound and OreTreasury updates ---\n');
 
