@@ -18,6 +18,13 @@ ENCODED_NAME="${ENCODED_NAME//\//%2F}"
 RESPONSE_FILE="$(mktemp "${TMPDIR:-/tmp}/npm-registry-response.XXXXXX")"
 trap 'rm -f "$RESPONSE_FILE"' EXIT
 
+using_trusted_publishing() {
+  [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" \
+    && -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
+    && -z "${NODE_AUTH_TOKEN:-}" \
+    && -z "${NPM_TOKEN:-}" ]]
+}
+
 STATUS="$(curl --silent --show-error --retry 3 --retry-all-errors \
   --user-agent 'arete-release-workflow (https://github.com/AreteA4/arete)' \
   --output "$RESPONSE_FILE" \
@@ -38,7 +45,9 @@ case "$STATUS" in
     ;;
 esac
 
-if NPM_ACCOUNT="$(npm whoami 2>/dev/null)"; then
+if using_trusted_publishing; then
+  echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION with npm trusted publishing"
+elif NPM_ACCOUNT="$(npm whoami 2>/dev/null)"; then
   echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION as $NPM_ACCOUNT"
 elif [[ "$DRY_RUN" == "--dry-run" ]]; then
   echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION (unauthenticated dry run)"
@@ -47,8 +56,11 @@ else
   exit 1
 fi
 
-if [[ "$DRY_RUN" == "--dry-run" ]]; then
-  npm publish "$PACKAGE_DIR" --access public --dry-run
-else
-  npm publish "$PACKAGE_DIR" --access public
-fi
+(
+  cd "$PACKAGE_DIR"
+  if [[ "$DRY_RUN" == "--dry-run" ]]; then
+    npm publish --access public --provenance --dry-run
+  else
+    npm publish --access public --provenance
+  fi
+)

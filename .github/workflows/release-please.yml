@@ -32,7 +32,10 @@ jobs:
       mcp_version: ${{ steps.release.outputs['rust/arete-mcp--version'] }}
       mcp_release_created: ${{ steps.release.outputs['rust/arete-mcp--release_created'] }}
       idl_release_created: ${{ steps.release.outputs['arete-idl--release_created'] }}
+      hash_release_created: ${{ steps.release.outputs['arete-hash--release_created'] }}
+      artifacts_release_created: ${{ steps.release.outputs['arete-artifacts--release_created'] }}
       auth_release_created: ${{ steps.release.outputs['rust/arete-auth--release_created'] }}
+      typescript_hash_release_created: ${{ steps.release.outputs['typescript/hash--release_created'] }}
       core_version: ${{ steps.release.outputs['typescript/core--version'] }}
       core_release_created: ${{ steps.release.outputs['typescript/core--release_created'] }}
       react_release_created: ${{ steps.release.outputs['typescript/react--release_created'] }}
@@ -117,6 +120,14 @@ jobs:
         if: needs.release-please.outputs.idl_release_created == 'true'
         run: ./scripts/publish-crate.sh arete-idl
 
+      - name: Publish arete-hash
+        if: needs.release-please.outputs.hash_release_created == 'true'
+        run: ./scripts/publish-crate.sh arete-hash
+
+      - name: Publish arete-artifacts
+        if: needs.release-please.outputs.artifacts_release_created == 'true'
+        run: ./scripts/publish-crate.sh arete-artifacts
+
       - name: Publish arete-macros
         if: needs.release-please.outputs.macros_release_created == 'true'
         run: ./scripts/publish-crate.sh arete-macros
@@ -153,7 +164,11 @@ jobs:
     name: Publish to npm
     needs: release-please
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     if: >-
+      needs.release-please.outputs.typescript_hash_release_created == 'true' ||
       needs.release-please.outputs.core_release_created == 'true' ||
       needs.release-please.outputs.react_release_created == 'true' ||
       needs.release-please.outputs.adapter_kit_release_created == 'true' ||
@@ -167,12 +182,40 @@ jobs:
           node-version: "20.18.0"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Upgrade npm for trusted publishing
+        run: npm install --global npm@11
+
+      - name: Install hash dependencies
+        if: needs.release-please.outputs.typescript_hash_release_created == 'true'
+        run: npm ci
+        working-directory: typescript/hash
+
+      - name: Build hash
+        if: needs.release-please.outputs.typescript_hash_release_created == 'true'
+        run: npm run build
+        working-directory: typescript/hash
+
+      - name: Publish hash
+        if: needs.release-please.outputs.typescript_hash_release_created == 'true'
+        run: ../../scripts/publish-npm-package.sh .
+        working-directory: typescript/hash
+
       # Build @usearete/sdk first so every downstream package uses this checkout.
       - name: Install core dependencies
+        if: >-
+          needs.release-please.outputs.core_release_created == 'true' ||
+          needs.release-please.outputs.react_release_created == 'true' ||
+          needs.release-please.outputs.adapter_kit_release_created == 'true' ||
+          needs.release-please.outputs.adapter_web3js_release_created == 'true'
         run: npm ci
         working-directory: typescript/core
 
       - name: Build core
+        if: >-
+          needs.release-please.outputs.core_release_created == 'true' ||
+          needs.release-please.outputs.react_release_created == 'true' ||
+          needs.release-please.outputs.adapter_kit_release_created == 'true' ||
+          needs.release-please.outputs.adapter_web3js_release_created == 'true'
         run: npm run build
         working-directory: typescript/core
 
@@ -180,8 +223,6 @@ jobs:
         if: needs.release-please.outputs.core_release_created == 'true'
         run: ../../scripts/publish-npm-package.sh .
         working-directory: typescript/core
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Wait for core registry propagation
         if: needs.release-please.outputs.core_release_created == 'true'
@@ -215,8 +256,6 @@ jobs:
         if: needs.release-please.outputs.react_release_created == 'true'
         run: ../../scripts/publish-npm-package.sh .
         working-directory: typescript/react
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Install Kit adapter dependencies
         if: needs.release-please.outputs.adapter_kit_release_created == 'true'
@@ -232,8 +271,6 @@ jobs:
         if: needs.release-please.outputs.adapter_kit_release_created == 'true'
         run: ../../../scripts/publish-npm-package.sh .
         working-directory: typescript/adapters/kit
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Install web3.js adapter dependencies
         if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
@@ -249,8 +286,6 @@ jobs:
         if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
         run: ../../../scripts/publish-npm-package.sh .
         working-directory: typescript/adapters/web3js
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   bundle-templates:
     name: Bundle CLI Templates
@@ -529,6 +564,9 @@ jobs:
         bundle-templates,
       ]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:
       - uses: actions/checkout@v6
@@ -539,16 +577,20 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Upgrade npm for trusted publishing
+        run: npm install --global npm@11
+
       - name: Publish arete CLI wrapper
         run: ../../scripts/publish-npm-package.sh .
         working-directory: packages/arete
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-npm-mcp:
     name: Publish MCP to npm
     needs: [release-please, build-mcp-binaries, publish-mcp-checksums]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     if: needs.release-please.outputs.mcp_release_created == 'true'
     steps:
       - uses: actions/checkout@v6
@@ -559,11 +601,12 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Upgrade npm for trusted publishing
+        run: npm install --global npm@11
+
       - name: Publish arete MCP wrapper
         run: ../../scripts/publish-npm-package.sh .
         working-directory: packages/mcp
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # TODO: Uncomment when Python SDK is ready for PyPI publishing
   # publish-pypi:
