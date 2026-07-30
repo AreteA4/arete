@@ -182,6 +182,14 @@ enum Commands {
     #[command(subcommand)]
     Stack(StackCommands),
 
+    /// Build and validate portable live artifacts
+    #[command(subcommand)]
+    Live(LiveCommands),
+
+    /// Build and validate portable program artifacts
+    #[command(subcommand)]
+    Program(ProgramCommands),
+
     /// Build commands (advanced) - low-level build management
     #[command(subcommand, hide = true)]
     Build(BuildCommands),
@@ -212,7 +220,10 @@ enum SdkCommands {
 #[derive(Args)]
 struct SdkCreateArgs {
     /// Name of the stack to generate SDK for
-    #[arg(required_unless_present = "idl", conflicts_with = "idl")]
+    #[arg(
+        required_unless_present_any = ["idl", "program_spec", "manifest"],
+        conflicts_with_all = ["idl", "program_spec", "manifest"]
+    )]
     stack_name: Option<String>,
 
     /// Generate a TypeScript SDK
@@ -248,8 +259,39 @@ struct SdkCreateArgs {
     extensions: Option<String>,
 
     /// Raw IDL file to generate a standalone program SDK from (TypeScript + --program-only only)
-    #[arg(long, requires = "program_only", conflicts_with = "stack_name")]
+    #[arg(
+        long,
+        requires = "program_only",
+        conflicts_with_all = ["stack_name", "program_spec", "manifest"]
+    )]
     idl: Option<String>,
+
+    /// Local ProgramSpec artifact to generate a standalone program SDK from
+    #[arg(
+        long,
+        requires = "program_only",
+        conflicts_with_all = ["stack_name", "idl", "manifest"]
+    )]
+    program_spec: Option<String>,
+
+    /// Local StackManifest artifact; dependencies default to its directory
+    #[arg(
+        long,
+        conflicts_with_all = ["stack_name", "idl", "program_spec", "program_only"]
+    )]
+    manifest: Option<String>,
+
+    /// Approved recursive artifact search root; repeat for dependencies outside the manifest directory
+    #[arg(long, requires = "manifest")]
+    artifact_dir: Vec<String>,
+
+    /// Existing aliased live SDK import (`alias=./path.js`); repeat for composed manifests
+    #[arg(long, requires = "manifest")]
+    live_module: Vec<String>,
+
+    /// Existing independent program SDK import (`alias=./path.js`); repeat for composed manifests
+    #[arg(long, requires = "manifest")]
+    program_module: Vec<String>,
 
     /// Emit a standalone program-SDK module (pdas/accounts/instructions, no
     /// views or stack const). TypeScript only.
@@ -328,6 +370,33 @@ enum KeysCommands {
 
 #[derive(Subcommand)]
 enum StackCommands {
+    /// Compose ProgramSpecs and LiveSpecs into a portable StackManifest
+    Compose {
+        /// Client-facing stack name
+        #[arg(long)]
+        name: String,
+
+        /// ProgramSpec artifact path; repeat for each program
+        #[arg(long = "program")]
+        programs: Vec<String>,
+
+        /// Aliased LiveSpec artifact (`alias=path`); repeat to compose live packages
+        #[arg(long = "live")]
+        live_specs: Vec<String>,
+
+        /// Approved recursive artifact search root; repeat for multiple roots
+        #[arg(long = "artifact-dir")]
+        artifact_dirs: Vec<String>,
+
+        /// Selected client view (`alias=view_id`); repeat for an exact ordered allowlist
+        #[arg(long = "selected-view")]
+        selected_views: Vec<String>,
+
+        /// StackManifest output path
+        #[arg(short, long)]
+        output: String,
+    },
+
     /// List all stacks with their deployment status
     List,
 
@@ -405,6 +474,40 @@ enum StackCommands {
         /// Skip confirmation prompt
         #[arg(short, long)]
         force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LiveCommands {
+    /// Normalize a supported legacy stack into LiveSpec and ProgramSpec artifacts
+    Build {
+        /// Legacy .stack.json input
+        input: String,
+
+        /// LiveSpec output path
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Directory for ProgramSpec outputs
+        #[arg(long)]
+        program_dir: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProgramCommands {
+    /// Normalize an IDL into a portable ProgramSpec artifact
+    Build {
+        /// IDL JSON input
+        input: String,
+
+        /// ProgramSpec output path
+        #[arg(short, long)]
+        output: String,
+
+        /// Program ID when the IDL does not declare one
+        #[arg(long)]
+        program_id: Option<String>,
     },
 }
 
@@ -522,6 +625,8 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Config(_) => "config",
         Commands::Auth(_) => "auth",
         Commands::Stack(_) => "stack",
+        Commands::Live(_) => "live",
+        Commands::Program(_) => "program",
         Commands::Build(_) => "build",
         Commands::Telemetry(_) => "telemetry",
         Commands::Idl(_) => "idl",
@@ -592,6 +697,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 create_args.url,
                 create_args.extensions,
                 create_args.idl,
+                create_args.program_spec,
+                create_args.manifest,
+                create_args.artifact_dir,
+                create_args.live_module,
+                create_args.program_module,
                 create_args.program_only,
             ),
             SdkCommands::Sync(sync_args) => {
@@ -618,6 +728,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             },
         },
         Commands::Stack(stack_cmd) => match stack_cmd {
+            StackCommands::Compose {
+                name,
+                programs,
+                live_specs,
+                artifact_dirs,
+                selected_views,
+                output,
+            } => commands::public_artifacts::compose_stack(
+                &name,
+                &programs,
+                &live_specs,
+                &artifact_dirs,
+                &selected_views,
+                &output,
+            ),
             StackCommands::List => commands::stack::list(cli.json),
             StackCommands::Push { stack_name } => {
                 commands::stack::push(&cli.config, stack_name.as_deref())
@@ -645,6 +770,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 branch,
                 force,
             } => commands::stack::stop(&stack_name, branch.as_deref(), force),
+        },
+        Commands::Live(live_cmd) => match live_cmd {
+            LiveCommands::Build {
+                input,
+                output,
+                program_dir,
+            } => commands::public_artifacts::build_live(&input, output, program_dir),
+        },
+        Commands::Program(program_cmd) => match program_cmd {
+            ProgramCommands::Build {
+                input,
+                output,
+                program_id,
+            } => commands::public_artifacts::build_program(&input, &output, program_id.as_deref()),
         },
         Commands::Build(build_cmd) => match build_cmd {
             BuildCommands::Create {

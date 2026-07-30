@@ -99,7 +99,7 @@ pub fn push(config_path: &str, stack_name: Option<&str>) -> Result<()> {
         print!("  {} {} ", "↑".blue(), ast.stack_name);
         match load_and_upload_ast(&client, remote_spec.id, &ast) {
             Ok(response) => {
-                let hash_short = &response.version.content_hash[..12];
+                let hash_short = response.version.short_hash();
                 if !response.version_is_new {
                     println!(
                         "{} (v{} up to date)",
@@ -349,7 +349,7 @@ pub fn show(stack_name: &str, version: Option<i32>, json: bool) -> Result<()> {
     if let Some(ver) = &spec_with_version.latest_version {
         println!();
         println!("  {} Latest Version", "•".dimmed());
-        println!("    v{} ({})", ver.version_number, &ver.content_hash[..12]);
+        println!("    v{} ({})", ver.version_number, ver.short_hash());
         println!("    State: {}", ver.state_name);
         println!(
             "    Handlers: {}, Sections: {}",
@@ -389,7 +389,7 @@ pub fn show(stack_name: &str, version: Option<i32>, json: bool) -> Result<()> {
         if let Some(ver) = ver {
             println!();
             println!("  {} Version {}", "•".dimmed(), v);
-            println!("    Hash: {}", ver.content_hash);
+            println!("    Portable AST: {}", ver.portable_hash());
             println!("    State: {}", ver.state_name);
             println!(
                 "    Handlers: {}, Sections: {}",
@@ -445,7 +445,7 @@ pub fn versions(stack_name: &str, limit: i64, json: bool) -> Result<()> {
     );
 
     for version in &versions {
-        let hash_short = &version.content_hash[..12];
+        let hash_short = version.short_hash();
 
         println!(
             "  {} v{}",
@@ -597,7 +597,7 @@ pub fn rollback(
         println!(
             "  Found version {} (hash: {})",
             ver.version_number,
-            &ver.content_hash[..12]
+            ver.short_hash()
         );
         ver.id
     } else {
