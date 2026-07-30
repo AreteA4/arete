@@ -39,14 +39,14 @@ concepts and are not required here.
 Live, Program Read, chain-read, and transaction surfaces are independent. The
 fluent helpers update a `RuntimePlan`:
 
-| Builder method | Capabilities enabled |
-| -------------- | -------------------- |
-| `.websocket()` | WebSocket transport and live projection runtime |
-| `.program_reads()` | Health plus typed, release-checked program HTTP reads |
-| `.chain_reads()` | Generic Solana chain-read HTTP routes |
-| `.stack_queries()` | Stack-scoped query HTTP routes |
-| `.transactions_config(config)` | Fixed transaction routes when `config.enabled` is true |
-| `.http()` | Convenience set: health, program reads, chain reads, and stack queries |
+| Builder method                 | Capabilities enabled                                                   |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| `.websocket()`                 | WebSocket transport and live projection runtime                        |
+| `.program_reads()`             | Health plus typed, release-checked program HTTP reads                  |
+| `.chain_reads()`               | Generic Solana chain-read HTTP routes                                  |
+| `.stack_queries()`             | Stack-scoped query HTTP routes                                         |
+| `.transactions_config(config)` | Fixed transaction routes when `config.enabled` is true                 |
+| `.http()`                      | Convenience set: health, program reads, chain reads, and stack queries |
 
 Transaction routes are never enabled by `.http()`. To enforce an exact
 capability set after configuring listeners, replace the inferred plan:
@@ -80,14 +80,14 @@ services, then supply independent chain and transaction transports.
 
 These environment variables are read by the generated runtime and server code:
 
-| Variable               | Required | Default | Description                                              |
-| ---------------------- | -------- | ------- | -------------------------------------------------------- |
-| `YELLOWSTONE_ENDPOINT` | For live runtime | —       | Yellowstone gRPC endpoint URL                            |
-| `YELLOWSTONE_X_TOKEN`  | Provider-specific | —       | Authentication token for the endpoint                    |
-| `ARETE_READ_RPC_URL`   | For RPC-backed reads | —     | Upstream used by Program Read and chain-read routes      |
-| `ARETE_TRANSACTION_RPC_URL` | For transaction routes | — | Independent transaction inspect/send upstream           |
-| `ARETE_TRANSACTIONS_ENABLED` | No | `false` | Explicitly enables fixed transaction routes              |
-| `RUST_LOG`             | No       | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`) |
+| Variable                     | Required               | Default | Description                                              |
+| ---------------------------- | ---------------------- | ------- | -------------------------------------------------------- |
+| `YELLOWSTONE_ENDPOINT`       | For live runtime       | —       | Yellowstone gRPC endpoint URL                            |
+| `YELLOWSTONE_X_TOKEN`        | Provider-specific      | —       | Authentication token for the endpoint                    |
+| `ARETE_READ_RPC_URL`         | For RPC-backed reads   | —       | Upstream used by Program Read and chain-read routes      |
+| `ARETE_TRANSACTION_RPC_URL`  | For transaction routes | —       | Independent transaction inspect/send upstream            |
+| `ARETE_TRANSACTIONS_ENABLED` | No                     | `false` | Explicitly enables fixed transaction routes              |
+| `RUST_LOG`                   | No                     | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`) |
 
 ## WebSocket Configuration
 

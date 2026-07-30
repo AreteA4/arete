@@ -128,14 +128,14 @@ This section remains for compatibility with composite inputs through **August
 If legacy entries are omitted, older CLI paths may still discover compatible
 inputs under `.arete/`.
 
-| Option                   | Type    | Required | Description                                               |
-| ------------------------ | ------- | -------- | --------------------------------------------------------- |
-| `name`                   | string  | Yes      | Compatibility name used by legacy CLI commands            |
-| `stack`                  | string  | Yes      | Path to a legacy composite `.stack.json` input             |
-| `description`            | string  | No       | Stack description                                         |
-| `typescript_output_file` | string  | No       | Legacy per-stack TypeScript output path                   |
-| `rust_output_crate`      | string  | No       | Legacy per-stack Rust crate/module directory              |
-| `rust_module`            | boolean | No       | Legacy override for module versus crate generation        |
+| Option                   | Type    | Required | Description                                        |
+| ------------------------ | ------- | -------- | -------------------------------------------------- |
+| `name`                   | string  | Yes      | Compatibility name used by legacy CLI commands     |
+| `stack`                  | string  | Yes      | Path to a legacy composite `.stack.json` input     |
+| `description`            | string  | No       | Stack description                                  |
+| `typescript_output_file` | string  | No       | Legacy per-stack TypeScript output path            |
+| `rust_output_crate`      | string  | No       | Legacy per-stack Rust crate/module directory       |
+| `rust_module`            | boolean | No       | Legacy override for module versus crate generation |
 
 ---
 

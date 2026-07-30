@@ -23,20 +23,20 @@ Complete reference for the Arete CLI (`a4`).
 
 ## Quick Reference
 
-| Command                              | Description                                      |
-| ------------------------------------ | ------------------------------------------------ |
-| `a4 create [name]`                   | Scaffold a new app from a template               |
-| `a4 init`                            | Initialize a stack project                       |
-| `a4 program build <idl>`             | Build a portable ProgramSpec                     |
-| `a4 live build <legacy.stack.json>`  | Normalize a legacy input to explicit artifacts   |
-| `a4 stack compose`                   | Compose ProgramSpecs and aliased LiveSpecs       |
-| `a4 sdk create --manifest ... --ts`  | Generate a TypeScript SDK from a StackManifest   |
-| `a4 sdk create --manifest ... --rust` | Generate a Rust SDK from a StackManifest        |
-| `a4 up <manifest>`                   | Deploy one exact StackManifest                   |
-| `a4 status`                          | Show project overview                            |
-| `a4 stack list`                      | List deployed stacks                             |
-| `a4 telemetry status`                | Show telemetry status                            |
-| `a4 explore`                         | Discover deployed stacks and schemas             |
+| Command                               | Description                                    |
+| ------------------------------------- | ---------------------------------------------- |
+| `a4 create [name]`                    | Scaffold a new app from a template             |
+| `a4 init`                             | Initialize a stack project                     |
+| `a4 program build <idl>`              | Build a portable ProgramSpec                   |
+| `a4 live build <legacy.stack.json>`   | Normalize a legacy input to explicit artifacts |
+| `a4 stack compose`                    | Compose ProgramSpecs and aliased LiveSpecs     |
+| `a4 sdk create --manifest ... --ts`   | Generate a TypeScript SDK from a StackManifest |
+| `a4 sdk create --manifest ... --rust` | Generate a Rust SDK from a StackManifest       |
+| `a4 up <manifest>`                    | Deploy one exact StackManifest                 |
+| `a4 status`                           | Show project overview                          |
+| `a4 stack list`                       | List deployed stacks                           |
+| `a4 telemetry status`                 | Show telemetry status                          |
+| `a4 explore`                          | Discover deployed stacks and schemas           |
 
 :::note[npm vs Cargo]
 When installed via npm (`npm install -g @usearete/a4`), the command is `a4`. When installed via Cargo (`cargo install a4-cli`), the command is also `a4`. Both are the same CLI.
@@ -488,13 +488,13 @@ a4 sdk create --manifest ./.arete/MyStack.stack-manifest.json --ts \
 
 **Options:**
 
-| Flag                        | Description                         |
-| --------------------------- | ----------------------------------- |
-| `--output, -o <path>`       | Output file path (overrides config) |
-| `--package-name, -p <name>` | Package name for TypeScript         |
-| `--artifact-dir <path>`     | Additional approved artifact search root; repeat as needed |
-| `--live-module <alias=path>`| Existing generated module for an aliased LiveSpec          |
-| `--program-module <alias=path>` | Existing generated module for an independent ProgramSpec |
+| Flag                            | Description                                                |
+| ------------------------------- | ---------------------------------------------------------- |
+| `--output, -o <path>`           | Output file path (overrides config)                        |
+| `--package-name, -p <name>`     | Package name for TypeScript                                |
+| `--artifact-dir <path>`         | Additional approved artifact search root; repeat as needed |
+| `--live-module <alias=path>`    | Existing generated module for an aliased LiveSpec          |
+| `--program-module <alias=path>` | Existing generated module for an independent ProgramSpec   |
 
 ### a4 sdk create --manifest \<path\> --rust
 

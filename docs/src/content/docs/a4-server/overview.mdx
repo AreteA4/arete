@@ -41,12 +41,12 @@ selection.
 Do not treat one server URL as part of artifact identity. The builder enables
 runtime surfaces independently:
 
-| Surface | Builder configuration | Client transport |
-| ------- | --------------------- | ---------------- |
-| Live views | `.websocket()` and the generated live runtime | Per-LiveSpec WebSocket transport |
-| Program reads | `.program_reads()` | Per-program HTTP transport and release/binding |
-| Chain reads | `.chain_reads()` | Generic Solana chain-read transport |
-| Transactions | `.transactions_config(...)` | Transaction inspect/send transport |
+| Surface       | Builder configuration                         | Client transport                               |
+| ------------- | --------------------------------------------- | ---------------------------------------------- |
+| Live views    | `.websocket()` and the generated live runtime | Per-LiveSpec WebSocket transport               |
+| Program reads | `.program_reads()`                            | Per-program HTTP transport and release/binding |
+| Chain reads   | `.chain_reads()`                              | Generic Solana chain-read transport            |
+| Transactions  | `.transactions_config(...)`                   | Transaction inspect/send transport             |
 
 `.http()` is a convenience that enables health, Program Read, chain-read, and
 stack-query routes together; transaction routes remain disabled until explicitly
@@ -57,12 +57,12 @@ bindings while choosing completely separate chain and transaction transports.
 
 To run a stack with `a4-server`, you need:
 
-| Requirement                   | Description                                                                                                                                          |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Yellowstone gRPC Endpoint** | Required for a live runtime. A URL to a Solana node running the [Yellowstone Geyser plugin](https://github.com/rpcpool/yellowstone-grpc).              |
-| **X-Token**                   | Usually required when the selected Yellowstone provider authenticates live streams.                                                                    |
-| **Rust 1.75+**                | Required to build the server binary.                                                                                                                 |
-| **A compiled definition**     | Your crate with the `#[arete(...)]` macro, which generates a live or program-only `spec()` function.                                                  |
+| Requirement                   | Description                                                                                                                               |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **Yellowstone gRPC Endpoint** | Required for a live runtime. A URL to a Solana node running the [Yellowstone Geyser plugin](https://github.com/rpcpool/yellowstone-grpc). |
+| **X-Token**                   | Usually required when the selected Yellowstone provider authenticates live streams.                                                       |
+| **Rust 1.75+**                | Required to build the server binary.                                                                                                      |
+| **A compiled definition**     | Your crate with the `#[arete(...)]` macro, which generates a live or program-only `spec()` function.                                      |
 
 :::caution[Yellowstone Access Required]
 You must have access to a Yellowstone gRPC endpoint when enabling live
@@ -76,9 +76,9 @@ projections. Program-only reads do not require Yellowstone. Live options include
 
 `a4-server` reads configuration from environment variables:
 
-| Variable               | Required | Description                           |
-| ---------------------- | -------- | ------------------------------------- |
-| `YELLOWSTONE_ENDPOINT` | For live runtime | Your Yellowstone gRPC endpoint URL    |
+| Variable               | Required          | Description                           |
+| ---------------------- | ----------------- | ------------------------------------- |
+| `YELLOWSTONE_ENDPOINT` | For live runtime  | Your Yellowstone gRPC endpoint URL    |
 | `YELLOWSTONE_X_TOKEN`  | Provider-specific | Authentication token for the endpoint |
 
 ## When to Use a4-server
