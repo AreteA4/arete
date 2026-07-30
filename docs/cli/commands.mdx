@@ -22,7 +22,9 @@ Complete reference for the Arete CLI (`a4`).
 | Command | Description |
 |---------|-------------|
 | `a4 init` | Initialize project |
-| `a4 up [stack]` | Deploy stack (push + build + deploy) |
+| `a4 program build <idl>` | Build a portable ProgramSpec |
+| `a4 stack compose` | Compose ProgramSpecs and aliased LiveSpecs |
+| `a4 up <manifest>` | Deploy one exact StackManifest |
 | `a4 status` | Show project overview |
 | `a4 auth login` | Authenticate |
 
@@ -38,7 +40,8 @@ Initialize a new Arete project.
 a4 init
 ```
 
-Creates `arete.toml` with auto-discovered stacks from `.arete/*.ast.json`.
+Creates `arete.toml` and `.arete/`. Rust DSL builds write ProgramSpec,
+LiveSpec, and StackManifest artifacts directly.
 
 ### a4 config validate
 
@@ -52,22 +55,13 @@ a4 config validate
 
 ## Authentication
 
-### a4 auth register
-
-Create a new account.
-
-```bash
-a4 auth register
-```
-
-Prompts for username and password (min 8 characters).
-
 ### a4 auth login
 
-Login to your account.
+Save an API key for the selected environment.
 
 ```bash
 a4 auth login
+a4 auth login --key <your-api-key>
 ```
 
 ### a4 auth logout
@@ -100,24 +94,23 @@ a4 auth whoami
 
 ## Deployment
 
-### a4 up [stack-name]
+### a4 up <manifest>
 
-Deploy a stack: push, build, and deploy in one command.
+Deploy one exact local StackManifest.
 
 ```bash
-# Deploy all stacks
-a4 up
-
-# Deploy specific stack
-a4 up my-stack
+# Deploy the exact composition
+a4 up .arete/MyStack.stack-manifest.json
 
 # Deploy to branch
-a4 up my-stack --branch staging
-# Creates: my-stack-staging.stack.arete.run
+a4 up .arete/MyStack.stack-manifest.json --branch staging
 
 # Preview deployment
-a4 up my-stack --preview
+a4 up .arete/MyStack.stack-manifest.json --preview
 ```
+
+Composite `.stack.json` is an input-only compatibility adapter through **August
+31, 2026**. Do not deploy by name for new workflows.
 
 **Options:**
 
@@ -140,6 +133,38 @@ a4 status --json
 
 ## Stack Management
 
+### a4 program build <idl>
+
+```bash
+a4 program build ./idl/my-program.json \
+  --output ./.arete/my-program.program-spec.json
+```
+
+### a4 live build <legacy.stack.json>
+
+Normalize a supported legacy input into a LiveSpec and ProgramSpecs:
+
+```bash
+a4 live build ./Legacy.stack.json \
+  --output ./.arete/Legacy.live-spec.json \
+  --program-dir ./.arete/programs
+```
+
+### a4 stack compose
+
+```bash
+a4 stack compose --name MyApp \
+  --live core=./Core.live-spec.json \
+  --live analytics=./Analytics.live-spec.json \
+  --artifact-dir . \
+  --selected-view core=Position/state \
+  --selected-view analytics=Volume/list \
+  --output ./MyApp.stack-manifest.json
+```
+
+Each alias can receive an independent live binding. Program Read, chain, and
+transaction transports remain independent too.
+
 ### a4 stack list
 
 List all stacks with deployment status.
@@ -149,9 +174,10 @@ a4 stack list
 a4 stack list --json
 ```
 
-### a4 stack push [stack-name]
+### a4 stack push [stack-name] (legacy)
 
-Push local stacks to remote.
+Push a legacy configured composite input. This compatibility command is retained
+only through **August 31, 2026**.
 
 ```bash
 # Push all stacks
@@ -300,17 +326,19 @@ List stacks available for SDK generation.
 a4 sdk list
 ```
 
-### a4 sdk create typescript <stack-name>
+### a4 sdk create --manifest <path> --ts|--rust
 
-Generate TypeScript SDK.
+Generate local SDK source from one exact StackManifest.
 
 ```bash
-a4 sdk create typescript my-stack
-a4 sdk create typescript my-stack --output ./src/generated/
-a4 sdk create typescript my-stack --package-name @myorg/my-sdk
-a4 sdk create my-stack --ts --program-only
-a4 sdk create --ts --program-only --idl ./idls/spl-token.idl.json
+a4 sdk create --manifest .arete/MyStack.stack-manifest.json --ts
+a4 sdk create --manifest .arete/MyStack.stack-manifest.json --rust
+a4 sdk create --program-spec .arete/my-program.program-spec.json \
+  --program-only --ts
 ```
+
+Generation does not publish packages; a trusted operator publishes reviewed
+npm/crates.io output manually.
 
 ---
 
@@ -331,17 +359,11 @@ typescript_package = "@myorg/my-sdk"
 [build]
 watch_by_default = true
 
-# Stack definitions
-# Auto-discovered from .arete/*.ast.json
-# Define explicitly for custom naming:
+# Legacy composite inputs (compatibility only through August 31, 2026)
 [[stacks]]
 name = "my-game"
-ast = "SettlementGame"  # Entity name or path to .ast.json
+stack = ".arete/SettlementGame.stack.json"
 description = "Settlement game tracking"
-
-[[stacks]]
-name = "token-tracker"
-ast = ".arete/Token.ast.json"
 ```
 
 ---
@@ -379,8 +401,8 @@ pending → uploading → queued → building → pushing → deploying → comp
 # Initialize project
 a4 init
 
-# Create account and login
-a4 auth register
+# Login with your API key
+a4 auth login
 
 # Validate configuration
 a4 config validate
@@ -393,7 +415,7 @@ a4 config validate
 cargo build
 
 # Deploy
-a4 up my-stack
+a4 up .arete/MyStack.stack-manifest.json
 
 # Check status
 a4 status
@@ -403,8 +425,7 @@ a4 status
 
 ```bash
 # Deploy feature branch
-a4 up my-stack --branch feature-x
-# URL: my-stack-feature-x.stack.arete.run
+a4 up .arete/MyStack.stack-manifest.json --branch feature-x
 
 # Check deployment
 a4 stack list
@@ -439,23 +460,20 @@ a4 stack rollback my-stack --to 2
 |-------|----------|
 | `Not authenticated` | Run `a4 auth login` |
 | `Stack not found` | Check `a4 stack list` for available stacks |
-| `AST file not found` | Run `cargo build` to generate AST |
+| `StackManifest not found` | Run `cargo build` and use the generated manifest path |
 | `Build failed` | Check `a4 build status <id>` for details |
 | `Config invalid` | Run `a4 config validate` |
 
 ---
 
-## WebSocket URL Patterns
+## Endpoint and DNS Handoff
 
-After successful deployment:
-
-| Type | Pattern |
-|------|---------|
-| Production | `wss://{stack-name}.stack.arete.run` |
-| Branch | `wss://{stack-name}-{branch}.stack.arete.run` |
-
-Get the URL with:
+Use the deployment record to obtain the assigned bindings:
 
 ```bash
 a4 stack show <stack-name>
 ```
+
+Live, Program Read, chain, and transaction endpoints are independent. Operators
+map the required bindings through their chosen DNS/CDN provider and manage
+records and certificates there; the portable artifacts assume no DNS vendor.

@@ -5,11 +5,13 @@ sidebar:
   order: 2
 ---
 
-This guide shows how to run your compiled stack as a WebSocket server using `a4-server`.
+This guide shows how to run a generated live or program-only `spec()` using
+`a4-server`. The code-first server does not load a StackManifest at startup or
+select a hosted Program Release.
 
 ## 1. Set Environment Variables
 
-Before running, configure your Yellowstone connection:
+Before running a live projection, configure your Yellowstone connection:
 
 ```bash
 export YELLOWSTONE_ENDPOINT="https://your-geyser-endpoint.com"
@@ -26,6 +28,10 @@ YELLOWSTONE_X_TOKEN=your-secret-token
 :::tip
 Most Yellowstone providers (Triton, Helius, etc.) will give you both an endpoint URL and an authentication token when you sign up.
 :::
+
+A program-only `spec()` serving typed account reads does not start the live
+runtime and does not need Yellowstone. Its HTTP reads use the configured Solana
+read RPC instead.
 
 ## 2. Create the Server Binary
 
@@ -69,7 +75,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // Get the spec from your stack
+    // Get the generated spec. It includes local account readers and automatic
+    // release fingerprints as well as this stack's live projection.
     let spec = my_stream::spec();
 
     // Start the server
@@ -84,6 +91,71 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+The generated local release fingerprint is derived from the ProgramSpec and
+decoder-engine contract. It is not a hosted Program Release and requires no
+decoder binding.
+
+### Program-only server
+
+An IDL-only Rust module generates a `spec()` with typed account readers and no
+live projection bytecode:
+
+```rust
+use arete::prelude::*;
+use a4_server::{RuntimePlan, Server};
+use std::net::SocketAddr;
+
+#[arete(idl = ["idl/my_program.json"])]
+mod my_program {}
+
+Server::builder()
+    .spec(my_program::spec())
+    .program_reads()
+    .http_bind("0.0.0.0:8081".parse::<SocketAddr>()?)
+    // http_bind configures the listener; restore the exact capability plan.
+    .runtime_plan(RuntimePlan::program_reads())
+    .start()
+    .await?;
+```
+
+### Choose runtime surfaces explicitly
+
+Live, Program Read, chain, and transaction transports are independent. Enable
+only the capabilities this process should own:
+
+```rust
+use a4_server::{RuntimePlan, Server, TransactionConfig};
+
+let plan = RuntimePlan {
+    health: true,
+    chain_reads: true,
+    program_reads: true,
+    stack_queries: false,
+    transactions: true,
+    websocket: true,
+    live_runtime: true,
+};
+
+Server::builder()
+    .spec(my_stream::spec())
+    .websocket()                         // live views
+    .bind("[::]:8877".parse::<SocketAddr>()?)
+    .program_reads()                     // typed program account HTTP reads
+    .chain_reads()                       // generic chain-read HTTP routes
+    .http_bind("0.0.0.0:8081".parse::<SocketAddr>()?)
+    .transactions_config(TransactionConfig {
+        enabled: true,
+        rpc_url: Some(transaction_rpc_url),
+        ..TransactionConfig::default()
+    })
+    .runtime_plan(plan)
+    .start()
+    .await?;
+```
+
+`.http()` is available as a convenience for health, Program Read, chain-read,
+and stack-query routes. It still does not enable transaction submission.
 
 ## 3. Run the Server
 
@@ -114,6 +186,10 @@ const stack = await Arete.connect(MY_STREAM_STACK, {
 
 This local example assumes the server is explicitly configured for `allow_all`. Hosted browser deployments require a publishable key and should pass it through React as `<AreteProvider stack={MY_STREAM_STACK} auth={{ publishableKey }}>`.
 
+For a composed client, configure each aliased LiveSpec's WebSocket endpoint and
+each program's Program Read binding separately. Supply chain and transaction
+transports explicitly; never derive them from the live URL.
+
 ```rust title="Rust"
 use a4_sdk::Arete;
 
@@ -124,9 +200,13 @@ let stack = Arete::connect("ws://localhost:8877").await?;
 
 ### Health Endpoints
 
-Enable HTTP health checks for orchestrators like Kubernetes:
+Enable HTTP health checks for orchestrators like Kubernetes. Because the legacy
+`http_health()` and `health_bind()` helpers configure the shared HTTP listener,
+set an explicit plan when this process should expose health only:
 
 ```rust
+use a4_server::RuntimePlan;
+
 Server::builder()
     .spec(spec)
     .websocket()
@@ -134,6 +214,12 @@ Server::builder()
     .health_monitoring()
     .http_health()
     .health_bind("0.0.0.0:8081".parse()?)
+    .runtime_plan(RuntimePlan {
+        health: true,
+        websocket: true,
+        live_runtime: true,
+        ..RuntimePlan::default()
+    })
     .start()
     .await?;
 ```
@@ -149,6 +235,13 @@ a4-server = { version = "{{VERSION}}", features = ["otel"] }
 ### Graceful Shutdown
 
 `a4-server` handles `SIGINT` and `SIGTERM` automatically, ensuring clean disconnection from the Yellowstone stream.
+
+### Deployment, Packages, and DNS
+
+Building this binary does not publish a generated SDK package or configure a
+hostname. Operators publish reviewed npm/crates.io packages manually and map the
+server's endpoint bindings through their chosen DNS/CDN provider. Arete's
+portable artifacts do not require a particular DNS vendor or URL pattern.
 
 ### Transaction Relay
 

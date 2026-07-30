@@ -79,6 +79,34 @@ HTTP reads require the exact `read` scope. Transaction inspection routes
 require `transaction:inspect`; submission requires `transaction:send`. These
 whitespace-delimited scopes are independent and do not imply one another.
 
+### Standalone Solana Gateway
+
+`Server::solana_gateway(target_id)` is the supported OSS composition point for a
+regional HTTP gateway. It reuses the existing health, `/chain/*`, and
+`/transactions/v1/*` handlers and cannot configure a `Spec`, WebSocket, live
+runtime, stack queries, or Program Reads.
+
+```rust
+use arete_server::{Server, TransactionConfig};
+
+let transactions = TransactionConfig::from_env()?;
+Server::solana_gateway("gateway-us-east-1")
+    .bind("[::]:8081".parse()?)
+    .transactions_config(transactions)
+    .start()
+    .await?;
+```
+
+Set `ARETE_READ_RPC_URL` for chain reads. Transaction configuration remains
+explicit and uses the existing `ARETE_TRANSACTIONS_*` variables documented
+below. The gateway plan fails startup if transactions are not enabled. Process
+packaging and regional deployment belong in the platform repository; OSS
+exports only this reusable library composition.
+
+When an auth plugin is configured, the gateway also requires the stable
+`arete:solana-gateway` audience, `solana-gateway-binding` target kind, and the
+exact target ID passed to `Server::solana_gateway`.
+
 ### Transaction Relay
 
 The complete self-hosting and operations guide is available in

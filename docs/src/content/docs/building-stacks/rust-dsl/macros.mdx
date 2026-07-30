@@ -4,7 +4,17 @@ sidebar:
   order: 2
 ---
 
-Arete uses Rust procedural macros to define data pipelines declaratively. These macros transform your Rust structs into a unified stack spec (`.stack.json`), which is then used for both local execution and cloud deployment.
+Arete uses Rust procedural macros to define data pipelines declaratively. The
+macros generate local runtime code and write separate ProgramSpec, LiveSpec, and
+StackManifest artifacts directly. This keeps portable program identity, live
+projection behavior, client composition, and hosted deployment bindings from
+becoming one coupled file.
+
+:::note[Legacy input]
+Composite `.stack.json` is an input-only compatibility format through **August
+31, 2026**. New builds consume the explicit macro outputs. Use
+`a4 live build <legacy.stack.json>` only when normalizing an older input.
+:::
 
 ---
 
@@ -30,6 +40,34 @@ pub mod my_stream {
 | `skip_decoders` | `bool`              | No       | If true, skips generating instruction decoders (useful for manual decoding).                                                              |
 
 _\* Either `idl` or `proto` must be provided._
+
+### Generated outputs
+
+With entities, `#[arete]` generates:
+
+```text
+.arete/<program>.program-spec.json
+.arete/<ModuleName>.live-spec.json
+.arete/<ModuleName>.stack-manifest.json
+```
+
+The generated `spec()` combines projection bytecode, views, parsers, and local
+program account readers for the OSS code-first server path. Its program runtime
+definitions use automatic local release fingerprints; they do not require a
+hosted Program Release or decoder binding.
+
+With only IDLs and no entities, the same macro generates ProgramSpecs, a
+zero-live StackManifest, and a program-only `spec()`:
+
+```rust
+#[arete(idl = ["idl/token.json"])]
+pub mod token_program {}
+
+let spec = token_program::spec();
+```
+
+The program-only spec has generated account readers and no live projection
+work. This is useful with `Server::builder().spec(spec).program_reads()`.
 
 ---
 

@@ -273,17 +273,19 @@ if before.trading.last_trade_price != after.trading.last_trade_price {
 
 ## Generating a Rust SDK
 
-Use the Arete CLI to generate a typed Rust SDK from your spec:
+Use the Arete CLI to generate a typed Rust SDK from an exact StackManifest:
 
 ```bash
 # Generate SDK crate
-a4 sdk create rust settlement-game
+a4 sdk create --manifest .arete/SettlementGame.stack-manifest.json --rust
 
 # With custom output directory
-a4 sdk create rust settlement-game --output ./crates/game-sdk
+a4 sdk create --manifest .arete/SettlementGame.stack-manifest.json --rust \
+  --output ./crates/game-sdk
 
 # With custom crate name
-a4 sdk create rust settlement-game --crate-name game-sdk
+a4 sdk create --manifest .arete/SettlementGame.stack-manifest.json --rust \
+  --crate-name game-sdk
 ```
 
 This generates a crate with:

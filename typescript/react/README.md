@@ -119,7 +119,7 @@ Multi-stack apps can keep passing the stack explicitly: `useArete(stack, options
 Supported props:
 
 - `stack` — default stack for argument-less `useArete()` calls
-- `stackOptions` — default client lookup options (`url`, `httpUrl`, `transport`, `programs`) for the provider stack, including explicit `useArete(providerStack)` calls
+- `stackOptions` — default client lookup options (`url`, `httpUrl`, `transport`, `transactions`, `programs`) for the provider stack, including explicit `useArete(providerStack)` calls
 - `autoConnect` — defaults to `true`; controls only whether the provider starts the initial connection
 - `autoReconnect` — defaults to `true`; controls only recovery after an established connection is lost
 - `wallet`
@@ -161,6 +161,7 @@ Supported hook options:
 - `url`
 - `httpUrl`
 - `transport`
+- `transactions` — explicit transaction transport when execution uses a different service from `httpUrl`
 - `programs`
 
 All options are optional. By default the client connects to the endpoints embedded in the generated stack definition (`stack.endpoints`), so `useArete(STACK)` with no options is the common case.

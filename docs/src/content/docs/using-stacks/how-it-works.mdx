@@ -177,6 +177,7 @@ A **Stack SDK** is a generated package that tells the Arete client how to intera
 - **Helpers** — Shared formatting and transformation logic
 
 You can share generated SDKs with your team or publish them to npm/crates.io.
+Package publication is a separate, manual operator action.
 
 ---
 
@@ -184,10 +185,10 @@ You can share generated SDKs with your team or publish them to npm/crates.io.
 
 ### Specification Time
 
-1. Write stream definition using Rust macros
-2. Build generates stack spec (`.arete/*.stack.json`)
-3. Deploy with `a4 up`
-4. Cloud compiles spec to bytecode
+1. Write a stream definition using Rust macros
+2. Build generates ProgramSpec, LiveSpec, and StackManifest artifacts
+3. Review the selected views and run `a4 up <path.stack-manifest.json>`
+4. The hosted control plane resolves immutable Program Releases and creates deployment bindings
 
 ### Client
 

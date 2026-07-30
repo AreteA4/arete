@@ -140,6 +140,9 @@ const arete = useArete();
 Passing that same stack explicitly also keeps its provider options, so local
 endpoint overrides still apply: `useArete(MY_STACK)`. Per-call options take
 precedence, and a different explicit stack does not inherit these defaults.
+Lookup options accept `url`, `httpUrl`, `transport`, `transactions`, and
+`programs`. Supply `transactions` when transaction inspection and submission
+use a different service from the stack HTTP read endpoint.
 
 Register the stack type once so argument-less calls are typed:
 
@@ -386,7 +389,9 @@ HTTP-only mutations and results without receipt slots skip default stream reconc
 
 ## Generated boundary
 
-A stack build produces `.arete/<Stack>.stack.json`; SDK generation consumes that AST. The generated directory can contain:
+A stack build produces ProgramSpec, LiveSpec, and StackManifest artifacts under
+`.arete/`; SDK generation consumes the exact StackManifest. The generated
+directory can contain:
 
 - `<stack>-core.ts`: generated entities, schemas, views, and program modules
 - `<stack>.ts`: public entry point and extension wiring
@@ -399,7 +404,10 @@ Regenerate after changing a stack, IDL, extension, or generator. For this monore
 bash scripts/generate-example-sdks.sh
 ```
 
-That command rebuilds `stacks/ore/.arete/OreStream.stack.json` from local Arete source before emitting all example SDKs. CI runs generation twice and rejects AST, provenance, or artifact drift.
+That command rebuilds `ore.program-spec.json`,
+`OreStream.live-spec.json`, and `OreStream.stack-manifest.json` from local Arete
+source before emitting all example SDKs. CI runs generation twice and rejects
+artifact, provenance, or output drift.
 
 ## Migration from 0.3 to next
 

@@ -83,6 +83,64 @@ Each packaged, attached, or standalone program is canonically available under `s
 - `defaults` - reusable program defaults
 - `math` - pure protocol calculations
 
+### Program Read Transports
+
+Generated account readers use a `ProgramReadDescriptor` for each program. Local
+generation emits an explicit `local-http` descriptor, so the endpoint must come
+from the connection call:
+
+```ts
+const client = await Arete.connect(LOCAL_STACK, {
+  url: 'ws://localhost:8877',
+  httpUrl: 'http://localhost:8877',
+});
+```
+
+Installed hosted SDKs instead contain a complete `hosted-binding` descriptor:
+the release, read endpoint, binding ID, and auth metadata are pinned together.
+Hosted account reads ignore `httpUrl` and stack HTTP endpoints. A
+`programReads` runtime override must replace that complete descriptor; release,
+binding, and endpoint fields are never patched independently.
+
+Stack and program queries remain stack-HTTP operations. They continue to use
+`httpUrl` or `stack.endpoints.http` and do not use a hosted Program Read binding.
+Composition sessions accept only complete hosted descriptors or complete hosted
+overrides, and never infer Program Read endpoints from their members.
+
+### Hosted Solana Gateway Transports
+
+Hosted composition installs also emit complete, independent `chain` and
+`transactions` gateway bindings. Construct both authenticated transports from
+those generated descriptors instead of using a LiveSpec query endpoint:
+
+```ts
+import { createHostedSolanaGatewayTransports } from '@usearete/sdk';
+import { MY_STACK_HOSTED_BINDINGS } from './generated/my-stack';
+
+const { chain, transactions } = createHostedSolanaGatewayTransports(
+  {
+    chain: MY_STACK_HOSTED_BINDINGS.chain,
+    transactions: MY_STACK_HOSTED_BINDINGS.transactions,
+  },
+  {
+    auth: { publishableKey: import.meta.env.VITE_ARETE_PUBLISHABLE_KEY },
+  }
+);
+```
+
+The helper mints tokens for the exact `solana-gateway-binding` target. `read`,
+`transaction:inspect`, and `transaction:send` use separate scope caches. An
+authentication failure is refreshed at most once, and transaction requests are
+replayed only when the gateway explicitly reports that upstream dispatch did
+not begin. Chain and transaction descriptors may intentionally share the same
+endpoint and binding ID.
+
+Generated hosted compositions additionally export
+`create<StackName>HostedSession(options)`. It constructs these transports and
+passes them to the explicit composition session; the lower-level
+`create<StackName>Session(options)` continues to require caller-supplied `chain`
+and `transactions` transports.
+
 ### Raw Instructions
 
 Use raw handlers when you want exact wire control and will compose the transaction yourself:
