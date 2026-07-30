@@ -130,6 +130,7 @@ jobs:
           node-version: "20"
           cache: "npm"
           cache-dependency-path: |
+            typescript/core/package-lock.json
             examples/ore-typescript/package-lock.json
 
       - name: Regenerate example SDKs
@@ -152,9 +153,13 @@ jobs:
             exit 1
           fi
 
+      - name: Build local TypeScript SDK
+        working-directory: typescript/core
+        run: npm ci && npm run build
+
       - name: Install TypeScript example dependencies
         working-directory: examples/ore-typescript
-        run: npm ci
+        run: npm ci && npm install ../../typescript/core --no-save --package-lock=false
 
       - name: Strict compile TypeScript example
         working-directory: examples/ore-typescript
@@ -192,7 +197,9 @@ jobs:
 
       - name: Install app dependencies
         working-directory: examples/ore-react
-        run: npm ci
+        run: |
+          npm ci
+          npm install ../../typescript/core ../../typescript/react ../../typescript/adapters/web3js --no-save --package-lock=false
 
       - name: Install Chromium
         working-directory: examples/ore-react
