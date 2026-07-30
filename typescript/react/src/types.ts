@@ -137,6 +137,8 @@ export interface ClientLookupOptions<TPrograms extends ProgramMap | undefined = 
   httpUrl?: string;
   /** Override the stack transport. HTTP mode disables streaming view subscriptions. */
   transport?: CoreConnectOptions<TPrograms>['transport'];
+  /** Override the transaction transport independently from the stack HTTP endpoint. */
+  transactions?: CoreConnectOptions<TPrograms>['transactions'];
   /** Attach additional program SDKs to the connected client. */
   programs?: TPrograms;
 }

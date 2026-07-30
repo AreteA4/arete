@@ -210,10 +210,11 @@ export function useArete(
   const url = resolvedOptions?.url;
   const httpUrl = resolvedOptions?.httpUrl;
   const transport = resolvedOptions?.transport;
+  const transactions = resolvedOptions?.transactions;
   const attachedPrograms = resolvedOptions?.programs;
   const lookupOptions = useMemo(
-    () => ({ url, httpUrl, transport, programs: attachedPrograms }) as ClientLookupOptions<ProgramMap>,
-    [url, httpUrl, transport, attachedPrograms]
+    () => ({ url, httpUrl, transport, transactions, programs: attachedPrograms }) as ClientLookupOptions<ProgramMap>,
+    [url, httpUrl, transport, transactions, attachedPrograms]
   );
   const lookupKey = createClientCacheKey(resolvedStack, lookupOptions);
   const initialClient = getClient(resolvedStack, lookupOptions) as ConnectedStack<StackDefinition, ProgramMap> | null;

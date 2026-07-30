@@ -8,6 +8,7 @@ import {
   SubscriptionRegistry,
   parseFrame,
   type Subscription,
+  type TransactionTransport,
 } from '@usearete/sdk';
 import type { AreteConfig } from './types';
 
@@ -54,14 +55,21 @@ describe('provider wallet helpers', () => {
     ).toBe(
       createClientCacheKey(stack, { url: 'ws://localhost:7777', httpUrl: 'http://localhost:7777' })
     );
+    const transactions = {} as TransactionTransport;
+    expect(createClientCacheKey(stack, { transactions })).toBe(
+      createClientCacheKey(stack, { transactions })
+    );
+    expect(createClientCacheKey(stack, { transactions })).not.toBe(
+      createClientCacheKey(stack, { transactions: {} as TransactionTransport })
+    );
   });
 
   it('keys attached programs by behavior while allowing fresh outer maps', () => {
-    const generatedProgramA = { name: 'ore', programId: 'ore-program', definitionHash: 'ore-v1' };
-    const generatedProgramB = { name: 'ore', programId: 'ore-program', definitionHash: 'ore-v1' };
-    const changedProgram = { name: 'ore', programId: 'ore-program', definitionHash: 'ore-v2' };
-    const anonymousProgramA = { definitionHash: 'anonymous-v1' };
-    const anonymousProgramB = { definitionHash: 'anonymous-v1' };
+    const generatedProgramA = { name: 'ore', programId: 'ore-program', sdkDefinitionHash: 'ore-v1' };
+    const generatedProgramB = { name: 'ore', programId: 'ore-program', sdkDefinitionHash: 'ore-v1' };
+    const changedProgram = { name: 'ore', programId: 'ore-program', sdkDefinitionHash: 'ore-v2' };
+    const anonymousProgramA = { sdkDefinitionHash: 'anonymous-v1' };
+    const anonymousProgramB = { sdkDefinitionHash: 'anonymous-v1' };
     const manualProgram = { name: 'ore', rawInstructions: { mine: jest.fn() } };
 
     expect(createClientCacheKey(stack, { transport: 'http' })).not.toBe(createClientCacheKey(stack));
@@ -141,8 +149,9 @@ describe('provider wallet helpers', () => {
     const connect = jest.spyOn(Arete, 'connect').mockReturnValue(
       new Promise(() => undefined) as never,
     );
+    const transactions = {} as TransactionTransport;
     function Consumer() {
-      useArete(stack);
+      useArete(stack, { transactions });
       return null;
     }
     let renderer: ReactTestRenderer | undefined;
@@ -163,6 +172,7 @@ describe('provider wallet helpers', () => {
       expect.objectContaining({
         autoConnect: false,
         autoReconnect: true,
+        transactions,
       }),
     );
     act(() => renderer?.unmount());
