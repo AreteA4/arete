@@ -1,0 +1,64 @@
+{
+  "name": "@usearete/hash",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Authoritative typed artifact identity protocol for Arete",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AreteA4/arete.git",
+    "directory": "typescript/hash"
+  },
+  "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "test": "vitest run",
+    "test:pack": "npm run build && node ./scripts/pack-boundary.mjs",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "arete",
+    "hash",
+    "jcs",
+    "sha256",
+    "solana"
+  ],
+  "author": "Arete Team",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "16.0.3",
+    "@rollup/plugin-typescript": "11.1.6",
+    "@types/node": "22.20.1",
+    "rollup": "3.29.5",
+    "rollup-plugin-dts": "6.2.3",
+    "tslib": "2.8.1",
+    "typescript": "5.9.3",
+    "vitest": "1.6.1"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ]
+}

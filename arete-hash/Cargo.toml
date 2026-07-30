@@ -1,0 +1,23 @@
+[package]
+name = "arete-hash"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Authoritative typed artifact identity protocol for Arete"
+keywords = ["arete", "hash", "jcs", "sha256"]
+categories = ["cryptography", "encoding"]
+
+[dependencies]
+arete-idl = { path = "../arete-idl", version = "0.1.0" }
+bs58 = "0.5"
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_json_canonicalizer = "=0.3.2"
+sha2 = "0.10"
+thiserror = "2.0"
+
+[dev-dependencies]
+tempfile = "3"
