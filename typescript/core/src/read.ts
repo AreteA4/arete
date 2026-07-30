@@ -55,12 +55,10 @@ export async function parseReadResponse<T>(response: Response, path: string): Pr
 
 export function programAccountRead<T>(input: {
   account: string;
-  path: string;
   schema?: Schema<T>;
 }): ProgramAccountReadDefinition<T> {
   return {
     account: input.account,
-    path: input.path,
     schema: input.schema,
   } as const;
 }

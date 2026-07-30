@@ -2,10 +2,13 @@ import type { Frame } from './frame';
 import { parseFrame, parseFrameFromBlob } from './frame';
 import type {
   AuthConfig,
+  AuthTokenTarget,
+  AuthTokenRequest,
   AuthTokenResult,
   ConnectionState,
   ConnectionStateCallback,
   AreteConfig,
+  ProgramReadBindingAuthTarget,
   SocketIssue,
   SocketIssueCallback,
   Subscription,
@@ -23,6 +26,7 @@ const MIN_REFRESH_DELAY_MS = 1_000;
 const DEFAULT_QUERY_PARAMETER = 'hs_token';
 const DEFAULT_HOSTED_TOKEN_ENDPOINT = 'https://api.arete.run/ws/sessions';
 const HOSTED_WEBSOCKET_SUFFIX = '.stack.arete.run';
+const MAX_HTTP_AUTH_TOKEN_STATES = 32;
 
 interface TokenEndpointResponse {
   token: string;
@@ -62,6 +66,12 @@ type AuthStrategy =
   | { kind: 'static-token'; token: string }
   | { kind: 'token-provider'; getToken: NonNullable<AuthConfig['getToken']> }
   | { kind: 'token-endpoint'; endpoint: string };
+
+interface HttpAuthTokenState {
+  token?: string;
+  expiresAt?: number;
+  inFlight?: Promise<string | undefined>;
+}
 
 function normalizeTokenResult(result: string | AuthTokenResult): AuthTokenResult {
   if (typeof result === 'string') {
@@ -108,6 +118,89 @@ function parseJwtExpiry(token: string): number | undefined {
 
 function normalizeExpiryTimestamp(expiresAt?: number, expires_at?: number): number | undefined {
   return expiresAt ?? expires_at;
+}
+
+function normalizeScopes(scopes: readonly string[]): string[] {
+  return [...new Set(scopes)].sort();
+}
+
+function isProgramReadBindingAuthTarget(value: unknown): value is ProgramReadBindingAuthTarget {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return candidate['targetKind'] === 'program-read-binding'
+    && typeof candidate['targetId'] === 'string'
+    && typeof candidate['programReleaseHash'] === 'string';
+}
+
+function isAuthTokenTarget(value: unknown): value is AuthTokenTarget {
+  if (isProgramReadBindingAuthTarget(value)) {
+    return true;
+  }
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return candidate['targetKind'] === 'solana-gateway-binding'
+    && typeof candidate['targetId'] === 'string'
+    && candidate['programReleaseHash'] === undefined;
+}
+
+function isAuthTokenRequest(value: unknown): value is AuthTokenRequest {
+  return typeof value === 'object'
+    && value !== null
+    && Array.isArray((value as { scopes?: unknown }).scopes);
+}
+
+function hasAuthTokenTarget(
+  request: AuthTokenRequest
+): request is AuthTokenRequest & AuthTokenTarget {
+  return isAuthTokenTarget(request);
+}
+
+function normalizeAuthTokenRequest(request: AuthTokenRequest): AuthTokenRequest {
+  const scopes = normalizeScopes(request.scopes);
+  const hasTargetField = request.targetKind !== undefined
+    || request.targetId !== undefined
+    || request.programReleaseHash !== undefined;
+
+  if (!hasTargetField) {
+    return { scopes };
+  }
+  if (!hasAuthTokenTarget(request)) {
+    throw new AreteError(
+      'Targeted authentication requires a complete supported target identity',
+      'INVALID_CONFIG'
+    );
+  }
+
+  if (isProgramReadBindingAuthTarget(request)) {
+    return {
+      scopes,
+      targetKind: request.targetKind,
+      targetId: request.targetId,
+      programReleaseHash: request.programReleaseHash,
+    };
+  }
+  return {
+    scopes,
+    targetKind: request.targetKind,
+    targetId: request.targetId,
+  };
+}
+
+function createTargetedHttpTokenIdentity(
+  request: AuthTokenRequest & AuthTokenTarget
+): string {
+  return JSON.stringify([
+    request.targetKind,
+    request.targetId,
+    request.programReleaseHash ?? null,
+    normalizeScopes(request.scopes),
+  ]);
 }
 
 function isRefreshAuthResponseMessage(value: unknown): value is RefreshAuthResponseMessage {
@@ -162,6 +255,7 @@ export class ConnectionManager {
   private tokenRefreshTimeout: ReturnType<typeof setTimeout> | null = null;
   private tokenRefreshInFlight: Promise<void> | null = null;
   private tokenRequestInFlight: Promise<string | undefined> | null = null;
+  private readonly httpAuthTokenStates = new Map<string, HttpAuthTokenState>();
   private currentState: ConnectionState = 'disconnected';
   private subscriptionQueue: Map<string, Subscription> = new Map();
   private activeSubscriptions: Map<string, Subscription> = new Map();
@@ -176,6 +270,7 @@ export class ConnectionManager {
   private socketIssueHandlers: Set<SocketIssueCallback> = new Set();
 
   private authConfig?: AuthConfig;
+  private readonly authFetch: typeof fetch;
   private currentToken?: string;
   private tokenExpiry?: number;
   private tokenScopes = new Set<string>();
@@ -195,6 +290,15 @@ export class ConnectionManager {
     this.maxReconnectAttempts =
       config.maxReconnectAttempts ?? DEFAULT_CONFIG.maxReconnectAttempts;
     this.authConfig = config.auth;
+    this.authFetch = config.fetch ?? ((input, init) => {
+      if (typeof globalThis.fetch !== 'function') {
+        throw new AreteError(
+          'A fetch implementation is required for authentication token requests',
+          'INVALID_CONFIG'
+        );
+      }
+      return globalThis.fetch(input, init);
+    });
 
     if (config.initialSubscriptions) {
       for (const subscription of config.initialSubscriptions) {
@@ -275,8 +379,14 @@ export class ConnectionManager {
     forceRefresh = false,
     requiredScopes: readonly string[] = ['read']
   ): Promise<string | undefined> {
-    for (const scope of requiredScopes) this.requestedScopes.add(scope);
-    if (!forceRefresh && this.currentToken && !this.isTokenExpired() && this.tokenCovers(requiredScopes)) {
+    const normalizedRequiredScopes = normalizeScopes(requiredScopes);
+    for (const scope of normalizedRequiredScopes) this.requestedScopes.add(scope);
+    if (
+      !forceRefresh
+      && this.currentToken
+      && !this.isTokenExpired()
+      && this.tokenCovers(normalizedRequiredScopes)
+    ) {
       return this.currentToken;
     }
 
@@ -285,11 +395,15 @@ export class ConnectionManager {
       if (!this.currentToken) {
         return undefined;
       }
-      if (this.currentToken && !this.isTokenExpired() && this.tokenCovers(requiredScopes)) {
+      if (
+        this.currentToken
+        && !this.isTokenExpired()
+        && this.tokenCovers(normalizedRequiredScopes)
+      ) {
         return this.currentToken;
       }
       throw new AreteError(
-        `Authentication token was not granted required scopes: ${requiredScopes.join(', ')}`,
+        `Authentication token was not granted required scopes: ${normalizedRequiredScopes.join(', ')}`,
         'AUTH_REQUIRED'
       );
     }
@@ -297,16 +411,16 @@ export class ConnectionManager {
     let request!: Promise<string | undefined>;
     request = Promise.resolve().then(() =>
       this.fetchAuthToken(
-        [...new Set([...this.tokenScopes, ...this.requestedScopes])],
+        normalizeScopes([...this.tokenScopes, ...this.requestedScopes]),
         () => this.tokenRequestInFlight === request
       )
     );
     this.tokenRequestInFlight = request;
     try {
       const token = await request;
-      if (token && !this.tokenCovers(requiredScopes)) {
+      if (token && !this.tokenCovers(normalizedRequiredScopes)) {
         throw new AreteError(
-          `Authentication token was not granted required scopes: ${requiredScopes.join(', ')}`,
+          `Authentication token was not granted required scopes: ${normalizedRequiredScopes.join(', ')}`,
           'AUTH_REQUIRED'
         );
       }
@@ -322,7 +436,15 @@ export class ConnectionManager {
     scopes: readonly string[],
     isCurrent: () => boolean
   ): Promise<string | undefined> {
+    const request: AuthTokenRequest = { scopes: normalizeScopes(scopes) };
+    const result = await this.requestAuthToken(request, isCurrent);
+    return result === undefined ? undefined : this.updateTokenState(result, request.scopes);
+  }
 
+  private async requestAuthToken(
+    request: AuthTokenRequest,
+    isCurrent: () => boolean
+  ): Promise<string | AuthTokenResult | undefined> {
     const strategy = this.getAuthStrategy();
     const requireCurrent = () => {
       if (!isCurrent()) {
@@ -333,13 +455,13 @@ export class ConnectionManager {
     switch (strategy.kind) {
       case 'static-token': {
         requireCurrent();
-        return this.updateTokenState(strategy.token, scopes);
+        return strategy.token;
       }
       case 'token-provider':
         try {
-          const result = await strategy.getToken({ scopes });
+          const result = await strategy.getToken(request);
           requireCurrent();
-          return this.updateTokenState(result, scopes);
+          return result;
         } catch (error) {
           if (error instanceof AreteError) {
             throw error;
@@ -352,12 +474,9 @@ export class ConnectionManager {
         }
       case 'token-endpoint':
         try {
-          const result = await this.fetchTokenFromEndpoint(strategy.endpoint, scopes);
+          const result = await this.fetchTokenFromEndpoint(strategy.endpoint, request);
           requireCurrent();
-          return this.updateTokenState(
-            result,
-            scopes
-          );
+          return result;
         } catch (error) {
           if (error instanceof AreteError) {
             throw error;
@@ -374,18 +493,132 @@ export class ConnectionManager {
     }
   }
 
-  private createTokenEndpointRequestBody(scopes: readonly string[]): Record<string, string | readonly string[]> {
+  private updateHttpTokenState(
+    state: HttpAuthTokenState,
+    result: string | AuthTokenResult,
+    request: AuthTokenRequest
+  ): string {
+    const normalized = normalizeTokenResult(result);
+    if (!normalized.token) {
+      throw new AreteError(
+        'Authentication provider returned an empty token',
+        'TOKEN_INVALID'
+      );
+    }
+
+    const grantedScopes = new Set(normalized.scopes ?? request.scopes);
+    if (!request.scopes.every((scope) => grantedScopes.has(scope))) {
+      throw new AreteError(
+        `Authentication token was not granted required scopes: ${request.scopes.join(', ')}`,
+        'AUTH_REQUIRED'
+      );
+    }
+
+    const expiresAt = normalizeExpiryTimestamp(normalized.expiresAt, normalized.expires_at)
+      ?? parseJwtExpiry(normalized.token);
+    if (this.isExpiryExpired(expiresAt)) {
+      throw new AreteError('Authentication token is expired', 'TOKEN_EXPIRED');
+    }
+
+    state.token = normalized.token;
+    state.expiresAt = expiresAt;
+    return normalized.token;
+  }
+
+  private async getTargetedHttpAuthToken(
+    request: AuthTokenRequest & AuthTokenTarget,
+    forceRefresh: boolean
+  ): Promise<string | undefined> {
+    const identity = createTargetedHttpTokenIdentity(request);
+    let state = this.httpAuthTokenStates.get(identity);
+
+    if (!forceRefresh && state?.token && !this.isExpiryExpired(state.expiresAt)) {
+      this.touchHttpAuthTokenState(identity, state);
+      return state.token;
+    }
+    if (state?.inFlight) {
+      this.touchHttpAuthTokenState(identity, state);
+      return state.inFlight;
+    }
+    if (!state) {
+      state = {};
+      this.httpAuthTokenStates.set(identity, state);
+    }
+
+    const tokenState = state;
+    let inFlight!: Promise<string | undefined>;
+    inFlight = Promise.resolve().then(async () => {
+      const result = await this.requestAuthToken(
+        request,
+        () => this.httpAuthTokenStates.get(identity) === tokenState
+          && tokenState.inFlight === inFlight
+      );
+      return result === undefined
+        ? undefined
+        : this.updateHttpTokenState(tokenState, result, request);
+    });
+    tokenState.inFlight = inFlight;
+    this.touchHttpAuthTokenState(identity, tokenState);
+    this.trimHttpAuthTokenStates();
+
+    try {
+      return await inFlight;
+    } finally {
+      if (
+        this.httpAuthTokenStates.get(identity) === tokenState
+        && tokenState.inFlight === inFlight
+      ) {
+        tokenState.inFlight = undefined;
+      }
+      this.trimHttpAuthTokenStates();
+    }
+  }
+
+  private touchHttpAuthTokenState(identity: string, state: HttpAuthTokenState): void {
+    this.httpAuthTokenStates.delete(identity);
+    this.httpAuthTokenStates.set(identity, state);
+  }
+
+  private trimHttpAuthTokenStates(): void {
+    if (this.httpAuthTokenStates.size <= MAX_HTTP_AUTH_TOKEN_STATES) {
+      return;
+    }
+
+    for (const [identity, state] of this.httpAuthTokenStates) {
+      if (!state.inFlight) {
+        this.httpAuthTokenStates.delete(identity);
+      }
+      if (this.httpAuthTokenStates.size <= MAX_HTTP_AUTH_TOKEN_STATES) {
+        break;
+      }
+    }
+  }
+
+  private createTokenEndpointRequestBody(
+    request: AuthTokenRequest
+  ): Record<string, string | readonly string[]> {
+    if (hasAuthTokenTarget(request)) {
+      const target = {
+        targetKind: request.targetKind,
+        targetId: request.targetId,
+        scopes: request.scopes,
+      };
+      return isProgramReadBindingAuthTarget(request)
+        ? { ...target, programReleaseHash: request.programReleaseHash }
+        : target;
+    }
+
     return {
       websocket_url: this.websocketUrl ?? '',
-      scopes,
+      scopes: request.scopes,
     };
   }
 
   private async fetchTokenFromEndpoint(
     tokenEndpoint: string,
-    scopes: readonly string[] = [...this.requestedScopes]
+    request: AuthTokenRequest
   ): Promise<TokenEndpointResponse> {
-    const response = await fetch(tokenEndpoint, {
+    const response = await this.authFetch(tokenEndpoint, {
       method: 'POST',
       headers: {
         ...(this.authConfig?.publishableKey
@@ -395,7 +628,7 @@ export class ConnectionManager {
         'Content-Type': 'application/json',
       },
       credentials: this.authConfig?.tokenEndpointCredentials,
-      body: JSON.stringify(this.createTokenEndpointRequestBody(scopes)),
+      body: JSON.stringify(this.createTokenEndpointRequestBody(request)),
     });
 
     if (!response.ok) {
@@ -443,12 +676,16 @@ export class ConnectionManager {
     return data;
   }
 
-  private isTokenExpired(): boolean {
-    if (!this.tokenExpiry) {
+  private isExpiryExpired(expiresAt?: number): boolean {
+    if (!expiresAt) {
       return false;
     }
 
-    return Date.now() >= (this.tokenExpiry - TOKEN_REFRESH_BUFFER_SECONDS) * 1000;
+    return Date.now() >= (expiresAt - TOKEN_REFRESH_BUFFER_SECONDS) * 1000;
+  }
+
+  private isTokenExpired(): boolean {
+    return this.isExpiryExpired(this.tokenExpiry);
   }
 
   private scheduleTokenRefresh(): void {
@@ -640,21 +877,111 @@ export class ConnectionManager {
 
   async getHttpAuthToken(forceRefresh?: boolean): Promise<string | undefined>;
   async getHttpAuthToken(requiredScopes?: readonly string[], forceRefresh?: boolean): Promise<string | undefined>;
+  async getHttpAuthToken(request: AuthTokenRequest, forceRefresh?: boolean): Promise<string | undefined>;
   async getHttpAuthToken(
-    requiredScopesOrForce: readonly string[] | boolean = ['read'],
-    forceRefresh = false
+    target: AuthTokenTarget,
+    forceRefresh?: boolean
+  ): Promise<string | undefined>;
+  async getHttpAuthToken(
+    target: AuthTokenTarget,
+    requiredScopes: readonly string[],
+    forceRefresh?: boolean
+  ): Promise<string | undefined>;
+  async getHttpAuthToken(
+    requiredScopes: readonly string[],
+    target: AuthTokenTarget,
+    forceRefresh?: boolean
+  ): Promise<string | undefined>;
+  async getHttpAuthToken(
+    requiredScopes: readonly string[],
+    forceRefresh: boolean,
+    target: AuthTokenTarget
+  ): Promise<string | undefined>;
+  async getHttpAuthToken(
+    requestOrScopesOrTargetOrForce:
+      | AuthTokenRequest
+      | AuthTokenTarget
+      | readonly string[]
+      | boolean = ['read'],
+    scopesTargetOrForce: readonly string[] | AuthTokenTarget | boolean = false,
+    targetOrForce: AuthTokenTarget | boolean = false
   ): Promise<string | undefined> {
-    const requiredScopes = typeof requiredScopesOrForce === 'boolean'
-      ? ['read']
-      : requiredScopesOrForce;
-    const force = typeof requiredScopesOrForce === 'boolean'
-      ? requiredScopesOrForce
-      : forceRefresh;
-    return this.getOrRefreshToken(force, requiredScopes);
+    let request: AuthTokenRequest;
+    let force = false;
+
+    if (typeof requestOrScopesOrTargetOrForce === 'boolean') {
+      request = { scopes: ['read'] };
+      force = requestOrScopesOrTargetOrForce;
+    } else if (Array.isArray(requestOrScopesOrTargetOrForce)) {
+      if (isAuthTokenTarget(scopesTargetOrForce)) {
+        request = {
+          scopes: requestOrScopesOrTargetOrForce,
+          ...scopesTargetOrForce,
+        };
+        force = typeof targetOrForce === 'boolean' ? targetOrForce : false;
+      } else if (isAuthTokenTarget(targetOrForce)) {
+        request = {
+          scopes: requestOrScopesOrTargetOrForce,
+          ...targetOrForce,
+        };
+        force = typeof scopesTargetOrForce === 'boolean' ? scopesTargetOrForce : false;
+      } else {
+        request = { scopes: requestOrScopesOrTargetOrForce };
+        force = typeof scopesTargetOrForce === 'boolean' ? scopesTargetOrForce : false;
+      }
+    } else if (isAuthTokenRequest(requestOrScopesOrTargetOrForce)) {
+      request = requestOrScopesOrTargetOrForce;
+      force = typeof scopesTargetOrForce === 'boolean' ? scopesTargetOrForce : false;
+    } else if (isAuthTokenTarget(requestOrScopesOrTargetOrForce)) {
+      const requiredScopes = Array.isArray(scopesTargetOrForce)
+        ? scopesTargetOrForce
+        : ['read'];
+      request = {
+        scopes: requiredScopes,
+        ...requestOrScopesOrTargetOrForce,
+      };
+      force = typeof scopesTargetOrForce === 'boolean'
+        ? scopesTargetOrForce
+        : typeof targetOrForce === 'boolean' ? targetOrForce : false;
+    } else {
+      throw new AreteError('Invalid HTTP authentication token request', 'INVALID_CONFIG');
+    }
+
+    const normalizedRequest = normalizeAuthTokenRequest(request);
+    return hasAuthTokenTarget(normalizedRequest)
+      ? this.getTargetedHttpAuthToken(normalizedRequest, force)
+      : this.getOrRefreshToken(force, normalizedRequest.scopes);
   }
 
-  clearHttpAuthToken(): void {
-    this.clearTokenState();
+  clearHttpAuthToken(): void;
+  clearHttpAuthToken(request: AuthTokenRequest): void;
+  clearHttpAuthToken(
+    target: AuthTokenTarget,
+    requiredScopes?: readonly string[]
+  ): void;
+  clearHttpAuthToken(
+    identity?: AuthTokenRequest | AuthTokenTarget,
+    requiredScopes: readonly string[] = ['read']
+  ): void {
+    if (identity === undefined) {
+      this.clearTokenState();
+      this.httpAuthTokenStates.clear();
+      return;
+    }
+
+    const request = normalizeAuthTokenRequest(
+      isAuthTokenRequest(identity)
+        ? identity
+        : {
+            scopes: requiredScopes,
+            ...identity,
+          }
+    );
+    if (hasAuthTokenTarget(request)) {
+      this.httpAuthTokenStates.delete(createTargetedHttpTokenIdentity(request));
+    } else {
+      this.clearTokenState();
+    }
   }
 
   onFrame(handler: FrameHandler): () => void {

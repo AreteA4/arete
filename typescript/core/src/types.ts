@@ -42,9 +42,21 @@ export type ReadTransportMethod = 'GET' | 'POST';
 
 export interface ProgramAccountReadDefinition<T> {
   readonly account: string;
-  readonly path: string;
   readonly schema?: Schema<T>;
   readonly _result?: T;
+}
+
+export type ProgramAccountBatchItem<T> =
+  | { readonly address: string; readonly status: 'ok'; readonly value: T }
+  | { readonly address: string; readonly status: 'missing' }
+  | {
+      readonly address: string;
+      readonly status: 'error';
+      readonly error: { readonly code: string };
+    };
+
+export interface ProgramAccountBatchResult<T> {
+  readonly items: readonly ProgramAccountBatchItem<T>[];
 }
 
 export interface ProgramQueryDefinition<TParams = unknown, TResult = unknown> {
@@ -68,8 +80,11 @@ export interface StackQueryDefinition<TParams = unknown, TResult = unknown> {
 export interface ProgramSdkDefinition {
   readonly name: string;
   readonly programId?: string;
-  /** Stable fingerprint of the generated program behavior used for client caching. */
-  readonly definitionHash?: string;
+  /** Typed identity of the generated program behavior and compiler provenance. */
+  readonly sdkDefinitionHash?: string;
+  readonly programSpecHash?: string;
+  readonly idlContentHash?: string;
+  readonly normalizedIdlHash?: string;
   readonly schemas?: Record<string, Schema<unknown>>;
   readonly pdas?: Record<string, unknown>;
   readonly accounts?: Record<string, ProgramAccountReadDefinition<unknown>>;
@@ -81,14 +96,110 @@ export interface ProgramSdkDefinition {
   readonly math?: unknown;
 }
 
-export interface StackDefinition {
+export interface ProgramReleaseReference {
+  readonly programReleaseHash: string;
+  readonly programSpecHash: string;
+}
+
+/** Public, non-secret metadata describing how an HTTP bearer token is acquired. */
+export interface HttpAuthMetadata {
+  readonly required?: boolean;
+  readonly mode?: string;
+  readonly sessionEndpoint: string;
+  readonly jwksUrl?: string;
+  readonly tokenTransport?: string;
+  readonly audience?: string;
+  readonly targetKind: 'program-read-binding';
+  readonly targetId: string;
+  readonly scopes?: readonly string[];
+  readonly acceptedKeyClasses?: readonly string[];
+}
+
+export interface ProgramReadBinding {
+  readonly endpoint: string;
+  readonly programReadBindingId: string;
+  readonly auth: HttpAuthMetadata;
+}
+
+export type SolanaGatewayAuthScope =
+  | 'read'
+  | 'transaction:inspect'
+  | 'transaction:send';
+
+/** Complete public auth metadata emitted for a hosted Solana gateway binding. */
+export interface SolanaGatewayAuthMetadata {
+  readonly required: boolean;
+  readonly mode: string;
+  readonly sessionEndpoint: string;
+  readonly jwksUrl: string;
+  readonly tokenTransport: string;
+  readonly audience: 'arete:solana-gateway';
+  readonly targetKind: 'solana-gateway-binding';
+  readonly targetId: string;
+  readonly scopes: readonly SolanaGatewayAuthScope[];
+  readonly acceptedKeyClasses: readonly string[];
+  readonly transactionEntitlementRequired: boolean;
+}
+
+/** One generated, non-inheriting hosted Solana gateway capability binding. */
+export interface HostedSolanaGatewayCapabilityBinding {
+  readonly endpoint: string;
+  readonly authPolicy: string;
+  readonly solanaGatewayBindingId: string;
+  readonly cluster: string;
+  readonly region: string;
+  readonly auth: SolanaGatewayAuthMetadata;
+}
+
+export interface HostedSolanaGatewayBindings {
+  readonly chain: HostedSolanaGatewayCapabilityBinding;
+  readonly transactions: HostedSolanaGatewayCapabilityBinding;
+}
+
+/** Generated release identity with one explicit, non-inheriting read transport. */
+export type ProgramReadDescriptor =
+  | {
+      readonly release: ProgramReleaseReference;
+      readonly transport: {
+        readonly kind: 'local-http';
+        readonly endpointSource: 'connect-http-url';
+      };
+    }
+  | {
+      readonly release: ProgramReleaseReference;
+      readonly transport: {
+        readonly kind: 'hosted-binding';
+        readonly binding: ProgramReadBinding;
+      };
+    };
+
+/** Runtime overrides replace the complete generated descriptor. */
+export type ProgramReadOverride = ProgramReadDescriptor;
+
+export type ProgramReadDescriptors<
+  TPrograms extends Record<string, ProgramSdkDefinition> | undefined,
+> = TPrograms extends Record<string, ProgramSdkDefinition>
+  ? { readonly [K in keyof TPrograms]: ProgramReadDescriptor }
+  : Record<string, never>;
+
+export type ProgramReadOverrides<
+  TPrograms extends Record<string, ProgramSdkDefinition> | undefined,
+> = TPrograms extends Record<string, ProgramSdkDefinition>
+  ? { readonly [K in keyof TPrograms]?: ProgramReadOverride }
+  : Record<string, never>;
+
+export interface StackDefinition<
+  TPrograms extends Record<string, ProgramSdkDefinition> = Record<string, ProgramSdkDefinition>,
+> {
   readonly name: string;
   readonly endpoints: StackEndpoints;
   readonly views: Record<string, ViewGroup>;
   readonly schemas?: Record<string, Schema<unknown>>;
   readonly patchSchemas?: Record<string, Schema<unknown>>;
   readonly queries?: Record<string, StackQueryDefinition<unknown, unknown>>;
-  readonly programs?: Record<string, ProgramSdkDefinition>;
+  readonly programs?: TPrograms;
+  /** Release and transport metadata keyed in parallel with `programs`. */
+  readonly programReads?: ProgramReadDescriptors<TPrograms>;
 }
 
 export interface ViewGroup {
@@ -193,9 +304,31 @@ export interface AuthTokenResult {
   scopes?: readonly string[];
 }
 
-export interface AuthTokenRequest {
-  scopes: readonly string[];
+export interface ProgramReadBindingAuthTarget {
+  readonly targetKind: 'program-read-binding';
+  readonly targetId: string;
+  readonly programReleaseHash: string;
 }
+
+export interface SolanaGatewayBindingAuthTarget {
+  readonly targetKind: 'solana-gateway-binding';
+  readonly targetId: string;
+  readonly programReleaseHash?: never;
+}
+
+export type AuthTokenTarget =
+  | ProgramReadBindingAuthTarget
+  | SolanaGatewayBindingAuthTarget;
+
+export type AuthTokenRequest =
+  | {
+      readonly scopes: readonly string[];
+      readonly targetKind?: never;
+      readonly targetId?: never;
+      readonly programReleaseHash?: never;
+    }
+  | ({ readonly scopes: readonly string[] } & ProgramReadBindingAuthTarget)
+  | ({ readonly scopes: readonly string[] } & SolanaGatewayBindingAuthTarget);
 
 export interface WebSocketFactoryInit {
   headers?: Record<string, string>;
@@ -234,6 +367,8 @@ export interface AreteConfig {
   maxEntriesPerView?: number | null;
   /** Authentication configuration */
   auth?: AuthConfig;
+  /** Fetch implementation used for authentication token requests. */
+  fetch?: typeof fetch;
 }
 
 export interface SocketIssue {

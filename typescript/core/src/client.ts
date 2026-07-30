@@ -8,7 +8,12 @@ import type {
   UnsubscribeFn,
   ProgramSdkDefinition,
   ProgramAccountReadDefinition,
+  ProgramAccountBatchResult,
   ProgramQueryDefinition,
+  ProgramReadDescriptor,
+  ProgramReadOverride,
+  ProgramReadOverrides,
+  ProgramReleaseReference,
   StackQueryDefinition,
 } from './types';
 import { AreteError, parseErrorCode, shouldRefreshToken } from './types';
@@ -26,7 +31,7 @@ import { QueryStore } from './query-store';
 import { createTypedViews } from './views';
 import type { Frame } from './frame';
 import type { WalletAdapter, BuiltInstruction, SendOptions } from './wallet/types';
-import { createChainClient, deriveHttpEndpoint, type ChainClient } from './chain';
+import { createChainClient, type ChainClient } from './chain';
 import type {
   InstructionHandler,
   ExecutionResult,
@@ -55,6 +60,10 @@ import {
 } from './operations';
 import { parseReadResponse } from './read';
 import {
+  createProgramReadTransport,
+  type ProgramReadTransport,
+} from './program-read-transport';
+import {
   createTransactionTransport,
   type TransactionAuthScope,
   type TransactionTransport,
@@ -74,6 +83,173 @@ export type StackWithAttachedPrograms<
 > = Omit<TStack, 'programs'> & {
   programs: MergeProgramMaps<TStack['programs'], TAttachedPrograms>;
 };
+
+function effectiveProgramRead(
+  stack: StackDefinition,
+  name: string,
+  override: ProgramReadOverride | undefined
+): ProgramReadDescriptor | undefined {
+  return override ?? stack.programReads?.[name];
+}
+
+function validateReleaseIdentity(
+  programName: string,
+  definition: ProgramSdkDefinition,
+  release: ProgramReleaseReference | undefined
+): void {
+  if (
+    release
+    && definition.programSpecHash
+    && release.programSpecHash !== definition.programSpecHash
+  ) {
+    throw new AreteError(
+      `Program '${programName}' release programSpecHash '${release.programSpecHash}' does not match definition programSpecHash '${definition.programSpecHash}'`,
+      'PROGRAM_RELEASE_MISMATCH'
+    );
+  }
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isSecureOrLoopbackHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:'
+      || (url.protocol === 'http:'
+        && ['localhost', '127.0.0.1', '::1'].includes(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+export function validateProgramReadDescriptor(
+  programName: string,
+  descriptor: ProgramReadDescriptor
+): void {
+  if (
+    !descriptor.release
+    || !isNonEmptyString(descriptor.release.programReleaseHash)
+    || !isNonEmptyString(descriptor.release.programSpecHash)
+  ) {
+    throw new AreteError(
+      `Program '${programName}' read descriptor requires a complete release`,
+      'INVALID_CONFIG'
+    );
+  }
+  if (!descriptor.transport || typeof descriptor.transport !== 'object') {
+    throw new AreteError(
+      `Program '${programName}' read descriptor requires a transport`,
+      'INVALID_CONFIG'
+    );
+  }
+  if (descriptor.transport.kind === 'local-http') {
+    if (descriptor.transport.endpointSource !== 'connect-http-url') {
+      throw new AreteError(
+        `Program '${programName}' local HTTP transport must use endpointSource 'connect-http-url'`,
+        'INVALID_CONFIG'
+      );
+    }
+    return;
+  }
+  if (descriptor.transport.kind !== 'hosted-binding') {
+    throw new AreteError(
+      `Program '${programName}' read descriptor has an unsupported transport`,
+      'INVALID_CONFIG'
+    );
+  }
+  const { binding } = descriptor.transport;
+  if (
+    !binding
+    || !isSecureOrLoopbackHttpUrl(binding.endpoint)
+    || !/^prb_[A-Za-z0-9_-]{32}$/.test(binding.programReadBindingId)
+    || !binding.auth
+    || binding.auth.targetKind !== 'program-read-binding'
+    || binding.auth.targetId !== binding.programReadBindingId
+    || !isSecureOrLoopbackHttpUrl(binding.auth.sessionEndpoint)
+  ) {
+    throw new AreteError(
+      `Program '${programName}' hosted binding requires secure endpoints, a canonical binding ID, and matching program-read-binding auth metadata`,
+      'INVALID_CONFIG'
+    );
+  }
+}
+
+function validateProgramReads(
+  stack: StackDefinition,
+  overrides: Readonly<Record<string, ProgramReadOverride>> | undefined,
+  validateDescriptorKeys = true
+): void {
+  const programKeys = Object.keys(stack.programs ?? {});
+  if (validateDescriptorKeys && stack.programReads) {
+    const readKeys = Object.keys(stack.programReads);
+    const missing = programKeys.filter((key) => !readKeys.includes(key));
+    const extra = readKeys.filter((key) => !programKeys.includes(key));
+    if (missing.length > 0 || extra.length > 0) {
+      throw new AreteError(
+        `Stack '${stack.name}' programReads keys must exactly match programs`
+          + `${missing.length > 0 ? `; missing: ${missing.join(', ')}` : ''}`
+          + `${extra.length > 0 ? `; unknown: ${extra.join(', ')}` : ''}`,
+        'INVALID_CONFIG'
+      );
+    }
+  }
+
+  for (const [name, descriptor] of Object.entries(stack.programReads ?? {})) {
+    validateProgramReadDescriptor(name, descriptor);
+  }
+
+  for (const key of Object.keys(overrides ?? {})) {
+    if (!programKeys.includes(key)) {
+      throw new AreteError(
+        `Program read override '${key}' does not match a program in stack '${stack.name}'`,
+        'INVALID_CONFIG'
+      );
+    }
+    validateProgramReadDescriptor(key, overrides![key]!);
+  }
+  for (const [name, definition] of Object.entries(stack.programs ?? {})) {
+    validateReleaseIdentity(name, definition, stack.programReads?.[name]?.release);
+    validateReleaseIdentity(name, definition, overrides?.[name]?.release);
+  }
+}
+
+function hasCompleteIndependentProgramReads(
+  stack: StackDefinition,
+  overrides: Readonly<Record<string, ProgramReadOverride>> | undefined,
+  connectHttpUrl: string | undefined
+): boolean {
+  const programs = Object.entries(stack.programs ?? {});
+  const readablePrograms = programs
+    .filter(([, definition]) => hasProgramAccountReads(definition));
+  return programs.length > 0 && readablePrograms.every(([name]) => {
+    const read = effectiveProgramRead(stack, name, overrides?.[name]);
+    return read?.transport.kind === 'hosted-binding'
+      || (read?.transport.kind === 'local-http' && isNonEmptyString(connectHttpUrl));
+  });
+}
+
+function validateLocalProgramReadEndpoints(
+  stack: StackDefinition,
+  overrides: Readonly<Record<string, ProgramReadOverride>> | undefined,
+  connectHttpUrl: string | undefined
+): void {
+  for (const [name, definition] of Object.entries(stack.programs ?? {})) {
+    if (!hasProgramAccountReads(definition)) continue;
+    const descriptor = effectiveProgramRead(stack, name, overrides?.[name]);
+    if (descriptor?.transport.kind === 'local-http' && !isNonEmptyString(connectHttpUrl)) {
+      throw new AreteError(
+        `Program '${name}' local HTTP transport requires ConnectOptions.httpUrl`,
+        'INVALID_CONFIG'
+      );
+    }
+  }
+}
+
+function hasProgramAccountReads(definition: ProgramSdkDefinition): boolean {
+  return Object.keys(definition.accounts ?? {}).length > 0;
+}
 
 function mergeAttachedPrograms<
   TStack extends StackDefinition,
@@ -155,7 +331,10 @@ export function withPrograms<
   return cloneStackWithPrograms(stack, mergeAttachedPrograms(stack, attachedPrograms));
 }
 
-export interface ConnectOptions<TPrograms extends ProgramMap | undefined = undefined> {
+export interface ConnectOptions<
+  TPrograms extends ProgramMap | undefined = undefined,
+  TStackPrograms extends ProgramMap | undefined = ProgramMap,
+> {
   url?: string;
   httpUrl?: string;
   /**
@@ -189,6 +368,12 @@ export interface ConnectOptions<TPrograms extends ProgramMap | undefined = undef
   fetch?: typeof fetch;
   /** Additional program SDKs exposed under client.programs.<key>. */
   programs?: TPrograms;
+  /** Per-program complete descriptor replacements. */
+  programReads?: ProgramReadOverrides<MergeProgramMaps<TStackPrograms, TPrograms>>;
+  /** Explicit chain transport, used by composition sessions. */
+  chain?: ChainClient;
+  /** Explicit transaction transport, used by composition sessions. */
+  transactions?: TransactionTransport;
   /** Default semantic-operation execution settings. */
   execution?: OperationExecutionOptions<any>;
 }
@@ -203,6 +388,8 @@ export interface AreteOptionsWithStorage<TStack extends StackDefinition> extends
   wallet?: WalletAdapter;
   fetch?: typeof fetch;
   execution?: OperationExecutionOptions<any>;
+  chain?: ChainClient;
+  transactions?: TransactionTransport;
   onFrameValidationError?: (diagnostic: FrameValidationDiagnostic) => void;
 }
 
@@ -229,7 +416,7 @@ export interface TypedInstruction<TParams, TError> {
 
 export interface TypedAccountReader<T> {
   fetch(address: string): Promise<T | null>;
-  fetchMany(addresses: readonly string[]): Promise<Array<T | null>>;
+  fetchMany(addresses: readonly string[]): Promise<ProgramAccountBatchResult<T>>;
   exists(address: string): Promise<boolean>;
 }
 
@@ -358,21 +545,29 @@ export class Arete<TStack extends StackDefinition> {
   private readonly _chain: ChainClient;
   private readonly _transactions: TransactionTransport;
   private readonly stack: TStack;
-  private readonly httpBaseUrl: string;
+  private readonly httpBaseUrl: string | undefined;
+  private readonly connectHttpUrl: string | undefined;
+  private readonly programReadOverrides: Readonly<Record<string, ProgramReadOverride>>;
   private readonly fetchImpl: typeof fetch;
+  private readonly auth: import('./types').AuthConfig | undefined;
   private readonly executionDefaults?: OperationExecutionOptions<any>;
   private _wallet?: WalletAdapter;
   private _aggregatedErrors?: ErrorMetadata[];
 
   private constructor(
     url: string | null,
-    httpBaseUrl: string,
+    httpBaseUrl: string | undefined,
+    connectHttpUrl: string | undefined,
+    programReadOverrides: Readonly<Record<string, ProgramReadOverride>>,
     options: AreteOptionsWithStorage<TStack>
   ) {
     this.stack = options.stack;
     this._wallet = options.wallet;
     this.executionDefaults = options.execution;
     this.httpBaseUrl = httpBaseUrl;
+    this.connectHttpUrl = connectHttpUrl;
+    this.programReadOverrides = programReadOverrides;
+    this.auth = options.auth;
     this.fetchImpl = options.fetch ?? this.resolveFetchImpl();
     this.storage = new SortedStorageDecorator(options.storage ?? new MemoryAdapter());
     this.queryStore = new QueryStore(this.storage);
@@ -391,6 +586,7 @@ export class Arete<TStack extends StackDefinition> {
       reconnectIntervals: options.reconnectIntervals,
       maxReconnectAttempts: options.maxReconnectAttempts,
       auth: options.auth,
+      fetch: this.fetchImpl,
     });
     this.subscriptionRegistry = new SubscriptionRegistry(this.connection, this.queryStore);
 
@@ -403,24 +599,24 @@ export class Arete<TStack extends StackDefinition> {
 
     this._views = createTypedViews(this.stack, this.storage, this.subscriptionRegistry);
     this._queries = this.buildQueries();
-    this._chain = createChainClient(
-      this.httpBaseUrl,
-      ((input: RequestInfo | URL, init?: RequestInit) =>
-        this.authenticatedFetch(
-          typeof input === 'string'
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input.url,
-          init,
-          ['read']
-        )) as typeof fetch
-    );
-    this._transactions = createTransactionTransport(
-      this.httpBaseUrl,
-      (input, init, scope, requirePreDispatchMarker) =>
-        this.authenticatedFetch(input, init, [scope], requirePreDispatchMarker)
-    );
+    this._chain = options.chain ?? createChainClient(
+        this.httpBaseUrl ?? '',
+        ((input: RequestInfo | URL, init?: RequestInit) =>
+          this.authenticatedStackFetch(
+            typeof input === 'string'
+              ? input
+              : input instanceof URL
+                ? input.toString()
+                : input.url,
+            init,
+            ['read']
+          )) as typeof fetch
+      );
+    this._transactions = options.transactions ?? createTransactionTransport(
+        this.httpBaseUrl ?? '',
+        (input, init, scope, requirePreDispatchMarker) =>
+          this.authenticatedStackFetch(input, init, [scope], requirePreDispatchMarker)
+      );
     this._programs = this.buildPrograms();
   }
 
@@ -448,6 +644,7 @@ export class Arete<TStack extends StackDefinition> {
     const bases: Record<string, Omit<ProgramInterface<ProgramSdkDefinition>, 'instructions' | 'transactions' | 'flows'>> = {};
 
     for (const [name, definition] of Object.entries(this.stack.programs ?? {})) {
+      const transport = this.createProgramTransport(name, definition);
       const instructions: Record<string, TypedInstruction<Record<string, unknown>, unknown>> = {};
       for (const [instructionName, handler] of Object.entries(definition.rawInstructions ?? {})) {
         instructions[instructionName] = this.createTypedInstruction(handler as InstructionHandler);
@@ -455,7 +652,10 @@ export class Arete<TStack extends StackDefinition> {
 
       const accounts: Record<string, TypedAccountReader<unknown>> = {};
       for (const [accountName, accountDefinition] of Object.entries(definition.accounts ?? {})) {
-        accounts[accountName] = this.createAccountReader(accountDefinition as ProgramAccountReadDefinition<unknown>);
+        accounts[accountName] = this.createAccountReader(
+          accountDefinition as ProgramAccountReadDefinition<unknown>,
+          transport
+        );
       }
 
       const queries: Record<string, TypedQueryExecutor<Record<string, unknown>, unknown>> = {};
@@ -513,23 +713,74 @@ export class Arete<TStack extends StackDefinition> {
     };
   }
 
-  private createAccountReader<T>(definition: ProgramAccountReadDefinition<T>): TypedAccountReader<T> {
+  private createProgramTransport(
+    name: string,
+    definition: ProgramSdkDefinition
+  ): ProgramReadTransport {
+    if (!hasProgramAccountReads(definition)) {
+      return createProgramReadTransport({
+        kind: 'unavailable',
+        message: `Program '${name}' has no generated account readers`,
+      });
+    }
+    const descriptor = effectiveProgramRead(this.stack, name, this.programReadOverrides[name]);
+    validateReleaseIdentity(name, definition, descriptor?.release);
+
+    if (descriptor?.transport.kind === 'local-http') {
+      return createProgramReadTransport({
+        kind: 'local-http',
+        endpoint: this.connectHttpUrl!,
+        release: descriptor.release,
+        fetch: this.fetchImpl,
+      });
+    }
+    if (descriptor?.transport.kind === 'hosted-binding') {
+      return createProgramReadTransport({
+        kind: 'hosted-binding',
+        release: descriptor.release,
+        binding: descriptor.transport.binding,
+        auth: this.auth,
+        fetch: this.fetchImpl,
+      });
+    }
+
+    return createProgramReadTransport({
+      kind: 'unavailable',
+      message: `Program '${name}' has no release-aware read descriptor`,
+    });
+  }
+
+  private createAccountReader<T>(
+    definition: ProgramAccountReadDefinition<T>,
+    transport: ProgramReadTransport
+  ): TypedAccountReader<T> {
     return {
       fetch: async (address: string): Promise<T | null> => {
-        const result = await this.readJson<T | null>(`${definition.path}/${encodeURIComponent(address)}`);
+        const result = await transport.read<T | null>({
+          operation: 'fetch',
+          account: definition.account,
+          address,
+        });
         return result === null ? null : parseProgramAccountValue(definition, result);
       },
-      fetchMany: async (addresses: readonly string[]): Promise<Array<T | null>> => {
-        const result = await this.readJson<Array<T | null>>(definition.path, {
-          method: 'POST',
-          body: { addresses },
+      fetchMany: async (addresses: readonly string[]): Promise<ProgramAccountBatchResult<T>> => {
+        const result = await transport.read<ProgramAccountBatchResult<unknown>>({
+          operation: 'fetchMany',
+          account: definition.account,
+          addresses,
         });
-        return result.map((value) =>
-          value === null ? null : parseProgramAccountValue(definition, value)
-        );
+        return {
+          items: result.items.map((item) => item.status === 'ok'
+            ? { ...item, value: parseProgramAccountValue(definition, item.value) }
+            : item),
+        };
       },
       exists: async (address: string): Promise<boolean> => {
-        const result = await this.readJson<{ exists: boolean }>(`${definition.path}/${encodeURIComponent(address)}/exists`);
+        const result = await transport.read<{ exists: boolean }>({
+          operation: 'exists',
+          account: definition.account,
+          address,
+        });
         return result.exists;
       },
     };
@@ -603,7 +854,28 @@ export class Arete<TStack extends StackDefinition> {
     return response;
   }
 
+  private authenticatedStackFetch(
+    input: string,
+    init?: RequestInit,
+    requiredScopes: readonly (TransactionAuthScope | 'read')[] = ['read'],
+    requirePreDispatchMarker = false
+  ): Promise<Response> {
+    if (!this.httpBaseUrl) {
+      throw new AreteError(
+        `Stack '${this.stack.name}' has no HTTP endpoint; this operation is not a program account read`,
+        'INVALID_CONFIG'
+      );
+    }
+    return this.authenticatedFetch(input, init, requiredScopes, requirePreDispatchMarker);
+  }
+
   private resolveReadUrl(path: string): string {
+    if (!this.httpBaseUrl) {
+      throw new AreteError(
+        `Stack '${this.stack.name}' has no HTTP endpoint; stack queries require httpUrl or endpoints.http`,
+        'INVALID_CONFIG'
+      );
+    }
     return `${this.httpBaseUrl.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
   }
 
@@ -621,29 +893,46 @@ export class Arete<TStack extends StackDefinition> {
     TPrograms extends ProgramMap | undefined = undefined,
   >(
     stack: T,
-    options?: ConnectOptions<TPrograms>
+    options?: ConnectOptions<TPrograms, T['programs']>
   ): Promise<ConnectedArete<StackWithAttachedPrograms<T, TPrograms>, T>> {
+    validateProgramReads(stack, undefined);
+    const attachedPrograms = options?.programs as TPrograms;
+    const effectiveStack = withPrograms(stack, attachedPrograms);
+    const programReadOverrides = options?.programReads ?? {};
+    validateProgramReads(effectiveStack, programReadOverrides, false);
+
     const requestedUrl = options?.url ?? stack.endpoints.ws;
+    const connectHttpUrl = options?.httpUrl;
+    validateLocalProgramReadEndpoints(effectiveStack, programReadOverrides, connectHttpUrl);
     const autoConnect = options?.autoConnect !== false;
-    const httpOnly = options?.transport === 'http';
+    const independentlyReadable = hasCompleteIndependentProgramReads(
+      effectiveStack,
+      programReadOverrides,
+      connectHttpUrl
+    );
+    const implicitProgramOnlyHttp = options?.transport === undefined
+      && !requestedUrl
+      && independentlyReadable
+      && Object.keys(stack.views).length === 0;
+    const httpOnly = options?.transport === 'http' || implicitProgramOnlyHttp;
     const url = httpOnly ? null : requestedUrl;
-    const httpUrl =
-      options?.httpUrl
-      ?? stack.endpoints.http
-      ?? (requestedUrl ? deriveHttpEndpoint(requestedUrl) : undefined);
+    const hasGeneratedHttp = Object.prototype.hasOwnProperty.call(stack.endpoints, 'http');
+    let httpUrl = options?.httpUrl;
+    if (httpUrl === undefined) {
+      if (hasGeneratedHttp) {
+        httpUrl = stack.endpoints.http;
+      }
+    }
 
     if (!httpOnly && !url) {
       throw new AreteError('WebSocket URL is required (provide url option or define endpoints.ws in stack)', 'INVALID_CONFIG');
     }
-    if (!httpUrl) {
+    if (!httpUrl && !independentlyReadable) {
       throw new AreteError(
         'HTTP endpoint is required for transport: "http" (provide httpUrl option or define endpoints.http in stack)',
         'INVALID_CONFIG'
       );
     }
-
-    const attachedPrograms = options?.programs as TPrograms;
-    const effectiveStack = withPrograms(stack, attachedPrograms);
 
     const internalOptions: AreteOptionsWithStorage<StackWithAttachedPrograms<T, TPrograms>> = {
       stack: effectiveStack,
@@ -661,9 +950,17 @@ export class Arete<TStack extends StackDefinition> {
       wallet: options?.wallet,
       fetch: options?.fetch,
       execution: options?.execution,
+      chain: options?.chain,
+      transactions: options?.transactions,
     };
 
-    const client = new Arete(url, httpUrl, internalOptions);
+    const client = new Arete(
+      url,
+      httpUrl || undefined,
+      connectHttpUrl,
+      programReadOverrides,
+      internalOptions
+    );
 
     if (!httpOnly && autoConnect) {
       await client.connection.connect();

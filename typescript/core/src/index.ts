@@ -1,9 +1,13 @@
-import { Arete as BaseArete, withPrograms } from './client';
+import {
+  Arete as BaseArete,
+  validateProgramReadDescriptor,
+  withPrograms,
+} from './client';
 import { createSession } from './session';
 
 const Arete = Object.assign(BaseArete, { session: createSession });
 
-export { Arete, withPrograms, createSession };
+export { Arete, withPrograms, createSession, validateProgramReadDescriptor };
 export type {
   ConnectOptions,
   AreteOptionsWithStorage,
@@ -73,6 +77,7 @@ export type {
   Session,
   SessionDefinition,
   SessionOptions,
+  CompositionSessionOptions,
   SessionMemberOptions,
 } from './session';
 
@@ -88,6 +93,12 @@ export type {
   ContextSlotOptions,
   TokenBalanceInput,
 } from './chain';
+
+export { createHostedSolanaGatewayTransports } from './solana-gateway';
+export type {
+  HostedSolanaGatewayTransportOptions,
+  HostedSolanaGatewayTransports,
+} from './solana-gateway';
 
 export { createTransactionTransport, TransactionTransportError } from './transactions';
 export type {
@@ -137,6 +148,10 @@ export {
   stackQuery,
   ReadRequestError,
 } from './read';
+export type {
+  ProgramReadRequest,
+  ProgramReadTransport,
+} from './program-read-transport';
 
 export { ConnectionManager, isHostedAreteEndpoint } from './connection';
 export {
@@ -205,7 +220,20 @@ export type {
   StackEndpoints,
   ReadTransportMethod,
   ProgramAccountReadDefinition,
+  ProgramAccountBatchItem,
+  ProgramAccountBatchResult,
   ProgramQueryDefinition,
+  ProgramReleaseReference,
+  HttpAuthMetadata,
+  ProgramReadBinding,
+  SolanaGatewayAuthScope,
+  SolanaGatewayAuthMetadata,
+  HostedSolanaGatewayCapabilityBinding,
+  HostedSolanaGatewayBindings,
+  ProgramReadDescriptor,
+  ProgramReadOverride,
+  ProgramReadDescriptors,
+  ProgramReadOverrides,
   StackQueryDefinition,
   ProgramSdkDefinition,
   ViewGroup,
@@ -224,7 +252,10 @@ export type {
   AreteConfig,
   AuthConfig,
   AuthTokenResult,
+  AuthTokenTarget,
   AuthTokenRequest,
+  ProgramReadBindingAuthTarget,
+  SolanaGatewayBindingAuthTarget,
   WebSocketFactoryInit,
   TypedViews,
   TypedViewGroup,

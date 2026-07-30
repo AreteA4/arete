@@ -1,5 +1,6 @@
 import {
   Arete,
+  validateProgramReadDescriptor,
   withPrograms,
   type ConnectedArete,
   type ConnectOptions,
@@ -8,7 +9,15 @@ import {
   type TransactionOptions,
 } from './client';
 import { createChainClient, type ChainClient } from './chain';
-import { AreteError, type AuthConfig, type StackDefinition, type ProgramSdkDefinition } from './types';
+import {
+  AreteError,
+  type AuthConfig,
+  type ProgramReadDescriptor,
+  type ProgramReadDescriptors,
+  type ProgramReadOverride,
+  type StackDefinition,
+  type ProgramSdkDefinition,
+} from './types';
 import type { StorageAdapter } from './storage/adapter';
 import type { WalletAdapter, BuiltInstruction } from './wallet/types';
 import type { ExecutionResult } from './instructions';
@@ -28,9 +37,14 @@ import type { TransactionTransport } from './transactions';
  * composition of programs + views, and a standalone program member reuses the
  * exact same machinery as a stack with no views, connected HTTP-only.
  */
-export interface SessionDefinition {
+export interface SessionDefinition<
+  TPrograms extends Record<string, ProgramSdkDefinition> = Record<string, ProgramSdkDefinition>,
+> {
+  readonly mode?: 'composition';
   readonly stacks?: Record<string, StackDefinition>;
-  readonly programs?: Record<string, ProgramSdkDefinition>;
+  readonly programs?: TPrograms;
+  /** Generated descriptors keyed in parallel with standalone `programs`. */
+  readonly programReads?: ProgramReadDescriptors<TPrograms>;
 }
 
 type SessionStackPrograms<TDef extends SessionDefinition> = Partial<{
@@ -69,6 +83,10 @@ export interface SessionMemberOptions<
   autoConnect?: boolean;
   autoReconnect?: boolean;
   programs?: TPrograms;
+  /** Override applied to every program owned by this member. */
+  programRead?: ProgramReadOverride;
+  /** Per-program overrides for this member. */
+  programReads?: Readonly<Record<string, ProgramReadOverride>>;
 }
 
 export interface SessionOptions<
@@ -98,7 +116,22 @@ export interface SessionOptions<
     >;
   };
   programs?: Record<string, SessionMemberOptions>;
+  /** Override applied to every program in the session. */
+  programRead?: ProgramReadOverride;
+  /** Session-wide per-program overrides, keyed by program key. */
+  programReads?: Readonly<Record<string, ProgramReadOverride>>;
 }
+
+export type CompositionSessionOptions<
+  TDef extends SessionDefinition = SessionDefinition,
+  TStackPrograms extends SessionStackPrograms<TDef> = {},
+> = Omit<SessionOptions<TDef, TStackPrograms>, 'chain' | 'transactions' | 'endpoints'> & {
+  /** Chain reads never inherit a live member's HTTP endpoint. */
+  chain: ChainClient;
+  /** Transactions never inherit a live member's HTTP endpoint. */
+  transactions: TransactionTransport;
+  endpoints?: never;
+};
 
 type SessionStacks<
   TDef extends SessionDefinition,
@@ -153,8 +186,10 @@ type ExplicitSessionPrograms<TDef extends SessionDefinition> = {
 type SessionPrograms<
   TDef extends SessionDefinition,
   TStackPrograms extends SessionStackPrograms<TDef> = {},
-> = Omit<PromotedSessionPrograms<TDef, TStackPrograms>, keyof NonNullable<TDef['programs']>>
-  & ExplicitSessionPrograms<TDef>;
+> = TDef extends { readonly mode: 'composition' }
+  ? ExplicitSessionPrograms<TDef>
+  : Omit<PromotedSessionPrograms<TDef, TStackPrograms>, keyof NonNullable<TDef['programs']>>
+    & ExplicitSessionPrograms<TDef>;
 
 export interface Session<
   TDef extends SessionDefinition = SessionDefinition,
@@ -180,13 +215,57 @@ export interface Session<
 
 type SessionConnectionMemberOptions = Pick<
   SessionMemberOptions<Record<string, ProgramSdkDefinition>>,
-  'url' | 'httpUrl' | 'transport' | 'auth' | 'storage' | 'autoConnect' | 'autoReconnect'
+  | 'url'
+  | 'httpUrl'
+  | 'transport'
+  | 'auth'
+  | 'storage'
+  | 'autoConnect'
+  | 'autoReconnect'
+  | 'programRead'
+  | 'programReads'
 >;
 
 type SessionConnectionOptions = Pick<
   SessionOptions,
-  'wallet' | 'auth' | 'fetch' | 'transport' | 'endpoints'
+  | 'wallet'
+  | 'auth'
+  | 'fetch'
+  | 'transport'
+  | 'endpoints'
+  | 'programRead'
+  | 'programReads'
+  | 'chain'
+  | 'transactions'
 >;
+
+function mergeProgramReadOverrides(
+  ...layers: readonly (ProgramReadOverride | undefined)[]
+): ProgramReadOverride | undefined {
+  return layers.reduce<ProgramReadOverride | undefined>(
+    (selected, layer) => layer ?? selected,
+    undefined
+  );
+}
+
+function resolveSessionProgramReads(
+  stack: StackDefinition,
+  member: SessionConnectionMemberOptions | undefined,
+  options: SessionConnectionOptions | undefined
+): Readonly<Record<string, ProgramReadOverride>> | undefined {
+  const reads = Object.fromEntries(
+    Object.keys(stack.programs ?? {}).flatMap((name) => {
+      const override = mergeProgramReadOverrides(
+        options?.programRead,
+        options?.programReads?.[name],
+        member?.programRead,
+        member?.programReads?.[name]
+      );
+      return override ? [[name, override] as const] : [];
+    })
+  );
+  return Object.keys(reads).length > 0 ? reads : undefined;
+}
 
 function resolveMemberConnectOptions(
   stack: StackDefinition,
@@ -195,10 +274,10 @@ function resolveMemberConnectOptions(
   forceHttpOnly: boolean
 ): ConnectOptions {
   const transport = member?.transport ?? options?.transport ?? (forceHttpOnly ? 'http' : 'ws');
-  // Resolution order: per-member override → the stack's own endpoints →
-  // session-wide fallback endpoints.
+  // Stack endpoints remain on the stack definition. Only explicit session/member
+  // HTTP options are forwarded as ConnectOptions.httpUrl for local Program Reads.
   const url = member?.url ?? (stack.endpoints.ws || options?.endpoints?.ws);
-  const httpUrl = member?.httpUrl ?? stack.endpoints.http ?? options?.endpoints?.http;
+  const httpUrl = member?.httpUrl ?? options?.endpoints?.http;
   return {
     url,
     httpUrl,
@@ -209,15 +288,53 @@ function resolveMemberConnectOptions(
     autoReconnect: member?.autoReconnect,
     wallet: options?.wallet,
     fetch: options?.fetch,
+    programReads: resolveSessionProgramReads(stack, member, options),
+    chain: options?.chain,
+    transactions: options?.transactions,
   };
 }
 
-function programAsStack(name: string, program: ProgramSdkDefinition): StackDefinition {
+function validateCompositionProgramReads(
+  stack: StackDefinition,
+  member: SessionConnectionMemberOptions | undefined,
+  options: SessionConnectionOptions | undefined
+): void {
+  const overrides = resolveSessionProgramReads(stack, member, options);
+  for (const [name, program] of Object.entries(stack.programs ?? {})) {
+    const descriptor = overrides?.[name] ?? stack.programReads?.[name];
+    if (descriptor) validateProgramReadDescriptor(name, descriptor);
+    if (Object.keys(program.accounts ?? {}).length === 0) continue;
+    const binding = descriptor?.transport.kind === 'hosted-binding'
+      ? descriptor.transport.binding
+      : undefined;
+    if (
+      !descriptor?.release
+      || !binding
+      || !binding.endpoint?.trim()
+      || !binding.programReadBindingId?.trim()
+      || binding.auth?.targetKind !== 'program-read-binding'
+      || binding.auth.targetId !== binding.programReadBindingId
+      || !binding.auth.sessionEndpoint?.trim()
+    ) {
+      throw new AreteError(
+        `Composition session program '${name}' requires a complete hosted-binding descriptor or override`,
+        'INVALID_CONFIG'
+      );
+    }
+  }
+}
+
+function programAsStack(
+  name: string,
+  program: ProgramSdkDefinition,
+  descriptor: ProgramReadDescriptor | undefined
+): StackDefinition {
   return {
     name,
     endpoints: { ws: '' },
     views: {},
     programs: { [name]: program },
+    ...(descriptor ? { programReads: { [name]: descriptor } } : {}),
   };
 }
 
@@ -226,12 +343,57 @@ export async function createSession<
   TStackPrograms extends SessionStackPrograms<TDef> = {},
 >(
   definition: TDef,
-  options?: SessionOptions<TDef, TStackPrograms>
+  ...args: TDef extends { readonly mode: 'composition' }
+    ? [options: CompositionSessionOptions<TDef, TStackPrograms>]
+    : [options?: SessionOptions<TDef, TStackPrograms>]
 ): Promise<Session<TDef, TStackPrograms>> {
+  const options = args[0] as SessionOptions<TDef, TStackPrograms> | undefined;
   const stackEntries = Object.entries(definition.stacks ?? {});
   const programEntries = Object.entries(definition.programs ?? {});
   if (stackEntries.length === 0 && programEntries.length === 0) {
     throw new AreteError('createSession requires at least one stack or program member', 'INVALID_CONFIG');
+  }
+  if (definition.mode === 'composition' && (!options?.chain || !options?.transactions)) {
+    throw new AreteError(
+      'composition sessions require explicit chain and transaction transports',
+      'INVALID_CONFIG'
+    );
+  }
+  if (definition.mode === 'composition' && options?.endpoints !== undefined) {
+    throw new AreteError(
+      'composition sessions require per-member live endpoints, not shared fallback endpoints',
+      'INVALID_CONFIG'
+    );
+  }
+  if (definition.programReads) {
+    const programKeys = programEntries.map(([key]) => key);
+    const descriptorKeys = Object.keys(definition.programReads);
+    if (
+      programKeys.some((key) => !descriptorKeys.includes(key))
+      || descriptorKeys.some((key) => !programKeys.includes(key))
+    ) {
+      throw new AreteError(
+        'Session definition programReads keys must exactly match standalone programs',
+        'INVALID_CONFIG'
+      );
+    }
+  }
+  if (definition.mode === 'composition') {
+    for (const [key, stack] of stackEntries) {
+      const member = options?.stacks?.[key as keyof NonNullable<TDef['stacks']>];
+      validateCompositionProgramReads(
+        withPrograms(stack, member?.programs as Record<string, ProgramSdkDefinition> | undefined),
+        member,
+        options
+      );
+    }
+    for (const [key, program] of programEntries) {
+      validateCompositionProgramReads(
+        programAsStack(key, program, definition.programReads?.[key]),
+        options?.programs?.[key],
+        options
+      );
+    }
   }
 
   let wallet = options?.wallet;
@@ -244,16 +406,30 @@ export async function createSession<
         stack,
         memberOptions?.programs as Record<string, ProgramSdkDefinition> | undefined
       );
-      const connectOptions = resolveMemberConnectOptions(effectiveStack, memberOptions, options, false);
-      const client = await Arete.connect(effectiveStack, connectOptions);
+      const connectOptions = resolveMemberConnectOptions(
+        effectiveStack,
+        memberOptions,
+        options,
+        false
+      );
+      const client = await Arete.connect(stack, {
+        ...connectOptions,
+        programs: memberOptions?.programs,
+        programReads: connectOptions.programReads as any,
+      });
       return [key, client] as const;
     })
   );
 
   const connectedPrograms = await Promise.all(
     programEntries.map(async ([key, program]) => {
-      const syntheticStack = programAsStack(key, program);
-      const connectOptions = resolveMemberConnectOptions(syntheticStack, options?.programs?.[key], options, true);
+      const syntheticStack = programAsStack(key, program, definition.programReads?.[key]);
+      const connectOptions = resolveMemberConnectOptions(
+        syntheticStack,
+        options?.programs?.[key],
+        options,
+        true
+      );
       const client = await Arete.connect(syntheticStack, connectOptions);
       return [key, client] as const;
     })
@@ -266,7 +442,7 @@ export async function createSession<
   const executionHost = memberClients[0]!;
   const transactions = options?.transactions ?? executionHost.transactions;
 
-  const stacks = Object.fromEntries(connectedStacks) as SessionStacks<TDef, TStackPrograms>;
+  const stacks = Object.fromEntries(connectedStacks) as unknown as SessionStacks<TDef, TStackPrograms>;
   const explicitProgramKeys = new Set(connectedPrograms.map(([key]) => key));
   const programOwners = new Map<string, { stack: string; programId?: string }>();
   const connectedProgramEntries = connectedPrograms.map(([key, client]) => [
@@ -278,25 +454,27 @@ export async function createSession<
     ProgramInterface<ProgramSdkDefinition>
   >;
 
-  for (const [stackKey, client] of connectedStacks) {
-    for (const [programKey, program] of Object.entries(
-      client.programs as Record<string, ProgramInterface<ProgramSdkDefinition>>
-    )) {
-      if (explicitProgramKeys.has(programKey)) {
-        continue;
+  if (definition.mode !== 'composition') {
+    for (const [stackKey, client] of connectedStacks) {
+      for (const [programKey, program] of Object.entries(
+        client.programs as Record<string, ProgramInterface<ProgramSdkDefinition>>
+      )) {
+        if (explicitProgramKeys.has(programKey)) {
+          continue;
+        }
+        const existingOwner = programOwners.get(programKey);
+        if (existingOwner) {
+          console.warn(
+            `Program '${programKey}' is bundled by stacks '${existingOwner.stack}'` +
+            ` (${existingOwner.programId ?? 'unknown program ID'}) and '${stackKey}'` +
+            ` (${program.programId ?? 'unknown program ID'}); session.programs.${programKey}` +
+            ` uses '${existingOwner.stack}' because it was connected first`
+          );
+          continue;
+        }
+        promotedPrograms[programKey] = program;
+        programOwners.set(programKey, { stack: stackKey, programId: program.programId });
       }
-      const existingOwner = programOwners.get(programKey);
-      if (existingOwner) {
-        console.warn(
-          `Program '${programKey}' is bundled by stacks '${existingOwner.stack}'` +
-          ` (${existingOwner.programId ?? 'unknown program ID'}) and '${stackKey}'` +
-          ` (${program.programId ?? 'unknown program ID'}); session.programs.${programKey}` +
-          ` uses '${existingOwner.stack}' because it was connected first`
-        );
-        continue;
-      }
-      promotedPrograms[programKey] = program;
-      programOwners.set(programKey, { stack: stackKey, programId: program.programId });
     }
   }
 

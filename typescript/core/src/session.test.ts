@@ -6,10 +6,34 @@ import { createInstructionHandler } from './instructions';
 import { createPreparedFlow } from './operations';
 import { programAccountRead } from './read';
 import type { ChainClient } from './chain';
+import type { TransactionTransport } from './transactions';
 
 const SIGNER = 'So11111111111111111111111111111111111111112';
 const ORE_PROGRAM = 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv';
 const SQUADS_PROGRAM = 'SQDS111111111111111111111111111111111111111';
+const SQUADS_BINDING_ID = 'prb_00000000000000000000000000000003';
+
+function squadsRead(endpoint: string) {
+  return {
+    release: {
+      programReleaseHash: 'release-squads',
+      programSpecHash: 'spec-squads',
+    },
+    transport: {
+      kind: 'hosted-binding',
+      binding: {
+        endpoint,
+        programReadBindingId: SQUADS_BINDING_ID,
+        auth: {
+          required: false,
+          sessionEndpoint: 'https://auth.invalid/session',
+          targetKind: 'program-read-binding',
+          targetId: SQUADS_BINDING_ID,
+        },
+      },
+    },
+  } as const;
+}
 
 const closeHandler = createInstructionHandler({
   programId: ORE_PROGRAM,
@@ -29,14 +53,17 @@ const SQUADS_STACK = {
     squads: {
       name: 'squads',
       programId: SQUADS_PROGRAM,
+      programSpecHash: 'spec-squads',
       accounts: {
         Multisig: programAccountRead<{ threshold: number }>({
           account: 'Multisig',
-          path: '/programs/squads/accounts/Multisig',
         }),
       },
       rawInstructions: {},
     },
+  },
+  programReads: {
+    squads: squadsRead('https://squads.invalid'),
   },
 } as const;
 
@@ -49,7 +76,7 @@ const ORE_PROGRAM_SDK = {
 function makeFetch() {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.includes('/programs/squads/accounts/Multisig/')) {
+    if (url.includes('/v1/releases/release-squads/accounts/Multisig/')) {
       return new Response(JSON.stringify({ threshold: 2 }), { status: 200 });
     }
     if (url.includes('/chain/exists/')) {
@@ -62,6 +89,205 @@ function makeFetch() {
 describe('createSession', () => {
   it('rejects an empty definition', async () => {
     await expect(createSession({})).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
+  });
+
+  it('requires explicit chain and transaction transports in composition mode', async () => {
+    await expect((createSession as any)(
+      { mode: 'composition', stacks: { squads: SQUADS_STACK } },
+      { stacks: { squads: { autoConnect: false } } }
+    )).rejects.toMatchObject({
+      code: 'INVALID_CONFIG',
+      message: expect.stringContaining('explicit chain and transaction transports'),
+    });
+  });
+
+  it('keeps three live and Program Read bindings independent in composition mode', async () => {
+    const websocketUrls: string[] = [];
+    class SessionWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      readyState = SessionWebSocket.CONNECTING;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: unknown }) => void | Promise<void>) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: ((event: { code: number; reason: string }) => void) | null = null;
+
+      constructor(public readonly url: string) {
+        websocketUrls.push(url);
+        queueMicrotask(() => {
+          this.readyState = SessionWebSocket.OPEN;
+          this.onopen?.();
+        });
+      }
+
+      send(): void {}
+
+      close(code = 1000, reason = ''): void {
+        this.readyState = SessionWebSocket.CLOSED;
+        this.onclose?.({ code, reason });
+      }
+    }
+    vi.stubGlobal('WebSocket', SessionWebSocket as unknown as typeof WebSocket);
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ threshold: 2 }), { status: 200 })
+    );
+    const member = (alias: string) => ({
+      ...SQUADS_STACK,
+      name: alias,
+      endpoints: {
+        ws: `wss://${alias}.live.invalid`,
+        http: `https://${alias}.live.invalid`,
+      },
+       programReads: {
+        squads: squadsRead(`https://${alias}.reads.invalid`),
+      },
+    } as const);
+    const chain = { exists: vi.fn(async () => true) } as unknown as ChainClient;
+    const transactions = {} as TransactionTransport;
+    const session = await createSession(
+      {
+        mode: 'composition',
+        stacks: {
+          squads: member('squads'),
+          presale: member('presale'),
+          damm: member('damm'),
+        },
+      },
+      {
+        chain,
+        transactions,
+        fetch: fetchMock as typeof fetch,
+      }
+    );
+
+    expect(websocketUrls).toEqual([
+      'wss://squads.live.invalid',
+      'wss://presale.live.invalid',
+      'wss://damm.live.invalid',
+    ]);
+    await session.stacks.squads.programs.squads.accounts.Multisig.fetch('one');
+    await session.stacks.presale.programs.squads.accounts.Multisig.fetch('two');
+    await session.stacks.damm.programs.squads.accounts.Multisig.fetch('three');
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      'https://squads.reads.invalid/v1/releases/release-squads/accounts/Multisig/one',
+      'https://presale.reads.invalid/v1/releases/release-squads/accounts/Multisig/two',
+      'https://damm.reads.invalid/v1/releases/release-squads/accounts/Multisig/three',
+    ]);
+    expect(session.chain).toBe(chain);
+    expect(session.transactions).toBe(transactions);
+    expect(session.programs).toEqual({});
+    session.close();
+    vi.unstubAllGlobals();
+  });
+
+  it('connects zero-account standalone programs without a stack HTTP endpoint', async () => {
+    const chain = { exists: vi.fn(async () => true) } as unknown as ChainClient;
+    const transactions = {} as TransactionTransport;
+    const session = await createSession(
+      {
+        mode: 'composition',
+        programs: { ore: ORE_PROGRAM_SDK },
+        programReads: {
+          ore: {
+            release: {
+              programReleaseHash: 'release-ore',
+              programSpecHash: 'spec-ore',
+            },
+            transport: {
+              kind: 'local-http',
+              endpointSource: 'connect-http-url',
+            },
+          },
+        },
+      },
+      { chain, transactions, fetch: makeFetch() as typeof fetch }
+    );
+
+    expect(session.programs.ore.programId).toBe(ORE_PROGRAM);
+    session.close();
+  });
+
+  it('rejects local Program Reads instead of inheriting a live endpoint in composition mode', async () => {
+    const fetchMock = makeFetch();
+    const chain = { exists: vi.fn(async () => true) } as unknown as ChainClient;
+    const transactions = {} as TransactionTransport;
+    const stack = {
+      ...SQUADS_STACK,
+      endpoints: { ws: 'wss://live.invalid', http: 'https://live.invalid' },
+      programReads: {
+        squads: {
+          release: {
+            programReleaseHash: 'release-squads',
+            programSpecHash: 'spec-squads',
+          },
+          transport: {
+            kind: 'local-http',
+            endpointSource: 'connect-http-url',
+          },
+        },
+      },
+    } as const;
+    await expect(createSession(
+      { mode: 'composition', stacks: { squads: stack } },
+      {
+        chain,
+        transactions,
+        fetch: fetchMock as typeof fetch,
+        stacks: { squads: { autoConnect: false } },
+      }
+    )).rejects.toMatchObject({
+      code: 'INVALID_CONFIG',
+      message: expect.stringContaining('complete hosted-binding'),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a complete hosted override as a composition descriptor replacement', async () => {
+    const fetchMock = makeFetch();
+    const chain = { exists: vi.fn(async () => true) } as unknown as ChainClient;
+    const transactions = {} as TransactionTransport;
+    const stack = {
+      ...SQUADS_STACK,
+      endpoints: { ws: 'wss://live.invalid', http: 'https://live.invalid' },
+      programReads: {
+        squads: {
+          release: {
+            programReleaseHash: 'release-local',
+            programSpecHash: 'spec-squads',
+          },
+          transport: {
+            kind: 'local-http',
+            endpointSource: 'connect-http-url',
+          },
+        },
+      },
+    } as const;
+    const session = await createSession(
+      { mode: 'composition', stacks: { squads: stack } },
+      {
+        chain,
+        transactions,
+        fetch: fetchMock as typeof fetch,
+        stacks: {
+          squads: {
+            autoConnect: false,
+            httpUrl: 'https://member.invalid',
+            programReads: {
+              squads: squadsRead('https://override.reads.invalid'),
+            },
+          },
+        },
+      }
+    );
+
+    await session.stacks.squads.programs.squads.accounts.Multisig.fetch('multisig');
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'https://override.reads.invalid/v1/releases/release-squads/accounts/Multisig/multisig'
+    );
+    session.close();
   });
 
   it('supports independent per-stack initial connection policy', async () => {
@@ -94,7 +320,11 @@ describe('createSession', () => {
     const fetchMock = makeFetch();
     const session = await createSession(
       {
-        stacks: { squads: SQUADS_STACK },
+        stacks: {
+          squads: {
+            ...SQUADS_STACK,
+          },
+        },
         programs: { ore: ORE_PROGRAM_SDK },
       },
       {
@@ -345,7 +575,22 @@ describe('createSession', () => {
   });
 
   it('supports pre-widening a stack definition with withPrograms()', async () => {
-    const stack = withPrograms(SQUADS_STACK, { ore: ORE_PROGRAM_SDK });
+    const stack = {
+      ...withPrograms(SQUADS_STACK, { ore: ORE_PROGRAM_SDK }),
+      programReads: {
+        ...SQUADS_STACK.programReads,
+        ore: {
+          release: {
+            programReleaseHash: 'release-ore',
+            programSpecHash: 'spec-ore',
+          },
+          transport: {
+            kind: 'local-http',
+            endpointSource: 'connect-http-url',
+          },
+        },
+      },
+    } as const;
     const session = await createSession(
       {
         stacks: { squads: stack },
@@ -423,6 +668,10 @@ describe('createSession', () => {
       programs: {
         ...SQUADS_STACK.programs,
         governance: SQUADS_STACK.programs.squads,
+      },
+      programReads: {
+        ...SQUADS_STACK.programReads,
+        governance: squadsRead('https://squads.invalid'),
       },
     } as const;
     const session = await createSession(

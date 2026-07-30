@@ -159,7 +159,7 @@ export type ExtendedProgramDefinition<
   TDefaults = never,
   TOperations extends AnyProgramOperations = ProgramOperations,
   TMath = never,
-> = Omit<TBase, 'definitionHash'>
+> = Omit<TBase, 'sdkDefinitionHash'>
   & MaybeField<'addresses', TAddresses>
   & MaybeField<'constants', TConstants>
   & MaybeField<'defaults', TDefaults>
@@ -269,7 +269,7 @@ export function extendProgram<
 > {
   const base = program as Record<PropertyKey, unknown> & ProgramRuntimeExtensionCarrier;
   const extended = { ...program } as Record<PropertyKey, unknown>;
-  delete extended.definitionHash;
+  delete extended.sdkDefinitionHash;
 
   for (const key of ['pdas', 'accounts', 'queries', 'addresses', 'constants', 'defaults', 'math'] as const) {
     const extensionValue = extensions[key];
