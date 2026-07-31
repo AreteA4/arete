@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.3.0...arete-sdk-v0.4.0) (2026-07-31)
+
+
+### Features
+
+* introduce the versioned public artifact model ([9c6777a](https://github.com/AreteA4/arete/commit/9c6777a3fe1703cc7491b56afaaac0bc5940b321))
+
 ## [0.3.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.2.0...arete-sdk-v0.3.0) (2026-07-22)
 
 

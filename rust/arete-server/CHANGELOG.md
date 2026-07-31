@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.0](https://github.com/AreteA4/arete/compare/arete-server-v0.3.0...arete-server-v0.4.0) (2026-07-31)
+
+
+### Features
+
+* **arete-server:** add runtime plans and release-addressed reads ([e699888](https://github.com/AreteA4/arete/commit/e699888bd3cf77527c3786d1009466ddb3bfd769))
+* introduce the versioned public artifact model ([9c6777a](https://github.com/AreteA4/arete/commit/9c6777a3fe1703cc7491b56afaaac0bc5940b321))
+
+
+### Bug Fixes
+
+* satisfy Rust 1.97 checks and refresh generated SDKs ([f70238b](https://github.com/AreteA4/arete/commit/f70238b4a5369e13afc9de3866e9275b3efa0558))
+* **server:** enforce program-read binding authorization ([30f3180](https://github.com/AreteA4/arete/commit/30f3180beffdf42b961a448337ff166ff1b97c6d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.3.0 to 0.4.0
+    * arete-auth bumped from 0.2.0 to 0.3.0
+
 ## [0.3.0](https://github.com/AreteA4/arete/compare/arete-server-v0.2.0...arete-server-v0.3.0) (2026-07-22)
 
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.3.0...arete-typescript-v0.4.0) (2026-07-31)
+
+
+### Features
+
+* **core:** add release-addressed reads and hosted transports ([f784932](https://github.com/AreteA4/arete/commit/f784932716f9555e50cb042896a938c47d3354c2))
+* introduce the versioned public artifact model ([9c6777a](https://github.com/AreteA4/arete/commit/9c6777a3fe1703cc7491b56afaaac0bc5940b321))
+* mint anonymous hosted sessions when no publishable key is configured ([afcddda](https://github.com/AreteA4/arete/commit/afcdddae35c05fb98c98358665ce829b63d4073f))
+
 ## [0.3.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.2.0...arete-typescript-v0.3.0) (2026-07-22)
 
 

@@ -6,6 +6,32 @@
 
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.4.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.3.0...a4-cli-v0.4.0) (2026-07-31)
+
+
+### Features
+
+* **cli:** add artifact commands and manifest-driven SDK workflows ([e16719d](https://github.com/AreteA4/arete/commit/e16719dc2c917f84dff91687c05e916c2d557027))
+* introduce the versioned public artifact model ([9c6777a](https://github.com/AreteA4/arete/commit/9c6777a3fe1703cc7491b56afaaac0bc5940b321))
+
+
+### Bug Fixes
+
+* **cli:** anonymous hs_token mint for public hosted stacks ([20a2383](https://github.com/AreteA4/arete/commit/20a23833a1116bd93c681079116f12aac5d6b567))
+* **cli:** fall back to anonymous hs_token mint when no API key is stored ([bb6c2cf](https://github.com/AreteA4/arete/commit/bb6c2cf1c53ff52b11bd4db2d108cc8915367da4))
+* **cli:** reject dangling credential symlinks ([79e1fb2](https://github.com/AreteA4/arete/commit/79e1fb2b03db90309f86640b91b5c0f73f2c0249))
+* **cli:** surface broken credential load errors ([d6b8bfe](https://github.com/AreteA4/arete/commit/d6b8bfec24bf9a9bdfa28baf4d91663ca0637623))
+* satisfy Rust 1.97 checks and refresh generated SDKs ([f70238b](https://github.com/AreteA4/arete/commit/f70238b4a5369e13afc9de3866e9275b3efa0558))
+* synchronize linked release artifacts ([136ef2d](https://github.com/AreteA4/arete/commit/136ef2d2c761349deb5d101c2a3a119f64997b30))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.3.0 to 0.4.0
+    * arete-idl bumped from 0.1.0 to 0.2.0
+
 ## [0.3.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.2.0...a4-cli-v0.3.0) (2026-07-22)
 
 

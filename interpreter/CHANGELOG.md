@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.3.0...arete-interpreter-v0.4.0) (2026-07-31)
+
+
+### Features
+
+* **interpreter:** generate SDKs from public artifacts ([9fd622f](https://github.com/AreteA4/arete/commit/9fd622fbac7d0b3a13426e4d9333db4fe1442717))
+* introduce the versioned public artifact model ([9c6777a](https://github.com/AreteA4/arete/commit/9c6777a3fe1703cc7491b56afaaac0bc5940b321))
+
+
+### Bug Fixes
+
+* permit absent nullable fields in canonical schemas ([65b4a1d](https://github.com/AreteA4/arete/commit/65b4a1d0117d89f1925b58ae518cd5c82bdc504e))
+* satisfy Rust 1.97 checks and refresh generated SDKs ([f70238b](https://github.com/AreteA4/arete/commit/f70238b4a5369e13afc9de3866e9275b3efa0558))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.3.0 to 0.4.0
+    * arete-idl bumped from 0.1.0 to 0.2.0
+
 ## [0.3.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.2.0...arete-interpreter-v0.3.0) (2026-07-22)
 
 
