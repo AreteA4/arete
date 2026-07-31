@@ -68,6 +68,20 @@ jobs:
       - name: Check npm lockfiles match manifests
         run: bash ./scripts/check-lockfile-sync.sh
 
+  npm-publish-auth:
+    name: npm Publishing Authentication
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Test publishing authentication selection
+        run: bash ./scripts/test-npm-publish-auth.sh
+
   rust:
     name: Rust
     runs-on: ubuntu-latest

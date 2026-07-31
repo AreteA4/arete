@@ -47,10 +47,13 @@ cleanup() {
 trap cleanup EXIT
 
 using_trusted_publishing() {
+  local node_auth_token="${NODE_AUTH_TOKEN:-}"
+
+  # setup-node exports this placeholder when registry-url is set without a token.
   [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" \
     && -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
-    && -z "${NODE_AUTH_TOKEN:-}" \
-    && -z "${NPM_TOKEN:-}" ]]
+    && -z "${NPM_TOKEN:-}" \
+    && ( -z "$node_auth_token" || "$node_auth_token" == "XXXXX-XXXXX-XXXXX-XXXXX" ) ]]
 }
 
 if [[ -n "${NPM_TOKEN:-}" ]]; then
