@@ -244,15 +244,75 @@ a4-stacks = "{{VERSION}}"
 use a4_stacks::ore::{OreStack, OreRound};
 ```
 
-**Generated from your own stack** - Build the stack AST first, then use the CLI to generate an SDK for any language:
+**Generated from your own stack** - Build the explicit artifacts first, then use
+the exact StackManifest to generate an SDK for either language:
 
 ```bash
 cargo build
-a4 sdk create my-stack --ts
-a4 sdk create my-stack --rust
+a4 sdk create --manifest .arete/MyStack.stack-manifest.json --ts
+a4 sdk create --manifest .arete/MyStack.stack-manifest.json --rust
 ```
 
 Both approaches produce a generated stack definition that can be inserted into an Arete session. Generated directories are output boundaries: edit the stack, IDL, or extension source and regenerate instead of hand-editing core, entry, extension copies, or `sdk-provenance.json`.
+
+Program account reads carry their own generated transport descriptor. Local SDK
+generation emits `transport: { kind: 'local-http', endpointSource:
+'connect-http-url' }`, which requires an explicit `httpUrl` connection option.
+A hosted install emits `kind: 'hosted-binding'` with its release, endpoint,
+binding ID, and auth metadata. Hosted reads ignore stack HTTP and runtime
+`httpUrl`; stack queries continue to use those stack HTTP settings separately.
+The generated hosted descriptor includes the exact binding ID as its auth target:
+
+```ts
+{
+  release: {
+    programReleaseHash: 'arete:h1:program-release:sha256:...',
+    programSpecHash: 'arete:h1:program-spec:sha256:...',
+  },
+  transport: {
+    kind: 'hosted-binding',
+    binding: {
+      endpoint: 'https://program-read.example/v1',
+      programReadBindingId: 'prb_00000000000000000000000000000001',
+      auth: {
+        sessionEndpoint: 'https://api.example/ws/sessions',
+        targetKind: 'program-read-binding',
+        targetId: 'prb_00000000000000000000000000000001',
+      },
+    },
+  },
+}
+```
+
+Hosted endpoints and session endpoints must use HTTPS, except that loopback HTTP
+is accepted for local testing. Binding IDs must match
+`^prb_[A-Za-z0-9_-]{32}$`, and `auth.targetId` must equal
+`programReadBindingId`.
+Runtime `programReads` options replace complete descriptors rather than merging
+individual fields. Composition sessions require complete hosted descriptors or
+complete hosted overrides and do not inherit Program Read endpoints from live
+members.
+
+Hosted compositions carry separate chain and transaction capability bindings.
+Each descriptor includes its endpoint, stable Solana gateway binding ID,
+cluster, region, auth policy, and complete public auth metadata. The generated
+hosted session helper constructs and supplies both transports:
+
+```ts
+const session = await createMyStackHostedSession({
+  auth: {
+    publishableKey: import.meta.env.VITE_ARETE_PUBLISHABLE_KEY,
+  },
+});
+```
+
+Use `createHostedSolanaGatewayTransports(bindings, { auth, fetch })` directly
+when composing a session yourself. Tokens are minted for the exact
+`solana-gateway-binding` target and cached separately for `read`,
+`transaction:inspect`, and `transaction:send`. Authentication refresh happens
+at most once; a transaction is replayed only when the gateway states that it
+was not dispatched upstream. Chain and transaction bindings can share one
+endpoint and stable binding ID. They never inherit a LiveSpec query endpoint.
 
 For writes, prefer semantic `.prepare(...)` operations. They accept normal camelCase objects and derive or normalize protocol details before you call `session.execute(prepared)`. Use `program.raw.<idlInstruction>.build(...)` only as the exact IDL escape hatch; raw instruction names, account names, argument names, and nested objects preserve the IDL shape, including snake_case.
 

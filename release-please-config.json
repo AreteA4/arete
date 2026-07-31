@@ -72,6 +72,11 @@
       "release-type": "node",
       "component": "arete-typescript"
     },
+    "typescript/hash": {
+      "release-type": "node",
+      "component": "arete-hash-npm",
+      "initial-version": "0.1.0"
+    },
     "typescript/adapters/kit": {
       "release-type": "node",
       "component": "arete-adapter-kit"
@@ -91,6 +96,16 @@
     "arete-idl": {
       "release-type": "rust",
       "component": "arete-idl"
+    },
+    "arete-hash": {
+      "release-type": "rust",
+      "component": "arete-hash",
+      "initial-version": "0.1.0"
+    },
+    "arete-artifacts": {
+      "release-type": "rust",
+      "component": "arete-artifacts",
+      "initial-version": "0.1.0"
     }
   },
   "plugins": [

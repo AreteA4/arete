@@ -85,7 +85,7 @@ pub fn create(
                     )
                 })?;
 
-            println!("  Version {} found (hash: {})", v, &ver.content_hash[..12]);
+            println!("  Version {} found (hash: {})", v, ver.short_hash());
             (Some(spec.id), Some(ver.id))
         }
         (Some(spec), None) => {
@@ -113,7 +113,7 @@ pub fn create(
                 println!(
                     "  Using version {} (hash: {})",
                     ver.version_number,
-                    &ver.content_hash[..12]
+                    ver.short_hash()
                 );
             }
 

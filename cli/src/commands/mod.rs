@@ -4,6 +4,7 @@ pub mod config;
 pub mod create;
 pub mod explore;
 pub mod idl;
+pub mod public_artifacts;
 pub mod sdk;
 pub mod stack;
 pub mod status;

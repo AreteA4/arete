@@ -114,6 +114,7 @@ export function AreteProvider({
       url: options?.url,
       httpUrl: options?.httpUrl,
       transport: options?.transport,
+      transactions: options?.transactions,
       programs: options?.programs,
       storage: adapter,
       autoConnect: config.autoConnect,

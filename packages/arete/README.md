@@ -30,7 +30,7 @@ cargo install a4-cli
 |---------|-------------|
 | `a4 create [name]` | Scaffold a new app from a template |
 | `a4 init` | Initialize a stack project |
-| `a4 up` | Deploy your stack |
+| `a4 up <path.stack-manifest.json>` | Deploy one exact StackManifest |
 | `a4 status` | Show project overview |
 | `a4 auth login` | Authenticate with Arete |
 

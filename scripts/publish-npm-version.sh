@@ -17,7 +17,8 @@ Examples:
 Notes:
   - Copies only the npm package directories into a temporary repo snapshot.
   - Rewrites the staged package metadata to the target version.
-  - Publishes in dependency order: sdk -> react -> adapters -> a4 -> mcp.
+  - Publishes in dependency order: hash -> sdk -> react -> adapters -> a4 -> mcp.
+  - Keeps the independently versioned hash package at its checked-in version.
   - Skips packages that are already published at that exact version.
 EOF
 }
@@ -44,6 +45,13 @@ cleanup() {
 }
 
 trap cleanup EXIT
+
+using_trusted_publishing() {
+  [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" \
+    && -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
+    && -z "${NODE_AUTH_TOKEN:-}" \
+    && -z "${NPM_TOKEN:-}" ]]
+}
 
 if [[ -n "${NPM_TOKEN:-}" ]]; then
   cat >"$STAGING_DIR/.npmrc" <<EOF
@@ -122,12 +130,13 @@ publish_package() {
   local package_dir="$1"
   local package_name="$2"
   local install_command="${3:-}"
+  local expected_version="${4:-$VERSION}"
 
   local staged_version
   staged_version="$(node -p "require('$package_dir/package.json').version")"
 
-  if [[ "$staged_version" != "$VERSION" ]]; then
-    echo "Expected $package_name to be staged as $VERSION, found $staged_version"
+  if [[ "$staged_version" != "$expected_version" ]]; then
+    echo "Expected $package_name to be staged as $expected_version, found $staged_version"
     exit 1
   fi
 
@@ -141,24 +150,24 @@ publish_package() {
     --user-agent 'arete-release-workflow (https://github.com/AreteA4/arete)' \
     --output "$response_file" \
     --write-out '%{http_code}' \
-    "https://registry.npmjs.org/${encoded_name}/${VERSION}")"
+    "https://registry.npmjs.org/${encoded_name}/${expected_version}")"
 
   case "$status" in
     200)
-      echo "Skipping ${package_name}@${VERSION}; already published"
+      echo "Skipping ${package_name}@${expected_version}; already published"
       return
       ;;
     404)
       ;;
     *)
-      echo "Unable to check ${package_name}@${VERSION} on npm (HTTP $status)"
+      echo "Unable to check ${package_name}@${expected_version} on npm (HTTP $status)"
       cat "$response_file"
       exit 1
       ;;
   esac
 
   echo
-  echo "Publishing ${package_name}@${VERSION}"
+  echo "Publishing ${package_name}@${expected_version}"
 
   if [[ -n "$install_command" ]]; then
     (
@@ -170,9 +179,9 @@ publish_package() {
   (
     cd "$package_dir"
     if [[ "$DRY_RUN" == "--dry-run" ]]; then
-      npm publish --access public --dry-run
+      npm publish --access public --provenance --dry-run
     else
-      npm publish --access public
+      npm publish --access public --provenance
     fi
   )
 }
@@ -200,6 +209,7 @@ wait_for_package() {
 echo "Staging npm packages into $STAGING_DIR"
 
 copy_package_dir "$ROOT_DIR/typescript/core" "$STAGING_DIR/typescript/core"
+copy_package_dir "$ROOT_DIR/typescript/hash" "$STAGING_DIR/typescript/hash"
 copy_package_dir "$ROOT_DIR/typescript/react" "$STAGING_DIR/typescript/react"
 copy_package_dir "$ROOT_DIR/typescript/adapters/kit" "$STAGING_DIR/typescript/adapters/kit"
 copy_package_dir "$ROOT_DIR/typescript/adapters/web3js" "$STAGING_DIR/typescript/adapters/web3js"
@@ -221,13 +231,22 @@ rewrite_package_lock "$STAGING_DIR/typescript/adapters/web3js/package-lock.json"
 rewrite_package_json "$STAGING_DIR/packages/arete/package.json" "$VERSION"
 rewrite_package_json "$STAGING_DIR/packages/mcp/package.json" "$VERSION"
 
-if npm_account="$(npm whoami 2>/dev/null)"; then
+if using_trusted_publishing; then
+  echo "Using npm trusted publishing"
+elif npm_account="$(npm whoami 2>/dev/null)"; then
   echo "Using npm account: $npm_account"
 elif [[ "$DRY_RUN" == "--dry-run" ]]; then
   echo "npm auth not configured locally; continuing because this is a dry run"
 else
   echo "npm auth not configured. Run npm login or pass NPM_TOKEN=..."
   exit 1
+fi
+
+hash_version="$(node -p "require('$STAGING_DIR/typescript/hash/package.json').version")"
+publish_package "$STAGING_DIR/typescript/hash" "@usearete/hash" "npm install" "$hash_version"
+
+if [[ "$DRY_RUN" != "--dry-run" ]]; then
+  wait_for_package "@usearete/hash" "$hash_version"
 fi
 
 publish_package "$STAGING_DIR/typescript/core" "@usearete/sdk" "npm install"

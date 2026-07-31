@@ -11,7 +11,7 @@ impl Stack for OreStreamStack {
     }
 
     fn url() -> &'static str {
-        "wss://ore.stack.arete.run"
+        "" // TODO: Set URL after first deployment in arete.toml
     }
 }
 

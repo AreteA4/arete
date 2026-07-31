@@ -16,6 +16,9 @@ Real-time streaming data pipelines for Solana - transform on-chain events into t
 | arete-sdk | Rust | crates.io | Rust client SDK |
 | a4-cli | Rust | crates.io | CLI tool for SDK generation |
 | arete-idl | Rust | crates.io | IDL parsing and type system |
+| arete-hash | Rust | crates.io | Typed artifact identity and canonical hashing protocol |
+| arete-artifacts | Rust | crates.io | Versioned public artifact schemas and legacy normalization |
+| @usearete/hash | TypeScript | npm | TypeScript implementation of the artifact identity protocol |
 | @usearete/sdk | TypeScript | npm | Pure TypeScript SDK (framework-agnostic) |
 | @usearete/react | TypeScript | npm | React SDK with hooks |
 | @usearete/adapter-kit | TypeScript | npm | Wallet adapter for `@solana/kit` |
@@ -52,6 +55,86 @@ Hosted browser stacks require authentication. For the hosted ORE stack, set `VIT
 # Coming soon
 pip install arete-sdk
 ```
+
+## Artifact and Runtime Model
+
+Arete keeps portable behavior separate from the infrastructure that serves it:
+
+| Concept | What it represents |
+|---------|--------------------|
+| **ProgramSpec** | Portable program identity: program ID, normalized public IDL, account and instruction definitions, PDAs, and compatibility hashes. It contains no endpoint or managed decoder binding. |
+| **LiveSpec** | Entities, mappings, handlers, computed fields, resolvers, and views over exact ProgramSpecs. |
+| **StackManifest** | A client-facing composition of ProgramSpecs and aliased LiveSpecs, including the exact selected views. It contains no deployment URL. |
+| **Program Release** | A hosted, immutable binding from one ProgramSpec to managed decoder behavior. Changing decoder semantics creates a new release. |
+| **Deployment** | A hosted runtime prepared for one exact StackManifest. Images, regions, replicas, and rollout state belong here rather than in portable artifacts. |
+| **Binding** | An operational endpoint and authentication attachment for a live deployment, Program Read release, chain reader, or transaction relay. Bindings can change without changing portable artifact hashes. |
+
+The Rust DSL writes authoritative artifacts directly during compilation:
+
+```bash
+cargo build
+
+# Typical outputs:
+# .arete/<program>.program-spec.json
+# .arete/<StackName>.live-spec.json
+# .arete/<StackName>.stack-manifest.json
+```
+
+An IDL-only module generates ProgramSpecs, a zero-live StackManifest, and a
+program-only `spec()` with generated account readers:
+
+```rust
+use arete::prelude::*;
+
+#[arete(idl = ["idl/my_program.json"])]
+mod my_program {}
+
+let spec = my_program::spec();
+```
+
+Local `spec()` generation derives release fingerprints automatically from each
+ProgramSpec and the generated decoder-engine contract. An OSS server does not
+select or publish a hosted Program Release.
+
+Use the explicit artifacts for CLI workflows:
+
+```bash
+# Create a standalone ProgramSpec directly from an IDL.
+a4 program build ./idl/my_program.json \
+  --output ./.arete/my_program.program-spec.json
+
+# Compose one or more LiveSpecs under stable aliases. Repeating
+# --selected-view creates the exact ordered client allowlist.
+a4 stack compose --name my-app \
+  --live core=./.arete/Core.live-spec.json \
+  --artifact-dir ./.arete \
+  --selected-view core=Position/list \
+  --output ./.arete/MyApp.stack-manifest.json
+
+# Generate local source, or deploy the exact manifest.
+a4 sdk create --manifest ./.arete/MyApp.stack-manifest.json --ts
+a4 sdk create --manifest ./.arete/MyApp.stack-manifest.json --rust
+a4 up ./.arete/MyApp.stack-manifest.json
+
+# Install a hosted SDK pinned to a published Program Release and read binding.
+a4 install program spl-token --ts
+```
+
+A composed client keeps each aliased LiveSpec's live transport and each
+program's Program Read transport independent. Chain reads and transaction
+submission are separate transports as well; do not infer one endpoint from
+another.
+
+`a4 sdk create` writes local source only. Publishing generated packages to npm
+or crates.io is an explicit operator action. Likewise, deployment produces
+endpoint bindings, not a required DNS provider: operators hand those endpoints
+to their chosen DNS/CDN provider and manage records and certificates there.
+
+> **Legacy compatibility:** Composite `.stack.json` files are input-only
+> compatibility artifacts through **August 31, 2026**. Use
+> `a4 live build <legacy.stack.json>` to normalize one; new authoring, SDK
+> generation, and deployment should use ProgramSpec, LiveSpec, and
+> StackManifest files.
 
 ## Repository Structure
 

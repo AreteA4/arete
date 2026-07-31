@@ -135,7 +135,8 @@ Everything under `src/generated/` is generated output. Do not edit it by hand.
 
 The inputs are:
 
-- `stacks/ore/src/stack.rs` and its IDLs, compiled to `stacks/ore/.arete/OreStream.stack.json`
+- `stacks/ore/src/stack.rs` and its IDLs, compiled to ProgramSpec, LiveSpec, and
+  StackManifest artifacts under `stacks/ore/.arete/`
 - `stacks/ore/extensions/`, which adds ORE-specific reads, math, addresses, and semantic transactions
 - the monorepo CLI and TypeScript generator
 

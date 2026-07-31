@@ -5,7 +5,9 @@ sidebar:
   order: 3
 ---
 
-This page documents all configuration options available in `a4-server`.
+This page documents the principal configuration options available in
+`a4-server`. The server consumes generated Rust `spec()` values, not deployment
+URLs or hosted release manifests.
 
 ## Server Builder API
 
@@ -15,26 +17,77 @@ The server is configured using a fluent builder pattern:
 use a4_server::Server;
 
 Server::builder()
-    .spec(my_spec())           // Required: your stack specification
+    .spec(my_spec())           // Generated live or program-only specification
     .websocket()               // Enable WebSocket server
     .bind("[::]:8877".parse()?)
     .yellowstone(config)       // Optional: manual Yellowstone config
     .health_monitoring()       // Enable health monitoring
-    .http_health()             // Enable HTTP health endpoints
+    .http_health()             // Configure the shared HTTP listener
     .reconnection()            // Enable auto-reconnection
     .start()
     .await?;
 ```
 
+The generated spec carries exact ProgramSpec identities and local account
+readers. For OSS code-first use, release fingerprints are derived automatically
+from each ProgramSpec and the generated decoder-engine contract. Hosted Program
+Releases, deployments, and endpoint bindings are separate control-plane
+concepts and are not required here.
+
+## Runtime Capability Plan
+
+Live, Program Read, chain-read, and transaction surfaces are independent. The
+fluent helpers update a `RuntimePlan`:
+
+| Builder method                 | Capabilities enabled                                                   |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| `.websocket()`                 | WebSocket transport and live projection runtime                        |
+| `.program_reads()`             | Health plus typed, release-checked program HTTP reads                  |
+| `.chain_reads()`               | Generic Solana chain-read HTTP routes                                  |
+| `.stack_queries()`             | Stack-scoped query HTTP routes                                         |
+| `.transactions_config(config)` | Fixed transaction routes when `config.enabled` is true                 |
+| `.http()`                      | Convenience set: health, program reads, chain reads, and stack queries |
+
+Transaction routes are never enabled by `.http()`. To enforce an exact
+capability set after configuring listeners, replace the inferred plan:
+
+```rust
+use a4_server::RuntimePlan;
+
+let plan = RuntimePlan {
+    health: true,
+    chain_reads: false,
+    program_reads: true,
+    stack_queries: false,
+    transactions: false,
+    websocket: false,
+    live_runtime: false,
+};
+
+Server::builder()
+    .spec(my_program::spec())
+    .http_bind("0.0.0.0:8081".parse()?)
+    .runtime_plan(plan)
+    .start()
+    .await?;
+```
+
+This program-only configuration does not require Yellowstone. A composed client
+may point each LiveSpec alias and each Program Read binding at different
+services, then supply independent chain and transaction transports.
+
 ## Environment Variables
 
-These environment variables are read automatically by the generated parser code:
+These environment variables are read by the generated runtime and server code:
 
-| Variable               | Required | Default | Description                                              |
-| ---------------------- | -------- | ------- | -------------------------------------------------------- |
-| `YELLOWSTONE_ENDPOINT` | Yes      | —       | Yellowstone gRPC endpoint URL                            |
-| `YELLOWSTONE_X_TOKEN`  | Usually  | —       | Authentication token for the endpoint                    |
-| `RUST_LOG`             | No       | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`) |
+| Variable                     | Required               | Default | Description                                              |
+| ---------------------------- | ---------------------- | ------- | -------------------------------------------------------- |
+| `YELLOWSTONE_ENDPOINT`       | For live runtime       | —       | Yellowstone gRPC endpoint URL                            |
+| `YELLOWSTONE_X_TOKEN`        | Provider-specific      | —       | Authentication token for the endpoint                    |
+| `ARETE_READ_RPC_URL`         | For RPC-backed reads   | —       | Upstream used by Program Read and chain-read routes      |
+| `ARETE_TRANSACTION_RPC_URL`  | For transaction routes | —       | Independent transaction inspect/send upstream            |
+| `ARETE_TRANSACTIONS_ENABLED` | No                     | `false` | Explicitly enables fixed transaction routes              |
+| `RUST_LOG`                   | No                     | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`) |
 
 ## WebSocket Configuration
 
@@ -149,14 +202,19 @@ Server::builder()
 | `.with_heartbeat_interval(duration)`   | Set heartbeat interval   |
 | `.with_health_check_timeout(duration)` | Set health check timeout |
 
-## HTTP Health Server
+## Shared HTTP Server and Health Routes
 
-Exposes HTTP endpoints for orchestrators like Kubernetes to perform health checks.
+The shared HTTP listener exposes health routes and whichever read/transaction
+capabilities are selected in `RuntimePlan`. For compatibility,
+`http_health()`/`http_health_config()` are aliases for `http()`/`http_config()`;
+by themselves they infer health, Program Read, chain-read, and stack-query
+capabilities.
 
 ### Basic Usage
 
 ```rust
-// Enable with defaults (binds to [::]:8081)
+// Configure the listener with the full HTTP convenience capability set.
+// It binds to [::]:8081.
 Server::builder()
     .http_health()
     .start()
@@ -166,6 +224,27 @@ Server::builder()
 Server::builder()
     .http_health()
     .health_bind("0.0.0.0:8081".parse()?)
+    .start()
+    .await?;
+```
+
+For health-only HTTP alongside a live WebSocket, replace the inferred plan after
+configuring the listener:
+
+```rust
+use a4_server::RuntimePlan;
+
+Server::builder()
+    .spec(spec)
+    .websocket()
+    .http_health()
+    .health_bind("0.0.0.0:8081".parse()?)
+    .runtime_plan(RuntimePlan {
+        health: true,
+        websocket: true,
+        live_runtime: true,
+        ..RuntimePlan::default()
+    })
     .start()
     .await?;
 ```
@@ -325,7 +404,8 @@ async fn main() -> anyhow::Result<()> {
             HealthConfig::new()
                 .with_heartbeat_interval(Duration::from_secs(15))
         )
-        // HTTP health endpoints on port 8081
+        // Shared HTTP listener on port 8081. The convenience helper enables
+        // health, Program Read, chain-read, and stack-query routes.
         .http_health()
         .health_bind("0.0.0.0:8081".parse()?)
         // Reconnection with limited attempts
@@ -340,3 +420,11 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+## Operational Handoff
+
+Portable ProgramSpec, LiveSpec, and StackManifest hashes do not include runtime
+hostnames. Building or starting `a4-server` also does not publish generated SDK
+packages. Operators are responsible for reviewed npm/crates.io publication and
+for mapping the resulting endpoint bindings through any DNS/CDN provider they
+choose.

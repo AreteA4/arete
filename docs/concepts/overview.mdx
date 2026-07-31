@@ -145,10 +145,13 @@ pub struct Token {
 
 ### 5. Stacks
 
-A **stack** is the deployed data pipeline plus its generated client definition. Generate the TypeScript definition with the CLI rather than hand-writing view factories:
+A **StackManifest** is the portable client composition of exact ProgramSpecs,
+aliased LiveSpecs, and selected views. A deployment and its endpoint bindings
+are separate. Generate the TypeScript definition with the CLI rather than
+hand-writing view factories:
 
 ```bash
-a4 sdk create typescript my-tokens
+a4 sdk create --manifest .arete/MyTokens.stack-manifest.json --ts
 ```
 
 ```typescript
@@ -166,10 +169,10 @@ Connected generated stacks expose typed views and, when defined, programs, reads
 
 ### Specification Time
 
-1. Write stream definition using Rust macros
-2. Build generates AST (`.arete/*.ast.json`)
-3. Deploy with `a4 up`
-4. Cloud compiles AST to bytecode
+1. Write a stream definition using Rust macros
+2. Build generates ProgramSpec, LiveSpec, and StackManifest artifacts
+3. Deploy the exact composition with `a4 up .arete/MyTokens.stack-manifest.json`
+4. Cloud resolves immutable Program Releases and creates deployment bindings
 
 ### Runtime
 

@@ -8,7 +8,7 @@ description: The end-to-end process of building and deploying an Arete data pipe
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 import Workflow from "../../../components/Workflow.astro";
 
-Building a stack follows a straightforward four-step workflow: define your data model in Rust, compile to build the stack, deploy to Arete Cloud, and connect from your application.
+Building a stack follows a straightforward four-step workflow: define your data model in Rust, compile portable artifacts, deploy an exact StackManifest, and connect from your application.
 
 <Workflow steps={[
   {
@@ -17,11 +17,11 @@ Building a stack follows a straightforward four-step workflow: define your data 
   },
   {
     title: "Build Stack",
-    description: "Compile with cargo build"
+    description: "Emit ProgramSpec, LiveSpec, and StackManifest"
   },
   {
     title: "Deploy via CLI",
-    description: "Push to cloud with a4 up"
+    description: "Deploy the exact manifest with the CLI"
   },
   {
     title: "Connect from App",
@@ -67,7 +67,15 @@ In practice, field paths use fully qualified names with the generated SDK module
 
 ## Step 2: Build the Stack
 
-When you compile your Rust project, Arete macros transform your definition into a portable JSON specification. This is the compiled representation of your data pipeline.
+When you compile your Rust project, Arete macros transform the definition
+directly into three explicit, content-addressed artifact kinds:
+
+- **ProgramSpec** — endpoint-free program identity, public IDL, accounts,
+  instructions, and PDAs.
+- **LiveSpec** — entity, mapping, handler, resolver, and view behavior over exact
+  ProgramSpecs.
+- **StackManifest** — the client composition: aliased LiveSpecs, ProgramSpecs,
+  and selected views. It contains no deployment URL.
 
 ```bash
 cargo build
@@ -80,16 +88,56 @@ my-stack/
 ├── src/lib.rs
 ├── Cargo.toml
 └── .arete/
-    └── OreStack.stack.json    # Generated stack specification
+    ├── ore.program-spec.json
+    ├── OreStack.live-spec.json
+    └── OreStack.stack-manifest.json
 ```
 
-The `.stack.json` file contains everything Arete needs to execute your pipeline: all entities, field mappings, aggregation logic, key resolution rules, and more. A single stack file can contain multiple entities.
+The DSL can also generate only the program layer. An IDL-only module with no
+entities emits ProgramSpecs, a zero-live StackManifest, and a program-only
+`spec()` containing generated account readers:
+
+```rust
+#[arete(idl = ["my_program.json"])]
+pub mod my_program {}
+
+let spec = my_program::spec();
+```
+
+The program-only `spec()` is suitable for `Server::builder().spec(spec)` with
+Program Read HTTP routes and does not start projection work unless you enable a
+live runtime.
+
+:::note[Legacy input]
+The compiler may also emit a composite `.stack.json` for compatibility. Treat it
+as an input-only adapter: `a4 live build <legacy.stack.json>` can normalize it
+through **August 31, 2026**. Do not use it as the primary SDK or deployment
+artifact.
+:::
+
+To combine independently built live packages, assign each LiveSpec a stable
+alias and optionally select an exact ordered view allowlist:
+
+```bash
+a4 stack compose --name my-app \
+  --live markets=./markets.live-spec.json \
+  --live positions=./positions.live-spec.json \
+  --artifact-dir . \
+  --selected-view markets=Market/list \
+  --selected-view positions=Position/state \
+  --output ./MyApp.stack-manifest.json
+```
+
+Omit `--selected-view` to expose every view from each supplied LiveSpec.
 
 ---
 
 ## Step 3: Deploy with the CLI
 
-The Arete CLI (`a4`) handles deployment to Arete Cloud. A single command pushes your stack specification, builds the execution environment, and deploys to a global edge network.
+The Arete CLI (`a4`) handles hosted deployment. A single command submits one
+exact StackManifest. The control plane resolves its ProgramSpecs to immutable
+Program Releases, prepares each aliased LiveSpec, and creates deployment and
+endpoint bindings.
 
 :::caution[Closed Beta]
 Arete is currently in closed beta. You'll need an API key to deploy. [Contact us on X](https://x.com/usearete) to request access.
@@ -99,8 +147,8 @@ Arete is currently in closed beta. You'll need an API key to deploy. [Contact us
 # Initialize project config (creates arete.toml)
 a4 init
 
-# Deploy your stack
-a4 up
+# Deploy your exact manifest
+a4 up .arete/OreStack.stack-manifest.json
 ```
 
 On success, you'll receive a WebSocket URL:
@@ -108,7 +156,7 @@ On success, you'll receive a WebSocket URL:
 ```
 ✔ Stack pushed (v1)
 ✔ Build completed
-🚀 Deployed to: wss://ore.stack.arete.run
+🚀 Deployment and endpoint bindings are ready
 ```
 
 → [CLI Reference](/cli/commands) — Full command documentation
@@ -117,26 +165,33 @@ On success, you'll receive a WebSocket URL:
 
 ## Step 4: Generate SDK and Connect
 
-Once deployed, generate a typed SDK for your stack:
+Generate a typed SDK from the same manifest you reviewed and deployed:
 
 <Tabs>
 <TabItem label="Generate SDK — TypeScript">
 
 ```bash
-a4 sdk create typescript ore
+a4 sdk create --manifest .arete/OreStack.stack-manifest.json --ts
 ```
 
 </TabItem>
 <TabItem label="Generate SDK — Rust">
 
 ```bash
-a4 sdk create rust ore
+a4 sdk create --manifest .arete/OreStack.stack-manifest.json --rust
 ```
 
 </TabItem>
 </Tabs>
 
-This creates a package containing the stack definition that tells the Arete client how to interact with your feed, including all entities and their views. Import it in your application:
+This creates local source containing the selected stack definition, entities,
+views, and independent program SDKs. `a4 sdk create` does not publish an npm
+package or Rust crate; package publication is a separate operator action.
+
+For composed manifests, each `--live alias=path` keeps its own live transport.
+Program Read bindings are selected per program, while chain and transaction
+transports are supplied independently. A client must not derive any of these
+endpoints from another. Import the generated source in your application:
 
 <Tabs>
 <TabItem label="Connect from app — React">
@@ -211,7 +266,10 @@ async fn main() -> anyhow::Result<()> {
 </TabItem>
 </Tabs>
 
-Share the generated SDK with your team or publish it — anyone with the SDK can connect to your stack's feed (assuming they're authorized).
+Share the generated SDK with your team or publish it manually — anyone with the
+SDK can connect to the selected bindings when authorized. Hosted deployment
+does not prescribe a DNS provider; operators can hand returned endpoint bindings
+to their chosen DNS/CDN provider.
 
 → [Your First Stack](/building-stacks/your-first-stack) — Complete tutorial with working code
 

@@ -4,7 +4,7 @@
     "ore-devex.ts",
     "ore-stack-extensions.ts"
   ],
-  "inputKind": "stack-ast",
-  "inputHash": "84f4dca9b7c6be04a841f1f32b681318c68ea9653e101f395c9c77feb9f06918",
+  "inputKind": "stack-manifest",
+  "inputHash": "arete:h1:stack-manifest:sha256:edd1ffe8ef2c26232c1440f20625b8834b8c4d4e63250136ce62bcc38609f84a",
   "sdkRange": "^0.2.0 || ^0.3.0"
 }

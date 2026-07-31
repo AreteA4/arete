@@ -39,6 +39,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       idl_version: ${{ steps.validate.outputs.idl_version }}
+      hash_version: ${{ steps.validate.outputs.hash_version }}
+      artifacts_version: ${{ steps.validate.outputs.artifacts_version }}
+      typescript_hash_version: ${{ steps.validate.outputs.typescript_hash_version }}
       auth_version: ${{ steps.validate.outputs.auth_version }}
     steps:
       - uses: actions/checkout@v6
@@ -124,8 +127,14 @@ jobs:
           done
 
           IDL_VERSION="$(crate_version arete-idl)"
+          HASH_VERSION="$(crate_version arete-hash)"
+          ARTIFACTS_VERSION="$(crate_version arete-artifacts)"
+          TYPESCRIPT_HASH_VERSION="$(jq -r '.version' typescript/hash/package.json)"
           AUTH_VERSION="$(crate_version arete-auth)"
           echo "idl_version=$IDL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "hash_version=$HASH_VERSION" >> "$GITHUB_OUTPUT"
+          echo "artifacts_version=$ARTIFACTS_VERSION" >> "$GITHUB_OUTPUT"
+          echo "typescript_hash_version=$TYPESCRIPT_HASH_VERSION" >> "$GITHUB_OUTPUT"
           echo "auth_version=$AUTH_VERSION" >> "$GITHUB_OUTPUT"
 
           git fetch --tags --force
@@ -138,6 +147,9 @@ jobs:
             "a4-cli-v$VERSION"
             "arete-mcp-v$VERSION"
             "arete-idl-v$IDL_VERSION"
+            "arete-hash-v$HASH_VERSION"
+            "arete-artifacts-v$ARTIFACTS_VERSION"
+            "arete-hash-npm-v$TYPESCRIPT_HASH_VERSION"
             "arete-auth-v$AUTH_VERSION"
             "arete-typescript-v$VERSION"
             "arete-react-v$VERSION"
@@ -157,16 +169,24 @@ jobs:
           done
 
           RELEASE_SHA="$(git rev-list -n 1 "arete-v$VERSION")"
+          HASH_NPM_RELEASE_SHA="$(git rev-list -n 1 "arete-hash-npm-v$TYPESCRIPT_HASH_VERSION")"
           NPM_PACKAGES=(
-            '@usearete/sdk'
-            '@usearete/react'
-            '@usearete/adapter-kit'
-            '@usearete/adapter-web3js'
-            '@usearete/a4'
-            '@usearete/mcp'
+            "@usearete/hash|$TYPESCRIPT_HASH_VERSION"
+            "@usearete/sdk|$VERSION"
+            "@usearete/react|$VERSION"
+            "@usearete/adapter-kit|$VERSION"
+            "@usearete/adapter-web3js|$VERSION"
+            "@usearete/a4|$VERSION"
+            "@usearete/mcp|$VERSION"
           )
 
-          for package in "${NPM_PACKAGES[@]}"; do
+          for package_spec in "${NPM_PACKAGES[@]}"; do
+            package="${package_spec%%|*}"
+            package_version="${package_spec#*|}"
+            expected_git_head="$RELEASE_SHA"
+            if [[ "$package" == "@usearete/hash" ]]; then
+              expected_git_head="$HASH_NPM_RELEASE_SHA"
+            fi
             encoded_name="${package//@/%40}"
             encoded_name="${encoded_name//\//%2F}"
             response_file="$(mktemp)"
@@ -174,14 +194,14 @@ jobs:
               --user-agent 'arete-release-workflow (https://github.com/AreteA4/arete)' \
               --output "$response_file" \
               --write-out '%{http_code}' \
-              "https://registry.npmjs.org/${encoded_name}/${VERSION}")"
+              "https://registry.npmjs.org/${encoded_name}/${package_version}")"
 
             case "$status" in
               200)
                 git_head="$(jq -r '.gitHead // empty' "$response_file")"
                 # Recovery publishes from a staged directory without .git, so npm may omit gitHead.
-                if [[ -n "$git_head" && "$git_head" != "$RELEASE_SHA" && "$git_head" != "$SOURCE_SHA" ]]; then
-                  echo "$package@$VERSION has unexpected npm gitHead: $git_head"
+                if [[ -n "$git_head" && "$git_head" != "$expected_git_head" && "$git_head" != "$SOURCE_SHA" ]]; then
+                  echo "$package@$package_version has unexpected npm gitHead: $git_head"
                   rm -f "$response_file"
                   exit 1
                 fi
@@ -189,7 +209,7 @@ jobs:
               404)
                 ;;
               *)
-                echo "Unable to check $package@$VERSION on npm (HTTP $status)"
+                echo "Unable to check $package@$package_version on npm (HTTP $status)"
                 cat "$response_file"
                 rm -f "$response_file"
                 exit 1
@@ -201,7 +221,7 @@ jobs:
 
           while IFS= read -r changed_file; do
             case "$changed_file" in
-              .github/workflows/release-please.yml|.github/workflows/release-recovery.yml|arete/Cargo.toml|cli/Cargo.toml|release-please-config.json|rust/arete-mcp/Cargo.toml|scripts/publish-crate.sh|scripts/publish-npm-package.sh|scripts/publish-npm-version.sh|scripts/upload-release-asset.sh|stacks/ore/Cargo.lock)
+              .github/workflows/release-please.yml|.github/workflows/release-recovery.yml|.release-please-manifest.json|arete/Cargo.toml|arete-artifacts/Cargo.toml|arete-hash/Cargo.toml|cli/Cargo.toml|release-please-config.json|rust/arete-mcp/Cargo.toml|scripts/publish-crate.sh|scripts/publish-npm-package.sh|scripts/publish-npm-version.sh|scripts/upload-release-asset.sh|stacks/ore/Cargo.lock|typescript/hash/package.json|typescript/hash/package-lock.json)
                 ;;
               *)
                 echo "Recovery source contains an unapproved change: $changed_file"
@@ -234,6 +254,8 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           ./scripts/publish-crate.sh arete-idl
+          ./scripts/publish-crate.sh arete-hash
+          ./scripts/publish-crate.sh arete-artifacts
           ./scripts/publish-crate.sh arete-macros
           ./scripts/publish-crate.sh interpreter
           ./scripts/publish-crate.sh rust/arete-auth
@@ -468,6 +490,9 @@ jobs:
         bundle-templates,
       ]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -478,6 +503,9 @@ jobs:
         with:
           node-version: "20.18.0"
           registry-url: https://registry.npmjs.org
+
+      - name: Upgrade npm for provenance
+        run: npm install --global npm@11
 
       - name: Publish missing packages in dependency order
         env:

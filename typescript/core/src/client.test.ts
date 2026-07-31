@@ -796,8 +796,17 @@ describe('Arete instructions (namespaced stacks)', () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/programs/squads/accounts/Multisig/multisig-1')) {
+      if (url.endsWith('/v1/releases/release-squads/accounts/Multisig/multisig-1')) {
         return new Response(JSON.stringify({ threshold: 2, transactionIndex: '41' }), { status: 200 });
+      }
+      if (url.endsWith('/v1/releases/release-squads/accounts/Multisig') && init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          items: [
+            { address: 'multisig-1', status: 'ok', value: { threshold: 2, transaction_index: '41' } },
+            { address: 'missing', status: 'missing' },
+            { address: 'broken', status: 'error', error: { code: 'ACCOUNT_DECODE_FAILED' } },
+          ],
+        }), { status: 200 });
       }
       if (url.endsWith('/programs/squads/queries/findThreshold')) {
         return new Response(JSON.stringify({ transaction_index: '99' }), { status: 200 });
@@ -840,7 +849,6 @@ describe('Arete instructions (namespaced stacks)', () => {
             accounts: {
               Multisig: programAccountRead<{ threshold: number; transactionIndex: bigint }>({
                 account: 'Multisig',
-                path: '/programs/squads/accounts/Multisig',
                 schema: z
                   .object({
                     threshold: z.number(),
@@ -864,6 +872,27 @@ describe('Arete instructions (namespaced stacks)', () => {
             rawInstructions: {},
           },
         },
+        programReads: {
+          squads: {
+            release: {
+              programReleaseHash: 'release-squads',
+              programSpecHash: 'spec-squads',
+            },
+            transport: {
+              kind: 'hosted-binding',
+              binding: {
+                endpoint: 'https://example.invalid',
+                programReadBindingId: 'prb_00000000000000000000000000000003',
+                auth: {
+                  required: true,
+                  sessionEndpoint: 'https://auth.example.invalid/session',
+                  targetKind: 'program-read-binding',
+                  targetId: 'prb_00000000000000000000000000000003',
+                },
+              },
+            },
+          },
+        },
       } as const;
 
       const client = await Arete.connect(stack, {
@@ -883,8 +912,17 @@ describe('Arete instructions (namespaced stacks)', () => {
         multisigKey: 'multisig-1',
       });
       await expect(client.chain.exists('multisig-1')).resolves.toBe(true);
+      await expect(
+        client.programs.squads.accounts.Multisig.fetchMany(['multisig-1', 'missing', 'broken'])
+      ).resolves.toEqual({
+        items: [
+          { address: 'multisig-1', status: 'ok', value: { threshold: 2, transactionIndex: BigInt('41') } },
+          { address: 'missing', status: 'missing' },
+          { address: 'broken', status: 'error', error: { code: 'ACCOUNT_DECODE_FAILED' } },
+        ],
+      });
 
-      expect(fetchMock).toHaveBeenCalledWith('https://example.invalid/programs/squads/accounts/Multisig/multisig-1', {
+      expect(fetchMock).toHaveBeenCalledWith('https://example.invalid/v1/releases/release-squads/accounts/Multisig/multisig-1', {
         method: 'GET',
         headers: expect.any(Headers),
         body: undefined,
@@ -1137,18 +1175,109 @@ describe('Arete transport: http', () => {
     });
   });
 
-  it('derives the HTTP endpoint from the ws endpoint when only ws is defined', async () => {
+  it('uses generated HTTP metadata without deriving from an unrelated WebSocket endpoint', async () => {
     const { Arete } = await import('./index');
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ exists: true }), { status: 200 }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const stack = {
-      name: 'derive-http',
-      endpoints: { ws: 'wss://derive.invalid' },
+      name: 'independent-endpoints',
+      endpoints: {
+        ws: 'wss://stream.example.test/ws/v2?tenant=endpoint',
+        http: 'https://reads.unrelated.test/api/arete/v3',
+      },
       views: {},
       programs: {},
     } as const;
 
     const client = await Arete.connect(stack, { transport: 'http', fetch: fetchMock as typeof fetch });
     await expect(client.chain.exists('x')).resolves.toBe(true);
-    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://derive.invalid/chain/exists/x');
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'https://reads.unrelated.test/api/arete/v3/chain/exists/x'
+    );
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('prefers an explicit runtime HTTP endpoint over generated HTTP metadata', async () => {
+    const { Arete } = await import('./index');
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ exists: true }), { status: 200 }));
+    const stack = {
+      name: 'runtime-http',
+      endpoints: {
+        ws: 'wss://stream.example.test/socket',
+        http: 'https://generated.example.test/reads',
+      },
+      views: {},
+      programs: {},
+    } as const;
+
+    const client = await Arete.connect(stack, {
+      transport: 'http',
+      httpUrl: 'https://runtime.unrelated.test/custom/prefix',
+      fetch: fetchMock as typeof fetch,
+    });
+    await expect(client.chain.exists('x')).resolves.toBe(true);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'https://runtime.unrelated.test/custom/prefix/chain/exists/x'
+    );
+  });
+
+  it('accepts explicit runtime endpoints for an endpointless local definition', async () => {
+    const { Arete } = await import('./index');
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ exists: true }), { status: 200 }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const stack = {
+      name: 'local-endpointless',
+      endpoints: { ws: '', http: '' },
+      views: {},
+      programs: {},
+    } as const;
+
+    const client = await Arete.connect(stack, {
+      url: 'ws://127.0.0.1:8878/socket',
+      httpUrl: 'http://127.0.0.1:8879/local/api',
+      autoConnect: false,
+      fetch: fetchMock as typeof fetch,
+    });
+    await expect(client.chain.exists('local-account')).resolves.toBe(true);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'http://127.0.0.1:8879/local/api/chain/exists/local-account'
+    );
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('does not derive when generated endpoint metadata explicitly omits HTTP', async () => {
+    const { Arete } = await import('./index');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const stack = {
+      name: 'authoritative-no-http',
+      endpoints: { ws: 'wss://stream.example.test/socket', http: '' },
+      views: {},
+      programs: {},
+    } as const;
+
+    await expect(Arete.connect(stack, { transport: 'http' })).rejects.toMatchObject({
+      code: 'INVALID_CONFIG',
+    });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('does not derive stack HTTP from a WebSocket endpoint', async () => {
+    const { Arete } = await import('./index');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const stack = {
+      name: 'legacy-derive-http',
+      endpoints: { ws: 'wss://legacy.example.test/socket' },
+      views: {},
+      programs: {},
+    } as const;
+
+    await expect(Arete.connect(stack, { transport: 'http' })).rejects.toMatchObject({
+      code: 'INVALID_CONFIG',
+    });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

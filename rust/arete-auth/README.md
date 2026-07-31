@@ -67,6 +67,36 @@ let auth_context = verifier.verify(&token, None, None).unwrap();
 println!("Authenticated user: {}", auth_context.subject);
 ```
 
+### Typed Solana Gateway Claims
+
+Regional gateways use the stable audience `arete:solana-gateway` and target
+kind `solana-gateway-binding`. Build and validate those claims with the typed
+helpers rather than duplicating wire strings:
+
+```rust
+use arete_auth::{
+    SessionClaims, SolanaGatewayAuthorization, SolanaGatewayScope,
+};
+
+let claims = SessionClaims::solana_gateway_builder(
+    "my-service",
+    "user-123",
+    "gateway-us-east-1",
+)
+.with_scope("read transaction:inspect")
+.build();
+
+let authorization = SolanaGatewayAuthorization::try_from_context(
+    &auth_context,
+    "gateway-us-east-1",
+    SolanaGatewayScope::TransactionInspect,
+)?;
+```
+
+The only gateway scopes are the exact whitespace-delimited values `read`,
+`transaction:inspect`, and `transaction:send`; no scope implies another.
+Legacy deployment claims and their audience remain unchanged.
+
 ### Key Management
 
 ```rust

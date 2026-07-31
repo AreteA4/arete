@@ -97,6 +97,15 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Test direct artifact macros
+        run: cargo test -p arete-macros --test artifact_native_v2
+
+      - name: Test V1/V2 artifacts and multi-LiveSpec composition
+        run: cargo test -p arete-interpreter --test public_artifacts
+
+      - name: Test selected views and aliased SDK composition
+        run: cargo test -p a4-cli compose_ && cargo test -p a4-cli local_multi_live_generation
+
       - name: Build standalone ORE stack
         run: cargo build --manifest-path stacks/ore/Cargo.toml --locked
 
@@ -121,6 +130,7 @@ jobs:
           node-version: "20"
           cache: "npm"
           cache-dependency-path: |
+            typescript/core/package-lock.json
             examples/ore-typescript/package-lock.json
 
       - name: Regenerate example SDKs
@@ -143,9 +153,13 @@ jobs:
             exit 1
           fi
 
+      - name: Build local TypeScript SDK
+        working-directory: typescript/core
+        run: npm ci && npm run build
+
       - name: Install TypeScript example dependencies
         working-directory: examples/ore-typescript
-        run: npm ci
+        run: npm ci && npm install ../../typescript/core --no-save --package-lock=false
 
       - name: Strict compile TypeScript example
         working-directory: examples/ore-typescript
@@ -183,7 +197,9 @@ jobs:
 
       - name: Install app dependencies
         working-directory: examples/ore-react
-        run: npm ci
+        run: |
+          npm ci
+          npm install ../../typescript/core ../../typescript/react ../../typescript/adapters/web3js --no-save --package-lock=false
 
       - name: Install Chromium
         working-directory: examples/ore-react
@@ -240,6 +256,37 @@ jobs:
 
       - name: Test
         run: npm test
+
+  typescript-hash:
+    name: TypeScript Hash
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript/hash
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: typescript/hash/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Test packed package boundary
+        run: npm run test:pack
 
   typescript-adapters:
     name: TypeScript Adapters

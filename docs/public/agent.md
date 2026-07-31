@@ -150,9 +150,9 @@ Key rules:
 - ALWAYS run `a4 explore <stack> --json` before writing any Arete code. Never guess entity names, field paths, or types.
 - Use `a4 explore <stack> <Entity> --json` to get exact field names, types, and view definitions.
 - The primary public stack is `ore` (ORE mining data). Run `a4 explore ore --json` to see its entities.
-- For React apps with generated stacks: install `@usearete/react @usearete/sdk zod` (not `zustand`) and generate stack SDK files with `a4 sdk create typescript <stack>`
+- For React apps with generated stacks: install `@usearete/react @usearete/sdk zod` (not `zustand`) and generate from the exact local artifact with `a4 sdk create --manifest <path.stack-manifest.json> --ts`
 - Hosted ORE browser clients require `VITE_ARETE_PUBLISHABLE_KEY` passed as `auth={{ publishableKey }}`. Read-only viewing requires authentication but not a wallet.
-- For TypeScript apps: install `@usearete/sdk` and generate stack SDK files with `a4 sdk create typescript <stack>`
+- For TypeScript apps: install `@usearete/sdk` and generate from the exact local artifact with `a4 sdk create --manifest <path.stack-manifest.json> --ts`
 - To scaffold a new project quickly: `npx @usearete/a4 create my-app`
 
 Full documentation: https://docs.arete.run

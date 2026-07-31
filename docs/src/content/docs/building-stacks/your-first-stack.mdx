@@ -117,17 +117,31 @@ pub mod ore_stream {
 }
 ```
 
-### 5. Build to generate the stack file
+### 5. Build to generate explicit artifacts
 
-When you compile your code, Arete macros automatically generate a `.arete/OreStream.stack.json` file containing all entities in your stack.
+When you compile your code, Arete macros write the portable artifacts directly:
 
 ```bash
 cargo build
 ```
 
 :::tip[Checkpoint]
-Verify that the file `.arete/OreStream.stack.json` exists in your project root. This JSON file contains the compiled specification for your stack, including all entities and their field mappings.
+Verify these files in your project root:
+
+```text
+.arete/ore.program-spec.json
+.arete/OreStream.live-spec.json
+.arete/OreStream.stack-manifest.json
+```
+
+The ProgramSpec identifies the program without an endpoint, the LiveSpec holds
+the entities and views, and the StackManifest selects their client composition.
 :::
+
+The generated `ore_stream::spec()` follows the OSS code-first path. It embeds
+the live runtime plus generated account readers and automatically derives local
+release fingerprints from the ProgramSpec and decoder-engine contract. It does
+not require a hosted Program Release or decoder selection.
 
 ---
 
@@ -149,10 +163,12 @@ a4 init
 
 ### 2. Push and Deploy
 
-The `up` command is a shortcut that pushes your stack, builds the container, and deploys it to a global cluster.
+The `up` command deploys one exact StackManifest. Hosted preparation resolves
+its ProgramSpec to an immutable Program Release and creates deployment and
+endpoint bindings without adding those operational values to the manifest.
 
 ```bash
-a4 up
+a4 up .arete/OreStream.stack-manifest.json
 ```
 
 **Expected Output:**
@@ -161,7 +177,7 @@ a4 up
 ✔ Stack pushed (v1)
 ✔ Build created (id: bld_123...)
 ✔ Build completed
-🚀 Deployed to: wss://<your-stack-name>.stack.arete.run
+🚀 Deployment and endpoint bindings are ready
 ```
 
 :::tip[Checkpoint]
@@ -180,13 +196,17 @@ The generated SDK contains the typed interface to your stack — it tells the Ar
 
 ### 1. Generate the SDK
 
-From your stack project directory (where you ran `a4 up`):
+From your stack project directory:
 
 ```bash
-a4 sdk create typescript ore-stack --output ./sdk
+a4 sdk create --manifest .arete/OreStream.stack-manifest.json \
+  --ts \
+  --output ./sdk/ore-stack.ts
 ```
 
-This creates a typed SDK in `./sdk/` with full TypeScript support.
+This creates a typed SDK with full TypeScript support. Use `--rust` instead of
+`--ts` for Rust output. Generation writes local source; publishing it as an npm
+package or Rust crate is a separate operator action.
 
 ---
 
@@ -359,11 +379,14 @@ ARETE_PUBLISHABLE_KEY=hspk_... npx tsx src/index.ts
 
 ### "Stack file not found"
 
-Ensure you ran `cargo build` in your Rust project. The `#[arete]` macro generates the `.stack.json` file during compilation.
+Ensure you ran `cargo build` in your Rust project and that
+`.arete/OreStream.stack-manifest.json` exists. The `#[arete]` macro writes the
+ProgramSpec, LiveSpec, and StackManifest during compilation.
 
 ### WebSocket connection fails
 
-1. Check that the URL matches the output of `a4 up`.
+1. Check that the live binding matches the output of
+   `a4 up .arete/OreStream.stack-manifest.json`.
 2. Ensure your stack is successfully deployed by running `a4 stack list`.
 
 ### Data is not appearing

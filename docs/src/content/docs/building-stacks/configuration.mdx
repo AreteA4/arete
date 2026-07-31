@@ -5,7 +5,11 @@ sidebar:
 description: Complete reference for arete.toml configuration options.
 ---
 
-The `arete.toml` file is the central configuration for your Arete project. It defines your project metadata, SDK generation settings, build preferences, and stack definitions. The file is created automatically when you run `a4 init`, but you can customize it for advanced use cases.
+The `arete.toml` file stores project metadata, SDK output defaults, and build
+preferences. Portable behavior lives in ProgramSpec, LiveSpec, and StackManifest
+artifacts rather than in this operational configuration. The file is created
+automatically when you run `a4 init`, but you can customize it for advanced use
+cases.
 
 ---
 
@@ -20,7 +24,7 @@ a4 init
 This command:
 
 - Creates `arete.toml` with a project name based on your directory
-- Auto-discovers stacks from `.arete/*.stack.json` files
+- May discover legacy composite inputs for compatibility
 - Creates a `.arete/` directory if it doesn't exist
 
 You can then customize the generated file for your needs.
@@ -32,7 +36,7 @@ You can then customize the generated file for your needs.
 By default, the CLI looks for `arete.toml` in the current directory. You can specify a different path with the `--config` flag:
 
 ```bash
-a4 --config ./config/arete.toml up
+a4 --config ./config/arete.toml up .arete/MyStack.stack-manifest.json
 ```
 
 ---
@@ -46,7 +50,14 @@ For most projects, you only need a project name:
 name = "my-stack"
 ```
 
-The CLI auto-discovers stacks from `.arete/*.stack.json` files created during `cargo build`.
+Rust DSL compilation writes `.arete/*.program-spec.json`,
+`.arete/*.live-spec.json`, and `.arete/*.stack-manifest.json`. Pass the manifest
+path explicitly when generating an SDK or deploying:
+
+```bash
+a4 sdk create --manifest .arete/MyStack.stack-manifest.json --ts
+a4 up .arete/MyStack.stack-manifest.json
+```
 
 ---
 
@@ -70,10 +81,10 @@ rust_module_mode = false                               # Generate Rust SDKs as m
 [build]
 watch_by_default = true
 
-# Stack definitions (auto-discovered by default, but can be explicit)
+# Legacy composite inputs (compatibility only through August 31, 2026)
 [[stacks]]
 name = "my-game"
-stack = "SettlementGame"                               # Stack name or path to .stack.json
+stack = "./.arete/SettlementGame.stack.json"           # Legacy input path
 description = "Settlement game tracking"
 typescript_output_file = "./src/generated/game.ts"    # Per-stack TypeScript output path
 rust_output_crate = "./crates/game-stack"             # Per-stack Rust output path
@@ -110,41 +121,43 @@ rust_module = true                                     # Per-stack: generate as 
 | ------------------ | ------- | ------- | -------------------------------------------------------------- |
 | `watch_by_default` | boolean | `true`  | Enable file watching for automatic rebuilds during development |
 
-### `[[stacks]]` — Stack Definitions
+### `[[stacks]]` — Legacy Composite Inputs
 
-Define stacks explicitly for custom naming or per-stack overrides. If not defined, stacks are auto-discovered from `.arete/*.stack.json` files.
+This section remains for compatibility with composite inputs through **August
+31, 2026**. New SDK and deployment commands take a StackManifest path directly.
+If legacy entries are omitted, older CLI paths may still discover compatible
+inputs under `.arete/`.
 
-| Option                   | Type    | Required | Description                                                  |
-| ------------------------ | ------- | -------- | ------------------------------------------------------------ |
-| `name`                   | string  | Yes      | Stack name (used for SDK generation and CLI commands)        |
-| `stack`                  | string  | Yes      | Stack name from your Rust code or path to `.stack.json` file |
-| `description`            | string  | No       | Stack description                                            |
-| `typescript_output_file` | string  | No       | Per-stack TypeScript output file path                        |
-| `rust_output_crate`      | string  | No       | Per-stack Rust output crate/module directory                 |
-| `rust_module`            | boolean | No       | Per-stack override for module vs crate generation            |
+| Option                   | Type    | Required | Description                                        |
+| ------------------------ | ------- | -------- | -------------------------------------------------- |
+| `name`                   | string  | Yes      | Compatibility name used by legacy CLI commands     |
+| `stack`                  | string  | Yes      | Path to a legacy composite `.stack.json` input     |
+| `description`            | string  | No       | Stack description                                  |
+| `typescript_output_file` | string  | No       | Legacy per-stack TypeScript output path            |
+| `rust_output_crate`      | string  | No       | Legacy per-stack Rust crate/module directory       |
+| `rust_module`            | boolean | No       | Legacy override for module versus crate generation |
 
 ---
 
 ## Common Use Cases
 
-### Multiple Stacks in One Project
+### Multiple LiveSpecs in One StackManifest
 
-Each stack is a separate `#[arete]` module that can contain multiple entities. Use multiple `[[stacks]]` entries when you have separate programs or data sources:
+Compose independently built LiveSpecs with aliases rather than coupling them in
+`arete.toml`:
 
-```toml
-[project]
-name = "my-defi-protocol"
-
-[[stacks]]
-name = "lending"
-stack = "LendingMarket"
-description = "Lending pool positions and interest rates"
-
-[[stacks]]
-name = "dex"
-stack = "DexPool"
-description = "DEX liquidity pools and swaps"
+```bash
+a4 stack compose --name my-defi-protocol \
+  --live lending=./Lending.live-spec.json \
+  --live dex=./Dex.live-spec.json \
+  --artifact-dir . \
+  --selected-view lending=Position/list \
+  --selected-view dex=Pool/state \
+  --output ./MyDefi.stack-manifest.json
 ```
+
+Each alias remains an independent live binding. The composed client also keeps
+Program Read, chain, and transaction transports independent.
 
 ### Separate SDK Output Directories
 
@@ -177,22 +190,22 @@ name = "my-project"
 rust_module_mode = true  # All Rust SDKs generated as modules
 ```
 
-Or per-stack:
+For a legacy configured input, this can still be overridden per entry:
 
 ```toml
 [[stacks]]
 name = "my-game"
-stack = "SettlementGame"
+stack = "./.arete/SettlementGame.stack.json"
 rust_module = true
 rust_output_crate = "./src/generated"  # Will create mod.rs here
 ```
 
-### Per-Stack TypeScript Output File
+### Legacy Per-Stack TypeScript Output File
 
 ```toml
 [[stacks]]
 name = "game"
-stack = "GameState"
+stack = "./.arete/GameState.stack.json"
 typescript_output_file = "./src/game.ts"
 ```
 
@@ -243,8 +256,12 @@ This checks:
 
 - Required fields are present
 - File paths are valid
-- Stack references resolve to valid `.stack.json` files
+- Legacy stack references resolve to supported composite input files
 - No conflicting settings
+
+Validation does not deploy, bind endpoints, publish generated packages, or
+configure DNS. Package publication and provider-neutral DNS/CDN handoff remain
+operator responsibilities.
 
 ---
 

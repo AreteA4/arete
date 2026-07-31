@@ -4,7 +4,18 @@ import { ConnectionManager, isHostedAreteEndpoint } from './connection';
 import { SubscriptionRegistry } from './subscription';
 import { QueryStore } from './query-store';
 import { MemoryAdapter } from './storage/memory-adapter';
-import { AreteError, type Subscription, type SubscriptionQuery } from './types';
+import {
+  AreteError,
+  type AuthTokenRequest,
+  type ProgramReadBindingAuthTarget,
+  type SolanaGatewayBindingAuthTarget,
+  type Subscription,
+  type SubscriptionQuery,
+} from './types';
+
+const PROGRAM_READ_BINDING_1 = 'prb_00000000000000000000000000000001';
+const PROGRAM_READ_BINDING_2 = 'prb_00000000000000000000000000000002';
+const SOLANA_GATEWAY_BINDING = 'sgb_00000000000000000000000000000001';
 
 function toBase64Url(value: string): string {
   return Buffer.from(value, 'utf-8')
@@ -18,6 +29,24 @@ function makeJwt(exp: number): string {
   const header = toBase64Url(JSON.stringify({ alg: 'none', typ: 'JWT' }));
   const payload = toBase64Url(JSON.stringify({ exp }));
   return `${header}.${payload}.signature`;
+}
+
+function programReadTarget(
+  targetId = PROGRAM_READ_BINDING_1,
+  programReleaseHash = 'release-1'
+): ProgramReadBindingAuthTarget {
+  return {
+    targetKind: 'program-read-binding',
+    targetId,
+    programReleaseHash,
+  };
+}
+
+function solanaGatewayTarget(): SolanaGatewayBindingAuthTarget {
+  return {
+    targetKind: 'solana-gateway-binding',
+    targetId: SOLANA_GATEWAY_BINDING,
+  };
 }
 
 function subscription(
@@ -345,6 +374,235 @@ describe('ConnectionManager auth', () => {
     expect(getToken).toHaveBeenCalledTimes(4);
     expect(MockWebSocket.instances).toHaveLength(2);
     expect(manager.getState()).toBe('connected');
+  });
+
+  it('reuses a program-read token for the same exact target and scopes', async () => {
+    const getToken = vi.fn(async (request?: AuthTokenRequest) => ({
+      token: 'program-read-token',
+      scopes: request?.scopes,
+    }));
+    const manager = new ConnectionManager({ websocketUrl: null, auth: { getToken } });
+    const request = {
+      ...programReadTarget(),
+      scopes: ['read'],
+    } as const;
+
+    await expect(manager.getHttpAuthToken(request)).resolves.toBe('program-read-token');
+    await expect(manager.getHttpAuthToken(request)).resolves.toBe('program-read-token');
+
+    expect(getToken).toHaveBeenCalledTimes(1);
+    expect(getToken).toHaveBeenCalledWith({
+      targetKind: 'program-read-binding',
+      targetId: PROGRAM_READ_BINDING_1,
+      programReleaseHash: 'release-1',
+      scopes: ['read'],
+    });
+  });
+
+  it('does not reuse a program-read token across bindings', async () => {
+    const getToken = vi.fn(async (request?: AuthTokenRequest) => ({
+      token: `token-${request?.targetId}`,
+      scopes: request?.scopes,
+    }));
+    const manager = new ConnectionManager({ websocketUrl: null, auth: { getToken } });
+
+    await expect(manager.getHttpAuthToken(['read'], false, programReadTarget(PROGRAM_READ_BINDING_1)))
+      .resolves.toBe(`token-${PROGRAM_READ_BINDING_1}`);
+    await expect(manager.getHttpAuthToken(programReadTarget(PROGRAM_READ_BINDING_2)))
+      .resolves.toBe(`token-${PROGRAM_READ_BINDING_2}`);
+    await expect(manager.getHttpAuthToken(programReadTarget(PROGRAM_READ_BINDING_1)))
+      .resolves.toBe(`token-${PROGRAM_READ_BINDING_1}`);
+
+    expect(getToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not reuse a program-read token across exact releases', async () => {
+    const getToken = vi.fn(async (request?: AuthTokenRequest) => ({
+      token: `token-${request?.programReleaseHash}`,
+      scopes: request?.scopes,
+    }));
+    const manager = new ConnectionManager({ websocketUrl: null, auth: { getToken } });
+
+    await expect(manager.getHttpAuthToken(programReadTarget(PROGRAM_READ_BINDING_1, 'release-1')))
+      .resolves.toBe('token-release-1');
+    await expect(manager.getHttpAuthToken(programReadTarget(PROGRAM_READ_BINDING_1, 'release-2')))
+      .resolves.toBe('token-release-2');
+    await expect(manager.getHttpAuthToken(programReadTarget(PROGRAM_READ_BINDING_1, 'release-1')))
+      .resolves.toBe('token-release-1');
+
+    expect(getToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('normalizes targeted scope order and duplicates for cache and in-flight identity', async () => {
+    let resolveToken!: (result: { token: string; scopes: readonly string[] }) => void;
+    const getToken = vi.fn((request?: AuthTokenRequest) =>
+      new Promise<{ token: string; scopes: readonly string[] }>((resolve) => {
+        resolveToken = resolve;
+      }));
+    const manager = new ConnectionManager({ websocketUrl: null, auth: { getToken } });
+    const target = programReadTarget();
+
+    const first = manager.getHttpAuthToken({
+      ...target,
+      scopes: ['read:batch', 'read', 'read:batch'],
+    });
+    const second = manager.getHttpAuthToken({
+      ...target,
+      scopes: ['read', 'read:batch'],
+    });
+    await vi.waitFor(() => expect(getToken).toHaveBeenCalledTimes(1));
+    expect(getToken.mock.calls[0]?.[0]?.scopes).toEqual(['read', 'read:batch']);
+
+    resolveToken({ token: 'normalized-token', scopes: ['read:batch', 'read'] });
+    await expect(Promise.all([first, second]))
+      .resolves.toEqual(['normalized-token', 'normalized-token']);
+  });
+
+  it('keeps in-flight program-read token requests isolated by target identity', async () => {
+    const resolvers = new Map<
+      string,
+      (result: { token: string; scopes: readonly string[] }) => void
+    >();
+    const getToken = vi.fn((request?: AuthTokenRequest) =>
+      new Promise<{ token: string; scopes: readonly string[] }>((resolve) => {
+        resolvers.set(request?.targetId ?? 'legacy', resolve);
+      }));
+    const manager = new ConnectionManager({ websocketUrl: null, auth: { getToken } });
+
+    const first = manager.getHttpAuthToken(programReadTarget(PROGRAM_READ_BINDING_1));
+    const second = manager.getHttpAuthToken(programReadTarget(PROGRAM_READ_BINDING_2));
+    await vi.waitFor(() => expect(getToken).toHaveBeenCalledTimes(2));
+
+    resolvers.get(PROGRAM_READ_BINDING_2)?.({ token: 'token-2', scopes: ['read'] });
+    resolvers.get(PROGRAM_READ_BINDING_1)?.({ token: 'token-1', scopes: ['read'] });
+    await expect(Promise.all([first, second])).resolves.toEqual(['token-1', 'token-2']);
+  });
+
+  it('sends camelCase target fields to token endpoints while preserving legacy websocket_url', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ token: 'session-token', scopes: ['read'] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      auth: { tokenEndpoint: 'https://auth.example/sessions' },
+    });
+
+    await manager.getHttpAuthToken(programReadTarget());
+    await manager.getHttpAuthToken(['read']);
+
+    const targetedInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(targetedInit.body))).toEqual({
+      targetKind: 'program-read-binding',
+      targetId: PROGRAM_READ_BINDING_1,
+      programReleaseHash: 'release-1',
+      scopes: ['read'],
+    });
+    const legacyInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(JSON.parse(String(legacyInit.body))).toEqual({
+      websocket_url: 'wss://demo.stack.arete.run',
+      scopes: ['read'],
+    });
+  });
+
+  it('serializes and caches Solana gateway tokens by exact target and scope set', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as AuthTokenRequest;
+      return new Response(JSON.stringify({
+        token: `gateway-${request.scopes.join('+')}`,
+        scopes: request.scopes,
+      }), { status: 200 });
+    });
+    const manager = new ConnectionManager({
+      websocketUrl: null,
+      auth: { tokenEndpoint: 'https://auth.example/sessions' },
+      fetch: fetchMock as typeof fetch,
+    });
+    const target = solanaGatewayTarget();
+
+    await expect(manager.getHttpAuthToken(target, ['read']))
+      .resolves.toBe('gateway-read');
+    await expect(manager.getHttpAuthToken(['read'], target))
+      .resolves.toBe('gateway-read');
+    await expect(manager.getHttpAuthToken(target, ['transaction:inspect']))
+      .resolves.toBe('gateway-transaction:inspect');
+    await expect(manager.getHttpAuthToken({
+      ...target,
+      scopes: ['transaction:send'],
+    })).resolves.toBe('gateway-transaction:send');
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      {
+        targetKind: 'solana-gateway-binding',
+        targetId: SOLANA_GATEWAY_BINDING,
+        scopes: ['read'],
+      },
+      {
+        targetKind: 'solana-gateway-binding',
+        targetId: SOLANA_GATEWAY_BINDING,
+        scopes: ['transaction:inspect'],
+      },
+      {
+        targetKind: 'solana-gateway-binding',
+        targetId: SOLANA_GATEWAY_BINDING,
+        scopes: ['transaction:send'],
+      },
+    ]);
+  });
+
+  it('does not expose program-read tokens to websocket or transaction token calls', async () => {
+    const getToken = vi.fn(async (request?: AuthTokenRequest) => ({
+      token: request?.targetKind
+        ? 'program-read-token'
+        : `legacy-${request?.scopes.join('+')}`,
+      scopes: request?.scopes,
+    }));
+    const manager = new ConnectionManager({
+      websocketUrl: 'ws://localhost:8878',
+      auth: { getToken },
+    });
+
+    await expect(manager.getHttpAuthToken(programReadTarget()))
+      .resolves.toBe('program-read-token');
+    await manager.connect();
+    expect(MockWebSocket.instances[0]?.url).toContain('hs_token=legacy-read');
+    expect(MockWebSocket.instances[0]?.url).not.toContain('program-read-token');
+    await expect(manager.getHttpAuthToken(['transaction:send']))
+      .resolves.toBe('legacy-read+transaction:send');
+
+    expect(getToken.mock.calls.map(([request]) => request)).toEqual([
+      {
+        targetKind: 'program-read-binding',
+        targetId: PROGRAM_READ_BINDING_1,
+        programReleaseHash: 'release-1',
+        scopes: ['read'],
+      },
+      { scopes: ['read'] },
+      { scopes: ['read', 'transaction:send'] },
+    ]);
+    manager.disconnect();
+  });
+
+  it('clears only the requested targeted HTTP token identity', async () => {
+    const getToken = vi.fn(async (request?: AuthTokenRequest) => ({
+      token: `${request?.targetId}-${getToken.mock.calls.length}`,
+      scopes: request?.scopes,
+    }));
+    const manager = new ConnectionManager({ websocketUrl: null, auth: { getToken } });
+    const firstTarget = programReadTarget(PROGRAM_READ_BINDING_1);
+    const secondTarget = programReadTarget(PROGRAM_READ_BINDING_2);
+
+    await manager.getHttpAuthToken(firstTarget);
+    await manager.getHttpAuthToken(secondTarget);
+    manager.clearHttpAuthToken(firstTarget);
+
+    await expect(manager.getHttpAuthToken(secondTarget))
+      .resolves.toBe(`${PROGRAM_READ_BINDING_2}-2`);
+    await expect(manager.getHttpAuthToken(firstTarget))
+      .resolves.toBe(`${PROGRAM_READ_BINDING_1}-3`);
+    expect(getToken).toHaveBeenCalledTimes(3);
   });
 
   it('reuses and atomically upgrades the shared token scope cache', async () => {

@@ -4,6 +4,12 @@ use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
 
 use crate::types::{IdlAmountHint, SteelDiscriminant};
 
+/// Version of the semantic IDL normalization performed by this crate.
+///
+/// Incrementing this value is a protocol change: it changes the canonical
+/// `IdlSnapshotV1` input and all identities that contain it.
+pub const IDL_NORMALIZATION_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IdlSnapshot {
     pub name: String,
@@ -19,6 +25,56 @@ pub struct IdlSnapshot {
     #[serde(default)]
     pub errors: Vec<IdlErrorSnapshot>,
     pub discriminant_size: usize,
+}
+
+/// Canonical, versioned input for normalized IDL identities.
+///
+/// The legacy `IdlSnapshot` wire shape remains unchanged for existing ASTs.
+/// This wrapper adds the normalization version only to new protocol inputs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", try_from = "IdlSnapshotV1Wire")]
+pub struct IdlSnapshotV1 {
+    pub normalization_version: u32,
+    #[serde(flatten)]
+    pub snapshot: IdlSnapshot,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IdlSnapshotV1Wire {
+    normalization_version: u32,
+    #[serde(flatten)]
+    snapshot: IdlSnapshot,
+}
+
+impl TryFrom<IdlSnapshotV1Wire> for IdlSnapshotV1 {
+    type Error = String;
+
+    fn try_from(value: IdlSnapshotV1Wire) -> Result<Self, Self::Error> {
+        if value.normalization_version != IDL_NORMALIZATION_VERSION {
+            return Err(format!(
+                "unsupported IDL normalization version {}; expected {}",
+                value.normalization_version, IDL_NORMALIZATION_VERSION
+            ));
+        }
+        Ok(Self {
+            normalization_version: value.normalization_version,
+            snapshot: value.snapshot,
+        })
+    }
+}
+
+impl IdlSnapshotV1 {
+    pub fn new(snapshot: IdlSnapshot) -> Self {
+        Self {
+            normalization_version: IDL_NORMALIZATION_VERSION,
+            snapshot,
+        }
+    }
+
+    pub fn into_legacy_snapshot(self) -> IdlSnapshot {
+        self.snapshot
+    }
 }
 
 impl<'de> Deserialize<'de> for IdlSnapshot {
@@ -390,6 +446,236 @@ pub struct IdlErrorSnapshot {
     pub msg: Option<String>,
 }
 
+/// Normalize a parsed IDL into the stable snapshot used by existing ASTs.
+pub fn normalize_idl_snapshot(idl: &crate::types::IdlSpec) -> IdlSnapshot {
+    use crate::types::IdlTypeDefKind;
+
+    let mut types: Vec<IdlTypeDefSnapshot> = idl
+        .types
+        .iter()
+        .map(|typedef| IdlTypeDefSnapshot {
+            name: typedef.name.clone(),
+            docs: typedef.docs.clone(),
+            serialization: typedef.serialization.as_ref().map(snapshot_serialization),
+            type_def: snapshot_type_def(&typedef.type_def),
+        })
+        .collect();
+
+    for account in &idl.accounts {
+        if types.iter().any(|typedef| typedef.name == account.name) {
+            continue;
+        }
+        if let Some(type_def) = &account.type_def {
+            types.push(IdlTypeDefSnapshot {
+                name: account.name.clone(),
+                docs: account.docs.clone(),
+                serialization: None,
+                type_def: snapshot_type_def(type_def),
+            });
+        }
+    }
+
+    let uses_steel_discriminant = idl.instructions.iter().any(|instruction| {
+        instruction.discriminant.is_some() && instruction.discriminator.is_empty()
+    });
+    let discriminant_size = if uses_steel_discriminant { 1 } else { 8 };
+    let program_id = idl.address.clone().or_else(|| {
+        idl.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.address.clone())
+    });
+
+    IdlSnapshot {
+        name: idl.get_name().to_string(),
+        program_id,
+        version: idl.get_version().to_string(),
+        accounts: idl
+            .accounts
+            .iter()
+            .map(|account| {
+                let serialization = idl
+                    .types
+                    .iter()
+                    .find(|typedef| typedef.name == account.name)
+                    .and_then(|typedef| typedef.serialization.as_ref())
+                    .map(snapshot_serialization);
+                let fields =
+                    account
+                        .type_def
+                        .as_ref()
+                        .map_or_else(Vec::new, |type_def| match type_def {
+                            IdlTypeDefKind::Struct { fields, .. } => {
+                                fields.iter().map(snapshot_field).collect()
+                            }
+                            _ => Vec::new(),
+                        });
+
+                IdlAccountSnapshot {
+                    name: account.name.clone(),
+                    discriminator: account.get_discriminator(),
+                    docs: account.docs.clone(),
+                    serialization,
+                    fields,
+                    type_def: None,
+                }
+            })
+            .collect(),
+        instructions: idl
+            .instructions
+            .iter()
+            .map(|instruction| IdlInstructionSnapshot {
+                name: instruction.name.clone(),
+                discriminator: instruction.get_discriminator(),
+                discriminant: instruction.discriminant.clone(),
+                docs: instruction.docs.clone(),
+                accounts: instruction
+                    .flattened_accounts()
+                    .iter()
+                    .map(|account| IdlInstructionAccountSnapshot {
+                        name: account.name.clone(),
+                        writable: account.is_mut,
+                        signer: account.is_signer,
+                        optional: account.optional,
+                        address: account.address.clone(),
+                        docs: account.docs.clone(),
+                    })
+                    .collect(),
+                args: instruction.args.iter().map(snapshot_field).collect(),
+            })
+            .collect(),
+        types,
+        events: idl
+            .events
+            .iter()
+            .map(|event| IdlEventSnapshot {
+                name: event.name.clone(),
+                discriminator: event.get_discriminator(),
+                docs: event.docs.clone(),
+                fields: event.fields.iter().map(snapshot_field).collect(),
+            })
+            .collect(),
+        errors: idl
+            .errors
+            .iter()
+            .map(|error| IdlErrorSnapshot {
+                code: error.code,
+                name: error.name.clone(),
+                msg: error.msg.clone(),
+            })
+            .collect(),
+        discriminant_size,
+    }
+}
+
+/// Normalize a parsed IDL into the versioned input used by authoritative hashes.
+pub fn normalize_idl_snapshot_v1(idl: &crate::types::IdlSpec) -> IdlSnapshotV1 {
+    IdlSnapshotV1::new(normalize_idl_snapshot(idl))
+}
+
+fn snapshot_serialization(
+    serialization: &crate::types::IdlSerialization,
+) -> IdlSerializationSnapshot {
+    match serialization {
+        crate::types::IdlSerialization::Borsh => IdlSerializationSnapshot::Borsh,
+        crate::types::IdlSerialization::Bytemuck => IdlSerializationSnapshot::Bytemuck,
+        crate::types::IdlSerialization::BytemuckUnsafe => IdlSerializationSnapshot::BytemuckUnsafe,
+    }
+}
+
+fn snapshot_field(field: &crate::types::IdlField) -> IdlFieldSnapshot {
+    IdlFieldSnapshot {
+        name: field.name.clone(),
+        type_: snapshot_type(&field.type_),
+        amount_hint: field.amount_hint.clone(),
+    }
+}
+
+fn snapshot_type_def(type_def: &crate::types::IdlTypeDefKind) -> IdlTypeDefKindSnapshot {
+    match type_def {
+        crate::types::IdlTypeDefKind::Struct { kind, fields } => IdlTypeDefKindSnapshot::Struct {
+            kind: kind.clone(),
+            fields: fields.iter().map(snapshot_field).collect(),
+        },
+        crate::types::IdlTypeDefKind::TupleStruct { kind, fields } => {
+            IdlTypeDefKindSnapshot::TupleStruct {
+                kind: kind.clone(),
+                fields: fields.iter().map(snapshot_type).collect(),
+            }
+        }
+        crate::types::IdlTypeDefKind::Enum { kind, variants } => IdlTypeDefKindSnapshot::Enum {
+            kind: kind.clone(),
+            variants: variants.iter().map(snapshot_enum_variant).collect(),
+        },
+    }
+}
+
+fn snapshot_enum_variant(variant: &crate::types::IdlEnumVariant) -> IdlEnumVariantSnapshot {
+    IdlEnumVariantSnapshot {
+        name: variant.name.clone(),
+        fields: variant
+            .fields
+            .iter()
+            .map(|field| match field {
+                crate::types::IdlEnumVariantField::Named(named) => {
+                    IdlEnumVariantFieldSnapshot::Named(snapshot_field(named))
+                }
+                crate::types::IdlEnumVariantField::Tuple(tuple) => {
+                    IdlEnumVariantFieldSnapshot::Tuple(snapshot_type(tuple))
+                }
+            })
+            .collect(),
+    }
+}
+
+fn snapshot_type(idl_type: &crate::types::IdlType) -> IdlTypeSnapshot {
+    match idl_type {
+        crate::types::IdlType::Simple(simple) => IdlTypeSnapshot::Simple(simple.clone()),
+        crate::types::IdlType::Array(array) => IdlTypeSnapshot::Array(IdlArrayTypeSnapshot {
+            array: array
+                .array
+                .iter()
+                .map(|element| match element {
+                    crate::types::IdlTypeArrayElement::Nested(ty) => {
+                        IdlArrayElementSnapshot::Type(snapshot_type(ty))
+                    }
+                    crate::types::IdlTypeArrayElement::Type(type_name) => {
+                        IdlArrayElementSnapshot::TypeName(type_name.clone())
+                    }
+                    crate::types::IdlTypeArrayElement::Size(size) => {
+                        IdlArrayElementSnapshot::Size(*size)
+                    }
+                })
+                .collect(),
+        }),
+        crate::types::IdlType::Option(option) => IdlTypeSnapshot::Option(IdlOptionTypeSnapshot {
+            option: Box::new(snapshot_type(&option.option)),
+        }),
+        crate::types::IdlType::Vec(vec_type) => IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
+            vec: Box::new(snapshot_type(&vec_type.vec)),
+        }),
+        crate::types::IdlType::Defined(defined) => {
+            IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                defined: match &defined.defined {
+                    crate::types::IdlTypeDefinedInner::Named { name } => {
+                        IdlDefinedInnerSnapshot::Named { name: name.clone() }
+                    }
+                    crate::types::IdlTypeDefinedInner::Simple(simple) => {
+                        IdlDefinedInnerSnapshot::Simple(simple.clone())
+                    }
+                },
+            })
+        }
+        crate::types::IdlType::HashMap(hash_map) => {
+            IdlTypeSnapshot::HashMap(IdlHashMapTypeSnapshot {
+                hash_map: (
+                    Box::new(snapshot_type(&hash_map.hash_map.0)),
+                    Box::new(snapshot_type(&hash_map.hash_map.1)),
+                ),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,5 +820,27 @@ mod tests {
             parsed.hash_map.1.as_ref(),
             IdlTypeSnapshot::Simple(value) if value == "string"
         ));
+    }
+
+    #[test]
+    fn idl_snapshot_v1_rejects_unknown_normalization_versions() {
+        let value = serde_json::json!({
+            "normalizationVersion": 2,
+            "name": "demo",
+            "program_id": "11111111111111111111111111111111",
+            "version": "1.0.0",
+            "accounts": [],
+            "instructions": [],
+            "types": [],
+            "events": [],
+            "errors": [],
+            "discriminant_size": 8
+        });
+
+        let error = serde_json::from_value::<IdlSnapshotV1>(value)
+            .expect_err("unknown normalization version must fail");
+        assert!(error
+            .to_string()
+            .contains("unsupported IDL normalization version 2"));
     }
 }

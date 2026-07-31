@@ -10,7 +10,7 @@ Every Arete stack ships with [Zod](https://zod.dev) schemas alongside its TypeSc
 
 ## Generated Schemas
 
-When you run `a4 sdk create typescript`, the CLI generates a Zod schema for every entity and sub-type. These mirror the TypeScript interfaces exactly:
+When you run `a4 sdk create --manifest <path.stack-manifest.json> --ts`, the CLI generates a Zod schema for every selected entity and sub-type. These mirror the TypeScript interfaces exactly:
 
 ```typescript
 import {

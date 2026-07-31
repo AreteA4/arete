@@ -32,14 +32,14 @@ fn generate_resolver_registry(resolver_hooks: &[ResolverHook]) -> TokenStream {
 
     let resolver_arms = resolver_hooks.iter().map(|hook| {
         let event_type = hook.account_type.clone();
-        
+
         let account_type_base = crate::event_type_helpers::strip_event_type_suffix(&event_type);
         let _fn_name = format_ident!("resolve_{}_key", to_snake_case(account_type_base));
 
         match &hook.strategy {
             ResolverStrategy::PdaReverseLookup { lookup_name: _, queue_discriminators } => {
                 let disc_bytes: Vec<u8> = queue_discriminators.iter().flatten().copied().collect();
-                
+
                 quote! {
                     #event_type => {
                         Some(|account_address: &str, _account_data: &arete::runtime::serde_json::Value, ctx: &mut arete::runtime::arete_interpreter::resolvers::ResolveContext| {

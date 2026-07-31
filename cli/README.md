@@ -23,24 +23,27 @@ cargo install --path cli
 ## Quick Start
 
 ```bash
-# Initialize project (auto-discovers AST files)
+# Initialize project
 a4 init
 
 # Authenticate
 a4 auth login
 
-# Deploy
-a4 up
+# Build explicit artifacts and deploy the exact manifest
+cargo build
+a4 up .arete/MyStack.stack-manifest.json
 ```
 
-That's it! Your stack is deployed and you'll see the WebSocket URL.
+The deployment returns operational bindings for the exact StackManifest.
 
 ## Command Overview
 
 | Command | Description |
 |---------|-------------|
 | `a4 init` | Initialize project |
-| `a4 up [stack]` | Deploy (push + build + deploy) |
+| `a4 program build <idl>` | Build a portable ProgramSpec |
+| `a4 stack compose` | Compose ProgramSpecs and aliased LiveSpecs |
+| `a4 up <manifest>` | Deploy an exact StackManifest |
 | `a4 status` | Show project overview |
 | `a4 stack list` | List all stacks |
 | `a4 stack show <name>` | Show stack details |
@@ -53,7 +56,7 @@ That's it! Your stack is deployed and you'll see the WebSocket URL.
 cargo build
 
 # Deploy
-a4 up
+a4 up .arete/MyStack.stack-manifest.json
 
 # Check status
 a4 status
@@ -81,9 +84,10 @@ a4 stack show settlement-game
 
 Shows: entity info, deployment status, version history, recent builds.
 
-### `a4 stack push [name]`
+### `a4 stack push [name]` (legacy)
 
-Push local stacks to remote without deploying:
+Push a legacy configured composite input. This compatibility path is retained
+only through **August 31, 2026**:
 
 ```bash
 a4 stack push                  # Push all
@@ -117,21 +121,22 @@ a4 stack delete settlement-game
 
 ## Deployment
 
-### `a4 up [stack-name]`
+### `a4 up <manifest>`
 
-The happy path - push, build, and deploy in one command:
+Deploy one exact local StackManifest:
 
 ```bash
-a4 up                              # Deploy all
-a4 up settlement-game              # Deploy one
-a4 up settlement-game --branch staging  # Branch deploy
-a4 up settlement-game --preview    # Preview deployment
+a4 up .arete/MyStack.stack-manifest.json
+a4 up .arete/MyStack.stack-manifest.json --branch staging
+a4 up .arete/MyStack.stack-manifest.json --preview
 ```
+
+Composite `.stack.json` is an input-only compatibility adapter through **August
+31, 2026**. New deployments use the manifest path.
 
 ## Authentication
 
 ```bash
-a4 auth register    # Create new account
 a4 auth login       # Login
 a4 auth logout      # Logout
 a4 auth whoami      # Verify with server
@@ -146,11 +151,12 @@ a4 install ore-stack-abc123 --ts              # Install a published hosted stack
 a4 install ore-stack-abc123 --rust            # Install a published hosted Rust stack SDK
 a4 install program spl-token --ts             # Install a published hosted program SDK
 a4 sdk list                                   # List available stacks
-a4 sdk create settlement-game --ts            # Generate a stack TypeScript SDK
-a4 sdk create settlement-game --rust          # Generate a stack Rust SDK
-a4 sdk create settlement-game --ts --program-only
-a4 sdk create --ts --program-only --idl ./idls/spl-token.idl.json
+a4 sdk create --manifest .arete/MyStack.stack-manifest.json --ts
+a4 sdk create --manifest .arete/MyStack.stack-manifest.json --rust
+a4 sdk create --program-spec .arete/token.program-spec.json --program-only --ts
 ```
+
+SDK generation writes local source and does not publish a package.
 
 ## Configuration
 
@@ -163,11 +169,10 @@ name = "my-project"
 [sdk]
 output_dir = "./generated"
 
-# Stacks - auto-discovered from .arete/*.stack.json
-# `stack` may be a local AST name/path or a hosted stack identifier.
+# Legacy composite inputs (compatibility only through August 31, 2026)
 [[stacks]]
 name = "my-game"
-stack = "SettlementGame"
+stack = ".arete/SettlementGame.stack.json"
 ```
 
 For most projects, you only need:
@@ -177,14 +182,17 @@ For most projects, you only need:
 name = "my-project"
 ```
 
-The CLI auto-discovers stacks from `.arete/*.stack.json` files.
+New SDK and deployment workflows pass an explicit StackManifest path.
 
-## WebSocket URLs
+## Endpoint and DNS Handoff
 
-| Type | Pattern |
-|------|---------|
-| Production | `wss://{stack-name}.stack.arete.run` |
-| Branch | `wss://{stack-name}-{branch}.stack.arete.run` |
+Live, Program Read, chain, and transaction endpoints are independent bindings.
+Operators map them through their chosen DNS/CDN provider and publish generated
+SDK packages manually. Hosted TypeScript composition output preserves the full
+Solana gateway descriptors and exports a `create<StackName>HostedSession`
+helper. That helper creates authenticated chain and transaction transports from
+the generated bindings; the generic composition helper still requires explicit
+transports.
 
 ## Environment Variables
 
@@ -198,7 +206,7 @@ The CLI auto-discovers stacks from `.arete/*.stack.json` files.
 |-------|----------|
 | `Not authenticated` | Run `a4 auth login` |
 | `Stack not found` | Check `a4 stack list` |
-| `AST file not found` | Run `cargo build` to generate AST |
+| `StackManifest not found` | Run `cargo build` and use the generated manifest path |
 | `Build failed` | Check `a4 status` for build details |
 
 ## License

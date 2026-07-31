@@ -1,0 +1,53 @@
+{
+  "contractVersion": "program-read-http/v1",
+  "success": {
+    "rawValue": {
+      "value": "decoded",
+      "count": 7
+    },
+    "missing": null,
+    "exists": {
+      "exists": true
+    },
+    "batch": {
+      "items": [
+        {
+          "address": "present",
+          "status": "ok",
+          "value": {
+            "value": "decoded",
+            "count": 7
+          }
+        },
+        {
+          "address": "missing",
+          "status": "missing"
+        },
+        {
+          "address": "broken",
+          "status": "error",
+          "error": {
+            "code": "ACCOUNT_DECODE_FAILED"
+          }
+        }
+      ]
+    }
+  },
+  "errors": {
+    "nested": {
+      "error": {
+        "code": "ACCOUNT_DECODE_FAILED"
+      }
+    },
+    "refreshable": {
+      "error": {
+        "code": "TOKEN_EXPIRED"
+      }
+    },
+    "nonRefreshable": {
+      "error": {
+        "code": "AUTH_REQUIRED"
+      }
+    }
+  }
+}

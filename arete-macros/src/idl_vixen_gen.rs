@@ -167,14 +167,17 @@ pub fn generate_spec_function_without_registries(idl: &IdlSpec, _program_id: &st
     }
 }
 
-pub fn generate_multi_idl_spec_function(idls: &[(&IdlSpec, &str, &str)]) -> TokenStream {
+pub fn generate_multi_idl_spec_function(
+    idls: &[(&IdlSpec, &str, &str, &arete_hash::OssProgramIdentityV1)],
+    has_live_entities: bool,
+) -> TokenStream {
     let config = RuntimeGenConfig::for_idl();
 
     let vm_handler_struct = vixen_runtime::generate_vm_handler_struct();
 
     let handler_impls: Vec<TokenStream> = idls
         .iter()
-        .map(|(idl, _program_id, parser_module_name)| {
+        .map(|(idl, _program_id, parser_module_name, _identity)| {
             let program_name = idl.get_name();
             let state_enum_name = format!("{}State", to_pascal_case(program_name));
             let instruction_enum_name = format!("{}Instruction", to_pascal_case(program_name));
@@ -196,7 +199,7 @@ pub fn generate_multi_idl_spec_function(idls: &[(&IdlSpec, &str, &str)]) -> Toke
 
     let pipeline_infos: Vec<vixen_runtime::PipelineInfo> = idls
         .iter()
-        .map(|(idl, program_id, parser_module_name)| {
+        .map(|(idl, program_id, parser_module_name, identity)| {
             let program_name = idl.get_name();
             vixen_runtime::PipelineInfo {
                 parser_module_name: parser_module_name.to_string(),
@@ -209,11 +212,23 @@ pub fn generate_multi_idl_spec_function(idls: &[(&IdlSpec, &str, &str)]) -> Toke
                     .iter()
                     .map(|account| account.name.clone())
                     .collect(),
+                program_spec_hash: identity.program_spec_hash.to_string(),
+                idl_content_hash: identity.program_spec.idl_content_hash.to_string(),
+                normalized_idl_hash: identity.program_spec.normalized_idl_hash.to_string(),
+                program_release_hash: identity.release_hash.to_string(),
             }
         })
         .collect();
 
-    let spec_fn = vixen_runtime::generate_multi_pipeline_spec_function(&pipeline_infos, &config);
+    let spec_fn = if has_live_entities {
+        vixen_runtime::generate_multi_pipeline_spec_function(&pipeline_infos, &config)
+    } else {
+        vixen_runtime::generate_program_only_spec_function(&pipeline_infos)
+    };
+
+    if !has_live_entities {
+        return spec_fn;
+    }
 
     quote! {
         #vm_handler_struct

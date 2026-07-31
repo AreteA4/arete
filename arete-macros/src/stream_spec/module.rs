@@ -139,19 +139,26 @@ pub fn process_module(
                 }
             }
 
-            let entity_asts: Vec<crate::ast::SerializableStreamSpec> = all_outputs
+            let mut entity_asts: Vec<crate::ast::SerializableStreamSpec> = all_outputs
                 .iter()
                 .filter_map(|result| result.ast_spec.clone())
                 .collect();
+            for entity in &mut entity_asts {
+                entity.normalize_event_names();
+            }
+
+            let pda_overrides = BTreeMap::new();
+            let instruction_overrides = Vec::new();
 
             let mut stack_spec = SerializableStackSpec {
                 ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
                 stack_name: stack_name.clone(),
                 program_ids: vec![],
                 idls: vec![],
-                entities: entity_asts,
-                pdas: BTreeMap::new(),
-                instructions: vec![],
+                program_specs: vec![],
+                entities: entity_asts.clone(),
+                pdas: pda_overrides.clone(),
+                instructions: instruction_overrides.clone(),
                 content_hash: None,
             };
             stack_spec.normalize_event_names();
@@ -170,9 +177,25 @@ pub fn process_module(
                 )
             })?;
 
-            if let Err(error) = crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name) {
-                eprintln!("Warning: Failed to write stack AST: {error}");
-            }
+            crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name).map_err(|error| {
+                syn::Error::new(
+                    module.ident.span(),
+                    format!("Failed to write compatibility stack AST: {error}"),
+                )
+            })?;
+            crate::ast::writer::write_public_artifacts(
+                &stack_name,
+                &[],
+                &entity_asts,
+                &pda_overrides,
+                &instruction_overrides,
+            )
+            .map_err(|error| {
+                syn::Error::new(
+                    module.ident.span(),
+                    format!("Failed to write authoritative public stack artifacts: {error}"),
+                )
+            })?;
 
             let multi_entity_builder = generate_multi_entity_builder(
                 &entity_names,

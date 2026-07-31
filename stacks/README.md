@@ -24,10 +24,12 @@ The generated example SDKs are checked into the repo. Regenerate them with `./sc
 
 ```bash
 cd ore
-cargo build                      # Generates .arete/*.ast.json
-a4 up                            # Deploy to Arete
-a4 sdk create typescript ore --output ../../my-app/src/generated/ore-stack.ts
-a4 sdk create rust ore --output ../../my-app/src/generated/ore --module
+cargo build                      # Generates ProgramSpec, LiveSpec, and StackManifest
+a4 up .arete/OreStream.stack-manifest.json
+a4 sdk create --manifest .arete/OreStream.stack-manifest.json --ts \
+  --output ../../my-app/src/generated/ore-stack.ts
+a4 sdk create --manifest .arete/OreStream.stack-manifest.json --rust \
+  --output ../../my-app/src/generated/ore --module
 ```
 
 ## Use Generated Stacks

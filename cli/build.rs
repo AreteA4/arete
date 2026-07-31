@@ -1,4 +1,4 @@
-use sha2::{Digest, Sha256};
+use arete_hash::{CompilerSourceV1, CompilerV1};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,13 +63,6 @@ fn dependency_root(
         .to_path_buf())
 }
 
-fn update_hash_part(hasher: &mut Sha256, label: &str, value: &[u8]) {
-    hasher.update((label.len() as u64).to_be_bytes());
-    hasher.update(label.as_bytes());
-    hasher.update((value.len() as u64).to_be_bytes());
-    hasher.update(value);
-}
-
 fn strip_local_dependency_versions(value: &mut toml::Value) {
     match value {
         toml::Value::Table(table) => {
@@ -123,7 +116,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metadata: serde_json::Value = serde_json::from_slice(&metadata_output.stdout)?;
 
     let mut package_roots = vec![("cli", manifest_dir)];
-    for package_name in ["arete-idl", "arete-macros", "arete-interpreter"] {
+    for package_name in [
+        "arete-hash",
+        "arete-idl",
+        "arete-macros",
+        "arete-interpreter",
+    ] {
         package_roots.push((package_name, dependency_root(&metadata, package_name)?));
     }
 
@@ -142,16 +140,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     files.sort_by(|left, right| left.0.cmp(&right.0));
 
-    let mut hasher = Sha256::new();
+    let mut sources = Vec::with_capacity(files.len());
     for (label, path) in files {
-        update_hash_part(&mut hasher, &label, &hash_contents(&path)?);
+        sources.push(CompilerSourceV1::new(label, hash_contents(&path)?));
     }
 
-    let hash = hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{:02x}", byte))
-        .collect::<String>();
-    println!("cargo:rustc-env=ARETE_SDK_GENERATOR_SHA256={hash}");
+    let compiler_hash = CompilerV1::new(sources)?.hash()?;
+    println!("cargo:rustc-env=ARETE_SDK_COMPILER_HASH={compiler_hash}");
     Ok(())
 }

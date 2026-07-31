@@ -50,8 +50,49 @@ pub fn write_stack_to_file(
     let stack_file = ast_dir.join(format!("{}.stack.json", stack_name));
     let json = serde_json::to_string_pretty(spec)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-    std::fs::write(&stack_file, json)?;
+    arete_artifacts::atomic_write(&stack_file, json.as_bytes())
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     Ok(())
+}
+
+/// Author and atomically write the authoritative explicit V2 artifacts from
+/// semantic codegen data. The composite stack AST is deliberately not an input
+/// to this path.
+pub fn write_public_artifacts(
+    stack_name: &str,
+    program_specs: &[arete_hash::ProgramSpecV1],
+    entity_specs: &[super::types::SerializableStreamSpec],
+    pda_overrides: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
+    instruction_overrides: &[InstructionDef],
+) -> Result<(), arete_artifacts::ArtifactError> {
+    let entities = entity_specs
+        .iter()
+        .map(transcode_artifact_projection)
+        .collect::<Result<Vec<arete_artifacts::PortableEntity>, _>>()?;
+    let mut input =
+        arete_artifacts::StackAuthoringV2::new(stack_name, program_specs.to_vec(), entities);
+    input.pda_overrides = transcode_artifact_projection(pda_overrides)?;
+    input.instruction_overrides = transcode_artifact_projection(instruction_overrides)?;
+    let artifacts = arete_artifacts::author_stack_v2(input)?;
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|error| {
+        arete_artifacts::ArtifactError::InvalidArtifact(format!(
+            "CARGO_MANIFEST_DIR is unavailable: {error}"
+        ))
+    })?;
+    let ast_dir = std::path::Path::new(&manifest_dir).join(".arete");
+    arete_artifacts::write_authored_stack_v2(&ast_dir, stack_name, &artifacts)?;
+    Ok(())
+}
+
+fn transcode_artifact_projection<T, U>(value: &T) -> Result<U, arete_artifacts::ArtifactError>
+where
+    T: serde::Serialize + ?Sized,
+    U: serde::de::DeserializeOwned,
+{
+    let value = serde_json::to_value(value)
+        .map_err(|error| arete_artifacts::ArtifactError::InvalidJson(error.to_string()))?;
+    serde_json::from_value(value)
+        .map_err(|error| arete_artifacts::ArtifactError::InvalidJson(error.to_string()))
 }
 
 /// Helper function to parse transformation string to enum

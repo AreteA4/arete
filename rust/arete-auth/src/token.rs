@@ -231,7 +231,7 @@ impl TokenVerifier {
             return Err(VerifyError::Expired);
         }
 
-        if claims.nbf > now {
+        if claims.nbf > now || claims.iat > now {
             return Err(VerifyError::NotYetValid);
         }
 
@@ -496,6 +496,47 @@ mod tests {
     }
 
     #[test]
+    fn legacy_claims_without_typed_target_deserialize_and_verify() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims: SessionClaims = serde_json::from_value(serde_json::json!({
+            "iss": "test-issuer",
+            "sub": "legacy-subject",
+            "aud": "deployment-1",
+            "iat": now,
+            "nbf": now,
+            "exp": now + 300,
+            "jti": "legacy-jti",
+            "scope": "read",
+            "metering_key": "api_key:1",
+            "deployment_id": "deployment-1",
+            "key_class": "publishable"
+        }))
+        .unwrap();
+        assert_eq!(claims.target_kind, None);
+        assert_eq!(claims.target_id, None);
+        assert_eq!(claims.program_id, None);
+        assert_eq!(claims.program_release_hash, None);
+
+        let signing_key = crate::keys::SigningKey::generate();
+        let verifying_key = signing_key.verifying_key();
+        let token = TokenSigner::new(signing_key, "test-issuer")
+            .sign(claims)
+            .unwrap();
+        let context = TokenVerifier::new(verifying_key, "test-issuer", "deployment-1")
+            .verify(&token, None, None)
+            .unwrap();
+
+        assert_eq!(context.subject, "legacy-subject");
+        assert_eq!(context.deployment_id.as_deref(), Some("deployment-1"));
+        assert_eq!(context.target_kind, None);
+    }
+
+    #[test]
     fn test_expired_token() {
         let signing_key = crate::keys::SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
@@ -516,6 +557,23 @@ mod tests {
         // Should fail with expired error
         let result = verifier.verify(&token, None, None);
         assert!(matches!(result, Err(VerifyError::Expired)));
+    }
+
+    #[test]
+    fn test_future_issued_token_is_not_yet_valid() {
+        let signing_key = crate::keys::SigningKey::generate();
+        let verifying_key = signing_key.verifying_key();
+        let signer = TokenSigner::new(signing_key, "test-issuer");
+        let verifier = TokenVerifier::new(verifying_key, "test-issuer", "test-audience");
+        let mut claims = create_test_claims();
+        claims.iat += 300;
+
+        let token = signer.sign(claims).unwrap();
+
+        assert!(matches!(
+            verifier.verify(&token, None, None),
+            Err(VerifyError::NotYetValid)
+        ));
     }
 
     #[test]

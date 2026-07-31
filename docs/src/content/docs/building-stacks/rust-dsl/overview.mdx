@@ -18,7 +18,25 @@ Instead of writing complex ETL pipelines with manual account parsing and event h
 - **Resolvers** — External data (like token metadata) enriched automatically
 - **Strategies** — How incoming data merges with existing state
 
-The macros transform your Rust code into a JSON-based stack spec (`.stack.json`), which Arete compiles into optimized bytecode for real-time execution.
+The macros compile your Rust code into optimized runtime bytecode and write
+authoritative public artifacts directly:
+
+- one ProgramSpec for each IDL program;
+- a LiveSpec containing entities, mappings, handlers, and views; and
+- a convenience StackManifest referencing those exact artifacts and selected
+  views.
+
+After `cargo build`, these files appear under `.arete/` as
+`*.program-spec.json`, `*.live-spec.json`, and `*.stack-manifest.json`.
+ProgramSpecs and StackManifests are portable and endpoint-free. A hosted
+deployment and its live, Program Read, chain, and transaction bindings are
+operational objects created later.
+
+:::note[Legacy input]
+A composite `.stack.json` may still be emitted for compiler compatibility, but
+it is an input-only adapter through **August 31, 2026**. New SDK generation and
+deployment use the explicit artifacts.
+:::
 
 ---
 
@@ -51,6 +69,26 @@ pub mod my_stream {
 :::note
 Field paths use the `{name}_sdk::accounts::` and `{name}_sdk::instructions::` prefix, where the name is derived from the IDL's program metadata. For example, an IDL named "my_program" generates `my_program_sdk::accounts::*` and `my_program_sdk::instructions::*`.
 :::
+
+### Program-only definitions
+
+An IDL-only `#[arete]` module with no entities generates ProgramSpecs, a
+zero-live StackManifest, and a program-only `spec()`:
+
+```rust
+use arete::prelude::*;
+
+#[arete(idl = ["my_program.json"])]
+pub mod my_program {}
+
+let spec = my_program::spec();
+```
+
+That `spec()` contains generated account readers but no live views or projection
+bytecode. It can serve release-pinned-style Program Reads locally without a
+hosted registry. The local release fingerprint is derived automatically from
+the ProgramSpec and generated decoder-engine contract; a self-hoster does not
+create or select a managed Program Release.
 
 ---
 

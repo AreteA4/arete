@@ -278,6 +278,46 @@ describe('protocol v2 view hooks', () => {
     act(() => renderer?.unmount());
   });
 
+  it('warns in development when a caller schema silently filters view data', () => {
+    const { active, client, process } = createClient();
+    const rejected = new Error('invalid entity');
+    const consoleWarn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let renderer: ReactTestRenderer | undefined;
+    const schema = {
+      safeParse: (value: unknown) => {
+        const entity = value as { id: string };
+        return entity.id === '2'
+          ? { success: false as const, error: rejected }
+          : { success: true as const, data: entity };
+      },
+    };
+    function Harness() {
+      useListView(
+        { mode: 'list', view: 'Order/list' },
+        client as never,
+        { schema },
+      );
+      return null;
+    }
+    act(() => { renderer = create(React.createElement(Harness)); });
+    const subscription = active(() => true);
+
+    act(() => {
+      process(snapshot(subscription, ['1', '2'], 'schema-filter-warning'));
+    });
+
+    expect(consoleWarn).toHaveBeenCalledTimes(1);
+    expect(consoleWarn.mock.calls[0]?.[0]).toContain(
+      'View schema filtered 1 entity from Order/list',
+    );
+    expect(consoleWarn.mock.calls[0]?.[1]).toMatchObject({
+      view: 'Order/list',
+      rejectedCount: 1,
+    });
+    act(() => renderer?.unmount());
+    consoleWarn.mockRestore();
+  });
+
   it('refcounts equivalent normalized hook queries', () => {
     const { client, connection } = createClient();
     let renderer: ReactTestRenderer | undefined;

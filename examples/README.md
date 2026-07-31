@@ -34,3 +34,8 @@ cargo run
 cd ore-typescript
 npm install && npm start
 ```
+
+The local generated SDK uses an explicit `local-http` Program Read descriptor.
+The example therefore passes `ws://localhost:8878` and
+`http://localhost:8081` independently; neither endpoint is derived from the
+other.

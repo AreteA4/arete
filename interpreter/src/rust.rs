@@ -1,5 +1,5 @@
 use crate::ast::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct RustOutput {
@@ -35,7 +35,7 @@ impl Default for RustConfig {
     fn default() -> Self {
         Self {
             crate_name: "generated-stack".to_string(),
-            sdk_version: "0.2".to_string(),
+            sdk_version: "0.3".to_string(),
             module_mode: false,
             url: None,
         }
@@ -111,7 +111,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-arete-sdk = "{}"
+arete-sdk = {{ package = "arete-a4-sdk", version = "{}" }}
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 "#,
@@ -832,6 +832,13 @@ mod tests {
             output.types_rs
         );
     }
+
+    #[test]
+    fn generated_manifest_uses_published_arete_sdk_package() {
+        let manifest = generate_stack_cargo_toml(&RustStackConfig::default());
+
+        assert!(manifest.contains("arete-sdk = { package = \"arete-a4-sdk\", version = \"0.3\" }"));
+    }
 }
 
 // ============================================================================
@@ -846,11 +853,32 @@ pub struct RustStackConfig {
     pub url: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RustCompositionConfig {
+    pub stack: RustStackConfig,
+    pub live_urls: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RustAliasedStackOutput {
+    pub alias: String,
+    pub module_name: String,
+    pub output: RustOutput,
+}
+
+#[derive(Debug, Clone)]
+pub struct RustCompositionOutput {
+    pub name: String,
+    pub cargo_toml: String,
+    pub lib_rs: String,
+    pub live_stacks: Vec<RustAliasedStackOutput>,
+}
+
 impl Default for RustStackConfig {
     fn default() -> Self {
         Self {
             crate_name: "generated-stack".to_string(),
-            sdk_version: "0.2".to_string(),
+            sdk_version: "0.3".to_string(),
             module_mode: false,
             url: None,
         }
@@ -864,6 +892,14 @@ impl Default for RustStackConfig {
 pub fn compile_stack_spec(
     stack_spec: SerializableStackSpec,
     config: Option<RustStackConfig>,
+) -> Result<RustOutput, String> {
+    compile_stack_spec_with_view_selection(stack_spec, config, false)
+}
+
+fn compile_stack_spec_with_view_selection(
+    stack_spec: SerializableStackSpec,
+    config: Option<RustStackConfig>,
+    exact_views: bool,
 ) -> Result<RustOutput, String> {
     let config = config.unwrap_or_default();
     let stack_name = &stack_spec.stack_name;
@@ -880,6 +916,13 @@ pub fn compile_stack_spec(
         entity_specs.push(spec);
     }
 
+    let view_entity_names = entity_specs
+        .iter()
+        .zip(&entity_names)
+        .filter(|(spec, _)| !exact_views || !spec.views.is_empty())
+        .map(|(_, name)| name.clone())
+        .collect::<Vec<_>>();
+
     let types_rs = generate_stack_types_rs(&entity_specs, &entity_names);
     let entity_rs = generate_stack_entity_rs(
         stack_name,
@@ -887,8 +930,9 @@ pub fn compile_stack_spec(
         &entity_specs,
         &entity_names,
         &config,
+        exact_views,
     );
-    let lib_rs = generate_stack_lib_rs(stack_name, &entity_names, config.module_mode);
+    let lib_rs = generate_stack_lib_rs(stack_name, &view_entity_names, config.module_mode);
     let cargo_toml = generate_stack_cargo_toml(&config);
 
     Ok(RustOutput {
@@ -899,6 +943,108 @@ pub fn compile_stack_spec(
     })
 }
 
+/// Compile a stack model whose `views` have already been projected by a
+/// StackManifest selected-view allowlist.
+pub fn compile_stack_spec_with_exact_views(
+    stack_spec: SerializableStackSpec,
+    config: Option<RustStackConfig>,
+) -> Result<RustOutput, String> {
+    compile_stack_spec_with_view_selection(stack_spec, config, true)
+}
+
+/// Compile Rust output from an explicit StackManifest and its public dependencies.
+pub fn compile_public_artifacts(
+    programs: &[arete_artifacts::ProgramSpecArtifact],
+    live_spec: &arete_artifacts::LiveSpecArtifact,
+    manifest: &arete_artifacts::StackManifestArtifact,
+    config: Option<RustStackConfig>,
+) -> Result<RustOutput, String> {
+    let stack_spec =
+        crate::public_artifacts::stack_spec_from_artifacts(programs, live_spec, manifest)?;
+    compile_stack_spec(stack_spec, config)
+}
+
+/// Compile typed V2 public artifacts through the current single-live generator.
+pub fn compile_public_artifacts_v2(
+    programs: &[arete_artifacts::ProgramSpecArtifact],
+    live_spec: &arete_artifacts::LiveSpecArtifactV2,
+    manifest: &arete_artifacts::StackManifestArtifactV2,
+    config: Option<RustStackConfig>,
+) -> Result<RustOutput, String> {
+    let stack_spec =
+        crate::public_artifacts::stack_spec_from_artifacts_v2(programs, live_spec, manifest)?;
+    compile_stack_spec_with_view_selection(stack_spec, config, true)
+}
+
+/// Generate one namespaced Rust stack module per live alias plus a manifest
+/// module that preserves alias boundaries instead of flattening views/adapters.
+pub fn compile_composed_public_artifacts_v2(
+    programs: &[arete_artifacts::ProgramSpecArtifact],
+    live_specs: &[(String, arete_artifacts::LiveSpecArtifactV2)],
+    manifest: &arete_artifacts::StackManifestArtifactV2,
+    config: Option<RustCompositionConfig>,
+) -> Result<RustCompositionOutput, String> {
+    let composed =
+        crate::public_artifacts::stack_specs_from_artifacts_v2(programs, live_specs, manifest)?;
+    if composed.live_specs.is_empty() {
+        return Err(
+            "Rust composition generation requires at least one aliased LiveSpec".to_string(),
+        );
+    }
+    let config = config.unwrap_or_default();
+    let mut live_stacks = Vec::with_capacity(composed.live_specs.len());
+    for live in composed.live_specs {
+        let module_name = rust_module_name(&live.alias);
+        let mut live_config = config.stack.clone();
+        live_config.module_mode = true;
+        live_config.url = config.live_urls.get(&live.alias).cloned();
+        let output =
+            compile_stack_spec_with_view_selection(live.stack_spec, Some(live_config), true)?;
+        live_stacks.push(RustAliasedStackOutput {
+            alias: live.alias,
+            module_name,
+            output,
+        });
+    }
+    let lib_rs = live_stacks
+        .iter()
+        .map(|live| format!("pub mod {};", live.module_name))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(RustCompositionOutput {
+        name: composed.name,
+        cargo_toml: generate_stack_cargo_toml(&config.stack),
+        lib_rs: format!("{lib_rs}\n"),
+        live_stacks,
+    })
+}
+
+pub fn write_rust_composition_crate(
+    output: &RustCompositionOutput,
+    crate_dir: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    let source = crate_dir.join("src");
+    std::fs::create_dir_all(&source)?;
+    std::fs::write(crate_dir.join("Cargo.toml"), &output.cargo_toml)?;
+    std::fs::write(source.join("lib.rs"), &output.lib_rs)?;
+    for live in &output.live_stacks {
+        write_rust_module(&live.output, &source.join(&live.module_name))?;
+    }
+    Ok(())
+}
+
+pub fn write_rust_composition_module(
+    output: &RustCompositionOutput,
+    module_dir: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(module_dir)?;
+    std::fs::write(module_dir.join("mod.rs"), &output.lib_rs)?;
+    for live in &output.live_stacks {
+        write_rust_module(&live.output, &module_dir.join(&live.module_name))?;
+    }
+    Ok(())
+}
+
 fn generate_stack_cargo_toml(config: &RustStackConfig) -> String {
     format!(
         r#"[package]
@@ -907,7 +1053,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-arete-sdk = "{}"
+arete-sdk = {{ package = "arete-a4-sdk", version = "{}" }}
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 "#,
@@ -1018,6 +1164,7 @@ fn generate_stack_entity_rs(
     entity_specs: &[SerializableStreamSpec],
     entity_names: &[String],
     config: &RustStackConfig,
+    exact_views: bool,
 ) -> String {
     let types_import = if config.module_mode {
         "super::types"
@@ -1025,8 +1172,15 @@ fn generate_stack_entity_rs(
         "crate::types"
     };
 
-    let entity_type_imports: Vec<String> =
-        entity_names.iter().map(|name| name.to_string()).collect();
+    let selected_entities = entity_specs
+        .iter()
+        .zip(entity_names)
+        .filter(|(spec, _)| !exact_views || !spec.views.is_empty())
+        .collect::<Vec<_>>();
+    let entity_type_imports = selected_entities
+        .iter()
+        .map(|(_, name)| (*name).to_string())
+        .collect::<Vec<_>>();
 
     let url_impl = match &config.url {
         Some(url) => format!(
@@ -1042,21 +1196,21 @@ fn generate_stack_entity_rs(
     };
 
     // StackViews struct fields
-    let views_fields: Vec<String> = entity_names
+    let views_fields: Vec<String> = selected_entities
         .iter()
-        .map(|name| {
+        .map(|(_, name)| {
             let snake = to_snake_case(name);
             format!("    pub {}: {}EntityViews,", snake, name)
         })
         .collect();
 
     // Views::from_builder body — clone builder for all but last entity
-    let views_builder_fields: Vec<String> = entity_names
+    let views_builder_fields: Vec<String> = selected_entities
         .iter()
         .enumerate()
-        .map(|(i, name)| {
+        .map(|(i, (_, name))| {
             let snake = to_snake_case(name);
-            if i < entity_names.len() - 1 {
+            if i < selected_entities.len() - 1 {
                 format!(
                     "            {}: {}EntityViews {{ builder: builder.clone() }},",
                     snake, name
@@ -1071,6 +1225,9 @@ fn generate_stack_entity_rs(
     let mut entity_views_structs = Vec::new();
     for (i, entity_name) in entity_names.iter().enumerate() {
         let spec = &entity_specs[i];
+        if exact_views && spec.views.is_empty() {
+            continue;
+        }
 
         let derived: Vec<_> = spec
             .views
@@ -1084,9 +1241,14 @@ fn generate_stack_entity_rs(
 
         let mut methods = Vec::new();
 
-        // state() method — always present
-        methods.push(format!(
-            r#"    pub fn state(&self) -> StateView<{entity}> {{
+        if !exact_views
+            || spec
+                .views
+                .iter()
+                .any(|view| view.id == format!("{entity_name}/state"))
+        {
+            methods.push(format!(
+                r#"    pub fn state(&self) -> StateView<{entity}> {{
         StateView::new(
             self.builder.connection().clone(),
             self.builder.store().clone(),
@@ -1094,17 +1256,24 @@ fn generate_stack_entity_rs(
             self.builder.initial_data_timeout(),
         )
     }}"#,
-            entity = entity_name
-        ));
+                entity = entity_name
+            ));
+        }
 
-        // Always include list view (built-in view, like state)
-        methods.push(format!(
-            r#"
+        if !exact_views
+            || spec
+                .views
+                .iter()
+                .any(|view| view.id == format!("{entity_name}/list"))
+        {
+            methods.push(format!(
+                r#"
     pub fn list(&self) -> ViewHandle<{entity}> {{
         self.builder.view("{entity}/list")
     }}"#,
-            entity = entity_name
-        ));
+                entity = entity_name
+            ));
+        }
 
         // Derived view methods
         for view in &derived {
@@ -1135,9 +1304,22 @@ impl {entity}EntityViews {{
         ));
     }
 
+    let types_use = if entity_type_imports.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "use {types_import}::{{{}}};\n",
+            entity_type_imports.join(", ")
+        )
+    };
+    let empty_builder = if selected_entities.is_empty() {
+        "        let _ = builder;\n"
+    } else {
+        ""
+    };
+
     format!(
-        r#"use {types_import}::{{{entity_imports}}};
-use arete_sdk::{{Stack, StateView, ViewBuilder, ViewHandle, Views}};
+        r#"{types_use}use arete_sdk::{{Stack, StateView, ViewBuilder, ViewHandle, Views}};
 
 pub struct {stack}Stack;
 
@@ -1157,20 +1339,20 @@ pub struct {stack}StackViews {{
 
 impl Views for {stack}StackViews {{
     fn from_builder(builder: ViewBuilder) -> Self {{
-        Self {{
+{empty_builder}        Self {{
 {views_builder}
         }}
     }}
 }}
 {entity_views}"#,
-        types_import = types_import,
-        entity_imports = entity_type_imports.join(", "),
+        types_use = types_use,
         stack = stack_name,
         stack_kebab = stack_kebab,
         url_impl = url_impl,
         views_fields = views_fields.join("\n"),
         views_builder = views_builder_fields.join("\n"),
         entity_views = entity_views_structs.join("\n"),
+        empty_builder = empty_builder,
     )
 }
 
@@ -1203,15 +1385,118 @@ fn to_pascal_case(s: &str) -> String {
 
 fn to_snake_case(s: &str) -> String {
     let mut result = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if ch.is_uppercase() {
-            if i > 0 {
+    let mut separator = false;
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if separator && !result.is_empty() {
                 result.push('_');
             }
-            result.push(ch.to_lowercase().next().unwrap());
+            separator = false;
+            if ch.is_ascii_uppercase() {
+                if !result.is_empty() && !result.ends_with('_') {
+                    result.push('_');
+                }
+                result.push(ch.to_ascii_lowercase());
+            } else {
+                result.push(ch.to_ascii_lowercase());
+            }
         } else {
-            result.push(ch);
+            separator = true;
         }
     }
+    if result
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_digit())
+    {
+        result.insert_str(0, "value_");
+    }
+    if is_rust_keyword(&result) {
+        result.push('_');
+    }
     result
+}
+
+fn rust_module_name(value: &str) -> String {
+    let mut output = String::new();
+    let mut separator = false;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !output.is_empty() {
+                output.push('_');
+            }
+            separator = false;
+            output.push(character.to_ascii_lowercase());
+        } else {
+            separator = true;
+        }
+    }
+    if output
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_digit())
+    {
+        output.insert_str(0, "live_");
+    }
+    if is_rust_keyword(&output) {
+        output.push_str("_live");
+    }
+    output
+}
+
+fn is_rust_keyword(value: &str) -> bool {
+    matches!(
+        value,
+        "as" | "async"
+            | "await"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "union"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+            | "try"
+    )
 }

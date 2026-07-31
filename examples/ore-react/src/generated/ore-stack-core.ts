@@ -114,14 +114,14 @@ export const TokenMetadataPatchSchema = z.object({
 }));
 
 export const OreRoundEntropySchema = z.object({
-  entropy_end_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  entropy_samples: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  entropy_seed: z.string().nullable(),
-  entropy_slot_hash: z.string().nullable(),
-  entropy_start_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  entropy_value: z.string().nullable(),
-  entropy_var_address: z.string().nullable(),
-  resolved_seed: z.array(z.number()).nullable(),
+  entropy_end_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  entropy_samples: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  entropy_seed: z.string().nullable().optional(),
+  entropy_slot_hash: z.string().nullable().optional(),
+  entropy_start_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  entropy_value: z.string().nullable().optional(),
+  entropy_var_address: z.string().nullable().optional(),
+  resolved_seed: z.array(z.number()).nullable().optional(),
 }).transform((value) => ({
   entropyEndAt: value.entropy_end_at,
   entropySamples: value.entropy_samples,
@@ -154,8 +154,8 @@ export const OreRoundEntropyPatchSchema = z.object({
 }));
 
 export const OreRoundIdSchema = z.object({
-  round_address: z.string().nullable(),
-  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  round_address: z.string().nullable().optional(),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
 }).transform((value) => ({
   roundAddress: value.round_address,
   roundId: value.round_id,
@@ -170,8 +170,8 @@ export const OreRoundIdPatchSchema = z.object({
 }));
 
 export const OreRoundMetricsSchema = z.object({
-  checkpoint_count: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  deploy_count: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  checkpoint_count: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  deploy_count: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
 }).transform((value) => ({
   checkpointCount: value.checkpoint_count,
   deployCount: value.deploy_count,
@@ -186,17 +186,17 @@ export const OreRoundMetricsPatchSchema = z.object({
 }));
 
 export const OreRoundResultsSchema = z.object({
-  did_hit_motherlode: z.boolean().nullable(),
-  expires_at_slot_hash: SlotHashBytesSchema.nullable(),
-  pre_reveal_rng: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  pre_reveal_rng_candidate: KeccakRngValueSchema.nullable(),
-  pre_reveal_winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  rent_payer: z.string().nullable(),
-  rng: KeccakRngValueSchema.nullable(),
-  slot_hash: z.string().nullable(),
-  top_miner: z.string().nullable(),
-  top_miner_reward: z.number().nullable(),
-  winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  did_hit_motherlode: z.boolean().nullable().optional(),
+  expires_at_slot_hash: SlotHashBytesSchema.nullable().optional(),
+  pre_reveal_rng: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  pre_reveal_rng_candidate: KeccakRngValueSchema.nullable().optional(),
+  pre_reveal_winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  rent_payer: z.string().nullable().optional(),
+  rng: KeccakRngValueSchema.nullable().optional(),
+  slot_hash: z.string().nullable().optional(),
+  top_miner: z.string().nullable().optional(),
+  top_miner_reward: z.number().nullable().optional(),
+  winning_square: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
 }).transform((value) => ({
   didHitMotherlode: value.did_hit_motherlode,
   expiresAtSlotHash: value.expires_at_slot_hash,
@@ -238,17 +238,17 @@ export const OreRoundResultsPatchSchema = z.object({
 }));
 
 export const OreRoundStateSchema = z.object({
-  closes_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  count_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable(),
-  deployed_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable(),
-  deployed_per_square_ui: z.array(z.number()).nullable(),
-  estimated_expires_at_unix: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  expires_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  motherlode: z.number().nullable(),
-  total_deployed: z.number().nullable(),
-  total_miners: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  total_vaulted: z.number().nullable(),
-  total_winnings: z.number().nullable(),
+  closes_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  count_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable().optional(),
+  deployed_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable().optional(),
+  deployed_per_square_ui: z.array(z.number()).nullable().optional(),
+  estimated_expires_at_unix: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  expires_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  motherlode: z.number().nullable().optional(),
+  total_deployed: z.number().nullable().optional(),
+  total_miners: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  total_vaulted: z.number().nullable().optional(),
+  total_winnings: z.number().nullable().optional(),
 }).transform((value) => ({
   closesAt: value.closes_at,
   countPerSquare: value.count_per_square,
@@ -290,7 +290,7 @@ export const OreRoundStatePatchSchema = z.object({
 }));
 
 export const OreRoundTreasurySchema = z.object({
-  motherlode: z.number().nullable(),
+  motherlode: z.number().nullable().optional(),
 }).transform((value) => ({
   motherlode: value.motherlode,
 }));
@@ -308,7 +308,7 @@ export const OreRoundSchema = z.object({
   results: OreRoundResultsSchema,
   state: OreRoundStateSchema,
   treasury: OreRoundTreasurySchema,
-  ore_metadata: TokenMetadataSchema.nullable(),
+  ore_metadata: TokenMetadataSchema.nullable().optional(),
 }).transform((value) => ({
   entropy: value.entropy,
   id: value.id,
@@ -344,7 +344,7 @@ export const OreRoundCompletedSchema = z.object({
   results: OreRoundResultsSchema,
   state: OreRoundStateSchema,
   treasury: OreRoundTreasurySchema,
-  ore_metadata: TokenMetadataSchema.nullable(),
+  ore_metadata: TokenMetadataSchema.nullable().optional(),
 }).transform((value) => ({
   entropy: value.entropy,
   id: value.id,
@@ -434,7 +434,7 @@ export const BoardPatchSchema = z.object({
 }));
 
 export const OreBoardIdSchema = z.object({
-  address: z.string().nullable(),
+  address: z.string().nullable().optional(),
 }).transform((value) => ({
   address: value.address,
 }));
@@ -446,10 +446,10 @@ export const OreBoardIdPatchSchema = z.object({
 }));
 
 export const OreBoardStateSchema = z.object({
-  end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  production_cost_ema: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  start_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  end_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  production_cost_ema: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  start_slot: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
 }).transform((value) => ({
   endSlot: value.end_slot,
   productionCostEma: value.production_cost_ema,
@@ -472,7 +472,7 @@ export const OreBoardStatePatchSchema = z.object({
 export const OreBoardSchema = z.object({
   id: OreBoardIdSchema,
   state: OreBoardStateSchema,
-  board_snapshot: CaptureWrapperSchema(BoardSchema).nullable(),
+  board_snapshot: CaptureWrapperSchema(BoardSchema).nullable().optional(),
 }).transform((value) => ({
   id: value.id,
   state: value.state,
@@ -492,7 +492,7 @@ export const OreBoardPatchSchema = z.object({
 export const OreBoardCompletedSchema = z.object({
   id: OreBoardIdSchema,
   state: OreBoardStateSchema,
-  board_snapshot: CaptureWrapperSchema(BoardSchema).nullable(),
+  board_snapshot: CaptureWrapperSchema(BoardSchema).nullable().optional(),
 }).transform((value) => ({
   id: value.id,
   state: value.state,
@@ -547,7 +547,7 @@ export const TreasuryPatchSchema = z.object({
 }));
 
 export const OreTreasuryIdSchema = z.object({
-  address: z.string().nullable(),
+  address: z.string().nullable().optional(),
 }).transform((value) => ({
   address: value.address,
 }));
@@ -559,9 +559,9 @@ export const OreTreasuryIdPatchSchema = z.object({
 }));
 
 export const OreTreasuryStateSchema = z.object({
-  motherlode: z.number().nullable(),
-  total_refined: z.number().nullable(),
-  total_unclaimed: z.number().nullable(),
+  motherlode: z.number().nullable().optional(),
+  total_refined: z.number().nullable().optional(),
+  total_unclaimed: z.number().nullable().optional(),
 }).transform((value) => ({
   motherlode: value.motherlode,
   totalRefined: value.total_refined,
@@ -581,7 +581,7 @@ export const OreTreasuryStatePatchSchema = z.object({
 export const OreTreasurySchema = z.object({
   id: OreTreasuryIdSchema,
   state: OreTreasuryStateSchema,
-  treasury_snapshot: CaptureWrapperSchema(TreasurySchema).nullable(),
+  treasury_snapshot: CaptureWrapperSchema(TreasurySchema).nullable().optional(),
 }).transform((value) => ({
   id: value.id,
   state: value.state,
@@ -601,7 +601,7 @@ export const OreTreasuryPatchSchema = z.object({
 export const OreTreasuryCompletedSchema = z.object({
   id: OreTreasuryIdSchema,
   state: OreTreasuryStateSchema,
-  treasury_snapshot: CaptureWrapperSchema(TreasurySchema).nullable(),
+  treasury_snapshot: CaptureWrapperSchema(TreasurySchema).nullable().optional(),
 }).transform((value) => ({
   id: value.id,
   state: value.state,
@@ -816,13 +816,13 @@ export const AutomationPatchSchema = z.object({
 }));
 
 export const OreMinerAutomationSchema = z.object({
-  amount: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  executor: z.string().nullable(),
-  fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  amount: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  balance: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  executor: z.string().nullable().optional(),
+  fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
 }).transform((value) => ({
   amount: value.amount,
   balance: value.balance,
@@ -852,9 +852,9 @@ export const OreMinerAutomationPatchSchema = z.object({
 }));
 
 export const OreMinerIdSchema = z.object({
-  authority: z.string().nullable(),
-  automation_address: z.string().nullable(),
-  miner_address: z.string().nullable(),
+  authority: z.string().nullable().optional(),
+  automation_address: z.string().nullable().optional(),
+  miner_address: z.string().nullable().optional(),
 }).transform((value) => ({
   authority: value.authority,
   automationAddress: value.automation_address,
@@ -872,12 +872,12 @@ export const OreMinerIdPatchSchema = z.object({
 }));
 
 export const OreMinerRewardsSchema = z.object({
-  lifetime_deployed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  lifetime_rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  lifetime_rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  refined_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
+  lifetime_deployed: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  lifetime_rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  lifetime_rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  refined_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  rewards_ore: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  rewards_sol: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
 }).transform((value) => ({
   lifetimeDeployed: value.lifetime_deployed,
   lifetimeRewardsOre: value.lifetime_rewards_ore,
@@ -904,14 +904,14 @@ export const OreMinerRewardsPatchSchema = z.object({
 }));
 
 export const OreMinerStateSchema = z.object({
-  checkpoint_fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  checkpoint_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  deployed_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable(),
-  deployed_per_square_ui: z.array(z.number()).nullable(),
-  last_claim_ore_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  last_claim_sol_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable(),
-  total_deployed: z.number().nullable(),
+  checkpoint_fee: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  checkpoint_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  deployed_per_square: z.array(z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value))).nullable().optional(),
+  deployed_per_square_ui: z.array(z.number()).nullable().optional(),
+  last_claim_ore_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  last_claim_sol_at: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  round_id: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).nullable().optional(),
+  total_deployed: z.number().nullable().optional(),
 }).transform((value) => ({
   checkpointFee: value.checkpoint_fee,
   checkpointId: value.checkpoint_id,
@@ -948,8 +948,8 @@ export const OreMinerSchema = z.object({
   id: OreMinerIdSchema,
   rewards: OreMinerRewardsSchema,
   state: OreMinerStateSchema,
-  miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable(),
-  automation_snapshot: CaptureWrapperSchema(AutomationSchema).nullable(),
+  miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable().optional(),
+  automation_snapshot: CaptureWrapperSchema(AutomationSchema).nullable().optional(),
 }).transform((value) => ({
   automation: value.automation,
   id: value.id,
@@ -980,8 +980,8 @@ export const OreMinerCompletedSchema = z.object({
   id: OreMinerIdSchema,
   rewards: OreMinerRewardsSchema,
   state: OreMinerStateSchema,
-  miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable(),
-  automation_snapshot: CaptureWrapperSchema(AutomationSchema).nullable(),
+  miner_snapshot: CaptureWrapperSchema(MinerSchema).nullable().optional(),
+  automation_snapshot: CaptureWrapperSchema(AutomationSchema).nullable().optional(),
 }).transform((value) => ({
   automation: value.automation,
   id: value.id,
@@ -1965,8 +1965,8 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
 export const ORE_STREAM_STACK_CORE = {
   name: 'ore-stream',
   endpoints: {
-    ws: 'wss://ore.stack.arete.run',
-    http: 'https://ore.stack.arete.run',
+    ws: '', // TODO: Set after first deployment or pass useArete(..., { url })
+    http: '', // TODO: Set after first deployment or pass useArete(..., { httpUrl })
   },
   views: {
     OreRound: {
@@ -2037,7 +2037,10 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      definitionHash: '2a918259db992c3d84b04f9d101f7eafec3fb8feb608bb09412719754caedadb',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:e2e299bbd3e464f718f94cba2c8ff4143eb65edf022f8b8b78bccaef8690a339',
+      programSpecHash: 'arete:h1:program-spec:sha256:e09807977d6fa86ef1d0a11b747e7e8147a394178fc35cf8f1d3e13140399cf2',
+      idlContentHash: 'arete:h1:idl-content:sha256:ddd66054beab80ddfdd504097ff5f1040dc046eab91cd396cf3f04f69878dfca',
+      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:815e9674705c9938e6793fb19ade1501bcd5ec9b73453fc3d149963a0d7965c5',
       pdas: {
         automation: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('automation'), account('authority')),
         board: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('board')),
@@ -2053,12 +2056,12 @@ export const ORE_STREAM_STACK_CORE = {
         treasury: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('treasury')),
       },
       accounts: {
-        Automation: programAccountRead<OreAutomation>({ account: 'Automation', path: '/programs/ore/accounts/Automation', schema: OreAutomationSchema }),
-        Board: programAccountRead<OreBoard2>({ account: 'Board', path: '/programs/ore/accounts/Board', schema: OreBoard2Schema }),
-        Config: programAccountRead<Config>({ account: 'Config', path: '/programs/ore/accounts/Config', schema: ConfigSchema }),
-        Miner: programAccountRead<OreMiner2>({ account: 'Miner', path: '/programs/ore/accounts/Miner', schema: OreMiner2Schema }),
-        Round: programAccountRead<Round>({ account: 'Round', path: '/programs/ore/accounts/Round', schema: RoundSchema }),
-        Treasury: programAccountRead<OreTreasury2>({ account: 'Treasury', path: '/programs/ore/accounts/Treasury', schema: OreTreasury2Schema }),
+        Automation: programAccountRead<OreAutomation>({ account: 'Automation', schema: OreAutomationSchema }),
+        Board: programAccountRead<OreBoard2>({ account: 'Board', schema: OreBoard2Schema }),
+        Config: programAccountRead<Config>({ account: 'Config', schema: ConfigSchema }),
+        Miner: programAccountRead<OreMiner2>({ account: 'Miner', schema: OreMiner2Schema }),
+        Round: programAccountRead<Round>({ account: 'Round', schema: RoundSchema }),
+        Treasury: programAccountRead<OreTreasury2>({ account: 'Treasury', schema: OreTreasury2Schema }),
       },
       rawInstructions: {
         automate: oreAutomateInstruction,
@@ -2214,9 +2217,12 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      definitionHash: '2a918259db992c3d84b04f9d101f7eafec3fb8feb608bb09412719754caedadb',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:dd4eb062d87744c7a8697f8db17d5a5329193b305cff851058e8872949dfdcca',
+      programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
+      idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
+      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',
       accounts: {
-        Var: programAccountRead<Var>({ account: 'Var', path: '/programs/entropy/accounts/Var', schema: VarSchema }),
+        Var: programAccountRead<Var>({ account: 'Var', schema: VarSchema }),
       },
       rawInstructions: {
         open: entropyOpenInstruction,
@@ -2278,6 +2284,16 @@ export const ORE_STREAM_STACK_CORE = {
           };
         },
       },
+    },
+  },
+  programReads: {
+    ore: {
+      release: { programReleaseHash: "arete:h1:program-release:sha256:99b5d7c44b0a70d87ca0523fad441707379013410439cf390ba07580aa7d15a0", programSpecHash: "arete:h1:program-spec:sha256:e09807977d6fa86ef1d0a11b747e7e8147a394178fc35cf8f1d3e13140399cf2" },
+      transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
+    },
+    entropy: {
+      release: { programReleaseHash: "arete:h1:program-release:sha256:9e7d6811735b35f9fd144c1eaa21ac1a48720b706d81bd0d0cd9ad6ec7f32b6c", programSpecHash: "arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b" },
+      transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
     },
   },
   addresses: {

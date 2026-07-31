@@ -2,7 +2,6 @@ import type { ProgramSdkDefinition, StackDefinition } from './types';
 import type { ClientLookupOptions } from './types';
 
 type ProgramMap = Record<string, ProgramSdkDefinition>;
-type CacheableProgramDefinition = ProgramSdkDefinition & { readonly definitionHash?: string };
 
 const objectKeys = new WeakMap<object, string>();
 let nextObjectKey = 0;
@@ -27,7 +26,7 @@ function getProgramsKey(programs: ProgramMap): string {
   const entries = Object.entries(programs)
     .map(([key, definition]) => [
       key,
-      (definition as CacheableProgramDefinition).definitionHash
+      definition.sdkDefinitionHash
         ?? getObjectKey(definition as object, 'program'),
     ])
     .sort(([left], [right]) => left.localeCompare(right));
@@ -50,6 +49,9 @@ export function createClientCacheKey<
     options?.transport ?? 'ws',
     options?.url ?? stack.endpoints.ws,
     options?.httpUrl ?? stack.endpoints.http ?? '',
+    options?.transactions
+      ? getObjectKey(options.transactions as object, 'transactions')
+      : 'transactions-default',
     options?.programs
       ? getProgramsKey(options.programs)
       : 'programs-none',
