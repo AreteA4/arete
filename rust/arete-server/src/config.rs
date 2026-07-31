@@ -331,6 +331,7 @@ pub struct ServerConfig {
     pub reconnection: Option<ReconnectionConfig>,
     pub transactions: Option<TransactionConfig>,
     pub solana_gateway_target_id: Option<String>,
+    pub program_read_binding_target_id: Option<String>,
 }
 
 impl ServerConfig {

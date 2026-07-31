@@ -66,6 +66,7 @@ struct HttpRequestState {
     limit_state: Arc<HttpLimitState>,
     transaction_state: Arc<Option<TransactionState>>,
     solana_gateway_target_id: Arc<Option<String>>,
+    program_read_binding_target_id: Arc<Option<String>>,
 }
 
 /// HTTP server that exposes health endpoints
@@ -77,6 +78,7 @@ pub struct HttpHealthServer {
     auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
     transaction_config: Option<TransactionConfig>,
     solana_gateway_target_id: Option<String>,
+    program_read_binding_target_id: Option<String>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<crate::metrics::Metrics>>,
 }
@@ -91,6 +93,7 @@ impl HttpHealthServer {
             auth_plugin: None,
             transaction_config: None,
             solana_gateway_target_id: None,
+            program_read_binding_target_id: None,
             #[cfg(feature = "otel")]
             metrics: None,
         }
@@ -127,6 +130,11 @@ impl HttpHealthServer {
         self
     }
 
+    pub fn with_program_read_binding_target(mut self, target_id: impl Into<String>) -> Self {
+        self.program_read_binding_target_id = Some(target_id.into());
+        self
+    }
+
     #[cfg(feature = "otel")]
     pub fn with_metrics(mut self, metrics: Option<Arc<crate::metrics::Metrics>>) -> Self {
         self.metrics = metrics;
@@ -156,6 +164,7 @@ impl HttpHealthServer {
             limit_state: Arc::new(HttpLimitState::default()),
             transaction_state: Arc::new(transaction_state),
             solana_gateway_target_id: Arc::new(self.solana_gateway_target_id),
+            program_read_binding_target_id: Arc::new(self.program_read_binding_target_id),
         };
 
         loop {
@@ -237,6 +246,7 @@ async fn handle_request_inner(
         limit_state,
         transaction_state,
         solana_gateway_target_id,
+        program_read_binding_target_id,
     } = state;
     let path = req.uri().path().to_string();
 
@@ -380,6 +390,7 @@ async fn handle_request_inner(
                 rpc_client,
                 program_runtime_catalog,
                 auth_context,
+                program_read_binding_target_id,
             )
             .await)
         }
@@ -785,6 +796,7 @@ async fn handle_program_account_request(
     rpc_client: Client,
     program_runtime_catalog: Arc<ProgramRuntimeCatalog>,
     auth_context: Option<crate::websocket::auth::AuthContext>,
+    program_read_binding_target_id: Arc<Option<String>>,
 ) -> Response<Full<Bytes>> {
     let route = match ProgramReadRoute::parse(req.method(), path) {
         Ok(route) => route,
@@ -797,6 +809,13 @@ async fn handle_program_account_request(
     let Some(definition) = program_runtime_catalog.get(&release_hash).cloned() else {
         return program_read_error_response(ProgramReadError::ReleaseNotFound);
     };
+    if let Err(error) = authorize_program_read(
+        auth_context.as_ref(),
+        program_read_binding_target_id.as_deref(),
+        &definition,
+    ) {
+        return with_release_metadata(program_read_error_response(error), &definition, None, None);
+    }
     let Some(rpc_url) = rpc_url.as_ref() else {
         return with_release_metadata(
             program_read_error_response(ProgramReadError::RpcNotConfigured),
@@ -957,6 +976,29 @@ const MAX_PROGRAM_BATCH_ADDRESSES: usize = 100;
 const MAX_PROGRAM_ACCOUNT_BYTES: usize = 10 * 1024 * 1024;
 const PROGRAM_DECODE_TIMEOUT: Duration = Duration::from_secs(2);
 
+fn authorize_program_read(
+    auth_context: Option<&crate::websocket::auth::AuthContext>,
+    expected_target_id: Option<&str>,
+    definition: &ProgramRuntimeDefinition,
+) -> std::result::Result<(), ProgramReadError> {
+    let Some(context) = auth_context else {
+        return Ok(());
+    };
+    let Some(expected_target_id) = expected_target_id.filter(|target_id| !target_id.is_empty())
+    else {
+        return Err(ProgramReadError::AuthorizationNotConfigured);
+    };
+
+    arete_auth::ProgramReadAuthorization::try_from_context(
+        context,
+        expected_target_id,
+        &definition.program_id,
+        &definition.program_release_hash.to_string(),
+    )
+    .map(|_| ())
+    .map_err(|_| ProgramReadError::Unauthorized)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProgramReadError {
     NotFound,
@@ -964,6 +1006,8 @@ enum ProgramReadError {
     InvalidReleaseHash,
     ReleaseNotFound,
     InvalidRequest,
+    Unauthorized,
+    AuthorizationNotConfigured,
     BatchLimitExceeded,
     RpcNotConfigured,
     RpcFailed,
@@ -983,6 +1027,8 @@ impl ProgramReadError {
             Self::InvalidReleaseHash => "INVALID_PROGRAM_RELEASE_HASH",
             Self::ReleaseNotFound => "PROGRAM_RELEASE_NOT_FOUND",
             Self::InvalidRequest => "INVALID_REQUEST",
+            Self::Unauthorized => "PROGRAM_READ_UNAUTHORIZED",
+            Self::AuthorizationNotConfigured => "PROGRAM_READ_AUTH_NOT_CONFIGURED",
             Self::BatchLimitExceeded => "BATCH_LIMIT_EXCEEDED",
             Self::RpcNotConfigured => "READ_RPC_NOT_CONFIGURED",
             Self::RpcFailed => "RPC_REQUEST_FAILED",
@@ -999,6 +1045,8 @@ impl ProgramReadError {
         match self {
             Self::NotFound | Self::ReleaseNotFound => StatusCode::NOT_FOUND,
             Self::InvalidReleaseHash | Self::InvalidRequest => StatusCode::BAD_REQUEST,
+            Self::Unauthorized => StatusCode::FORBIDDEN,
+            Self::AuthorizationNotConfigured => StatusCode::SERVICE_UNAVAILABLE,
             Self::BatchLimitExceeded | Self::AccountDataTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::ProgramReadsDisabled | Self::RpcNotConfigured => StatusCode::SERVICE_UNAVAILABLE,
             Self::RpcFailed | Self::RpcResponseInvalid | Self::AccountDataInvalid => {
@@ -1513,6 +1561,55 @@ mod tests {
             program_release_hash,
             account_reader: reader,
         }
+    }
+
+    fn program_read_context(
+        target_id: &str,
+        program_id: &str,
+        release_hash: &str,
+    ) -> crate::websocket::auth::AuthContext {
+        crate::websocket::auth::AuthContext::from_claims(
+            arete_auth::SessionClaims::program_read_builder(
+                "issuer",
+                "user:1",
+                target_id,
+                program_id,
+                release_hash,
+            )
+            .build(),
+        )
+    }
+
+    #[test]
+    fn program_read_auth_is_bound_to_target_program_and_release() {
+        let definition = runtime_definition(Arc::new(|_, _| Ok(Value::Null)));
+        let release_hash = definition.program_release_hash.to_string();
+        let valid = program_read_context("binding-1", &definition.program_id, &release_hash);
+
+        assert_eq!(
+            authorize_program_read(Some(&valid), Some("binding-1"), &definition),
+            Ok(())
+        );
+
+        let wrong_target = program_read_context("binding-2", &definition.program_id, &release_hash);
+        let wrong_program = program_read_context("binding-1", "Program222", &release_hash);
+        let wrong_release = program_read_context(
+            "binding-1",
+            &definition.program_id,
+            "arete:h1:program-release:sha256:different",
+        );
+
+        for context in [&wrong_target, &wrong_program, &wrong_release] {
+            assert_eq!(
+                authorize_program_read(Some(context), Some("binding-1"), &definition),
+                Err(ProgramReadError::Unauthorized)
+            );
+        }
+        assert_eq!(
+            authorize_program_read(Some(&valid), None, &definition),
+            Err(ProgramReadError::AuthorizationNotConfigured)
+        );
+        assert_eq!(authorize_program_read(None, None, &definition), Ok(()));
     }
 
     #[test]

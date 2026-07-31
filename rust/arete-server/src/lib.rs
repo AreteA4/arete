@@ -438,6 +438,17 @@ impl ServerBuilder {
         self
     }
 
+    /// Enable program reads bound to one exact hosted program-read target.
+    pub fn program_read_binding(mut self, target_id: impl Into<String>) -> Self {
+        if self.config.http_health.is_none() {
+            self.config.http_health = Some(HttpHealthConfig::default());
+        }
+        self.config.runtime_plan.health = true;
+        self.config.runtime_plan.program_reads = true;
+        self.config.program_read_binding_target_id = Some(target_id.into());
+        self
+    }
+
     pub fn chain_reads(mut self) -> Self {
         if self.config.http_health.is_none() {
             self.config.http_health = Some(HttpHealthConfig::default());
@@ -684,6 +695,17 @@ mod tests {
         let builder = Server::builder().http();
         assert!(builder.config.runtime_plan.program_reads);
         assert!(!builder.config.runtime_plan.live_runtime_enabled());
+    }
+
+    #[test]
+    fn program_read_binding_configures_the_exact_auth_target() {
+        let builder = Server::builder().program_read_binding("binding-1");
+
+        assert!(builder.config.runtime_plan.program_reads);
+        assert_eq!(
+            builder.config.program_read_binding_target_id.as_deref(),
+            Some("binding-1")
+        );
     }
 
     #[test]

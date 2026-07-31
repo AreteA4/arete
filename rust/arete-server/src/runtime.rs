@@ -335,6 +335,9 @@ impl Runtime {
             let mut http_server = HttpServer::new(http_health_config.bind_address)
                 .with_runtime_plan(plan)
                 .with_program_runtime_catalog(program_runtime_catalog);
+            if let Some(target_id) = self.config.program_read_binding_target_id.clone() {
+                http_server = http_server.with_program_read_binding_target(target_id);
+            }
             if let Some(target_id) = self.config.solana_gateway_target_id.clone() {
                 http_server = http_server.with_solana_gateway_target(target_id);
             }
