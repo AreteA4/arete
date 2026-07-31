@@ -159,7 +159,7 @@ jobs:
 
       - name: Install TypeScript example dependencies
         working-directory: examples/ore-typescript
-        run: npm ci && npm install ../../typescript/core --no-save --package-lock=false
+        run: npm install ../../typescript/core --no-save
 
       - name: Strict compile TypeScript example
         working-directory: examples/ore-typescript
@@ -197,9 +197,7 @@ jobs:
 
       - name: Install app dependencies
         working-directory: examples/ore-react
-        run: |
-          npm ci
-          npm install ../../typescript/core ../../typescript/react ../../typescript/adapters/web3js --no-save --package-lock=false
+        run: npm install ../../typescript/core ../../typescript/react ../../typescript/adapters/web3js --no-save
 
       - name: Install Chromium
         working-directory: examples/ore-react

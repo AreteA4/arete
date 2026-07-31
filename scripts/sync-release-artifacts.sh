@@ -76,6 +76,39 @@ const dependencySections = [
   'peerDependencies',
 ];
 
+const packageFiles = trackedFiles('*package.json');
+const localPackages = new Map(packageFiles.map(relativeManifest => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, relativeManifest), 'utf8'));
+  return [manifest.name, manifest.version];
+}).filter(([name, version]) => name && version));
+
+for (const relativeManifest of packageFiles) {
+  const manifestPath = path.join(root, relativeManifest);
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  let changed = false;
+
+  for (const section of dependencySections) {
+    for (const [name, spec] of Object.entries(manifest[section] ?? {})) {
+      const targetVersion = localPackages.get(name);
+      const registryRange = typeof spec === 'string'
+        ? spec.match(/^([~^]?)\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/)
+        : null;
+      if (!targetVersion || !registryRange) continue;
+
+      const targetSpec = `${registryRange[1]}${targetVersion}`;
+      if (spec === targetSpec) continue;
+
+      manifest[section][name] = targetSpec;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    console.log(`Synchronized local npm dependencies in ${relativeManifest}`);
+  }
+}
+
 for (const relativeLock of trackedFiles('*package-lock.json')) {
   const lockPath = path.join(root, relativeLock);
   const manifestPath = path.join(path.dirname(lockPath), 'package.json');
