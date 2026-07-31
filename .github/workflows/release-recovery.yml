@@ -350,19 +350,42 @@ jobs:
         with:
           ref: ${{ inputs.source_sha }}
 
+      - name: Reuse existing release binary
+        id: release-binary
+        if: ${{ inputs.publish }}
+        env:
+          BINARY_NAME: ${{ matrix.binary_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ matrix.release }}-v${{ inputs.version }}
+        run: |
+          release="$(gh release view "$RELEASE_TAG" --json assets)"
+          if jq -e --arg name "$BINARY_NAME" 'any(.assets[]; .name == $name and .state == "uploaded" and .size > 0)' <<<"$release" >/dev/null; then
+            gh release download "$RELEASE_TAG" --pattern "$BINARY_NAME" --dir .
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Reusing $BINARY_NAME from $RELEASE_TAG"
+          elif jq -e --arg name "$BINARY_NAME" 'any(.assets[]; .name == $name)' <<<"$release" >/dev/null; then
+            echo "Existing asset $BINARY_NAME on $RELEASE_TAG is not fully uploaded"
+            exit 1
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
+
       - name: Install Rust toolchain
+        if: steps.release-binary.outputs.exists != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ inputs.rust_toolchain }}
           targets: ${{ matrix.target }}
 
       - name: Install cargo-zigbuild
-        if: matrix.cross
+        if: matrix.cross && steps.release-binary.outputs.exists != 'true'
         run: |
           pip3 install ziglang==0.16.0
           cargo install cargo-zigbuild --version 0.23.0 --locked
 
       - name: Build binary
+        if: steps.release-binary.outputs.exists != 'true'
         run: |
           if [[ "${{ matrix.cross }}" == "true" ]]; then
             cargo zigbuild --locked --release --target "${{ matrix.target }}" --package "${{ matrix.package }}"
@@ -372,6 +395,7 @@ jobs:
         shell: bash
 
       - name: Rename binary
+        if: steps.release-binary.outputs.exists != 'true'
         run: cp "target/${{ matrix.target }}/release/${{ matrix.source_name }}" "${{ matrix.binary_name }}"
         shell: bash
 
@@ -388,8 +412,38 @@ jobs:
           name: ${{ matrix.artifact_prefix }}-sha256-${{ matrix.binary_name }}
           path: ${{ matrix.binary_name }}.sha256
 
+      - name: Validate rebuilt binary against existing checksums
+        if: ${{ inputs.publish && steps.release-binary.outputs.exists != 'true' }}
+        env:
+          BINARY_NAME: ${{ matrix.binary_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ matrix.release }}-v${{ inputs.version }}
+        run: |
+          release="$(gh release view "$RELEASE_TAG" --json assets)"
+          if jq -e 'any(.assets[]; .name == "checksums.txt" and .state == "uploaded" and .size > 0)' <<<"$release" >/dev/null; then
+            mkdir -p existing-checksums
+            gh release download "$RELEASE_TAG" --pattern checksums.txt --dir existing-checksums
+            expected_hash="$(
+              tr -d '\r' < existing-checksums/checksums.txt |
+                while read -r hash asset_name; do
+                  if [[ "$asset_name" == "$BINARY_NAME" ]]; then
+                    echo "$hash"
+                  fi
+                done
+            )"
+            read -r actual_hash _ < "${BINARY_NAME}.sha256"
+            if [[ -z "$expected_hash" || "$actual_hash" != "$expected_hash" ]]; then
+              echo "Rebuilt $BINARY_NAME does not match checksums.txt on $RELEASE_TAG"
+              exit 1
+            fi
+          elif jq -e 'any(.assets[]; .name == "checksums.txt")' <<<"$release" >/dev/null; then
+            echo "Existing checksums.txt on $RELEASE_TAG is not fully uploaded"
+            exit 1
+          fi
+        shell: bash
+
       - name: Upload binary to release
-        if: ${{ inputs.publish }}
+        if: ${{ inputs.publish && steps.release-binary.outputs.exists != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
@@ -425,10 +479,38 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
         run: |
-          sort cli-checksums/*.sha256 > cli-checksums/checksums.txt
-          sort mcp-checksums/*.sha256 > mcp-checksums/checksums.txt
-          ./scripts/upload-release-asset.sh "a4-cli-v${VERSION}" cli-checksums/checksums.txt
-          ./scripts/upload-release-asset.sh "arete-mcp-v${VERSION}" mcp-checksums/checksums.txt
+          publish_checksums() {
+            local release_tag="$1"
+            local checksum_dir="$2"
+            local release
+            local existing_dir="$checksum_dir/existing"
+
+            for checksum_file in "$checksum_dir"/*.sha256; do
+              tr -d '\r' < "$checksum_file"
+            done | LC_ALL=C sort > "$checksum_dir/checksums.txt"
+
+            release="$(gh release view "$release_tag" --json assets)"
+            if jq -e 'any(.assets[]; .name == "checksums.txt" and .state == "uploaded" and .size > 0)' <<<"$release" >/dev/null; then
+              mkdir -p "$existing_dir"
+              gh release download "$release_tag" --pattern checksums.txt --dir "$existing_dir"
+              tr -d '\r' < "$existing_dir/checksums.txt" | LC_ALL=C sort > "$checksum_dir/existing-checksums.txt"
+              if cmp -s "$checksum_dir/checksums.txt" "$checksum_dir/existing-checksums.txt"; then
+                echo "Reusing checksums.txt from $release_tag"
+                return
+              fi
+              echo "Refusing to replace checksums.txt with checksums for non-identical binaries on $release_tag"
+              exit 1
+            elif jq -e 'any(.assets[]; .name == "checksums.txt")' <<<"$release" >/dev/null; then
+              echo "Existing checksums.txt on $release_tag is not fully uploaded"
+              exit 1
+            fi
+
+            ./scripts/upload-release-asset.sh "$release_tag" "$checksum_dir/checksums.txt"
+          }
+
+          publish_checksums "a4-cli-v${VERSION}" cli-checksums
+          publish_checksums "arete-mcp-v${VERSION}" mcp-checksums
+        shell: bash
 
   bundle-templates:
     name: Bundle CLI templates
@@ -440,17 +522,41 @@ jobs:
         with:
           ref: ${{ inputs.source_sha }}
 
+      - name: Check existing template bundle
+        id: release-templates
+        env:
+          ASSET_NAME: arete-templates-v${{ inputs.version }}.tar.gz
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: a4-cli-v${{ inputs.version }}
+        run: |
+          release="$(gh release view "$RELEASE_TAG" --json assets)"
+          if jq -e --arg name "$ASSET_NAME" 'any(.assets[]; .name == $name and .state == "uploaded" and .size > 0)' <<<"$release" >/dev/null; then
+            gh release download "$RELEASE_TAG" --pattern "$ASSET_NAME" --dir .
+            tar -tzf "$ASSET_NAME" >/dev/null
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Reusing $ASSET_NAME from $RELEASE_TAG"
+          elif jq -e --arg name "$ASSET_NAME" 'any(.assets[]; .name == $name)' <<<"$release" >/dev/null; then
+            echo "Existing asset $ASSET_NAME on $RELEASE_TAG is not fully uploaded"
+            exit 1
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
+
       - name: Setup Node.js
+        if: steps.release-templates.outputs.exists != 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "20"
 
       - name: Install Rust toolchain
+        if: steps.release-templates.outputs.exists != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ inputs.rust_toolchain }}
 
       - name: Prepare and bundle templates
+        if: steps.release-templates.outputs.exists != 'true'
         env:
           VERSION: ${{ inputs.version }}
         run: |
@@ -473,6 +579,7 @@ jobs:
             ore-typescript
 
       - name: Upload templates to release
+        if: steps.release-templates.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
