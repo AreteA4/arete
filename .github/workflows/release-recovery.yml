@@ -221,7 +221,7 @@ jobs:
 
           while IFS= read -r changed_file; do
             case "$changed_file" in
-              .github/workflows/release-please.yml|.github/workflows/release-recovery.yml|.release-please-manifest.json|arete/Cargo.toml|arete-artifacts/Cargo.toml|arete-hash/Cargo.toml|cli/Cargo.toml|release-please-config.json|rust/arete-mcp/Cargo.toml|scripts/publish-crate.sh|scripts/publish-npm-package.sh|scripts/publish-npm-version.sh|scripts/upload-release-asset.sh|stacks/ore/Cargo.lock|typescript/hash/package.json|typescript/hash/package-lock.json)
+              .github/workflows/ci.yml|.github/workflows/release-please.yml|.github/workflows/release-recovery.yml|.release-please-manifest.json|arete/Cargo.toml|arete-artifacts/Cargo.toml|arete-hash/Cargo.toml|cli/Cargo.toml|release-please-config.json|rust/arete-mcp/Cargo.toml|scripts/publish-crate.sh|scripts/publish-npm-package.sh|scripts/publish-npm-version.sh|scripts/test-npm-publish-auth.sh|scripts/upload-release-asset.sh|stacks/ore/Cargo.lock|typescript/hash/package.json|typescript/hash/package-lock.json)
                 ;;
               *)
                 echo "Recovery source contains an unapproved change: $changed_file"
@@ -501,13 +501,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20.18.0"
+          node-version: "24"
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Upgrade npm for provenance
         run: npm install --global npm@11
 
       - name: Publish missing packages in dependency order
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: ./scripts/publish-npm-version.sh "${{ inputs.version }}"
