@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.3.0...arete-macros-v0.4.0) (2026-07-31)
+
+
+### Features
+
+* **arete-macros:** derive program identities and author v2 artifacts ([2949b7b](https://github.com/AreteA4/arete/commit/2949b7b0e0136080b03effdd74d2fa03991ca06b))
+* introduce the versioned public artifact model ([9c6777a](https://github.com/AreteA4/arete/commit/9c6777a3fe1703cc7491b56afaaac0bc5940b321))
+
+
+### Bug Fixes
+
+* satisfy Rust 1.97 checks and refresh generated SDKs ([f70238b](https://github.com/AreteA4/arete/commit/f70238b4a5369e13afc9de3866e9275b3efa0558))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.1.0 to 0.2.0
+
 ## [0.3.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.2.0...arete-macros-v0.3.0) (2026-07-22)
 
 

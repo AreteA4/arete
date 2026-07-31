@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.2.0...arete-auth-v0.3.0) (2026-07-31)
+
+
+### Features
+
+* **arete-auth:** scope tokens to program and gateway targets ([91dff72](https://github.com/AreteA4/arete/commit/91dff726720af204edef0b6f61d186613daed7fa))
+* introduce the versioned public artifact model ([9c6777a](https://github.com/AreteA4/arete/commit/9c6777a3fe1703cc7491b56afaaac0bc5940b321))
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.1.0...arete-auth-v0.2.0) (2026-07-22)
 
 

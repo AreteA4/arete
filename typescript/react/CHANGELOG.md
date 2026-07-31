@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.0](https://github.com/AreteA4/arete/compare/arete-react-v0.3.0...arete-react-v0.4.0) (2026-07-31)
+
+
+### Features
+
+* introduce the versioned public artifact model ([9c6777a](https://github.com/AreteA4/arete/commit/9c6777a3fe1703cc7491b56afaaac0bc5940b321))
+* **react:** add explicit transactions transport support ([206973f](https://github.com/AreteA4/arete/commit/206973f0e6dda8aa8e78ecae385693e518306b1b))
+
+
+### Bug Fixes
+
+* warn when view schemas silently filter entities ([ca4fe7b](https://github.com/AreteA4/arete/commit/ca4fe7bb40476fd3ece6da7ecb712a8248b761eb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @usearete/sdk bumped from ^0.3.0 to ^0.4.0
+
 ## [0.3.0](https://github.com/AreteA4/arete/compare/arete-react-v0.2.0...arete-react-v0.3.0) (2026-07-22)
 
 

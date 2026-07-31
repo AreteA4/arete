@@ -1,6 +1,6 @@
 {
   "name": "@usearete/hash",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Authoritative typed artifact identity protocol for Arete",
   "main": "./dist/index.cjs",
