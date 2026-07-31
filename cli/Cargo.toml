@@ -37,7 +37,7 @@ arete-interpreter = { version = "0.4.0", path = "../interpreter" }
 arete-artifacts = { version = "0.1.0", path = "../arete-artifacts" }
 arete-idl = { path = "../arete-idl", version = "0.2.0" }
 arete-hash = { path = "../arete-hash", version = "0.1.0" }
-arete-sdk = { package = "arete-a4-sdk", path = "../rust/arete-a4-sdk", version = "0.3.0" }
+arete-sdk = { package = "arete-a4-sdk", path = "../rust/arete-a4-sdk", version = "0.4.0" }
 reqwest = { version = "0.11", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 dirs = "5.0"
 rpassword = "7.3"
