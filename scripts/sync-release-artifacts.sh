@@ -104,3 +104,12 @@ for (const relativeLock of trackedFiles('*package-lock.json')) {
   fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
 }
 EOF
+
+while IFS= read -r lockfile; do
+  manifest="${lockfile%Cargo.lock}Cargo.toml"
+  [ -f "$ROOT_DIR/$manifest" ] || continue
+  cargo metadata \
+    --manifest-path "$ROOT_DIR/$manifest" \
+    --format-version 1 \
+    > /dev/null
+done < <(git -C "$ROOT_DIR" ls-files '*Cargo.lock')
