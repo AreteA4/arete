@@ -10,7 +10,7 @@ The internal `arete.decoder-fixtures/v1` projection hashes as
 `decoder-fixture-set`. Cases are validated and sorted by stable ID before JCS
 hashing; exact account bytes and optional private diagnostics participate in
 identity. The kind is marked `internal-only` and is not a public artifact
-identity. Error expectations use the five public V2 account decode categories;
+identity. Error expectations use the stable public account decode categories;
 private diagnostics contain only trailing-byte and candidate counts.
 
 The shared conformance vectors live in `../test-vectors/hash-v1.json` and are
