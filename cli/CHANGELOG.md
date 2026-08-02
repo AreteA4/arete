@@ -6,6 +6,24 @@
 
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.4.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.4.0...a4-cli-v0.4.1) (2026-08-02)
+
+
+### Miscellaneous Chores
+
+* **a4-cli:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.4.0 to 0.4.1
+    * arete-artifacts bumped from 0.1.0 to 0.1.1
+    * arete-hash bumped from 0.1.0 to 0.1.1
+  * build-dependencies
+    * arete-hash bumped from 0.1.0 to 0.1.1
+
 ## [0.4.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.3.0...a4-cli-v0.4.0) (2026-07-31)
 
 
