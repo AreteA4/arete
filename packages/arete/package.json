@@ -3,7 +3,7 @@
   "version": "0.4.1",
   "description": "Arete CLI (a4) - Real-time Solana streaming pipelines",
   "bin": {
-    "a4": "./bin/a4.js"
+    "a4": "bin/a4.js"
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.js"
