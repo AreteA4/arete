@@ -1235,8 +1235,8 @@ impl Generator {
             schema: DECODER_FIXTURE_SCHEMA_V1.to_string(),
             program_id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
             normalized_idl_hash,
-            decoder_engine_id: "arete-hosted-decoder-engine/v2".to_string(),
-            decoder_abi_version: "2".to_string(),
+            decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+            decoder_abi_version: "1".to_string(),
             cases: vec![
                 DecoderFixtureCaseV1 {
                     id: "account-decoded".to_string(),
