@@ -1,0 +1,3 @@
+# Advance this marker in a release-worthy commit only when a change outside the
+# linked Arete group causes a linked package to receive a dependency release.
+2026-08-02: propagate the arete-hash decoder fixture correction

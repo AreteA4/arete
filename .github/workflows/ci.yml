@@ -68,6 +68,23 @@ jobs:
       - name: Check npm lockfiles match manifests
         run: bash ./scripts/check-lockfile-sync.sh
 
+  linked-release-versions:
+    name: Linked Release Versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Test linked release validation
+        run: node --test ./scripts/check-linked-release-versions.test.mjs
+
+      - name: Check linked release versions
+        run: node ./scripts/check-linked-release-versions.mjs
+
   npm-publish-auth:
     name: npm Publishing Authentication
     runs-on: ubuntu-latest

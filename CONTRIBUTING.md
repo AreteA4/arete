@@ -280,6 +280,19 @@ chore: update dependencies
 test: add integration tests for Python SDK
 ```
 
+### Linked release propagation
+
+The components in the `arete` linked-version group must always share one
+version. Release Please evaluates that group before its workspace plugins add
+dependency-only releases, so a change to an independently versioned package can
+otherwise bump only part of the linked group.
+
+When such a change reaches a linked package, advance
+`arete/.release-please-trigger` in a release-worthy commit, normally using
+`fix(arete): ...`. Do not advance it for changes that leave the linked packages
+unaffected. The `Linked Release Versions` CI check blocks release PRs whose
+linked manifest or package versions diverge.
+
 ## Pull Request Process
 
 ### Before You Start
