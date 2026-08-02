@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/AreteA4/arete/compare/arete-hash-v0.1.0...arete-hash-v0.1.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* align decoder fixture vectors with v1 ([f6ca2c3](https://github.com/AreteA4/arete/commit/f6ca2c3516e4728a2638fb09c8c1886d0aed542e))
+* align decoder fixture vectors with v1 ([9104a09](https://github.com/AreteA4/arete/commit/9104a09400331ce1a9b9020d9f327b35cbe7759f))
+
 ## 0.1.0 (2026-07-31)
 
 

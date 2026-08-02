@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.1](https://github.com/AreteA4/arete/compare/arete-macros-v0.4.0...arete-macros-v0.4.1) (2026-08-02)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-hash bumped from 0.1.0 to 0.1.1
+    * arete-artifacts bumped from 0.1.0 to 0.1.1
+
 ## [0.4.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.3.0...arete-macros-v0.4.0) (2026-07-31)
 
 

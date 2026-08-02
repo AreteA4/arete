@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.1](https://github.com/AreteA4/arete/compare/arete-v0.4.0...arete-v0.4.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **arete:** keep linked releases synchronized ([555c1cc](https://github.com/AreteA4/arete/commit/555c1cc62d9ff13550f12fab6012e7dca57ec4e4))
+* **arete:** keep linked releases synchronized ([18270e2](https://github.com/AreteA4/arete/commit/18270e28f1e69103eb4c3ba4f57e886f80ef8bad))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.4.0 to 0.4.1
+    * arete-macros bumped from 0.4.0 to 0.4.1
+    * arete-server bumped from 0.4.0 to 0.4.1
+
 ## [0.4.0](https://github.com/AreteA4/arete/compare/arete-v0.3.0...arete-v0.4.0) (2026-07-31)
 
 
