@@ -143,8 +143,8 @@ impl OreDevex for Arete<OreStreamStack> {
             signer: input.signer.clone(),
             authority: authority.clone(),
             round: round.clone(),
-            entropy_var,
-            entropy_program: entropy::PROGRAM_ID.to_string(),
+            entropy_var: Some(entropy_var),
+            entropy_program: Some(entropy::PROGRAM_ID.to_string()),
         })
         .map_err(|error| instruction_error("deploy instruction", error))?;
         let deploy = create_prepared_instruction(

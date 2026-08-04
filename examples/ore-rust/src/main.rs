@@ -19,8 +19,8 @@ fn demo_deploy_params() -> ore_program::DeployParams {
         signer: Some(AUTHORITY.to_string()),
         authority: AUTHORITY.to_string(),
         round: "11111111111111111111111111111111".to_string(),
-        entropy_var: "11111111111111111111111111111111".to_string(),
-        entropy_program: entropy_program::PROGRAM_ID.to_string(),
+        entropy_var: Some("11111111111111111111111111111111".to_string()),
+        entropy_program: Some(entropy_program::PROGRAM_ID.to_string()),
     }
 }
 

@@ -5,6 +5,6 @@
     "ore-stack-extensions.ts"
   ],
   "inputKind": "stack-manifest",
-  "inputHash": "arete:h1:stack-manifest:sha256:8ebc521edc3184f118c05ab5f93c50fba5fd682f21c9d83694994c454101db68",
+  "inputHash": "arete:h1:stack-manifest:sha256:a6b62df213adddabe1f5426bebdecb4a786a3fbf46775ca91676e720e5efb984",
   "sdkRange": "^0.2.0 || ^0.3.0"
 }

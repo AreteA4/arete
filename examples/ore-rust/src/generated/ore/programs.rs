@@ -16,10 +16,10 @@ pub mod ore {
     pub const PROGRAM_ID: &str = "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv";
 
     /// Content hash of the exact program specification captured at generation time.
-    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:3bfd8a90dcb0bdab01235344fb61e35912990942396295e5546f242c56e9ea97";
+    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:b37beb6e8df0a55316f39cea21f3f3f5bc827aa7e6a54291398edbf1db58ff6b";
 
     /// Release identity addressing hosted account reads for this program.
-    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:a6d6453e013dc0a8d725e3d351557a08a7203381b9fac78c6218a3926a1b467b";
+    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:adff79886735a8cacfb69bd3a5371f5cfeec18d099a289cce4755b9104ffd986";
 
     /// Release-addressed read descriptor for this program (HTTP reads over
     /// the client's HTTP base URL).
@@ -514,12 +514,14 @@ pub mod ore {
         pub authority: String,
         /// Address of the `round` account.
         pub round: String,
-        /// Address of the `entropyVar` account.
+        /// Optional address of the `entropyVar` account.
         #[serde(rename = "entropyVar")]
-        pub entropy_var: String,
-        /// Address of the `entropyProgram` account.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub entropy_var: Option<String>,
+        /// Optional address of the `entropyProgram` account.
         #[serde(rename = "entropyProgram")]
-        pub entropy_program: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub entropy_program: Option<String>,
     }
 
     /// Deploys SOL to selected squares for the current round.
@@ -616,14 +618,14 @@ pub mod ore {
                     is_signer: false,
                     is_writable: true,
                     resolution: AccountResolution::UserProvided,
-                    is_optional: false,
+                    is_optional: true,
                 },
                 AccountMeta {
                     name: "entropyProgram".to_string(),
                     is_signer: false,
                     is_writable: false,
                     resolution: AccountResolution::UserProvided,
-                    is_optional: false,
+                    is_optional: true,
                 },
             ],
             args: vec![

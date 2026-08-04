@@ -156,7 +156,7 @@ pub struct IdlAccountArg {
     pub is_signer: bool,
     #[serde(default)]
     pub address: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "isOptional")]
     pub optional: bool,
     #[serde(default)]
     pub docs: Vec<String>,

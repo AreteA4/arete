@@ -860,7 +860,7 @@
               "name": "entropyVar",
               "writable": true,
               "signer": false,
-              "optional": false,
+              "optional": true,
               "address": null,
               "docs": []
             },
@@ -868,7 +868,7 @@
               "name": "entropyProgram",
               "writable": false,
               "signer": false,
-              "optional": false,
+              "optional": true,
               "address": null,
               "docs": [
                 "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
@@ -2856,7 +2856,7 @@
       "programId": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "idlContentHash": "arete:h1:idl-content:sha256:a6c8507030a7ba25b7aeb41d35634a5a3fa27023ad3000ff216b869155da5d12",
       "portableIdlHash": "arete:h1:idl-portable:sha256:10efe0793e8742548f774ff07f8aec238dc1243e40194ad7d096f33edb2d6f74",
-      "normalizedIdlHash": "arete:h1:idl-normalized:sha256:c270fa2b38c1ddea39aeeb988db2fccdb9cc082428e2ab7a903d39360839bebf",
+      "normalizedIdlHash": "arete:h1:idl-normalized:sha256:4ad55eb4df42e150fb8004e52180ad2722f3a893847a828c48cd7da5eeccbc42",
       "idlSnapshot": {
         "normalizationVersion": 1,
         "name": "ore",
@@ -3730,7 +3730,7 @@
                 "name": "entropyVar",
                 "writable": true,
                 "signer": false,
-                "optional": false,
+                "optional": true,
                 "address": null,
                 "docs": []
               },
@@ -3738,7 +3738,7 @@
                 "name": "entropyProgram",
                 "writable": false,
                 "signer": false,
-                "optional": false,
+                "optional": true,
                 "address": null,
                 "docs": [
                   "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
@@ -5869,7 +5869,7 @@
               "resolution": {
                 "category": "userProvided"
               },
-              "is_optional": false
+              "is_optional": true
             },
             {
               "name": "entropyProgram",
@@ -5878,7 +5878,7 @@
               "resolution": {
                 "category": "userProvided"
               },
-              "is_optional": false,
+              "is_optional": true,
               "docs": [
                 "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
               ]
@@ -10105,7 +10105,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "3a1a91128f147b30ac458b8218d69115959ced723b95d1baeb263ee3cb41d67e",
+      "content_hash": "86c64526fce93362912186fd1808d5c126e5f4d1df70a0fe86cd6235191afd27",
       "views": [
         {
           "id": "OreRound/latest",
@@ -10567,7 +10567,7 @@
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "3d2bfc08005094be57c9acf1e6b0cd6c229d6ed6d2dd1fb01663aef2f0044bc0",
+      "content_hash": "2c2cc014ef9231791fedbd2a6411cf0538d44977417fc8abe0e5f855420ef7a2",
       "views": []
     },
     {
@@ -11028,7 +11028,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "0f777beda9f802687a134c73ab595efc71504601205e4f9282976154d40d447d",
+      "content_hash": "3bc899246276d3ed9af027a9136b43f439b5c84b72134d15df7c36f0c079d97a",
       "views": []
     },
     {
@@ -12898,7 +12898,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "63a02c428ad1bbee2e3261ad64f665af4a84795773624ff7e011ec1f98123233",
+      "content_hash": "089c685f8663523f298319fe125d3c612309d598b93488807e9255e3183c456e",
       "views": []
     }
   ],
@@ -13516,7 +13516,7 @@
           "resolution": {
             "category": "userProvided"
           },
-          "is_optional": false
+          "is_optional": true
         },
         {
           "name": "entropyProgram",
@@ -13525,7 +13525,7 @@
           "resolution": {
             "category": "userProvided"
           },
-          "is_optional": false,
+          "is_optional": true,
           "docs": [
             "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
           ]
@@ -14562,5 +14562,5 @@
       ]
     }
   ],
-  "content_hash": "be64687a603e762a46c2b423ccc7570a6c6cc290d4f88875c5846de843396df4"
+  "content_hash": "c1e560b702159b2fff2334575ac16caa9f9616c115ff4b83305020d5502ca84f"
 }

@@ -3,9 +3,12 @@ import test from 'node:test';
 
 import {
   AutomationStrategy,
+  ORE_PROGRAM_ADDRESS,
   U64_MAX,
+  buildPreparedOreInstruction,
   didHitMotherlode,
   prepareConfigureAutomation,
+  prepareDeploy,
   quoteAutomationFunding,
   quoteManualDeployment,
   previewSolClaim,
@@ -39,6 +42,19 @@ test('keeps the validated automation strategy discriminants', () => {
     miner: 'miner',
   });
   assert.equal(prepared.params.strategy, AutomationStrategy.Preferred);
+});
+
+test('builds a prepared deploy without the optional entropy program', () => {
+  assert.doesNotThrow(() =>
+    buildPreparedOreInstruction(
+      prepareDeploy({
+        signer: ORE_PROGRAM_ADDRESS,
+        amountPerSquare: 1n,
+        squares: [0],
+        roundId: 1n,
+      }),
+    ),
+  );
 });
 
 test('classifies the transaction needed to realize and claim SOL rewards', () => {

@@ -1267,7 +1267,7 @@ mod tests {
                 {
                     "name": "initialize",
                     "accounts": [
-                        { "name": "tokenProgram", "isMut": false, "isSigner": false }
+                        { "name": "tokenProgram", "isMut": false, "isSigner": false, "isOptional": true }
                     ],
                     "args": [
                         { "name": "nonce", "type": "u8" }
@@ -1295,6 +1295,7 @@ mod tests {
         assert!(idl.accounts[0].discriminator.is_empty());
         assert!(idl.instructions[0].discriminator.is_empty());
         assert!(idl.instructions[0].discriminant.is_none());
+        assert!(idl.instructions[0].accounts[0].optional);
     }
 
     #[test]
