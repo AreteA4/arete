@@ -178,8 +178,9 @@ struct SharedMemberOptions {
     transactions: Option<Arc<dyn TransactionTransport>>,
 }
 
-type MemberFuture =
-    Pin<Box<dyn Future<Output = Result<Arc<dyn SessionMember>, AreteError>> + Send>>;
+type MemberFuture = Pin<
+    Box<dyn Future<Output = Result<(Arc<dyn SessionMember>, Option<String>), AreteError>> + Send>,
+>;
 type MemberConnector = Box<dyn FnOnce(SharedMemberOptions) -> MemberFuture + Send>;
 
 /// Builder for a multi-stack [`Session`].
@@ -208,12 +209,16 @@ impl SessionBuilder {
                 let mut builder = Arete::<S>::builder();
                 // URL precedence mirrors the TS resolveMemberConnectOptions:
                 // member.url ?? (stack.endpoints.ws || shared endpoints.ws).
-                if let Some(url) = member.url.as_deref() {
-                    builder = builder.url(url);
-                } else if S::url().is_empty() {
-                    if let Some(url) = shared.endpoints_ws.as_deref() {
-                        builder = builder.url(url);
+                let websocket_url = member.url.clone().or_else(|| {
+                    let generated = S::url();
+                    if generated.is_empty() {
+                        shared.endpoints_ws.clone()
+                    } else {
+                        Some(generated.to_string())
                     }
+                });
+                if let Some(url) = websocket_url.as_deref() {
+                    builder = builder.url(url);
                 }
                 if let Some(http_url) = member.http_url.or(shared.endpoints_http) {
                     builder = builder.http_url(http_url);
@@ -236,7 +241,7 @@ impl SessionBuilder {
                     builder = builder.transactions(transactions);
                 }
                 let client = builder.connect().await?;
-                Ok(Arc::new(client) as Arc<dyn SessionMember>)
+                Ok((Arc::new(client) as Arc<dyn SessionMember>, websocket_url))
             })
         });
         self.members.push((key.into(), connector));
@@ -317,8 +322,12 @@ impl SessionBuilder {
         let shared = self.shared;
         let mut members: Vec<(String, Arc<dyn SessionMember>)> =
             Vec::with_capacity(self.members.len());
+        let mut canonical_websocket_url = None;
         for (key, connector) in self.members {
-            let client = connector(shared.clone()).await?;
+            let (client, websocket_url) = connector(shared.clone()).await?;
+            if members.is_empty() {
+                canonical_websocket_url = websocket_url;
+            }
             members.push((key, client));
         }
 
@@ -330,8 +339,11 @@ impl SessionBuilder {
             (Some(chain), _) => chain.clone(),
             (None, Some(endpoint)) => {
                 let http = reqwest::Client::new();
-                let tokens = Arc::new(HttpAuthClient::new(shared.auth.clone(), None, http.clone()))
-                    as Arc<dyn TokenSource>;
+                let tokens = Arc::new(HttpAuthClient::new(
+                    shared.auth.clone(),
+                    canonical_websocket_url,
+                    http.clone(),
+                )) as Arc<dyn TokenSource>;
                 Arc::new(HttpChainClient::with_http_client(
                     endpoint.clone(),
                     tokens,

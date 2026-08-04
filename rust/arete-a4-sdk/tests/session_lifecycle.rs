@@ -6,11 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arete_a4_sdk::{
-    create_prepared_instruction, AreteError, BuiltAccountMeta, BuiltInstruction, ExecuteOptions,
-    PreparedOperation, Pubkey, SendOptions, SendResult, Session, Signer, SignerRegistry, Stack,
-    TransactionOptions, Transport, ViewBuilder, ViewHandle, Views, WalletAdapter, WalletError,
-    WalletExecutionContext,
+    create_prepared_instruction, AreteError, AuthConfig, BuiltAccountMeta, BuiltInstruction,
+    ChainError, ExecuteOptions, PreparedOperation, Pubkey, SendOptions, SendResult, Session,
+    Signer, SignerRegistry, Stack, TransactionOptions, Transport, ViewBuilder, ViewHandle, Views,
+    WalletAdapter, WalletError, WalletExecutionContext,
 };
+use axum::{routing::get, Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -51,6 +52,21 @@ macro_rules! test_stack {
 
 test_stack!(StackA, "session-stack-a");
 test_stack!(StackB, "session-stack-b");
+
+struct HostedStack;
+
+impl Stack for HostedStack {
+    type Views = TestViews;
+    type Programs = ();
+
+    fn name() -> &'static str {
+        "hosted-session-stack"
+    }
+
+    fn url() -> &'static str {
+        "wss://generated-session-test.stack.arete.run"
+    }
+}
 
 #[derive(Default)]
 struct MockWallet {
@@ -226,6 +242,67 @@ async fn execute_uses_the_first_member_with_shared_wallet_and_registry() {
         .unwrap();
     assert_eq!(result.signature, "session-signature");
     assert_eq!(wallet.calls.load(Ordering::SeqCst), 2);
+}
+
+async fn assert_canonical_chain_uses_hosted_auth(session: Session) {
+    let error = session.chain().exists("account").await.unwrap_err();
+    assert!(matches!(
+        error,
+        ChainError::Sdk(AreteError::ConnectionFailed(ref message))
+            if message.contains("Invalid publishable key")
+    ));
+}
+
+#[tokio::test]
+async fn canonical_chain_keeps_effective_hosted_websocket_url() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/chain/exists/:address",
+                get(|| async { Json(serde_json::json!({ "exists": true })) }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+
+    let session = Session::builder()
+        .stack::<StackA>("a")
+        .transport(Transport::Http)
+        .endpoints_ws("wss://session-test.stack.arete.run")
+        .endpoints_http(endpoint.clone())
+        .auth(AuthConfig::default().with_publishable_key("invalid\npublishable-key"))
+        .connect()
+        .await
+        .unwrap();
+    assert_canonical_chain_uses_hosted_auth(session).await;
+
+    let session = Session::builder()
+        .stack::<HostedStack>("hosted")
+        .transport(Transport::Http)
+        .endpoints_http(endpoint.clone())
+        .auth(AuthConfig::default().with_publishable_key("invalid\npublishable-key"))
+        .connect()
+        .await
+        .unwrap();
+    assert_canonical_chain_uses_hosted_auth(session).await;
+
+    let session = Session::builder()
+        .stack_with::<StackA>("custom", |member| {
+            member.url("wss://custom-session-test.stack.arete.run")
+        })
+        .transport(Transport::Http)
+        .endpoints_http(endpoint)
+        .auth(AuthConfig::default().with_publishable_key("invalid\npublishable-key"))
+        .connect()
+        .await
+        .unwrap();
+    assert_canonical_chain_uses_hosted_auth(session).await;
+
+    server.abort();
 }
 
 #[tokio::test]
