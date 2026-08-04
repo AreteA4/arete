@@ -203,6 +203,28 @@ pub enum AreteError {
 
     #[error("Channel error: {0}")]
     ChannelError(String),
+
+    /// Invalid client/session/gateway configuration (mirror of the TS
+    /// `INVALID_CONFIG` error code).
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+
+    /// View subscriptions require the streaming WebSocket, but this client
+    /// was connected with `Transport::Http` (mirror of the TS
+    /// `WEBSOCKET_DISABLED` error).
+    #[error(
+        "View subscriptions require the WebSocket transport; this client was connected with Transport::Http"
+    )]
+    WebSocketDisabled,
+
+    /// A transaction dispatched through [`crate::Arete::transaction`] failed;
+    /// carries the structured outcome from the operations failure model.
+    #[error(
+        "Transaction failed ({phase}): {message}",
+        phase = .0.phase(),
+        message = .0.message()
+    )]
+    TransactionFailed(Box<crate::operations::TransactionFailureOutcome>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,6 +252,14 @@ impl AreteError {
         }
     }
 
+    /// Structured failure outcome for [`AreteError::TransactionFailed`].
+    pub fn transaction_outcome(&self) -> Option<&crate::operations::TransactionFailureOutcome> {
+        match self {
+            Self::TransactionFailed(outcome) => Some(outcome),
+            _ => None,
+        }
+    }
+
     pub fn should_retry(&self) -> bool {
         match self {
             Self::HandshakeRejected { status, code, .. }
@@ -246,7 +276,10 @@ impl AreteError {
             | Self::MaxReconnectAttempts(_)
             | Self::SubscriptionFailed(_)
             | Self::Protocol { .. }
-            | Self::ChannelError(_) => false,
+            | Self::ChannelError(_)
+            | Self::InvalidConfig(_)
+            | Self::WebSocketDisabled
+            | Self::TransactionFailed(_) => false,
         }
     }
 

@@ -74,6 +74,9 @@ struct ConnectionManagerInner {
     last_socket_issue: Arc<RwLock<Option<SocketIssue>>>,
     socket_issue_tx: broadcast::Sender<SocketIssue>,
     store: SharedStore,
+    /// HTTP-only mode: no socket is ever opened and subscription acquisition
+    /// fails with [`AreteError::WebSocketDisabled`].
+    disabled: bool,
 }
 
 #[derive(Clone)]
@@ -144,6 +147,7 @@ impl ConnectionManager {
             last_socket_issue: last_socket_issue.clone(),
             socket_issue_tx: socket_issue_tx.clone(),
             store: store.clone(),
+            disabled: false,
         };
 
         spawn_connection_loop(
@@ -170,6 +174,47 @@ impl ConnectionManager {
                 "Connection task ended before initial connect completed".to_string(),
             )),
         }
+    }
+
+    /// Construct a manager for HTTP-only clients (`Transport::Http`).
+    ///
+    /// No connection task is spawned and no socket is ever opened. Any
+    /// attempt to acquire a subscription fails fast with
+    /// [`AreteError::WebSocketDisabled`] (recorded as the manager's last
+    /// error), so view streams terminate instead of hanging. This is the
+    /// least invasive HTTP-only construction path: the rest of the client
+    /// (store, views wiring) is built exactly as in WebSocket mode.
+    pub fn new_disabled(config: ConnectionConfig, store: SharedStore) -> Self {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let (socket_issue_tx, _) = broadcast::channel(1);
+        Self {
+            inner: Arc::new(ConnectionManagerInner {
+                url: String::new(),
+                state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
+                subscriptions: Arc::new(RwLock::new(SubscriptionRegistry::new())),
+                config,
+                command_tx,
+                last_error: Arc::new(RwLock::new(None)),
+                last_socket_issue: Arc::new(RwLock::new(None)),
+                socket_issue_tx,
+                store,
+                disabled: true,
+            }),
+        }
+    }
+
+    /// Whether this manager was constructed HTTP-only (no socket).
+    pub fn is_disabled(&self) -> bool {
+        self.inner.disabled
+    }
+
+    async fn reject_when_disabled(&self) -> Result<(), AreteError> {
+        if !self.inner.disabled {
+            return Ok(());
+        }
+        let error = AreteError::WebSocketDisabled;
+        set_last_error(&self.inner.last_error, error.clone()).await;
+        Err(error)
     }
 
     pub async fn state(&self) -> ConnectionState {
@@ -225,6 +270,7 @@ impl ConnectionManager {
         query: SubscriptionQuery,
         snapshot: SnapshotOptions,
     ) -> Result<SubscriptionLease, AreteError> {
+        self.reject_when_disabled().await?;
         let (subscription, is_new) = self
             .inner
             .subscriptions
@@ -238,6 +284,7 @@ impl ConnectionManager {
         &self,
         subscription: Subscription,
     ) -> Result<SubscriptionLease, AreteError> {
+        self.reject_when_disabled().await?;
         let (subscription, is_new) = self
             .inner
             .subscriptions

@@ -133,13 +133,16 @@ name = "arete-a4-sdk"
 version = "0.4.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
+ "bs58",
  "flate2",
  "futures-util",
  "pin-project-lite",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "solana-pubkey",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
@@ -786,6 +789,7 @@ dependencies = [
  "curve25519-dalek-derive",
  "digest",
  "fiat-crypto",
+ "rand_core 0.6.4",
  "rustc_version",
  "subtle",
  "zeroize",
@@ -3015,6 +3019,7 @@ checksum = "9b62adb9c3261a052ca1f999398c388f1daf558a1b492f60a6d9e64857db4ff1"
 dependencies = [
  "borsh 0.10.4",
  "borsh 1.6.0",
+ "curve25519-dalek",
  "five8",
  "five8_const",
  "getrandom 0.2.17",
