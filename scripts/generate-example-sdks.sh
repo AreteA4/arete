@@ -49,7 +49,9 @@ trap 'rm -rf "$RUST_SDK_TMP"' EXIT
 
 ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create --manifest "$ORE_MANIFEST_PATH" --rust \
     --output "$RUST_SDK_TMP" \
-    --module
+    --module \
+    --url "wss://ore.stack.arete.run" \
+    --extensions "$RUST_SDK_OUTPUT"
 
 rm -rf "$RUST_SDK_OUTPUT"
 mv "$RUST_SDK_TMP" "$RUST_SDK_OUTPUT"

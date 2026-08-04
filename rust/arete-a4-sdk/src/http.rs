@@ -500,7 +500,9 @@ impl HttpAuthClient {
             .scopes
             .map(|scopes| scopes.into_iter().collect())
             .unwrap_or_else(|| requested_scopes.iter().cloned().collect());
-        let expires_at = minted.expires_at.or_else(|| parse_jwt_expiry(&minted.token));
+        let expires_at = minted
+            .expires_at
+            .or_else(|| parse_jwt_expiry(&minted.token));
         if token_is_expiring(expires_at, now_epoch_seconds()) {
             return Err(invalid_auth_error(
                 "Authentication token is expired",
@@ -1007,7 +1009,10 @@ mod tests {
     #[tokio::test]
     async fn no_auth_config_yields_no_token() {
         let client = HttpAuthClient::new(None, None, reqwest::Client::new());
-        let token = client.token(&AuthTokenRequest::read(), false).await.unwrap();
+        let token = client
+            .token(&AuthTokenRequest::read(), false)
+            .await
+            .unwrap();
         assert_eq!(token, None);
     }
 
@@ -1018,7 +1023,10 @@ mod tests {
             .with_token_provider(|| async { Ok(crate::auth::AuthToken::new("provider-token")) })
             .with_token_endpoint("http://127.0.0.1:9/never");
         let client = HttpAuthClient::new(Some(auth), None, reqwest::Client::new());
-        let token = client.token(&AuthTokenRequest::read(), false).await.unwrap();
+        let token = client
+            .token(&AuthTokenRequest::read(), false)
+            .await
+            .unwrap();
         assert_eq!(token.as_deref(), Some("static-token"));
     }
 
@@ -1028,7 +1036,10 @@ mod tests {
             .with_token_provider(|| async { Ok(crate::auth::AuthToken::new("provider-token")) })
             .with_token_endpoint("http://127.0.0.1:9/never");
         let client = HttpAuthClient::new(Some(auth), None, reqwest::Client::new());
-        let token = client.token(&AuthTokenRequest::read(), false).await.unwrap();
+        let token = client
+            .token(&AuthTokenRequest::read(), false)
+            .await
+            .unwrap();
         assert_eq!(token.as_deref(), Some("provider-token"));
     }
 
@@ -1075,8 +1086,14 @@ mod tests {
         let endpoint = spawn_token_endpoint(state.clone()).await;
         let client = endpoint_client(&endpoint);
 
-        let first = client.token(&AuthTokenRequest::read(), false).await.unwrap();
-        let cached = client.token(&AuthTokenRequest::read(), false).await.unwrap();
+        let first = client
+            .token(&AuthTokenRequest::read(), false)
+            .await
+            .unwrap();
+        let cached = client
+            .token(&AuthTokenRequest::read(), false)
+            .await
+            .unwrap();
         assert_eq!(first, cached);
         assert_eq!(state.mints.load(Ordering::SeqCst), 1);
 
@@ -1103,12 +1120,18 @@ mod tests {
         let endpoint = spawn_token_endpoint(state.clone()).await;
         let client = endpoint_client(&endpoint);
 
-        let first = client.token(&AuthTokenRequest::read(), false).await.unwrap();
+        let first = client
+            .token(&AuthTokenRequest::read(), false)
+            .await
+            .unwrap();
         let forced = client.token(&AuthTokenRequest::read(), true).await.unwrap();
         assert_ne!(first, forced);
 
         client.invalidate(&AuthTokenRequest::read());
-        let after_invalidate = client.token(&AuthTokenRequest::read(), false).await.unwrap();
+        let after_invalidate = client
+            .token(&AuthTokenRequest::read(), false)
+            .await
+            .unwrap();
         assert_ne!(forced, after_invalidate);
         assert_eq!(state.mints.load(Ordering::SeqCst), 3);
     }
@@ -1296,7 +1319,10 @@ mod tests {
         let valid = jwt_with_exp(now_epoch_seconds() + 3600);
         let auth = AuthConfig::default().with_token(valid.clone());
         let client = HttpAuthClient::new(Some(auth), None, reqwest::Client::new());
-        let token = client.token(&AuthTokenRequest::read(), false).await.unwrap();
+        let token = client
+            .token(&AuthTokenRequest::read(), false)
+            .await
+            .unwrap();
         assert_eq!(token, Some(valid));
     }
 
@@ -1335,10 +1361,8 @@ mod tests {
             serde_json::json!("solana-gateway-binding")
         );
         assert_eq!(
-            serde_json::from_value::<TokenTargetKind>(serde_json::json!(
-                "solana-gateway-binding"
-            ))
-            .unwrap(),
+            serde_json::from_value::<TokenTargetKind>(serde_json::json!("solana-gateway-binding"))
+                .unwrap(),
             TokenTargetKind::SolanaGatewayBinding
         );
     }

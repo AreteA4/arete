@@ -70,7 +70,9 @@ pub fn resolve_accounts(
     // precede a resolved account cannot simply be dropped — that would shift
     // every later account into the wrong slot — so they get the program ID as
     // a placeholder; trailing omitted optionals are dropped as usual.
-    let last_resolved = metas.iter().rposition(|meta| resolved.contains_key(&meta.name));
+    let last_resolved = metas
+        .iter()
+        .rposition(|meta| resolved.contains_key(&meta.name));
     let mut accounts = Vec::new();
     for (index, meta) in metas.iter().enumerate() {
         if let Some(account) = resolved.get(&meta.name) {
@@ -174,12 +176,14 @@ fn resolve_single(
             is_signer: meta.is_signer,
             is_writable: meta.is_writable,
         })),
-        AccountResolution::UserProvided => Ok(overrides.get(&meta.name).map(|address| ResolvedAccount {
-            name: meta.name.clone(),
-            address: address.clone(),
-            is_signer: meta.is_signer,
-            is_writable: meta.is_writable,
-        })),
+        AccountResolution::UserProvided => {
+            Ok(overrides.get(&meta.name).map(|address| ResolvedAccount {
+                name: meta.name.clone(),
+                address: address.clone(),
+                is_signer: meta.is_signer,
+                is_writable: meta.is_writable,
+            }))
+        }
         AccountResolution::Pda(config) => {
             resolve_pda(meta, config, args, resolve, resolved, program_id).map(Some)
         }
@@ -207,8 +211,8 @@ fn resolve_pda(
             PdaSeed::Literal(text) => seeds.push(text.as_bytes().to_vec()),
             PdaSeed::Bytes(bytes) => seeds.push(bytes.clone()),
             PdaSeed::ArgRef { arg, arg_type } => {
-                let value = get_value_by_path(Some(args), arg)
-                    .or_else(|| get_value_by_path(resolve, arg));
+                let value =
+                    get_value_by_path(Some(args), arg).or_else(|| get_value_by_path(resolve, arg));
                 let Some(value) = value else {
                     return Err(InstructionError::Pda(format!(
                         "PDA seed references missing argument: {arg} (for account \"{}\")",
@@ -302,19 +306,29 @@ mod tests {
     ) -> AccountResolutionResult {
         let args = args.as_object().cloned().unwrap();
         let result = resolve_accounts(metas, &args, overrides, None, payer, program_id).unwrap();
-        assert!(result.missing.is_empty(), "unexpected missing: {:?}", result.missing);
+        assert!(
+            result.missing.is_empty(),
+            "unexpected missing: {:?}",
+            result.missing
+        );
         result
     }
 
     fn expected_pda(seeds: &[Vec<u8>], program_id: &str) -> String {
-        derive_program_address(seeds, program_id).unwrap().0.to_string()
+        derive_program_address(seeds, program_id)
+            .unwrap()
+            .0
+            .to_string()
     }
 
     #[test]
     fn resolves_signer_known_and_user_provided() {
         let metas = [
             signer("authority"),
-            meta("systemProgram", AccountResolution::Known(SYSTEM_PROGRAM.to_string())),
+            meta(
+                "systemProgram",
+                AccountResolution::Known(SYSTEM_PROGRAM.to_string()),
+            ),
             meta("mint", AccountResolution::UserProvided),
         ];
         let result = resolve_ok(
@@ -334,7 +348,10 @@ mod tests {
 
     #[test]
     fn prefers_explicit_signer_overrides_over_the_payer() {
-        let metas = [signer("authority"), meta("mint", AccountResolution::UserProvided)];
+        let metas = [
+            signer("authority"),
+            meta("mint", AccountResolution::UserProvided),
+        ];
         let result = resolve_ok(
             &metas,
             json!({}),
@@ -369,7 +386,10 @@ mod tests {
         assert_eq!(names, ["authority", "state"]);
 
         let expected = expected_pda(
-            &[b"state".to_vec(), bs58::decode(WSOL_MINT).into_vec().unwrap()],
+            &[
+                b"state".to_vec(),
+                bs58::decode(WSOL_MINT).into_vec().unwrap(),
+            ],
             TOKEN_PROGRAM,
         );
         assert_eq!(result.accounts[1].address, expected);
@@ -386,7 +406,10 @@ mod tests {
             }),
         )];
         let result = resolve_ok(&metas, json!({}), &BTreeMap::new(), None, None);
-        assert_eq!(result.accounts[0].address, expected_pda(&[raw], TOKEN_PROGRAM));
+        assert_eq!(
+            result.accounts[0].address,
+            expected_pda(&[raw], TOKEN_PROGRAM)
+        );
     }
 
     #[test]
@@ -456,13 +479,17 @@ mod tests {
             "proposal",
             AccountResolution::Pda(PdaConfig {
                 program_id: Some(TOKEN_PROGRAM.to_string()),
-                seeds: vec![PdaSeed::ArgRef { arg: "transactionIndex".to_string(), arg_type: None }],
+                seeds: vec![PdaSeed::ArgRef {
+                    arg: "transactionIndex".to_string(),
+                    arg_type: None,
+                }],
             }),
         )];
-        let err = resolve_accounts(&metas, &Map::new(), &BTreeMap::new(), None, None, None)
-            .unwrap_err();
+        let err =
+            resolve_accounts(&metas, &Map::new(), &BTreeMap::new(), None, None, None).unwrap_err();
         assert!(
-            err.to_string().contains("missing argument: transactionIndex"),
+            err.to_string()
+                .contains("missing argument: transactionIndex"),
             "unexpected error: {err}"
         );
     }
@@ -514,16 +541,16 @@ mod tests {
             )
         };
         let metas = [pda_ref("a", "b"), pda_ref("b", "a")];
-        let err = resolve_accounts(&metas, &Map::new(), &BTreeMap::new(), None, None, None)
-            .unwrap_err();
+        let err =
+            resolve_accounts(&metas, &Map::new(), &BTreeMap::new(), None, None, None).unwrap_err();
         assert!(matches!(err, InstructionError::CircularPdaDependency(_)));
     }
 
     #[test]
     fn reports_missing_required_user_provided_accounts() {
         let metas = [meta("mint", AccountResolution::UserProvided)];
-        let result = resolve_accounts(&metas, &Map::new(), &BTreeMap::new(), None, None, None)
-            .unwrap();
+        let result =
+            resolve_accounts(&metas, &Map::new(), &BTreeMap::new(), None, None, None).unwrap();
         assert_eq!(result.missing, ["mint"]);
         assert!(result.accounts.is_empty());
     }
@@ -537,8 +564,8 @@ mod tests {
                 seeds: vec![PdaSeed::Literal("state".to_string())],
             }),
         )];
-        let err = resolve_accounts(&metas, &Map::new(), &BTreeMap::new(), None, None, None)
-            .unwrap_err();
+        let err =
+            resolve_accounts(&metas, &Map::new(), &BTreeMap::new(), None, None, None).unwrap_err();
         assert_eq!(err, InstructionError::MissingProgramId("state".to_string()));
     }
 
@@ -546,7 +573,10 @@ mod tests {
     fn substitutes_the_program_id_for_omitted_non_trailing_optional_accounts() {
         let metas = [
             signer("authority"),
-            AccountMeta { is_optional: true, ..meta("referrer", AccountResolution::UserProvided) },
+            AccountMeta {
+                is_optional: true,
+                ..meta("referrer", AccountResolution::UserProvided)
+            },
             meta("mint", AccountResolution::UserProvided),
         ];
         let result = resolve_ok(
@@ -567,7 +597,10 @@ mod tests {
     fn drops_omitted_trailing_optional_accounts() {
         let metas = [
             signer("authority"),
-            AccountMeta { is_optional: true, ..meta("referrer", AccountResolution::UserProvided) },
+            AccountMeta {
+                is_optional: true,
+                ..meta("referrer", AccountResolution::UserProvided)
+            },
         ];
         let result = resolve_ok(
             &metas,
@@ -584,7 +617,10 @@ mod tests {
     fn resolves_provided_optional_accounts_normally() {
         let metas = [
             signer("authority"),
-            AccountMeta { is_optional: true, ..meta("referrer", AccountResolution::UserProvided) },
+            AccountMeta {
+                is_optional: true,
+                ..meta("referrer", AccountResolution::UserProvided)
+            },
             meta("mint", AccountResolution::UserProvided),
         ];
         let result = resolve_ok(

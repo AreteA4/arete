@@ -5334,7 +5334,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["ore-devex.ts", "ore-extensions.ts"]
         );
-        assert_eq!(resolved.input_kind, Some(ExtensionsInputKind::StackManifest));
+        assert_eq!(
+            resolved.input_kind,
+            Some(ExtensionsInputKind::StackManifest)
+        );
         assert_eq!(resolved.input_hash.as_deref(), Some("ts-staged-pin-hash"));
         assert_eq!(resolved.sdk_range.as_deref(), Some("^0.2.0 || ^0.3.0"));
     }
@@ -5350,8 +5353,7 @@ mod tests {
             std::env::temp_dir().join(format!("a4-ts-ext-rust-outdir-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output_dir);
         write_bundle_dir(&output_dir, &rust_test_artifact("hash-1"));
-        fs::write(output_dir.join("ore-extensions.ts"), "export default {};")
-            .expect("entry file");
+        fs::write(output_dir.join("ore-extensions.ts"), "export default {};").expect("entry file");
 
         let error = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), None)
             .expect_err("Rust manifest in output dir must be rejected for TypeScript generation");
@@ -5373,8 +5375,7 @@ mod tests {
             std::env::temp_dir().join(format!("a4-ts-ext-infer-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output_dir);
         fs::create_dir_all(&output_dir).expect("output directory");
-        fs::write(output_dir.join("ore-extensions.ts"), "export default {};")
-            .expect("entry file");
+        fs::write(output_dir.join("ore-extensions.ts"), "export default {};").expect("entry file");
 
         let resolved = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), None)
             .expect("entry inference should resolve")
@@ -5434,17 +5435,21 @@ mod tests {
         let _ = fs::remove_dir_all(&output_dir);
         fs::create_dir_all(&output_dir).expect("output directory");
         fs::write(output_dir.join("extensions.json"), staged_manifest).expect("manifest");
-        fs::write(output_dir.join("ore-devex.ts"), "export const helper = 1;\n")
-            .expect("helper file");
+        fs::write(
+            output_dir.join("ore-devex.ts"),
+            "export const helper = 1;\n",
+        )
+        .expect("helper file");
         fs::write(
             output_dir.join("ore-stack-extensions.ts"),
             "export * from './ore-devex.js';\nexport default {};\n",
         )
         .expect("entry file");
 
-        let resolved = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore-stack"), None)
-            .expect("staged manifest should resolve")
-            .expect("staged manifest should be present");
+        let resolved =
+            resolve_extensions_artifact(None, &layout_in(&output_dir, "ore-stack"), None)
+                .expect("staged manifest should resolve")
+                .expect("staged manifest should be present");
         assert_eq!(
             serde_json::to_string_pretty(&resolved.manifest()).unwrap(),
             staged_manifest

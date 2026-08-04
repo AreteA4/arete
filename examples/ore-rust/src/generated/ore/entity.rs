@@ -14,10 +14,6 @@ impl Stack for OreStreamStack {
     fn url() -> &'static str {
         "wss://ore.stack.arete.run"
     }
-
-    fn http_url() -> &'static str {
-        "https://ore.stack.arete.run"
-    }
 }
 
 pub struct OreStreamStackViews {

@@ -215,7 +215,11 @@ fn seed_int(value: &Value) -> Option<SeedInt> {
 
 /// Little-endian two's-complement encoding at a fixed byte width, with an
 /// overflow check so out-of-range values fail instead of silently truncating.
-fn encode_seed_int(number: &SeedInt, size: usize, signed: bool) -> Result<Vec<u8>, InstructionError> {
+fn encode_seed_int(
+    number: &SeedInt,
+    size: usize,
+    signed: bool,
+) -> Result<Vec<u8>, InstructionError> {
     let (bytes, fits) = match number {
         SeedInt::Unsigned(u) => {
             let fits = size >= 16 || (u >> (size * 8)) == 0;
@@ -252,11 +256,23 @@ mod tests {
 
     #[test]
     fn canonicalizes_pubkey_and_string_spellings() {
-        for t in ["pubkey", "Pubkey", "publicKey", "PublicKey", "solana_pubkey::Pubkey"] {
-            assert_eq!(normalize_seed_type(Some(t)), Some(CanonicalSeedType::Pubkey));
+        for t in [
+            "pubkey",
+            "Pubkey",
+            "publicKey",
+            "PublicKey",
+            "solana_pubkey::Pubkey",
+        ] {
+            assert_eq!(
+                normalize_seed_type(Some(t)),
+                Some(CanonicalSeedType::Pubkey)
+            );
         }
         for t in ["string", "String", "str"] {
-            assert_eq!(normalize_seed_type(Some(t)), Some(CanonicalSeedType::String));
+            assert_eq!(
+                normalize_seed_type(Some(t)),
+                Some(CanonicalSeedType::String)
+            );
         }
     }
 
@@ -264,11 +280,17 @@ mod tests {
     fn passes_integer_widths_through_and_rejects_everything_else() {
         assert_eq!(
             normalize_seed_type(Some("u32")),
-            Some(CanonicalSeedType::Int { bits: 32, signed: false })
+            Some(CanonicalSeedType::Int {
+                bits: 32,
+                signed: false
+            })
         );
         assert_eq!(
             normalize_seed_type(Some("i64")),
-            Some(CanonicalSeedType::Int { bits: 64, signed: true })
+            Some(CanonicalSeedType::Int {
+                bits: 64,
+                signed: true
+            })
         );
         assert_eq!(normalize_seed_type(Some("u24")), None);
         assert_eq!(normalize_seed_type(Some("Vec<u8>")), None);
@@ -277,9 +299,18 @@ mod tests {
 
     #[test]
     fn encodes_typed_integers_little_endian_at_the_declared_width() {
-        assert_eq!(serialize_seed_value(&json!(1), Some("u8")).unwrap(), vec![1]);
-        assert_eq!(serialize_seed_value(&json!(258), Some("u16")).unwrap(), vec![2, 1]);
-        assert_eq!(serialize_seed_value(&json!(7), Some("u32")).unwrap(), vec![7, 0, 0, 0]);
+        assert_eq!(
+            serialize_seed_value(&json!(1), Some("u8")).unwrap(),
+            vec![1]
+        );
+        assert_eq!(
+            serialize_seed_value(&json!(258), Some("u16")).unwrap(),
+            vec![2, 1]
+        );
+        assert_eq!(
+            serialize_seed_value(&json!(7), Some("u32")).unwrap(),
+            vec![7, 0, 0, 0]
+        );
         assert_eq!(
             serialize_seed_value(&json!(42), Some("u64")).unwrap(),
             vec![42, 0, 0, 0, 0, 0, 0, 0]
@@ -293,37 +324,42 @@ mod tests {
 
     #[test]
     fn encodes_negative_signed_integers_in_twos_complement() {
-        assert_eq!(serialize_seed_value(&json!(-1), Some("i64")).unwrap(), vec![0xff; 8]);
+        assert_eq!(
+            serialize_seed_value(&json!(-1), Some("i64")).unwrap(),
+            vec![0xff; 8]
+        );
     }
 
     #[test]
     fn rejects_values_that_overflow_the_declared_width() {
         for (value, ty) in [(json!(256), "u8"), (json!(-1), "u32")] {
             let err = serialize_seed_value(&value, Some(ty)).unwrap_err();
-            assert!(err.to_string().contains("does not fit"), "unexpected error: {err}");
+            assert!(
+                err.to_string().contains("does not fit"),
+                "unexpected error: {err}"
+            );
         }
     }
 
     #[test]
     fn decodes_pubkey_seeds_from_base58_to_32_bytes() {
         let expected = bs58::decode(TOKEN_PROGRAM).into_vec().unwrap();
-        assert_eq!(serialize_seed_value(&json!(TOKEN_PROGRAM), Some("pubkey")).unwrap(), expected);
+        assert_eq!(
+            serialize_seed_value(&json!(TOKEN_PROGRAM), Some("pubkey")).unwrap(),
+            expected
+        );
         assert_eq!(
             serialize_seed_value(&json!(TOKEN_PROGRAM), Some("solana_pubkey::Pubkey")).unwrap(),
             expected
         );
-        assert!(
-            serialize_seed_value(&json!("abc"), Some("pubkey"))
-                .unwrap_err()
-                .to_string()
-                .contains("expected 32")
-        );
-        assert!(
-            serialize_seed_value(&json!(42), Some("pubkey"))
-                .unwrap_err()
-                .to_string()
-                .contains("base58 string")
-        );
+        assert!(serialize_seed_value(&json!("abc"), Some("pubkey"))
+            .unwrap_err()
+            .to_string()
+            .contains("expected 32"));
+        assert!(serialize_seed_value(&json!(42), Some("pubkey"))
+            .unwrap_err()
+            .to_string()
+            .contains("base58 string"));
     }
 
     #[test]
@@ -338,12 +374,20 @@ mod tests {
 
     #[test]
     fn passes_byte_arrays_through() {
-        assert_eq!(serialize_seed_value(&json!([1, 2, 255]), None).unwrap(), vec![1, 2, 255]);
+        assert_eq!(
+            serialize_seed_value(&json!([1, 2, 255]), None).unwrap(),
+            vec![1, 2, 255]
+        );
     }
 
     #[test]
     fn untyped_heuristics_try_base58_for_address_length_strings_and_utf8_otherwise() {
-        assert_eq!(serialize_seed_value(&json!(TOKEN_PROGRAM), None).unwrap().len(), 32);
+        assert_eq!(
+            serialize_seed_value(&json!(TOKEN_PROGRAM), None)
+                .unwrap()
+                .len(),
+            32
+        );
         assert_eq!(
             serialize_seed_value(&json!("treasury"), None).unwrap(),
             b"treasury".to_vec()

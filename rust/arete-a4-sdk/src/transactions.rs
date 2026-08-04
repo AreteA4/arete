@@ -570,7 +570,9 @@ impl TransactionTransport for HttpTransactionTransport {
             .maybe("commitment", commitment_value(options.commitment))
             .maybe("minContextSlot", decimal(options.min_context_slot))
             .build();
-        let value = self.post("block-height", body, SCOPE_INSPECT, false).await?;
+        let value = self
+            .post("block-height", body, SCOPE_INSPECT, false)
+            .await?;
         decimal_u64(value.get("blockHeight"), "blockHeight")
     }
 }
@@ -722,8 +724,10 @@ mod tests {
             .block_height(TransactionRequestContext::default())
             .await
             .unwrap_err();
-        assert!(matches!(error, TransactionError::InvalidResponse(ref message)
-            if message.contains("Invalid decimal u64 field 'blockHeight'")));
+        assert!(
+            matches!(error, TransactionError::InvalidResponse(ref message)
+            if message.contains("Invalid decimal u64 field 'blockHeight'"))
+        );
     }
 
     #[tokio::test]

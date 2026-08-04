@@ -122,7 +122,10 @@ pub fn parse_ui_amount_to_raw(value: &str, decimals: u8) -> Result<u128, AmountE
         digits.push_str(&fraction_part[..decimals_usize]);
     } else {
         digits.push_str(fraction_part);
-        digits.extend(std::iter::repeat_n('0', decimals_usize - fraction_part.len()));
+        digits.extend(std::iter::repeat_n(
+            '0',
+            decimals_usize - fraction_part.len(),
+        ));
     }
 
     let normalized = digits.trim_start_matches('0');

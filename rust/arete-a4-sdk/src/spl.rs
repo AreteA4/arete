@@ -179,20 +179,13 @@ mod tests {
 
     #[test]
     fn derivation_is_deterministic_and_uses_token_program_in_seeds() {
-        let default_program =
-            derive_associated_token_account(WSOL_MINT, USDC_MINT, None).unwrap();
-        let explicit_spl = derive_associated_token_account(
-            WSOL_MINT,
-            USDC_MINT,
-            Some(SPL_TOKEN_PROGRAM_ADDRESS),
-        )
-        .unwrap();
-        let token_2022 = derive_associated_token_account(
-            WSOL_MINT,
-            USDC_MINT,
-            Some(TOKEN_2022_PROGRAM_ADDRESS),
-        )
-        .unwrap();
+        let default_program = derive_associated_token_account(WSOL_MINT, USDC_MINT, None).unwrap();
+        let explicit_spl =
+            derive_associated_token_account(WSOL_MINT, USDC_MINT, Some(SPL_TOKEN_PROGRAM_ADDRESS))
+                .unwrap();
+        let token_2022 =
+            derive_associated_token_account(WSOL_MINT, USDC_MINT, Some(TOKEN_2022_PROGRAM_ADDRESS))
+                .unwrap();
 
         assert_eq!(default_program, explicit_spl);
         assert_ne!(explicit_spl, token_2022);
@@ -238,7 +231,9 @@ mod tests {
             Err(SplError::MintNotFound(mint)) if mint == "missing"
         ));
 
-        let chain = FakeChain(MintBehavior::Owned("UnsupportedProgram1111111111111111111111111"));
+        let chain = FakeChain(MintBehavior::Owned(
+            "UnsupportedProgram1111111111111111111111111",
+        ));
         assert!(matches!(
             resolve_token_program_address(&chain, "mint", None).await,
             Err(SplError::UnsupportedTokenProgram { .. })

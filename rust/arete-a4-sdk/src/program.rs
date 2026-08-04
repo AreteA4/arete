@@ -169,8 +169,10 @@ impl ProgramBuilder {
         }
         let mut config = self.auth_config.clone().unwrap_or_default();
         config.token_endpoint = Some(session_endpoint.to_string());
-        Some(Arc::new(HttpAuthClient::new(Some(config), None, self.http()))
-            as Arc<dyn BearerTokenSource>)
+        Some(
+            Arc::new(HttpAuthClient::new(Some(config), None, self.http()))
+                as Arc<dyn BearerTokenSource>,
+        )
     }
 }
 

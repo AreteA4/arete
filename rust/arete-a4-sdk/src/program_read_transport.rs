@@ -303,7 +303,10 @@ fn body_error_code(body: &str) -> Option<String> {
     {
         return Some(code.to_string());
     }
-    parsed.get("code").and_then(Value::as_str).map(str::to_string)
+    parsed
+        .get("code")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// TS `isRefreshableErrorCode`: normalize `_` to `-`, parse as a wire auth
@@ -727,7 +730,10 @@ mod tests {
 
         let requests = server.requests();
         assert_eq!(requests[0].method, "POST");
-        assert_eq!(requests[0].path, "/v1/releases/release-alpha/accounts/State");
+        assert_eq!(
+            requests[0].path,
+            "/v1/releases/release-alpha/accounts/State"
+        );
         assert!(requests[0]
             .content_type
             .as_deref()
@@ -813,11 +819,10 @@ mod tests {
     #[tokio::test]
     async fn non_refreshable_401_does_not_replay() {
         let non_refreshable = fixture()["errors"]["nonRefreshable"].clone();
-        let server =
-            TestServer::spawn(vec![
-                CannedResponse::json(non_refreshable.to_string()).with_status(401)
-            ])
-            .await;
+        let server = TestServer::spawn(vec![
+            CannedResponse::json(non_refreshable.to_string()).with_status(401)
+        ])
+        .await;
         let auth = MockTokenSource::new();
         let transport = hosted_transport(&server, Some(auth.clone()), None);
 
@@ -843,11 +848,10 @@ mod tests {
     #[tokio::test]
     async fn refreshable_code_on_403_does_not_replay() {
         let refreshable = fixture()["errors"]["refreshable"].clone();
-        let server =
-            TestServer::spawn(vec![
-                CannedResponse::json(refreshable.to_string()).with_status(403)
-            ])
-            .await;
+        let server = TestServer::spawn(vec![
+            CannedResponse::json(refreshable.to_string()).with_status(403)
+        ])
+        .await;
         let auth = MockTokenSource::new();
         let transport = hosted_transport(&server, Some(auth.clone()), None);
 
@@ -873,11 +877,10 @@ mod tests {
     #[tokio::test]
     async fn refreshable_401_without_auth_source_does_not_replay() {
         let refreshable = fixture()["errors"]["refreshable"].clone();
-        let server =
-            TestServer::spawn(vec![
-                CannedResponse::json(refreshable.to_string()).with_status(401)
-            ])
-            .await;
+        let server = TestServer::spawn(vec![
+            CannedResponse::json(refreshable.to_string()).with_status(401)
+        ])
+        .await;
         let transport = local_transport(&server);
 
         let err = transport
@@ -931,9 +934,10 @@ mod tests {
     #[tokio::test]
     async fn nested_body_code_is_read_without_header() {
         let nested = fixture()["errors"]["nested"].clone();
-        let server =
-            TestServer::spawn(vec![CannedResponse::json(nested.to_string()).with_status(422)])
-                .await;
+        let server = TestServer::spawn(vec![
+            CannedResponse::json(nested.to_string()).with_status(422)
+        ])
+        .await;
         let transport = local_transport(&server);
 
         let err = transport

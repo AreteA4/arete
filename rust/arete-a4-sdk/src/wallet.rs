@@ -112,7 +112,10 @@ impl fmt::Debug for WalletExecutionContext {
         f.debug_struct("WalletExecutionContext")
             .field(
                 "transaction_transport",
-                &self.transaction_transport.as_ref().map(|_| "TransactionTransport"),
+                &self
+                    .transaction_transport
+                    .as_ref()
+                    .map(|_| "TransactionTransport"),
             )
             .finish()
     }
@@ -267,7 +270,10 @@ mod tests {
     #[test]
     fn signer_addresses_default_to_public_key() {
         let wallet = FixedKeyWallet;
-        assert_eq!(wallet.signer_addresses(), vec!["wallet-address".to_string()]);
+        assert_eq!(
+            wallet.signer_addresses(),
+            vec!["wallet-address".to_string()]
+        );
     }
 
     #[test]

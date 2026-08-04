@@ -7,8 +7,8 @@ use crate::error::{AreteError, SocketIssue};
 use crate::http::{HttpAuthClient, TokenSource};
 use crate::instruction::{BuiltInstruction, ErrorMetadata};
 use crate::operations::{
-    classify_wallet_error, execute_prepared_operation, ExecuteOptions, ExecutionHost,
-    FailurePhase, OperationExecutionError, OperationReceipt, PreparedOperation, SignerRegistry,
+    classify_wallet_error, execute_prepared_operation, ExecuteOptions, ExecutionHost, FailurePhase,
+    OperationExecutionError, OperationReceipt, PreparedOperation, SignerRegistry,
     TransactionFailureOutcome,
 };
 use crate::program::Programs;
@@ -63,7 +63,10 @@ pub struct TransactionOptions {
 impl std::fmt::Debug for TransactionOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransactionOptions")
-            .field("wallet", &self.wallet.as_ref().map(|wallet| wallet.public_key()))
+            .field(
+                "wallet",
+                &self.wallet.as_ref().map(|wallet| wallet.public_key()),
+            )
             .field("send", &self.send)
             .field("errors", &self.errors.len())
             .finish()
@@ -346,7 +349,10 @@ impl<S: Stack> Arete<S> {
             )));
         };
         let context = WalletExecutionContext::new(Some(self.transactions.clone()));
-        match wallet.sign_and_send(instructions, &options.send, &context).await {
+        match wallet
+            .sign_and_send(instructions, &options.send, &context)
+            .await
+        {
             Ok(result) => Ok(ExecutionResult {
                 signature: result.signature,
                 slot: result.slot,

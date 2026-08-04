@@ -53,24 +53,28 @@ pub mod view;
 pub mod wallet;
 
 pub use amounts::{
-    format_raw_to_ui, parse_ui_amount_to_raw, resolve_amount, resolve_amount_to_raw,
-    to_raw_amount, AmountError, AmountInput, AmountResolutionInput, ResolvedAmount,
+    format_raw_to_ui, parse_ui_amount_to_raw, resolve_amount, resolve_amount_to_raw, to_raw_amount,
+    AmountError, AmountInput, AmountResolutionInput, ResolvedAmount,
 };
 pub use auth::{AuthConfig, AuthToken, TokenTransport};
 pub use chain::{
-    derive_http_endpoint, ChainClient, ChainClock, ChainError, ContextSlotOptions,
-    HttpChainClient, MintAccountInfo, NativeBalanceInfo, RawAccountInfo, TokenAccountInfo,
-    TokenBalanceInfo, TokenBalanceInput,
+    derive_http_endpoint, ChainClient, ChainClock, ChainError, ContextSlotOptions, HttpChainClient,
+    MintAccountInfo, NativeBalanceInfo, RawAccountInfo, TokenAccountInfo, TokenBalanceInfo,
+    TokenBalanceInput,
 };
 pub use client::{Arete, AreteBuilder, ExecutionResult, TransactionOptions, Transport};
 pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
 pub use entity::Stack;
 pub use error::{AreteError, AuthErrorCode, SocketIssue};
+pub use frame::{
+    parse_frame, parse_server_message, parse_snapshot_entities, try_parse_subscribed_frame, Frame,
+    Mode, Operation, ProtocolErrorFrame, ServerFrame, ServerMessage, SnapshotEntity, SortConfig,
+    SortOrder,
+};
 pub use gateway::{
-    create_hosted_solana_gateway_transports, validate_gateway_binding,
-    HostedSolanaGatewayBindings, HostedSolanaGatewayCapabilityBinding,
-    HostedSolanaGatewayTransports, SolanaGatewayAuthMetadata,
+    create_hosted_solana_gateway_transports, validate_gateway_binding, HostedSolanaGatewayBindings,
+    HostedSolanaGatewayCapabilityBinding, HostedSolanaGatewayTransports, SolanaGatewayAuthMetadata,
 };
 pub use http::{
     fetch_json, AuthTokenRequest, AuthTokenTarget, AuthedRequest, AuthedResponse, HttpAuthClient,
@@ -84,14 +88,14 @@ pub use instruction::{
 pub use operations::{
     append_flow_transactions, append_transaction_instructions, create_prepared_flow,
     create_prepared_instruction, create_prepared_transaction, create_prepared_transaction_body,
-    execute_prepared_operation, format_program_error, parse_program_error,
-    prepend_flow_transaction_instructions, prepend_transaction_instructions,
-    describe_prepared_operation, ExecuteOptions, ExecutionHost, FailurePhase, OperationCallback,
-    OperationError, OperationExecutionError, OperationExecutionEvent, OperationKind,
-    OperationReceipt, OperationTransactionReceipt, PreparedFlow, PreparedInstruction,
-    PreparedOperation, PreparedTransaction, PreparedTransactionBody,
-    PreparedTransactionChildren, PreparedTransactionInstruction, ProgramError, Signer,
-    SignerRegistry, TransactionFailureOutcome, TransactionOutcome,
+    describe_prepared_operation, execute_prepared_operation, format_program_error,
+    parse_program_error, prepend_flow_transaction_instructions, prepend_transaction_instructions,
+    ExecuteOptions, ExecutionHost, FailurePhase, OperationCallback, OperationError,
+    OperationExecutionError, OperationExecutionEvent, OperationKind, OperationReceipt,
+    OperationTransactionReceipt, PreparedFlow, PreparedInstruction, PreparedOperation,
+    PreparedTransaction, PreparedTransactionBody, PreparedTransactionChildren,
+    PreparedTransactionInstruction, ProgramError, Signer, SignerRegistry,
+    TransactionFailureOutcome, TransactionOutcome,
 };
 pub use program::{ProgramBuilder, Programs};
 pub use program_read_transport::{
@@ -103,22 +107,16 @@ pub use read::{
     ProgramReleaseReference, QueryExecutor, ReadError, ReadRequestError, StackQueryDef,
 };
 pub use session::{Session, SessionBuilder, SessionMemberOptions};
-pub use transactions::{
-    HttpTransactionTransport, TransactionError, TransactionTransport, TransactionTransportError,
-};
-pub use wallet::{
-    ConfirmationLevel, SendOptions, SendResult, WalletAdapter, WalletError,
-    WalletExecutionContext,
-};
-pub use frame::{
-    parse_frame, parse_server_message, parse_snapshot_entities, try_parse_subscribed_frame, Frame,
-    Mode, Operation, ProtocolErrorFrame, ServerFrame, ServerMessage, SnapshotEntity, SortConfig,
-    SortOrder,
-};
 pub use store::{deep_merge_with_append, SharedStore, StoreConfig, StoreUpdate};
 pub use stream::{
     EntityStream, FilterMapStream, FilteredStream, KeyFilter, MapStream, RichEntityStream,
     RichUpdate, Update, UseStream,
+};
+pub use transactions::{
+    HttpTransactionTransport, TransactionError, TransactionTransport, TransactionTransportError,
+};
+pub use wallet::{
+    ConfirmationLevel, SendOptions, SendResult, WalletAdapter, WalletError, WalletExecutionContext,
 };
 
 pub use subscription::{

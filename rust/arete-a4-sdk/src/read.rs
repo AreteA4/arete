@@ -363,11 +363,13 @@ fn parse_program_account_value<T: DeserializeOwned>(
 ) -> Result<T, ReadError> {
     match serde_json::from_value::<T>(value.clone()) {
         Ok(parsed) => Ok(parsed),
-        Err(_) => serde_json::from_value::<T>(normalize_program_account_wire_keys(value)).map_err(
-            |_| ReadError::SchemaValidation {
-                account: account.to_string(),
-            },
-        ),
+        Err(_) => {
+            serde_json::from_value::<T>(normalize_program_account_wire_keys(value)).map_err(|_| {
+                ReadError::SchemaValidation {
+                    account: account.to_string(),
+                }
+            })
+        }
     }
 }
 
@@ -477,11 +479,8 @@ impl<T: DeserializeOwned> AccountReader<T> {
         };
         let path = self.transport.request_path(&request);
         let value = self.transport.read(&request).await?;
-        let batch: WireBatch =
-            serde_json::from_value(value).map_err(|source| ReadError::InvalidResponse {
-                path,
-                source,
-            })?;
+        let batch: WireBatch = serde_json::from_value(value)
+            .map_err(|source| ReadError::InvalidResponse { path, source })?;
         let mut items = Vec::with_capacity(batch.items.len());
         for item in batch.items {
             items.push(match item {
@@ -507,11 +506,8 @@ impl<T: DeserializeOwned> AccountReader<T> {
         };
         let path = self.transport.request_path(&request);
         let value = self.transport.read(&request).await?;
-        let parsed: ExistsResponse =
-            serde_json::from_value(value).map_err(|source| ReadError::InvalidResponse {
-                path,
-                source,
-            })?;
+        let parsed: ExistsResponse = serde_json::from_value(value)
+            .map_err(|source| ReadError::InvalidResponse { path, source })?;
         Ok(parsed.exists)
     }
 }

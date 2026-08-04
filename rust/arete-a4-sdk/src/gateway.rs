@@ -179,7 +179,9 @@ impl TokenSource for TargetedTokenSource {
         request: &AuthTokenRequest,
         force_refresh: bool,
     ) -> Result<Option<String>, AreteError> {
-        self.inner.token(&self.retarget(request), force_refresh).await
+        self.inner
+            .token(&self.retarget(request), force_refresh)
+            .await
     }
 
     fn invalidate(&self, request: &AuthTokenRequest) {
@@ -213,24 +215,25 @@ pub fn create_hosted_solana_gateway_transports(
 
     let http = http.unwrap_or_default();
     let mut clients: HashMap<String, Arc<HttpAuthClient>> = HashMap::new();
-    let mut token_source_for = |binding: &HostedSolanaGatewayCapabilityBinding| -> Arc<dyn TokenSource> {
-        let effective = binding_auth_config(binding, auth.as_ref());
-        let identity = if has_runtime_auth_strategy(auth.as_ref()) {
-            "runtime-auth-strategy".to_string()
-        } else {
-            format!("session-endpoint:{}", binding.auth.session_endpoint)
+    let mut token_source_for =
+        |binding: &HostedSolanaGatewayCapabilityBinding| -> Arc<dyn TokenSource> {
+            let effective = binding_auth_config(binding, auth.as_ref());
+            let identity = if has_runtime_auth_strategy(auth.as_ref()) {
+                "runtime-auth-strategy".to_string()
+            } else {
+                format!("session-endpoint:{}", binding.auth.session_endpoint)
+            };
+            let client = clients
+                .entry(identity)
+                .or_insert_with(|| Arc::new(HttpAuthClient::new(effective, None, http.clone())))
+                .clone();
+            Arc::new(TargetedTokenSource {
+                inner: client,
+                target: AuthTokenTarget::solana_gateway_binding(
+                    binding.solana_gateway_binding_id.clone(),
+                ),
+            })
         };
-        let client = clients
-            .entry(identity)
-            .or_insert_with(|| Arc::new(HttpAuthClient::new(effective, None, http.clone())))
-            .clone();
-        Arc::new(TargetedTokenSource {
-            inner: client,
-            target: AuthTokenTarget::solana_gateway_binding(
-                binding.solana_gateway_binding_id.clone(),
-            ),
-        })
-    };
 
     let chain_tokens = token_source_for(&bindings.chain);
     let transaction_tokens = token_source_for(&bindings.transactions);
@@ -313,7 +316,9 @@ mod tests {
     }
 
     fn assert_invalid(bindings: HostedSolanaGatewayBindings) {
-        let error = create_hosted_solana_gateway_transports(&bindings, None, None).err().unwrap();
+        let error = create_hosted_solana_gateway_transports(&bindings, None, None)
+            .err()
+            .unwrap();
         assert!(
             matches!(error, AreteError::InvalidConfig(ref message)
                 if message.contains("Hosted Solana gateway")),
@@ -473,10 +478,7 @@ mod tests {
             Json(json!({ "token": "gateway-token", "expires_at": 4_102_444_800u64 }))
         }
 
-        async fn clock(
-            State(state): State<GatewayServerState>,
-            headers: HeaderMap,
-        ) -> Json<Value> {
+        async fn clock(State(state): State<GatewayServerState>, headers: HeaderMap) -> Json<Value> {
             state.chain_auth_headers.lock().unwrap().push(
                 headers
                     .get("authorization")

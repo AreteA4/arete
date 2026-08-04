@@ -110,11 +110,14 @@ impl fmt::Display for ProgramError {
 /// Returns `None` when no metadata entry matches; use
 /// [`ProgramError::unknown`] for the TS-style placeholder fallback.
 pub fn parse_program_error(code: u32, errors: &[ErrorMetadata]) -> Option<ProgramError> {
-    errors.iter().find(|entry| entry.code == code).map(|entry| ProgramError {
-        code: entry.code,
-        name: entry.name.clone(),
-        message: entry.msg.clone(),
-    })
+    errors
+        .iter()
+        .find(|entry| entry.code == code)
+        .map(|entry| ProgramError {
+            code: entry.code,
+            name: entry.name.clone(),
+            message: entry.msg.clone(),
+        })
 }
 
 /// Format a program error as `"Name (code): message"` (mirror of the TS
@@ -340,9 +343,8 @@ pub fn create_prepared_transaction_body(
     if instructions.is_empty() {
         return Err(OperationError::EmptyTransaction(name));
     }
-    let required_signer_addresses = dedupe(
-        required_signer_addresses.unwrap_or_else(|| infer_signer_addresses(&instructions)),
-    );
+    let required_signer_addresses =
+        dedupe(required_signer_addresses.unwrap_or_else(|| infer_signer_addresses(&instructions)));
     Ok(PreparedTransactionBody {
         name,
         instructions,
@@ -540,16 +542,18 @@ pub fn create_prepared_transaction(
             })
             .collect::<Result<_, _>>()?,
     };
-    let instructions: Vec<BuiltInstruction> =
-        parts.iter().flat_map(|part| part.instructions.clone()).collect();
+    let instructions: Vec<BuiltInstruction> = parts
+        .iter()
+        .flat_map(|part| part.instructions.clone())
+        .collect();
     let inherited_signers = required_signer_addresses.unwrap_or_else(|| {
         parts
             .iter()
             .flat_map(|part| part.required_signer_addresses.clone())
             .collect()
     });
-    let inherited_errors = errors
-        .unwrap_or_else(|| parts.iter().flat_map(|part| part.errors.clone()).collect());
+    let inherited_errors =
+        errors.unwrap_or_else(|| parts.iter().flat_map(|part| part.errors.clone()).collect());
     let transaction = create_prepared_transaction_body(
         name.clone(),
         instructions,
@@ -748,7 +752,10 @@ impl SignerRegistry {
         if address.is_empty() {
             return Err(OperationError::EmptySignerAddress);
         }
-        self.signers.write().expect("signer registry poisoned").insert(address, signer);
+        self.signers
+            .write()
+            .expect("signer registry poisoned")
+            .insert(address, signer);
         Ok(())
     }
 
@@ -760,27 +767,48 @@ impl SignerRegistry {
 
     /// Remove the entry for `address`, returning whether one existed.
     pub fn unregister(&self, address: &str) -> bool {
-        self.signers.write().expect("signer registry poisoned").remove(address).is_some()
+        self.signers
+            .write()
+            .expect("signer registry poisoned")
+            .remove(address)
+            .is_some()
     }
 
     /// The signer registered under `address`, if any.
     pub fn get(&self, address: &str) -> Option<Arc<dyn Signer>> {
-        self.signers.read().expect("signer registry poisoned").get(address).cloned()
+        self.signers
+            .read()
+            .expect("signer registry poisoned")
+            .get(address)
+            .cloned()
     }
 
     /// Whether a signer is registered under `address`.
     pub fn has(&self, address: &str) -> bool {
-        self.signers.read().expect("signer registry poisoned").contains_key(address)
+        self.signers
+            .read()
+            .expect("signer registry poisoned")
+            .contains_key(address)
     }
 
     /// All registered addresses (sorted).
     pub fn addresses(&self) -> Vec<String> {
-        self.signers.read().expect("signer registry poisoned").keys().cloned().collect()
+        self.signers
+            .read()
+            .expect("signer registry poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// All registered signers (sorted by address).
     pub fn values(&self) -> Vec<Arc<dyn Signer>> {
-        self.signers.read().expect("signer registry poisoned").values().cloned().collect()
+        self.signers
+            .read()
+            .expect("signer registry poisoned")
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// All `(address, signer)` entries (sorted by address).
@@ -795,7 +823,10 @@ impl SignerRegistry {
 
     /// Remove all entries.
     pub fn clear(&self) {
-        self.signers.write().expect("signer registry poisoned").clear();
+        self.signers
+            .write()
+            .expect("signer registry poisoned")
+            .clear();
     }
 
     /// Number of registered signers.
@@ -811,7 +842,9 @@ impl SignerRegistry {
 
 impl fmt::Debug for SignerRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignerRegistry").field("addresses", &self.addresses()).finish()
+        f.debug_struct("SignerRegistry")
+            .field("addresses", &self.addresses())
+            .finish()
     }
 }
 
@@ -838,10 +871,16 @@ impl fmt::Debug for ExecutionHost<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExecutionHost")
             .field("wallet", &self.wallet.map(|wallet| wallet.public_key()))
-            .field("available_signer_addresses", &self.available_signer_addresses)
+            .field(
+                "available_signer_addresses",
+                &self.available_signer_addresses,
+            )
             .field(
                 "transaction_transport",
-                &self.transaction_transport.as_ref().map(|_| "TransactionTransport"),
+                &self
+                    .transaction_transport
+                    .as_ref()
+                    .map(|_| "TransactionTransport"),
             )
             .finish()
     }
@@ -891,9 +930,18 @@ impl fmt::Debug for ExecuteOptions {
         f.debug_struct("ExecuteOptions")
             .field("send", &self.send)
             .field("signer_registry", &self.signer_registry)
-            .field("available_signer_addresses", &self.available_signer_addresses)
-            .field("on_transaction_start", &self.on_transaction_start.as_ref().map(|_| "Fn"))
-            .field("on_transaction_success", &self.on_transaction_success.as_ref().map(|_| "Fn"))
+            .field(
+                "available_signer_addresses",
+                &self.available_signer_addresses,
+            )
+            .field(
+                "on_transaction_start",
+                &self.on_transaction_start.as_ref().map(|_| "Fn"),
+            )
+            .field(
+                "on_transaction_success",
+                &self.on_transaction_success.as_ref().map(|_| "Fn"),
+            )
             .finish()
     }
 }
@@ -939,7 +987,12 @@ fn missing_signers(
 ) -> Vec<String> {
     let mut available: Vec<&str> = Vec::new();
     let mut owned: Vec<String> = Vec::new();
-    available.extend(options.available_signer_addresses.iter().map(String::as_str));
+    available.extend(
+        options
+            .available_signer_addresses
+            .iter()
+            .map(String::as_str),
+    );
     available.extend(host.available_signer_addresses.iter().map(String::as_str));
     if let Some(registry) = &options.signer_registry {
         owned.extend(registry.addresses());
@@ -1094,7 +1147,10 @@ pub async fn execute_prepared_operation(
         kind: operation.kind(),
         operation_name: operation.name().to_string(),
         artifacts: operation.artifacts().clone(),
-        signatures: receipts.iter().map(|receipt| receipt.signature.clone()).collect(),
+        signatures: receipts
+            .iter()
+            .map(|receipt| receipt.signature.clone())
+            .collect(),
         transactions: receipts,
     })
 }
@@ -1279,7 +1335,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(body.required_signer_addresses, vec![addr(10), addr(12), addr(13)]);
+        assert_eq!(
+            body.required_signer_addresses,
+            vec![addr(10), addr(12), addr(13)]
+        );
     }
 
     #[test]
@@ -1298,14 +1357,20 @@ mod tests {
     fn empty_instructions_are_rejected() {
         let error = create_prepared_transaction_body("empty-tx", vec![], None, None).unwrap_err();
         assert_eq!(error, OperationError::EmptyTransaction("empty-tx".into()));
-        assert_eq!(error.to_string(), "Transaction 'empty-tx' must contain at least one item");
+        assert_eq!(
+            error.to_string(),
+            "Transaction 'empty-tx' must contain at least one item"
+        );
     }
 
     #[test]
     fn empty_flow_is_rejected() {
         let error = create_prepared_flow("empty-flow", vec![], Value::Null).unwrap_err();
         assert_eq!(error, OperationError::EmptyFlow("empty-flow".into()));
-        assert_eq!(error.to_string(), "Flow 'empty-flow' must contain at least one item");
+        assert_eq!(
+            error.to_string(),
+            "Flow 'empty-flow' must contain at least one item"
+        );
     }
 
     #[test]
@@ -1319,9 +1384,9 @@ mod tests {
         );
         let child_transaction = create_prepared_transaction(
             "child-tx",
-            PreparedTransactionChildren::Instructions(vec![
-                PreparedTransactionInstruction::Built(instruction(2, vec![meta(11, true), meta(10, true)])),
-            ]),
+            PreparedTransactionChildren::Instructions(vec![PreparedTransactionInstruction::Built(
+                instruction(2, vec![meta(11, true), meta(10, true)]),
+            )]),
             Value::Null,
             None,
             Some(vec![error_metadata(6001, "Second", "second failed")]),
@@ -1348,7 +1413,10 @@ mod tests {
             ]
         );
         // Inherited, concatenated in child order, deduplicated.
-        assert_eq!(combined.transaction.required_signer_addresses, vec![addr(10), addr(11)]);
+        assert_eq!(
+            combined.transaction.required_signer_addresses,
+            vec![addr(10), addr(11)]
+        );
         assert_eq!(
             combined.transaction.errors,
             vec![
@@ -1366,7 +1434,10 @@ mod tests {
             Some(vec![]),
         )
         .unwrap();
-        assert_eq!(overridden.transaction.required_signer_addresses, vec!["only"]);
+        assert_eq!(
+            overridden.transaction.required_signer_addresses,
+            vec!["only"]
+        );
         assert!(overridden.transaction.errors.is_empty());
     }
 
@@ -1374,10 +1445,13 @@ mod tests {
     fn flow_as_child_is_rejected() {
         let flow = create_prepared_flow(
             "inner-flow",
-            vec![
-                create_prepared_transaction_body("stage", vec![instruction(1, vec![])], None, None)
-                    .unwrap(),
-            ],
+            vec![create_prepared_transaction_body(
+                "stage",
+                vec![instruction(1, vec![])],
+                None,
+                None,
+            )
+            .unwrap()],
             Value::Null,
         )
         .unwrap();
@@ -1419,12 +1493,17 @@ mod tests {
             ]
         );
         // New signers first, then existing (mirrors TS).
-        assert_eq!(prepended.required_signer_addresses, vec![addr(11), addr(10)]);
+        assert_eq!(
+            prepended.required_signer_addresses,
+            vec![addr(11), addr(10)]
+        );
         assert_eq!(prepended.errors, base.errors);
 
-        let appended =
-            append_transaction_instructions(&base, &[instruction(3, vec![meta(12, true), meta(10, true)])])
-                .unwrap();
+        let appended = append_transaction_instructions(
+            &base,
+            &[instruction(3, vec![meta(12, true), meta(10, true)])],
+        )
+        .unwrap();
         assert_eq!(
             appended.instructions,
             vec![
@@ -1439,25 +1518,26 @@ mod tests {
     fn flow_composition_helpers() {
         let flow = create_prepared_flow(
             "flow",
-            vec![
-                create_prepared_transaction_body(
-                    "first",
-                    vec![instruction(1, vec![meta(10, true)])],
-                    None,
-                    None,
-                )
-                .unwrap(),
-            ],
+            vec![create_prepared_transaction_body(
+                "first",
+                vec![instruction(1, vec![meta(10, true)])],
+                None,
+                None,
+            )
+            .unwrap()],
             json!({"flow": true}),
         )
         .unwrap();
 
         let appended = append_flow_transactions(
             &flow,
-            vec![
-                create_prepared_transaction_body("second", vec![instruction(2, vec![])], None, None)
-                    .unwrap(),
-            ],
+            vec![create_prepared_transaction_body(
+                "second",
+                vec![instruction(2, vec![])],
+                None,
+                None,
+            )
+            .unwrap()],
         )
         .unwrap();
         assert_eq!(appended.transactions.len(), 2);
@@ -1470,8 +1550,14 @@ mod tests {
             &[instruction(3, vec![meta(12, true)])],
         )
         .unwrap();
-        assert_eq!(prepended.transactions[1].instructions[0], instruction(3, vec![meta(12, true)]));
-        assert_eq!(prepended.transactions[1].required_signer_addresses, vec![addr(12)]);
+        assert_eq!(
+            prepended.transactions[1].instructions[0],
+            instruction(3, vec![meta(12, true)])
+        );
+        assert_eq!(
+            prepended.transactions[1].required_signer_addresses,
+            vec![addr(12)]
+        );
 
         let error = prepend_flow_transaction_instructions(&appended, 5, &[]).unwrap_err();
         assert_eq!(
@@ -1488,8 +1574,12 @@ mod tests {
     #[test]
     fn signer_registry_round_trip() {
         let registry = SignerRegistry::new();
-        registry.register("alpha", Arc::new(AddressSigner("alpha".into()))).unwrap();
-        registry.register_signer(Arc::new(AddressSigner("beta".into()))).unwrap();
+        registry
+            .register("alpha", Arc::new(AddressSigner("alpha".into())))
+            .unwrap();
+        registry
+            .register_signer(Arc::new(AddressSigner("beta".into())))
+            .unwrap();
 
         assert!(registry.has("alpha"));
         assert_eq!(registry.len(), 2);
@@ -1497,7 +1587,11 @@ mod tests {
         assert_eq!(registry.get("beta").unwrap().address(), "beta");
         assert_eq!(registry.values().len(), 2);
         assert_eq!(
-            registry.entries().iter().map(|(a, _)| a.clone()).collect::<Vec<_>>(),
+            registry
+                .entries()
+                .iter()
+                .map(|(a, _)| a.clone())
+                .collect::<Vec<_>>(),
             vec!["alpha", "beta"]
         );
 
@@ -1509,7 +1603,9 @@ mod tests {
         assert!(registry.is_empty());
 
         assert_eq!(
-            registry.register("", Arc::new(AddressSigner(String::new()))).unwrap_err(),
+            registry
+                .register("", Arc::new(AddressSigner(String::new())))
+                .unwrap_err(),
             OperationError::EmptySignerAddress
         );
     }
@@ -1536,17 +1632,25 @@ mod tests {
             vec![
                 create_prepared_transaction_body(
                     "first",
-                    vec![instruction(1, vec![BuiltAccountMeta {
-                        pubkey: key(0xAA),
-                        is_signer: true,
-                        is_writable: true,
-                    }])],
+                    vec![instruction(
+                        1,
+                        vec![BuiltAccountMeta {
+                            pubkey: key(0xAA),
+                            is_signer: true,
+                            is_writable: true,
+                        }],
+                    )],
                     None,
                     None,
                 )
                 .unwrap(),
-                create_prepared_transaction_body("second", vec![instruction(2, vec![])], None, None)
-                    .unwrap(),
+                create_prepared_transaction_body(
+                    "second",
+                    vec![instruction(2, vec![])],
+                    None,
+                    None,
+                )
+                .unwrap(),
             ],
             json!({"flow": "artifacts"}),
         )
@@ -1558,17 +1662,17 @@ mod tests {
         let options = ExecuteOptions {
             on_transaction_start: Some(Arc::new(move |event| {
                 assert!(event.receipt.is_none());
-                start_events
-                    .lock()
-                    .unwrap()
-                    .push(format!("start:{}:{}", event.transaction_index, event.transaction.name));
+                start_events.lock().unwrap().push(format!(
+                    "start:{}:{}",
+                    event.transaction_index, event.transaction.name
+                ));
             })),
             on_transaction_success: Some(Arc::new(move |event| {
                 let receipt = event.receipt.expect("success event carries receipt");
-                success_events
-                    .lock()
-                    .unwrap()
-                    .push(format!("success:{}:{}", event.transaction_index, receipt.signature));
+                success_events.lock().unwrap().push(format!(
+                    "success:{}:{}",
+                    event.transaction_index, receipt.signature
+                ));
             })),
             ..ExecuteOptions::default()
         };
@@ -1578,12 +1682,17 @@ mod tests {
             available_signer_addresses: Vec::new(),
             ..ExecutionHost::default()
         };
-        let receipt = execute_prepared_operation(&host, &operation, &options).await.unwrap();
+        let receipt = execute_prepared_operation(&host, &operation, &options)
+            .await
+            .unwrap();
 
         assert_eq!(receipt.kind, OperationKind::Flow);
         assert_eq!(receipt.operation_name, "happy-flow");
         assert_eq!(receipt.artifacts, json!({"flow": "artifacts"}));
-        assert_eq!(receipt.signatures, vec!["first-signature", "second-signature"]);
+        assert_eq!(
+            receipt.signatures,
+            vec!["first-signature", "second-signature"]
+        );
         assert_eq!(
             receipt.transactions,
             vec![
@@ -1642,10 +1751,16 @@ mod tests {
             ..ExecuteOptions::default()
         };
 
-        let error = execute_prepared_operation(&host, &operation, &options).await.unwrap_err();
+        let error = execute_prepared_operation(&host, &operation, &options)
+            .await
+            .unwrap_err();
 
         assert_eq!(wallet.calls(), 0, "wallet must not be called");
-        assert_eq!(*started.lock().unwrap(), 0, "start callback fires after validation");
+        assert_eq!(
+            *started.lock().unwrap(),
+            0,
+            "start callback fires after validation"
+        );
         assert_eq!(error.operation_name, "needs-signer");
         assert_eq!(error.failed_transaction_index, 0);
         assert!(error.completed_receipts.is_empty());
@@ -1671,14 +1786,22 @@ mod tests {
         wallet.extra_signer_addresses = vec![addr(11)];
 
         let registry = Arc::new(SignerRegistry::new());
-        registry.register(addr(12), Arc::new(AddressSigner(addr(12)))).unwrap();
+        registry
+            .register(addr(12), Arc::new(AddressSigner(addr(12))))
+            .unwrap();
 
         let operation: PreparedOperation = create_prepared_transaction(
             "well-signed",
             PreparedTransactionChildren::Instructions(vec![PreparedTransactionInstruction::Built(
                 instruction(
                     1,
-                    vec![meta(0xAA, true), meta(11, true), meta(12, true), meta(13, true), meta(14, true)],
+                    vec![
+                        meta(0xAA, true),
+                        meta(11, true),
+                        meta(12, true),
+                        meta(13, true),
+                        meta(14, true),
+                    ],
                 ),
             )]),
             Value::Null,
@@ -1699,7 +1822,9 @@ mod tests {
             ..ExecuteOptions::default()
         };
 
-        let receipt = execute_prepared_operation(&host, &operation, &options).await.unwrap();
+        let receipt = execute_prepared_operation(&host, &operation, &options)
+            .await
+            .unwrap();
         assert_eq!(receipt.signatures, vec!["sig-1"]);
         assert_eq!(wallet.calls(), 1);
     }
@@ -1711,12 +1836,14 @@ mod tests {
                 signature: "first-signature".into(),
                 slot: Some(10),
             }),
-            Err(WalletError::from_outcome(TransactionFailureOutcome::ChainFailed {
-                signature: Some("second-signature".into()),
-                slot: Some(11),
-                program_error: None,
-                message: "second transaction failed".into(),
-            })),
+            Err(WalletError::from_outcome(
+                TransactionFailureOutcome::ChainFailed {
+                    signature: Some("second-signature".into()),
+                    slot: Some(11),
+                    program_error: None,
+                    message: "second transaction failed".into(),
+                },
+            )),
         ]);
 
         let operation: PreparedOperation = create_prepared_flow(
@@ -1724,8 +1851,13 @@ mod tests {
             vec![
                 create_prepared_transaction_body("first", vec![instruction(1, vec![])], None, None)
                     .unwrap(),
-                create_prepared_transaction_body("second", vec![instruction(2, vec![])], None, None)
-                    .unwrap(),
+                create_prepared_transaction_body(
+                    "second",
+                    vec![instruction(2, vec![])],
+                    None,
+                    None,
+                )
+                .unwrap(),
             ],
             Value::Null,
         )
@@ -1773,7 +1905,11 @@ mod tests {
             instruction(1, vec![]),
             Value::Null,
             None,
-            Some(vec![error_metadata(6000, "OreProgramError", "ORE deploy failed")]),
+            Some(vec![error_metadata(
+                6000,
+                "OreProgramError",
+                "ORE deploy failed",
+            )]),
         )
         .into();
 
@@ -1799,15 +1935,23 @@ mod tests {
                 message: "OreProgramError (6000): ORE deploy failed".into(),
             }
         );
-        assert_eq!(error.outcome.program_error().unwrap().to_string(), "OreProgramError (6000): ORE deploy failed");
+        assert_eq!(
+            error.outcome.program_error().unwrap().to_string(),
+            "OreProgramError (6000): ORE deploy failed"
+        );
     }
 
     #[tokio::test]
     async fn unclassified_wallet_error_is_not_submitted_in_send_phase() {
         let wallet = MockWallet::new(vec![Err(WalletError::new("connection reset"))]);
-        let operation: PreparedOperation =
-            create_prepared_instruction("plain-failure", instruction(1, vec![]), Value::Null, None, None)
-                .into();
+        let operation: PreparedOperation = create_prepared_instruction(
+            "plain-failure",
+            instruction(1, vec![]),
+            Value::Null,
+            None,
+            None,
+        )
+        .into();
 
         let host = ExecutionHost {
             wallet: Some(&wallet),
@@ -1829,9 +1973,14 @@ mod tests {
 
     #[tokio::test]
     async fn missing_wallet_is_classified_as_wallet_phase() {
-        let operation: PreparedOperation =
-            create_prepared_instruction("no-wallet", instruction(1, vec![]), Value::Null, None, None)
-                .into();
+        let operation: PreparedOperation = create_prepared_instruction(
+            "no-wallet",
+            instruction(1, vec![]),
+            Value::Null,
+            None,
+            None,
+        )
+        .into();
         let host = ExecutionHost::default();
         let error = execute_prepared_operation(&host, &operation, &ExecuteOptions::default())
             .await
@@ -1849,7 +1998,11 @@ mod tests {
 
     #[test]
     fn parse_and_format_program_errors() {
-        let metadata = [error_metadata(6000, "SlippageExceeded", "Slippage tolerance exceeded")];
+        let metadata = [error_metadata(
+            6000,
+            "SlippageExceeded",
+            "Slippage tolerance exceeded",
+        )];
         let parsed = parse_program_error(6000, &metadata).unwrap();
         assert_eq!(
             format_program_error(&parsed),
@@ -1900,7 +2053,10 @@ mod tests {
         let transaction = &description["transactions"][0];
         assert_eq!(transaction["name"], "describe-me");
         assert_eq!(transaction["required_signer_addresses"], json!([addr(10)]));
-        assert_eq!(transaction["errors"], json!([{"code": 6000, "name": "E", "msg": "m"}]));
+        assert_eq!(
+            transaction["errors"],
+            json!([{"code": 6000, "name": "E", "msg": "m"}])
+        );
         assert_eq!(transaction["instruction_count"], 1);
         let ix = &transaction["instructions"][0];
         assert_eq!(ix["program_id"], addr(7));

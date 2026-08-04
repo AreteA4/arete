@@ -8,7 +8,9 @@
 
 use serde_json::{Map, Value};
 
-use super::types::{json_kind, ArgField, ArgSchema, ArgType, EnumVariantDef, EnumVariantKind, InstructionError};
+use super::types::{
+    json_kind, ArgField, ArgSchema, ArgType, EnumVariantDef, EnumVariantKind, InstructionError,
+};
 
 /// Serializes the discriminator plus instruction arguments into Borsh-encoded
 /// instruction data.
@@ -61,16 +63,28 @@ fn invalid(ctx: &str, message: impl Into<String>) -> InstructionError {
 }
 
 /// Small integers (u8..u32, i8..i32) accept only integral JSON numbers.
-fn int_in_range(value: &Value, ctx: &str, ty: &str, min: i128, max: i128) -> Result<i128, InstructionError> {
+fn int_in_range(
+    value: &Value,
+    ctx: &str,
+    ty: &str,
+    min: i128,
+    max: i128,
+) -> Result<i128, InstructionError> {
     let Value::Number(n) = value else {
-        return Err(invalid(ctx, format!("expected a number for {ty}, got {}", json_kind(value))));
+        return Err(invalid(
+            ctx,
+            format!("expected a number for {ty}, got {}", json_kind(value)),
+        ));
     };
     let v = if let Some(u) = n.as_u64() {
         i128::from(u)
     } else if let Some(i) = n.as_i64() {
         i128::from(i)
     } else {
-        return Err(invalid(ctx, format!("expected an integer for {ty}, got {n}")));
+        return Err(invalid(
+            ctx,
+            format!("expected an integer for {ty}, got {n}"),
+        ));
     };
     if v < min || v > max {
         return Err(invalid(ctx, format!("value {v} out of range for {ty}")));
@@ -88,7 +102,10 @@ fn wide_int(value: &Value, ctx: &str, ty: &str) -> Result<WideInt, InstructionEr
             } else if let Some(i) = n.as_i64() {
                 Ok(WideInt::Signed(i128::from(i)))
             } else {
-                Err(invalid(ctx, format!("expected an integer for {ty}, got {n}")))
+                Err(invalid(
+                    ctx,
+                    format!("expected an integer for {ty}, got {n}"),
+                ))
             }
         }
         Value::String(s) => {
@@ -103,7 +120,10 @@ fn wide_int(value: &Value, ctx: &str, ty: &str) -> Result<WideInt, InstructionEr
         }
         other => Err(invalid(
             ctx,
-            format!("expected an integer or decimal string for {ty}, got {}", json_kind(other)),
+            format!(
+                "expected an integer or decimal string for {ty}, got {}",
+                json_kind(other)
+            ),
         )),
     }
 }
@@ -117,7 +137,10 @@ fn float_value(value: &Value, ctx: &str, ty: &str) -> Result<f64, InstructionErr
         Value::Number(n) => n
             .as_f64()
             .ok_or_else(|| invalid(ctx, format!("value {n} is not representable as {ty}"))),
-        other => Err(invalid(ctx, format!("expected a number for {ty}, got {}", json_kind(other)))),
+        other => Err(invalid(
+            ctx,
+            format!("expected a number for {ty}, got {}", json_kind(other)),
+        )),
     }
 }
 
@@ -125,7 +148,10 @@ fn byte_array(value: &Value, ctx: &str) -> Result<Vec<u8>, InstructionError> {
     let Value::Array(items) = value else {
         return Err(invalid(
             ctx,
-            format!("Cannot serialize bytes from value of type {}", json_kind(value)),
+            format!(
+                "Cannot serialize bytes from value of type {}",
+                json_kind(value)
+            ),
         ));
     };
     items
@@ -139,7 +165,12 @@ fn byte_array(value: &Value, ctx: &str) -> Result<Vec<u8>, InstructionError> {
         .collect()
 }
 
-fn serialize_value(value: &Value, ty: &ArgType, ctx: &str, out: &mut Vec<u8>) -> Result<(), InstructionError> {
+fn serialize_value(
+    value: &Value,
+    ty: &ArgType,
+    ctx: &str,
+    out: &mut Vec<u8>,
+) -> Result<(), InstructionError> {
     match ty {
         ArgType::U8 => {
             let v = int_in_range(value, ctx, "u8", 0, i128::from(u8::MAX))?;
@@ -158,11 +189,23 @@ fn serialize_value(value: &Value, ty: &ArgType, ctx: &str, out: &mut Vec<u8>) ->
             out.extend_from_slice(&(v as i8).to_le_bytes());
         }
         ArgType::I16 => {
-            let v = int_in_range(value, ctx, "i16", i128::from(i16::MIN), i128::from(i16::MAX))?;
+            let v = int_in_range(
+                value,
+                ctx,
+                "i16",
+                i128::from(i16::MIN),
+                i128::from(i16::MAX),
+            )?;
             out.extend_from_slice(&(v as i16).to_le_bytes());
         }
         ArgType::I32 => {
-            let v = int_in_range(value, ctx, "i32", i128::from(i32::MIN), i128::from(i32::MAX))?;
+            let v = int_in_range(
+                value,
+                ctx,
+                "i32",
+                i128::from(i32::MIN),
+                i128::from(i32::MAX),
+            )?;
             out.extend_from_slice(&(v as i32).to_le_bytes());
         }
         ArgType::U64 => match wide_int(value, ctx, "u64")? {
@@ -201,13 +244,19 @@ fn serialize_value(value: &Value, ty: &ArgType, ctx: &str, out: &mut Vec<u8>) ->
         }
         ArgType::Bool => {
             let Value::Bool(b) = value else {
-                return Err(invalid(ctx, format!("expected a boolean, got {}", json_kind(value))));
+                return Err(invalid(
+                    ctx,
+                    format!("expected a boolean, got {}", json_kind(value)),
+                ));
             };
             out.push(u8::from(*b));
         }
         ArgType::String => {
             let Value::String(s) = value else {
-                return Err(invalid(ctx, format!("expected a string, got {}", json_kind(value))));
+                return Err(invalid(
+                    ctx,
+                    format!("expected a string, got {}", json_kind(value)),
+                ));
             };
             out.extend_from_slice(&(s.len() as u32).to_le_bytes());
             out.extend_from_slice(s.as_bytes());
@@ -256,7 +305,10 @@ fn serialize_value(value: &Value, ty: &ArgType, ctx: &str, out: &mut Vec<u8>) ->
         }
         ArgType::Vec(inner) => {
             let Value::Array(items) = value else {
-                return Err(invalid(ctx, format!("expected an array for vec, got {}", json_kind(value))));
+                return Err(invalid(
+                    ctx,
+                    format!("expected an array for vec, got {}", json_kind(value)),
+                ));
             };
             out.extend_from_slice(&(items.len() as u32).to_le_bytes());
             for item in items {
@@ -273,12 +325,18 @@ fn serialize_value(value: &Value, ty: &ArgType, ctx: &str, out: &mut Vec<u8>) ->
         }
         ArgType::Array(inner, length) => {
             let Value::Array(items) = value else {
-                return Err(invalid(ctx, format!("expected an array, got {}", json_kind(value))));
+                return Err(invalid(
+                    ctx,
+                    format!("expected an array, got {}", json_kind(value)),
+                ));
             };
             if items.len() != *length {
                 return Err(invalid(
                     ctx,
-                    format!("Array length mismatch: expected {length}, got {}", items.len()),
+                    format!(
+                        "Array length mismatch: expected {length}, got {}",
+                        items.len()
+                    ),
                 ));
             }
             for item in items {
@@ -287,12 +345,18 @@ fn serialize_value(value: &Value, ty: &ArgType, ctx: &str, out: &mut Vec<u8>) ->
         }
         ArgType::HashMap(key_ty, value_ty) => {
             if **key_ty != ArgType::String {
-                return Err(invalid(ctx, "Instruction hashMap keys must use the 'string' schema"));
+                return Err(invalid(
+                    ctx,
+                    "Instruction hashMap keys must use the 'string' schema",
+                ));
             }
             let Value::Object(map) = value else {
                 return Err(invalid(
                     ctx,
-                    format!("HashMap value must be a plain object, got {}", json_kind(value)),
+                    format!(
+                        "HashMap value must be a plain object, got {}",
+                        json_kind(value)
+                    ),
                 ));
             };
             // Rust/Borsh sorts String keys by their UTF-8 bytes before serializing.
@@ -320,7 +384,10 @@ fn serialize_struct(
     let Value::Object(obj) = value else {
         return Err(invalid(
             ctx,
-            format!("Struct value must be a plain object, got {}", json_kind(value)),
+            format!(
+                "Struct value must be a plain object, got {}",
+                json_kind(value)
+            ),
         ));
     };
     for field in fields {
@@ -338,12 +405,19 @@ fn serialize_struct(
     Ok(())
 }
 
-fn variant_index(variants: &[EnumVariantDef], name: &str, ctx: &str) -> Result<usize, InstructionError> {
+fn variant_index(
+    variants: &[EnumVariantDef],
+    name: &str,
+    ctx: &str,
+) -> Result<usize, InstructionError> {
     variants.iter().position(|v| v.name == name).ok_or_else(|| {
         let names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
         invalid(
             ctx,
-            format!("Unknown enum variant \"{name}\". Expected one of: {}", names.join(", ")),
+            format!(
+                "Unknown enum variant \"{name}\". Expected one of: {}",
+                names.join(", ")
+            ),
         )
     })
 }
@@ -357,7 +431,11 @@ fn serialize_enum(
     match value {
         // A bare variant index (unit variants only).
         Value::Number(n) => {
-            let Some(index) = n.as_u64().map(|i| i as usize).filter(|i| *i < variants.len()) else {
+            let Some(index) = n
+                .as_u64()
+                .map(|i| i as usize)
+                .filter(|i| *i < variants.len())
+            else {
                 return Err(invalid(
                     ctx,
                     format!(
@@ -408,17 +486,25 @@ fn serialize_enum(
             match &variants[index].kind {
                 EnumVariantKind::Unit => Err(invalid(
                     ctx,
-                    format!("Enum variant \"{key}\" is fieldless; pass '{key}' instead of an object"),
+                    format!(
+                        "Enum variant \"{key}\" is fieldless; pass '{key}' instead of an object"
+                    ),
                 )),
                 EnumVariantKind::Struct(fields) => {
                     out.push(index as u8);
                     serialize_struct(payload, fields, &format!("{ctx}.{key}"), out)
                 }
                 EnumVariantKind::Tuple(types) => {
-                    let Some(items) = payload.as_array().filter(|items| items.len() == types.len()) else {
+                    let Some(items) = payload
+                        .as_array()
+                        .filter(|items| items.len() == types.len())
+                    else {
                         return Err(invalid(
                             ctx,
-                            format!("Enum variant \"{key}\" expects a tuple of length {}", types.len()),
+                            format!(
+                                "Enum variant \"{key}\" expects a tuple of length {}",
+                                types.len()
+                            ),
                         ));
                     };
                     out.push(index as u8);
@@ -431,7 +517,10 @@ fn serialize_enum(
         }
         other => Err(invalid(
             ctx,
-            format!("Cannot serialize enum from value of type {}", json_kind(other)),
+            format!(
+                "Cannot serialize enum from value of type {}",
+                json_kind(other)
+            ),
         )),
     }
 }
@@ -444,15 +533,22 @@ mod tests {
     const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
 
     fn arg(name: &str, ty: ArgType) -> ArgSchema {
-        ArgSchema { name: name.to_string(), ty }
+        ArgSchema {
+            name: name.to_string(),
+            ty,
+        }
     }
 
     fn args(value: Value) -> Map<String, Value> {
-        value.as_object().cloned().expect("test args must be an object")
+        value
+            .as_object()
+            .cloned()
+            .expect("test args must be an object")
     }
 
     fn ser(schema: &[ArgSchema], params: Value) -> Vec<u8> {
-        serialize_instruction_data(&[], &args(params), schema).expect("serialization should succeed")
+        serialize_instruction_data(&[], &args(params), schema)
+            .expect("serialization should succeed")
     }
 
     fn ser_err(schema: &[ArgSchema], params: Value) -> String {
@@ -484,8 +580,13 @@ mod tests {
             ser(&schema, json!({ "amount": "18446744073709551615" })),
             vec![0xff; 8]
         );
-        assert_eq!(ser(&schema, json!({ "amount": "1" })), vec![1, 0, 0, 0, 0, 0, 0, 0]);
-        assert!(ser_err(&schema, json!({ "amount": "18446744073709551616" })).contains("out of range"));
+        assert_eq!(
+            ser(&schema, json!({ "amount": "1" })),
+            vec![1, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert!(
+            ser_err(&schema, json!({ "amount": "18446744073709551616" })).contains("out of range")
+        );
         assert!(ser_err(&schema, json!({ "amount": -1 })).contains("out of range"));
     }
 
@@ -500,14 +601,20 @@ mod tests {
             json!({ "small": "-9223372036854775808", "big": "-170141183460469231731687303715884105728" }),
         );
         assert_eq!(&min[..8], &[0, 0, 0, 0, 0, 0, 0, 0x80]);
-        assert_eq!(&min[8..24], &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]);
+        assert_eq!(
+            &min[8..24],
+            &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]
+        );
     }
 
     #[test]
     fn serializes_large_u128_values() {
         let schema = [arg("huge", ArgType::U128)];
         assert_eq!(
-            ser(&schema, json!({ "huge": "340282366920938463463374607431768211455" })),
+            ser(
+                &schema,
+                json!({ "huge": "340282366920938463463374607431768211455" })
+            ),
             vec![0xff; 16]
         );
         assert_eq!(ser(&schema, json!({ "huge": 1 }))[0], 1);
@@ -516,7 +623,10 @@ mod tests {
     #[test]
     fn serializes_strings_with_a_length_prefix() {
         let schema = [arg("s", ArgType::String)];
-        assert_eq!(ser(&schema, json!({ "s": "hi" })), vec![2, 0, 0, 0, 0x68, 0x69]);
+        assert_eq!(
+            ser(&schema, json!({ "s": "hi" })),
+            vec![2, 0, 0, 0, 0x68, 0x69]
+        );
     }
 
     #[test]
@@ -530,7 +640,10 @@ mod tests {
     #[test]
     fn serializes_vec_with_a_length_prefix() {
         let schema = [arg("v", ArgType::Vec(Box::new(ArgType::U16)))];
-        assert_eq!(ser(&schema, json!({ "v": [1, 258] })), vec![2, 0, 0, 0, 1, 0, 2, 1]);
+        assert_eq!(
+            ser(&schema, json!({ "v": [1, 258] })),
+            vec![2, 0, 0, 0, 1, 0, 2, 1]
+        );
     }
 
     #[test]
@@ -552,7 +665,10 @@ mod tests {
     #[test]
     fn serializes_bytes_with_a_length_prefix() {
         let schema = [arg("blob", ArgType::Bytes)];
-        assert_eq!(ser(&schema, json!({ "blob": [9, 8] })), vec![2, 0, 0, 0, 9, 8]);
+        assert_eq!(
+            ser(&schema, json!({ "blob": [9, 8] })),
+            vec![2, 0, 0, 0, 9, 8]
+        );
         assert!(ser_err(&schema, json!({ "blob": "nope" })).contains("Cannot serialize bytes"));
     }
 
@@ -571,7 +687,10 @@ mod tests {
             ArgType::HashMap(Box::new(ArgType::String), Box::new(ArgType::U8)),
         )];
         let data = ser(&schema, json!({ "labels": { "z": 1, "a": 2 } }));
-        assert_eq!(data, vec![2, 0, 0, 0, 1, 0, 0, 0, 0x61, 2, 1, 0, 0, 0, 0x7a, 1]);
+        assert_eq!(
+            data,
+            vec![2, 0, 0, 0, 1, 0, 0, 0, 0x61, 2, 1, 0, 0, 0, 0x7a, 1]
+        );
     }
 
     #[test]
@@ -656,15 +775,24 @@ mod tests {
         let schema = [arg(
             "data",
             ArgType::Struct(vec![
-                ArgField { name: "amount".to_string(), ty: ArgType::U64 },
+                ArgField {
+                    name: "amount".to_string(),
+                    ty: ArgType::U64,
+                },
                 ArgField {
                     name: "inner".to_string(),
-                    ty: ArgType::Struct(vec![ArgField { name: "flag".to_string(), ty: ArgType::Bool }]),
+                    ty: ArgType::Struct(vec![ArgField {
+                        name: "flag".to_string(),
+                        ty: ArgType::Bool,
+                    }]),
                 },
             ]),
         )];
         // Keys intentionally out of schema order.
-        let data = ser(&schema, json!({ "data": { "inner": { "flag": true }, "amount": 3 } }));
+        let data = ser(
+            &schema,
+            json!({ "data": { "inner": { "flag": true }, "amount": 3 } }),
+        );
         assert_eq!(data, vec![3, 0, 0, 0, 0, 0, 0, 0, 1]);
     }
 
@@ -672,19 +800,23 @@ mod tests {
     fn rejects_structs_with_missing_required_fields() {
         let schema = [arg(
             "data",
-            ArgType::Struct(vec![ArgField { name: "amount".to_string(), ty: ArgType::U64 }]),
+            ArgType::Struct(vec![ArgField {
+                name: "amount".to_string(),
+                ty: ArgType::U64,
+            }]),
         )];
-        assert!(
-            ser_err(&schema, json!({ "data": {} }))
-                .contains("Missing required struct field \"amount\"")
-        );
+        assert!(ser_err(&schema, json!({ "data": {} }))
+            .contains("Missing required struct field \"amount\""));
     }
 
     fn op_schema() -> [ArgSchema; 1] {
         [arg(
             "op",
             ArgType::Enum(vec![
-                EnumVariantDef { name: "noop".to_string(), kind: EnumVariantKind::Unit },
+                EnumVariantDef {
+                    name: "noop".to_string(),
+                    kind: EnumVariantKind::Unit,
+                },
                 EnumVariantDef {
                     name: "transfer".to_string(),
                     kind: EnumVariantKind::Struct(vec![ArgField {
@@ -705,13 +837,20 @@ mod tests {
         let schema = [arg(
             "status",
             ArgType::Enum(vec![
-                EnumVariantDef { name: "active".to_string(), kind: EnumVariantKind::Unit },
-                EnumVariantDef { name: "sunset".to_string(), kind: EnumVariantKind::Unit },
+                EnumVariantDef {
+                    name: "active".to_string(),
+                    kind: EnumVariantKind::Unit,
+                },
+                EnumVariantDef {
+                    name: "sunset".to_string(),
+                    kind: EnumVariantKind::Unit,
+                },
             ]),
         )];
         assert_eq!(ser(&schema, json!({ "status": "sunset" })), vec![1]);
         assert_eq!(ser(&schema, json!({ "status": 0 })), vec![0]);
-        assert!(ser_err(&schema, json!({ "status": "paused" })).contains("Unknown enum variant \"paused\""));
+        assert!(ser_err(&schema, json!({ "status": "paused" }))
+            .contains("Unknown enum variant \"paused\""));
         assert!(ser_err(&schema, json!({ "status": 2 })).contains("out of range"));
     }
 
@@ -722,7 +861,10 @@ mod tests {
             ser(&schema, json!({ "op": { "transfer": { "amount": 7 } } })),
             vec![1, 7, 0, 0, 0, 0, 0, 0, 0]
         );
-        assert_eq!(ser(&schema, json!({ "op": { "pair": [5, 258] } })), vec![2, 5, 2, 1]);
+        assert_eq!(
+            ser(&schema, json!({ "op": { "pair": [5, 258] } })),
+            vec![2, 5, 2, 1]
+        );
     }
 
     #[test]
@@ -744,7 +886,12 @@ mod tests {
         let schema = [arg("amount", ArgType::U64)];
         for params in [json!({}), json!({ "amount": null })] {
             let err = serialize_instruction_data(&[], &args(params), &schema).unwrap_err();
-            assert_eq!(err, InstructionError::MissingArgument { name: "amount".to_string() });
+            assert_eq!(
+                err,
+                InstructionError::MissingArgument {
+                    name: "amount".to_string()
+                }
+            );
         }
     }
 

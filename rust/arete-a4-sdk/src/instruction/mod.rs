@@ -20,7 +20,9 @@ mod types;
 
 pub use handler::InstructionHandler;
 pub use resolver::{resolve_accounts, AccountResolutionResult, ResolvedAccount};
-pub use seed::{derive_program_address, normalize_seed_type, serialize_seed_value, CanonicalSeedType};
+pub use seed::{
+    derive_program_address, normalize_seed_type, serialize_seed_value, CanonicalSeedType,
+};
 pub use serializer::serialize_instruction_data;
 pub use solana_pubkey::Pubkey;
 pub use types::{

@@ -674,8 +674,10 @@ mod tests {
             .native_balance("addr", ContextSlotOptions::default())
             .await
             .unwrap_err();
-        assert!(matches!(error, ChainError::InvalidResponse { ref message, .. }
-            if message.contains("exceeds u64")));
+        assert!(
+            matches!(error, ChainError::InvalidResponse { ref message, .. }
+            if message.contains("exceeds u64"))
+        );
 
         let router = Router::new().route(
             "/chain/native-balance",
@@ -687,8 +689,10 @@ mod tests {
             .native_balance("addr", ContextSlotOptions::default())
             .await
             .unwrap_err();
-        assert!(matches!(error, ChainError::InvalidResponse { ref message, .. }
-            if message.contains("decimal u64 string")));
+        assert!(
+            matches!(error, ChainError::InvalidResponse { ref message, .. }
+            if message.contains("decimal u64 string"))
+        );
     }
 
     #[tokio::test]

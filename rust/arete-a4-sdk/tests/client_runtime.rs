@@ -10,8 +10,7 @@ use arete_a4_sdk::{
     create_prepared_instruction, Arete, AreteError, BuiltAccountMeta, BuiltInstruction,
     ErrorMetadata, ExecuteOptions, FailurePhase, PreparedOperation, Pubkey, SendOptions,
     SendResult, Signer, SignerRegistry, Stack, TransactionFailureOutcome, TransactionOptions,
-    Transport, ViewBuilder, ViewHandle, Views, WalletAdapter, WalletError,
-    WalletExecutionContext,
+    Transport, ViewBuilder, ViewHandle, Views, WalletAdapter, WalletError, WalletExecutionContext,
 };
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -268,8 +267,10 @@ async fn execute_merges_client_wallet_and_signer_registry() {
         .await
         .unwrap();
 
-    let operation =
-        prepared_requiring(vec![signer.to_string(), "extra-signer".to_string()], &signer);
+    let operation = prepared_requiring(
+        vec![signer.to_string(), "extra-signer".to_string()],
+        &signer,
+    );
     let receipt = client
         .execute(&operation, ExecuteOptions::default())
         .await
@@ -298,8 +299,10 @@ async fn execute_call_options_replace_the_client_registry() {
         .await
         .unwrap();
 
-    let operation =
-        prepared_requiring(vec![signer.to_string(), "extra-signer".to_string()], &signer);
+    let operation = prepared_requiring(
+        vec![signer.to_string(), "extra-signer".to_string()],
+        &signer,
+    );
     // Call options win: an explicit empty registry replaces the client's,
     // so the required extra signer is now missing and execution fails
     // closed before dispatch.
@@ -326,9 +329,7 @@ async fn spawn_http_stack() -> String {
     let router = Router::new()
         .route(
             "/chain/clock",
-            get(|| async {
-                Json(json!({ "slot": 555u64, "unixTimestamp": 1_700_000_000i64 }))
-            }),
+            get(|| async { Json(json!({ "slot": 555u64, "unixTimestamp": 1_700_000_000i64 })) }),
         )
         .route(
             "/transactions/v1/latest-blockhash",
@@ -360,7 +361,10 @@ async fn http_only_mode_serves_chain_and_transactions_but_fails_views_fast() {
         .await
         .unwrap();
     assert_eq!(client.transport(), Transport::Http);
-    assert_eq!(client.http_base_url(), Some(format!("http://{addr}")).as_deref());
+    assert_eq!(
+        client.http_base_url(),
+        Some(format!("http://{addr}")).as_deref()
+    );
 
     // Chain reads and the transaction relay work over the derived base.
     let clock = client.chain().clock().await.unwrap();
@@ -424,7 +428,10 @@ async fn http_base_prefers_explicit_then_generated_then_derived() {
         .connect()
         .await
         .unwrap();
-    assert_eq!(client.http_base_url(), Some("https://derived.example/socket"));
+    assert_eq!(
+        client.http_base_url(),
+        Some("https://derived.example/socket")
+    );
 
     // No URL at all: no base; chain calls fail with a clear config error.
     let client = Arete::<TestStack>::builder()
