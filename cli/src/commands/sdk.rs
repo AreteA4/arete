@@ -72,6 +72,11 @@ struct ExtensionsManifest {
     input_kind: Option<ExtensionsInputKind>,
     input_hash: Option<String>,
     sdk_range: Option<String>,
+    /// Target SDK language of the bundle (`"rust"` for Rust bundles; absent
+    /// or `"typescript"` for TypeScript bundles). Skipped when absent so
+    /// pre-existing TypeScript manifests round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +121,7 @@ struct ResolvedExtensionsArtifact {
     input_kind: Option<ExtensionsInputKind>,
     input_hash: Option<String>,
     sdk_range: Option<String>,
+    language: Option<String>,
     sdk_extension_hash: Option<String>,
     sdk_output_tree_hash: Option<String>,
     program_extension_bindings: Vec<ProgramExtensionBinding>,
@@ -133,9 +139,14 @@ impl ResolvedExtensionsArtifact {
             input_kind: self.input_kind,
             input_hash: self.input_hash.clone(),
             sdk_range: self.sdk_range.clone(),
+            language: self.language.clone(),
         }
     }
 }
+
+/// Bundle language declared by an extensions manifest.
+const EXTENSIONS_LANGUAGE_TYPESCRIPT: &str = "typescript";
+const EXTENSIONS_LANGUAGE_RUST: &str = "rust";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProgramExtensionBinding {
@@ -614,6 +625,7 @@ pub fn sync(config_path: &str, ts: bool, rust: bool, stack_filters: Vec<String>)
                 false,
                 None,
                 None,
+                None,
                 Vec::new(),
             )?;
         }
@@ -756,6 +768,7 @@ pub fn create(
                 crate_name_override,
                 module_flag,
                 url_override,
+                extensions_override,
                 manifest_override,
                 artifact_dirs,
             )
@@ -923,7 +936,7 @@ pub fn create_typescript(
             stack_name
         );
         if let Some(stack_config) = cfg.find_stack(stack_name) {
-            let source = resolve_stack_source(&client, &stack_config.stack)?;
+            let source = resolve_stack_source(&client, &stack_config.stack, None)?;
 
             let name = stack_config.name.as_deref().unwrap_or(&stack_config.stack);
             let raw_output =
@@ -1102,6 +1115,7 @@ pub fn install_stack(
             crate_name_override,
             module_flag,
             url_override,
+            extensions_override,
         ),
     }
 }
@@ -1120,7 +1134,7 @@ fn install_typescript(
     );
 
     let client = ApiClient::new()?;
-    let source = resolve_remote_stack_source(&client, stack_name)?;
+    let source = resolve_remote_stack_source(&client, stack_name, None)?;
     let output_path = output_override
         .map(PathBuf::from)
         .unwrap_or_else(|| default_typescript_output_dir(source.sdk_name()));
@@ -1188,6 +1202,7 @@ fn install_rust(
     crate_name_override: Option<String>,
     module_flag: bool,
     url_override: Option<String>,
+    extensions_override: Option<String>,
 ) -> Result<()> {
     println!(
         "{} Looking up hosted stack '{}'...",
@@ -1196,7 +1211,7 @@ fn install_rust(
     );
 
     let client = ApiClient::new()?;
-    let source = resolve_remote_stack_source(&client, stack_name)?;
+    let source = resolve_remote_stack_source(&client, stack_name, Some(EXTENSIONS_LANGUAGE_RUST))?;
     let crate_name = crate_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
     let output_dir = output_override
         .map(PathBuf::from)
@@ -1230,6 +1245,11 @@ fn install_rust(
                 "multi-live Rust install requires per-alias URLs; a shared --url is not allowed"
             );
         }
+        if extensions_override.is_some() || source.hosted_extensions().is_some() {
+            anyhow::bail!(
+                "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
+            );
+        }
         let live_urls = match &source {
             ResolvedStackSource::Remote(stack) => stack
                 .live_bindings
@@ -1247,9 +1267,12 @@ fn install_rust(
             Some(arete_interpreter::rust::RustCompositionConfig {
                 stack: arete_interpreter::rust::RustStackConfig {
                     crate_name: crate_name.clone(),
-                    sdk_version: "0.3".to_string(),
+                    sdk_version: "0.4".to_string(),
                     module_mode: module_flag,
                     url: None,
+                    http_url: None,
+                    extension_modules: Vec::new(),
+                    extension_entry: None,
                 },
                 live_urls,
             }),
@@ -1290,53 +1313,15 @@ fn install_rust(
         stack_spec.entities.len()
     );
 
-    let rust_config = arete_interpreter::rust::RustStackConfig {
-        crate_name: crate_name.clone(),
-        sdk_version: "0.3".to_string(),
-        module_mode: module_flag,
-        url: stack_url,
-    };
-
-    let output = match &source {
-        ResolvedStackSource::Remote(stack) if stack.exact_views => {
-            arete_interpreter::rust::compile_stack_spec_with_exact_views(
-                stack_spec,
-                Some(rust_config),
-            )
-        }
-        _ => arete_interpreter::rust::compile_stack_spec(stack_spec, Some(rust_config)),
-    }
-    .map_err(|e| anyhow::anyhow!("Failed to compile Rust: {}", e))?;
-
-    if module_flag {
-        arete_interpreter::rust::write_rust_module(&output, &output_dir)
-            .with_context(|| format!("Failed to write Rust module to {}", output_dir.display()))?;
-
-        println!("{} Successfully generated Rust module!", "✓".green().bold());
-        println!("  Module: {}", output_dir.display().to_string().bold());
-        println!("\n  Add to your lib.rs:");
-        let module_name = output_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("module");
-        println!("    pub mod {};", module_name.cyan());
-    } else {
-        arete_interpreter::rust::write_rust_crate(&output, &output_dir)
-            .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))?;
-
-        println!("{} Successfully generated Rust SDK!", "✓".green().bold());
-        println!("  Crate: {}", output_dir.display().to_string().bold());
-        println!("\n  Add to your Cargo.toml:");
-        println!(
-            "    {} = {{ path = \"{}\" }}",
-            crate_name.cyan(),
-            output_dir.display()
-        );
-    }
-
-    telemetry::record_sdk_generated("rust");
-
-    Ok(())
+    generate_rust_stack_sdk(
+        &source,
+        stack_spec,
+        &output_dir,
+        &crate_name,
+        module_flag,
+        stack_url,
+        extensions_override.as_deref().map(Path::new),
+    )
 }
 
 pub fn install_program(
@@ -1374,7 +1359,7 @@ fn install_program_typescript(
 
     let client = ApiClient::new()?;
     let install = client
-        .get_registry_program_install(program)
+        .get_registry_program_install(program, None)
         .with_context(|| {
             format!(
                 "No accessible hosted program SDK with identifier '{}' was found.",
@@ -1643,6 +1628,7 @@ fn build_extensions_artifact(
     input_kind: Option<ExtensionsInputKind>,
     input_hash: Option<String>,
     sdk_range: Option<String>,
+    language: Option<String>,
 ) -> Result<ResolvedExtensionsArtifact> {
     let entry = normalize_extension_relative_path(&entry)?;
     let entry_source = files
@@ -1663,6 +1649,7 @@ fn build_extensions_artifact(
         input_kind,
         input_hash,
         sdk_range,
+        language,
         sdk_extension_hash: None,
         sdk_output_tree_hash: None,
         program_extension_bindings,
@@ -1670,6 +1657,13 @@ fn build_extensions_artifact(
 }
 
 fn infer_extensions_artifact_from_entry(entry_path: &Path) -> Result<ResolvedExtensionsArtifact> {
+    infer_extensions_artifact_from_entry_with_language(entry_path, None)
+}
+
+fn infer_extensions_artifact_from_entry_with_language(
+    entry_path: &Path,
+    language: Option<String>,
+) -> Result<ResolvedExtensionsArtifact> {
     let source_dir = entry_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let entry = entry_path
         .file_name()
@@ -1683,6 +1677,7 @@ fn infer_extensions_artifact_from_entry(entry_path: &Path) -> Result<ResolvedExt
         None,
         None,
         None,
+        language,
     )
 }
 
@@ -1708,6 +1703,36 @@ fn parse_program_extension_bindings(source: &str) -> Vec<ProgramExtensionBinding
     bindings
 }
 
+fn build_extensions_artifact_from_manifest(
+    manifest: ExtensionsManifest,
+    source_dir: &Path,
+) -> Result<ResolvedExtensionsArtifact> {
+    build_extensions_artifact(
+        manifest.entry,
+        read_extensions_files(source_dir, &manifest.files)?,
+        manifest.input_kind,
+        manifest.input_hash,
+        manifest.sdk_range,
+        manifest.language,
+    )
+}
+
+/// Reject bundles authored for the other SDK language. Bundles without a
+/// declared `language` stay accepted by both pipelines for back-compat.
+fn ensure_extensions_language(artifact: &ResolvedExtensionsArtifact, expected: &str) -> Result<()> {
+    match artifact.language.as_deref() {
+        None => Ok(()),
+        Some(language) if language == expected => Ok(()),
+        Some(language) => Err(anyhow::anyhow!(
+            "Extensions bundle declares language '{}' but this is a {} SDK generation; \
+             pass a {} extensions bundle instead",
+            language,
+            expected,
+            expected
+        )),
+    }
+}
+
 fn resolve_explicit_extensions_artifact(
     path: &Path,
     layout: &TypeScriptLayout,
@@ -1716,13 +1741,7 @@ fn resolve_explicit_extensions_artifact(
         let manifest_path = path.join("extensions.json");
         if manifest_path.exists() {
             let manifest = read_extensions_manifest(&manifest_path)?;
-            return build_extensions_artifact(
-                manifest.entry,
-                read_extensions_files(path, &manifest.files)?,
-                manifest.input_kind,
-                manifest.input_hash,
-                manifest.sdk_range,
-            );
+            return build_extensions_artifact_from_manifest(manifest, path);
         }
 
         let explicit_entry = path.join(format!("{}.ts", extension_entry_stem(&layout.base_name)));
@@ -1744,39 +1763,164 @@ fn resolve_explicit_extensions_artifact(
     if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
         let manifest = read_extensions_manifest(path)?;
         let source_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-        return build_extensions_artifact(
-            manifest.entry,
-            read_extensions_files(&source_dir, &manifest.files)?,
-            manifest.input_kind,
-            manifest.input_hash,
-            manifest.sdk_range,
-        );
+        return build_extensions_artifact_from_manifest(manifest, &source_dir);
     }
 
     infer_extensions_artifact_from_entry(path)
 }
 
+/// Resolve the devex extensions bundle for a TypeScript SDK generation.
+///
+/// Precedence: explicit `--extensions` path, then a hosted registry
+/// artifact, then an `extensions.json` already staged in the output
+/// directory, then bare entry-file inference from the output directory.
+/// Reusing the staged manifest keeps its input pins and helper files
+/// intact instead of silently nulling them via entry-file inference.
+/// Mirroring the Rust rung, a staged manifest declaring the other SDK
+/// language is a hard error rather than a silent skip.
 fn resolve_extensions_artifact(
     explicit_path: Option<&Path>,
     layout: &TypeScriptLayout,
     hosted_artifact: Option<&ResolvedExtensionsArtifact>,
 ) -> Result<Option<ResolvedExtensionsArtifact>> {
-    if let Some(path) = explicit_path {
-        return resolve_explicit_extensions_artifact(path, layout).map(Some);
+    let artifact = if let Some(path) = explicit_path {
+        Some(resolve_explicit_extensions_artifact(path, layout)?)
+    } else if let Some(artifact) = hosted_artifact {
+        Some(artifact.clone())
+    } else {
+        let manifest_path = layout.output_dir.join("extensions.json");
+        if manifest_path.exists() {
+            let manifest = read_extensions_manifest(&manifest_path)?;
+            Some(build_extensions_artifact_from_manifest(
+                manifest,
+                &layout.output_dir,
+            )?)
+        } else {
+            let inferred_entry = layout
+                .output_dir
+                .join(format!("{}.ts", extension_entry_stem(&layout.base_name)));
+            if inferred_entry.exists() {
+                Some(infer_extensions_artifact_from_entry(&inferred_entry)?)
+            } else {
+                None
+            }
+        }
+    };
+
+    if let Some(ref artifact) = artifact {
+        ensure_extensions_language(artifact, EXTENSIONS_LANGUAGE_TYPESCRIPT)?;
+    }
+    Ok(artifact)
+}
+
+/// Resolve the devex extensions bundle for a Rust SDK generation.
+///
+/// Precedence: explicit `--extensions` path, then a hosted registry artifact
+/// (only when its manifest declares `language: "rust"`), then an
+/// `extensions.json` already staged in the output module directory —
+/// reusing the staged manifest keeps its input pins intact instead of
+/// silently nulling them. Unlike the TypeScript pipeline there is no
+/// final bare entry-file inference from the output directory.
+fn resolve_rust_extensions_artifact(
+    explicit_path: Option<&Path>,
+    hosted_artifact: Option<&ResolvedExtensionsArtifact>,
+    output_module_dir: &Path,
+    base_stem: &str,
+) -> Result<Option<ResolvedExtensionsArtifact>> {
+    let artifact = if let Some(path) = explicit_path {
+        Some(resolve_explicit_rust_extensions_artifact(path, base_stem)?)
+    } else if let Some(artifact) = hosted_artifact
+        .filter(|artifact| artifact.language.as_deref() == Some(EXTENSIONS_LANGUAGE_RUST))
+    {
+        Some(artifact.clone())
+    } else {
+        let manifest_path = output_module_dir.join("extensions.json");
+        if manifest_path.exists() {
+            let manifest = read_extensions_manifest(&manifest_path)?;
+            Some(build_extensions_artifact_from_manifest(
+                manifest,
+                output_module_dir,
+            )?)
+        } else {
+            None
+        }
+    };
+
+    if let Some(ref artifact) = artifact {
+        ensure_extensions_language(artifact, EXTENSIONS_LANGUAGE_RUST)?;
+    }
+    Ok(artifact)
+}
+
+/// Compute the `pub mod` wiring stems for a staged Rust bundle: helper files
+/// first (manifest order, which is sorted), entry stem last. Duplicate stems
+/// and collisions with generated modules are rejected by the compiler.
+fn rust_extension_wiring(artifact: &ResolvedExtensionsArtifact) -> Result<(Vec<String>, String)> {
+    let entry_stem = rust_extension_module_stem(&artifact.entry)?;
+    let mut stems = Vec::new();
+    for file in &artifact.files {
+        if file.path == artifact.entry {
+            continue;
+        }
+        stems.push(rust_extension_module_stem(&file.path)?);
+    }
+    stems.push(entry_stem.clone());
+    Ok((stems, entry_stem))
+}
+
+fn rust_extension_module_stem(path: &str) -> Result<String> {
+    let normalized = normalize_extension_relative_path(path)?;
+    let stem = normalized.strip_suffix(".rs").ok_or_else(|| {
+        anyhow::anyhow!(
+            "Rust extensions bundles require .rs files; '{}' is not supported",
+            path
+        )
+    })?;
+    if stem.contains('/') {
+        return Err(anyhow::anyhow!(
+            "Rust extensions bundles require flat .rs files; '{}' is not supported",
+            path
+        ));
+    }
+    Ok(arete_interpreter::rust::rust_module_name(stem))
+}
+
+fn resolve_explicit_rust_extensions_artifact(
+    path: &Path,
+    base_stem: &str,
+) -> Result<ResolvedExtensionsArtifact> {
+    if path.is_dir() {
+        let manifest_path = path.join("extensions.json");
+        if manifest_path.exists() {
+            let manifest = read_extensions_manifest(&manifest_path)?;
+            return build_extensions_artifact_from_manifest(manifest, path);
+        }
+
+        let entry = path.join("extensions.rs");
+        if entry.exists() {
+            return infer_extensions_artifact_from_entry_with_language(
+                &entry,
+                Some(EXTENSIONS_LANGUAGE_RUST.to_string()),
+            );
+        }
+
+        return Err(anyhow::anyhow!(
+            "No extensions.json manifest or extensions.rs entry found in {} for the '{}' Rust SDK",
+            path.display(),
+            base_stem
+        ));
     }
 
-    if let Some(artifact) = hosted_artifact {
-        return Ok(Some(artifact.clone()));
+    if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+        let manifest = read_extensions_manifest(path)?;
+        let source_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        return build_extensions_artifact_from_manifest(manifest, &source_dir);
     }
 
-    let inferred_entry = layout
-        .output_dir
-        .join(format!("{}.ts", extension_entry_stem(&layout.base_name)));
-    if inferred_entry.exists() {
-        return infer_extensions_artifact_from_entry(&inferred_entry).map(Some);
-    }
-
-    Ok(None)
+    infer_extensions_artifact_from_entry_with_language(
+        path,
+        Some(EXTENSIONS_LANGUAGE_RUST.to_string()),
+    )
 }
 
 fn version_satisfies_range(current: &str, range: &str) -> bool {
@@ -1808,6 +1952,37 @@ fn discover_usearete_sdk_version(start_dir: &Path) -> Option<String> {
         let manifest_json = fs::read_to_string(&manifest_path).ok()?;
         let manifest: PackageVersionManifest = serde_json::from_str(&manifest_json).ok()?;
         return Some(manifest.version);
+    }
+
+    None
+}
+
+/// Best-effort discovery of the `arete-a4-sdk` dependency version declared by
+/// a `Cargo.toml` at or above `start_dir`. Only an exact `major.minor.patch`
+/// version is returned (dependency *requirements* like `"0"` or `"0.4"` are
+/// not comparable against an extensions `sdkRange` and are skipped).
+fn discover_arete_sdk_crate_version(start_dir: &Path) -> Option<String> {
+    let version_regex = Regex::new(
+        r#"(?m)^\s*(?:arete-a4-sdk|arete-sdk)\s*=\s*(?:"([^"]+)"|\{[^}]*version\s*=\s*"([^"]+)"[^}]*\})"#,
+    )
+    .expect("arete sdk version regex should compile");
+
+    for ancestor in start_dir.ancestors() {
+        let manifest_path = ancestor.join("Cargo.toml");
+        let Ok(manifest) = fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        for captures in version_regex.captures_iter(&manifest) {
+            let declared = captures
+                .get(1)
+                .or_else(|| captures.get(2))
+                .map(|value| value.as_str());
+            if let Some(declared) = declared {
+                if Version::parse(declared).is_ok() {
+                    return Some(declared.to_string());
+                }
+            }
+        }
     }
 
     None
@@ -1924,14 +2099,35 @@ fn build_sdk_provenance_manifest(
     input_pin: &ResolvedExtensionsInputPin,
     extensions: Option<&ResolvedExtensionsArtifact>,
 ) -> Result<SdkProvenanceManifestV2> {
-    let mut artifacts = BTreeSet::from([
-        generated_artifact_name(&layout.core_path)?,
-        generated_artifact_name(&layout.entry_path)?,
-    ]);
+    build_sdk_provenance_manifest_from_artifacts(
+        BTreeSet::from([
+            generated_artifact_name(&layout.core_path)?,
+            generated_artifact_name(&layout.entry_path)?,
+        ]),
+        "",
+        input_pin,
+        extensions,
+    )
+}
+
+/// Shared provenance builder for TypeScript and Rust outputs. `generated`
+/// lists the generated artifact names relative to the provenance manifest;
+/// staged extension files (and `extensions.json`) are appended under
+/// `extension_file_prefix` (`"src/"` for Rust crate mode, empty otherwise).
+fn build_sdk_provenance_manifest_from_artifacts(
+    generated: BTreeSet<String>,
+    extension_file_prefix: &str,
+    input_pin: &ResolvedExtensionsInputPin,
+    extensions: Option<&ResolvedExtensionsArtifact>,
+) -> Result<SdkProvenanceManifestV2> {
+    let mut artifacts = generated;
     if let Some(artifact) = extensions {
-        artifacts.insert("extensions.json".to_string());
+        artifacts.insert(format!("{extension_file_prefix}extensions.json"));
         for file in &artifact.files {
-            artifacts.insert(normalize_extension_relative_path(&file.path)?);
+            artifacts.insert(format!(
+                "{extension_file_prefix}{}",
+                normalize_extension_relative_path(&file.path)?
+            ));
         }
     }
 
@@ -1994,12 +2190,38 @@ fn write_sdk_provenance_manifest(
     extensions: Option<&ResolvedExtensionsArtifact>,
 ) -> Result<()> {
     let manifest = build_sdk_provenance_manifest(layout, input_pin, extensions)?;
+    write_sdk_provenance_manifest_file(&layout.output_dir, &manifest)
+}
+
+/// Write `sdk-provenance.json` for a Rust output directory. `generated`
+/// lists the generated file names relative to `output_dir` (for example
+/// `mod.rs` in module mode or `src/lib.rs` in crate mode).
+fn write_rust_sdk_provenance_manifest(
+    output_dir: &Path,
+    generated: BTreeSet<String>,
+    extension_file_prefix: &str,
+    input_pin: &ResolvedExtensionsInputPin,
+    extensions: Option<&ResolvedExtensionsArtifact>,
+) -> Result<()> {
+    let manifest = build_sdk_provenance_manifest_from_artifacts(
+        generated,
+        extension_file_prefix,
+        input_pin,
+        extensions,
+    )?;
+    write_sdk_provenance_manifest_file(output_dir, &manifest)
+}
+
+fn write_sdk_provenance_manifest_file(
+    output_dir: &Path,
+    manifest: &SdkProvenanceManifestV2,
+) -> Result<()> {
     let contents = format!(
         "{}\n",
-        serde_json::to_string_pretty(&manifest)
+        serde_json::to_string_pretty(manifest)
             .context("Failed to serialize SDK provenance manifest")?
     );
-    let path = layout.output_dir.join(SDK_PROVENANCE_FILE);
+    let path = output_dir.join(SDK_PROVENANCE_FILE);
     fs::write(&path, contents).with_context(|| {
         format!(
             "Failed to write SDK provenance manifest to {}",
@@ -2089,6 +2311,7 @@ fn resolved_extensions_artifact_from_registry(
             .map(ExtensionsInputKind::from_registry),
         artifact.manifest.input_hash.clone(),
         artifact.manifest.sdk_range.clone(),
+        artifact.manifest.language.clone(),
     )?;
     resolved.sdk_extension_hash = artifact.sdk_extension_hash.clone();
     resolved.sdk_output_tree_hash = artifact.sdk_output_tree_hash.clone();
@@ -2354,6 +2577,62 @@ fn stage_extensions_artifact_with_manifest(
         }
     }
 
+    write_extensions_artifact_files(artifact, output_dir, manifest_name)
+}
+
+/// Stage a Rust devex extensions bundle into the generated module directory.
+///
+/// Runs the same input-pin validation as the TypeScript pipeline, then
+/// requires a flat all-`.rs` file layout (module wiring emits one
+/// `pub mod <stem>;` per file, so nested paths cannot be wired). The
+/// `sdkRange` check is warning-only best-effort: it compares against the
+/// `arete-a4-sdk` dependency version when one is trivially discoverable from
+/// a `Cargo.toml` at or above the output directory, and skips silently
+/// otherwise.
+fn stage_rust_extensions_artifact(
+    artifact: &ResolvedExtensionsArtifact,
+    output_dir: &Path,
+    input_pin: &ResolvedExtensionsInputPin,
+) -> Result<()> {
+    let input_pin_errors = validate_extensions_input_pin(artifact, input_pin);
+    if !input_pin_errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Extensions artifact is incompatible with generated input: {}",
+            input_pin_errors.join("; ")
+        ));
+    }
+
+    for file in &artifact.files {
+        let normalized = normalize_extension_relative_path(&file.path)?;
+        if !normalized.ends_with(".rs") || normalized.contains('/') {
+            return Err(anyhow::anyhow!(
+                "Rust extensions bundles require flat .rs files; '{}' is not supported",
+                file.path
+            ));
+        }
+    }
+
+    if let Some(range) = artifact.sdk_range.as_deref() {
+        if let Some(current) = discover_arete_sdk_crate_version(output_dir) {
+            if !version_satisfies_range(&current, range) {
+                println!(
+                    "{} extensions sdkRange mismatch: manifest={}, current={}",
+                    "⚠".yellow().bold(),
+                    range,
+                    current
+                );
+            }
+        }
+    }
+
+    write_extensions_artifact_files(artifact, output_dir, "extensions.json")
+}
+
+fn write_extensions_artifact_files(
+    artifact: &ResolvedExtensionsArtifact,
+    output_dir: &Path,
+    manifest_name: &str,
+) -> Result<()> {
     for file in &artifact.files {
         let relative_path = normalize_extension_relative_path(&file.path)?;
         let destination_path = output_dir.join(&relative_path);
@@ -2812,7 +3091,7 @@ fn find_stack_by_name(
     output_override: Option<String>,
     package_name_override: Option<String>,
 ) -> Result<(ResolvedStackSource, PathBuf, String)> {
-    let source = resolve_stack_source(client, stack_name)?;
+    let source = resolve_stack_source(client, stack_name, None)?;
 
     let output = output_override
         .map(|p| p.into())
@@ -3435,6 +3714,7 @@ pub fn create_rust(
     crate_name_override: Option<String>,
     module_flag: bool,
     url_override: Option<String>,
+    extensions_override: Option<String>,
     manifest_override: Option<String>,
     artifact_dirs: Vec<String>,
 ) -> Result<()> {
@@ -3522,6 +3802,11 @@ pub fn create_rust(
                 "multi-live Rust generation requires per-alias URLs; a shared --url is not allowed"
             );
         }
+        if extensions_override.is_some() || source.hosted_extensions().is_some() {
+            anyhow::bail!(
+                "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
+            );
+        }
         let live_urls = match &source {
             ResolvedStackSource::Remote(stack) => stack
                 .live_bindings
@@ -3539,9 +3824,12 @@ pub fn create_rust(
             Some(arete_interpreter::rust::RustCompositionConfig {
                 stack: arete_interpreter::rust::RustStackConfig {
                     crate_name: crate_name.clone(),
-                    sdk_version: "0.3".to_string(),
+                    sdk_version: "0.4".to_string(),
                     module_mode: as_module,
                     url: None,
+                    http_url: None,
+                    extension_modules: Vec::new(),
+                    extension_entry: None,
                 },
                 live_urls,
             }),
@@ -3582,14 +3870,59 @@ pub fn create_rust(
         stack_spec.entities.len()
     );
 
-    let rust_config = arete_interpreter::rust::RustStackConfig {
-        crate_name: crate_name.clone(),
-        sdk_version: "0.3".to_string(),
-        module_mode: as_module,
-        url: stack_url,
+    generate_rust_stack_sdk(
+        &source,
+        stack_spec,
+        &output_dir,
+        &crate_name,
+        as_module,
+        stack_url,
+        extensions_override.as_deref().map(Path::new),
+    )
+}
+
+/// Shared single-live Rust generation: compile the stack, wire and stage the
+/// optional devex extensions bundle, and record provenance.
+fn generate_rust_stack_sdk(
+    source: &ResolvedStackSource,
+    stack_spec: arete_interpreter::ast::SerializableStackSpec,
+    output_dir: &Path,
+    crate_name: &str,
+    as_module: bool,
+    stack_url: Option<String>,
+    extensions_path: Option<&Path>,
+) -> Result<()> {
+    let input_pin = stack_input_pin(source, &stack_spec)?;
+    let module_dir = if as_module {
+        output_dir.to_path_buf()
+    } else {
+        output_dir.join("src")
+    };
+    let artifact = resolve_rust_extensions_artifact(
+        extensions_path,
+        source.hosted_extensions(),
+        &module_dir,
+        source.sdk_name(),
+    )?;
+    let (extension_modules, extension_entry) = match artifact.as_ref() {
+        Some(artifact) => {
+            let (modules, entry) = rust_extension_wiring(artifact)?;
+            (modules, Some(entry))
+        }
+        None => (Vec::new(), None),
     };
 
-    let output = match &source {
+    let rust_config = arete_interpreter::rust::RustStackConfig {
+        crate_name: crate_name.to_string(),
+        sdk_version: "0.4".to_string(),
+        module_mode: as_module,
+        url: stack_url,
+        http_url: source.default_http_url(),
+        extension_modules,
+        extension_entry,
+    };
+
+    let output = match source {
         ResolvedStackSource::LocalArtifacts(_) => {
             arete_interpreter::rust::compile_stack_spec_with_exact_views(
                 stack_spec,
@@ -3606,12 +3939,54 @@ pub fn create_rust(
     }
     .map_err(|e| anyhow::anyhow!("Failed to compile Rust: {}", e))?;
 
+    let mut generated = BTreeSet::new();
     if as_module {
-        arete_interpreter::rust::write_rust_module(&output, &output_dir)
+        arete_interpreter::rust::write_rust_module(&output, output_dir)
             .with_context(|| format!("Failed to write Rust module to {}", output_dir.display()))?;
+        generated.extend([
+            "mod.rs".to_string(),
+            "types.rs".to_string(),
+            "entity.rs".to_string(),
+        ]);
+        if output.programs_rs.is_some() {
+            generated.insert("programs.rs".to_string());
+        }
+    } else {
+        arete_interpreter::rust::write_rust_crate(&output, output_dir)
+            .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))?;
+        generated.extend([
+            "Cargo.toml".to_string(),
+            "src/lib.rs".to_string(),
+            "src/types.rs".to_string(),
+            "src/entity.rs".to_string(),
+        ]);
+        if output.programs_rs.is_some() {
+            generated.insert("src/programs.rs".to_string());
+        }
+    }
 
+    if let Some(ref artifact) = artifact {
+        stage_rust_extensions_artifact(artifact, &module_dir, &input_pin)?;
+    }
+    let extension_file_prefix = if as_module { "" } else { "src/" };
+    write_rust_sdk_provenance_manifest(
+        output_dir,
+        generated,
+        extension_file_prefix,
+        &input_pin,
+        artifact.as_ref(),
+    )?;
+
+    if as_module {
         println!("{} Successfully generated Rust module!", "✓".green().bold());
         println!("  Module: {}", output_dir.display().to_string().bold());
+        if let Some(ref artifact) = artifact {
+            println!(
+                "  Extensions: {} file(s), entry {}",
+                artifact.files.len(),
+                artifact.entry
+            );
+        }
         println!("\n  Add to your lib.rs:");
         let module_name = output_dir
             .file_name()
@@ -3619,11 +3994,15 @@ pub fn create_rust(
             .unwrap_or("module");
         println!("    pub mod {};", module_name.cyan());
     } else {
-        arete_interpreter::rust::write_rust_crate(&output, &output_dir)
-            .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))?;
-
         println!("{} Successfully generated Rust SDK!", "✓".green().bold());
         println!("  Crate: {}", output_dir.display().to_string().bold());
+        if let Some(ref artifact) = artifact {
+            println!(
+                "  Extensions: {} file(s), entry {}",
+                artifact.files.len(),
+                artifact.entry
+            );
+        }
         println!("\n  Add to your Cargo.toml:");
         println!(
             "    {} = {{ path = \"{}\" }}",
@@ -3646,14 +4025,15 @@ fn find_stack_for_rust(
 ) -> Result<(ResolvedStackSource, PathBuf, String)> {
     let (source, stack_config) = if let Some(cfg) = config {
         if let Some(stack_config) = cfg.find_stack(stack_name) {
-            let source = resolve_stack_source(client, &stack_config.stack)?;
+            let source =
+                resolve_stack_source(client, &stack_config.stack, Some(EXTENSIONS_LANGUAGE_RUST))?;
             (source, Some(stack_config))
         } else {
-            let source = resolve_stack_source(client, stack_name)?;
+            let source = resolve_stack_source(client, stack_name, Some(EXTENSIONS_LANGUAGE_RUST))?;
             (source, None)
         }
     } else {
-        let source = resolve_stack_source(client, stack_name)?;
+        let source = resolve_stack_source(client, stack_name, Some(EXTENSIONS_LANGUAGE_RUST))?;
         (source, None)
     };
 
@@ -3670,12 +4050,23 @@ fn find_stack_for_rust(
     Ok((source, crate_dir, crate_name))
 }
 
-fn resolve_stack_source(client: &ApiClient, stack: &str) -> Result<ResolvedStackSource> {
+/// Resolve a stack source, preferring a local AST file.
+///
+/// `language` selects the hosted devex-extension bundle: TypeScript
+/// generation passes `None` (the request stays byte-identical to released
+/// CLIs and the registry serves the TypeScript bundle), while the Rust
+/// pipeline passes `Some("rust")` so a hosted Rust bundle — and never a
+/// TypeScript one — reaches the Rust extensions rung.
+fn resolve_stack_source(
+    client: &ApiClient,
+    stack: &str,
+    language: Option<&str>,
+) -> Result<ResolvedStackSource> {
     if let Some(ast) = find_ast_file(stack, None)? {
         return Ok(ResolvedStackSource::Local(ast));
     }
 
-    let remote = client.get_registry_stack_install(stack).with_context(|| {
+    let remote = client.get_registry_stack_install(stack, language).with_context(|| {
         format!(
             "Stack '{}' was not found locally and no accessible hosted stack with that identifier was found.",
             stack
@@ -3687,13 +4078,19 @@ fn resolve_stack_source(client: &ApiClient, stack: &str) -> Result<ResolvedStack
     )?)))
 }
 
-fn resolve_remote_stack_source(client: &ApiClient, stack: &str) -> Result<ResolvedStackSource> {
-    let remote = client.get_registry_stack_install(stack).with_context(|| {
-        format!(
-            "No accessible hosted stack with identifier '{}' was found.",
-            stack
-        )
-    })?;
+fn resolve_remote_stack_source(
+    client: &ApiClient,
+    stack: &str,
+    language: Option<&str>,
+) -> Result<ResolvedStackSource> {
+    let remote = client
+        .get_registry_stack_install(stack, language)
+        .with_context(|| {
+            format!(
+                "No accessible hosted stack with identifier '{}' was found.",
+                stack
+            )
+        })?;
 
     Ok(ResolvedStackSource::Remote(Box::new(remote_stack_install(
         remote,
@@ -4032,6 +4429,7 @@ mod tests {
             input_kind: Some(kind),
             input_hash: Some(hash.to_string()),
             sdk_range: None,
+            language: None,
             sdk_extension_hash: None,
             sdk_output_tree_hash: None,
             program_extension_bindings: vec![],
@@ -4249,6 +4647,54 @@ mod tests {
             .expect("remote stack should resolve");
 
         assert_eq!(remote.sdk_name, "manifest-stream");
+    }
+
+    /// A hosted bundle fetched with `?language=rust` carries
+    /// `language: "rust"` in its manifest; the resolved artifact must keep
+    /// that marker so it reaches the Rust extensions rung — and so the
+    /// TypeScript rung keeps rejecting it if it ever leaks there.
+    #[test]
+    fn remote_stack_routes_rust_language_hosted_extensions_to_the_rust_rung() {
+        let mut install = registry_stack_install("ore", "OreStream");
+        install.extensions = Some(RegistrySdkExtensionArtifact {
+            artifact_hash: "rust-extension-hash".to_string(),
+            sdk_extension_hash: None,
+            sdk_output_tree_hash: None,
+            manifest: crate::api_client::RegistrySdkExtensionManifest {
+                entry: "extensions.rs".to_string(),
+                files: vec!["extensions.rs".to_string()],
+                input_kind: Some(RegistrySdkExtensionInputKind::StackManifest),
+                input_hash: Some(install.stack_manifest_hash.clone()),
+                sdk_range: None,
+                language: Some(EXTENSIONS_LANGUAGE_RUST.to_string()),
+            },
+            files: BTreeMap::from([(
+                "extensions.rs".to_string(),
+                "pub trait Devex {}\n".to_string(),
+            )]),
+            created_at: "2026-08-04T00:00:00Z".to_string(),
+        });
+
+        let remote = remote_stack_install(install).expect("remote stack should resolve");
+        let hosted = remote
+            .hosted_extensions
+            .as_ref()
+            .expect("hosted extensions should be resolved");
+        assert_eq!(hosted.language.as_deref(), Some(EXTENSIONS_LANGUAGE_RUST));
+
+        // Rust rung accepts the hosted artifact...
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-rust-hosted-route-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        let resolved = resolve_rust_extensions_artifact(None, Some(hosted), &output_dir, "ore")
+            .expect("hosted Rust bundle should resolve")
+            .expect("hosted Rust bundle should be present");
+        assert_eq!(resolved.entry, "extensions.rs");
+
+        // ...while the TypeScript rung rejects it outright.
+        let error = resolve_extensions_artifact(None, &layout("ore"), Some(hosted))
+            .expect_err("TypeScript generation must reject a Rust hosted bundle");
+        assert!(error.to_string().contains("declares language 'rust'"));
     }
 
     #[test]
@@ -4655,6 +5101,518 @@ mod tests {
         .is_err());
     }
 
+    fn rust_test_artifact(hash: &str) -> ResolvedExtensionsArtifact {
+        ResolvedExtensionsArtifact {
+            entry: "extensions.rs".to_string(),
+            files: vec![
+                ResolvedExtensionsFile {
+                    path: "devex.rs".to_string(),
+                    contents: "pub fn helper() {}\n".to_string(),
+                },
+                ResolvedExtensionsFile {
+                    path: "extensions.rs".to_string(),
+                    contents: "pub use super::devex::*;\n".to_string(),
+                },
+            ],
+            input_kind: Some(ExtensionsInputKind::StackManifest),
+            input_hash: Some(hash.to_string()),
+            sdk_range: None,
+            language: Some(EXTENSIONS_LANGUAGE_RUST.to_string()),
+            sdk_extension_hash: None,
+            sdk_output_tree_hash: None,
+            program_extension_bindings: vec![],
+        }
+    }
+
+    fn write_bundle_dir(dir: &Path, artifact: &ResolvedExtensionsArtifact) {
+        fs::create_dir_all(dir).expect("bundle directory");
+        for file in &artifact.files {
+            fs::write(dir.join(&file.path), &file.contents).expect("bundle file");
+        }
+        fs::write(
+            dir.join("extensions.json"),
+            serde_json::to_string_pretty(&artifact.manifest()).unwrap(),
+        )
+        .expect("bundle manifest");
+    }
+
+    fn ts_bundle_artifact(hash: &str) -> ResolvedExtensionsArtifact {
+        ResolvedExtensionsArtifact {
+            entry: "ore-extensions.ts".to_string(),
+            files: vec![
+                ResolvedExtensionsFile {
+                    path: "ore-devex.ts".to_string(),
+                    contents: "export const helper = 1;\n".to_string(),
+                },
+                ResolvedExtensionsFile {
+                    path: "ore-extensions.ts".to_string(),
+                    contents: "export * from './ore-devex.js';\nexport default {};\n".to_string(),
+                },
+            ],
+            input_kind: Some(ExtensionsInputKind::StackManifest),
+            input_hash: Some(hash.to_string()),
+            sdk_range: Some("^0.2.0 || ^0.3.0".to_string()),
+            language: Some(EXTENSIONS_LANGUAGE_TYPESCRIPT.to_string()),
+            sdk_extension_hash: None,
+            sdk_output_tree_hash: None,
+            program_extension_bindings: vec![],
+        }
+    }
+
+    fn layout_in(output_dir: &Path, base_name: &str) -> TypeScriptLayout {
+        TypeScriptLayout {
+            entry_path: output_dir.join(format!("{}.ts", base_name)),
+            core_path: output_dir.join(format!("{}-core.ts", base_name)),
+            output_dir: output_dir.to_path_buf(),
+            base_name: base_name.to_string(),
+        }
+    }
+
+    #[test]
+    fn typescript_extensions_manifest_without_language_roundtrips_byte_identically() {
+        let staged = r#"{
+  "entry": "ore-stack-extensions.ts",
+  "files": [
+    "ore-devex.ts",
+    "ore-stack-extensions.ts"
+  ],
+  "inputKind": "stack-manifest",
+  "inputHash": "arete:h1:stack-manifest:sha256:edd1ffe8ef2c26232c1440f20625b8834b8c4d4e63250136ce62bcc38609f84a",
+  "sdkRange": "^0.2.0 || ^0.3.0"
+}"#;
+
+        let manifest: ExtensionsManifest =
+            serde_json::from_str(staged).expect("TS manifest without language should parse");
+        assert_eq!(manifest.language, None);
+        let reserialized = serde_json::to_string_pretty(&manifest).unwrap();
+        assert_eq!(reserialized, staged);
+        assert!(!reserialized.contains("language"));
+    }
+
+    #[test]
+    fn rust_resolution_prefers_explicit_bundle_over_output_dir_manifest() {
+        let root =
+            std::env::temp_dir().join(format!("a4-rust-ext-explicit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let bundle_dir = root.join("bundle");
+        let output_dir = root.join("out");
+        let explicit = rust_test_artifact("explicit-hash");
+        let staged = rust_test_artifact("staged-hash");
+        write_bundle_dir(&bundle_dir, &explicit);
+        write_bundle_dir(&output_dir, &staged);
+
+        let resolved =
+            resolve_rust_extensions_artifact(Some(&bundle_dir), None, &output_dir, "ore")
+                .expect("explicit bundle should resolve")
+                .expect("explicit bundle should be present");
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(resolved.input_hash.as_deref(), Some("explicit-hash"));
+        assert_eq!(resolved.language.as_deref(), Some(EXTENSIONS_LANGUAGE_RUST));
+    }
+
+    #[test]
+    fn rust_resolution_accepts_single_entry_file() {
+        let root = std::env::temp_dir().join(format!("a4-rust-ext-single-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("bundle root");
+        fs::write(root.join("extensions.rs"), "pub trait Devex {}\n").expect("entry file");
+
+        let resolved = resolve_rust_extensions_artifact(
+            Some(&root.join("extensions.rs")),
+            None,
+            &root.join("missing-output"),
+            "ore",
+        )
+        .expect("single-entry bundle should resolve")
+        .expect("single-entry bundle should be present");
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(resolved.entry, "extensions.rs");
+        assert_eq!(
+            resolved
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["extensions.rs"]
+        );
+        assert_eq!(resolved.input_hash, None);
+        assert_eq!(resolved.language.as_deref(), Some(EXTENSIONS_LANGUAGE_RUST));
+    }
+
+    #[test]
+    fn rust_resolution_reuses_output_dir_manifest_and_preserves_pins() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-rust-ext-outdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        let staged = rust_test_artifact("staged-pin-hash");
+        write_bundle_dir(&output_dir, &staged);
+
+        let resolved = resolve_rust_extensions_artifact(None, None, &output_dir, "ore")
+            .expect("staged manifest should resolve")
+            .expect("staged manifest should be present");
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert_eq!(
+            resolved.input_kind,
+            Some(ExtensionsInputKind::StackManifest)
+        );
+        assert_eq!(resolved.input_hash.as_deref(), Some("staged-pin-hash"));
+        assert_eq!(resolved.entry, "extensions.rs");
+    }
+
+    #[test]
+    fn rust_resolution_returns_none_without_sources() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-rust-ext-none-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+
+        let resolved = resolve_rust_extensions_artifact(None, None, &output_dir, "ore")
+            .expect("empty resolution should succeed");
+
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn rust_resolution_rejects_typescript_bundles() {
+        let bundle_dir =
+            std::env::temp_dir().join(format!("a4-rust-ext-ts-reject-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&bundle_dir);
+        let mut typescript = rust_test_artifact("hash-1");
+        typescript.language = Some(EXTENSIONS_LANGUAGE_TYPESCRIPT.to_string());
+        write_bundle_dir(&bundle_dir, &typescript);
+
+        let error = resolve_rust_extensions_artifact(
+            Some(&bundle_dir),
+            None,
+            &bundle_dir.join("missing-output"),
+            "ore",
+        )
+        .expect_err("TypeScript bundle must be rejected for Rust generation");
+        let _ = fs::remove_dir_all(&bundle_dir);
+
+        assert!(error.to_string().contains("declares language 'typescript'"));
+    }
+
+    #[test]
+    fn typescript_resolution_rejects_rust_bundles() {
+        let bundle_dir =
+            std::env::temp_dir().join(format!("a4-ts-ext-rust-reject-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&bundle_dir);
+        write_bundle_dir(&bundle_dir, &rust_test_artifact("hash-1"));
+
+        let error = resolve_extensions_artifact(Some(&bundle_dir), &layout("ore"), None)
+            .expect_err("Rust bundle must be rejected for TypeScript generation");
+        let _ = fs::remove_dir_all(&bundle_dir);
+
+        assert!(error.to_string().contains("declares language 'rust'"));
+    }
+
+    /// Regression: `a4 sdk sync` (no `--extensions`) against an output dir
+    /// holding a full staged bundle must reuse the manifest with its input
+    /// pins and helper files intact, instead of re-inferring a pinless
+    /// entry-only artifact.
+    #[test]
+    fn typescript_resolution_reuses_output_dir_manifest_and_preserves_pins() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-ts-ext-outdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        write_bundle_dir(&output_dir, &ts_bundle_artifact("ts-staged-pin-hash"));
+
+        let resolved = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), None)
+            .expect("staged manifest should resolve")
+            .expect("staged manifest should be present");
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert_eq!(resolved.entry, "ore-extensions.ts");
+        assert_eq!(
+            resolved
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ore-devex.ts", "ore-extensions.ts"]
+        );
+        assert_eq!(resolved.input_kind, Some(ExtensionsInputKind::StackManifest));
+        assert_eq!(resolved.input_hash.as_deref(), Some("ts-staged-pin-hash"));
+        assert_eq!(resolved.sdk_range.as_deref(), Some("^0.2.0 || ^0.3.0"));
+    }
+
+    /// Mirrors `rust_resolution_rejects_typescript_bundles` for the staged
+    /// output-dir rung: the Rust path hard-errors on a wrong-language
+    /// manifest found in the output dir, so the TypeScript path does the
+    /// symmetric thing for a Rust manifest — error, not silent skip. Once
+    /// the manifest is gone, entry-file inference is reachable again.
+    #[test]
+    fn typescript_resolution_rejects_rust_output_dir_manifest_then_falls_back_to_entry() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-ts-ext-rust-outdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        write_bundle_dir(&output_dir, &rust_test_artifact("hash-1"));
+        fs::write(output_dir.join("ore-extensions.ts"), "export default {};")
+            .expect("entry file");
+
+        let error = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), None)
+            .expect_err("Rust manifest in output dir must be rejected for TypeScript generation");
+        assert!(error.to_string().contains("declares language 'rust'"));
+
+        fs::remove_file(output_dir.join("extensions.json")).expect("remove manifest");
+        let resolved = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), None)
+            .expect("entry inference should resolve")
+            .expect("entry inference should be present");
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert_eq!(resolved.entry, "ore-extensions.ts");
+        assert_eq!(resolved.input_hash, None);
+    }
+
+    #[test]
+    fn typescript_resolution_infers_entry_file_when_no_manifest_present() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-ts-ext-infer-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        fs::create_dir_all(&output_dir).expect("output directory");
+        fs::write(output_dir.join("ore-extensions.ts"), "export default {};")
+            .expect("entry file");
+
+        let resolved = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), None)
+            .expect("entry inference should resolve")
+            .expect("entry inference should be present");
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert_eq!(resolved.entry, "ore-extensions.ts");
+        assert_eq!(
+            resolved
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ore-extensions.ts"]
+        );
+        assert_eq!(resolved.input_kind, None);
+        assert_eq!(resolved.input_hash, None);
+        assert_eq!(resolved.sdk_range, None);
+    }
+
+    #[test]
+    fn typescript_resolution_prefers_hosted_artifact_over_output_dir_manifest() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-ts-ext-hosted-wins-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        write_bundle_dir(&output_dir, &ts_bundle_artifact("staged-hash"));
+        let hosted = test_artifact(ExtensionsInputKind::StackManifest, "hosted-hash");
+
+        let resolved =
+            resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), Some(&hosted))
+                .expect("hosted bundle should resolve")
+                .expect("hosted bundle should be present");
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert_eq!(resolved.input_hash.as_deref(), Some("hosted-hash"));
+        assert_eq!(resolved.entry, "index.ts");
+    }
+
+    /// The `examples/ore-typescript/src/generated` dir shape (manifest
+    /// without `language`, entry + helper files) survives a no-flag
+    /// regeneration: resolution reuses the staged manifest and restaging
+    /// rewrites `extensions.json` byte-identically with pins intact.
+    #[test]
+    fn typescript_output_dir_manifest_survives_no_flag_regeneration_byte_stable() {
+        let staged_manifest = r#"{
+  "entry": "ore-stack-extensions.ts",
+  "files": [
+    "ore-devex.ts",
+    "ore-stack-extensions.ts"
+  ],
+  "inputKind": "stack-manifest",
+  "inputHash": "arete:h1:stack-manifest:sha256:edd1ffe8ef2c26232c1440f20625b8834b8c4d4e63250136ce62bcc38609f84a",
+  "sdkRange": "^0.2.0 || ^0.3.0"
+}"#;
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-ts-ext-roundtrip-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        fs::create_dir_all(&output_dir).expect("output directory");
+        fs::write(output_dir.join("extensions.json"), staged_manifest).expect("manifest");
+        fs::write(output_dir.join("ore-devex.ts"), "export const helper = 1;\n")
+            .expect("helper file");
+        fs::write(
+            output_dir.join("ore-stack-extensions.ts"),
+            "export * from './ore-devex.js';\nexport default {};\n",
+        )
+        .expect("entry file");
+
+        let resolved = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore-stack"), None)
+            .expect("staged manifest should resolve")
+            .expect("staged manifest should be present");
+        assert_eq!(
+            serde_json::to_string_pretty(&resolved.manifest()).unwrap(),
+            staged_manifest
+        );
+
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: "arete:h1:stack-manifest:sha256:edd1ffe8ef2c26232c1440f20625b8834b8c4d4e63250136ce62bcc38609f84a"
+                .to_string(),
+        };
+        stage_extensions_artifact(&resolved, &output_dir, &input_pin)
+            .expect("restaging the reused bundle should succeed");
+        let restaged =
+            fs::read_to_string(output_dir.join("extensions.json")).expect("restaged manifest");
+        let _ = fs::remove_dir_all(&output_dir);
+        assert_eq!(restaged, staged_manifest);
+    }
+
+    #[test]
+    fn rust_resolution_ignores_hosted_bundles_without_rust_language() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-rust-ext-hosted-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        let hosted_typescript = test_artifact(ExtensionsInputKind::StackManifest, "hash-1");
+
+        let resolved =
+            resolve_rust_extensions_artifact(None, Some(&hosted_typescript), &output_dir, "ore")
+                .expect("hosted TypeScript bundle should be skipped, not fatal");
+        assert!(resolved.is_none());
+
+        let hosted_rust = rust_test_artifact("hash-2");
+        let resolved =
+            resolve_rust_extensions_artifact(None, Some(&hosted_rust), &output_dir, "ore")
+                .expect("hosted Rust bundle should resolve")
+                .expect("hosted Rust bundle should be present");
+        assert_eq!(resolved.input_hash.as_deref(), Some("hash-2"));
+    }
+
+    #[test]
+    fn rust_extension_wiring_orders_entry_last_and_requires_flat_rs_files() {
+        let artifact = rust_test_artifact("hash-1");
+        let (modules, entry) = rust_extension_wiring(&artifact).expect("wiring should resolve");
+        assert_eq!(modules, vec!["devex".to_string(), "extensions".to_string()]);
+        assert_eq!(entry, "extensions");
+
+        let mut nested = rust_test_artifact("hash-1");
+        nested.files[0].path = "nested/devex.rs".to_string();
+        assert!(rust_extension_wiring(&nested)
+            .unwrap_err()
+            .to_string()
+            .contains("flat .rs files"));
+
+        let mut non_rs = rust_test_artifact("hash-1");
+        non_rs.files[0].path = "devex.ts".to_string();
+        assert!(rust_extension_wiring(&non_rs)
+            .unwrap_err()
+            .to_string()
+            .contains(".rs files"));
+    }
+
+    #[test]
+    fn stage_rust_extensions_artifact_writes_bundle_and_rejects_pin_mismatch() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-rust-ext-stage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        fs::create_dir_all(&output_dir).expect("output directory");
+        let hash = format!("arete:h1:stack-manifest:sha256:{}", "44".repeat(32));
+        let artifact = rust_test_artifact(&hash);
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: hash.clone(),
+        };
+
+        stage_rust_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect("matching pin should stage");
+        let manifest_json =
+            fs::read_to_string(output_dir.join("extensions.json")).expect("staged manifest");
+        assert!(output_dir.join("devex.rs").exists());
+        assert!(output_dir.join("extensions.rs").exists());
+        assert!(manifest_json.contains("\"language\": \"rust\""));
+
+        let mismatched_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: format!("arete:h1:stack-manifest:sha256:{}", "55".repeat(32)),
+        };
+        let error = stage_rust_extensions_artifact(&artifact, &output_dir, &mismatched_pin)
+            .expect_err("pin mismatch must be a hard error");
+        assert!(error.to_string().contains("extensions input hash mismatch"));
+
+        let mut non_rs = artifact.clone();
+        non_rs.files[0].path = "devex.ts".to_string();
+        assert!(stage_rust_extensions_artifact(&non_rs, &output_dir, &input_pin).is_err());
+
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn rust_provenance_lists_generated_and_staged_artifacts_with_prefix() {
+        let hash = format!("arete:h1:stack-manifest:sha256:{}", "66".repeat(32));
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: hash.clone(),
+        };
+        let artifact = rust_test_artifact(&hash);
+
+        let manifest = build_sdk_provenance_manifest_from_artifacts(
+            BTreeSet::from([
+                "Cargo.toml".to_string(),
+                "src/lib.rs".to_string(),
+                "src/types.rs".to_string(),
+                "src/entity.rs".to_string(),
+            ]),
+            "src/",
+            &input_pin,
+            Some(&artifact),
+        )
+        .expect("rust provenance should build");
+
+        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.input.hash, hash);
+        assert_eq!(
+            manifest
+                .extensions
+                .as_ref()
+                .unwrap()
+                .legacy_provenance_sha256,
+            extensions_artifact_hash(&artifact)
+        );
+        assert_eq!(
+            manifest.artifacts,
+            vec![
+                "Cargo.toml",
+                "src/devex.rs",
+                "src/entity.rs",
+                "src/extensions.json",
+                "src/extensions.rs",
+                "src/lib.rs",
+                "src/types.rs",
+            ]
+        );
+    }
+
+    #[test]
+    fn discover_arete_sdk_crate_version_only_returns_exact_versions() {
+        let root = std::env::temp_dir().join(format!("a4-rust-sdk-version-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let nested = root.join("generated/ore");
+        fs::create_dir_all(&nested).expect("nested output directory");
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[dependencies]\narete-sdk = { package = \"arete-a4-sdk\", version = \"0\" }\n",
+        )
+        .unwrap();
+        assert_eq!(discover_arete_sdk_crate_version(&nested), None);
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[dependencies]\narete-a4-sdk = \"0.4.1\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            discover_arete_sdk_crate_version(&nested).as_deref(),
+            Some("0.4.1")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn normalize_extension_relative_path_rejects_parent_segments() {
         let error = normalize_extension_relative_path("../secrets.ts").unwrap_err();
@@ -4728,6 +5686,7 @@ mod tests {
                 input_kind: Some(RegistrySdkExtensionInputKind::ProgramIdl),
                 input_hash: Some("idl-hash".to_string()),
                 sdk_range: Some("^0.1.5".to_string()),
+                language: None,
             },
             files: BTreeMap::from([(
                 "index.ts".to_string(),

@@ -5,13 +5,18 @@ pub struct OreStreamStack;
 
 impl Stack for OreStreamStack {
     type Views = OreStreamStackViews;
+    type Programs = OreStreamStackPrograms;
 
     fn name() -> &'static str {
         "ore-stream"
     }
 
     fn url() -> &'static str {
-        "" // TODO: Set URL after first deployment in arete.toml
+        "wss://ore.stack.arete.run"
+    }
+
+    fn http_url() -> &'static str {
+        "https://ore.stack.arete.run"
     }
 }
 
@@ -110,5 +115,19 @@ impl OreMinerEntityViews {
 
     pub fn list(&self) -> ViewHandle<OreMiner> {
         self.builder.view("OreMiner/list")
+    }
+}
+
+pub struct OreStreamStackPrograms {
+    pub ore: super::programs::ore::OreProgram,
+    pub entropy: super::programs::entropy::EntropyProgram,
+}
+
+impl arete_sdk::Programs for OreStreamStackPrograms {
+    fn from_builder(builder: arete_sdk::ProgramBuilder) -> Self {
+        Self {
+            ore: super::programs::ore::OreProgram::from_builder(builder.clone()),
+            entropy: super::programs::entropy::EntropyProgram::from_builder(builder),
+        }
     }
 }

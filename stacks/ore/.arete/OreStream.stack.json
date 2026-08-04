@@ -833,6 +833,14 @@
               "docs": []
             },
             {
+              "name": "treasury",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
               "name": "systemProgram",
               "writable": false,
               "signer": false,
@@ -861,8 +869,10 @@
               "writable": false,
               "signer": false,
               "optional": false,
-              "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
-              "docs": []
+              "address": null,
+              "docs": [
+                "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
+              ]
             }
           ],
           "args": [
@@ -2844,9 +2854,9 @@
     {
       "schema": "arete.program-spec/v1",
       "programId": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "idlContentHash": "arete:h1:idl-content:sha256:ddd66054beab80ddfdd504097ff5f1040dc046eab91cd396cf3f04f69878dfca",
-      "portableIdlHash": "arete:h1:idl-portable:sha256:1aba4b0bb33a499c7871bf2c60d505eda3a0669938fe54a5a36122cd6c1863ad",
-      "normalizedIdlHash": "arete:h1:idl-normalized:sha256:815e9674705c9938e6793fb19ade1501bcd5ec9b73453fc3d149963a0d7965c5",
+      "idlContentHash": "arete:h1:idl-content:sha256:a6c8507030a7ba25b7aeb41d35634a5a3fa27023ad3000ff216b869155da5d12",
+      "portableIdlHash": "arete:h1:idl-portable:sha256:10efe0793e8742548f774ff07f8aec238dc1243e40194ad7d096f33edb2d6f74",
+      "normalizedIdlHash": "arete:h1:idl-normalized:sha256:c270fa2b38c1ddea39aeeb988db2fccdb9cc082428e2ab7a903d39360839bebf",
       "idlSnapshot": {
         "normalizationVersion": 1,
         "name": "ore",
@@ -3693,6 +3703,14 @@
                 "docs": []
               },
               {
+                "name": "treasury",
+                "writable": true,
+                "signer": false,
+                "optional": false,
+                "address": null,
+                "docs": []
+              },
+              {
                 "name": "systemProgram",
                 "writable": false,
                 "signer": false,
@@ -3721,8 +3739,10 @@
                 "writable": false,
                 "signer": false,
                 "optional": false,
-                "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
-                "docs": []
+                "address": null,
+                "docs": [
+                  "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
+                ]
               }
             ],
             "args": [
@@ -5814,6 +5834,15 @@
               "is_optional": false
             },
             {
+              "name": "treasury",
+              "is_signer": false,
+              "is_writable": true,
+              "resolution": {
+                "category": "userProvided"
+              },
+              "is_optional": false
+            },
+            {
               "name": "systemProgram",
               "is_signer": false,
               "is_writable": false,
@@ -5847,10 +5876,12 @@
               "is_signer": false,
               "is_writable": false,
               "resolution": {
-                "category": "known",
-                "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
+                "category": "userProvided"
               },
-              "is_optional": false
+              "is_optional": false,
+              "docs": [
+                "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
+              ]
             }
           ],
           "args": [
@@ -10074,7 +10105,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "1afdaefc8695e5f7107f2fc2d366d8a6832ca81595a6660e68e27f7aca630bff",
+      "content_hash": "3a1a91128f147b30ac458b8218d69115959ced723b95d1baeb263ee3cb41d67e",
       "views": [
         {
           "id": "OreRound/latest",
@@ -10536,7 +10567,7 @@
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "ab563787384f36a48daea94cdcff68b990a26e5ad1b6e86fcf15fae0ecf384a4",
+      "content_hash": "3d2bfc08005094be57c9acf1e6b0cd6c229d6ed6d2dd1fb01663aef2f0044bc0",
       "views": []
     },
     {
@@ -10997,7 +11028,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "7fcb9dfcdbdc2174b42d1332ca968d0e81151e77dc3c3d855f862432d66d4e26",
+      "content_hash": "0f777beda9f802687a134c73ab595efc71504601205e4f9282976154d40d447d",
       "views": []
     },
     {
@@ -12867,7 +12898,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "3e999ec5908ef4377ff6018dbd312d0cb11ec6167dee7378cde8c2b9c5bada93",
+      "content_hash": "63a02c428ad1bbee2e3261ad64f665af4a84795773624ff7e011ec1f98123233",
       "views": []
     }
   ],
@@ -13449,6 +13480,16 @@
           "is_optional": false
         },
         {
+          "name": "treasury",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "pdaRef",
+            "pda_name": "treasury"
+          },
+          "is_optional": false
+        },
+        {
           "name": "systemProgram",
           "is_signer": false,
           "is_writable": false,
@@ -13482,10 +13523,12 @@
           "is_signer": false,
           "is_writable": false,
           "resolution": {
-            "category": "known",
-            "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
+            "category": "userProvided"
           },
-          "is_optional": false
+          "is_optional": false,
+          "docs": [
+            "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
+          ]
         }
       ],
       "args": [
@@ -14519,5 +14562,5 @@
       ]
     }
   ],
-  "content_hash": "78389d78a607d1b5d0166ee2fcd2271910a6b04d411482927c845a82bb083290"
+  "content_hash": "be64687a603e762a46c2b423ccc7570a6c6cc290d4f88875c5846de843396df4"
 }

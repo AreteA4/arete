@@ -339,6 +339,11 @@
           "isSigner": false
         },
         {
+          "name": "treasury",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
           "name": "systemProgram",
           "isMut": false,
           "isSigner": false,
@@ -353,13 +358,17 @@
         {
           "name": "entropyVar",
           "isMut": true,
-          "isSigner": false
+          "isSigner": false,
+          "isOptional": true
         },
         {
           "name": "entropyProgram",
           "isMut": false,
           "isSigner": false,
-          "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
+          "isOptional": true,
+          "docs": [
+            "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
+          ]
         }
       ],
       "args": [

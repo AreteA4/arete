@@ -1,0 +1,11 @@
+{
+  "entry": "extensions.rs",
+  "files": [
+    "devex.rs",
+    "extensions.rs"
+  ],
+  "inputKind": "stack-manifest",
+  "inputHash": "arete:h1:stack-manifest:sha256:8ebc521edc3184f118c05ab5f93c50fba5fd682f21c9d83694994c454101db68",
+  "sdkRange": null,
+  "language": "rust"
+}
