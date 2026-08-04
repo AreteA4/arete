@@ -96,15 +96,25 @@ Read https://docs.arete.run/agent.md and follow its instructions. This installs 
 a4 explore --json
 ```
 
-This queries Arete's live registry and returns schemas for every public stack — entities, fields, views, types. Use the output as ground truth when writing code, not your training data.
+This queries Arete's live registry. Each JSON response has a `schemaVersion`;
+deep exploration reports the exact deployment identities consumed by install.
+Use it as ground truth when writing code, not your training data.
 
 For a single stack:
 
 ```bash
-a4 explore <stack-name> --json
+a4 explore stack <stack-ref> --json
 ```
 
-For a single entity within a stack:
+Discover or inspect a standalone program before installing it:
+
+```bash
+a4 explore programs --json
+a4 explore program <program-ref> --json
+```
+
+For a single entity within a stack, the legacy form remains available and is
+resolved through the same stack install descriptor:
 
 ```bash
 a4 explore <stack-name> <EntityName> --json
