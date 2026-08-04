@@ -144,6 +144,32 @@ a4 auth whoami      # Verify with server
 
 Credentials: `~/.arete/credentials.toml`
 
+## Registry Exploration
+
+Exploration uses the same deployment-pinned install descriptors as `a4
+install`, so the reported StackManifest, LiveSpec, AST, and Program Release
+identities are the ones an installation will consume.
+
+```bash
+a4 explore                              # List stacks
+a4 explore programs                     # List complete installable programs
+a4 explore stack ore --json             # Exact stack descriptor summary
+a4 explore program spl-token --json     # Accounts, instructions, and release
+```
+
+Legacy stack forms remain valid:
+
+```bash
+a4 explore ore
+a4 explore ore OreRound
+```
+
+Every JSON explore response includes `schemaVersion`. Stack exploration shows
+LiveSpec aliases without flattening multi-live compositions and includes only
+the views selected by the exact StackManifest. If descriptor assembly fails,
+the command reports the deployment/publication problem instead of falling back
+to a different AST.
+
 ## SDK Generation
 
 ```bash

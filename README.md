@@ -118,6 +118,11 @@ a4 up ./.arete/MyApp.stack-manifest.json
 
 # Install a hosted SDK pinned to a published Program Release and read binding.
 a4 install program spl-token --ts
+
+# Inspect the same deployment-pinned descriptors before installing.
+a4 explore stack ore --json
+a4 explore programs --json
+a4 explore program spl-token --json
 ```
 
 A composed client keeps each aliased LiveSpec's live transport and each
