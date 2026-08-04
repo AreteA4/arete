@@ -110,12 +110,15 @@ enum Commands {
     /// Show overview of stacks, builds, and deployments
     Status,
 
-    /// Discover stacks and explore their schemas
+    /// Discover installable stacks and programs through pinned descriptors
     Explore {
-        /// Stack name to explore
-        name: Option<String>,
+        /// `stack`, `program`, `programs`, or a legacy stack reference
+        target: Option<String>,
 
-        /// Entity name to show field details
+        /// Resource reference, or an entity for legacy `explore <stack> <entity>`
+        reference: Option<String>,
+
+        /// Entity for explicit `explore stack <ref> <entity>` drill-down
         entity: Option<String>,
     },
 
@@ -657,9 +660,31 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             dry_run,
         } => commands::up::up(&cli.config, stack_name.as_deref(), branch, preview, dry_run),
         Commands::Status => commands::status::status(cli.json),
-        Commands::Explore { name, entity } => match name {
-            Some(name) => commands::explore::show(&name, entity.as_deref(), cli.json),
-            None => commands::explore::list(cli.json),
+        Commands::Explore {
+            target,
+            reference,
+            entity,
+        } => match (target.as_deref(), reference.as_deref(), entity.as_deref()) {
+            (None, None, None) => commands::explore::list(cli.json),
+            (Some("programs"), None, None) => commands::explore::list_programs(cli.json),
+            (Some("program"), Some(reference), None) => {
+                commands::explore::show_program(reference, cli.json)
+            }
+            (Some("stack"), Some(reference), entity) => {
+                commands::explore::show_stack(reference, entity, cli.json)
+            }
+            (Some("program"), None, None) => Err(anyhow::anyhow!(
+                "Program reference required. Usage: a4 explore program <ref>"
+            )),
+            (Some("stack"), None, None) => Err(anyhow::anyhow!(
+                "Stack reference required. Usage: a4 explore stack <ref>"
+            )),
+            (Some(stack), entity, None) => {
+                commands::explore::show_stack(stack, entity, cli.json)
+            }
+            _ => Err(anyhow::anyhow!(
+                "Invalid explore arguments. Use `a4 explore`, `a4 explore programs`, `a4 explore stack <ref>`, or `a4 explore program <ref>`."
+            )),
         },
         Commands::Push { stack_name } => commands::stack::push(&cli.config, stack_name.as_deref()),
         Commands::Install {
@@ -856,6 +881,75 @@ mod tests {
                 assert!(ts);
             }
             _ => panic!("expected install command"),
+        }
+    }
+
+    #[test]
+    fn parse_explicit_stack_explore() {
+        let cli = Cli::try_parse_from(["a4", "explore", "stack", "ore", "Position", "--json"])
+            .expect("cli should parse");
+        match cli.command {
+            Some(Commands::Explore {
+                target,
+                reference,
+                entity,
+            }) => {
+                assert_eq!(target.as_deref(), Some("stack"));
+                assert_eq!(reference.as_deref(), Some("ore"));
+                assert_eq!(entity.as_deref(), Some("Position"));
+                assert!(cli.json);
+            }
+            _ => panic!("expected explore command"),
+        }
+    }
+
+    #[test]
+    fn parse_program_list_and_program_explore() {
+        for (args, expected_reference) in [
+            (vec!["a4", "explore", "programs"], None),
+            (
+                vec!["a4", "explore", "program", "spl-token"],
+                Some("spl-token"),
+            ),
+        ] {
+            let cli = Cli::try_parse_from(args).expect("cli should parse");
+            match cli.command {
+                Some(Commands::Explore {
+                    target,
+                    reference,
+                    entity,
+                }) => {
+                    assert_eq!(
+                        target.as_deref(),
+                        Some(if expected_reference.is_some() {
+                            "program"
+                        } else {
+                            "programs"
+                        })
+                    );
+                    assert_eq!(reference.as_deref(), expected_reference);
+                    assert!(entity.is_none());
+                }
+                _ => panic!("expected explore command"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_legacy_stack_entity_explore() {
+        let cli = Cli::try_parse_from(["a4", "explore", "ore", "Position"])
+            .expect("legacy CLI should parse");
+        match cli.command {
+            Some(Commands::Explore {
+                target,
+                reference,
+                entity,
+            }) => {
+                assert_eq!(target.as_deref(), Some("ore"));
+                assert_eq!(reference.as_deref(), Some("Position"));
+                assert!(entity.is_none());
+            }
+            _ => panic!("expected explore command"),
         }
     }
 }

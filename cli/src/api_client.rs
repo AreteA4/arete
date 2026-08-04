@@ -465,11 +465,14 @@ pub struct RegistryStackItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistrySchemaResponse {
-    pub name: String,
-    pub websocket_url: String,
-    pub description: Option<String>,
-    pub schema: StackSchema,
+#[serde(rename_all = "camelCase")]
+pub struct RegistryProgramItem {
+    pub install_name: String,
+    pub display_name: String,
+    pub program_id: String,
+    pub program_release_hash: String,
+    pub program_spec_hash: String,
+    pub sdk_targets: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -648,35 +651,6 @@ pub struct RegistryProgramInstallBinding {
     pub endpoint: String,
     pub program_read_binding_id: String,
     pub auth: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StackSchema {
-    pub stack_name: String,
-    pub entities: Vec<EntitySchema>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EntitySchema {
-    pub name: String,
-    pub primary_keys: Vec<String>,
-    pub fields: Vec<FieldSchema>,
-    pub views: Vec<ViewSchema>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FieldSchema {
-    pub path: String,
-    pub rust_type: String,
-    pub nullable: bool,
-    pub section: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ViewSchema {
-    pub id: String,
-    pub mode: String,
-    pub pipeline: Vec<serde_json::Value>,
 }
 
 impl ApiClient {
@@ -890,6 +864,20 @@ impl ApiClient {
         Self::handle_response(response)
     }
 
+    /// List complete installable programs. Auth expands results to global
+    /// visibility, matching the stack registry collection.
+    pub fn list_registry_programs(&self) -> Result<Vec<RegistryProgramItem>> {
+        let response = self
+            .with_optional_auth(
+                self.client
+                    .get(format!("{}/api/registry/programs", self.base_url)),
+            )
+            .send()
+            .context("Failed to send registry program list request")?;
+
+        Self::handle_response(response)
+    }
+
     /// Get a registry stack's info. Auth expands access to global visibility.
     #[allow(dead_code)]
     pub fn get_registry_stack(&self, name: &str) -> Result<RegistryStackItem> {
@@ -900,19 +888,6 @@ impl ApiClient {
             )
             .send()
             .context("Failed to send registry get request")?;
-
-        Self::handle_response(response)
-    }
-
-    /// Get full schema for a registry stack. Auth expands access to global visibility.
-    pub fn get_registry_schema(&self, name: &str) -> Result<RegistrySchemaResponse> {
-        let response = self
-            .with_optional_auth(
-                self.client
-                    .get(format!("{}/api/registry/{}/schema", self.base_url, name)),
-            )
-            .send()
-            .context("Failed to send registry schema request")?;
 
         Self::handle_response(response)
     }
@@ -971,24 +946,6 @@ impl ApiClient {
             .with_optional_auth(self.client.get(url))
             .send()
             .context("Failed to send registry program install request")?;
-
-        Self::handle_response(response)
-    }
-
-    // ========================================================================
-    // Authenticated schema endpoints
-    // ========================================================================
-
-    /// Get schema for user's own spec (requires auth)
-    pub fn get_spec_schema(&self, spec_id: i32) -> Result<RegistrySchemaResponse> {
-        let api_key = self.require_api_key()?;
-
-        let response = self
-            .client
-            .get(format!("{}/api/specs/{}/schema", self.base_url, spec_id))
-            .bearer_auth(api_key)
-            .send()
-            .context("Failed to send spec schema request")?;
 
         Self::handle_response(response)
     }
