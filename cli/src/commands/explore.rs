@@ -837,7 +837,7 @@ fn build_program_output(
             .collect(),
         events: value_array(idl, "events")
             .iter()
-            .map(event_summary)
+            .map(|event| event_summary(idl, event))
             .collect(),
         types: value_array(idl, "types").iter().map(type_summary).collect(),
         program_read: program_read_summary(descriptor)?,
@@ -946,14 +946,40 @@ fn first_bool(value: &Value, keys: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-fn event_summary(event: &Value) -> EventSummary {
-    let fields = if event.get("fields").is_some() {
-        named_types(event, "fields")
-    } else {
+fn named_type_fields(idl: &Value, name: &str) -> Option<Vec<NamedTypeSummary>> {
+    value_array(idl, "types")
+        .iter()
+        .find(|user_type| {
+            user_type
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+        })
+        .map(|user_type| named_types(user_type.get("type").unwrap_or(user_type), "fields"))
+}
+
+fn event_summary(idl: &Value, event: &Value) -> EventSummary {
+    let inline_fields = named_types(event, "fields");
+    let fields = if inline_fields.is_empty() {
         event
-            .get("type")
-            .map(|definition| named_types(definition, "fields"))
+            .get("data")
+            .and_then(|data| data.get("name"))
+            .and_then(Value::as_str)
+            .and_then(|name| named_type_fields(idl, name))
+            .or_else(|| {
+                event
+                    .get("type")
+                    .map(|definition| named_types(definition, "fields"))
+            })
+            .or_else(|| {
+                event
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .and_then(|name| named_type_fields(idl, name))
+            })
             .unwrap_or_default()
+    } else {
+        inline_fields
     };
     EventSummary {
         name: event
@@ -1567,6 +1593,28 @@ mod tests {
         assert!(json["definition"].is_null());
         assert!(json["accounts"][0].get("docs").is_none());
         assert!(render_program(&output).contains("a4 install program demo --ts"));
+    }
+
+    #[test]
+    fn program_explore_resolves_event_data_type_fields() {
+        let mut descriptor = program_descriptor();
+        descriptor.definition.idl_payload["events"] = json!([{
+            "name": "ValueSet",
+            "fields": [],
+            "data": {"kind": "definedTypeLinkNode", "name": "ValueSetData"}
+        }]);
+        descriptor.definition.idl_payload["types"] = json!([{
+            "name": "ValueSetData",
+            "type": {
+                "kind": "struct",
+                "fields": [{"name": "value", "type": "u64"}]
+            }
+        }]);
+
+        let output = build_program_output(&descriptor).unwrap();
+
+        assert_eq!(output.events[0].fields[0].name, "value");
+        assert_eq!(output.events[0].fields[0].field_type, json!("u64"));
     }
 
     #[test]
