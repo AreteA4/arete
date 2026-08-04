@@ -89,6 +89,12 @@ where
             .list_for_query_sync::<T>(&crate::SubscriptionQuery::new(&self.view_path))
     }
 
+    /// Get the first item from this view, mirroring the TypeScript `useOne`
+    /// convenience for single-row derived views like `latest`.
+    pub async fn get_one(&self) -> Option<T> {
+        self.get().await.into_iter().next()
+    }
+
     /// Stream merged entities directly (simplest API - filters out removals and deletes).
     ///
     /// Emits `T` after each change. Patches are merged to give full entity state.
@@ -143,6 +149,19 @@ where
             KeyFilter::Multiple(keys.iter().map(|s| s.to_string()).collect()),
         )
     }
+
+    /// Stream merged entities filtered to specific keys (deletes filtered out).
+    pub fn listen_keys(&self, keys: &[&str]) -> UseBuilder<T>
+    where
+        T: Unpin,
+    {
+        UseBuilder::new(
+            self.connection.clone(),
+            self.store.clone(),
+            self.view_path.clone(),
+            KeyFilter::Multiple(keys.iter().map(|s| s.to_string()).collect()),
+        )
+    }
 }
 
 /// Builder for `.use()` subscriptions that emit `T` directly. Implements `Stream`.
@@ -154,6 +173,7 @@ where
     store: SharedStore,
     view_path: String,
     key_filter: KeyFilter,
+    key: Option<String>,
     partition: Option<String>,
     take: Option<usize>,
     skip: Option<usize>,
@@ -174,11 +194,22 @@ where
         view_path: String,
         key_filter: KeyFilter,
     ) -> Self {
+        Self::new_keyed(connection, store, view_path, key_filter, None)
+    }
+
+    fn new_keyed(
+        connection: ConnectionManager,
+        store: SharedStore,
+        view_path: String,
+        key_filter: KeyFilter,
+        key: Option<String>,
+    ) -> Self {
         Self {
             connection,
             store,
             view_path,
             key_filter,
+            key,
             partition: None,
             take: None,
             skip: None,
@@ -247,7 +278,7 @@ where
                 this.store.clone(),
                 this.view_path.clone(),
                 this.key_filter.clone(),
-                None,
+                this.key.clone(),
                 this.partition.clone(),
                 this.filters.clone(),
                 this.take,
@@ -271,6 +302,7 @@ where
     store: SharedStore,
     view_path: String,
     key_filter: KeyFilter,
+    key: Option<String>,
     partition: Option<String>,
     take: Option<usize>,
     skip: Option<usize>,
@@ -291,11 +323,22 @@ where
         view_path: String,
         key_filter: KeyFilter,
     ) -> Self {
+        Self::new_keyed(connection, store, view_path, key_filter, None)
+    }
+
+    fn new_keyed(
+        connection: ConnectionManager,
+        store: SharedStore,
+        view_path: String,
+        key_filter: KeyFilter,
+        key: Option<String>,
+    ) -> Self {
         Self {
             connection,
             store,
             view_path,
             key_filter,
+            key,
             partition: None,
             take: None,
             skip: None,
@@ -355,7 +398,7 @@ where
             self.store,
             self.view_path,
             self.key_filter,
-            None,
+            self.key,
             self.partition,
             self.filters,
             self.take,
@@ -382,7 +425,7 @@ where
                 this.store.clone(),
                 this.view_path.clone(),
                 this.key_filter.clone(),
-                None,
+                this.key.clone(),
                 this.partition.clone(),
                 this.filters.clone(),
                 this.take,
@@ -406,6 +449,7 @@ where
     store: SharedStore,
     view_path: String,
     key_filter: KeyFilter,
+    key: Option<String>,
     partition: Option<String>,
     take: Option<usize>,
     skip: Option<usize>,
@@ -426,11 +470,22 @@ where
         view_path: String,
         key_filter: KeyFilter,
     ) -> Self {
+        Self::new_keyed(connection, store, view_path, key_filter, None)
+    }
+
+    fn new_keyed(
+        connection: ConnectionManager,
+        store: SharedStore,
+        view_path: String,
+        key_filter: KeyFilter,
+        key: Option<String>,
+    ) -> Self {
         Self {
             connection,
             store,
             view_path,
             key_filter,
+            key,
             partition: None,
             take: None,
             skip: None,
@@ -496,7 +551,7 @@ where
                 this.store.clone(),
                 this.view_path.clone(),
                 this.key_filter.clone(),
-                None,
+                this.key.clone(),
                 this.partition.clone(),
                 this.filters.clone(),
                 this.take,
@@ -618,38 +673,44 @@ where
     }
 
     /// Stream merged entity values directly (simplest API - filters out removals and deletes).
-    pub fn listen(&self, key: &str) -> UseStream<T>
+    ///
+    /// Returns a builder, so keyed subscriptions accept the same query options
+    /// as list views: `.with_snapshot(false)`, `.after(cursor)`, `.partition(..)`, …
+    pub fn listen(&self, key: &str) -> UseBuilder<T>
     where
         T: Unpin,
     {
-        UseStream::new_lazy(
+        UseBuilder::new_keyed(
             self.connection.clone(),
             self.store.clone(),
-            self.view_path.clone(),
             self.view_path.clone(),
             KeyFilter::Single(key.to_string()),
             Some(key.to_string()),
         )
     }
 
-    /// Watch for updates to a specific key.
-    pub fn watch(&self, key: &str) -> EntityStream<T> {
-        EntityStream::new_lazy(
+    /// Watch for updates to a specific key. Chain query options before polling.
+    pub fn watch(&self, key: &str) -> WatchBuilder<T>
+    where
+        T: Unpin,
+    {
+        WatchBuilder::new_keyed(
             self.connection.clone(),
             self.store.clone(),
-            self.view_path.clone(),
             self.view_path.clone(),
             KeyFilter::Single(key.to_string()),
             Some(key.to_string()),
         )
     }
 
-    /// Watch for updates with before/after diffs.
-    pub fn watch_rich(&self, key: &str) -> RichEntityStream<T> {
-        RichEntityStream::new_lazy(
+    /// Watch for updates with before/after diffs. Chain query options before polling.
+    pub fn watch_rich(&self, key: &str) -> RichWatchBuilder<T>
+    where
+        T: Unpin,
+    {
+        RichWatchBuilder::new_keyed(
             self.connection.clone(),
             self.store.clone(),
-            self.view_path.clone(),
             self.view_path.clone(),
             KeyFilter::Single(key.to_string()),
             Some(key.to_string()),

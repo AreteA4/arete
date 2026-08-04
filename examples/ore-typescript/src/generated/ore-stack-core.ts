@@ -1497,7 +1497,9 @@ export interface OreDeployParams {
   config?: string;
   miner?: string;
   round: string;
-  entropyVar: string;
+  treasury?: string;
+  entropyVar?: string;
+  entropyProgram?: string;
 }
 
 export type OreDeployError = OreStreamOreProgramError;
@@ -1524,10 +1526,11 @@ export const oreDeployInstruction = createInstructionHandler<OreDeployParams, Or
     { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
     { name: 'miner', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'miner' }, { type: 'accountRef', accountName: 'authority' }] } },
     { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
     { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
     { name: 'oreProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv' },
-    { name: 'entropyVar', isSigner: false, isWritable: true, category: 'userProvided' },
-    { name: 'entropyProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X' },
+    { name: 'entropyVar', isSigner: false, isWritable: true, category: 'userProvided', isOptional: true },
+    { name: 'entropyProgram', isSigner: false, isWritable: false, category: 'userProvided', isOptional: true },
   ],
   errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
 });
@@ -2037,10 +2040,10 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:e2e299bbd3e464f718f94cba2c8ff4143eb65edf022f8b8b78bccaef8690a339',
-      programSpecHash: 'arete:h1:program-spec:sha256:e09807977d6fa86ef1d0a11b747e7e8147a394178fc35cf8f1d3e13140399cf2',
-      idlContentHash: 'arete:h1:idl-content:sha256:ddd66054beab80ddfdd504097ff5f1040dc046eab91cd396cf3f04f69878dfca',
-      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:815e9674705c9938e6793fb19ade1501bcd5ec9b73453fc3d149963a0d7965c5',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:04630a0bc3bdea904da2a022a0c5cc69566ac03c8af1e03ce6ceddfb76cdf5d0',
+      programSpecHash: 'arete:h1:program-spec:sha256:b37beb6e8df0a55316f39cea21f3f3f5bc827aa7e6a54291398edbf1db58ff6b',
+      idlContentHash: 'arete:h1:idl-content:sha256:a6c8507030a7ba25b7aeb41d35634a5a3fa27023ad3000ff216b869155da5d12',
+      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:4ad55eb4df42e150fb8004e52180ad2722f3a893847a828c48cd7da5eeccbc42',
       pdas: {
         automation: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('automation'), account('authority')),
         board: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('board')),
@@ -2217,7 +2220,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:dd4eb062d87744c7a8697f8db17d5a5329193b305cff851058e8872949dfdcca',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:ca188f75281ec8531e3cd07835d0a39fa34b22b79c0aa4b8062ebd6a4d806bb0',
       programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
       idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',
@@ -2288,7 +2291,7 @@ export const ORE_STREAM_STACK_CORE = {
   },
   programReads: {
     ore: {
-      release: { programReleaseHash: "arete:h1:program-release:sha256:99b5d7c44b0a70d87ca0523fad441707379013410439cf390ba07580aa7d15a0", programSpecHash: "arete:h1:program-spec:sha256:e09807977d6fa86ef1d0a11b747e7e8147a394178fc35cf8f1d3e13140399cf2" },
+      release: { programReleaseHash: "arete:h1:program-release:sha256:adff79886735a8cacfb69bd3a5371f5cfeec18d099a289cce4755b9104ffd986", programSpecHash: "arete:h1:program-spec:sha256:b37beb6e8df0a55316f39cea21f3f3f5bc827aa7e6a54291398edbf1db58ff6b" },
       transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
     },
     entropy: {

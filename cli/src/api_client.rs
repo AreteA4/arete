@@ -503,6 +503,11 @@ pub struct RegistrySdkExtensionManifest {
     pub input_kind: Option<RegistrySdkExtensionInputKind>,
     pub input_hash: Option<String>,
     pub sdk_range: Option<String>,
+    /// Target SDK language of the hosted bundle (`"rust"` or absent /
+    /// `"typescript"`). Optional until the registry exposes a language
+    /// dimension on sdk_extension_contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -927,12 +932,22 @@ impl ApiClient {
     }
 
     /// Get deployment-pinned install data for a hosted stack.
-    pub fn get_registry_stack_install(&self, stack: &str) -> Result<RegistryStackInstallResponse> {
+    ///
+    /// `language` selects the hosted devex-extension bundle language. The
+    /// TypeScript path passes `None`, keeping the request byte-identical to
+    /// pre-selector CLIs; Rust generation passes `Some("rust")`.
+    pub fn get_registry_stack_install(
+        &self,
+        stack: &str,
+        language: Option<&str>,
+    ) -> Result<RegistryStackInstallResponse> {
+        let url = registry_install_url(
+            &self.base_url,
+            &format!("/api/registry/stacks/{}/install", stack),
+            language,
+        );
         let response = self
-            .with_optional_auth(self.client.get(format!(
-                "{}/api/registry/stacks/{}/install",
-                self.base_url, stack
-            )))
+            .with_optional_auth(self.client.get(url))
             .send()
             .context("Failed to send registry stack install request")?;
 
@@ -940,15 +955,20 @@ impl ApiClient {
     }
 
     /// Get canonical install data for a hosted program SDK.
+    ///
+    /// See [`Self::get_registry_stack_install`] for the `language` contract.
     pub fn get_registry_program_install(
         &self,
         program: &str,
+        language: Option<&str>,
     ) -> Result<RegistryProgramInstallResponse> {
+        let url = registry_install_url(
+            &self.base_url,
+            &format!("/api/registry/programs/{}/install", program),
+            language,
+        );
         let response = self
-            .with_optional_auth(self.client.get(format!(
-                "{}/api/registry/programs/{}/install",
-                self.base_url, program
-            )))
+            .with_optional_auth(self.client.get(url))
             .send()
             .context("Failed to send registry program install request")?;
 
@@ -1437,6 +1457,18 @@ impl ApiClient {
     }
 }
 
+/// Build a registry install URL, appending the optional `language` selector.
+///
+/// With `language: None` the URL is byte-identical to the pre-selector
+/// request, so default TypeScript installs keep hitting the registry exactly
+/// as released CLIs do.
+fn registry_install_url(base_url: &str, path: &str, language: Option<&str>) -> String {
+    match language {
+        Some(language) => format!("{base_url}{path}?language={language}"),
+        None => format!("{base_url}{path}"),
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::ensure_no_dangling_symlink;
@@ -1472,6 +1504,37 @@ mod tests {
 
         assert!(error.to_string().contains("dangling symlink"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_install_urls_omit_language_by_default_and_pass_rust_selector() {
+        // TypeScript/default installs must issue byte-identical requests to
+        // released CLIs: no query string at all.
+        assert_eq!(
+            registry_install_url(
+                "https://api.example.test",
+                "/api/registry/stacks/ore/install",
+                None
+            ),
+            "https://api.example.test/api/registry/stacks/ore/install"
+        );
+        assert_eq!(
+            registry_install_url(
+                "https://api.example.test",
+                "/api/registry/programs/spl-token/install",
+                None
+            ),
+            "https://api.example.test/api/registry/programs/spl-token/install"
+        );
+        // The Rust rung opts in explicitly.
+        assert_eq!(
+            registry_install_url(
+                "https://api.example.test",
+                "/api/registry/stacks/ore/install",
+                Some("rust")
+            ),
+            "https://api.example.test/api/registry/stacks/ore/install?language=rust"
+        );
     }
 
     #[test]

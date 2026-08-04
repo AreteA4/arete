@@ -833,6 +833,14 @@
               "docs": []
             },
             {
+              "name": "treasury",
+              "writable": true,
+              "signer": false,
+              "optional": false,
+              "address": null,
+              "docs": []
+            },
+            {
               "name": "systemProgram",
               "writable": false,
               "signer": false,
@@ -852,7 +860,7 @@
               "name": "entropyVar",
               "writable": true,
               "signer": false,
-              "optional": false,
+              "optional": true,
               "address": null,
               "docs": []
             },
@@ -860,9 +868,11 @@
               "name": "entropyProgram",
               "writable": false,
               "signer": false,
-              "optional": false,
-              "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
-              "docs": []
+              "optional": true,
+              "address": null,
+              "docs": [
+                "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
+              ]
             }
           ],
           "args": [
@@ -2844,9 +2854,9 @@
     {
       "schema": "arete.program-spec/v1",
       "programId": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "idlContentHash": "arete:h1:idl-content:sha256:ddd66054beab80ddfdd504097ff5f1040dc046eab91cd396cf3f04f69878dfca",
-      "portableIdlHash": "arete:h1:idl-portable:sha256:1aba4b0bb33a499c7871bf2c60d505eda3a0669938fe54a5a36122cd6c1863ad",
-      "normalizedIdlHash": "arete:h1:idl-normalized:sha256:815e9674705c9938e6793fb19ade1501bcd5ec9b73453fc3d149963a0d7965c5",
+      "idlContentHash": "arete:h1:idl-content:sha256:a6c8507030a7ba25b7aeb41d35634a5a3fa27023ad3000ff216b869155da5d12",
+      "portableIdlHash": "arete:h1:idl-portable:sha256:10efe0793e8742548f774ff07f8aec238dc1243e40194ad7d096f33edb2d6f74",
+      "normalizedIdlHash": "arete:h1:idl-normalized:sha256:4ad55eb4df42e150fb8004e52180ad2722f3a893847a828c48cd7da5eeccbc42",
       "idlSnapshot": {
         "normalizationVersion": 1,
         "name": "ore",
@@ -3693,6 +3703,14 @@
                 "docs": []
               },
               {
+                "name": "treasury",
+                "writable": true,
+                "signer": false,
+                "optional": false,
+                "address": null,
+                "docs": []
+              },
+              {
                 "name": "systemProgram",
                 "writable": false,
                 "signer": false,
@@ -3712,7 +3730,7 @@
                 "name": "entropyVar",
                 "writable": true,
                 "signer": false,
-                "optional": false,
+                "optional": true,
                 "address": null,
                 "docs": []
               },
@@ -3720,9 +3738,11 @@
                 "name": "entropyProgram",
                 "writable": false,
                 "signer": false,
-                "optional": false,
-                "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X",
-                "docs": []
+                "optional": true,
+                "address": null,
+                "docs": [
+                  "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
+                ]
               }
             ],
             "args": [
@@ -5814,6 +5834,15 @@
               "is_optional": false
             },
             {
+              "name": "treasury",
+              "is_signer": false,
+              "is_writable": true,
+              "resolution": {
+                "category": "userProvided"
+              },
+              "is_optional": false
+            },
+            {
               "name": "systemProgram",
               "is_signer": false,
               "is_writable": false,
@@ -5840,17 +5869,19 @@
               "resolution": {
                 "category": "userProvided"
               },
-              "is_optional": false
+              "is_optional": true
             },
             {
               "name": "entropyProgram",
               "is_signer": false,
               "is_writable": false,
               "resolution": {
-                "category": "known",
-                "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
+                "category": "userProvided"
               },
-              "is_optional": false
+              "is_optional": true,
+              "docs": [
+                "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
+              ]
             }
           ],
           "args": [
@@ -10074,7 +10105,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "1afdaefc8695e5f7107f2fc2d366d8a6832ca81595a6660e68e27f7aca630bff",
+      "content_hash": "86c64526fce93362912186fd1808d5c126e5f4d1df70a0fe86cd6235191afd27",
       "views": [
         {
           "id": "OreRound/latest",
@@ -10536,7 +10567,7 @@
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "ab563787384f36a48daea94cdcff68b990a26e5ad1b6e86fcf15fae0ecf384a4",
+      "content_hash": "2c2cc014ef9231791fedbd2a6411cf0538d44977417fc8abe0e5f855420ef7a2",
       "views": []
     },
     {
@@ -10997,7 +11028,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "7fcb9dfcdbdc2174b42d1332ca968d0e81151e77dc3c3d855f862432d66d4e26",
+      "content_hash": "3bc899246276d3ed9af027a9136b43f439b5c84b72134d15df7c36f0c079d97a",
       "views": []
     },
     {
@@ -12867,7 +12898,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "3e999ec5908ef4377ff6018dbd312d0cb11ec6167dee7378cde8c2b9c5bada93",
+      "content_hash": "089c685f8663523f298319fe125d3c612309d598b93488807e9255e3183c456e",
       "views": []
     }
   ],
@@ -13449,6 +13480,16 @@
           "is_optional": false
         },
         {
+          "name": "treasury",
+          "is_signer": false,
+          "is_writable": true,
+          "resolution": {
+            "category": "pdaRef",
+            "pda_name": "treasury"
+          },
+          "is_optional": false
+        },
+        {
           "name": "systemProgram",
           "is_signer": false,
           "is_writable": false,
@@ -13475,17 +13516,19 @@
           "resolution": {
             "category": "userProvided"
           },
-          "is_optional": false
+          "is_optional": true
         },
         {
           "name": "entropyProgram",
           "is_signer": false,
           "is_writable": false,
           "resolution": {
-            "category": "known",
-            "address": "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"
+            "category": "userProvided"
           },
-          "is_optional": false
+          "is_optional": true,
+          "docs": [
+            "Entropy program when entropy sampling is enabled; system program sentinel otherwise."
+          ]
         }
       ],
       "args": [
@@ -14519,5 +14562,5 @@
       ]
     }
   ],
-  "content_hash": "78389d78a607d1b5d0166ee2fcd2271910a6b04d411482927c845a82bb083290"
+  "content_hash": "c1e560b702159b2fff2334575ac16caa9f9616c115ff4b83305020d5502ca84f"
 }

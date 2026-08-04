@@ -23,6 +23,7 @@ struct TestStack;
 
 impl Stack for TestStack {
     type Views = TestViews;
+    type Programs = ();
 
     fn name() -> &'static str {
         "protocol-v2-test"

@@ -1269,7 +1269,7 @@ fn prim(schema: &str, ts: &str) -> ParsedArgType {
 }
 
 /// Split `Name<inner>` into `(Name, inner)`, ignoring path qualifiers on `Name`.
-fn split_generic(t: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_generic(t: &str) -> Option<(&str, &str)> {
     let open = t.find('<')?;
     if !t.ends_with('>') {
         return None;
@@ -2403,7 +2403,7 @@ fn render_semantic_params_interface(
 /// Normalize a raw arg-type string (IDL or `pdas!` DSL spelling) to the
 /// canonical seed type the runtime's `serializeSeedValue` understands.
 /// Returns `None` for types that cannot be encoded as a seed.
-fn normalize_seed_arg_type(raw: &str) -> Option<String> {
+pub(crate) fn normalize_seed_arg_type(raw: &str) -> Option<String> {
     let t = raw.rsplit("::").next().unwrap_or(raw).trim();
     if let Some(width) = t.strip_prefix('u').or_else(|| t.strip_prefix('i')) {
         if matches!(width, "8" | "16" | "32" | "64" | "128") {
@@ -2435,7 +2435,7 @@ fn seed_arg_ts_type(raw: &str) -> Option<String> {
 // ============================================================================
 
 /// Dedupe errors by code, preserving first-seen definitions, sorted ascending.
-fn dedupe_errors_by_code(errors: &[IdlErrorSnapshot]) -> Vec<IdlErrorSnapshot> {
+pub(crate) fn dedupe_errors_by_code(errors: &[IdlErrorSnapshot]) -> Vec<IdlErrorSnapshot> {
     let mut seen: BTreeSet<u32> = BTreeSet::new();
     let mut by_code: BTreeMap<u32, IdlErrorSnapshot> = BTreeMap::new();
     for err in errors {
