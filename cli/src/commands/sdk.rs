@@ -62,6 +62,7 @@ struct ResolvedRegistryComposition {
 enum SdkTarget {
     TypeScript,
     Rust,
+    Python,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,9 +73,10 @@ struct ExtensionsManifest {
     input_kind: Option<ExtensionsInputKind>,
     input_hash: Option<String>,
     sdk_range: Option<String>,
-    /// Target SDK language of the bundle (`"rust"` for Rust bundles; absent
-    /// or `"typescript"` for TypeScript bundles). Skipped when absent so
-    /// pre-existing TypeScript manifests round-trip byte-identically.
+    /// Target SDK language of the bundle (`"rust"` for Rust bundles,
+    /// `"python"` for Python bundles; absent or `"typescript"` for
+    /// TypeScript bundles). Skipped when absent so pre-existing TypeScript
+    /// manifests round-trip byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     language: Option<String>,
 }
@@ -147,6 +149,7 @@ impl ResolvedExtensionsArtifact {
 /// Bundle language declared by an extensions manifest.
 const EXTENSIONS_LANGUAGE_TYPESCRIPT: &str = "typescript";
 const EXTENSIONS_LANGUAGE_RUST: &str = "rust";
+const EXTENSIONS_LANGUAGE_PYTHON: &str = "python";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProgramExtensionBinding {
@@ -549,8 +552,10 @@ pub fn list(config_path: &str) -> Result<()> {
 
             let ts_output = cfg.get_typescript_output_path(name, Some(stack), None);
             let rust_output = cfg.get_rust_output_path(name, Some(stack), None);
+            let python_output = cfg.get_python_output_path(name, Some(stack), None);
             println!("    TypeScript: {}", ts_output.display());
             println!("    Rust: {}", rust_output.display());
+            println!("    Python: {}", python_output.display());
             println!();
         }
     }
@@ -581,14 +586,21 @@ pub fn list(config_path: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn sync(config_path: &str, ts: bool, rust: bool, stack_filters: Vec<String>) -> Result<()> {
+pub fn sync(
+    config_path: &str,
+    ts: bool,
+    rust: bool,
+    python: bool,
+    stack_filters: Vec<String>,
+) -> Result<()> {
     let config = AreteConfig::load(config_path)?;
     if config.stacks.is_empty() {
         anyhow::bail!("No stacks are configured in {}", config_path);
     }
 
-    let sync_typescript = ts || !rust;
-    let sync_rust = rust || !ts;
+    let sync_typescript = ts || (!rust && !python);
+    let sync_rust = rust || (!ts && !python);
+    let sync_python = python || (!ts && !rust);
     let filter_set: BTreeSet<String> = stack_filters.into_iter().collect();
     let selected = resolve_sync_stack_names(&config, &filter_set)?;
 
@@ -618,6 +630,19 @@ pub fn sync(config_path: &str, ts: bool, rust: bool, stack_filters: Vec<String>)
         }
         if sync_rust {
             create_rust(
+                config_path,
+                Some(&stack_name),
+                None,
+                None,
+                false,
+                None,
+                None,
+                None,
+                Vec::new(),
+            )?;
+        }
+        if sync_python {
+            create_python(
                 config_path,
                 Some(&stack_name),
                 None,
@@ -714,6 +739,7 @@ pub fn create(
     stack_name: Option<&str>,
     ts: bool,
     rust: bool,
+    python: bool,
     output_override: Option<String>,
     package_name_override: Option<String>,
     crate_name_override: Option<String>,
@@ -734,7 +760,7 @@ pub fn create(
         ));
     }
 
-    match select_sdk_target(ts, rust, "Generate which SDK?")? {
+    match select_sdk_target(ts, rust, python, "Generate which SDK?")? {
         SdkTarget::TypeScript => create_typescript(
             config_path,
             stack_name,
@@ -766,6 +792,29 @@ pub fn create(
                 stack_name,
                 output_override,
                 crate_name_override,
+                module_flag,
+                url_override,
+                extensions_override,
+                manifest_override,
+                artifact_dirs,
+            )
+        }
+        SdkTarget::Python => {
+            if program_only {
+                return Err(anyhow::anyhow!(
+                    "--program-only is only supported for TypeScript SDKs (--ts)"
+                ));
+            }
+            if !live_module_values.is_empty() || !program_module_values.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "--live-module and --program-module are only supported for TypeScript composition SDKs"
+                ));
+            }
+            create_python(
+                config_path,
+                stack_name,
+                output_override,
+                package_name_override,
                 module_flag,
                 url_override,
                 extensions_override,
@@ -1051,6 +1100,7 @@ pub fn install_command(
     maybe_install_name: Option<&str>,
     ts: bool,
     rust: bool,
+    python: bool,
     output_override: Option<String>,
     package_name_override: Option<String>,
     crate_name_override: Option<String>,
@@ -1070,6 +1120,7 @@ pub fn install_command(
             install_name,
             ts,
             rust,
+            python,
             output_override,
             package_name_override,
             extensions_override,
@@ -1080,6 +1131,7 @@ pub fn install_command(
         install_target,
         ts,
         rust,
+        python,
         output_override,
         package_name_override,
         crate_name_override,
@@ -1094,6 +1146,7 @@ pub fn install_stack(
     stack_name: &str,
     ts: bool,
     rust: bool,
+    python: bool,
     output_override: Option<String>,
     package_name_override: Option<String>,
     crate_name_override: Option<String>,
@@ -1101,7 +1154,7 @@ pub fn install_stack(
     url_override: Option<String>,
     extensions_override: Option<String>,
 ) -> Result<()> {
-    match select_sdk_target(ts, rust, "Install which SDK?")? {
+    match select_sdk_target(ts, rust, python, "Install which SDK?")? {
         SdkTarget::TypeScript => install_typescript(
             stack_name,
             output_override,
@@ -1113,6 +1166,14 @@ pub fn install_stack(
             stack_name,
             output_override,
             crate_name_override,
+            module_flag,
+            url_override,
+            extensions_override,
+        ),
+        SdkTarget::Python => install_python(
+            stack_name,
+            output_override,
+            package_name_override,
             module_flag,
             url_override,
             extensions_override,
@@ -1324,22 +1385,153 @@ fn install_rust(
     )
 }
 
+fn install_python(
+    stack_name: &str,
+    output_override: Option<String>,
+    package_name_override: Option<String>,
+    module_flag: bool,
+    url_override: Option<String>,
+    extensions_override: Option<String>,
+) -> Result<()> {
+    println!(
+        "{} Looking up hosted stack '{}'...",
+        "→".blue().bold(),
+        stack_name
+    );
+
+    let client = ApiClient::new()?;
+    let source =
+        resolve_remote_stack_source(&client, stack_name, Some(EXTENSIONS_LANGUAGE_PYTHON))?;
+    let package_name =
+        package_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
+    let output_dir = output_override
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-py", source.sdk_name())));
+    let stack_url = url_override.or_else(|| source.default_websocket_url());
+
+    println!(
+        "{} Found hosted stack: {}",
+        "✓".green().bold(),
+        source.stack_id().bold()
+    );
+    source.print_source_details();
+    println!("  Output: {}", output_dir.display());
+    if module_flag {
+        println!("  Mode: module (plain package directory)");
+    }
+    if let Some(url) = &stack_url {
+        println!("  URL: {}", url.cyan());
+    } else {
+        println!(
+            "  URL: {}",
+            "(not provided by hosted stack - placeholder will be generated)".dimmed()
+        );
+    }
+
+    println!("\n{} Generating Python SDK...", "→".blue().bold());
+
+    if let Some(composition) = source.composition_artifacts() {
+        if stack_url.is_some() {
+            anyhow::bail!(
+                "multi-live Python install requires per-alias URLs; a shared --url is not allowed"
+            );
+        }
+        if extensions_override.is_some() || source.hosted_extensions().is_some() {
+            anyhow::bail!(
+                "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
+            );
+        }
+        let live_urls = match &source {
+            ResolvedStackSource::Remote(stack) => stack
+                .live_bindings
+                .iter()
+                .map(|live| (live.alias.clone(), live.binding.websocket_endpoint.clone()))
+                .collect(),
+            ResolvedStackSource::Local(_) | ResolvedStackSource::LocalArtifacts(_) => {
+                BTreeMap::new()
+            }
+        };
+        let output = arete_interpreter::python::compile_composed_public_artifacts_v2(
+            composition.program_specs,
+            composition.live_specs,
+            composition.stack_manifest,
+            Some(arete_interpreter::python::PythonCompositionConfig {
+                stack: arete_interpreter::python::PythonStackConfig {
+                    package_name: package_name.clone(),
+                    sdk_version: "0.4".to_string(),
+                    module_mode: module_flag,
+                    url: None,
+                    http_url: None,
+                    extension_modules: Vec::new(),
+                    extension_entry: None,
+                },
+                live_urls,
+            }),
+        )
+        .map_err(|error| anyhow::anyhow!("Failed to compile Python composition: {error}"))?;
+        if module_flag {
+            arete_interpreter::python::write_python_composition_module(&output, &output_dir)
+                .with_context(|| {
+                    format!(
+                        "Failed to write Python composition to {}",
+                        output_dir.display()
+                    )
+                })?;
+        } else {
+            arete_interpreter::python::write_python_composition_package(&output, &output_dir)
+                .with_context(|| {
+                    format!(
+                        "Failed to write Python composition to {}",
+                        output_dir.display()
+                    )
+                })?;
+        }
+        println!(
+            "{} Generated {} aliased Python stack modules in {}",
+            "✓".green().bold(),
+            output.live_stacks.len(),
+            output_dir.display()
+        );
+        telemetry::record_sdk_generated("python");
+        return Ok(());
+    }
+
+    let stack_spec = source.load_stack_spec(true)?;
+
+    println!(
+        "{} {} entities in stack",
+        "→".blue().bold(),
+        stack_spec.entities.len()
+    );
+
+    generate_python_stack_sdk(
+        &source,
+        stack_spec,
+        &output_dir,
+        &package_name,
+        module_flag,
+        stack_url,
+        extensions_override.as_deref().map(Path::new),
+    )
+}
+
 pub fn install_program(
     program: &str,
     ts: bool,
     rust: bool,
+    python: bool,
     output_override: Option<String>,
     package_name_override: Option<String>,
     extensions_override: Option<String>,
 ) -> Result<()> {
-    match select_sdk_target(ts, rust, "Install which SDK?")? {
+    match select_sdk_target(ts, rust, python, "Install which SDK?")? {
         SdkTarget::TypeScript => install_program_typescript(
             program,
             output_override,
             package_name_override,
             extensions_override,
         ),
-        SdkTarget::Rust => Err(anyhow::anyhow!(
+        SdkTarget::Rust | SdkTarget::Python => Err(anyhow::anyhow!(
             "Published program SDK install currently supports TypeScript only"
         )),
     }
@@ -1418,13 +1610,14 @@ fn install_program_typescript(
     Ok(())
 }
 
-fn select_sdk_target(ts: bool, rust: bool, prompt: &str) -> Result<SdkTarget> {
-    match (ts, rust) {
-        (true, false) => Ok(SdkTarget::TypeScript),
-        (false, true) => Ok(SdkTarget::Rust),
-        (false, false) => {
+fn select_sdk_target(ts: bool, rust: bool, python: bool, prompt: &str) -> Result<SdkTarget> {
+    match (ts, rust, python) {
+        (true, false, false) => Ok(SdkTarget::TypeScript),
+        (false, true, false) => Ok(SdkTarget::Rust),
+        (false, false, true) => Ok(SdkTarget::Python),
+        (false, false, false) => {
             let theme = ColorfulTheme::default();
-            let items = ["TypeScript", "Rust"];
+            let items = ["TypeScript", "Rust", "Python"];
             let selection = Select::with_theme(&theme)
                 .with_prompt(prompt)
                 .items(&items)
@@ -1435,11 +1628,12 @@ fn select_sdk_target(ts: bool, rust: bool, prompt: &str) -> Result<SdkTarget> {
             Ok(match selection {
                 0 => SdkTarget::TypeScript,
                 1 => SdkTarget::Rust,
+                2 => SdkTarget::Python,
                 _ => unreachable!(),
             })
         }
-        (true, true) => Err(anyhow::anyhow!(
-            "Cannot specify both --ts and --rust. Choose one."
+        _ => Err(anyhow::anyhow!(
+            "Cannot specify more than one of --ts, --rust, and --python. Choose one."
         )),
     }
 }
@@ -1923,6 +2117,119 @@ fn resolve_explicit_rust_extensions_artifact(
     )
 }
 
+/// Resolve the devex extensions bundle for a Python SDK generation.
+///
+/// Mirror of [`resolve_rust_extensions_artifact`]: explicit `--extensions`
+/// path, then a hosted registry artifact (only when its manifest declares
+/// `language: "python"`), then an `extensions.json` already staged in the
+/// output module directory — reusing the staged manifest keeps its input
+/// pins intact instead of silently nulling them. There is no final bare
+/// entry-file inference from the output directory.
+fn resolve_python_extensions_artifact(
+    explicit_path: Option<&Path>,
+    hosted_artifact: Option<&ResolvedExtensionsArtifact>,
+    output_module_dir: &Path,
+    base_stem: &str,
+) -> Result<Option<ResolvedExtensionsArtifact>> {
+    let artifact = if let Some(path) = explicit_path {
+        Some(resolve_explicit_python_extensions_artifact(
+            path, base_stem,
+        )?)
+    } else if let Some(artifact) = hosted_artifact
+        .filter(|artifact| artifact.language.as_deref() == Some(EXTENSIONS_LANGUAGE_PYTHON))
+    {
+        Some(artifact.clone())
+    } else {
+        let manifest_path = output_module_dir.join("extensions.json");
+        if manifest_path.exists() {
+            let manifest = read_extensions_manifest(&manifest_path)?;
+            Some(build_extensions_artifact_from_manifest(
+                manifest,
+                output_module_dir,
+            )?)
+        } else {
+            None
+        }
+    };
+
+    if let Some(ref artifact) = artifact {
+        ensure_extensions_language(artifact, EXTENSIONS_LANGUAGE_PYTHON)?;
+    }
+    Ok(artifact)
+}
+
+/// Compute the `from . import <stem>` wiring stems for a staged Python
+/// bundle: helper files first (manifest order, which is sorted), entry stem
+/// last. Duplicate stems and collisions with generated modules are rejected
+/// by the compiler.
+fn python_extension_wiring(artifact: &ResolvedExtensionsArtifact) -> Result<(Vec<String>, String)> {
+    let entry_stem = python_extension_module_stem(&artifact.entry)?;
+    let mut stems = Vec::new();
+    for file in &artifact.files {
+        if file.path == artifact.entry {
+            continue;
+        }
+        stems.push(python_extension_module_stem(&file.path)?);
+    }
+    stems.push(entry_stem.clone());
+    Ok((stems, entry_stem))
+}
+
+fn python_extension_module_stem(path: &str) -> Result<String> {
+    let normalized = normalize_extension_relative_path(path)?;
+    let stem = normalized.strip_suffix(".py").ok_or_else(|| {
+        anyhow::anyhow!(
+            "Python extensions bundles require .py files; '{}' is not supported",
+            path
+        )
+    })?;
+    if stem.contains('/') {
+        return Err(anyhow::anyhow!(
+            "Python extensions bundles require flat .py files; '{}' is not supported",
+            path
+        ));
+    }
+    Ok(arete_interpreter::python::python_module_name(stem))
+}
+
+fn resolve_explicit_python_extensions_artifact(
+    path: &Path,
+    base_stem: &str,
+) -> Result<ResolvedExtensionsArtifact> {
+    if path.is_dir() {
+        let manifest_path = path.join("extensions.json");
+        if manifest_path.exists() {
+            let manifest = read_extensions_manifest(&manifest_path)?;
+            return build_extensions_artifact_from_manifest(manifest, path);
+        }
+
+        let entry = path.join("extensions.py");
+        if entry.exists() {
+            return infer_extensions_artifact_from_entry_with_language(
+                &entry,
+                Some(EXTENSIONS_LANGUAGE_PYTHON.to_string()),
+            );
+        }
+
+        return Err(anyhow::anyhow!(
+            "No extensions.json manifest or extensions.py entry found in {} for the '{}' Python SDK",
+            path.display(),
+            base_stem
+        ));
+    }
+
+    if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+        let manifest = read_extensions_manifest(path)?;
+        let source_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        return build_extensions_artifact_from_manifest(manifest, &source_dir);
+    }
+
+    infer_extensions_artifact_from_entry_with_language(
+        path,
+        Some(EXTENSIONS_LANGUAGE_PYTHON.to_string()),
+    )
+}
+
 fn version_satisfies_range(current: &str, range: &str) -> bool {
     let Ok(current) = Version::parse(current) else {
         return false;
@@ -1978,6 +2285,32 @@ fn discover_arete_sdk_crate_version(start_dir: &Path) -> Option<String> {
                 .or_else(|| captures.get(2))
                 .map(|value| value.as_str());
             if let Some(declared) = declared {
+                if Version::parse(declared).is_ok() {
+                    return Some(declared.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Best-effort discovery of the `arete-sdk` dependency version pinned by a
+/// `pyproject.toml` at or above `start_dir`. Only an exact `==major.minor.patch`
+/// pin is returned (requirement *ranges* like `>=0.4` are not comparable
+/// against an extensions `sdkRange` and are skipped). Mirror of
+/// [`discover_arete_sdk_crate_version`].
+fn discover_arete_sdk_python_version(start_dir: &Path) -> Option<String> {
+    let version_regex = Regex::new(r#"["']arete-sdk\s*==\s*([0-9]+\.[0-9]+\.[0-9]+)["']"#)
+        .expect("arete python sdk version regex should compile");
+
+    for ancestor in start_dir.ancestors() {
+        let manifest_path = ancestor.join("pyproject.toml");
+        let Ok(manifest) = fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        for captures in version_regex.captures_iter(&manifest) {
+            if let Some(declared) = captures.get(1).map(|value| value.as_str()) {
                 if Version::parse(declared).is_ok() {
                     return Some(declared.to_string());
                 }
@@ -2193,10 +2526,11 @@ fn write_sdk_provenance_manifest(
     write_sdk_provenance_manifest_file(&layout.output_dir, &manifest)
 }
 
-/// Write `sdk-provenance.json` for a Rust output directory. `generated`
-/// lists the generated file names relative to `output_dir` (for example
-/// `mod.rs` in module mode or `src/lib.rs` in crate mode).
-fn write_rust_sdk_provenance_manifest(
+/// Write `sdk-provenance.json` for a Rust or Python output directory.
+/// `generated` lists the generated file names relative to `output_dir` (for
+/// example `mod.rs` in Rust module mode, `src/lib.rs` in crate mode, or
+/// `<module>/__init__.py` in Python package mode).
+fn write_language_sdk_provenance_manifest(
     output_dir: &Path,
     generated: BTreeSet<String>,
     extension_file_prefix: &str,
@@ -2614,6 +2948,53 @@ fn stage_rust_extensions_artifact(
 
     if let Some(range) = artifact.sdk_range.as_deref() {
         if let Some(current) = discover_arete_sdk_crate_version(output_dir) {
+            if !version_satisfies_range(&current, range) {
+                println!(
+                    "{} extensions sdkRange mismatch: manifest={}, current={}",
+                    "⚠".yellow().bold(),
+                    range,
+                    current
+                );
+            }
+        }
+    }
+
+    write_extensions_artifact_files(artifact, output_dir, "extensions.json")
+}
+
+/// Stage a Python devex extensions bundle into the generated module
+/// directory.
+///
+/// Mirror of [`stage_rust_extensions_artifact`]: same input-pin validation,
+/// then a flat all-`.py` file layout requirement (module wiring emits one
+/// `from . import <stem>` per file, so nested paths cannot be wired). The
+/// `sdkRange` check is warning-only best-effort against an exact `arete-sdk`
+/// pin in a `pyproject.toml` at or above the output directory.
+fn stage_python_extensions_artifact(
+    artifact: &ResolvedExtensionsArtifact,
+    output_dir: &Path,
+    input_pin: &ResolvedExtensionsInputPin,
+) -> Result<()> {
+    let input_pin_errors = validate_extensions_input_pin(artifact, input_pin);
+    if !input_pin_errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Extensions artifact is incompatible with generated input: {}",
+            input_pin_errors.join("; ")
+        ));
+    }
+
+    for file in &artifact.files {
+        let normalized = normalize_extension_relative_path(&file.path)?;
+        if !normalized.ends_with(".py") || normalized.contains('/') {
+            return Err(anyhow::anyhow!(
+                "Python extensions bundles require flat .py files; '{}' is not supported",
+                file.path
+            ));
+        }
+    }
+
+    if let Some(range) = artifact.sdk_range.as_deref() {
+        if let Some(current) = discover_arete_sdk_python_version(output_dir) {
             if !version_satisfies_range(&current, range) {
                 println!(
                     "{} extensions sdkRange mismatch: manifest={}, current={}",
@@ -3969,7 +4350,7 @@ fn generate_rust_stack_sdk(
         stage_rust_extensions_artifact(artifact, &module_dir, &input_pin)?;
     }
     let extension_file_prefix = if as_module { "" } else { "src/" };
-    write_rust_sdk_provenance_manifest(
+    write_language_sdk_provenance_manifest(
         output_dir,
         generated,
         extension_file_prefix,
@@ -4050,13 +4431,376 @@ fn find_stack_for_rust(
     Ok((source, crate_dir, crate_name))
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn create_python(
+    config_path: &str,
+    stack_name: Option<&str>,
+    output_override: Option<String>,
+    package_name_override: Option<String>,
+    module_flag: bool,
+    url_override: Option<String>,
+    extensions_override: Option<String>,
+    manifest_override: Option<String>,
+    artifact_dirs: Vec<String>,
+) -> Result<()> {
+    let config = AreteConfig::load_optional(config_path)?;
+    let client = ApiClient::new()?;
+
+    let config_dir = Path::new(config_path)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+
+    let stack_config = stack_name.and_then(|name| config.as_ref().and_then(|c| c.find_stack(name)));
+
+    let as_module = module_flag
+        || stack_config
+            .and_then(|s| s.python_module)
+            .unwrap_or_else(|| {
+                config
+                    .as_ref()
+                    .and_then(|c| c.sdk.as_ref())
+                    .map(|s| s.python_module_mode)
+                    .unwrap_or(false)
+            });
+
+    let (source, raw_output_dir, package_name) = if let Some(manifest_path) = manifest_override {
+        let source = ResolvedStackSource::LocalArtifacts(Box::new(load_local_stack_with_roots(
+            &manifest_path,
+            &artifact_dirs,
+        )?));
+        let package_name =
+            package_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
+        let output = output_override
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-py", source.sdk_name())));
+        (source, output, package_name)
+    } else {
+        let stack_name = stack_name
+            .ok_or_else(|| anyhow::anyhow!("stack name is required unless using --manifest"))?;
+        println!(
+            "{} Looking for stack '{}'...",
+            "→".blue().bold(),
+            stack_name
+        );
+        find_stack_for_python(
+            &client,
+            stack_name,
+            config.as_ref(),
+            output_override,
+            package_name_override,
+        )?
+    };
+
+    let stack_url = url_override
+        .or_else(|| stack_config.and_then(|s| s.url.clone()))
+        .or_else(|| source.default_websocket_url());
+
+    let output_dir = if raw_output_dir.is_relative() {
+        config_dir.join(&raw_output_dir)
+    } else {
+        raw_output_dir
+    };
+
+    println!(
+        "{} Found stack: {}",
+        "✓".green().bold(),
+        source.stack_id().bold()
+    );
+    source.print_source_details();
+    println!("  Output: {}", output_dir.display());
+    if as_module {
+        println!("  Mode: module (plain package directory)");
+    }
+    if let Some(url) = &stack_url {
+        println!("  URL: {}", url.cyan());
+    } else {
+        println!(
+            "  URL: {}",
+            "(not configured - placeholder will be generated)".dimmed()
+        );
+    }
+
+    println!("\n{} Generating Python SDK...", "→".blue().bold());
+
+    if let Some(composition) = source.composition_artifacts() {
+        if stack_url.is_some() {
+            anyhow::bail!(
+                "multi-live Python generation requires per-alias URLs; a shared --url is not allowed"
+            );
+        }
+        if extensions_override.is_some() || source.hosted_extensions().is_some() {
+            anyhow::bail!(
+                "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
+            );
+        }
+        let live_urls = match &source {
+            ResolvedStackSource::Remote(stack) => stack
+                .live_bindings
+                .iter()
+                .map(|live| (live.alias.clone(), live.binding.websocket_endpoint.clone()))
+                .collect(),
+            ResolvedStackSource::Local(_) | ResolvedStackSource::LocalArtifacts(_) => {
+                BTreeMap::new()
+            }
+        };
+        let output = arete_interpreter::python::compile_composed_public_artifacts_v2(
+            composition.program_specs,
+            composition.live_specs,
+            composition.stack_manifest,
+            Some(arete_interpreter::python::PythonCompositionConfig {
+                stack: arete_interpreter::python::PythonStackConfig {
+                    package_name: package_name.clone(),
+                    sdk_version: "0.4".to_string(),
+                    module_mode: as_module,
+                    url: None,
+                    http_url: None,
+                    extension_modules: Vec::new(),
+                    extension_entry: None,
+                },
+                live_urls,
+            }),
+        )
+        .map_err(|error| anyhow::anyhow!("Failed to compile Python composition: {error}"))?;
+        if as_module {
+            arete_interpreter::python::write_python_composition_module(&output, &output_dir)
+                .with_context(|| {
+                    format!(
+                        "Failed to write Python composition to {}",
+                        output_dir.display()
+                    )
+                })?;
+        } else {
+            arete_interpreter::python::write_python_composition_package(&output, &output_dir)
+                .with_context(|| {
+                    format!(
+                        "Failed to write Python composition to {}",
+                        output_dir.display()
+                    )
+                })?;
+        }
+        println!(
+            "{} Generated {} aliased Python stack modules in {}",
+            "✓".green().bold(),
+            output.live_stacks.len(),
+            output_dir.display()
+        );
+        telemetry::record_sdk_generated("python");
+        return Ok(());
+    }
+
+    let stack_spec = source.load_stack_spec(true)?;
+
+    println!(
+        "{} {} entities in stack",
+        "→".blue().bold(),
+        stack_spec.entities.len()
+    );
+
+    generate_python_stack_sdk(
+        &source,
+        stack_spec,
+        &output_dir,
+        &package_name,
+        as_module,
+        stack_url,
+        extensions_override.as_deref().map(Path::new),
+    )
+}
+
+/// Shared single-live Python generation: compile the stack, wire and stage
+/// the optional devex extensions bundle, and record provenance. Mirror of
+/// [`generate_rust_stack_sdk`].
+fn generate_python_stack_sdk(
+    source: &ResolvedStackSource,
+    stack_spec: arete_interpreter::ast::SerializableStackSpec,
+    output_dir: &Path,
+    package_name: &str,
+    as_module: bool,
+    stack_url: Option<String>,
+    extensions_path: Option<&Path>,
+) -> Result<()> {
+    let input_pin = stack_input_pin(source, &stack_spec)?;
+    let import_module_name = arete_interpreter::python::python_module_name(package_name);
+    let module_dir = if as_module {
+        output_dir.to_path_buf()
+    } else {
+        output_dir.join(&import_module_name)
+    };
+    let artifact = resolve_python_extensions_artifact(
+        extensions_path,
+        source.hosted_extensions(),
+        &module_dir,
+        source.sdk_name(),
+    )?;
+    let (extension_modules, extension_entry) = match artifact.as_ref() {
+        Some(artifact) => {
+            let (modules, entry) = python_extension_wiring(artifact)?;
+            (modules, Some(entry))
+        }
+        None => (Vec::new(), None),
+    };
+
+    let python_config = arete_interpreter::python::PythonStackConfig {
+        package_name: package_name.to_string(),
+        sdk_version: "0.4".to_string(),
+        module_mode: as_module,
+        url: stack_url,
+        http_url: source.default_http_url(),
+        extension_modules,
+        extension_entry,
+    };
+
+    let output = match source {
+        ResolvedStackSource::LocalArtifacts(_) => {
+            arete_interpreter::python::compile_stack_spec_with_exact_views(
+                stack_spec,
+                Some(python_config),
+            )
+        }
+        ResolvedStackSource::Remote(stack) if stack.exact_views => {
+            arete_interpreter::python::compile_stack_spec_with_exact_views(
+                stack_spec,
+                Some(python_config),
+            )
+        }
+        _ => arete_interpreter::python::compile_stack_spec(stack_spec, Some(python_config)),
+    }
+    .map_err(|e| anyhow::anyhow!("Failed to compile Python: {}", e))?;
+
+    let mut generated = BTreeSet::new();
+    if as_module {
+        arete_interpreter::python::write_python_module(&output, output_dir).with_context(|| {
+            format!("Failed to write Python module to {}", output_dir.display())
+        })?;
+        generated.extend([
+            "__init__.py".to_string(),
+            "models.py".to_string(),
+            "views.py".to_string(),
+        ]);
+        if output.programs_py.is_some() {
+            generated.insert("programs.py".to_string());
+        }
+    } else {
+        arete_interpreter::python::write_python_package(&output, output_dir).with_context(
+            || format!("Failed to write Python package to {}", output_dir.display()),
+        )?;
+        generated.extend([
+            "pyproject.toml".to_string(),
+            format!("{}/__init__.py", output.module_name),
+            format!("{}/models.py", output.module_name),
+            format!("{}/views.py", output.module_name),
+        ]);
+        if output.programs_py.is_some() {
+            generated.insert(format!("{}/programs.py", output.module_name));
+        }
+    }
+
+    if let Some(ref artifact) = artifact {
+        stage_python_extensions_artifact(artifact, &module_dir, &input_pin)?;
+    }
+    let extension_file_prefix = if as_module {
+        String::new()
+    } else {
+        format!("{}/", output.module_name)
+    };
+    write_language_sdk_provenance_manifest(
+        output_dir,
+        generated,
+        &extension_file_prefix,
+        &input_pin,
+        artifact.as_ref(),
+    )?;
+
+    if as_module {
+        println!(
+            "{} Successfully generated Python module!",
+            "✓".green().bold()
+        );
+        println!("  Module: {}", output_dir.display().to_string().bold());
+        if let Some(ref artifact) = artifact {
+            println!(
+                "  Extensions: {} file(s), entry {}",
+                artifact.files.len(),
+                artifact.entry
+            );
+        }
+        println!("\n  Import from your application:");
+        let module_name = output_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(arete_interpreter::python::python_module_name)
+            .unwrap_or_else(|| "module".to_string());
+        println!("    import {}", module_name.cyan());
+    } else {
+        println!("{} Successfully generated Python SDK!", "✓".green().bold());
+        println!("  Package: {}", output_dir.display().to_string().bold());
+        if let Some(ref artifact) = artifact {
+            println!(
+                "  Extensions: {} file(s), entry {}",
+                artifact.files.len(),
+                artifact.entry
+            );
+        }
+        println!("\n  Install into your environment:");
+        println!(
+            "    pip install -e {}",
+            output_dir.display().to_string().cyan()
+        );
+    }
+
+    telemetry::record_sdk_generated("python");
+
+    Ok(())
+}
+
+fn find_stack_for_python(
+    client: &ApiClient,
+    stack_name: &str,
+    config: Option<&AreteConfig>,
+    output_override: Option<String>,
+    package_name_override: Option<String>,
+) -> Result<(ResolvedStackSource, PathBuf, String)> {
+    let (source, stack_config) = if let Some(cfg) = config {
+        if let Some(stack_config) = cfg.find_stack(stack_name) {
+            let source = resolve_stack_source(
+                client,
+                &stack_config.stack,
+                Some(EXTENSIONS_LANGUAGE_PYTHON),
+            )?;
+            (source, Some(stack_config))
+        } else {
+            let source =
+                resolve_stack_source(client, stack_name, Some(EXTENSIONS_LANGUAGE_PYTHON))?;
+            (source, None)
+        }
+    } else {
+        let source = resolve_stack_source(client, stack_name, Some(EXTENSIONS_LANGUAGE_PYTHON))?;
+        (source, None)
+    };
+
+    let package_name =
+        package_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
+
+    let package_dir = if let Some(cfg) = config {
+        cfg.get_python_output_path(source.sdk_name(), stack_config, output_override)
+    } else {
+        output_override
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-py", source.sdk_name())))
+    };
+
+    Ok((source, package_dir, package_name))
+}
+
 /// Resolve a stack source, preferring a local AST file.
 ///
 /// `language` selects the hosted devex-extension bundle: TypeScript
 /// generation passes `None` (the request stays byte-identical to released
-/// CLIs and the registry serves the TypeScript bundle), while the Rust
-/// pipeline passes `Some("rust")` so a hosted Rust bundle — and never a
-/// TypeScript one — reaches the Rust extensions rung.
+/// CLIs and the registry serves the TypeScript bundle), while the Rust and
+/// Python pipelines pass `Some("rust")` / `Some("python")` so a hosted
+/// bundle of the matching language — and never a TypeScript one — reaches
+/// the corresponding extensions rung.
 fn resolve_stack_source(
     client: &ApiClient,
     stack: &str,
@@ -4953,6 +5697,8 @@ mod tests {
                     typescript_output_file: None,
                     rust_output_crate: None,
                     rust_module: None,
+                    python_output_package: None,
+                    python_module: None,
                     url: None,
                 },
                 crate::config::StackConfig {
@@ -4962,6 +5708,8 @@ mod tests {
                     typescript_output_file: None,
                     rust_output_crate: None,
                     rust_module: None,
+                    python_output_package: None,
+                    python_module: None,
                     url: None,
                 },
             ],
@@ -5618,6 +6366,528 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    fn python_test_artifact(hash: &str) -> ResolvedExtensionsArtifact {
+        ResolvedExtensionsArtifact {
+            entry: "extensions.py".to_string(),
+            files: vec![
+                ResolvedExtensionsFile {
+                    path: "devex.py".to_string(),
+                    contents: "def helper():\n    return None\n".to_string(),
+                },
+                ResolvedExtensionsFile {
+                    path: "extensions.py".to_string(),
+                    contents: "from .devex import *  # noqa: F401,F403\n".to_string(),
+                },
+            ],
+            input_kind: Some(ExtensionsInputKind::StackManifest),
+            input_hash: Some(hash.to_string()),
+            sdk_range: None,
+            language: Some(EXTENSIONS_LANGUAGE_PYTHON.to_string()),
+            sdk_extension_hash: None,
+            sdk_output_tree_hash: None,
+            program_extension_bindings: vec![],
+        }
+    }
+
+    #[test]
+    fn python_extensions_manifest_language_roundtrips() {
+        let staged = r#"{
+  "entry": "extensions.py",
+  "files": [
+    "devex.py",
+    "extensions.py"
+  ],
+  "inputKind": "stack-manifest",
+  "inputHash": "arete:h1:stack-manifest:sha256:edd1ffe8ef2c26232c1440f20625b8834b8c4d4e63250136ce62bcc38609f84a",
+  "sdkRange": "^0.2.0 || ^0.3.0",
+  "language": "python"
+}"#;
+
+        let manifest: ExtensionsManifest =
+            serde_json::from_str(staged).expect("Python manifest should parse");
+        assert_eq!(
+            manifest.language.as_deref(),
+            Some(EXTENSIONS_LANGUAGE_PYTHON)
+        );
+        let reserialized = serde_json::to_string_pretty(&manifest).unwrap();
+        assert_eq!(reserialized, staged);
+    }
+
+    /// A hosted bundle fetched with `?language=python` carries
+    /// `language: "python"` in its manifest; the resolved artifact must keep
+    /// that marker so it reaches the Python extensions rung — and so the
+    /// TypeScript rung keeps rejecting it if it ever leaks there.
+    #[test]
+    fn remote_stack_routes_python_language_hosted_extensions_to_the_python_rung() {
+        let mut install = registry_stack_install("ore", "OreStream");
+        install.extensions = Some(RegistrySdkExtensionArtifact {
+            artifact_hash: "python-extension-hash".to_string(),
+            sdk_extension_hash: None,
+            sdk_output_tree_hash: None,
+            manifest: crate::api_client::RegistrySdkExtensionManifest {
+                entry: "extensions.py".to_string(),
+                files: vec!["extensions.py".to_string()],
+                input_kind: Some(RegistrySdkExtensionInputKind::StackManifest),
+                input_hash: Some(install.stack_manifest_hash.clone()),
+                sdk_range: None,
+                language: Some(EXTENSIONS_LANGUAGE_PYTHON.to_string()),
+            },
+            files: BTreeMap::from([(
+                "extensions.py".to_string(),
+                "def devex():\n    return None\n".to_string(),
+            )]),
+            created_at: "2026-08-04T00:00:00Z".to_string(),
+        });
+
+        let remote = remote_stack_install(install).expect("remote stack should resolve");
+        let hosted = remote
+            .hosted_extensions
+            .as_ref()
+            .expect("hosted extensions should be resolved");
+        assert_eq!(hosted.language.as_deref(), Some(EXTENSIONS_LANGUAGE_PYTHON));
+
+        // Python rung accepts the hosted artifact...
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-python-hosted-route-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        let resolved = resolve_python_extensions_artifact(None, Some(hosted), &output_dir, "ore")
+            .expect("hosted Python bundle should resolve")
+            .expect("hosted Python bundle should be present");
+        assert_eq!(resolved.entry, "extensions.py");
+
+        // ...the Rust rung skips it (hosted wrong-language bundles are
+        // non-fatal there, mirroring the TypeScript-bundle behaviour)...
+        let skipped = resolve_rust_extensions_artifact(None, Some(hosted), &output_dir, "ore")
+            .expect("hosted Python bundle should be skipped by the Rust rung");
+        assert!(skipped.is_none());
+
+        // ...while the TypeScript rung rejects it outright.
+        let error = resolve_extensions_artifact(None, &layout("ore"), Some(hosted))
+            .expect_err("TypeScript generation must reject a Python hosted bundle");
+        assert!(error.to_string().contains("declares language 'python'"));
+    }
+
+    #[test]
+    fn python_resolution_prefers_explicit_bundle_over_output_dir_manifest() {
+        let root =
+            std::env::temp_dir().join(format!("a4-python-ext-explicit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let bundle_dir = root.join("bundle");
+        let output_dir = root.join("out");
+        let explicit = python_test_artifact("explicit-hash");
+        let staged = python_test_artifact("staged-hash");
+        write_bundle_dir(&bundle_dir, &explicit);
+        write_bundle_dir(&output_dir, &staged);
+
+        let resolved =
+            resolve_python_extensions_artifact(Some(&bundle_dir), None, &output_dir, "ore")
+                .expect("explicit bundle should resolve")
+                .expect("explicit bundle should be present");
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(resolved.input_hash.as_deref(), Some("explicit-hash"));
+        assert_eq!(
+            resolved.language.as_deref(),
+            Some(EXTENSIONS_LANGUAGE_PYTHON)
+        );
+    }
+
+    #[test]
+    fn python_resolution_accepts_single_entry_file() {
+        let root =
+            std::env::temp_dir().join(format!("a4-python-ext-single-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("bundle root");
+        fs::write(
+            root.join("extensions.py"),
+            "def devex():\n    return None\n",
+        )
+        .expect("entry file");
+
+        let resolved = resolve_python_extensions_artifact(
+            Some(&root.join("extensions.py")),
+            None,
+            &root.join("missing-output"),
+            "ore",
+        )
+        .expect("single-entry bundle should resolve")
+        .expect("single-entry bundle should be present");
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(resolved.entry, "extensions.py");
+        assert_eq!(
+            resolved
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["extensions.py"]
+        );
+        assert_eq!(resolved.input_hash, None);
+        assert_eq!(
+            resolved.language.as_deref(),
+            Some(EXTENSIONS_LANGUAGE_PYTHON)
+        );
+    }
+
+    /// Regression guard for the sync sharp edge: `a4 sdk sync --python`
+    /// against an output dir holding a full staged bundle must reuse the
+    /// manifest with its input pins and helper files intact, instead of
+    /// silently unpinning them.
+    #[test]
+    fn python_resolution_reuses_output_dir_manifest_and_preserves_pins() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-python-ext-outdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        let staged = python_test_artifact("staged-pin-hash");
+        write_bundle_dir(&output_dir, &staged);
+
+        let resolved = resolve_python_extensions_artifact(None, None, &output_dir, "ore")
+            .expect("staged manifest should resolve")
+            .expect("staged manifest should be present");
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert_eq!(
+            resolved.input_kind,
+            Some(ExtensionsInputKind::StackManifest)
+        );
+        assert_eq!(resolved.input_hash.as_deref(), Some("staged-pin-hash"));
+        assert_eq!(resolved.entry, "extensions.py");
+    }
+
+    #[test]
+    fn python_resolution_returns_none_without_sources() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-python-ext-none-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+
+        let resolved = resolve_python_extensions_artifact(None, None, &output_dir, "ore")
+            .expect("empty resolution should succeed");
+
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn python_resolution_rejects_typescript_and_rust_bundles() {
+        let root =
+            std::env::temp_dir().join(format!("a4-python-ext-reject-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let typescript_dir = root.join("typescript");
+        let mut typescript = python_test_artifact("hash-1");
+        typescript.language = Some(EXTENSIONS_LANGUAGE_TYPESCRIPT.to_string());
+        write_bundle_dir(&typescript_dir, &typescript);
+
+        let error = resolve_python_extensions_artifact(
+            Some(&typescript_dir),
+            None,
+            &root.join("missing-output"),
+            "ore",
+        )
+        .expect_err("TypeScript bundle must be rejected for Python generation");
+        assert!(error.to_string().contains("declares language 'typescript'"));
+
+        let rust_dir = root.join("rust");
+        write_bundle_dir(&rust_dir, &rust_test_artifact("hash-2"));
+        let error = resolve_python_extensions_artifact(
+            Some(&rust_dir),
+            None,
+            &root.join("missing-output"),
+            "ore",
+        )
+        .expect_err("Rust bundle must be rejected for Python generation");
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(error.to_string().contains("declares language 'rust'"));
+    }
+
+    #[test]
+    fn typescript_resolution_rejects_python_bundles() {
+        let bundle_dir =
+            std::env::temp_dir().join(format!("a4-ts-ext-python-reject-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&bundle_dir);
+        write_bundle_dir(&bundle_dir, &python_test_artifact("hash-1"));
+
+        let error = resolve_extensions_artifact(Some(&bundle_dir), &layout("ore"), None)
+            .expect_err("Python bundle must be rejected for TypeScript generation");
+        let _ = fs::remove_dir_all(&bundle_dir);
+
+        assert!(error.to_string().contains("declares language 'python'"));
+    }
+
+    #[test]
+    fn python_resolution_ignores_hosted_bundles_without_python_language() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-python-ext-hosted-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        let hosted_typescript = test_artifact(ExtensionsInputKind::StackManifest, "hash-1");
+
+        let resolved =
+            resolve_python_extensions_artifact(None, Some(&hosted_typescript), &output_dir, "ore")
+                .expect("hosted TypeScript bundle should be skipped, not fatal");
+        assert!(resolved.is_none());
+
+        let hosted_rust = rust_test_artifact("hash-2");
+        let resolved =
+            resolve_python_extensions_artifact(None, Some(&hosted_rust), &output_dir, "ore")
+                .expect("hosted Rust bundle should be skipped, not fatal");
+        assert!(resolved.is_none());
+
+        let hosted_python = python_test_artifact("hash-3");
+        let resolved =
+            resolve_python_extensions_artifact(None, Some(&hosted_python), &output_dir, "ore")
+                .expect("hosted Python bundle should resolve")
+                .expect("hosted Python bundle should be present");
+        assert_eq!(resolved.input_hash.as_deref(), Some("hash-3"));
+    }
+
+    #[test]
+    fn python_extension_wiring_orders_entry_last_and_requires_flat_py_files() {
+        let artifact = python_test_artifact("hash-1");
+        let (modules, entry) = python_extension_wiring(&artifact).expect("wiring should resolve");
+        assert_eq!(modules, vec!["devex".to_string(), "extensions".to_string()]);
+        assert_eq!(entry, "extensions");
+
+        // File stems are normalized through `python_module_name` so hyphens
+        // become underscores in the generated `from . import <stem>` wiring.
+        let mut hyphenated = python_test_artifact("hash-1");
+        hyphenated.files[0].path = "ore-devex.py".to_string();
+        let (modules, _) = python_extension_wiring(&hyphenated).expect("wiring should resolve");
+        assert_eq!(
+            modules,
+            vec!["ore_devex".to_string(), "extensions".to_string()]
+        );
+
+        let mut nested = python_test_artifact("hash-1");
+        nested.files[0].path = "nested/devex.py".to_string();
+        assert!(python_extension_wiring(&nested)
+            .unwrap_err()
+            .to_string()
+            .contains("flat .py files"));
+
+        let mut non_py = python_test_artifact("hash-1");
+        non_py.files[0].path = "devex.rs".to_string();
+        assert!(python_extension_wiring(&non_py)
+            .unwrap_err()
+            .to_string()
+            .contains(".py files"));
+    }
+
+    #[test]
+    fn stage_python_extensions_artifact_writes_bundle_and_rejects_pin_mismatch() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-python-ext-stage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        fs::create_dir_all(&output_dir).expect("output directory");
+        let hash = format!("arete:h1:stack-manifest:sha256:{}", "44".repeat(32));
+        let artifact = python_test_artifact(&hash);
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: hash.clone(),
+        };
+
+        stage_python_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect("matching pin should stage");
+        let manifest_json =
+            fs::read_to_string(output_dir.join("extensions.json")).expect("staged manifest");
+        assert!(output_dir.join("devex.py").exists());
+        assert!(output_dir.join("extensions.py").exists());
+        assert!(manifest_json.contains("\"language\": \"python\""));
+
+        let mismatched_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: format!("arete:h1:stack-manifest:sha256:{}", "55".repeat(32)),
+        };
+        let error = stage_python_extensions_artifact(&artifact, &output_dir, &mismatched_pin)
+            .expect_err("pin mismatch must be a hard error");
+        assert!(error.to_string().contains("extensions input hash mismatch"));
+
+        let mut non_py = artifact.clone();
+        non_py.files[0].path = "devex.rs".to_string();
+        assert!(stage_python_extensions_artifact(&non_py, &output_dir, &input_pin).is_err());
+
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn python_provenance_lists_generated_and_staged_artifacts_with_prefix() {
+        let hash = format!("arete:h1:stack-manifest:sha256:{}", "66".repeat(32));
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: hash.clone(),
+        };
+        let artifact = python_test_artifact(&hash);
+
+        let manifest = build_sdk_provenance_manifest_from_artifacts(
+            BTreeSet::from([
+                "pyproject.toml".to_string(),
+                "ore_stack/__init__.py".to_string(),
+                "ore_stack/models.py".to_string(),
+                "ore_stack/views.py".to_string(),
+            ]),
+            "ore_stack/",
+            &input_pin,
+            Some(&artifact),
+        )
+        .expect("python provenance should build");
+
+        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.input.hash, hash);
+        assert_eq!(
+            manifest
+                .extensions
+                .as_ref()
+                .unwrap()
+                .legacy_provenance_sha256,
+            extensions_artifact_hash(&artifact)
+        );
+        assert_eq!(
+            manifest.artifacts,
+            vec![
+                "ore_stack/__init__.py",
+                "ore_stack/devex.py",
+                "ore_stack/extensions.json",
+                "ore_stack/extensions.py",
+                "ore_stack/models.py",
+                "ore_stack/views.py",
+                "pyproject.toml",
+            ]
+        );
+    }
+
+    /// End-to-end single-live Python generation twin of the Rust pipeline:
+    /// compile from local V2 artifacts, stage an explicit devex bundle,
+    /// wire it through the generated `__init__.py`, and record provenance
+    /// with the package-mode `<module>/` prefix.
+    #[test]
+    fn local_single_live_python_generation_stages_extensions_and_provenance() {
+        use arete_hash::{CanonicalIdlDocument, ProgramSpecV1};
+
+        let directory =
+            std::env::temp_dir().join(format!("a4-python-single-live-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let document = CanonicalIdlDocument::parse(
+            br#"{"address":"11111111111111111111111111111111","metadata":{"name":"system","version":"1.0.0","spec":"0.1.0"},"instructions":[],"accounts":[],"types":[],"events":[],"errors":[]}"#,
+            None,
+        )
+        .unwrap();
+        let program =
+            arete_artifacts::ProgramSpecArtifact::new(ProgramSpecV1::from_document(&document))
+                .unwrap();
+        let live = arete_artifacts::live_spec_v2(
+            std::slice::from_ref(&program),
+            vec![arete_artifacts::PortableEntity::new(
+                "OreState",
+                "id.address",
+            )],
+            Vec::new(),
+        )
+        .unwrap();
+        let live_specs = vec![("live".to_string(), live)];
+        let stack_manifest = arete_artifacts::compose_stack_manifest_v2(
+            "OreStream",
+            std::slice::from_ref(&program),
+            live_specs
+                .iter()
+                .map(|(alias, live)| (alias.clone(), live))
+                .collect(),
+            vec![arete_artifacts::SelectedViewV2 {
+                live_alias: "live".to_string(),
+                view_id: "OreState/list".to_string(),
+            }],
+        )
+        .unwrap();
+        let manifest_hash = stack_manifest.artifact_hash.to_string();
+        let source = ResolvedStackSource::LocalArtifacts(Box::new(LocalArtifactStack {
+            manifest_path: directory.join("OreStream.stack-manifest.json"),
+            manifest_hash: manifest_hash.clone(),
+            program_specs: vec![program],
+            live_specs,
+            stack_manifest,
+        }));
+
+        let bundle_dir = directory.join("bundle");
+        write_bundle_dir(&bundle_dir, &python_test_artifact(&manifest_hash));
+
+        let output_dir = directory.join("generated/ore-py");
+        let stack_spec = source.load_stack_spec(true).unwrap();
+        generate_python_stack_sdk(
+            &source,
+            stack_spec,
+            &output_dir,
+            "ore-stack",
+            false,
+            Some("wss://ore.example.test/ws".to_string()),
+            Some(&bundle_dir),
+        )
+        .expect("python generation should succeed");
+
+        assert!(output_dir.join("pyproject.toml").is_file());
+        let init_py = fs::read_to_string(output_dir.join("ore_stack/__init__.py")).unwrap();
+        assert!(init_py.contains("from . import devex"));
+        assert!(init_py.contains("from .extensions import *"));
+        assert!(output_dir.join("ore_stack/models.py").is_file());
+        assert!(output_dir.join("ore_stack/views.py").is_file());
+        assert!(output_dir.join("ore_stack/devex.py").is_file());
+        assert!(output_dir.join("ore_stack/extensions.py").is_file());
+        assert!(output_dir.join("ore_stack/extensions.json").is_file());
+
+        let provenance =
+            fs::read_to_string(output_dir.join(SDK_PROVENANCE_FILE)).expect("provenance");
+        let SdkProvenanceManifest::V2(manifest) =
+            parse_sdk_provenance_manifest(&provenance).expect("provenance should parse")
+        else {
+            panic!("generation must write provenance V2");
+        };
+        assert_eq!(manifest.input.kind, ExtensionsInputKind::StackManifest);
+        assert_eq!(manifest.input.hash, manifest_hash);
+        assert!(manifest
+            .artifacts
+            .contains(&"ore_stack/extensions.py".to_string()));
+        assert!(manifest
+            .artifacts
+            .contains(&"ore_stack/extensions.json".to_string()));
+        assert!(manifest.artifacts.contains(&"pyproject.toml".to_string()));
+
+        // A pinless re-read of the staged output keeps the manifest intact
+        // (the sync sharp edge): resolution against the module dir reuses
+        // the staged bundle with its pins.
+        let resolved =
+            resolve_python_extensions_artifact(None, None, &output_dir.join("ore_stack"), "ore")
+                .expect("staged manifest should resolve")
+                .expect("staged manifest should be present");
+        assert_eq!(resolved.input_hash.as_deref(), Some(manifest_hash.as_str()));
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn discover_arete_sdk_python_version_only_returns_exact_pins() {
+        let root =
+            std::env::temp_dir().join(format!("a4-python-sdk-version-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let nested = root.join("generated/ore-py");
+        fs::create_dir_all(&nested).expect("nested output directory");
+
+        fs::write(
+            root.join("pyproject.toml"),
+            "[project]\ndependencies = [\"arete-sdk>=0.4\"]\n",
+        )
+        .unwrap();
+        assert_eq!(discover_arete_sdk_python_version(&nested), None);
+
+        fs::write(
+            root.join("pyproject.toml"),
+            "[project]\ndependencies = [\"arete-sdk==0.4.1\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            discover_arete_sdk_python_version(&nested).as_deref(),
+            Some("0.4.1")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn normalize_extension_relative_path_rejects_parent_segments() {
         let error = normalize_extension_relative_path("../secrets.ts").unwrap_err();
@@ -6181,7 +7451,7 @@ mod tests {
     }
 
     #[test]
-    fn local_multi_live_generation_writes_namespaced_typescript_and_rust_modules() {
+    fn local_multi_live_generation_writes_namespaced_typescript_rust_and_python_modules() {
         use arete_hash::{CanonicalIdlDocument, ProgramSpecV1};
         use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -6284,6 +7554,28 @@ mod tests {
             fs::read_to_string(rust_dir.join("src/lib.rs")).unwrap(),
             "pub mod alpha;\npub mod beta;\n"
         );
+
+        let python = arete_interpreter::python::compile_composed_public_artifacts_v2(
+            &stack.program_specs,
+            &stack.live_specs,
+            &stack.stack_manifest,
+            Some(arete_interpreter::python::PythonCompositionConfig {
+                stack: arete_interpreter::python::PythonStackConfig {
+                    package_name: "composed".to_string(),
+                    ..Default::default()
+                },
+                live_urls: BTreeMap::new(),
+            }),
+        )
+        .unwrap();
+        let python_dir = directory.join("python");
+        arete_interpreter::python::write_python_composition_package(&python, &python_dir).unwrap();
+        assert!(python_dir.join("pyproject.toml").is_file());
+        assert!(python_dir.join("composed/alpha/__init__.py").is_file());
+        assert!(python_dir.join("composed/beta/__init__.py").is_file());
+        let root_init = fs::read_to_string(python_dir.join("composed/__init__.py")).unwrap();
+        assert!(root_init.contains("from . import alpha"));
+        assert!(root_init.contains("from . import beta"));
         fs::remove_dir_all(directory).unwrap();
     }
 }

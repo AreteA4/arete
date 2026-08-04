@@ -1,3 +1,4 @@
+use crate::collation::{collation_key, locale_compare, CollationKey};
 use crate::error::AreteError;
 use crate::frame::{Mode, Operation, ServerFrame, SnapshotEntity, SortConfig, SortOrder};
 use crate::subscription::{canonical_subscription_identity, SnapshotOptions, SubscriptionQuery};
@@ -799,24 +800,28 @@ fn list_query_raw(state: &StoreState, subscription_id: &str) -> Vec<Value> {
     let Some(view) = state.views.get(&query.effective_query.view) else {
         return Vec::new();
     };
-    let mut rows: Vec<(String, Value)> = query
+    // Entity keys are decorated with their collation key: it is recomputed on
+    // every comparison otherwise, and the tie-break consults it constantly.
+    let mut rows: Vec<(CollationKey, Value)> = query
         .membership
         .iter()
         .filter_map(|key| {
             view.entities
                 .get(key)
                 .cloned()
-                .map(|value| (key.clone(), value))
+                .map(|value| (collation_key(key), value))
         })
         .collect();
     if let Some(sort) = &query.sort {
         rows.sort_by(|(left_key, left), (right_key, right)| {
-            let order =
-                compare_at_path(left, right, &sort.field).then_with(|| left_key.cmp(right_key));
-            match sort.order {
+            let order = compare_at_path(left, right, &sort.field);
+            let order = match sort.order {
                 SortOrder::Asc => order,
                 SortOrder::Desc => order.reverse(),
-            }
+            };
+            // query-store.ts:387 breaks ties on the entity key with
+            // `localeCompare`, ascending, *after* the desc negation.
+            order.then_with(|| left_key.cmp(right_key))
         });
     }
     rows.into_iter().map(|(_, value)| value).collect()
@@ -834,8 +839,10 @@ fn compare_at_path(left: &Value, right: &Value, path: &[String]) -> Ordering {
             .as_f64()
             .partial_cmp(&right.as_f64())
             .unwrap_or(Ordering::Equal),
-        (Some(Value::String(left)), Some(Value::String(right))) => left.cmp(right),
-        (Some(left), Some(right)) => left.to_string().cmp(&right.to_string()),
+        // query-store.ts:64 falls through to `String(left).localeCompare(...)`,
+        // so both string branches collate rather than compare bytes.
+        (Some(Value::String(left)), Some(Value::String(right))) => locale_compare(left, right),
+        (Some(left), Some(right)) => locale_compare(&left.to_string(), &right.to_string()),
     }
 }
 
@@ -911,5 +918,131 @@ impl Clone for SharedStore {
             ready_rx: self.ready_rx.clone(),
             config: self.config.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::subscription::PROTOCOL_VERSION;
+    use serde_json::json;
+
+    async fn store_with_sorted_list(keys: &[&str], sort: SortConfig) -> (SharedStore, String) {
+        let store = SharedStore::new();
+        let subscription_id = "sub-1";
+        store
+            .register_subscription(
+                subscription_id,
+                SubscriptionQuery::new("Account/list"),
+                true,
+            )
+            .await
+            .unwrap();
+        store
+            .apply_frame(ServerFrame::Subscribed {
+                protocol_version: PROTOCOL_VERSION,
+                subscription_id: subscription_id.to_string(),
+                query: SubscriptionQuery::new("Account/list"),
+                mode: Mode::List,
+                sort: Some(sort),
+            })
+            .await
+            .unwrap();
+        store
+            .apply_frame(ServerFrame::Snapshot {
+                protocol_version: PROTOCOL_VERSION,
+                subscription_id: subscription_id.to_string(),
+                snapshot_id: "snap-1".to_string(),
+                authoritative: true,
+                mode: Mode::List,
+                entity: "Account/list".to_string(),
+                key: None,
+                // Every row ties on `rank`, so ordering is decided purely by the
+                // entity-key tie-break — the common no-`_seq` case.
+                data: keys
+                    .iter()
+                    .map(|key| SnapshotEntity {
+                        key: (*key).to_string(),
+                        data: json!({"owner": *key, "rank": 1}),
+                    })
+                    .collect(),
+                complete: true,
+            })
+            .await
+            .unwrap();
+        (store, subscription_id.to_string())
+    }
+
+    async fn owners(store: &SharedStore, subscription_id: &str) -> Vec<String> {
+        store
+            .list_for_subscription::<Value>(subscription_id)
+            .await
+            .into_iter()
+            .map(|row| row["owner"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// Regression: the entity-key tie-break must use `localeCompare`, not bytes.
+    ///
+    /// Byte order yields `["Bqq", "Zap1", "aBc1", "apple"]` (all uppercase
+    /// first); TypeScript's `leftKey.localeCompare(rightKey)` yields
+    /// `["aBc1", "apple", "Bqq", "Zap1"]`. Mixed-case base58 addresses hit this
+    /// constantly.
+    #[tokio::test]
+    async fn list_key_tie_break_uses_collation_not_byte_order() {
+        let (store, subscription_id) = store_with_sorted_list(
+            &["Zap1", "aBc1", "Bqq", "apple"],
+            SortConfig {
+                field: vec!["rank".to_string()],
+                order: SortOrder::Asc,
+            },
+        )
+        .await;
+
+        assert_eq!(
+            owners(&store, &subscription_id).await,
+            ["aBc1", "apple", "Bqq", "Zap1"]
+        );
+    }
+
+    /// The tie-break stays ascending under `order: desc`, matching
+    /// `query-store.ts:387` where it is applied after the desc negation.
+    #[tokio::test]
+    async fn list_key_tie_break_is_ascending_even_when_sort_is_desc() {
+        let (store, subscription_id) = store_with_sorted_list(
+            &["Zap1", "aBc1", "Bqq", "apple"],
+            SortConfig {
+                field: vec!["rank".to_string()],
+                order: SortOrder::Desc,
+            },
+        )
+        .await;
+
+        assert_eq!(
+            owners(&store, &subscription_id).await,
+            ["aBc1", "apple", "Bqq", "Zap1"]
+        );
+    }
+
+    /// Regression: string sort-field values collate too (`query-store.ts:64`).
+    #[tokio::test]
+    async fn string_sort_field_uses_collation_not_byte_order() {
+        assert_eq!(
+            compare_at_path(
+                &json!({"label": "état"}),
+                &json!({"label": "zone"}),
+                &["label".to_string()],
+            ),
+            Ordering::Less,
+        );
+        // The `to_string()` fallback (non-scalar values) collates as well.
+        assert_eq!(
+            compare_at_path(
+                &json!({"label": ["état"]}),
+                &json!({"label": ["zone"]}),
+                &["label".to_string()],
+            ),
+            Ordering::Less,
+        );
     }
 }

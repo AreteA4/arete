@@ -15,8 +15,8 @@
 //! - `a4 up [stack]` - Deploy a stack (push + build + deploy)
 //! - `a4 stack list` - List all stacks
 //! - `a4 stack show` - Show stack details
-//! - `a4 sdk create` - Generate TypeScript/Rust SDK
-//! - `a4 install` - Generate TypeScript/Rust SDK from a hosted stack
+//! - `a4 sdk create` - Generate TypeScript/Rust/Python SDK
+//! - `a4 install` - Generate TypeScript/Rust/Python SDK from a hosted stack
 //!
 //! See `a4 --help` for the full command reference.
 
@@ -69,7 +69,7 @@ enum Commands {
         /// Project name (creates directory)
         name: Option<String>,
 
-        /// Template: react-ore, rust-ore
+        /// Template: react-ore, rust-ore, typescript-ore, python-ore
         #[arg(short, long)]
         template: Option<String>,
 
@@ -128,7 +128,7 @@ enum Commands {
         stack_name: Option<String>,
     },
 
-    /// Generate a TypeScript or Rust SDK from a hosted stack
+    /// Generate a TypeScript, Rust, or Python SDK from a hosted stack
     Install {
         /// Hosted stack identifier, or the reserved install target `program`
         target: String,
@@ -137,18 +137,22 @@ enum Commands {
         install_name: Option<String>,
 
         /// Generate a TypeScript SDK
-        #[arg(long, conflicts_with = "rust")]
+        #[arg(long, conflicts_with_all = ["rust", "python"])]
         ts: bool,
 
         /// Generate a Rust SDK
-        #[arg(long, conflicts_with = "ts")]
+        #[arg(long, conflicts_with_all = ["ts", "python"])]
         rust: bool,
 
-        /// Output path (file for TypeScript, directory for Rust)
+        /// Generate a Python SDK
+        #[arg(long, conflicts_with_all = ["ts", "rust"])]
+        python: bool,
+
+        /// Output path (file for TypeScript, directory for Rust or Python)
         #[arg(short, long)]
         output: Option<String>,
 
-        /// Package name for TypeScript
+        /// Package name for TypeScript imports, or the generated Python distribution
         #[arg(short, long)]
         package_name: Option<String>,
 
@@ -156,7 +160,7 @@ enum Commands {
         #[arg(long)]
         crate_name: Option<String>,
 
-        /// Generate Rust as a module (mod.rs) instead of a standalone crate
+        /// Generate Rust (mod.rs) or Python as a module instead of a standalone crate/package
         #[arg(long)]
         module: bool,
 
@@ -231,18 +235,22 @@ struct SdkCreateArgs {
     stack_name: Option<String>,
 
     /// Generate a TypeScript SDK
-    #[arg(long, conflicts_with = "rust")]
+    #[arg(long, conflicts_with_all = ["rust", "python"])]
     ts: bool,
 
     /// Generate a Rust SDK
-    #[arg(long, conflicts_with = "ts")]
+    #[arg(long, conflicts_with_all = ["ts", "python"])]
     rust: bool,
 
-    /// Output path (file for TypeScript, directory for Rust)
+    /// Generate a Python SDK
+    #[arg(long, conflicts_with_all = ["ts", "rust"])]
+    python: bool,
+
+    /// Output path (file for TypeScript, directory for Rust or Python)
     #[arg(short, long)]
     output: Option<String>,
 
-    /// Package name for TypeScript
+    /// Package name for TypeScript imports, or the generated Python distribution
     #[arg(short, long)]
     package_name: Option<String>,
 
@@ -250,7 +258,7 @@ struct SdkCreateArgs {
     #[arg(long)]
     crate_name: Option<String>,
 
-    /// Generate Rust as a module (mod.rs) instead of a standalone crate
+    /// Generate Rust (mod.rs) or Python as a module instead of a standalone crate/package
     #[arg(long)]
     module: bool,
 
@@ -299,19 +307,23 @@ struct SdkCreateArgs {
 
     /// Emit a standalone program-SDK module (pdas/accounts/instructions, no
     /// views or stack const). TypeScript only.
-    #[arg(long, conflicts_with = "rust")]
+    #[arg(long, conflicts_with_all = ["rust", "python"])]
     program_only: bool,
 }
 
 #[derive(Args)]
 struct SdkSyncArgs {
     /// Sync TypeScript SDKs only
-    #[arg(long, conflicts_with = "rust")]
+    #[arg(long, conflicts_with_all = ["rust", "python"])]
     ts: bool,
 
     /// Sync Rust SDKs only
-    #[arg(long, conflicts_with = "ts")]
+    #[arg(long, conflicts_with_all = ["ts", "python"])]
     rust: bool,
+
+    /// Sync Python SDKs only
+    #[arg(long, conflicts_with_all = ["ts", "rust"])]
+    python: bool,
 
     /// Limit sync to one or more configured stack names
     #[arg(long = "stack", short = 's')]
@@ -692,6 +704,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             install_name,
             ts,
             rust,
+            python,
             output,
             package_name,
             crate_name,
@@ -703,6 +716,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             install_name.as_deref(),
             ts,
             rust,
+            python,
             output,
             package_name,
             crate_name,
@@ -716,6 +730,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 create_args.stack_name.as_deref(),
                 create_args.ts,
                 create_args.rust,
+                create_args.python,
                 create_args.output,
                 create_args.package_name,
                 create_args.crate_name,
@@ -730,9 +745,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 create_args.program_module,
                 create_args.program_only,
             ),
-            SdkCommands::Sync(sync_args) => {
-                commands::sdk::sync(&cli.config, sync_args.ts, sync_args.rust, sync_args.stacks)
-            }
+            SdkCommands::Sync(sync_args) => commands::sdk::sync(
+                &cli.config,
+                sync_args.ts,
+                sync_args.rust,
+                sync_args.python,
+                sync_args.stacks,
+            ),
             SdkCommands::List => commands::sdk::list(&cli.config),
         },
         Commands::Config(config_cmd) => match config_cmd {

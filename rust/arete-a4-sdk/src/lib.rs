@@ -29,6 +29,7 @@ pub mod amounts;
 mod auth;
 pub mod chain;
 mod client;
+pub mod collation;
 mod config;
 mod connection;
 mod entity;
@@ -63,6 +64,7 @@ pub use chain::{
     TokenBalanceInput,
 };
 pub use client::{Arete, AreteBuilder, ExecutionResult, TransactionOptions, Transport};
+pub use collation::{collation_key, locale_compare, CollationKey};
 pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
 pub use entity::Stack;

@@ -50,6 +50,9 @@ pub struct SdkConfig {
     pub rust_output_dir: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub python_output_dir: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub typescript_package: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,6 +60,9 @@ pub struct SdkConfig {
 
     #[serde(default)]
     pub rust_module_mode: bool,
+
+    #[serde(default)]
+    pub python_module_mode: bool,
 }
 
 fn default_output_dir() -> String {
@@ -91,6 +97,12 @@ pub struct StackConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rust_module: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python_output_package: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python_module: Option<bool>,
 
     /// WebSocket URL for the deployed stack (e.g., wss://ore-round-abc123.stack.arete.run)
     /// This is typically set after first deployment and used for SDK generation.
@@ -171,6 +183,13 @@ impl AreteConfig {
             .unwrap_or_else(|| self.get_output_dir())
     }
 
+    pub fn get_python_output_dir(&self) -> &str {
+        self.sdk
+            .as_ref()
+            .and_then(|s| s.python_output_dir.as_deref())
+            .unwrap_or_else(|| self.get_output_dir())
+    }
+
     pub fn get_typescript_output_path(
         &self,
         stack_name: &str,
@@ -207,6 +226,28 @@ impl AreteConfig {
         }
 
         PathBuf::from(self.get_rust_output_dir()).join(format!("{}-stack", stack_name))
+    }
+
+    /// Python mirror of [`Self::get_rust_output_path`]. The default directory
+    /// suffix differs (`-py` instead of `-stack`) so no-flag `a4 sdk sync`
+    /// never writes Rust and Python outputs into the same directory.
+    pub fn get_python_output_path(
+        &self,
+        stack_name: &str,
+        stack_config: Option<&StackConfig>,
+        override_path: Option<String>,
+    ) -> PathBuf {
+        if let Some(path) = override_path {
+            return PathBuf::from(path);
+        }
+
+        if let Some(stack) = stack_config {
+            if let Some(ref package_path) = stack.python_output_package {
+                return PathBuf::from(package_path);
+            }
+        }
+
+        PathBuf::from(self.get_python_output_dir()).join(format!("{}-py", stack_name))
     }
 }
 

@@ -2,7 +2,7 @@ use crate::ast::*;
 use crate::typescript_instructions::{
     dedupe_errors_by_code, normalize_seed_arg_type, split_generic,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct RustOutput {
@@ -92,10 +92,315 @@ pub fn write_rust_module(
     Ok(())
 }
 
+/// Runtime envelope a resolved-struct field arrives in. Mirror of the
+/// TypeScript generator's `EventWrapper<T>` / `CaptureWrapper<T>` selection in
+/// `field_type_info_to_typescript` (and of `python::WrapperKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WrapperKind {
+    None,
+    Capture,
+    Event,
+}
+
+/// Target paths fed by an `AsCapture` mapping. Mirror of the TypeScript
+/// generator's `is_capture_field` and of `python::capture_field_targets`:
+/// those fields arrive wrapped in a `CaptureWrapper` envelope
+/// (`{timestamp, account_address, data, slot?, signature?}`) rather than as
+/// the bare account struct.
+pub(crate) fn capture_field_targets(spec: &SerializableStreamSpec) -> HashSet<String> {
+    let mut targets = HashSet::new();
+    for handler in &spec.handlers {
+        for mapping in &handler.mappings {
+            if matches!(&mapping.source, MappingSource::AsCapture { .. }) {
+                targets.insert(mapping.target_path.clone());
+            }
+        }
+    }
+    targets
+}
+
+/// Which runtime envelope a resolved-struct field arrives in. Mirror of the
+/// TypeScript generator: `#[capture]`-fed account fields arrive as
+/// `CaptureWrapper<T>` and event/instruction-list fields as `EventWrapper<T>`,
+/// never as the bare struct.
+pub(crate) fn wrapper_kind_for(
+    field: &FieldTypeInfo,
+    resolved: &ResolvedStructType,
+    capture_fields: &HashSet<String>,
+) -> WrapperKind {
+    if resolved.is_event || (resolved.is_instruction && field.is_array) {
+        return WrapperKind::Event;
+    }
+    if resolved.is_account
+        && (capture_fields.contains(&field.field_name)
+            || capture_fields.contains(field.raw_field_name()))
+    {
+        return WrapperKind::Capture;
+    }
+    WrapperKind::None
+}
+
+/// The runtime envelopes every generated `types.rs` carries. Mirrors
+/// `arete_interpreter::{EventWrapper, CaptureWrapper}` and the TypeScript
+/// `EventWrapper<T>` / `CaptureWrapper<T>` interfaces: capture/event-fed fields
+/// arrive wrapped on the wire, so the generated field types name the envelope
+/// and expose the provenance (`timestamp`, `account_address`, `slot`,
+/// `signature`) alongside the decoded `data`.
+const WRAPPER_TYPES: &str = r#"/// Wrapper for event data that includes context metadata.
+/// Events are automatically wrapped in this structure at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventWrapper<T> {
+    /// Unix timestamp when the event was processed.
+    #[serde(default, deserialize_with = "serde_utils::deserialize_i64")]
+    pub timestamp: i64,
+    /// The event-specific data.
+    pub data: T,
+    /// Optional blockchain slot number.
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub slot: Option<u64>,
+    /// Optional transaction signature.
+    #[serde(default)]
+    pub signature: Option<String>,
+}
+
+impl<T: Default> Default for EventWrapper<T> {
+    fn default() -> Self {
+        Self {
+            timestamp: 0,
+            data: T::default(),
+            slot: None,
+            signature: None,
+        }
+    }
+}
+
+/// Wrapper for account data captured with `#[capture]`, including context
+/// metadata. Captured accounts are automatically wrapped in this structure at
+/// runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureWrapper<T> {
+    /// Unix timestamp when the account was captured.
+    #[serde(default, deserialize_with = "serde_utils::deserialize_i64")]
+    pub timestamp: i64,
+    /// The account address (base58 encoded public key).
+    #[serde(default)]
+    pub account_address: String,
+    /// The captured account data.
+    pub data: T,
+    /// Optional blockchain slot number.
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub slot: Option<u64>,
+    /// Optional transaction signature.
+    #[serde(default)]
+    pub signature: Option<String>,
+}
+
+impl<T: Default> Default for CaptureWrapper<T> {
+    fn default() -> Self {
+        Self {
+            timestamp: 0,
+            account_address: String::new(),
+            data: T::default(),
+            slot: None,
+            signature: None,
+        }
+    }
+}
+"#;
+
+/// Rust definitions for the builtin resolver output types a generated SDK can
+/// name, in emission order. Mirror of the `typescript_interface()` blocks the
+/// resolvers in [`crate::resolvers`] register: `SlotHashBytes` (the
+/// `{ bytes }` wire shape of `ResolvedSlotHash`) and `TokenMetadata`. Field
+/// names are the snake_case wire keys the runtime emits, so no rename
+/// attributes are needed.
+///
+/// `KeccakRngValue` is deliberately absent even though it is a registered
+/// resolver output type. It is a `u64`, and TypeScript models it as
+/// `export type KeccakRngValue = string` only because the canonical numeric
+/// rule (docs/internal/sdk-core-api.md §2) puts `u64` on the wire as a decimal
+/// string. Rust decodes that back to a real `u64` via
+/// `serde_utils::deserialize_option_*_u64`, so `KeccakRngValue`-typed fields
+/// keep their integer typing instead of degrading to `String`.
+const BUILTIN_RESOLVER_STRUCTS: &[(&str, &str)] = &[
+    (
+        "SlotHashBytes",
+        r#"/// Slot hash resolved by the builtin `SlotHash` resolver.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SlotHashBytes {
+    /// 32-byte slot hash.
+    #[serde(default)]
+    pub bytes: Vec<u8>,
+}"#,
+    ),
+    (
+        "TokenMetadata",
+        r#"/// Token metadata resolved by the builtin `TokenMetadata` resolver.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TokenMetadata {
+    #[serde(default)]
+    pub mint: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub symbol: Option<String>,
+    #[serde(default)]
+    pub decimals: Option<u8>,
+    #[serde(default)]
+    pub logo_uri: Option<String>,
+}"#,
+    ),
+];
+
+/// The generated struct name for a builtin resolver output type named by a
+/// field's `inner_type`, or `None`. The registry is the authority (mirror of
+/// `typescript::is_builtin_resolver_type`), narrowed to the types
+/// [`BUILTIN_RESOLVER_STRUCTS`] can express as a Rust struct.
+pub(crate) fn builtin_resolver_struct(inner_type: Option<&str>) -> Option<&'static str> {
+    let inner = inner_type?;
+    if !crate::resolvers::is_resolver_output_type(inner) {
+        return None;
+    }
+    BUILTIN_RESOLVER_STRUCTS
+        .iter()
+        .find(|(name, _)| *name == inner)
+        .map(|(name, _)| *name)
+}
+
+/// Render the builtin resolver structs a generated `types.rs` actually
+/// references. Each block is followed by a blank line.
+fn render_builtin_resolver_structs(used: &BTreeSet<&'static str>) -> String {
+    let mut output = String::new();
+    for (name, definition) in BUILTIN_RESOLVER_STRUCTS {
+        if used.contains(name) {
+            output.push_str(definition);
+            output.push_str("\n\n");
+        }
+    }
+    output
+}
+
+/// Map the element of a `Vec<T>` scalar array to its Rust primitive. Mirror of
+/// `typescript::typescript_scalar_array_element` and
+/// `python::py_scalar_array_element`; accepts both stored forms of the inner
+/// type (`"Vec < f64 >"` and the bare `"f64"`) and returns `None` for
+/// non-scalar elements.
+fn rust_scalar_array_element(inner_type: &str) -> Option<&'static str> {
+    let trimmed = inner_type.trim();
+    let element = trimmed
+        .strip_prefix("Vec <")
+        .and_then(|rest| rest.strip_suffix('>'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix("Vec<")
+                .and_then(|rest| rest.strip_suffix('>'))
+        })
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    match element {
+        "f32" | "f64" => Some("f64"),
+        "bool" => Some("bool"),
+        "String" | "&str" | "str" => Some("String"),
+        _ => None,
+    }
+}
+
+/// Rust type plus `serde_utils` requirement for a non-resolved (scalar /
+/// scalar-array) field. Type and `#[serde(...)]` attribute are derived from
+/// one place so an integer vector can never be typed `Vec<u64>` while its
+/// deserializer stays scalar (or vice versa).
+struct RustScalarShape {
+    /// The bare Rust type, before the patch `Option<..>` wrapping.
+    rust_type: String,
+    /// Normalized integer kind whose `serde_utils` deserializer this field
+    /// needs, or `None` for a plain `#[serde(default)]`.
+    integer_kind: Option<&'static str>,
+    /// Whether that deserializer must be the `_vec_` variant.
+    is_vec: bool,
+}
+
+/// Shape of a non-resolved field. Shared by the entity-section path and the
+/// IDL `ResolvedField` path so the same on-chain array is typed identically
+/// whichever way it is reached (mirror of `python::py_scalar_field_shape`).
+///
+/// `Vec<u64>`-shaped fields are stored as `BaseType::Array` with an explicit
+/// `integer_kind`, so the integer check has to consult `integer_kind` and not
+/// just `base_type`. The guard stays tighter than the TypeScript one
+/// (`BaseType::Array` only, never "any field carrying an `integer_kind`") so
+/// `BaseType::Binary` fields keep their `Vec<u8>`.
+fn rust_scalar_field_shape(
+    base_type: &BaseType,
+    integer_kind: Option<IntegerKind>,
+    is_array: bool,
+    inner_type: Option<&str>,
+    rust_type_name: &str,
+) -> RustScalarShape {
+    if is_array && matches!(base_type, BaseType::Array) {
+        if let Some(kind) = integer_kind {
+            let kind = normalized_integer_kind_of(kind);
+            return RustScalarShape {
+                rust_type: format!("Vec<{kind}>"),
+                integer_kind: Some(kind),
+                is_vec: true,
+            };
+        }
+        if let Some(element) = inner_type.and_then(rust_scalar_array_element) {
+            return RustScalarShape {
+                rust_type: format!("Vec<{element}>"),
+                integer_kind: None,
+                is_vec: false,
+            };
+        }
+    }
+
+    // Only integer and timestamp types need the string-or-number treatment.
+    let kind = match base_type {
+        BaseType::Integer => Some(normalized_integer_kind(rust_type_name)),
+        BaseType::Timestamp => Some("i64"),
+        _ => None,
+    };
+    let is_vec = is_array && !matches!(base_type, BaseType::Array);
+    let base = base_type_to_rust(base_type, rust_type_name);
+    RustScalarShape {
+        rust_type: if is_vec { format!("Vec<{base}>") } else { base },
+        integer_kind: kind,
+        is_vec,
+    }
+}
+
+/// The `serde_utils::deserialize_*` function a shape needs, or `None` when a
+/// plain `#[serde(default)]` suffices.
+fn deserialize_with_for_shape(shape: &RustScalarShape, is_optional: bool) -> Option<String> {
+    let kind = shape.integer_kind?;
+    Some(match (is_optional, shape.is_vec) {
+        (false, false) => format!("serde_utils::deserialize_option_{kind}"),
+        (true, false) => format!("serde_utils::deserialize_option_option_{kind}"),
+        (false, true) => format!("serde_utils::deserialize_option_vec_{kind}"),
+        (true, true) => format!("serde_utils::deserialize_option_option_vec_{kind}"),
+    })
+}
+
+fn base_type_to_rust(base_type: &BaseType, rust_type_name: &str) -> String {
+    match base_type {
+        BaseType::Integer => normalized_integer_kind(rust_type_name).to_string(),
+        BaseType::Float => "f64".to_string(),
+        BaseType::String => "String".to_string(),
+        BaseType::Boolean => "bool".to_string(),
+        BaseType::Timestamp => "i64".to_string(),
+        BaseType::Binary => "Vec<u8>".to_string(),
+        BaseType::Pubkey => "String".to_string(),
+        BaseType::Array => "Vec<serde_json::Value>".to_string(),
+        BaseType::Object => "serde_json::Value".to_string(),
+        BaseType::Any => "serde_json::Value".to_string(),
+    }
+}
+
 pub(crate) struct RustCompiler {
     spec: SerializableStreamSpec,
     entity_name: String,
     config: RustConfig,
+    /// Field targets fed by an `AsCapture` mapping in this entity's handlers.
+    capture_fields: HashSet<String>,
 }
 
 impl RustCompiler {
@@ -104,10 +409,12 @@ impl RustCompiler {
         entity_name: String,
         config: RustConfig,
     ) -> Self {
+        let capture_fields = capture_field_targets(&spec);
         Self {
             spec,
             entity_name,
             config,
+            capture_fields,
         }
     }
 
@@ -175,7 +482,14 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
 
         output.push_str(&self.generate_main_entity_struct(&resolved_name_map));
         output.push_str(&self.generate_resolved_types(&resolved_name_map, &mut generated, None));
-        output.push_str(&self.generate_event_wrapper());
+
+        let builtins = render_builtin_resolver_structs(&self.used_builtin_resolver_types());
+        if !builtins.is_empty() {
+            output.push_str("\n\n");
+            output.push_str(builtins.trim_end());
+        }
+
+        output.push_str(&self.generate_wrapper_types());
 
         output
     }
@@ -193,8 +507,8 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
                 continue;
             }
             let field_name = to_snake_case(&field.field_name);
-            let rust_type = self.field_type_to_rust(field, resolved_name_map);
-            let serde_attr = self.serde_attr_for_field(field);
+            let rust_type = self.field_type_to_rust(field, &section.name, resolved_name_map);
+            let serde_attr = self.serde_attr_for_field(field, &section.name);
 
             fields.push(format!(
                 "    {}\n    pub {}: {},",
@@ -239,8 +553,9 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
                         continue;
                     }
                     let field_name = to_snake_case(&field.field_name);
-                    let rust_type = self.field_type_to_rust(field, resolved_name_map);
-                    let serde_attr = self.serde_attr_for_field(field);
+                    let rust_type =
+                        self.field_type_to_rust(field, &section.name, resolved_name_map);
+                    let serde_attr = self.serde_attr_for_field(field, &section.name);
                     fields.push(format!(
                         "    {}\n    pub {}: {},",
                         serde_attr, field_name, rust_type
@@ -329,32 +644,8 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         }
     }
 
-    fn generate_event_wrapper(&self) -> String {
-        r#"
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventWrapper<T> {
-    #[serde(default, deserialize_with = "serde_utils::deserialize_i64")]
-    pub timestamp: i64,
-    pub data: T,
-    #[serde(default)]
-    pub slot: Option<f64>,
-    #[serde(default)]
-    pub signature: Option<String>,
-}
-
-impl<T: Default> Default for EventWrapper<T> {
-    fn default() -> Self {
-        Self {
-            timestamp: 0,
-            data: T::default(),
-            slot: None,
-            signature: None,
-        }
-    }
-}
-"#
-        .to_string()
+    fn generate_wrapper_types(&self) -> String {
+        format!("\n\n{WRAPPER_TYPES}")
     }
 
     fn generate_entity_rs(&self) -> String {
@@ -514,14 +805,34 @@ impl {entity_name}EntityViews {{
     fn field_type_to_rust(
         &self,
         field: &FieldTypeInfo,
-        _resolved_name_map: &HashMap<String, String>,
+        section_name: &str,
+        resolved_name_map: &HashMap<String, String>,
     ) -> String {
-        let base = self.base_type_to_rust(&field.base_type, &field.rust_type_name);
-
-        let typed = if field.is_array && !matches!(field.base_type, BaseType::Array) {
-            format!("Vec<{}>", base)
+        // Fields backed by a resolved IDL struct are typed against the emitted
+        // struct, wrapped in the runtime envelope they actually arrive in.
+        // Mirror of `typescript::field_type_info_to_typescript`.
+        let typed = if let Some(resolved) = &field.resolved_type {
+            let name = self.resolved_type_to_rust_name(resolved, resolved_name_map);
+            let element = match wrapper_kind_for(field, resolved, &self.capture_fields) {
+                WrapperKind::None => name,
+                WrapperKind::Capture => format!("CaptureWrapper<{}>", name),
+                WrapperKind::Event => format!("EventWrapper<{}>", name),
+            };
+            if field.is_array {
+                format!("Vec<{}>", element)
+            } else {
+                element
+            }
+        } else if let Some(builtin) = self.builtin_type_for_field(section_name, field) {
+            // Builtin resolver outputs are typed against the generated struct.
+            // Mirror of `typescript::field_type_info_to_typescript`.
+            if field.is_array {
+                format!("Vec<{}>", builtin)
+            } else {
+                builtin.to_string()
+            }
         } else {
-            base
+            self.scalar_shape_for_field(field).rust_type
         };
 
         // All fields wrapped in Option since we receive patches
@@ -533,85 +844,94 @@ impl {entity_name}EntityViews {{
         }
     }
 
-    fn base_type_to_rust(&self, base_type: &BaseType, rust_type_name: &str) -> String {
-        match base_type {
-            BaseType::Integer => normalized_integer_kind(rust_type_name).to_string(),
-            BaseType::Float => "f64".to_string(),
-            BaseType::String => "String".to_string(),
-            BaseType::Boolean => "bool".to_string(),
-            BaseType::Timestamp => "i64".to_string(),
-            BaseType::Binary => "Vec<u8>".to_string(),
-            BaseType::Pubkey => "String".to_string(),
-            BaseType::Array => "Vec<serde_json::Value>".to_string(),
-            BaseType::Object => "serde_json::Value".to_string(),
-            BaseType::Any => "serde_json::Value".to_string(),
+    /// The builtin resolver struct a section field is typed against, if any.
+    ///
+    /// Mirror of the TypeScript generator's "effective field info" override in
+    /// `add_unmapped_fields`: a computed field keeps the *user's* declared Rust
+    /// type in the section (`ResolvedSlotHash`), and only the `field_mappings`
+    /// entry records the resolver output type (`SlotHashBytes`), so both have
+    /// to be consulted.
+    fn builtin_type_for_field(
+        &self,
+        section_name: &str,
+        field: &FieldTypeInfo,
+    ) -> Option<&'static str> {
+        if let Some(name) = builtin_resolver_struct(field.inner_type.as_deref()) {
+            return Some(name);
         }
+        let field_path = format!("{}.{}", section_name, field.field_name);
+        self.spec
+            .field_mappings
+            .get(&field_path)
+            .and_then(|mapping| builtin_resolver_struct(mapping.inner_type.as_deref()))
+    }
+
+    /// Builtin resolver structs referenced by this entity's emitted fields.
+    pub(crate) fn used_builtin_resolver_types(&self) -> BTreeSet<&'static str> {
+        let mut used = BTreeSet::new();
+        for section in &self.spec.sections {
+            for field in &section.fields {
+                if !field.emit || field.resolved_type.is_some() {
+                    continue;
+                }
+                if let Some(name) = self.builtin_type_for_field(&section.name, field) {
+                    used.insert(name);
+                }
+            }
+        }
+        used
+    }
+
+    fn scalar_shape_for_field(&self, field: &FieldTypeInfo) -> RustScalarShape {
+        rust_scalar_field_shape(
+            &field.base_type,
+            field.effective_integer_kind(),
+            field.is_array,
+            field
+                .inner_type
+                .as_deref()
+                .or(Some(field.rust_type_name.as_str())),
+            &field.rust_type_name,
+        )
+    }
+
+    fn scalar_shape_for_resolved_field(&self, field: &ResolvedField) -> RustScalarShape {
+        rust_scalar_field_shape(
+            &field.base_type,
+            field.effective_integer_kind(),
+            field.is_array,
+            Some(field.field_type.as_str()),
+            &field.field_type,
+        )
     }
 
     /// Return the `#[serde(...)]` attribute for a field.
     /// Integer fields get a `deserialize_with` pointing to the appropriate
     /// `serde_utils` function so that string-encoded big integers are handled.
-    fn serde_attr_for_field(&self, field: &FieldTypeInfo) -> String {
-        if let Some(deser_fn) = self.deserialize_with_for_type(
-            &field.base_type,
-            field.is_optional,
-            field.is_array && !matches!(field.base_type, BaseType::Array),
-            &field.rust_type_name,
-        ) {
-            format!("#[serde(default, deserialize_with = \"{}\")]", deser_fn)
-        } else {
-            "#[serde(default)]".to_string()
+    fn serde_attr_for_field(&self, field: &FieldTypeInfo, section_name: &str) -> String {
+        if field.resolved_type.is_some()
+            || self.builtin_type_for_field(section_name, field).is_some()
+        {
+            return "#[serde(default)]".to_string();
+        }
+        let shape = self.scalar_shape_for_field(field);
+        match deserialize_with_for_shape(&shape, field.is_optional) {
+            Some(deser_fn) => format!("#[serde(default, deserialize_with = \"{}\")]", deser_fn),
+            None => "#[serde(default)]".to_string(),
         }
     }
 
     /// Same as `serde_attr_for_field` but for resolved struct fields.
     fn serde_attr_for_resolved_field(&self, field: &ResolvedField) -> String {
-        if let Some(deser_fn) = self.deserialize_with_for_type(
-            &field.base_type,
-            field.is_optional,
-            field.is_array,
-            &field.field_type,
-        ) {
-            format!("#[serde(default, deserialize_with = \"{}\")]", deser_fn)
-        } else {
-            "#[serde(default)]".to_string()
+        let shape = self.scalar_shape_for_resolved_field(field);
+        match deserialize_with_for_shape(&shape, field.is_optional) {
+            Some(deser_fn) => format!("#[serde(default, deserialize_with = \"{}\")]", deser_fn),
+            None => "#[serde(default)]".to_string(),
         }
     }
 
-    /// Determine the appropriate `serde_utils::deserialize_*` function for a
-    /// given type combination, or `None` if no custom deserializer is needed.
-    fn deserialize_with_for_type(
-        &self,
-        base_type: &BaseType,
-        is_optional: bool,
-        is_array: bool,
-        rust_type_name: &str,
-    ) -> Option<String> {
-        // Only integer and timestamp types need the string-or-number treatment
-        let int_kind = match base_type {
-            BaseType::Integer => normalized_integer_kind(rust_type_name),
-            BaseType::Timestamp => "i64",
-            _ => return None,
-        };
-
-        let fn_name = match (is_optional, is_array) {
-            (false, false) => format!("serde_utils::deserialize_option_{}", int_kind),
-            (true, false) => format!("serde_utils::deserialize_option_option_{}", int_kind),
-            (false, true) => format!("serde_utils::deserialize_option_vec_{}", int_kind),
-            (true, true) => format!("serde_utils::deserialize_option_option_vec_{}", int_kind),
-        };
-
-        Some(fn_name)
-    }
-
     fn resolved_field_to_rust(&self, field: &ResolvedField) -> String {
-        let base = self.base_type_to_rust(&field.base_type, &field.field_type);
-
-        let typed = if field.is_array {
-            format!("Vec<{}>", base)
-        } else {
-            base
-        };
+        let typed = self.scalar_shape_for_resolved_field(field).rust_type;
 
         if field.is_optional {
             format!("Option<Option<{}>>", typed)
@@ -621,8 +941,18 @@ impl {entity_name}EntityViews {{
     }
 
     fn build_resolved_type_name_map(&self) -> HashMap<String, String> {
-        let mut reserved_names =
-            HashSet::from([self.entity_name.clone(), "EventWrapper".to_string()]);
+        let mut reserved_names = HashSet::from([
+            self.entity_name.clone(),
+            "EventWrapper".to_string(),
+            "CaptureWrapper".to_string(),
+        ]);
+
+        // Builtin resolver structs share the `types.rs` namespace, so a
+        // same-named IDL type has to be renamed around them. Mirror of the
+        // TypeScript generator reserving `TokenMetadata`.
+        for (name, _) in BUILTIN_RESOLVER_STRUCTS {
+            reserved_names.insert((*name).to_string());
+        }
 
         for section in &self.spec.sections {
             if !Self::is_root_section(&section.name)
@@ -703,6 +1033,21 @@ fn unique_resolved_type_name(
             return candidate;
         }
         index += 1;
+    }
+}
+
+/// [`normalized_integer_kind`] for an already-classified [`IntegerKind`].
+/// Kept byte-for-byte equivalent to the string-sniffing version: only
+/// `u64`/`i64`/`u32`/`i32` have `serde_utils` deserializers, so unsigned small
+/// ints widen to `u64` and everything else widens to `i64`.
+fn normalized_integer_kind_of(kind: IntegerKind) -> &'static str {
+    match kind {
+        IntegerKind::U64 => "u64",
+        IntegerKind::U32 => "u32",
+        IntegerKind::I32 => "i32",
+        IntegerKind::U8 | IntegerKind::U16 | IntegerKind::Usize => "u64",
+        // Signed small ints (i16/i8/isize) and the 128-bit kinds widen to i64.
+        _ => "i64",
     }
 }
 
@@ -800,11 +1145,15 @@ mod tests {
         let output = compile_serializable_spec(spec, "Plan".to_string(), None)
             .expect("rust sdk generation should succeed");
 
-        assert!(output
+        // The resolved struct is renamed away from the entity struct, and the
+        // field is typed against the renamed struct (no `AsCapture` mapping
+        // feeds it, so it stays a bare struct — see
+        // `rust_generator_wraps_capture_and_event_fields`).
+        assert!(output.types_rs.contains("pub struct PlanAccount"));
+        assert!(output.types_rs.contains("pub plan: Option<PlanAccount>"));
+        assert!(!output
             .types_rs
             .contains("pub plan: Option<serde_json::Value>"));
-        assert!(output.types_rs.contains("pub struct PlanAccount"));
-        assert!(!output.types_rs.contains("pub plan: Option<PlanAccount>"));
         assert!(
             !output.types_rs.contains("pub struct Plan {\n    #[serde(default, deserialize_with = \"serde_utils::deserialize_option_u64\")]\n    pub discriminator")
         );
@@ -859,11 +1208,408 @@ mod tests {
         );
     }
 
+    /// Scalar arrays must land on a real Rust element type. `Vec<u64>`-shaped
+    /// fields reach the generator as `BaseType::Array` + `integer_kind`, so the
+    /// integer check has to consult `integer_kind` (TypeScript emits
+    /// `bigint[]`, Python `List[int]`); non-integer scalar arrays keep their
+    /// element type instead of degrading to `Vec<serde_json::Value>`.
+    /// Rust twin of `python::tests::python_generator_converts_u64_arrays`.
+    #[test]
+    fn rust_generator_types_scalar_arrays() {
+        let mut entity = minimal_entity("OreRound");
+        entity.sections.push(EntitySection {
+            name: "state".to_string(),
+            fields: vec![
+                FieldTypeInfo::new(
+                    "deployed_per_square".to_string(),
+                    "Option<Vec<u64>>".to_string(),
+                ),
+                FieldTypeInfo::new(
+                    "deployed_per_square_ui".to_string(),
+                    "Option<Vec<f64>>".to_string(),
+                ),
+                FieldTypeInfo::new("flags".to_string(), "Option<Vec<bool>>".to_string()),
+                FieldTypeInfo::new("labels".to_string(), "Option<Vec<String>>".to_string()),
+                FieldTypeInfo::new("resolved_seed".to_string(), "Option<Vec<u8>>".to_string()),
+                // A `#[binary]` blob keeps `Vec<u8>`: the integer guard is
+                // `BaseType::Array`-only, never "any field with an
+                // `integer_kind`".
+                FieldTypeInfo::new("payload".to_string(), "Option<Vec<u8>>".to_string()),
+            ],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+        // The interpreter records the element kind explicitly for `Vec<u64>`.
+        for field in &mut entity.sections[1].fields {
+            match field.field_name.as_str() {
+                "deployed_per_square" => {
+                    field.base_type = BaseType::Array;
+                    field.integer_kind = Some(IntegerKind::U64);
+                    field.is_array = true;
+                    field.inner_type = Some("Vec < u64 >".to_string());
+                }
+                "resolved_seed" => {
+                    field.base_type = BaseType::Array;
+                    field.integer_kind = Some(IntegerKind::U8);
+                    field.is_array = true;
+                    field.inner_type = Some("Vec < u8 >".to_string());
+                }
+                "deployed_per_square_ui" => {
+                    field.base_type = BaseType::Array;
+                    field.is_array = true;
+                    field.inner_type = Some("Vec < f64 >".to_string());
+                }
+                "flags" => {
+                    field.base_type = BaseType::Array;
+                    field.is_array = true;
+                    field.inner_type = Some("Vec < bool >".to_string());
+                }
+                "labels" => {
+                    field.base_type = BaseType::Array;
+                    field.is_array = true;
+                    field.inner_type = Some("Vec < String >".to_string());
+                }
+                "payload" => {
+                    field.base_type = BaseType::Binary;
+                    field.integer_kind = Some(IntegerKind::U8);
+                    field.is_array = false;
+                    field.inner_type = Some("Vec < u8 >".to_string());
+                }
+                _ => {}
+            }
+        }
+
+        let output = compile_stack_spec(stack_of("OreRound", entity), None)
+            .expect("rust stack generation should succeed");
+        let types = &output.types_rs;
+
+        assert!(
+            !types.contains("Vec<serde_json::Value>"),
+            "scalar arrays should not fall back to untyped values:\n{types}"
+        );
+
+        // u64 arrives on the wire as decimal strings (canonical numeric rule),
+        // so the typed vector needs the string-or-number vector deserializer.
+        assert!(
+            types.contains(
+                "#[serde(default, deserialize_with = \"serde_utils::deserialize_option_option_vec_u64\")]\n    pub deployed_per_square: Option<Option<Vec<u64>>>,"
+            ),
+            "expected a typed u64 vector with its deserializer:\n{types}"
+        );
+        // Small unsigned ints widen to u64, matching the scalar policy in
+        // `normalized_integer_kind` (only u64/i64/u32/i32 have deserializers).
+        assert!(
+            types.contains(
+                "#[serde(default, deserialize_with = \"serde_utils::deserialize_option_option_vec_u64\")]\n    pub resolved_seed: Option<Option<Vec<u64>>>,"
+            ),
+            "expected u8 arrays to widen to Vec<u64>:\n{types}"
+        );
+
+        // Non-integer scalar arrays keep their element type and need no
+        // custom deserializer.
+        assert!(types.contains(
+            "#[serde(default)]\n    pub deployed_per_square_ui: Option<Option<Vec<f64>>>,"
+        ));
+        assert!(types.contains("#[serde(default)]\n    pub flags: Option<Option<Vec<bool>>>,"));
+        assert!(types.contains("#[serde(default)]\n    pub labels: Option<Option<Vec<String>>>,"));
+
+        // `BaseType::Binary` is untouched by the integer-array branch.
+        assert!(
+            types.contains("#[serde(default)]\n    pub payload: Option<Option<Vec<u8>>>,"),
+            "binary fields must keep Vec<u8>:\n{types}"
+        );
+    }
+
+    /// Builtin resolver outputs are typed against generated structs, matching
+    /// TypeScript's `oreMetadata: TokenMetadata | null` /
+    /// `expiresAtSlotHash: SlotHashBytes | null`. `expires_at_slot_hash` only
+    /// names the resolver output type in `field_mappings` (the section keeps
+    /// the user's declared `ResolvedSlotHash`), which is the TypeScript
+    /// "effective field info" override.
+    #[test]
+    fn rust_generator_types_builtin_resolver_fields() {
+        let mut entity = minimal_entity("OreRound");
+        let mut ore_metadata = FieldTypeInfo::new(
+            "ore_metadata".to_string(),
+            "Option<TokenMetadata>".to_string(),
+        );
+        ore_metadata.base_type = BaseType::Object;
+        ore_metadata.is_optional = true;
+        ore_metadata.inner_type = Some("TokenMetadata".to_string());
+
+        let mut expires_at_slot_hash = FieldTypeInfo::new(
+            "expires_at_slot_hash".to_string(),
+            "Option<ResolvedSlotHash>".to_string(),
+        );
+        expires_at_slot_hash.base_type = BaseType::Object;
+        expires_at_slot_hash.is_optional = true;
+        expires_at_slot_hash.inner_type = Some("ResolvedSlotHash".to_string());
+
+        // `KeccakRngValue` is a registered resolver output type, but it is a
+        // u64 that the wire spells as a decimal string; Rust decodes it.
+        let mut rng = FieldTypeInfo::new("rng".to_string(), "Option<u64>".to_string());
+        rng.is_optional = true;
+        rng.inner_type = Some("KeccakRngValue".to_string());
+        rng.integer_kind = Some(IntegerKind::U64);
+
+        entity.sections.push(EntitySection {
+            name: "results".to_string(),
+            fields: vec![expires_at_slot_hash.clone(), rng],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+        entity.sections.push(EntitySection {
+            name: "root".to_string(),
+            fields: vec![ore_metadata],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+
+        let mut slot_hash_mapping = expires_at_slot_hash;
+        slot_hash_mapping.base_type = BaseType::Any;
+        slot_hash_mapping.inner_type = Some("SlotHashBytes".to_string());
+        entity.field_mappings.insert(
+            "results.expires_at_slot_hash".to_string(),
+            slot_hash_mapping,
+        );
+
+        let output = compile_stack_spec(stack_of("OreRound", entity), None)
+            .expect("rust stack generation should succeed");
+        let types = &output.types_rs;
+
+        assert!(
+            types.contains("pub ore_metadata: Option<Option<TokenMetadata>>,"),
+            "expected a typed TokenMetadata field:\n{types}"
+        );
+        assert!(
+            types.contains("pub expires_at_slot_hash: Option<Option<SlotHashBytes>>,"),
+            "expected the field_mappings override to type the slot hash:\n{types}"
+        );
+        assert!(!types.contains("pub ore_metadata: Option<Option<serde_json::Value>>,"));
+        assert!(!types.contains("pub expires_at_slot_hash: Option<Option<serde_json::Value>>,"));
+
+        // The structs themselves are emitted once, with the snake_case wire keys.
+        assert_eq!(types.matches("pub struct TokenMetadata {").count(), 1);
+        assert_eq!(types.matches("pub struct SlotHashBytes {").count(), 1);
+        assert!(types.contains("    pub logo_uri: Option<String>,"));
+        assert!(types.contains("    pub bytes: Vec<u8>,"));
+
+        // `KeccakRngValue` stays a real u64 rather than degrading to String.
+        assert!(
+            types.contains(
+                "#[serde(default, deserialize_with = \"serde_utils::deserialize_option_option_u64\")]\n    pub rng: Option<Option<u64>>,"
+            ),
+            "KeccakRngValue fields must stay integers:\n{types}"
+        );
+        assert!(!types.contains("pub struct KeccakRngValue"));
+    }
+
+    /// Unused builtin resolver structs are not emitted.
+    #[test]
+    fn rust_generator_omits_unused_builtin_resolver_structs() {
+        let output = compile_stack_spec(stack_of("OreTreasury", capture_entity()), None)
+            .expect("rust stack generation should succeed");
+
+        assert!(!output.types_rs.contains("pub struct TokenMetadata"));
+        assert!(!output.types_rs.contains("pub struct SlotHashBytes"));
+    }
+
     #[test]
     fn generated_manifest_uses_published_arete_sdk_package() {
         let manifest = generate_stack_cargo_toml(&RustStackConfig::default());
 
         assert!(manifest.contains("arete-sdk = { package = \"arete-a4-sdk\", version = \"0.4\" }"));
+    }
+
+    fn resolved_field_of(name: &str, field_type: &str, base_type: BaseType) -> ResolvedField {
+        ResolvedField {
+            field_name: name.to_string(),
+            raw_name: Some(name.to_string()),
+            canonical_name: None,
+            field_type: field_type.to_string(),
+            base_type,
+            integer_kind: IntegerKind::from_rust_type(field_type),
+            is_optional: false,
+            is_array: false,
+        }
+    }
+
+    /// A root-section field backed by a resolved struct. Mirror of the Python
+    /// generator's `snapshot_field` fixture.
+    fn snapshot_field(
+        field_name: &str,
+        type_name: &str,
+        is_account: bool,
+        is_event: bool,
+    ) -> FieldTypeInfo {
+        FieldTypeInfo {
+            field_name: field_name.to_string(),
+            raw_name: Some(field_name.to_string()),
+            canonical_name: None,
+            rust_type_name: "Option<serde_json::Value>".to_string(),
+            base_type: BaseType::Object,
+            integer_kind: None,
+            is_optional: true,
+            is_array: false,
+            inner_type: Some("Value".to_string()),
+            source_path: None,
+            resolved_type: Some(ResolvedStructType {
+                type_name: type_name.to_string(),
+                fields: vec![
+                    resolved_field_of("motherlode", "u64", BaseType::Integer),
+                    resolved_field_of("owner", "publicKey", BaseType::Pubkey),
+                ],
+                is_instruction: false,
+                is_account,
+                is_event,
+                is_enum: false,
+                enum_variants: vec![],
+            }),
+            emit: true,
+        }
+    }
+
+    /// The handler mapping that feeds a field via `#[capture]`.
+    fn capture_handler(target_path: &str) -> SerializableHandlerSpec {
+        SerializableHandlerSpec {
+            source: SourceSpec::Source {
+                program_id: None,
+                discriminator: None,
+                type_name: "Treasury".to_string(),
+                serialization: None,
+                is_account: true,
+            },
+            key_resolution: KeyResolutionStrategy::Embedded {
+                primary_field: FieldPath::new(&["id", "address"]),
+            },
+            mappings: vec![SerializableFieldMapping {
+                target_path: target_path.to_string(),
+                source: MappingSource::AsCapture {
+                    field_transforms: BTreeMap::new(),
+                },
+                transform: None,
+                population: PopulationStrategy::LastWrite,
+                condition: None,
+                when: None,
+                stop: None,
+                emit: true,
+            }],
+            conditions: vec![],
+            emit: true,
+        }
+    }
+
+    fn stack_of(name: &str, entity: SerializableStreamSpec) -> SerializableStackSpec {
+        SerializableStackSpec {
+            ast_version: CURRENT_AST_VERSION.to_string(),
+            stack_name: name.to_string(),
+            program_ids: vec![],
+            idls: vec![],
+            program_specs: vec![],
+            entities: vec![entity],
+            pdas: BTreeMap::new(),
+            instructions: vec![],
+            content_hash: None,
+        }
+    }
+
+    fn capture_entity() -> SerializableStreamSpec {
+        let mut entity = minimal_entity("OreTreasury");
+        entity.handlers.push(capture_handler("treasury_snapshot"));
+        entity.sections.push(EntitySection {
+            name: "root".to_string(),
+            fields: vec![
+                snapshot_field("treasury_snapshot", "Treasury", true, false),
+                // Same struct kind, but no AsCapture mapping: stays unwrapped.
+                snapshot_field("plain_account", "Vault", true, false),
+                snapshot_field("deposit_event", "DepositEvent", false, true),
+            ],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+        entity
+    }
+
+    /// `#[capture]`-fed account fields and event fields arrive wrapped on the
+    /// wire (`{timestamp, account_address, data: {...}, slot?, signature?}`).
+    /// Emitting them as untyped `serde_json::Value` loses the typing TS and
+    /// Python give; the envelope itself stays exposed because the provenance
+    /// is unrecoverable elsewhere.
+    #[test]
+    fn rust_generator_wraps_capture_and_event_fields() {
+        let output = compile_stack_spec(stack_of("OreTreasury", capture_entity()), None)
+            .expect("rust stack generation should succeed");
+        let types = &output.types_rs;
+
+        // Both envelopes are emitted once, with the full provenance surface.
+        assert!(types.contains("pub struct EventWrapper<T> {"));
+        assert!(types.contains("pub struct CaptureWrapper<T> {"));
+        assert!(types.contains("    pub account_address: String,"));
+        assert!(types.contains("    pub data: T,"));
+        assert!(types.contains("    pub slot: Option<u64>,"));
+        assert!(types.contains("    pub signature: Option<String>,"));
+        assert_eq!(types.matches("pub struct CaptureWrapper<T>").count(), 1);
+
+        // Capture-fed account field: typed envelope, not an untyped blob.
+        assert!(
+            types.contains("pub treasury_snapshot: Option<Option<CaptureWrapper<Treasury>>>,"),
+            "expected a typed capture envelope, got:\n{types}"
+        );
+        assert!(!types.contains("pub treasury_snapshot: Option<Option<serde_json::Value>>,"));
+
+        // Event field: EventWrapper envelope.
+        assert!(types.contains("pub deposit_event: Option<Option<EventWrapper<DepositEvent>>>,"));
+
+        // Unmapped account field keeps the bare-struct shape.
+        assert!(types.contains("pub plain_account: Option<Option<Vault>>,"));
+        assert!(!types.contains("CaptureWrapper<Vault>"));
+
+        // The inner structs are still emitted so the envelopes resolve.
+        assert!(types.contains("pub struct Treasury {"));
+        assert!(types.contains("pub struct Vault {"));
+        assert!(types.contains("pub struct DepositEvent {"));
+    }
+
+    /// The single-entity path (`compile_serializable_spec`) emits the same
+    /// envelopes as the stack path.
+    #[test]
+    fn rust_generator_wraps_capture_fields_in_single_entity_mode() {
+        let output = compile_serializable_spec(capture_entity(), "OreTreasury".to_string(), None)
+            .expect("rust sdk generation should succeed");
+        let types = &output.types_rs;
+
+        assert!(types.contains("pub struct CaptureWrapper<T> {"));
+        assert!(types.contains("pub struct EventWrapper<T> {"));
+        assert!(types.contains("pub treasury_snapshot: Option<Option<CaptureWrapper<Treasury>>>,"));
+        assert!(types.contains("pub deposit_event: Option<Option<EventWrapper<DepositEvent>>>,"));
+        assert!(types.contains("pub plain_account: Option<Option<Vault>>,"));
+    }
+
+    /// `CaptureWrapper` is reserved in the resolved-type name map, so an IDL
+    /// struct actually named `CaptureWrapper` is renamed instead of shadowing
+    /// the envelope.
+    #[test]
+    fn rust_generator_reserves_wrapper_type_names() {
+        let mut entity = minimal_entity("OreTreasury");
+        entity.sections.push(EntitySection {
+            name: "root".to_string(),
+            fields: vec![
+                snapshot_field("wrapped", "CaptureWrapper", true, false),
+                snapshot_field("evented", "EventWrapper", true, false),
+            ],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+
+        let output = compile_stack_spec(stack_of("OreTreasury", entity), None)
+            .expect("rust stack generation should succeed");
+        let types = &output.types_rs;
+
+        assert!(types.contains("pub struct CaptureWrapperAccount {"));
+        assert!(types.contains("pub struct EventWrapperAccount {"));
+        assert!(types.contains("pub wrapped: Option<Option<CaptureWrapperAccount>>,"));
+        assert!(types.contains("pub evented: Option<Option<EventWrapperAccount>>,"));
+        assert_eq!(types.matches("pub struct CaptureWrapper<T>").count(), 1);
     }
 
     const TEST_PROGRAM_ID: &str = "Prog111111111111111111111111111111111111111";
@@ -1303,8 +2049,8 @@ mod tests {
     /// Regeneration helper for the checked-in ore example. Run with:
     /// `cargo test -p arete-interpreter regenerate_ore_example -- --ignored`
     ///
-    /// Rewrites `examples/ore-rust/src/generated/ore/{mod,entity,programs}.rs`
-    /// from `stacks/ore/.arete/OreStream.stack.json` (types.rs is left as-is).
+    /// Rewrites `examples/ore-rust/src/generated/ore/{mod,types,entity,programs}.rs`
+    /// from `stacks/ore/.arete/OreStream.stack.json`.
     ///
     /// Extension wiring reuses the `extensions.json` staged in the output
     /// directory (files sorted, entry last, stems via [`rust_module_name`]) —
@@ -1376,6 +2122,7 @@ mod tests {
             compile_stack_spec(spec, Some(config)).expect("ore stack should compile to Rust");
 
         std::fs::write(out_dir.join("mod.rs"), output.mod_rs()).unwrap();
+        std::fs::write(out_dir.join("types.rs"), &output.types_rs).unwrap();
         std::fs::write(out_dir.join("entity.rs"), &output.entity_rs).unwrap();
         std::fs::write(
             out_dir.join("programs.rs"),
@@ -1752,11 +2499,13 @@ fn generate_stack_types_rs(
 
     let mut generated = HashSet::new();
     let mut account_structs: BTreeMap<String, String> = BTreeMap::new();
+    let mut used_builtins: BTreeSet<&'static str> = BTreeSet::new();
 
     for (i, spec) in entity_specs.iter().enumerate() {
         let entity_name = &entity_names[i];
         let compiler = RustCompiler::new(spec.clone(), entity_name.clone(), RustConfig::default());
         let resolved_name_map = compiler.build_resolved_type_name_map();
+        used_builtins.extend(compiler.used_builtin_resolver_types());
 
         // Generate section structs (e.g., OreRoundId, OreRoundState)
         for section in &spec.sections {
@@ -1786,32 +2535,13 @@ fn generate_stack_types_rs(
         }
     }
 
-    // Generate EventWrapper once
-    output.push_str(
-        r#"
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventWrapper<T> {
-    #[serde(default, deserialize_with = "serde_utils::deserialize_i64")]
-    pub timestamp: i64,
-    pub data: T,
-    #[serde(default)]
-    pub slot: Option<f64>,
-    #[serde(default)]
-    pub signature: Option<String>,
-}
+    // Generate the builtin resolver output structs (SlotHashBytes /
+    // TokenMetadata) once, for the whole stack.
+    output.push_str(&render_builtin_resolver_structs(&used_builtins));
 
-impl<T: Default> Default for EventWrapper<T> {
-    fn default() -> Self {
-        Self {
-            timestamp: 0,
-            data: T::default(),
-            slot: None,
-            signature: None,
-        }
-    }
-}
-"#,
-    );
+    // Generate the runtime envelopes (EventWrapper / CaptureWrapper) once.
+    output.push('\n');
+    output.push_str(WRAPPER_TYPES);
 
     (output, account_structs)
 }

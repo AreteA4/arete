@@ -16,11 +16,17 @@ pub enum Template {
     React,
     Rust,
     Typescript,
+    Python,
 }
 
 impl Template {
     /// All available templates.
-    pub const ALL: &'static [Template] = &[Template::React, Template::Rust, Template::Typescript];
+    pub const ALL: &'static [Template] = &[
+        Template::React,
+        Template::Rust,
+        Template::Typescript,
+        Template::Python,
+    ];
 
     /// Template directory name (as stored in tarball).
     pub fn dir_name(&self) -> &'static str {
@@ -28,6 +34,7 @@ impl Template {
             Template::React => "ore-react",
             Template::Rust => "ore-rust",
             Template::Typescript => "ore-typescript",
+            Template::Python => "ore-python",
         }
     }
 
@@ -37,6 +44,7 @@ impl Template {
             Template::React => "react-ore",
             Template::Rust => "rust-ore",
             Template::Typescript => "typescript-ore",
+            Template::Python => "python-ore",
         }
     }
 
@@ -46,6 +54,7 @@ impl Template {
             Template::React => "ORE mining rounds viewer (React + Vite)",
             Template::Rust => "ORE mining rounds client (Rust + Tokio)",
             Template::Typescript => "ORE mining rounds client (TypeScript CLI)",
+            Template::Python => "ORE mining rounds client (Python + asyncio)",
         }
     }
 
@@ -55,12 +64,17 @@ impl Template {
             "react-ore" | "ore-react" => Some(Template::React),
             "rust-ore" | "ore-rust" => Some(Template::Rust),
             "typescript-ore" | "ore-typescript" | "ts-ore" | "ore-ts" => Some(Template::Typescript),
+            "python-ore" | "ore-python" | "py-ore" | "ore-py" => Some(Template::Python),
             _ => None,
         }
     }
 
     pub fn is_rust(&self) -> bool {
         matches!(self, Template::Rust)
+    }
+
+    pub fn is_python(&self) -> bool {
+        matches!(self, Template::Python)
     }
 
     pub fn is_typescript_cli(&self) -> bool {

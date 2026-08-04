@@ -33,6 +33,8 @@ tokio = { version = "1.0", features = ["rt-multi-thread", "sync", "time", "macro
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect"] }
 tracing = "0.1"
+unicode-normalization = "0.1"
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 url = "2"
 
 [dev-dependencies]

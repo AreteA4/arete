@@ -175,6 +175,8 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite 0.21.0",
  "tracing",
+ "unicode-normalization",
+ "unicode-properties",
  "url",
 ]
 
