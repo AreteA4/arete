@@ -1209,7 +1209,7 @@ fn generate_stack_models_py(
                     from_wire.push_str(&format!(
                         "        {field_name}={converter}(data.get({wire}) or {{}}),\n",
                         field_name = field_name,
-                        converter = format!("{}_from_wire", to_snake_case(class_name)),
+                        converter = format_args!("{}_from_wire", to_snake_case(class_name)),
                         wire = py_string_literal(field_name),
                     ));
                 }
@@ -1236,7 +1236,10 @@ fn generate_stack_models_py(
                 patch.push_str(&format!(
                     "    if {wire} in data:\n        out[{wire}] = {converter}(data[{wire}] or {{}})\n",
                     wire = py_string_literal(field_name),
-                    converter = format!("{}_patch_from_wire", to_snake_case(class_name)),
+                    converter = format_args!(
+                        "{}_patch_from_wire",
+                        to_snake_case(class_name)
+                    ),
                 ));
             }
             for field in &root_fields {
@@ -2294,7 +2297,7 @@ fn generate_py_instruction_block(
         "def {handler_fn}() -> InstructionHandler:\n    \"\"\"Raw instruction handler for `{name}` (escape hatch).\"\"\"\n    return InstructionHandler(\n        program_id={program_id_const},\n        discriminator=bytes([{discriminator}]),\n        accounts={accounts},\n        args={args},\n        errors={errors},\n    )",
         handler_fn = handler_fn,
         name = instr.name,
-        program_id_const = format!("{}_PROGRAM_ID", module_name.to_uppercase()),
+        program_id_const = format_args!("{}_PROGRAM_ID", module_name.to_uppercase()),
         discriminator = discriminator,
         accounts = accounts_literal,
         args = args_literal,
