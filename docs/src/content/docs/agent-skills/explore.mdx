@@ -5,20 +5,29 @@ sidebar:
 description: How agents use a4 explore to discover stacks and get live schema information.
 ---
 
-The `a4 explore` command is how agents (and humans) discover available stacks and introspect their schemas. Agent skills instruct the AI to run this command before writing any Arete code, so it always has accurate entity names, field paths, and types.
+The `a4 explore` command is how agents (and humans) discover installable resources and introspect their schemas. Agent skills instruct the AI to run this command before writing any Arete code, so it always has accurate entity names, field paths, and types.
+
+Exploration is **descriptor-backed**: it reads the same pinned install descriptors that `a4 install` consumes, so what you explore is exactly what you will install. It never selects a "latest" AST on its own, and it never falls back when an install descriptor is incomplete — it fails instead. Treat a refusal as "this resource is not installable", not as something to work around.
 
 ---
 
 ## Usage
 
 ```bash
-# List all available stacks
+# List installable stacks
 a4 explore
 
-# Show entities and views for a stack
-a4 explore <stack-name>
+# Inspect an exact stack install descriptor
+a4 explore stack <stack-ref>
 
-# Show fields and types for a specific entity
+# List installable standalone programs
+a4 explore programs
+
+# Inspect an exact program install descriptor
+a4 explore program <program-ref>
+
+# Legacy forms — routed through the same stack descriptor
+a4 explore <stack-name>
 a4 explore <stack-name> <EntityName>
 ```
 
@@ -26,9 +35,54 @@ Add `--json` to any command for machine-readable output (this is what agents use
 
 ```bash
 a4 explore --json
-a4 explore ore --json
+a4 explore stack ore --json
+a4 explore programs --json
+a4 explore program spl-token --json
 a4 explore ore OreRound --json
 ```
+
+Every JSON response carries a `schemaVersion` field. Read it before parsing — it tells you which output contract you got.
+
+**What each level shows:**
+
+| Command                       | Shows                                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `a4 explore`                  | Available stacks                                                                            |
+| `a4 explore programs`         | Complete promoted Program Release + Program Read installations                              |
+| `a4 explore stack <ref>`      | Exact identities, aliases, selected views, programs, auth, SDK targets, and install command |
+| `a4 explore program <ref>`    | Program identity, accounts, instructions, events, types, Program Read, and install command  |
+| `a4 explore <stack> [entity]` | Legacy syntax routed through descriptor-backed stack exploration                            |
+
+For a diagnostic view of a stack you own, use `a4 stack show <ref>` instead — that is an ownership view, not an install descriptor.
+
+---
+
+## From Exploration to Code
+
+Exploration is step one; the descriptor it prints is the input to `a4 install`.
+
+```bash
+# 1. Find something to build against
+a4 explore --json
+
+# 2. Read its exact install descriptor
+a4 explore stack ore --json
+
+# 3. Generate a typed client from that same descriptor
+a4 install ore --ts      # or --rust
+```
+
+Standalone programs follow the same path:
+
+```bash
+a4 explore programs --json
+a4 explore program spl-token --json
+a4 install program spl-token --ts
+```
+
+Program SDK install is TypeScript-only today; `--rust` on `a4 install program` returns an explicit error rather than falling back.
+
+Generated SDKs are not read-only. They expose PDA derivation, account resolution, instruction building, and transaction execution for the programs in scope — see the `arete-consume` skill for the patterns.
 
 ---
 
@@ -53,8 +107,10 @@ Without authentication, you see public registry stacks only. When logged in (`a4
 
 ## Exploring a Stack
 
+The legacy `a4 explore <stack-name>` form is still supported and resolves through the same descriptor as `a4 explore stack <ref>`. Prefer the explicit form in new agent code — it makes the descriptor identities visible.
+
 ```bash
-$ a4 explore ore
+$ a4 explore stack ore
 
 Stack: ore (OreStream)
   URL: wss://ore.stack.arete.run
@@ -125,24 +181,37 @@ Agents use the `--json` flag to get structured output they can parse:
 $ a4 explore ore OreRound --json
 ```
 
+Keys are **camelCase**. Every response opens with `schemaVersion` and `kind`.
+
 ```json
 {
+  "schemaVersion": 1,
+  "kind": "stackEntity",
+  "stack": "ore",
+  "identity": {
+    "stackManifestHash": "...",
+    "astContentHash": "...",
+    "portableAstHash": "...",
+    "specVersionId": 42
+  },
+  "liveAlias": "ore",
   "name": "OreRound",
-  "primary_keys": ["id.round_id"],
+  "programId": "...",
+  "primaryKeys": ["id.round_id"],
   "fields": [
-    { "path": "id.round_id", "rust_type": "u64", "nullable": false, "section": "id" },
-    { "path": "id.round_address", "rust_type": "Pubkey", "nullable": true, "section": "id" },
-    { "path": "state.motherlode", "rust_type": "u64", "nullable": true, "section": "state" }
+    { "section": "id", "path": "id.round_id", "rustType": "u64", "nullable": false },
+    { "section": "id", "path": "id.round_address", "rustType": "Pubkey", "nullable": true },
+    { "section": "state", "path": "state.motherlode", "rustType": "u64", "nullable": true }
   ],
   "views": [
-    { "id": "OreRound/state", "mode": "state", "pipeline": [] },
-    { "id": "OreRound/list", "mode": "list", "pipeline": [] },
-    { "id": "OreRound/latest", "mode": "list", "pipeline": [{"Sort": {"key": "id.round_id", "order": "desc"}}] }
+    { "liveAlias": "ore", "viewId": "OreRound/state", "entity": "OreRound", "pipelineSteps": 0 }
   ]
 }
 ```
 
-This is what the agent skills instruct the AI to call. The AI then uses the field paths and types to write correct SDK code.
+A program response is shaped differently — `a4 explore program <ref> --json` returns `installName`, `displayName`, an `identity` block (`programId`, `programSpecHash`, `programReleaseHash`, `idlContentHash`, `normalizedIdlHash`), plus `accounts`, `instructions`, `events`, `types`, `programRead`, `sdkTargets`, and `installCommand`.
+
+This is what the agent skills instruct the AI to call. The AI then uses the field paths, types, and pinned hashes to write correct SDK code against the exact artifact it will install.
 
 ---
 

@@ -2,12 +2,25 @@
 title: MCP Server
 sidebar:
   order: 5
-description: Connect AI tools to the Arete documentation MCP server.
+description: Connect AI tools to the Arete documentation and stream MCP servers.
 ---
+
+Arete ships **two** MCP servers. They serve different purposes and can be run together.
+
+| Server                                 | Transport                           | What it gives your agent                                      |
+| -------------------------------------- | ----------------------------------- | ------------------------------------------------------------- |
+| [Documentation](#documentation-server) | HTTP (`https://docs.arete.run/mcp`) | Search and read these docs without scraping                   |
+| [Stream](#stream-server)               | stdio (`npx -y @usearete/mcp`)      | Live entity data from a deployed stack, inside the agent loop |
+
+Neither server covers discovery (`a4 explore`), SDK generation (`a4 install`), or transaction construction. Those are CLI and SDK operations.
+
+---
+
+## Documentation server
 
 The Arete documentation MCP server gives AI tools first-class access to the docs instead of requiring them to scrape pages.
 
-## Endpoint
+### Endpoint
 
 Use the canonical HTTP endpoint:
 
@@ -17,7 +30,7 @@ https://docs.arete.run/mcp
 
 The legacy alias `https://docs.arete.run/mcp/sse` is still available for older configurations.
 
-## Tools
+### Tools
 
 | Tool          | Purpose                                                           |
 | ------------- | ----------------------------------------------------------------- |
@@ -26,7 +39,7 @@ The legacy alias `https://docs.arete.run/mcp/sse` is still available for older c
 
 The server also exposes the Arete platform skill as a resource at `https://docs.arete.run/skill.md`.
 
-## Claude Code
+### Claude Code
 
 ```bash
 claude mcp add --transport http Arete https://docs.arete.run/mcp
@@ -38,7 +51,7 @@ Verify the connection:
 claude mcp list
 ```
 
-## Cursor
+### Cursor
 
 Open MCP settings and add:
 
@@ -54,7 +67,7 @@ Open MCP settings and add:
 
 Then ask Cursor: "What tools do you have available?" It should list the Arete documentation tools.
 
-## VS Code
+### VS Code
 
 Create or update `.vscode/mcp.json`:
 
@@ -69,10 +82,92 @@ Create or update `.vscode/mcp.json`:
 }
 ```
 
-## Discovery
+### Discovery
 
 Discovery metadata is available at:
 
 - `https://docs.arete.run/.well-known/mcp`
 - `https://docs.arete.run/.well-known/mcp.json`
 - `https://docs.arete.run/.well-known/mcp/server-card.json`
+
+---
+
+## Stream server
+
+The stream MCP server (`a4-mcp`) is a local stdio server that opens WebSocket connections to deployed Arete stacks and caches streamed entities in memory. Use it when you want live data **inside the agent loop** — for exploration, debugging, or answering questions about current chain state. For application code, generate an SDK with `a4 install` instead.
+
+### Install
+
+```bash
+npx -y @usearete/mcp     # no global install
+npm install -g @usearete/mcp
+cargo install arete-mcp
+```
+
+### Tools
+
+| Tool                 | Purpose                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------- |
+| `ping`               | Health check. Returns `pong`.                                                                           |
+| `connect`            | Open a WebSocket connection to a stack. Returns a `connection_id`.                                      |
+| `disconnect`         | Close a connection and drop every subscription bound to it.                                             |
+| `subscribe`          | Bind a view on a connection. Streamed entities land in an in-memory cache.                              |
+| `unsubscribe`        | Cancel a subscription by id.                                                                            |
+| `query_entities`     | Filter and project cached entities. Accepts a string `where` DSL and structured `filters` (both ANDed). |
+| `get_entity`         | Fetch a single cached entity by key.                                                                    |
+| `list_entities`      | List cached entity keys. Capped at 1000 per response; `total_cached` reports the true size.             |
+| `get_recent`         | Return up to N entities from the subscription's exact ordered query membership.                         |
+| `list_subscriptions` | List active subscriptions, optionally filtered by `connection_id`.                                      |
+| `list_connections`   | List all open connections.                                                                              |
+
+View ids follow the `<EntityName>/<view>` template — e.g. `OreRound/list`, `OreRound/latest`. Run `a4 explore stack <ref>` to get the exact view ids for a stack.
+
+### Authentication
+
+Do not pass `api_key` in tool calls. The server resolves credentials in this order:
+
+1. Explicit `api_key` argument on `connect` (override — avoid in agent calls)
+2. `ARETE_API_KEY` environment variable
+3. The credentials file written by `a4 auth login`
+
+Run `a4 auth login` once and omit the argument.
+
+### Claude Desktop / Claude Code
+
+```json
+{
+  "mcpServers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
+
+### Cursor
+
+```json
+{
+  "mcpServers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
+
+### VS Code
+
+```json
+{
+  "servers": {
+    "arete": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```

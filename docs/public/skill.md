@@ -1,6 +1,6 @@
 ---
 name: arete-platform
-version: 1.0.0
+version: 1.1.0
 description: Official skill for the Arete platform. Register and start building on Solana with Arete.
 homepage: https://arete.run
 metadata: {"category":"solana-platform","api_base":"https://api.arete.run","cli":"a4","registry":"https://arete.run/registry"}
@@ -10,10 +10,34 @@ metadata: {"category":"solana-platform","api_base":"https://api.arete.run","cli"
 
 You are onboarding to **Arete**, a system for programmable real-time data feeds on Solana. This file walks you (the agent) through registering, getting an API key, and using the platform.
 
-> ## What's new in 1.0.0
+> ## What's new in 1.1.0
 >
-> Initial release. Agent self-signup is live: `POST /api/agents/signup`.
-> Free-tier agents can read the registry, connect to public stacks (e.g. Ore RPC), and use the CLI's `a4 explore` against live schemas.
+> **Descriptor-backed discovery and install.** The registry now serves pinned install
+> descriptors and content-addressed artifacts, all without auth:
+> `GET /api/registry/programs`, `/api/registry/stacks/:stack/install`,
+> `/api/registry/programs/:program/install`,
+> `/api/registry/artifacts/{program-spec,live-spec,stack-manifest}/:hash`, and
+> `/api/registry/hash-aliases/:algorithm/:digest`.
+>
+> **Standalone programs are first-class.** You can discover, inspect, and install a
+> program without a stack: `a4 explore programs`, `a4 explore program <ref>`,
+> `a4 install program <ref>`.
+>
+> **SDK generation is a free-tier action.** `a4 install <stack> --ts|--rust` generates a
+> typed client from a public stack. Rust and Python SDKs joined TypeScript/React.
+>
+> **Transaction construction shipped.** Generated SDKs expose PDA derivation, account
+> resolution, instruction building, and execution — not just stream reads.
+>
+> **New read endpoints for agents:** `/api/specs/:id/versions/{slim,latest}`,
+> `/api/deployments/:id/{history,operations}`,
+> `/api/automation/runs/:id/{events,events/stream,run-events,run-events/stream,artifacts}`.
+>
+> **Newly forbidden (previously undocumented):** `POST /api/builds/raw`,
+> `POST /api/builds/artifacts`, `POST /api/specs/:id/versions/raw`,
+> `POST /api/deployments/compositions`.
+>
+> 1.0.0: initial release. Agent self-signup via `POST /api/agents/signup`.
 
 > **API base URL:** `https://api.arete.run`. The agent-onboarding endpoints live under `/api/agents/*`. Do not use the docs or marketing site for API calls.
 
@@ -27,6 +51,8 @@ You are onboarding to **Arete**, a system for programmable real-time data feeds 
 | `arete-consume` skill | https://github.com/AreteA4/skills/blob/main/arete-consume/SKILL.md | TypeScript / React / Rust SDK patterns for consuming streams |
 | `arete-build` skill | https://github.com/AreteA4/skills/blob/main/arete-build/SKILL.md | Rust DSL syntax for authoring custom stacks |
 | Registry | https://arete.run/registry | Browseable catalog of public stacks |
+| Docs MCP server | `https://docs.arete.run/mcp` | HTTP MCP — `search_docs`, `fetch_page` over these docs |
+| Stream MCP server | `npx -y @usearete/mcp` | stdio MCP — connect/subscribe/query live stack entities |
 
 ## Security
 
@@ -120,7 +146,35 @@ resolved through the same stack install descriptor:
 a4 explore <stack-name> <EntityName> --json
 ```
 
-### 5. Consume
+Exploration is descriptor-backed: it reports the exact StackManifest, AST, LiveSpec,
+view, and Program Release identities that `a4 install` will consume. It never picks a
+"latest" AST on its own and never falls back when an install descriptor is incomplete.
+If exploration refuses, the resource is genuinely not installable — do not work around it.
+
+### 5. Install a typed SDK
+
+Generate a client from what you just discovered. This is a free-tier action against
+public resources — no owned stack required.
+
+```bash
+# TypeScript client for a hosted stack
+a4 install <stack-ref> --ts
+
+# Rust client for the same stack
+a4 install <stack-ref> --rust
+
+# Standalone program client — no stack involved
+a4 install program <program-ref> --ts
+```
+
+Published program SDK install is TypeScript-only today; `--rust` on
+`a4 install program` returns an explicit error, not a fallback.
+
+Generated SDKs cover more than stream reads. They expose PDA derivation, account
+resolution, instruction building, and transaction execution for the programs in scope.
+Read the `arete-consume` skill for the patterns in your language.
+
+### 6. Consume
 
 Connect to an existing public stack (e.g. `ore`, the ORE mining stack) using the patterns in the `arete-consume` skill. Free-tier agents can read the registry and connect to public free-tier endpoints without further setup.
 
@@ -128,6 +182,9 @@ Connect to an existing public stack (e.g. `ore`, the ORE mining stack) using the
 # After step 3, the arete-consume skill is in your project.
 # Read it for the up-to-date SDK patterns for your language.
 ```
+
+If you want live entity data inside your own agent loop rather than in generated
+application code, add the stream MCP server instead — see "MCP servers" below.
 
 ## Agent key management
 
@@ -157,32 +214,84 @@ curl -X DELETE https://api.arete.run/api/agents/me/keys/:id \
 
 Do **not** call `/api/auth/keys` — that's the human-only surface and will return `403 agent-account-forbidden` for agent keys. Use `/api/agents/me/keys` instead.
 
+## MCP servers
+
+Two separate MCP servers exist. They do different jobs; you can run both.
+
+### Docs MCP (HTTP)
+
+Search and read these docs without scraping pages.
+
+```text
+https://docs.arete.run/mcp
+```
+
+| Tool | Purpose |
+|------|---------|
+| `search_docs` | Search the docs, returns ranked snippets with page slugs |
+| `fetch_page` | Fetch a documentation page as raw markdown by slug |
+
+Claude Code: `claude mcp add --transport http Arete https://docs.arete.run/mcp`
+
+### Stream MCP (stdio)
+
+Read live stack entities from inside your own agent loop, without generating an SDK.
+
+```bash
+npx -y @usearete/mcp     # or: cargo install arete-mcp
+```
+
+| Tool | Purpose |
+|------|---------|
+| `ping` | Health check |
+| `connect` / `disconnect` | Open/close a WebSocket connection to a stack |
+| `subscribe` / `unsubscribe` | Bind a view; streamed entities land in an in-memory cache |
+| `query_entities` | Filter and project cached entities (string DSL or structured filters) |
+| `get_entity` | Fetch one cached entity by key |
+| `list_entities` | List cached entity keys (capped at 1000 per response) |
+| `get_recent` | Return up to N entities from the ordered query membership |
+| `list_subscriptions` / `list_connections` | Inspect current state |
+
+Auth resolves in this order: explicit `api_key` argument on `connect`, then
+`ARETE_API_KEY`, then the credentials file written by `a4 auth login`. Prefer omitting
+`api_key` and letting it resolve — do not paste keys into tool calls.
+
+This server covers live reads only. Discovery (`a4 explore`), SDK generation
+(`a4 install`), and transaction construction are CLI and SDK operations, not MCP tools.
+
 ## Free-tier capabilities
 
 You are signed up as a free-tier headless agent. Here's what's allowed:
 
 | Action | Allowed |
 |---|---|
-| `GET /api/registry` — browse public stacks | Yes |
-| `GET /api/registry/:name/schema` — read schemas | Yes |
-| `GET /api/registry/stacks/:stack/ast` — read AST | Yes |
+| `GET /api/registry`, `/api/registry/:name`, `/api/registry/:name/schema` — browse public stacks and schemas | Yes |
+| `GET /api/registry/programs` — browse installable standalone programs | Yes |
+| `GET /api/registry/stacks/:stack/{install,ast}` — read a stack's pinned install descriptor and AST | Yes |
+| `GET /api/registry/programs/:program/install` — read a program's pinned install descriptor | Yes |
+| `GET /api/registry/artifacts/{program-spec,live-spec,stack-manifest}/:hash` — fetch content-addressed artifacts | Yes |
+| `GET /api/registry/hash-aliases/:algorithm/:digest` — resolve a hash alias | Yes |
+| `a4 install` / `a4 explore` against public resources — generate typed SDKs | Yes |
 | WebSocket against public free-tier endpoints (e.g. Ore RPC) | Yes |
 | `GET /api/agents/me` — read your own profile | Yes |
 | `GET /api/agents/me/keys` and key management on your own keys | Yes |
-| `GET /api/specs`, `/api/specs/:id`, `/api/specs/:id/{schema,versions}` — read specs | Yes (returns `200`; empty list if you own none) |
+| `GET /api/specs`, `/api/specs/:id`, `/api/specs/:id/{schema,versions,versions/slim,versions/latest}` — read specs | Yes (returns `200`; empty list if you own none) |
 | `GET /api/builds`, `/api/builds/:id` — read builds | Yes (returns `200`; empty list if you own none) |
-| `GET /api/deployments`, `/api/deployments/:id`, `/api/deployments/:id/events` — read deployments | Yes (returns `200`; empty list if you own none) |
-| `GET /api/automation/runs`, `/api/automation/runs/:id` — read workflow runs | Yes (returns `200`; empty list if you own none) |
+| `GET /api/deployments`, `/api/deployments/:id`, `/api/deployments/:id/{events,history,operations}` — read deployments | Yes (returns `200`; empty list if you own none) |
+| `GET /api/automation/runs`, `/api/automation/runs/:id`, `/api/automation/runs/:id/{events,events/stream,run-events,run-events/stream,artifacts}` — read workflow runs | Yes (returns `200`; empty list if you own none) |
 | `POST /ws/sessions` — mint a 5-minute WebSocket session token | Yes for public free-tier targets; `403 agent-account-forbidden` otherwise |
 | `POST /api/specs` — create a spec | No (`403 agent-account-forbidden`) |
 | `PUT/DELETE /api/specs/:id` | No (`403 agent-account-forbidden`) |
-| `POST /api/specs/:id/versions` — push a version | No (`403 agent-account-forbidden`) |
-| `POST /api/builds` — build a stack | No (`403 agent-account-forbidden`) |
+| `POST /api/specs/:id/versions` and `/versions/raw` — push a version | No (`403 agent-account-forbidden`) |
+| `POST /api/builds`, `/api/builds/raw`, `/api/builds/artifacts` — build a stack | No (`403 agent-account-forbidden`) |
+| `POST /api/deployments/compositions` — bind a stack composition | No (`403 agent-account-forbidden`) |
 | `POST /api/deployments/:id/{stop,restart,rollback}` — deployment ops | No (`403 agent-account-forbidden`) |
 | `DELETE /api/deployments/:id` — legacy stop | No (`403 agent-account-forbidden`) |
 | `POST /api/automation/runs` — run workflows | No (`403 agent-account-forbidden`) |
 | `POST /api/automation/runs/:id/{resume,retry,cancel}` — workflow ops | No (`403 agent-account-forbidden`) |
 | Anything under `/api/auth/keys/*` (human-only key management) | No (`403 agent-account-forbidden`) — use `/api/agents/me/keys` |
+| `/api/chat/*` — chat sessions | No — requires a browser JWT session, not an API key |
+| `/api/internal/*` (including `/api/internal/idls/*`) and `/api/admin/*` | No — internal-token / admin surfaces, not part of the agent API |
 
 If you got `403` with code `agent-account-forbidden`, that's a **hard policy**, not a transient error. **Don't retry.**
 
@@ -196,9 +305,16 @@ Base URL: `https://api.arete.run`
 |--------|----------|-------------|------------|
 | GET | `/health` | Platform health | none |
 | GET | `/api/registry` | List public stacks | platform default (configurable) |
+| GET | `/api/registry/programs` | List installable standalone programs | platform default |
 | GET | `/api/registry/:name` | Stack details | platform default |
 | GET | `/api/registry/:name/schema` | Schema | platform default |
+| GET | `/api/registry/stacks/:stack/install` | Pinned stack install descriptor | platform default |
 | GET | `/api/registry/stacks/:stack/ast` | AST | platform default |
+| GET | `/api/registry/programs/:program/install` | Pinned program install descriptor | platform default |
+| GET | `/api/registry/hash-aliases/:algorithm/:digest` | Resolve a public hash alias | platform default |
+| GET | `/api/registry/artifacts/program-spec/:hash` | Fetch a ProgramSpec artifact by hash | platform default |
+| GET | `/api/registry/artifacts/live-spec/:hash` | Fetch a LiveSpec artifact by hash | platform default |
+| GET | `/api/registry/artifacts/stack-manifest/:hash` | Fetch a StackManifest artifact by hash | platform default |
 | POST | `/api/agents/signup` | Register a new agent | 5/hour/IP |
 
 ### Authenticated endpoints (Bearer `a4_ak_*`)
@@ -215,13 +331,22 @@ Base URL: `https://api.arete.run`
 | GET | `/api/specs/:id` | Get spec |
 | GET | `/api/specs/:id/schema` | Get spec schema |
 | GET | `/api/specs/:id/versions` | List spec versions |
+| GET | `/api/specs/:id/versions/slim` | List spec versions without payloads |
+| GET | `/api/specs/:id/versions/latest` | Get the latest spec version |
 | GET | `/api/builds` | List builds you can see |
 | GET | `/api/builds/:id` | Get build |
 | GET | `/api/deployments` | List deployments you can see |
 | GET | `/api/deployments/:id` | Get deployment |
 | GET | `/api/deployments/:id/events` | Deployment events |
+| GET | `/api/deployments/:id/history` | Deployment history |
+| GET | `/api/deployments/:id/operations` | Deployment operations |
 | GET | `/api/automation/runs` | List workflow runs |
 | GET | `/api/automation/runs/:id` | Get workflow run |
+| GET | `/api/automation/runs/:id/events` | Workflow run events |
+| GET | `/api/automation/runs/:id/events/stream` | Stream workflow run events (SSE) |
+| GET | `/api/automation/runs/:id/run-events` | Workflow run trace events |
+| GET | `/api/automation/runs/:id/run-events/stream` | Stream trace events (SSE) |
+| GET | `/api/automation/runs/:id/artifacts` | Workflow run artifacts |
 
 ### Forbidden for agents (returns `403 agent-account-forbidden`)
 
@@ -231,11 +356,27 @@ Base URL: `https://api.arete.run`
 | POST | `/api/specs` |
 | PUT/DELETE | `/api/specs/:id` |
 | POST | `/api/specs/:id/versions` |
+| POST | `/api/specs/:id/versions/raw` |
 | POST | `/api/builds` |
+| POST | `/api/builds/raw` |
+| POST | `/api/builds/artifacts` |
+| POST | `/api/deployments/compositions` |
 | DELETE | `/api/deployments/:id` |
 | POST | `/api/deployments/:id/{stop,restart,rollback}` |
 | POST | `/api/automation/runs` |
 | POST | `/api/automation/runs/:id/{resume,retry,cancel}` |
+
+### Not part of the agent API
+
+These exist on the same host but are gated by a different principal. An `a4_ak_*` key
+will not open them, and no amount of retrying changes that.
+
+| Surface | Gate |
+|---------|------|
+| `/api/chat/*` | Browser JWT session (human) |
+| `/api/internal/idls/*` | Internal service token |
+| `/api/internal/{usage,conductor,chat,runtime}/*` | Internal service token |
+| `/api/admin/*` | Admin principal |
 
 ## Error codes
 
