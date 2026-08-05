@@ -114,12 +114,24 @@ impl RegistryClient {
         let url = format!("{}{path}", self.base_url);
         let mut request = self.http.get(&url);
 
-        // Best-effort auth. A hosted-stack URL is what makes `credentials::resolve`
-        // treat a missing key as fatal; passing an empty target keeps it optional,
-        // which is what we want — the registry answers unauthenticated callers.
-        if let Ok(resolved) = credentials::resolve(None, "") {
-            if let Some(key) = resolved.key {
-                request = request.bearer_auth(key);
+        // Best-effort auth, but only ever to an Arete origin. `ARETE_API_URL` can
+        // point anywhere, and `ARETE_API_KEY` (unlike the credentials file, which
+        // is keyed by API URL) is not scoped to a destination — so attaching it
+        // unconditionally would ship the user's key to whatever host that variable
+        // names. Every endpoint reached here is public, so the key only ever buys
+        // the global-stack widening on `GET /api/registry`. That is not worth
+        // leaking a credential for: when the destination is not recognised, send
+        // the request unauthenticated rather than failing, and the public subset
+        // still comes back.
+        //
+        // The empty target passed to `resolve` keeps a missing key non-fatal — it
+        // is a hosted *stack* URL that makes absence an error, which is a `connect`
+        // concern, not ours.
+        if is_arete_origin(&self.base_url) {
+            if let Ok(resolved) = credentials::resolve(None, "") {
+                if let Some(key) = resolved.key {
+                    request = request.bearer_auth(key);
+                }
             }
         }
 
@@ -129,10 +141,7 @@ impl RegistryClient {
             .map_err(|e| anyhow!("registry request to {url} failed: {e}"))?;
 
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| anyhow!("could not read registry response from {url}: {e}"))?;
+        let body = read_capped_body(response, path).await?;
 
         if !status.is_success() {
             // Surface the platform's structured `code` when there is one — those
@@ -149,18 +158,80 @@ impl RegistryClient {
             });
         }
 
-        if body.len() > MAX_RESPONSE_BYTES {
-            return Err(anyhow!(
-                "registry response for {path} is {} bytes, over the {MAX_RESPONSE_BYTES} byte \
-                 limit for a single tool result. Use `a4 explore` or `a4 install` on the \
-                 command line for payloads this large.",
-                body.len()
-            ));
-        }
-
         serde_json::from_str(&body)
             .map_err(|e| anyhow!("registry returned invalid JSON for {path}: {e}"))
     }
+}
+
+/// Read a response body, aborting as soon as it exceeds [`MAX_RESPONSE_BYTES`].
+///
+/// Buffering first and measuring afterwards would defeat the point of the cap:
+/// a multi-gigabyte artifact would be fully downloaded and allocated before we
+/// declined it, which is the exact failure the limit exists to prevent. So we
+/// check the declared `Content-Length` when the server offers one, then stream
+/// chunk by chunk and stop at the first chunk that crosses the line.
+async fn read_capped_body(mut response: reqwest::Response, path: &str) -> Result<String> {
+    // Fail before transferring anything when the server declares an oversized body.
+    check_size(response.content_length(), path)?;
+
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| anyhow!("could not read registry response for {path}: {e}"))?
+    {
+        check_size(Some((buf.len() + chunk.len()) as u64), path)?;
+        buf.extend_from_slice(&chunk);
+    }
+
+    String::from_utf8(buf).map_err(|e| anyhow!("registry response for {path} is not UTF-8: {e}"))
+}
+
+/// Shared size guard for both the declared-length and streaming paths, so the
+/// two cannot drift apart. `None` means the server declared nothing, which is
+/// not itself a failure — the streaming path still bounds it.
+fn check_size(bytes: Option<u64>, path: &str) -> Result<()> {
+    match bytes {
+        Some(n) if n > MAX_RESPONSE_BYTES as u64 => Err(anyhow!(
+            "registry response for {path} is at least {n} bytes, over the \
+             {MAX_RESPONSE_BYTES} byte limit for a single tool result. Use `a4 explore` \
+             or `a4 install` on the command line for payloads this large."
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Whether a resolved API key may be attached to requests for `base_url`.
+///
+/// Deliberately an allowlist. `ARETE_API_URL` is free-form, and a bearer token
+/// sent to the wrong host is unrecoverable — the key cannot be un-leaked. Local
+/// loopback is permitted so development against a local control plane keeps
+/// working; anything else gets unauthenticated requests, which still succeed
+/// because every endpoint this client touches is public.
+fn is_arete_origin(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    // Trailing dot is the fully-qualified form of the same name, so strip it
+    // before comparing — `api.arete.run.` must not slip past the allowlist.
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+
+    // `host_str` keeps the brackets on IPv6 literals (`[::1]`), which do not
+    // parse as an address. Strip them or loopback IPv6 is wrongly refused.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(&host);
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    host == "arete.run" || host.ends_with(".arete.run") || host == "localhost"
 }
 
 /// Validate a value destined for a URL path segment.
@@ -248,5 +319,90 @@ mod tests {
     #[test]
     fn short_error_bodies_pass_through() {
         assert_eq!(truncate_for_error("nope"), "nope");
+    }
+
+    #[test]
+    fn attaches_credentials_only_to_arete_origins() {
+        for ok in [
+            "https://api.arete.run",
+            "https://arete.run",
+            "https://API.Arete.Run",
+            "https://api.arete.run.", // fully-qualified form of the same host
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000",
+        ] {
+            assert!(is_arete_origin(ok), "expected {ok} to be allowed");
+        }
+    }
+
+    #[test]
+    fn refuses_credentials_for_foreign_origins() {
+        for bad in [
+            "https://evil.example",
+            // Suffix-confusion attempts against a naive `contains`/`starts_with`.
+            "https://arete.run.evil.example",
+            "https://notarete.run",
+            "https://api.arete.run.evil.example",
+            // Userinfo cannot smuggle the real host into the authority.
+            "https://api.arete.run@evil.example",
+            // Non-HTTP schemes never carry a bearer token.
+            "file:///etc/passwd",
+            "ftp://api.arete.run",
+            "not a url",
+            "",
+        ] {
+            assert!(!is_arete_origin(bad), "expected {bad} to be refused");
+        }
+    }
+
+    #[test]
+    fn public_ips_are_not_treated_as_loopback() {
+        assert!(!is_arete_origin("http://8.8.8.8:3000"));
+        assert!(!is_arete_origin("http://[2001:4860:4860::8888]:3000"));
+    }
+
+    #[test]
+    fn declared_length_over_cap_is_refused() {
+        // Guards the pre-transfer path: a server-declared Content-Length above
+        // the cap must fail before any body is read.
+        let err = check_size(Some(MAX_RESPONSE_BYTES as u64 + 1), "/x")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("over the"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn declared_length_at_or_under_cap_is_allowed() {
+        assert!(check_size(Some(MAX_RESPONSE_BYTES as u64), "/x").is_ok());
+        assert!(check_size(Some(0), "/x").is_ok());
+    }
+
+    #[test]
+    fn absent_declared_length_is_not_a_failure() {
+        // Chunked responses declare nothing; the streaming path bounds those.
+        assert!(check_size(None, "/x").is_ok());
+    }
+
+    #[tokio::test]
+    async fn oversized_undeclared_body_is_refused_while_streaming() {
+        // No Content-Length: the cap has to hold on the streaming path too.
+        let body = "x".repeat(MAX_RESPONSE_BYTES + 1024);
+        let response = http::Response::builder().status(200).body(body).unwrap();
+        let err = read_capped_body(reqwest::Response::from(response), "/x")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("over the"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn body_at_the_limit_is_accepted() {
+        let body = "x".repeat(MAX_RESPONSE_BYTES);
+        let response = http::Response::builder().status(200).body(body).unwrap();
+        let out = read_capped_body(reqwest::Response::from(response), "/x")
+            .await
+            .unwrap();
+        assert_eq!(out.len(), MAX_RESPONSE_BYTES);
     }
 }

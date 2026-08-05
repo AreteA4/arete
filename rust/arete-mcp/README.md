@@ -447,7 +447,7 @@ view. Equivalent subscriptions share one reference-counted wire subscription.
 ```jsonc
 // 1. Discover what exists
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explore_stacks","arguments":{}}}
-// → [{"name":"ore","websocketUrl":"wss://ore.stack.arete.run","entities":["OreRound",...]}, ...]
+// → [{"name":"ore","websocket_url":"wss://ore-r4xj7y.stack.arete.run","entities":["OreRound",...]}, ...]
 
 // 2. Get the exact view ids for the stack you picked
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"explore_stack_schema","arguments":{"stack":"ore"}}}
@@ -481,11 +481,17 @@ RUST_LOG=hs_mcp=debug,arete_sdk=info a4-mcp
 
 ## Environment
 
-| Variable         | Purpose                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------ |
-| `ARETE_API_KEY`  | API key for `connect` and for widening `explore_stacks` to global stacks             |
-| `ARETE_API_URL`  | API base for the discovery tools and credentials lookup. Defaults to `https://api.arete.run` |
-| `RUST_LOG`       | Log verbosity (stderr only)                                                          |
+| Variable        | Purpose                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| `ARETE_API_KEY` | API key for `connect`, and for widening `explore_stacks` to global stacks                     |
+| `ARETE_API_URL` | API base for the discovery tools and credentials lookup. Defaults to `https://api.arete.run`  |
+| `RUST_LOG`      | Log verbosity (stderr only)                                                                   |
+
+A resolved API key is attached to discovery requests **only when `ARETE_API_URL`
+names an Arete origin** (`arete.run`, any `*.arete.run` subdomain) or a local
+loopback address for development. Point it anywhere else and requests go out
+unauthenticated rather than shipping your key to that host — every endpoint the
+discovery tools touch is public, so you still get the public result set.
 
 ## Status
 

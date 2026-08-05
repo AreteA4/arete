@@ -146,7 +146,7 @@ View ids follow the `<EntityName>/<view>` template — e.g. `OreRound/list`, `Or
 ### Typical session
 
 ```
-explore_stacks()                        → pick a stack, note its websocketUrl
+explore_stacks()                        → pick a stack, note its websocket_url
 explore_stack_schema({ stack: "ore" })  → get the exact view id
 connect({ url })                        → connection_id
 subscribe({ connection_id, view })      → subscription_id
@@ -162,6 +162,8 @@ Do not pass `api_key` in tool calls. The server resolves credentials in this ord
 3. The credentials file written by `a4 auth login`
 
 Run `a4 auth login` once and omit the argument.
+
+The discovery tools attach a resolved key **only when `ARETE_API_URL` names an Arete origin** (`arete.run`, any `*.arete.run` subdomain) or a loopback address for local development. Pointed anywhere else, they send unauthenticated requests rather than forwarding your key to that host — the endpoints they touch are public, so you still get the public result set.
 
 ### Claude Desktop / Claude Code
 
