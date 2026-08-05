@@ -24,7 +24,12 @@ You are onboarding to **Arete**, a system for programmable real-time data feeds 
 > `a4 install program <ref>`.
 >
 > **SDK generation is a free-tier action.** `a4 install <stack> --ts|--rust` generates a
-> typed client from a public stack. Rust and Python SDKs joined TypeScript/React.
+> typed client from a public stack. Rust joined TypeScript/React as a generation target;
+> `a4 install program` is TypeScript-only.
+>
+> **Rollout note.** `GET /api/registry/programs` is the newest of these routes and may
+> return `404` until the next platform deploy. The rest are live. If you get a 404 there,
+> fall back to `GET /api/registry` and the per-program install descriptor.
 >
 > **Transaction construction shipped.** Generated SDKs expose PDA derivation, account
 > resolution, instruction building, and execution — not just stream reads.
@@ -235,11 +240,25 @@ Claude Code: `claude mcp add --transport http Arete https://docs.arete.run/mcp`
 
 ### Stream MCP (stdio)
 
-Read live stack entities from inside your own agent loop, without generating an SDK.
+Discover registry resources and read live stack entities from inside your own agent
+loop, without generating an SDK.
 
 ```bash
 npx -y @usearete/mcp     # or: cargo install arete-mcp
 ```
+
+Discovery tools — read-only against the public registry, no auth required:
+
+| Tool | Purpose |
+|------|---------|
+| `explore_stacks` | List stacks. The `websocket_url` is what `connect` takes (snake_case; other tools return camelCase) |
+| `explore_stack` | Pinned install descriptor for one stack |
+| `explore_stack_schema` | Entity/view schema — the view ids `subscribe` accepts |
+| `explore_programs` | List installable standalone programs |
+| `explore_program` | Pinned install descriptor for one program |
+| `resolve_artifact` | Fetch a content-addressed artifact by kind and hash |
+
+Streaming tools — stateful, `connect` first:
 
 | Tool | Purpose |
 |------|---------|
@@ -254,10 +273,11 @@ npx -y @usearete/mcp     # or: cargo install arete-mcp
 
 Auth resolves in this order: explicit `api_key` argument on `connect`, then
 `ARETE_API_KEY`, then the credentials file written by `a4 auth login`. Prefer omitting
-`api_key` and letting it resolve — do not paste keys into tool calls.
+`api_key` and letting it resolve — do not paste keys into tool calls. The discovery
+tools work without a key; supplying one widens `explore_stacks` to global stacks.
 
-This server covers live reads only. Discovery (`a4 explore`), SDK generation
-(`a4 install`), and transaction construction are CLI and SDK operations, not MCP tools.
+SDK generation (`a4 install`) and transaction construction are CLI and SDK
+operations, not MCP tools.
 
 ## Free-tier capabilities
 

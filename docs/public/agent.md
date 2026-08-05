@@ -176,9 +176,9 @@ resolution, instruction building, and transaction execution for the programs in 
 
 ## Step 5: Optional — Add the Stream MCP Server
 
-Only do this if you want to read live entity data inside your own loop (exploration,
-debugging, answering questions about current chain state). For code that ships, use the
-SDK from Step 4 instead.
+Only do this if you want to discover registry resources and read live entity data
+inside your own loop (exploration, debugging, answering questions about current chain
+state). For code that ships, use the SDK from Step 4 instead.
 
 ```
 npx -y @usearete/mcp
@@ -197,8 +197,15 @@ Add to your MCP client config:
 }
 ```
 
-Tools: `ping`, `connect`, `disconnect`, `subscribe`, `unsubscribe`, `query_entities`,
-`get_entity`, `list_entities`, `get_recent`, `list_subscriptions`, `list_connections`.
+Discovery tools (no auth needed): `explore_stacks`, `explore_stack`,
+`explore_stack_schema`, `explore_programs`, `explore_program`, `resolve_artifact`.
+
+Streaming tools: `ping`, `connect`, `disconnect`, `subscribe`, `unsubscribe`,
+`query_entities`, `get_entity`, `list_entities`, `get_recent`, `list_subscriptions`,
+`list_connections`.
+
+Typical order: `explore_stacks` to pick a stack, `explore_stack_schema` to get the
+exact view id, then `connect` -> `subscribe` -> `query_entities`.
 
 Do not pass `api_key` in tool calls. Run `a4 auth login` once and let the server resolve
 credentials from the credentials file or `ARETE_API_KEY`.
