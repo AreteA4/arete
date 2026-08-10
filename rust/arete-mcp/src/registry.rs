@@ -208,13 +208,16 @@ fn check_size(bytes: Option<u64>, path: &str) -> Result<()> {
 /// loopback is permitted so development against a local control plane keeps
 /// working; anything else gets unauthenticated requests, which still succeed
 /// because every endpoint this client touches is public.
+///
+/// The right host over the wrong scheme leaks just as badly, so HTTPS is
+/// required for Arete hosts: `ARETE_API_URL=http://api.arete.run` is an easy
+/// thing to have lying around in a shell profile, and it would put the key on
+/// the wire in cleartext. Loopback is the one exception — the request never
+/// reaches a network — so local development over plain HTTP keeps working.
 fn is_arete_origin(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url) else {
         return false;
     };
-    if !matches!(url.scheme(), "http" | "https") {
-        return false;
-    }
     let Some(host) = url.host_str() else {
         return false;
     };
@@ -228,10 +231,18 @@ fn is_arete_origin(base_url: &str) -> bool {
         .strip_prefix('[')
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(&host);
-    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
-        return ip.is_loopback();
+    let loopback = match bare.parse::<std::net::IpAddr>() {
+        // An explicit IP is only ever loopback or foreign; it is never an
+        // Arete hostname, so this decides the answer on its own.
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => host == "localhost",
+    };
+
+    match url.scheme() {
+        "http" => loopback,
+        "https" => loopback || host == "arete.run" || host.ends_with(".arete.run"),
+        _ => false,
     }
-    host == "arete.run" || host.ends_with(".arete.run") || host == "localhost"
 }
 
 /// Validate a value destined for a URL path segment.
@@ -240,6 +251,14 @@ fn is_arete_origin(base_url: &str) -> bool {
 /// stack reference means the agent has confused a reference with a path or a
 /// URL, and silently encoding it would produce a confusing 404 instead of an
 /// error that says what went wrong.
+///
+/// This is also a security boundary, not just ergonomics. The WHATWG parser
+/// behind `reqwest::Url` treats `\` as a path separator for http(s) and
+/// normalizes `..` away, so an unvalidated segment does not stay under
+/// `/api/registry/`: a hash shaped like `..\..\..\agents\me` resolves to
+/// `/api/agents/me`. Since [`RegistryClient::get`] attaches the bearer token
+/// before sending, that would let a public-registry tool issue authenticated
+/// requests against arbitrary routes.
 fn path_segment(value: &str, field: &str) -> Result<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -247,10 +266,17 @@ fn path_segment(value: &str, field: &str) -> Result<String> {
     }
     if let Some(bad) = trimmed
         .chars()
-        .find(|c| c.is_whitespace() || c.is_control() || "/?#%&".contains(*c))
+        .find(|c| c.is_whitespace() || c.is_control() || "/\\?#%&".contains(*c))
     {
         return Err(anyhow!(
             "`{field}` contains an invalid character {bad:?}. Pass a bare reference \
+             (e.g. `ore`), not a URL or path."
+        ));
+    }
+    // A dot-only segment is a relative path component, never a reference.
+    if trimmed.chars().all(|c| c == '.') {
+        return Err(anyhow!(
+            "`{field}` must not be a relative path segment. Pass a bare reference \
              (e.g. `ore`), not a URL or path."
         ));
     }
@@ -299,6 +325,45 @@ mod tests {
         assert!(path_segment("o re", "stack").is_err());
         assert!(path_segment("ore\n", "stack").is_ok()); // trimmed
         assert!(path_segment("or\ne", "stack").is_err()); // interior
+    }
+
+    #[test]
+    fn rejects_path_traversal_shapes() {
+        // `\` is a path separator to the WHATWG parser behind `reqwest::Url`,
+        // and `..` is normalized away, so neither may reach a URL.
+        for bad in [
+            r"..\..\..\agents\me",
+            r"ore\..\..\agents",
+            "..",
+            ".",
+            "%2e%2e%2fagents",
+        ] {
+            assert!(
+                path_segment(bad, "hash").is_err(),
+                "expected {bad:?} to be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn validated_segments_cannot_escape_the_registry_prefix() {
+        // Why that guard is load-bearing, asserted on the normalized request
+        // URL: unvalidated, this segment walks out of `/api/registry` and lands
+        // on an authenticated route that `get` has already attached a bearer
+        // token for.
+        let escaped = reqwest::Url::parse(
+            r"https://api.arete.run/api/registry/artifacts/program-spec/..\..\..\agents\me",
+        )
+        .unwrap();
+        assert_eq!(escaped.path(), "/api/agents/me");
+
+        // A reference that passes validation stays under the prefix.
+        let hash = path_segment("2f8a9c", "hash").unwrap();
+        let url = reqwest::Url::parse(&format!(
+            "https://api.arete.run/api/registry/artifacts/program-spec/{hash}"
+        ))
+        .unwrap();
+        assert_eq!(url.path(), "/api/registry/artifacts/program-spec/2f8a9c");
     }
 
     #[tokio::test]
@@ -353,6 +418,27 @@ mod tests {
             "",
         ] {
             assert!(!is_arete_origin(bad), "expected {bad} to be refused");
+        }
+    }
+
+    #[test]
+    fn requires_https_for_arete_hosts() {
+        // The right host over the wrong scheme leaks just as badly — the key
+        // would go out in cleartext.
+        for bad in [
+            "http://api.arete.run",
+            "http://arete.run",
+            "http://ore.stack.arete.run",
+        ] {
+            assert!(!is_arete_origin(bad), "expected {bad} to be refused");
+        }
+        // Loopback is the exception, since the request never reaches a network.
+        for ok in [
+            "http://localhost:3000",
+            "https://localhost:3000",
+            "https://127.0.0.1",
+        ] {
+            assert!(is_arete_origin(ok), "expected {ok} to be allowed");
         }
     }
 

@@ -297,9 +297,11 @@ impl AreteMcp {
                           Start here: the returned `websocket_url` is what `connect` \
                           takes, and `entities` tells you which `<EntityName>/<view>` \
                           ids to look for.\n\n\
-                          NOTE: this endpoint returns snake_case keys. The program and \
-                          install-descriptor endpoints return camelCase. Read the keys \
-                          you get rather than assuming one convention across tools.\n\n\
+                          NOTE: every registry endpoint behind the `explore_*` tools \
+                          returns snake_case keys (`websocket_url`, `primary_keys`, \
+                          `rust_type`). The `a4 explore --json` CLI output is camelCase \
+                          for the same data, so do not carry field names across from \
+                          one to the other — read the keys you actually get.\n\n\
                           No auth required — public stacks are always listed. If an \
                           api key is resolvable (ARETE_API_KEY or `a4 auth login`), \
                           global stacks are included too.")]
@@ -720,10 +722,17 @@ impl AreteMcp {
 /// transport failure or a non-2xx from the platform is not, and maps to
 /// `internal_error`. Getting this split wrong matters — agents retry
 /// `invalid_params` with different arguments and give up on `internal_error`.
+///
+/// Serialized compactly, not pretty-printed. `registry` caps a response body at
+/// 512 KiB to bound what lands in the agent's context, and indentation can
+/// multiply that several times over — a 400 KB array of short values pretty-prints
+/// to roughly 1 MB, so the cap would not hold where it is actually spent. Compact
+/// output is bounded by the body we already accepted, and nothing downstream
+/// reads this as anything but JSON.
 fn registry_result(result: anyhow::Result<serde_json::Value>) -> Result<CallToolResult, McpError> {
     match result {
         Ok(value) => {
-            let text = serde_json::to_string_pretty(&value).map_err(|e| {
+            let text = serde_json::to_string(&value).map_err(|e| {
                 McpError::internal_error(
                     format!("could not serialize registry response: {e}"),
                     None,
@@ -735,6 +744,7 @@ fn registry_result(result: anyhow::Result<serde_json::Value>) -> Result<CallTool
             let message = error.to_string();
             let caller_fixable = message.contains("must not be empty")
                 || message.contains("invalid character")
+                || message.contains("must not be a relative path segment")
                 || message.contains("unknown artifact kind");
             Err(if caller_fixable {
                 McpError::invalid_params(message, None)
@@ -895,5 +905,47 @@ mod view_validation_tests {
     #[test]
     fn rejects_empty_entity_with_mode() {
         assert!(validate_view_name("/list").is_err());
+    }
+}
+
+#[cfg(test)]
+mod registry_result_tests {
+    use super::registry_result;
+    use rmcp::model::ErrorCode;
+
+    /// Every rejection a bad path segment can produce must classify as
+    /// `invalid_params`. This is the difference between an agent retrying with
+    /// a corrected reference and giving up: agents treat `internal_error` as
+    /// "the server is broken, stop". The check is substring-based, so a reworded
+    /// validation error silently falls through to `internal_error` — this test
+    /// is what catches that.
+    #[test]
+    fn argument_rejections_are_invalid_params() {
+        let client = crate::registry::RegistryClient::new();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        for hash in [
+            "",                     // empty
+            "ore/../../agents",     // invalid character
+            r"..\..\..\agents\me",  // backslash traversal
+            "..",                   // dot-only segment
+        ] {
+            // `path_segment` rejects before any request, so this never leaves
+            // the process and needs no network.
+            let err = registry_result(rt.block_on(client.artifact("program-spec", hash)))
+                .expect_err("expected {hash:?} to be refused");
+            assert_eq!(
+                err.code,
+                ErrorCode::INVALID_PARAMS,
+                "{hash:?} should be caller-fixable, got: {}",
+                err.message
+            );
+        }
+
+        let err = registry_result(rt.block_on(client.artifact("not-a-kind", "abc")))
+            .expect_err("unknown kind should be refused");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 }
