@@ -458,7 +458,7 @@ view. Equivalent subscriptions share one reference-counted wire subscription.
 // → entities, fields, primary keys, and view ids like "OreRound/latest"
 
 // 3. Open connection
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"connect","arguments":{"url":"wss://ore.stack.arete.run"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"connect","arguments":{"url":"wss://ore-r4xj7y.stack.arete.run"}}}
 // → {"connection_id":"a1b2..."}
 
 // 4. Subscribe to a view
