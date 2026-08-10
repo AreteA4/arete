@@ -295,7 +295,6 @@ error here.
 
 - `explore_stacks()` — stacks in the registry. The `websocket_url` in each entry
   is what `connect` takes; `entities` tells you what to look for in the schema.
-  **Note:** this response is snake_case; the other discovery tools return camelCase.
 - `explore_stack({ stack })` — pinned install descriptor for one stack: the exact
   StackManifest, AST, LiveSpec, view, and Program Release identities `a4 install`
   would consume.
@@ -313,6 +312,11 @@ error here.
 Responses are the registry's JSON, passed through unchanged. Bodies over 512 KB
 are refused rather than truncated — use `a4 explore` or `a4 install` on the
 command line for payloads that large.
+
+**Key casing:** every one of these endpoints returns snake_case keys —
+`websocket_url`, `stack_name`, `primary_keys`, `rust_type`. The `a4 explore --json`
+CLI output describes the same data in camelCase, so field names are not
+interchangeable between the two; read the keys you actually receive.
 
 These tools cover discovery only. SDK generation (`a4 install`) and transaction
 construction live in the CLI and the generated SDKs, not here.

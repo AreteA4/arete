@@ -80,7 +80,7 @@ a4 explore program spl-token --json
 a4 install program spl-token --ts
 ```
 
-Program SDK install is TypeScript-only today; `--rust` on `a4 install program` returns an explicit error rather than falling back.
+Rust and TypeScript both generate program clients: `a4 install ore --rust` emits typed program modules alongside the stack — instruction building, PDA resolution, account readers, and program reads. Packaging a program SDK on its own (`a4 install program`) is TypeScript today.
 
 Generated SDKs are not read-only. They expose PDA derivation, account resolution, instruction building, and transaction execution for the programs in scope — see the `arete-consume` skill for the patterns.
 

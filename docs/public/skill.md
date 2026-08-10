@@ -23,9 +23,11 @@ You are onboarding to **Arete**, a system for programmable real-time data feeds 
 > program without a stack: `a4 explore programs`, `a4 explore program <ref>`,
 > `a4 install program <ref>`.
 >
-> **SDK generation is a free-tier action.** `a4 install <stack> --ts|--rust` generates a
-> typed client from a public stack. Rust joined TypeScript/React as a generation target;
-> `a4 install program` is TypeScript-only.
+> **SDK generation is a free-tier action, TypeScript and Rust alike.**
+> `a4 install <stack> --ts|--rust` generates a typed client from a public stack in either
+> language, including typed program clients — instruction building, PDA resolution, account
+> readers, and program reads. Standalone program SDKs packaged on their own
+> (`a4 install program`) are TypeScript today; for Rust program clients, install the stack.
 >
 > **Rollout note.** `GET /api/registry/programs` is the newest of these routes and may
 > return `404` until the next platform deploy. The rest are live. If you get a 404 there,
@@ -168,12 +170,9 @@ a4 install <stack-ref> --ts
 # Rust client for the same stack
 a4 install <stack-ref> --rust
 
-# Standalone program client — no stack involved
+# Standalone program SDK, packaged alone — TypeScript today
 a4 install program <program-ref> --ts
 ```
-
-Published program SDK install is TypeScript-only today; `--rust` on
-`a4 install program` returns an explicit error, not a fallback.
 
 Generated SDKs cover more than stream reads. They expose PDA derivation, account
 resolution, instruction building, and transaction execution for the programs in scope.
@@ -247,11 +246,14 @@ loop, without generating an SDK.
 npx -y @usearete/mcp     # or: cargo install arete-mcp
 ```
 
-Discovery tools — read-only against the public registry, no auth required:
+Discovery tools — read-only against the public registry, no auth required. Every one
+of them returns the registry's **snake_case** keys (`websocket_url`, `primary_keys`,
+`rust_type`); `a4 explore --json` returns the same data in camelCase, so do not carry
+field names between the two.
 
 | Tool | Purpose |
 |------|---------|
-| `explore_stacks` | List stacks. The `websocket_url` is what `connect` takes (snake_case; other tools return camelCase) |
+| `explore_stacks` | List stacks. The `websocket_url` is what `connect` takes |
 | `explore_stack` | Pinned install descriptor for one stack |
 | `explore_stack_schema` | Entity/view schema — the view ids `subscribe` accepts |
 | `explore_programs` | List installable standalone programs |

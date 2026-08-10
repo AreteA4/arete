@@ -165,7 +165,8 @@ a4 install <stack-ref> --ts
 a4 install <stack-ref> --rust
 ```
 
-For a standalone program (TypeScript only — `--rust` returns an explicit error here):
+Both targets above generate typed program clients — instruction building, PDA resolution,
+account readers, and program reads. A program SDK packaged on its own is TypeScript today:
 
 ```
 a4 install program <program-ref> --ts
