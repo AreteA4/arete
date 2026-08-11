@@ -297,11 +297,16 @@ impl AreteMcp {
                           Start here: the returned `websocket_url` is what `connect` \
                           takes, and `entities` tells you which `<EntityName>/<view>` \
                           ids to look for.\n\n\
-                          NOTE: every registry endpoint behind the `explore_*` tools \
-                          returns snake_case keys (`websocket_url`, `primary_keys`, \
-                          `rust_type`). The `a4 explore --json` CLI output is camelCase \
-                          for the same data, so do not carry field names across from \
-                          one to the other — read the keys you actually get.\n\n\
+                          NOTE: casing is not uniform across these tools. This endpoint \
+                          and `explore_stack_schema` return snake_case \
+                          (`websocket_url`, `primary_keys`, `rust_type`); \
+                          `explore_stack`, `explore_programs` and `explore_program` \
+                          return camelCase (`websocketUrl`, `installName`, \
+                          `programSpecHash`). `resolve_artifact` has a camelCase \
+                          envelope over a stored payload that may be snake_case inside. \
+                          Read the keys you actually get rather than assuming one \
+                          convention, and note `a4 explore --json` is camelCase \
+                          throughout, so it does not match this tool field-for-field.\n\n\
                           No auth required — public stacks are always listed. If an \
                           api key is resolvable (ARETE_API_KEY or `a4 auth login`), \
                           global stacks are included too.")]
@@ -723,23 +728,16 @@ impl AreteMcp {
 /// `internal_error`. Getting this split wrong matters — agents retry
 /// `invalid_params` with different arguments and give up on `internal_error`.
 ///
-/// Serialized compactly, not pretty-printed. `registry` caps a response body at
-/// 512 KiB to bound what lands in the agent's context, and indentation can
-/// multiply that several times over — a 400 KB array of short values pretty-prints
-/// to roughly 1 MB, so the cap would not hold where it is actually spent. Compact
-/// output is bounded by the body we already accepted, and nothing downstream
-/// reads this as anything but JSON.
-fn registry_result(result: anyhow::Result<serde_json::Value>) -> Result<CallToolResult, McpError> {
+/// The body is emitted exactly as the registry sent it. `registry` already bounds
+/// it to 512 KiB, and re-serializing would break that bound rather than preserve
+/// it: JSON number formatting is not length-preserving, so `1e9` becomes
+/// `1000000000.0` and an array of them grows over 3x — enough to carry a legal
+/// body well past the cap. Pretty-printing is worse again. Passing the accepted
+/// bytes through keeps the advertised bound true by construction and makes the
+/// documented raw pass-through actually raw.
+fn registry_result(result: anyhow::Result<String>) -> Result<CallToolResult, McpError> {
     match result {
-        Ok(value) => {
-            let text = serde_json::to_string(&value).map_err(|e| {
-                McpError::internal_error(
-                    format!("could not serialize registry response: {e}"),
-                    None,
-                )
-            })?;
-            Ok(CallToolResult::success(vec![Content::text(text)]))
-        }
+        Ok(body) => Ok(CallToolResult::success(vec![Content::text(body)])),
         Err(error) => {
             let message = error.to_string();
             let caller_fixable = message.contains("must not be empty")
@@ -927,10 +925,10 @@ mod registry_result_tests {
             .unwrap();
 
         for hash in [
-            "",                     // empty
-            "ore/../../agents",     // invalid character
-            r"..\..\..\agents\me",  // backslash traversal
-            "..",                   // dot-only segment
+            "",                    // empty
+            "ore/../../agents",    // invalid character
+            r"..\..\..\agents\me", // backslash traversal
+            "..",                  // dot-only segment
         ] {
             // `path_segment` rejects before any request, so this never leaves
             // the process and needs no network.
@@ -947,5 +945,27 @@ mod registry_result_tests {
         let err = registry_result(rt.block_on(client.artifact("not-a-kind", "abc")))
             .expect_err("unknown kind should be refused");
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    /// The tool result must be the registry's bytes, unchanged.
+    ///
+    /// Re-serializing a parsed `Value` would silently break both the documented
+    /// raw pass-through and the 512 KiB bound, because JSON number formatting is
+    /// not length-preserving: `1e9` comes back as `1000000000.0`, over 3x longer.
+    /// An array of those turns a legal body into an oversized tool result.
+    #[test]
+    fn body_passes_through_verbatim() {
+        let body = r#"{"big":1e9,"kept":"as-sent"}"#.to_string();
+        let result = registry_result(Ok(body.clone())).expect("should succeed");
+        let rendered = serde_json::to_string(&result).expect("result serializes");
+
+        assert!(
+            rendered.contains("1e9"),
+            "number must survive as sent: {rendered}"
+        );
+        assert!(
+            !rendered.contains("1000000000.0"),
+            "number must not be reformatted: {rendered}"
+        );
     }
 }

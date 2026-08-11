@@ -65,13 +65,13 @@ impl RegistryClient {
     }
 
     /// List stacks. Public stacks always; global stacks too when a key resolves.
-    pub async fn list_stacks(&self) -> Result<Value> {
+    pub async fn list_stacks(&self) -> Result<String> {
         self.get("/api/registry").await
     }
 
     /// The pinned install descriptor for one stack — the exact identities
     /// `a4 install` would consume.
-    pub async fn stack_install(&self, stack: &str) -> Result<Value> {
+    pub async fn stack_install(&self, stack: &str) -> Result<String> {
         let stack = path_segment(stack, "stack")?;
         self.get(&format!("/api/registry/stacks/{stack}/install"))
             .await
@@ -79,25 +79,25 @@ impl RegistryClient {
 
     /// Entity and view schema for one stack. This is where an agent gets the
     /// `<EntityName>/<view>` ids that `subscribe` expects.
-    pub async fn stack_schema(&self, stack: &str) -> Result<Value> {
+    pub async fn stack_schema(&self, stack: &str) -> Result<String> {
         let stack = path_segment(stack, "stack")?;
         self.get(&format!("/api/registry/{stack}/schema")).await
     }
 
     /// List installable standalone programs.
-    pub async fn list_programs(&self) -> Result<Value> {
+    pub async fn list_programs(&self) -> Result<String> {
         self.get("/api/registry/programs").await
     }
 
     /// The pinned install descriptor for one standalone program.
-    pub async fn program_install(&self, program: &str) -> Result<Value> {
+    pub async fn program_install(&self, program: &str) -> Result<String> {
         let program = path_segment(program, "program")?;
         self.get(&format!("/api/registry/programs/{program}/install"))
             .await
     }
 
     /// Fetch a content-addressed artifact by kind and hash.
-    pub async fn artifact(&self, kind: &str, hash: &str) -> Result<Value> {
+    pub async fn artifact(&self, kind: &str, hash: &str) -> Result<String> {
         let kind = kind.trim();
         if !ARTIFACT_KINDS.contains(&kind) {
             return Err(anyhow!(
@@ -110,7 +110,19 @@ impl RegistryClient {
             .await
     }
 
-    async fn get(&self, path: &str) -> Result<Value> {
+    /// Returns the response body verbatim rather than a parsed [`Value`].
+    ///
+    /// Two reasons, and both are contract-level. The body is already bounded by
+    /// [`MAX_RESPONSE_BYTES`]; re-serializing a parsed `Value` is *not* bounded by
+    /// that, because JSON number formatting is not length-preserving — `1e9`
+    /// round-trips to `1000000000.0`, so an array of those grows over 3x and can
+    /// carry a legal 512 KiB body past the limit the cap exists to enforce.
+    /// Returning the bytes we accepted keeps the advertised bound true by
+    /// construction. It also makes the documented raw pass-through actually raw:
+    /// a round-trip through `Value` rewrites numbers and reorders nothing
+    /// usefully, and agents comparing a hash-relevant artifact against the CLI
+    /// would see a body the platform never sent.
+    async fn get(&self, path: &str) -> Result<String> {
         let url = format!("{}{path}", self.base_url);
         let mut request = self.http.get(&url);
 
@@ -158,8 +170,12 @@ impl RegistryClient {
             });
         }
 
-        serde_json::from_str(&body)
-            .map_err(|e| anyhow!("registry returned invalid JSON for {path}: {e}"))
+        // Parse only to validate: a proxy's HTML error page must not reach the
+        // agent as though it were a registry response. The parsed value is
+        // discarded and the original bytes are returned.
+        serde_json::from_str::<Value>(&body)
+            .map_err(|e| anyhow!("registry returned invalid JSON for {path}: {e}"))?;
+        Ok(body)
     }
 }
 
