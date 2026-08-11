@@ -2,7 +2,7 @@
 title: Agent Skills
 sidebar:
   order: 1
-description: How the Arete CLI, agent skills, and agent.md work together to give your AI agent everything it needs to build with Arete.
+description: How the Arete CLI, agent skills, agent.md, and MCP servers work together to give your AI agent everything it needs to build with Arete.
 ---
 
 import { Tabs, TabItem } from "@astrojs/starlight/components";
@@ -12,7 +12,7 @@ import CopyPrompt from "../../../components/CopyPrompt.astro";
 If you haven't set up an AI coding tool yet, start with [AI Tooling Setup](/agent-skills/setup-tools/) which walks you through everything from scratch.
 :::
 
-Arete is designed to be built with AI agents. This page explains the three pieces that make that work: the **CLI**, the **agent skills**, and **agent.md**.
+Arete is designed to be built with AI agents. This page explains the four pieces that make that work: the **CLI**, the **agent skills**, **agent.md**, and the **MCP servers**.
 
 ---
 
@@ -28,13 +28,32 @@ cargo install a4-cli
 npm install -g @usearete/a4
 ```
 
+### Discovery
+
 The key command for agents is `a4 explore`:
 
 ```bash
-a4 explore --json
+a4 explore --json                      # installable stacks
+a4 explore stack <stack-ref> --json    # one stack's exact install descriptor
+a4 explore programs --json             # installable standalone programs
+a4 explore program <program-ref> --json
 ```
 
-This queries the Arete API and returns the live schemas for all available stacks — their entities, fields, views, and types. Because your agent runs this at setup time, it always works with accurate, up-to-date type information rather than guessing from training data.
+This queries the Arete API and returns pinned install descriptors — entities, fields, views, types, and the exact artifact hashes `a4 install` will consume. Because your agent runs this at setup time, it always works with accurate, up-to-date type information rather than guessing from training data. Every JSON response carries a `schemaVersion`.
+
+See [Schema Discovery](/agent-skills/explore/) for the full output contract.
+
+### Install
+
+Discovery feeds directly into code generation:
+
+```bash
+a4 install <stack-ref> --ts       # TypeScript client
+a4 install <stack-ref> --rust     # Rust client
+a4 install program <ref> --ts     # standalone program SDK (packaged alone: TS today)
+```
+
+Generated SDKs are not read-only. Alongside stream subscriptions they expose PDA derivation, account resolution, instruction building, and transaction execution for the programs in scope.
 
 ---
 
@@ -44,11 +63,11 @@ Agent skills are markdown files that teach your agent how to use Arete correctly
 
 Three skills are installed:
 
-| Skill           | What it teaches                                                           |
-| --------------- | ------------------------------------------------------------------------- |
-| `arete`         | Router skill — detects intent and routes the agent to the right sub-skill |
-| `arete-consume` | SDK patterns for connecting to streams in TypeScript, React, and Rust     |
-| `arete-build`   | Rust DSL syntax for building custom stacks from Solana program IDLs       |
+| Skill           | What it teaches                                                                                 |
+| --------------- | ----------------------------------------------------------------------------------------------- |
+| `arete`         | Router skill — detects intent and routes the agent to the right sub-skill                       |
+| `arete-consume` | SDK patterns for connecting to streams and building transactions in TypeScript, React, and Rust |
+| `arete-build`   | Rust DSL syntax for building custom stacks from Solana program IDLs                             |
 
 Install them manually with:
 
@@ -68,8 +87,10 @@ When your agent reads `agent.md`, it:
 
 1. Installs the Arete CLI (prefers Cargo, falls back to npm)
 2. Installs the agent skills into the project
-3. Runs `a4 explore --json` to load live schemas
-4. Understands it's ready to build
+3. Runs `a4 explore --json` to load pinned descriptors
+4. Generates a typed SDK with `a4 install`
+5. Optionally registers the stream MCP server
+6. Understands it's ready to build
 
 This is why the one-liner works:
 
@@ -79,11 +100,27 @@ Read https://docs.arete.run/agent.md and follow the instructions to set up Arete
 
 ---
 
+## MCP Servers
+
+Two MCP servers extend what your agent can do without leaving its loop. Both are optional — the CLI and skills are sufficient on their own.
+
+| Server        | Transport                           | Gives the agent                                                                  |
+| ------------- | ----------------------------------- | -------------------------------------------------------------------------------- |
+| Documentation | `https://docs.arete.run/mcp` (HTTP) | `search_docs`, `fetch_page` — read these docs without scraping                   |
+| Stream        | `npx -y @usearete/mcp` (stdio)      | `connect`, `subscribe`, `query_entities`, and friends — live entity data in-loop |
+
+The stream server is for **exploration and debugging**, not application code. When you're writing code that ships, generate an SDK with `a4 install`.
+
+See [MCP Server](/agent-skills/mcp/) for setup and the full tool list.
+
+---
+
 ## How They Fit Together
 
 ```
-agent.md  ──▶  CLI installed  ──▶  a4 explore --json  ──▶  live schemas
+agent.md  ──▶  CLI installed   ──▶  a4 explore   ──▶  pinned descriptors
                Skills installed ─▶  SDK patterns + DSL syntax
+               MCP (optional)   ─▶  docs search + live entity reads
 
                          ┌────────────────────────────┐
                          │         AI Agent            │
@@ -92,13 +129,16 @@ agent.md  ──▶  CLI installed  ──▶  a4 explore --json  ──▶  liv
                          │  Skills  +  Live schemas    │
                          └────────────┬───────────────┘
                                       │
-                              builds correct code
+                              a4 install --ts / --rust
+                                      │
+                                      ▼
+                        typed SDK: streams + transactions
                                       │
                                       ▼
                                Your Arete app
 ```
 
-The CLI gives the agent **live data**. The skills give the agent **correct patterns**. Together they remove the two main failure modes: wrong types and wrong API usage.
+The CLI gives the agent **live data and typed clients**. The skills give the agent **correct patterns**. MCP gives it **docs and live reads in-loop**. Together they remove the two main failure modes: wrong types and wrong API usage.
 
 ---
 
@@ -139,4 +179,5 @@ For editor-specific file locations and manual configuration, see [Editor Setup](
 - [Prompt Cookbook](/agent-skills/prompts/) — Copy-paste prompts for common tasks
 - [Tutorial: ORE Dashboard](/agent-skills/tutorial-ore-dashboard/) — Build a complete app step by step
 - [Schema Discovery](/agent-skills/explore/) — How `a4 explore` provides live type information
+- [MCP Server](/agent-skills/mcp/) — Documentation and stream MCP setup
 - [Editor Setup](/agent-skills/setup/) — Manual setup for specific editors

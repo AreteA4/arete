@@ -2,12 +2,25 @@
 title: MCP Server
 sidebar:
   order: 5
-description: Connect AI tools to the Arete documentation MCP server.
+description: Connect AI tools to the Arete documentation and stream MCP servers.
 ---
+
+Arete ships **two** MCP servers. They serve different purposes and can be run together.
+
+| Server                                 | Transport                           | What it gives your agent                                       |
+| -------------------------------------- | ----------------------------------- | -------------------------------------------------------------- |
+| [Documentation](#documentation-server) | HTTP (`https://docs.arete.run/mcp`) | Search and read these docs without scraping                    |
+| [Stream](#stream-server)               | stdio (`npx -y @usearete/mcp`)      | Registry discovery and live entity data, inside the agent loop |
+
+Neither server covers SDK generation (`a4 install`) or transaction construction. Those are CLI and SDK operations.
+
+---
+
+## Documentation server
 
 The Arete documentation MCP server gives AI tools first-class access to the docs instead of requiring them to scrape pages.
 
-## Endpoint
+### Endpoint
 
 Use the canonical HTTP endpoint:
 
@@ -17,7 +30,7 @@ https://docs.arete.run/mcp
 
 The legacy alias `https://docs.arete.run/mcp/sse` is still available for older configurations.
 
-## Tools
+### Tools
 
 | Tool          | Purpose                                                           |
 | ------------- | ----------------------------------------------------------------- |
@@ -26,7 +39,7 @@ The legacy alias `https://docs.arete.run/mcp/sse` is still available for older c
 
 The server also exposes the Arete platform skill as a resource at `https://docs.arete.run/skill.md`.
 
-## Claude Code
+### Claude Code
 
 ```bash
 claude mcp add --transport http Arete https://docs.arete.run/mcp
@@ -38,7 +51,7 @@ Verify the connection:
 claude mcp list
 ```
 
-## Cursor
+### Cursor
 
 Open MCP settings and add:
 
@@ -54,7 +67,7 @@ Open MCP settings and add:
 
 Then ask Cursor: "What tools do you have available?" It should list the Arete documentation tools.
 
-## VS Code
+### VS Code
 
 Create or update `.vscode/mcp.json`:
 
@@ -69,10 +82,133 @@ Create or update `.vscode/mcp.json`:
 }
 ```
 
-## Discovery
+### Discovery
 
 Discovery metadata is available at:
 
 - `https://docs.arete.run/.well-known/mcp`
 - `https://docs.arete.run/.well-known/mcp.json`
 - `https://docs.arete.run/.well-known/mcp/server-card.json`
+
+---
+
+## Stream server
+
+The stream MCP server (`a4-mcp`) is a local stdio server that discovers registry resources and opens WebSocket connections to deployed Arete stacks, caching streamed entities in memory. Use it when you want live data **inside the agent loop** — for exploration, debugging, or answering questions about current chain state. For application code, generate an SDK with `a4 install` instead.
+
+### Install
+
+```bash
+npx -y @usearete/mcp     # no global install
+npm install -g @usearete/mcp
+cargo install arete-mcp
+```
+
+### Discovery tools
+
+Read-only lookups against the public `/api/registry/*` endpoints. No signup required — public stacks and programs are visible to unauthenticated callers. When an api key resolves, `explore_stacks` also returns global stacks; a missing key is never an error here.
+
+| Tool                   | Purpose                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------- |
+| `explore_stacks`       | List stacks in the registry. The `websocket_url` in each entry is what `connect` takes.            |
+| `explore_stack`        | Pinned install descriptor for one stack — the exact identities `a4 install` would consume.         |
+| `explore_stack_schema` | Entity and view schema: field paths, types, primary keys, and the view ids `subscribe` accepts.    |
+| `explore_programs`     | List standalone Solana programs installable independent of any stack.                              |
+| `explore_program`      | Pinned install descriptor for one program: identity hashes, accounts, instructions, events, types. |
+| `resolve_artifact`     | Fetch a content-addressed artifact. `kind` is `program-spec`, `live-spec`, or `stack-manifest`.    |
+
+Responses are the registry's JSON, passed through unchanged. Bodies over 512 KB are refused rather than truncated — use `a4 explore` for payloads that large.
+
+:::caution[Key casing is not uniform across these tools]
+Read the keys you actually receive rather than assuming one convention:
+
+| Tool                                                   | Casing                                                                                                                                                                                          |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `explore_stacks`, `explore_stack_schema`               | **snake_case** — `websocket_url`, `http_auth`, `stack_name`, `primary_keys`, `rust_type`                                                                                                        |
+| `explore_stack`, `explore_programs`, `explore_program` | **camelCase** — `websocketUrl`, `installName`, `programSpecHash`, `stackManifestHash`                                                                                                           |
+| `resolve_artifact`                                     | camelCase envelope (`artifactHash`, `artifactVersion`, `kind`, `payload`); the payload is the stored artifact and may be snake_case inside, e.g. an embedded IDL's `program_id` and `is_signer` |
+
+Separately, `a4 explore --json` is camelCase throughout, so CLI field names do not transfer to `explore_stacks` or `explore_stack_schema` field-for-field.
+:::
+
+### Streaming tools
+
+Stateful. A session calls `connect` once, then `subscribe`, then reads the cache.
+
+| Tool                 | Purpose                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------- |
+| `ping`               | Health check. Returns `pong`.                                                                           |
+| `connect`            | Open a WebSocket connection to a stack. Returns a `connection_id`.                                      |
+| `disconnect`         | Close a connection and drop every subscription bound to it.                                             |
+| `subscribe`          | Bind a view on a connection. Streamed entities land in an in-memory cache.                              |
+| `unsubscribe`        | Cancel a subscription by id.                                                                            |
+| `query_entities`     | Filter and project cached entities. Accepts a string `where` DSL and structured `filters` (both ANDed). |
+| `get_entity`         | Fetch a single cached entity by key.                                                                    |
+| `list_entities`      | List cached entity keys. Capped at 1000 per response; `total_cached` reports the true size.             |
+| `get_recent`         | Return up to N entities from the subscription's exact ordered query membership.                         |
+| `list_subscriptions` | List active subscriptions, optionally filtered by `connection_id`.                                      |
+| `list_connections`   | List all open connections.                                                                              |
+
+View ids follow the `<EntityName>/<view>` template — e.g. `OreRound/list`, `OreRound/latest`. Call `explore_stack_schema` to get the exact ids rather than guessing from the template.
+
+### Typical session
+
+```
+explore_stacks()                        → pick a stack, note its websocket_url
+explore_stack_schema({ stack: "ore" })  → get the exact view id
+connect({ url })                        → connection_id
+subscribe({ connection_id, view })      → subscription_id
+query_entities({ subscription_id, … })  → data
+```
+
+### Authentication
+
+Do not pass `api_key` in tool calls. The server resolves credentials in this order:
+
+1. Explicit `api_key` argument on `connect` (override — avoid in agent calls)
+2. `ARETE_API_KEY` environment variable
+3. The credentials file written by `a4 auth login`
+
+Run `a4 auth login` once and omit the argument.
+
+The discovery tools attach a resolved key **only when `ARETE_API_URL` names an Arete origin over HTTPS** — `https://arete.run` or any `https://*.arete.run` subdomain. Plain HTTP is accepted only for loopback (`localhost`, `127.0.0.1`, `[::1]`), where the request never reaches a network. Everything else, including `http://api.arete.run`, gets an unauthenticated request rather than your key in cleartext or sent to a host it does not belong to — the endpoints these tools touch are public, so you still get the public result set.
+
+### Claude Desktop / Claude Code
+
+```json
+{
+  "mcpServers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
+
+### Cursor
+
+```json
+{
+  "mcpServers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
+
+### VS Code
+
+```json
+{
+  "servers": {
+    "arete": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
