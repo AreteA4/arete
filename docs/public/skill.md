@@ -246,10 +246,12 @@ loop, without generating an SDK.
 npx -y @usearete/mcp     # or: cargo install arete-mcp
 ```
 
-Discovery tools — read-only against the public registry, no auth required. Every one
-of them returns the registry's **snake_case** keys (`websocket_url`, `primary_keys`,
-`rust_type`); `a4 explore --json` returns the same data in camelCase, so do not carry
-field names between the two.
+Discovery tools — read-only against the public registry, no auth required. Casing is not
+uniform: `explore_stacks` and `explore_stack_schema` return snake_case (`websocket_url`,
+`primary_keys`, `rust_type`), while `explore_stack`, `explore_programs` and
+`explore_program` return camelCase (`websocketUrl`, `installName`, `programSpecHash`).
+`resolve_artifact` has a camelCase envelope over a stored payload that may be snake_case
+inside. `a4 explore --json` is camelCase throughout. Read the keys you actually receive.
 
 | Tool | Purpose |
 |------|---------|

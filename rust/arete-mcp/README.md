@@ -313,10 +313,16 @@ Responses are the registry's JSON, passed through unchanged. Bodies over 512 KB
 are refused rather than truncated — use `a4 explore` or `a4 install` on the
 command line for payloads that large.
 
-**Key casing:** every one of these endpoints returns snake_case keys —
-`websocket_url`, `stack_name`, `primary_keys`, `rust_type`. The `a4 explore --json`
-CLI output describes the same data in camelCase, so field names are not
-interchangeable between the two; read the keys you actually receive.
+**Key casing is not uniform.** `explore_stacks` and `explore_stack_schema` return
+snake_case (`websocket_url`, `stack_name`, `primary_keys`, `rust_type`).
+`explore_stack`, `explore_programs` and `explore_program` return camelCase
+(`websocketUrl`, `installName`, `programSpecHash`, `stackManifestHash`) — the CLI
+deserializes those three with `deny_unknown_fields`, so their shape is pinned.
+`resolve_artifact` returns a camelCase envelope (`artifactHash`, `artifactVersion`,
+`kind`, `payload`) wrapping a stored payload that may be snake_case inside, such as an
+embedded IDL's `program_id` and `is_signer`. Separately, `a4 explore --json` is
+camelCase throughout. Read the keys you actually receive rather than assuming one
+convention.
 
 These tools cover discovery only. SDK generation (`a4 install`) and transaction
 construction live in the CLI and the generated SDKs, not here.
@@ -492,9 +498,11 @@ RUST_LOG=hs_mcp=debug,arete_sdk=info a4-mcp
 | `RUST_LOG`      | Log verbosity (stderr only)                                                                   |
 
 A resolved API key is attached to discovery requests **only when `ARETE_API_URL`
-names an Arete origin** (`arete.run`, any `*.arete.run` subdomain) or a local
-loopback address for development. Point it anywhere else and requests go out
-unauthenticated rather than shipping your key to that host — every endpoint the
+names an Arete origin over HTTPS** — `https://arete.run` or any
+`https://*.arete.run` subdomain. Plain HTTP is permitted only for loopback
+(`localhost`, `127.0.0.1`, `[::1]`), where the request never leaves the machine.
+Anything else — including `http://api.arete.run`, which would put the key on the
+wire in cleartext — gets an unauthenticated request instead. Every endpoint the
 discovery tools touch is public, so you still get the public result set.
 
 ## Status
