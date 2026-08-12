@@ -78,7 +78,7 @@ Your API key (`a4_ak_*`) is a secret.
 ```bash
 curl -X POST https://api.arete.run/api/agents/signup \
   -H "Content-Type: application/json" \
-  -d '{"display_name": "my-agent"}'
+  -d '{"displayName": "my-agent"}'
 ```
 
 Response (shape):
@@ -86,15 +86,15 @@ Response (shape):
 ```json
 {
   "slug": "agt_7k2m9q1r",
-  "display_name": "my-agent",
-  "api_key": "a4_ak_xxx...",
+  "displayName": "my-agent",
+  "apiKey": "a4_ak_xxx...",
   "message": "Store this key securely - it will not be shown again"
 }
 ```
 
-⚠️ Save the `api_key` from the response. It is shown exactly once and cannot be recovered.
+⚠️ Save the `apiKey` from the response. It is shown exactly once and cannot be recovered.
 
-If `display_name` is omitted, the server generates `agent-<slug>` for you.
+If `displayName` is omitted, the server generates `agent-<slug>` for you.
 
 Rate limit: **5 signups per hour per IP**. If you exceed it you'll get `429 rate-limit-exceeded`.
 
@@ -110,14 +110,14 @@ Response (shape):
 ```json
 {
   "slug": "agt_7k2m9q1r",
-  "display_name": "my-agent",
+  "displayName": "my-agent",
   "status": "active",
-  "created_at": "2026-04-30T12:00:00Z",
-  "last_seen_at": "2026-04-30T12:05:00Z"
+  "createdAt": "2026-04-30T12:00:00Z",
+  "lastSeenAt": "2026-04-30T12:05:00Z"
 }
 ```
 
-You should see your slug, display_name, and `status: "active"`.
+You should see your slug, `displayName`, and `status: "active"`.
 
 ### 3. Install the local toolkit
 
@@ -209,7 +209,7 @@ curl -X POST https://api.arete.run/api/agents/me/keys \
 curl -X POST https://api.arete.run/api/agents/me/keys/publishable \
   -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"origin_allowlist": ["https://my-agent-ui.example"]}'
+  -d '{"originAllowlist": ["https://my-agent-ui.example"]}'
 
 # Revoke a key by id (substitute :id with the numeric key id from the list call)
 curl -X DELETE https://api.arete.run/api/agents/me/keys/:id \
@@ -246,16 +246,17 @@ loop, without generating an SDK.
 npx -y @usearete/mcp     # or: cargo install arete-mcp
 ```
 
-Discovery tools — read-only against the public registry, no auth required. Casing is not
-uniform: `explore_stacks` and `explore_stack_schema` return snake_case (`websocket_url`,
-`primary_keys`, `rust_type`), while `explore_stack`, `explore_programs` and
-`explore_program` return camelCase (`websocketUrl`, `installName`, `programSpecHash`).
-`resolve_artifact` has a camelCase envelope over a stored payload that may be snake_case
-inside. `a4 explore --json` is camelCase throughout. Read the keys you actually receive.
+Discovery tools — read-only against the public registry, no auth required. Every response is
+camelCase (`websocketUrl`, `httpAuth`, `stackName`, `primaryKeys`, `rustType`, `installName`,
+`programSpecHash`), and `a4 explore --json` uses the same names, so CLI and tool output
+transfer field-for-field. The one exception is content-addressed payloads: `resolve_artifact`
+returns a camelCase envelope over a stored artifact that may be snake_case inside, as do the
+`astPayload`, `stackManifest` and `liveSpec` values — those bytes are hash input and cannot
+be renamed.
 
 | Tool | Purpose |
 |------|---------|
-| `explore_stacks` | List stacks. The `websocket_url` is what `connect` takes |
+| `explore_stacks` | List stacks. The `websocketUrl` is what `connect` takes |
 | `explore_stack` | Pinned install descriptor for one stack |
 | `explore_stack_schema` | Entity/view schema — the view ids `subscribe` accepts |
 | `explore_programs` | List installable standalone programs |
@@ -348,7 +349,7 @@ Base URL: `https://api.arete.run`
 | GET | `/api/agents/me` | Your profile |
 | GET | `/api/agents/me/keys` | List your keys |
 | POST | `/api/agents/me/keys` | Mint rotation key (`a4_ak_*`) |
-| POST | `/api/agents/me/keys/publishable` | Mint publishable key (`a4_pk_*`) — requires `origin_allowlist` |
+| POST | `/api/agents/me/keys/publishable` | Mint publishable key (`a4_pk_*`) — requires `originAllowlist` |
 | DELETE | `/api/agents/me/keys/:id` | Revoke one of your keys |
 | POST | `/ws/sessions` | Mint a 5-minute WebSocket session token (where allowed) |
 | GET | `/api/specs` | List specs you can see |
@@ -408,12 +409,12 @@ Cite the structured `code` field in error responses, not the English `error` mes
 
 | HTTP | Code | Meaning |
 |------|------|---------|
-| 400 | (varies) | Request body or query invalid (e.g. publishable key missing `origin_allowlist`) |
+| 400 | (varies) | Request body or query invalid (e.g. publishable key missing `originAllowlist`) |
 | 401 | `missing-credentials` | No `Authorization` header |
 | 401 | `invalid-authorization-format` | `Authorization` header isn't `Bearer <key>` |
 | 401 | `invalid-api-key` | Key not found, hash mismatch, or soft-deleted |
 | 401 | `disabled-api-key` | Key was disabled by owner |
-| 401 | `expired-api-key` | Key past `expires_at` |
+| 401 | `expired-api-key` | Key past `expiresAt` |
 | 401 | `agent-profile-missing` | Agent user has no profile row (corrupt state — register a new agent) |
 | 401 | `user-not-found` | API key references a missing user (corrupt state) |
 | 403 | `agent-account-disabled` | Your profile `status='disabled'` |

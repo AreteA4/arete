@@ -294,19 +294,15 @@ impl AreteMcp {
     }
 
     #[tool(description = "List stacks available in the Arete registry. \
-                          Start here: the returned `websocket_url` is what `connect` \
+                          Start here: the returned `websocketUrl` is what `connect` \
                           takes, and `entities` tells you which `<EntityName>/<view>` \
                           ids to look for.\n\n\
-                          NOTE: casing is not uniform across these tools. This endpoint \
-                          and `explore_stack_schema` return snake_case \
-                          (`websocket_url`, `primary_keys`, `rust_type`); \
-                          `explore_stack`, `explore_programs` and `explore_program` \
-                          return camelCase (`websocketUrl`, `installName`, \
-                          `programSpecHash`). `resolve_artifact` has a camelCase \
-                          envelope over a stored payload that may be snake_case inside. \
-                          Read the keys you actually get rather than assuming one \
-                          convention, and note `a4 explore --json` is camelCase \
-                          throughout, so it does not match this tool field-for-field.\n\n\
+                          Keys are camelCase across every discovery tool, and \
+                          `a4 explore --json` matches field-for-field. The exception is \
+                          content-addressed payloads: `resolve_artifact`, and the \
+                          `astPayload`/`stackManifest`/`liveSpec` values inside \
+                          `explore_stack`, wrap a stored artifact that may be snake_case \
+                          inside — those bytes are hash input and cannot be renamed.\n\n\
                           No auth required — public stacks are always listed. If an \
                           api key is resolvable (ARETE_API_KEY or `a4 auth login`), \
                           global stacks are included too.")]

@@ -81,8 +81,10 @@ lexicographically.
   (GET) and `/chain/native-balance|balances` (POST, u64s as decimal strings).
 - **Transaction relay**: `POST <base>/transactions/v1/{latest-blockhash,fee,simulate,send,signature-status,block-height}`.
 - **Auth**: `POST <tokenEndpoint>` `{"websocket_url": "...", "scopes": ["read"]}` (+
-  `Authorization: Bearer <publishableKey>`) → `{"token","expires_at"}`; WS token in
+  `Authorization: Bearer <publishableKey>`) → `{"token","expiresAt"}`; WS token in
   `?hs_token=` (default) or `Authorization: Bearer` upgrade header. Refresh at `exp − 60s`.
+  The request's `websocket_url` is deliberately snake_case — the one key pinned for SDK
+  compatibility while the rest of the API moved to camelCase.
 
 ---
 
