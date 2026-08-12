@@ -380,6 +380,31 @@ spellings used as separate filter paths), Rust's stable sort falls back to BTree
 order while TS/Python fall back to insertion order — Rust is strictly more deterministic;
 unreachable from real filter paths.
 
+### Stale-sequence guard — added to Rust 2026-08-04
+
+The Rust store had **no** duplicate/stale-sequence guard for live `upsert`/`patch`
+frames: `apply_frame` destructured `ServerFrame::Upsert`/`::Patch` with `..`, discarding
+the `seq` the frame carries, and `apply_live` wrote storage unconditionally — so an
+older-sequence frame could overwrite newer cached data, which the TS and Python suites
+both forbid. Ported from `typescript/core/src/frame-processor.ts:623-712` and
+`python/arete-sdk/arete/store.py:341-391`: `frame::compare_seq` (slot compared as a digit
+string, so long slots cannot overflow a `u64` parse; only the second `:` segment is the
+index), per-key sequences in `ViewData::seqs` (a sibling map — **not** injected into the
+`serde_json::Value`, which would leak into user data and break typed deserialization),
+and the guard itself. A stale frame still grants query membership and emits an update
+carrying the **cached** value, exactly as TS does; snapshot rows still bypass the guard,
+which is the authoritative-replacement semantics.
+
+**Open TypeScript divergence.** On an upsert with no sequence (neither `frame.seq` nor a
+payload `_seq`), TypeScript drops the entity's tracked sequence — a side effect of
+carrying `__seq` on the entity object it replaces, not a designed behavior. That disarms
+the guard for that key until the next sequenced frame, letting a subsequent older frame
+overwrite newer data. Python retains the sequence (`store.py::_set_entity` only writes
+when `seq is not None`) and Rust now matches Python (`ViewData::set_seq`), since retaining
+is what keeps the guard armed. Verified empirically: for `seq 50:0009` → unsequenced →
+`seq 50:0001`, Python and Rust both keep the unsequenced value; TS would apply the older
+frame. TypeScript should be reconciled to match.
+
 ### Resolved-field typing — fixed 2026-08-04
 
 `RustCompiler::field_type_to_rust` never consulted `field.resolved_type` (the

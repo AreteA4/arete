@@ -121,6 +121,14 @@ reconnect.
   batch, `authoritative: true` **replaces** membership, `authoritative: false` (cursor
   resumes via `after`) **merges**.
 - Patches deep-merge with `append`-path array concatenation.
+- **Stale-sequence guard**: a live `upsert`/`patch` whose `seq` is not newer than the
+  cached entity's tracked sequence (`compare <= 0`, so equal counts as duplicate) must not
+  write storage. It still grants query membership and emits an update carrying the
+  *cached* value, so a query seeing the key for the first time converges on the
+  authoritative version rather than the stale one. Frames without a sequence are never
+  stale, and an unsequenced write must **not** clear the tracked sequence — doing so
+  disarms the guard until the next sequenced frame. Snapshot rows deliberately bypass this
+  guard; snapshot authority (above) governs them instead.
 - Ordering follows the server-declared `sort` from the `subscribed` ack. Entities tied on
   the sort field break the tie on entity key, and that tie-break is **always ascending** —
   the `desc` negation applies to the sort-field comparison only. Both comparisons use the
