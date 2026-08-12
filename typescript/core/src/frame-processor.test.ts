@@ -563,4 +563,29 @@ describe('FrameProcessor', () => {
     ]);
     expect(storage.get('TokenPosition/list', 'smaller')).toBeNull();
   });
+
+  it('keeps the tracked sequence when an upsert arrives without one', () => {
+    // An unsequenced upsert must not disarm the staleness guard: the patch
+    // branch already falls back to the stored sequence, and Python/Rust
+    // retain it too. Without the fallback the older frame below would win.
+    const storage = new SortedStorageDecorator(new MemoryAdapter());
+    const processor = new FrameProcessor(storage);
+
+    const upsert = (data: unknown, seq?: string): EntityFrame => ({
+      mode: 'state',
+      entity: 'Thing/state',
+      op: 'upsert',
+      key: 'k',
+      data,
+      ...(seq ? { seq } : {}),
+    } as EntityFrame);
+
+    processor.handleFrame(upsert({ v: 'first' }, '50:000000000009'));
+    processor.handleFrame(upsert({ v: 'second' }));
+    expect(storage.get('Thing/state', 'k')).toEqual({ v: 'second' });
+
+    // Older than the sequence recorded before the unsequenced write.
+    processor.handleFrame(upsert({ v: 'third' }, '50:000000000001'));
+    expect(storage.get('Thing/state', 'k')).toEqual({ v: 'second' });
+  });
 });

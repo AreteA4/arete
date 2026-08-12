@@ -395,15 +395,21 @@ and the guard itself. A stale frame still grants query membership and emits an u
 carrying the **cached** value, exactly as TS does; snapshot rows still bypass the guard,
 which is the authoritative-replacement semantics.
 
-**Open TypeScript divergence.** On an upsert with no sequence (neither `frame.seq` nor a
-payload `_seq`), TypeScript drops the entity's tracked sequence — a side effect of
-carrying `__seq` on the entity object it replaces, not a designed behavior. That disarms
-the guard for that key until the next sequenced frame, letting a subsequent older frame
-overwrite newer data. Python retains the sequence (`store.py::_set_entity` only writes
-when `seq is not None`) and Rust now matches Python (`ViewData::set_seq`), since retaining
-is what keeps the guard armed. Verified empirically: for `seq 50:0009` → unsequenced →
-`seq 50:0001`, Python and Rust both keep the unsequenced value; TS would apply the older
-frame. TypeScript should be reconciled to match.
+**Unsequenced upserts — reconciled across all three SDKs 2026-08-04.** On an upsert with
+no sequence (neither `frame.seq` nor a payload `_seq`), TypeScript used to drop the
+entity's tracked sequence — a side effect of carrying `__seq` on the entity object it
+replaces, not a designed behavior. That disarmed the guard for that key until the next
+sequenced frame, letting a later older frame overwrite newer data. The giveaway was
+internal inconsistency: the *patch* branch of the same function already fell back to
+`getInternalSeq(existing)`, while *upsert* did not. Reachable in practice — the server's
+`seq` is `Option<String>` at every layer (`rust/arete-server/src/websocket/frame.rs:93`).
+
+All three now retain the sequence: `frame-processor.ts` upsert gained
+`?? this.getInternalSeq(previousValue)`, Python already did this
+(`store.py::_set_entity` writes only when `seq is not None`), and Rust matches
+(`ViewData::set_seq`). Regression tests in all three drive `seq 50:…09` → unsequenced →
+`seq 50:…01` and assert the unsequenced value survives; each fails if its fallback is
+removed.
 
 ### Resolved-field typing — fixed 2026-08-04
 

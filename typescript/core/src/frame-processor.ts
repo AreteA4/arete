@@ -659,7 +659,12 @@ export class FrameProcessor {
           const nextValue = this.attachInternalSeq(
             viewPath,
             normalized,
-            frame.seq ?? this.extractSeq(frame.data)
+            // Fall back to the previous entity's sequence, as the patch branch
+            // below does. Without this an unsequenced upsert drops the tracked
+            // sequence (it rides on the object being replaced), disarming the
+            // staleness guard until the next sequenced frame and letting a
+            // later older frame overwrite newer data.
+            frame.seq ?? this.extractSeq(frame.data) ?? this.getInternalSeq(previousValue)
           );
           this.storage.set(viewPath, frame.key, nextValue);
           const update: Update<T> = {
