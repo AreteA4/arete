@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.4.1...arete-macros-v0.5.0) (2026-08-12)
+
+
+### Features
+
+* add managed release v2 contracts ([8d86427](https://github.com/AreteA4/arete/commit/8d864276f0267898ec70912b89e8fd2147a26b12))
+* add managed release v2 contracts ([16db61a](https://github.com/AreteA4/arete/commit/16db61aea9658ceabff66cb672b195fe09848f5e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.2.0 to 0.3.0
+    * arete-artifacts bumped from 0.1.1 to 0.2.0
+
 ## [0.4.1](https://github.com/AreteA4/arete/compare/arete-macros-v0.4.0...arete-macros-v0.4.1) (2026-08-02)
 
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.4.1...arete-sdk-v0.5.0) (2026-08-12)
+
+
+### Features
+
+* add Rust SDK program execution parity ([128df06](https://github.com/AreteA4/arete/commit/128df064631a8fe640dfb67bb56ea9fe767ba06a))
+* align Rust SDK with program execution APIs ([56361f8](https://github.com/AreteA4/arete/commit/56361f890eb91b76df5b26a85ad857238a569280))
+* generate Python SDKs and align cross-language workflows ([e12471b](https://github.com/AreteA4/arete/commit/e12471b0ef149cd80c4d2b6fcd6c6530803d998f))
+* generate Python SDKs and align cross-language workflows ([ed7938b](https://github.com/AreteA4/arete/commit/ed7938b18c519214c471015cb11e20cd7ab2f319))
+
+
+### Bug Fixes
+
+* guard the Rust store against stale live frames ([2b5902f](https://github.com/AreteA4/arete/commit/2b5902f5c18678801794d0f995e0b4a5ea7399d8))
+* keep generated SDK artifacts reproducible ([b29c9b8](https://github.com/AreteA4/arete/commit/b29c9b89bf9f883685105291e6bb3417a740f56d))
+* preserve hosted auth context in sessions ([d5addf7](https://github.com/AreteA4/arete/commit/d5addf75ae4c79c4a1eaaba59fbc9f538b981978))
+
 ## [0.4.1](https://github.com/AreteA4/arete/compare/arete-sdk-v0.4.0...arete-sdk-v0.4.1) (2026-08-02)
 
 

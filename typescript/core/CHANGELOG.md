@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.4.1...arete-typescript-v0.5.0) (2026-08-12)
+
+
+### Features
+
+* generate Python SDKs and align cross-language workflows ([e12471b](https://github.com/AreteA4/arete/commit/e12471b0ef149cd80c4d2b6fcd6c6530803d998f))
+
+
+### Bug Fixes
+
+* keep the tracked sequence on unsequenced upserts (TypeScript) ([cf3063c](https://github.com/AreteA4/arete/commit/cf3063c498e66f3573e9d87149ca3017ff2749d2))
+
 ## [0.4.1](https://github.com/AreteA4/arete/compare/arete-typescript-v0.4.0...arete-typescript-v0.4.1) (2026-08-02)
 
 

@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.4.1...arete-interpreter-v0.5.0) (2026-08-12)
+
+
+### Features
+
+* add managed release v2 contracts ([8d86427](https://github.com/AreteA4/arete/commit/8d864276f0267898ec70912b89e8fd2147a26b12))
+* add managed release v2 contracts ([16db61a](https://github.com/AreteA4/arete/commit/16db61aea9658ceabff66cb672b195fe09848f5e))
+* add Rust SDK program execution parity ([128df06](https://github.com/AreteA4/arete/commit/128df064631a8fe640dfb67bb56ea9fe767ba06a))
+* generate Python SDKs and align cross-language workflows ([e12471b](https://github.com/AreteA4/arete/commit/e12471b0ef149cd80c4d2b6fcd6c6530803d998f))
+* generate Python SDKs and align cross-language workflows ([ed7938b](https://github.com/AreteA4/arete/commit/ed7938b18c519214c471015cb11e20cd7ab2f319))
+* generate Rust program SDKs and extensions ([ff44e71](https://github.com/AreteA4/arete/commit/ff44e7140ddf6a4d9f61b8fba62fc1bdc141f105))
+
+
+### Bug Fixes
+
+* Python formatting ([99f43bd](https://github.com/AreteA4/arete/commit/99f43bda1fc56ebe9952162cb3e623bb5fc4b9e7))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.4.1 to 0.5.0
+    * arete-idl bumped from 0.2.0 to 0.3.0
+    * arete-artifacts bumped from 0.1.1 to 0.2.0
+
 ## [0.4.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.4.0...arete-interpreter-v0.4.1) (2026-08-02)
 
 

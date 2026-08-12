@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.2.0...arete-idl-v0.3.0) (2026-08-12)
+
+
+### Features
+
+* add Rust SDK program execution parity ([128df06](https://github.com/AreteA4/arete/commit/128df064631a8fe640dfb67bb56ea9fe767ba06a))
+
+
+### Bug Fixes
+
+* preserve optional instruction accounts from legacy IDLs ([1281d6e](https://github.com/AreteA4/arete/commit/1281d6e6024669afd7534585c0b8ef071e583385))
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.1.0...arete-idl-v0.2.0) (2026-07-31)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-mcp-npm-v0.4.1...arete-mcp-npm-v0.5.0) (2026-08-12)
+
+
+### Bug Fixes
+
+* normalize npm wrapper bin paths ([41cdfe3](https://github.com/AreteA4/arete/commit/41cdfe3a856b87fb98d64262c97f76c1c9657fa8))
+
 ## [0.4.1](https://github.com/AreteA4/arete/compare/arete-mcp-npm-v0.4.0...arete-mcp-npm-v0.4.1) (2026-08-02)
 
 
