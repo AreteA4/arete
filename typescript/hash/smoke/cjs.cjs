@@ -8,8 +8,10 @@ for (const name of [
   "HashError",
   "hashArtifactTree",
   "hashRawBytes",
+  "hashDecoderFixtureSetV2",
   "parseHashId",
   "parseIdlV1",
+  "validateHostedManagedProgramReleaseV2",
 ]) {
   assert(name in hash, `missing packed CommonJS export ${name}`);
 }

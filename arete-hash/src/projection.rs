@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    hash_framed_tuple, hash_jcs, Compiler, HashError, HashId, ProgramRelease, ProgramSpec,
-    SdkDefinition, TupleField,
+    hash_framed_tuple, hash_jcs, parse_json_bytes_strict, Compiler, HashError, HashId,
+    ProgramRelease, ProgramSpec, SdkDefinition, TupleField,
 };
 
 pub const COMPILER_SCHEMA_V1: &str = "arete.compiler/v1";
@@ -11,8 +11,14 @@ pub const SDK_DEFINITION_SCHEMA_V1: &str = "arete.sdk-definition/v1";
 pub const SDK_DEFINITION_PROGRAM_SPEC_INPUT_KIND: &str = "program-spec";
 pub const OSS_DECODER_ENGINE_ID: &str = "arete-oss-generated-decoder/v1";
 pub const PROGRAM_RELEASE_SCHEMA_V1: &str = "arete.program-release/v1";
+pub const PROGRAM_RELEASE_SCHEMA_V2: &str = "arete.program-release/v2";
 pub const HOSTED_MANAGED_RELEASE_PROFILE: &str = "hosted-managed";
 pub const OSS_GENERATED_RELEASE_PROFILE: &str = "oss-generated";
+pub const SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1: &str = "arete.solana-executable-identity/v1";
+pub const SOLANA_BPF_LOADER_V2_PROGRAM_ID: &str = "BPFLoader2111111111111111111111111111111111";
+pub const SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID: &str =
+    "BPFLoaderUpgradeab1e11111111111111111111111";
+pub const SOLANA_EXECUTABLE_PAYLOAD_SHA256_PREFIX: &str = "sha256:";
 
 /// Remove the declared top-level self-hash field and no other field.
 ///
@@ -151,9 +157,171 @@ impl SdkDefinitionV1 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HostedManagedProgramReleaseV1 {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SolanaExecutableIdentityV1 {
+    pub schema: String,
+    pub genesis_hash: String,
+    pub loader: SolanaExecutableLoaderV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SolanaExecutableLoaderV1 {
+    BpfLoaderV2(SolanaBpfLoaderV2IdentityV1),
+    BpfUpgradeableLoader(SolanaBpfUpgradeableLoaderIdentityV1),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SolanaBpfLoaderV2IdentityV1 {
+    pub loader_program_id: String,
+    pub executable_payload_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SolanaBpfUpgradeableLoaderIdentityV1 {
+    pub loader_program_id: String,
+    pub program_data_address: String,
+    pub deployment_slot: String,
+    pub upgrade_authority: SolanaUpgradeAuthorityV1,
+    pub executable_payload_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SolanaUpgradeAuthorityV1 {
+    None(SolanaNoUpgradeAuthorityV1),
+    Address(SolanaUpgradeAuthorityAddressV1),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolanaNoUpgradeAuthorityV1 {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SolanaUpgradeAuthorityAddressV1 {
+    pub address: String,
+}
+
+impl SolanaExecutableIdentityV1 {
+    pub fn new(
+        genesis_hash: impl Into<String>,
+        loader: SolanaExecutableLoaderV1,
+    ) -> Result<Self, HashError> {
+        let identity = Self {
+            schema: SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1.to_string(),
+            genesis_hash: genesis_hash.into(),
+            loader,
+        };
+        validate_solana_executable_identity_v1(&identity)?;
+        Ok(identity)
+    }
+}
+
+impl SolanaExecutableLoaderV1 {
+    pub fn bpf_loader_v2(executable_payload_sha256: impl Into<String>) -> Result<Self, HashError> {
+        let loader = Self::BpfLoaderV2(SolanaBpfLoaderV2IdentityV1 {
+            loader_program_id: SOLANA_BPF_LOADER_V2_PROGRAM_ID.to_string(),
+            executable_payload_sha256: executable_payload_sha256.into(),
+        });
+        validate_solana_executable_loader_v1(&loader)?;
+        Ok(loader)
+    }
+
+    pub fn bpf_upgradeable_loader(
+        program_data_address: impl Into<String>,
+        deployment_slot: u64,
+        upgrade_authority: SolanaUpgradeAuthorityV1,
+        executable_payload_sha256: impl Into<String>,
+    ) -> Result<Self, HashError> {
+        let loader = Self::BpfUpgradeableLoader(SolanaBpfUpgradeableLoaderIdentityV1 {
+            loader_program_id: SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID.to_string(),
+            program_data_address: program_data_address.into(),
+            deployment_slot: deployment_slot.to_string(),
+            upgrade_authority,
+            executable_payload_sha256: executable_payload_sha256.into(),
+        });
+        validate_solana_executable_loader_v1(&loader)?;
+        Ok(loader)
+    }
+}
+
+impl SolanaUpgradeAuthorityV1 {
+    pub const fn none() -> Self {
+        Self::None(SolanaNoUpgradeAuthorityV1 {})
+    }
+
+    pub fn address(address: impl Into<String>) -> Result<Self, HashError> {
+        let address = address.into();
+        validate_base58_32(&address, "upgradeAuthority.address")?;
+        Ok(Self::Address(SolanaUpgradeAuthorityAddressV1 { address }))
+    }
+}
+
+pub fn parse_solana_executable_identity_v1(
+    bytes: &[u8],
+) -> Result<SolanaExecutableIdentityV1, HashError> {
+    let value = parse_json_bytes_strict(bytes)?;
+    let identity: SolanaExecutableIdentityV1 = serde_json::from_value(value)
+        .map_err(|error| release_projection_error(error.to_string()))?;
+    validate_solana_executable_identity_v1(&identity)?;
+    Ok(identity)
+}
+
+pub fn validate_solana_executable_identity_v1(
+    identity: &SolanaExecutableIdentityV1,
+) -> Result<(), HashError> {
+    if identity.schema != SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1 {
+        return Err(HashError::UnknownVersion(identity.schema.clone()));
+    }
+    validate_base58_32(&identity.genesis_hash, "genesisHash")?;
+    validate_solana_executable_loader_v1(&identity.loader)
+}
+
+fn validate_solana_executable_loader_v1(
+    loader: &SolanaExecutableLoaderV1,
+) -> Result<(), HashError> {
+    match loader {
+        SolanaExecutableLoaderV1::BpfLoaderV2(loader) => {
+            validate_loader_program_id(
+                &loader.loader_program_id,
+                SOLANA_BPF_LOADER_V2_PROGRAM_ID,
+                "bpf-loader-v2",
+            )?;
+            validate_sha256_digest(&loader.executable_payload_sha256, "executablePayloadSha256")
+        }
+        SolanaExecutableLoaderV1::BpfUpgradeableLoader(loader) => {
+            validate_loader_program_id(
+                &loader.loader_program_id,
+                SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID,
+                "bpf-upgradeable-loader",
+            )?;
+            validate_base58_32(&loader.program_data_address, "programDataAddress")?;
+            validate_deployment_slot(&loader.deployment_slot)?;
+            if let SolanaUpgradeAuthorityV1::Address(authority) = &loader.upgrade_authority {
+                validate_base58_32(&authority.address, "upgradeAuthority.address")?;
+            }
+            validate_sha256_digest(&loader.executable_payload_sha256, "executablePayloadSha256")
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostedManagedProgramReleaseV2 {
     pub schema: String,
     pub release_profile: String,
     pub program_id: String,
@@ -163,43 +331,71 @@ pub struct HostedManagedProgramReleaseV1 {
     pub decoder_abi_version: String,
     pub decoder_engine_id: String,
     pub decoder_binding_id: String,
+    pub executable_identity: SolanaExecutableIdentityV1,
 }
 
-impl HostedManagedProgramReleaseV1 {
-    pub fn new(
-        program_id: impl Into<String>,
-        program_spec_hash: HashId<ProgramSpec>,
-        idl_content_hash: HashId<crate::IdlContent>,
-        normalized_idl_hash: HashId<crate::IdlNormalized>,
-        decoder_abi_version: impl Into<String>,
-        decoder_engine_id: impl Into<String>,
-        decoder_binding_id: impl Into<String>,
-    ) -> Self {
-        Self {
-            schema: PROGRAM_RELEASE_SCHEMA_V1.to_string(),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedManagedProgramReleaseV2Fields {
+    pub program_id: String,
+    pub program_spec_hash: HashId<ProgramSpec>,
+    pub idl_content_hash: HashId<crate::IdlContent>,
+    pub normalized_idl_hash: HashId<crate::IdlNormalized>,
+    pub decoder_abi_version: String,
+    pub decoder_engine_id: String,
+    pub decoder_binding_id: String,
+    pub executable_identity: SolanaExecutableIdentityV1,
+}
+
+impl HostedManagedProgramReleaseV2 {
+    pub fn new(fields: HostedManagedProgramReleaseV2Fields) -> Result<Self, HashError> {
+        let release = Self {
+            schema: PROGRAM_RELEASE_SCHEMA_V2.to_string(),
             release_profile: HOSTED_MANAGED_RELEASE_PROFILE.to_string(),
-            program_id: program_id.into(),
-            program_spec_hash,
-            idl_content_hash,
-            normalized_idl_hash,
-            decoder_abi_version: decoder_abi_version.into(),
-            decoder_engine_id: decoder_engine_id.into(),
-            decoder_binding_id: decoder_binding_id.into(),
-        }
+            program_id: fields.program_id,
+            program_spec_hash: fields.program_spec_hash,
+            idl_content_hash: fields.idl_content_hash,
+            normalized_idl_hash: fields.normalized_idl_hash,
+            decoder_abi_version: fields.decoder_abi_version,
+            decoder_engine_id: fields.decoder_engine_id,
+            decoder_binding_id: fields.decoder_binding_id,
+            executable_identity: fields.executable_identity,
+        };
+        validate_hosted_managed_program_release_v2(&release)?;
+        Ok(release)
     }
 
     pub fn hash(&self) -> Result<HashId<ProgramRelease>, HashError> {
-        validate_release_projection(
-            &self.schema,
-            &self.release_profile,
-            HOSTED_MANAGED_RELEASE_PROFILE,
-            &self.program_id,
-            &self.decoder_engine_id,
-            Some(&self.decoder_abi_version),
-            Some(&self.decoder_binding_id),
-        )?;
+        validate_hosted_managed_program_release_v2(self)?;
         hash_jcs(self)
     }
+}
+
+pub fn parse_hosted_managed_program_release_v2(
+    bytes: &[u8],
+) -> Result<HostedManagedProgramReleaseV2, HashError> {
+    let value = parse_json_bytes_strict(bytes)?;
+    let release: HostedManagedProgramReleaseV2 = serde_json::from_value(value)
+        .map_err(|error| release_projection_error(error.to_string()))?;
+    validate_hosted_managed_program_release_v2(&release)?;
+    Ok(release)
+}
+
+pub fn validate_hosted_managed_program_release_v2(
+    release: &HostedManagedProgramReleaseV2,
+) -> Result<(), HashError> {
+    validate_release_projection(
+        (&release.schema, PROGRAM_RELEASE_SCHEMA_V2),
+        (&release.release_profile, HOSTED_MANAGED_RELEASE_PROFILE),
+        &release.program_id,
+        &release.decoder_engine_id,
+        Some(&release.decoder_abi_version),
+        Some(&release.decoder_binding_id),
+    )?;
+    validate_base58_32(&release.program_id, "programId")?;
+    validate_release_identifier(&release.decoder_abi_version, "decoderAbiVersion", 64)?;
+    validate_release_identifier(&release.decoder_engine_id, "decoderEngineId", 128)?;
+    validate_release_identifier(&release.decoder_binding_id, "decoderBindingId", 128)?;
+    validate_solana_executable_identity_v1(&release.executable_identity)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,9 +446,8 @@ impl OssGeneratedProgramReleaseV1 {
 
     pub fn hash(&self) -> Result<HashId<ProgramRelease>, HashError> {
         validate_release_projection(
-            &self.schema,
-            &self.release_profile,
-            OSS_GENERATED_RELEASE_PROFILE,
+            (&self.schema, PROGRAM_RELEASE_SCHEMA_V1),
+            (&self.release_profile, OSS_GENERATED_RELEASE_PROFILE),
             &self.program_id,
             &self.decoder_engine_id,
             None,
@@ -263,17 +458,18 @@ impl OssGeneratedProgramReleaseV1 {
 }
 
 fn validate_release_projection(
-    schema: &str,
-    release_profile: &str,
-    expected_profile: &'static str,
+    schema: (&str, &'static str),
+    release_profile: (&str, &'static str),
     program_id: &str,
     decoder_engine_id: &str,
     decoder_abi_version: Option<&str>,
     decoder_binding_id: Option<&str>,
 ) -> Result<(), HashError> {
-    if schema != PROGRAM_RELEASE_SCHEMA_V1 {
+    let (schema, expected_schema) = schema;
+    if schema != expected_schema {
         return Err(HashError::UnknownVersion(schema.to_string()));
     }
+    let (release_profile, expected_profile) = release_profile;
     if release_profile != expected_profile {
         return Err(HashError::InvalidProjection {
             projection: "program release",
@@ -305,4 +501,80 @@ fn validate_release_projection(
         });
     }
     Ok(())
+}
+
+fn validate_loader_program_id(
+    actual: &str,
+    expected: &'static str,
+    variant: &'static str,
+) -> Result<(), HashError> {
+    if actual != expected {
+        return Err(release_projection_error(format!(
+            "loaderProgramId for '{variant}' must be '{expected}', not '{actual}'"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_release_identifier(
+    value: &str,
+    field: &str,
+    max_length: usize,
+) -> Result<(), HashError> {
+    if value.is_empty() || value.trim() != value || value.len() > max_length {
+        return Err(release_projection_error(format!(
+            "{field} must be a nonempty, trimmed string of at most {max_length} bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_deployment_slot(value: &str) -> Result<(), HashError> {
+    let canonical = value == "0"
+        || value
+            .strip_prefix(|character: char| ('1'..='9').contains(&character))
+            .is_some_and(|rest| rest.bytes().all(|byte| byte.is_ascii_digit()));
+    if !canonical || value.parse::<u64>().is_err() {
+        return Err(release_projection_error(
+            "deploymentSlot must be a canonical unsigned decimal u64 string".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sha256_digest(value: &str, field: &str) -> Result<(), HashError> {
+    let Some(digest) = value.strip_prefix(SOLANA_EXECUTABLE_PAYLOAD_SHA256_PREFIX) else {
+        return Err(release_projection_error(format!(
+            "{field} must use the sha256:<lowercase-hex> format"
+        )));
+    };
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(release_projection_error(format!(
+            "{field} must use the sha256:<lowercase-hex> format"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_base58_32(value: &str, field: &str) -> Result<(), HashError> {
+    let decoded = bs58::decode(value).into_vec().map_err(|_| {
+        release_projection_error(format!("{field} must be a canonical 32-byte base58 value"))
+    })?;
+    if decoded.len() != 32 || bs58::encode(decoded).into_string() != value {
+        return Err(release_projection_error(format!(
+            "{field} must be a canonical 32-byte base58 value"
+        )));
+    }
+    Ok(())
+}
+
+fn release_projection_error(reason: String) -> HashError {
+    HashError::InvalidProjection {
+        projection: "program release",
+        reason,
+    }
 }

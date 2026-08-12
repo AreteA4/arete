@@ -4,8 +4,11 @@ import { describe, expect, expectTypeOf, test } from "vitest";
 
 import {
   DECODER_FIXTURE_ACCOUNT_DECODE_ERROR_CATEGORIES,
-  hashDecoderFixtureSetV1,
-  validateDecoderFixtureSetV1,
+  DECODER_FIXTURE_MAX_ACCOUNT_BYTES,
+  DECODER_FIXTURE_MAX_CASES,
+  DECODER_FIXTURE_MAX_TOTAL_ACCOUNT_BYTES,
+  hashDecoderFixtureSetV2,
+  validateDecoderFixtureSetV2,
 } from "./fixture.js";
 
 import {
@@ -26,7 +29,7 @@ import {
   hashArtifactTree,
   hashFramedTuple,
   hashCompilerV1,
-  hashHostedManagedProgramReleaseV1,
+  hashHostedManagedProgramReleaseV2,
   hashJcs,
   hashJsonBytes,
   hashOssGeneratedProgramReleaseV1,
@@ -42,7 +45,8 @@ import {
   projectWithoutArtifactHash,
   type ArtifactTreeEntry,
   type AuthenticatedOwnerHashKind,
-  type HostedManagedProgramReleaseV1,
+  validateHostedManagedProgramReleaseV2,
+  type HostedManagedProgramReleaseV2,
   type JsonValue,
   type OssGeneratedProgramReleaseV1,
   type ProgramSpecV1,
@@ -305,8 +309,11 @@ describe("shared hash-v1 vectors", () => {
       if (vector.operation === "oss-program-release-v1") {
         return hashOssGeneratedProgramReleaseV1(vector.input.projection);
       }
-      if (vector.operation === "decoder-fixture-set-v1") {
-        return validateDecoderFixtureSetV1(vector.input.projection);
+      if (vector.operation === "decoder-fixture-set-v2") {
+        return validateDecoderFixtureSetV2(vector.input.projection);
+      }
+      if (vector.operation === "hosted-program-release-v2") {
+        return validateHostedManagedProgramReleaseV2(vector.input.projection);
       }
       throw new Error(`unknown operation ${vector.operation}`);
     };
@@ -361,24 +368,39 @@ describe("shared hash-v1 vectors", () => {
   });
 
   test.each(corpus.releaseVectors)("release $id", (vector) => {
-    const id =
-      vector.projection.releaseProfile === "hosted-managed"
-        ? hashHostedManagedProgramReleaseV1(
-            vector.projection as HostedManagedProgramReleaseV1,
-          )
-        : hashOssGeneratedProgramReleaseV1(
-            vector.projection as OssGeneratedProgramReleaseV1,
-          );
+    const id = vector.projection.releaseProfile === "oss-generated"
+      ? hashOssGeneratedProgramReleaseV1(
+          vector.projection as OssGeneratedProgramReleaseV1,
+        )
+      : vector.projection.schema === "arete.program-release/v2"
+        ? hashHostedManagedProgramReleaseV2(vector.projection)
+        : hashJcs("program-release", vector.projection);
     expectHash(vector.expected, canonicalizeJcs(vector.projection), id);
   });
 
+  test("hosted Release V2 without upgrade authority matches shared bytes and hash", () => {
+    const vector = corpus.releaseVectors.find(
+      (item) =>
+        item.id === "release-hosted-managed-v2-upgradeable-no-authority",
+    )!;
+    expect(
+      vector.projection.executableIdentity.loader.upgradeAuthority,
+    ).toEqual({ kind: "none" });
+    const projection = validateHostedManagedProgramReleaseV2(vector.projection);
+    expectHash(
+      vector.expected,
+      canonicalizeJcs(projection as unknown as JsonValue),
+      hashHostedManagedProgramReleaseV2(projection),
+    );
+  });
+
   test.each(corpus.decoderFixtureVectors)("decoder fixture $id", (vector) => {
-    const projection = validateDecoderFixtureSetV1(vector.input);
+    const projection = validateDecoderFixtureSetV2(vector.input);
     expect(projection).toEqual(vector.expectedProjection);
     expectHash(
       vector.expected,
       canonicalizeJcs(projection as unknown as JsonValue),
-      hashDecoderFixtureSetV1(vector.input),
+      hashDecoderFixtureSetV2(vector.input),
     );
   });
 });
@@ -435,21 +457,59 @@ describe("strict JSON values", () => {
     );
 
     const hostedVector = corpus.releaseVectors.find(
-      (vector) => vector.id === "release-hosted-managed",
+      (vector) => vector.id === "release-hosted-managed-v2-upgradeable",
     )!;
     const hosted = {
       ...hostedVector.projection,
       decoderBindingId: "",
-    } as HostedManagedProgramReleaseV1;
-    expect(() => hashHostedManagedProgramReleaseV1(hosted)).toThrowError(
+    } as HostedManagedProgramReleaseV2;
+    expect(() => hashHostedManagedProgramReleaseV2(hosted)).toThrowError(
       expect.objectContaining({ code: "invalid-projection" }),
     );
 
     expect(() =>
-      hashHostedManagedProgramReleaseV1({
+      hashHostedManagedProgramReleaseV2({
         ...hostedVector.projection,
         decoderAbiVersion: "",
-      } as HostedManagedProgramReleaseV1),
+      } as HostedManagedProgramReleaseV2),
     ).toThrowError(expect.objectContaining({ code: "invalid-projection" }));
+  });
+
+  test("fixture V2 enforces case and byte bounds", () => {
+    const baseline = structuredClone(corpus.decoderFixtureVectors[0]!.input);
+    baseline.cases[0].accountDataHex = "00".repeat(
+      DECODER_FIXTURE_MAX_ACCOUNT_BYTES + 1,
+    );
+    expect(() => validateDecoderFixtureSetV2(baseline)).toThrowError(
+      expect.objectContaining({ code: "invalid-projection" }),
+    );
+
+    const tooMany = structuredClone(corpus.decoderFixtureVectors[0]!.input);
+    const template = tooMany.cases[0];
+    tooMany.cases = Array.from(
+      { length: DECODER_FIXTURE_MAX_CASES + 1 },
+      (_, index) => ({ ...template, id: `case-${index}` }),
+    );
+    expect(() => validateDecoderFixtureSetV2(tooMany)).toThrowError(
+      expect.objectContaining({ code: "invalid-projection" }),
+    );
+
+    const tooLarge = structuredClone(corpus.decoderFixtureVectors[0]!.input);
+    const fullCase = {
+      ...tooLarge.cases[0],
+      accountDataHex: "00".repeat(DECODER_FIXTURE_MAX_ACCOUNT_BYTES),
+    };
+    tooLarge.cases = Array.from(
+      {
+        length:
+          DECODER_FIXTURE_MAX_TOTAL_ACCOUNT_BYTES /
+            DECODER_FIXTURE_MAX_ACCOUNT_BYTES +
+          1,
+      },
+      (_, index) => ({ ...fullCase, id: `total-${index}` }),
+    );
+    expect(() => validateDecoderFixtureSetV2(tooLarge)).toThrowError(
+      expect.objectContaining({ code: "invalid-projection" }),
+    );
   });
 });

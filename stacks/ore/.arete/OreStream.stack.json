@@ -2854,8 +2854,8 @@
     {
       "schema": "arete.program-spec/v1",
       "programId": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "idlContentHash": "arete:h1:idl-content:sha256:a6c8507030a7ba25b7aeb41d35634a5a3fa27023ad3000ff216b869155da5d12",
-      "portableIdlHash": "arete:h1:idl-portable:sha256:10efe0793e8742548f774ff07f8aec238dc1243e40194ad7d096f33edb2d6f74",
+      "idlContentHash": "arete:h1:idl-content:sha256:98b3cfcdeb2ad1a6a67a6a15d1b42979628da7bbabec1f30adc22958ead2ead6",
+      "portableIdlHash": "arete:h1:idl-portable:sha256:44f552651b3dbb588c86d64f7ba9a884021569772f394b60246f61c2a84ab7c0",
       "normalizedIdlHash": "arete:h1:idl-normalized:sha256:4ad55eb4df42e150fb8004e52180ad2722f3a893847a828c48cd7da5eeccbc42",
       "idlSnapshot": {
         "normalizationVersion": 1,
@@ -14562,5 +14562,5 @@
       ]
     }
   ],
-  "content_hash": "c1e560b702159b2fff2334575ac16caa9f9616c115ff4b83305020d5502ca84f"
+  "content_hash": "7b7566e4fd5987378f9e85c15995a2278bf5ed01e8e0d533349e07c517438a88"
 }

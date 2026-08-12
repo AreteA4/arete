@@ -186,10 +186,14 @@ fn checked_in_failure_vectors_fail_with_stable_codes() {
                     .hash()
                     .map(|_| ())
             }
-            "decoder-fixture-set-v1" => {
-                parse_decoder_fixture_set_v1(&serde_json::to_vec(&input["projection"]).unwrap())
+            "decoder-fixture-set-v2" => {
+                parse_decoder_fixture_set_v2(&serde_json::to_vec(&input["projection"]).unwrap())
                     .map(|_| ())
             }
+            "hosted-program-release-v2" => parse_hosted_managed_program_release_v2(
+                &serde_json::to_vec(&input["projection"]).unwrap(),
+            )
+            .map(|_| ()),
             other => panic!("unknown failure operation '{other}'"),
         };
         let error = result.unwrap_err();
@@ -344,20 +348,26 @@ fn checked_in_release_vectors_validate_typed_projections() {
         .expect("release vectors")
     {
         let projection = &vector["projection"];
-        let hash = match projection["releaseProfile"].as_str().unwrap() {
-            OSS_GENERATED_RELEASE_PROFILE => {
+        let hash = match (
+            projection["schema"].as_str().unwrap(),
+            projection["releaseProfile"].as_str().unwrap(),
+        ) {
+            (PROGRAM_RELEASE_SCHEMA_V1, OSS_GENERATED_RELEASE_PROFILE) => {
                 serde_json::from_value::<OssGeneratedProgramReleaseV1>(projection.clone())
                     .expect("OSS projection")
                     .hash()
                     .expect("valid OSS projection")
             }
-            HOSTED_MANAGED_RELEASE_PROFILE => {
-                serde_json::from_value::<HostedManagedProgramReleaseV1>(projection.clone())
-                    .expect("hosted projection")
+            (PROGRAM_RELEASE_SCHEMA_V2, HOSTED_MANAGED_RELEASE_PROFILE) => {
+                parse_hosted_managed_program_release_v2(&serde_json::to_vec(projection).unwrap())
+                    .expect("hosted V2 projection")
                     .hash()
-                    .expect("valid hosted projection")
+                    .expect("valid hosted V2 projection")
             }
-            other => panic!("unknown release profile '{other}'"),
+            (PROGRAM_RELEASE_SCHEMA_V1, HOSTED_MANAGED_RELEASE_PROFILE) => {
+                hash_jcs::<ProgramRelease, _>(projection).expect("historical hosted V1 hashes")
+            }
+            (schema, profile) => panic!("unknown release projection '{schema}'/'{profile}'"),
         };
         let payload = canonicalize_jcs(projection).unwrap();
         assert_expected_identity(
@@ -368,6 +378,33 @@ fn checked_in_release_vectors_validate_typed_projections() {
             hash.into_any(),
         );
     }
+}
+
+#[test]
+fn hosted_release_v2_without_upgrade_authority_matches_shared_bytes_and_hash() {
+    let corpus = corpus();
+    let vector = corpus["releaseVectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|vector| vector["id"] == "release-hosted-managed-v2-upgradeable-no-authority")
+        .expect("shared no-authority release vector");
+    assert_eq!(
+        vector["projection"]["executableIdentity"]["loader"]["upgradeAuthority"],
+        serde_json::json!({"kind": "none"})
+    );
+
+    let projection = &vector["projection"];
+    let release =
+        parse_hosted_managed_program_release_v2(&serde_json::to_vec(projection).unwrap()).unwrap();
+    let payload = canonicalize_jcs(projection).unwrap();
+    assert_expected_identity(
+        &vector["expected"],
+        HashKindName::ProgramRelease,
+        CanonicalizationProfile::AreteJcsV1,
+        &payload,
+        release.hash().unwrap().into_any(),
+    );
 }
 
 #[test]
@@ -391,7 +428,7 @@ fn checked_in_decoder_fixture_vectors_are_exact_and_order_invariant() {
         .as_array()
         .expect("decoder fixture vectors")
     {
-        let fixture: DecoderFixtureSetV1 =
+        let fixture: DecoderFixtureSetV2 =
             serde_json::from_value(vector["input"].clone()).expect("fixture projection");
         let projection = fixture.canonical_projection().expect("valid fixture");
         assert_eq!(
@@ -568,17 +605,64 @@ fn release_projections_reject_empty_semantic_identifiers() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|vector| vector["id"] == "release-hosted-managed")
+        .find(|vector| vector["id"] == "release-hosted-managed-v2-upgradeable")
         .unwrap();
-    let mut hosted: HostedManagedProgramReleaseV1 =
+    let mut hosted: HostedManagedProgramReleaseV2 =
         serde_json::from_value(hosted_vector["projection"].clone()).unwrap();
     hosted.decoder_binding_id.clear();
     assert_eq!(hosted.hash().unwrap_err().code(), "invalid-projection");
 
-    let mut hosted: HostedManagedProgramReleaseV1 =
+    let mut hosted: HostedManagedProgramReleaseV2 =
         serde_json::from_value(hosted_vector["projection"].clone()).unwrap();
     hosted.decoder_abi_version.clear();
     assert_eq!(hosted.hash().unwrap_err().code(), "invalid-projection");
+}
+
+#[test]
+fn decoder_fixture_v2_enforces_case_and_byte_bounds() {
+    let corpus = corpus();
+    let baseline = &corpus["decoderFixtureVectors"][0]["input"];
+    let mut fixture: DecoderFixtureSetV2 = serde_json::from_value(baseline.clone()).unwrap();
+
+    fixture.cases[0].account_data_hex = "00".repeat(DECODER_FIXTURE_MAX_ACCOUNT_BYTES + 1);
+    assert_eq!(
+        validate_decoder_fixture_set_v2(&fixture)
+            .unwrap_err()
+            .code(),
+        "invalid-projection"
+    );
+
+    let mut fixture: DecoderFixtureSetV2 = serde_json::from_value(baseline.clone()).unwrap();
+    let template = fixture.cases[0].clone();
+    fixture.cases = (0..=DECODER_FIXTURE_MAX_CASES)
+        .map(|index| DecoderFixtureCaseV2 {
+            id: format!("case-{index}"),
+            ..template.clone()
+        })
+        .collect();
+    assert_eq!(
+        validate_decoder_fixture_set_v2(&fixture)
+            .unwrap_err()
+            .code(),
+        "invalid-projection"
+    );
+
+    let mut fixture: DecoderFixtureSetV2 = serde_json::from_value(baseline.clone()).unwrap();
+    let mut template = fixture.cases[0].clone();
+    template.account_data_hex = "00".repeat(DECODER_FIXTURE_MAX_ACCOUNT_BYTES);
+    fixture.cases = (0..=DECODER_FIXTURE_MAX_TOTAL_ACCOUNT_BYTES
+        / DECODER_FIXTURE_MAX_ACCOUNT_BYTES)
+        .map(|index| DecoderFixtureCaseV2 {
+            id: format!("total-{index}"),
+            ..template.clone()
+        })
+        .collect();
+    assert_eq!(
+        validate_decoder_fixture_set_v2(&fixture)
+            .unwrap_err()
+            .code(),
+        "invalid-projection"
+    );
 }
 
 #[test]
