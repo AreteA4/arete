@@ -62,12 +62,13 @@ jobs:
       - name: Verify exact reviewed main commit and successful CI
         env:
           GH_TOKEN: ${{ github.token }}
+          RUST_TOOLCHAIN: ${{ inputs.rust_toolchain }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = "refs/heads/main"
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${{ inputs.rust_toolchain }}" =~ ^1\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RUST_TOOLCHAIN" =~ ^1\.[0-9]+\.[0-9]+$ ]]
           test "$SOURCE_COMMIT" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
           git show-ref --verify --quiet refs/remotes/origin/main
