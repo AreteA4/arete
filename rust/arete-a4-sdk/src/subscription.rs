@@ -1,4 +1,6 @@
+use crate::collation::locale_compare;
 use crate::error::AreteError;
+use serde::ser::{SerializeMap, SerializeSeq, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -14,7 +16,11 @@ pub struct SubscriptionQuery {
     pub key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partition: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        serialize_with = "serialize_filters_in_collation_order"
+    )]
     pub filters: BTreeMap<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub take: Option<usize>,
@@ -24,6 +30,64 @@ pub struct SubscriptionQuery {
     pub after: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot_limit: Option<usize>,
+}
+
+/// Emit `filters` in JS `localeCompare` order rather than the `BTreeMap`'s
+/// code-point order (canonical §2 ordering rule).
+///
+/// `BTreeMap` is what makes equivalent insertion orders produce one canonical
+/// identity, but its iteration order is byte order, which diverges from
+/// TypeScript for mixed-case and non-ASCII filter keys — and this serializer
+/// feeds both the wire frame and `canonical_identity`, so the divergence would
+/// silently split query dedup/refcounting across SDKs. Sorting here (rather
+/// than changing the container) keeps the public field type, `with_filter`,
+/// and `with_filters` unchanged.
+///
+/// Nested object keys inside filter *values* are reordered too, matching
+/// `canonicalJsonValue` in `typescript/core/src/subscription.ts` and
+/// `_canonical_json_value` in `python/arete-sdk/arete/subscription.py`.
+fn serialize_filters_in_collation_order<S: Serializer>(
+    filters: &BTreeMap<String, Value>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serialize_entries_in_collation_order(filters.iter(), filters.len(), serializer)
+}
+
+fn serialize_entries_in_collation_order<'a, S: Serializer>(
+    entries: impl Iterator<Item = (&'a String, &'a Value)>,
+    len: usize,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let mut ordered: Vec<(&String, &Value)> = entries.collect();
+    // Stable, so keys that collate equal keep the container's own order.
+    ordered.sort_by(|(left, _), (right, _)| locale_compare(left, right));
+    let mut map = serializer.serialize_map(Some(len))?;
+    for (key, value) in ordered {
+        map.serialize_entry(key, &CanonicalValue(value))?;
+    }
+    map.end()
+}
+
+/// A `serde_json::Value` serialized with every nested object key in collation
+/// order.
+struct CanonicalValue<'a>(&'a Value);
+
+impl Serialize for CanonicalValue<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Object(map) => {
+                serialize_entries_in_collation_order(map.iter(), map.len(), serializer)
+            }
+            Value::Array(items) => {
+                let mut sequence = serializer.serialize_seq(Some(items.len()))?;
+                for item in items {
+                    sequence.serialize_element(&CanonicalValue(item))?;
+                }
+                sequence.end()
+            }
+            scalar => scalar.serialize(serializer),
+        }
+    }
 }
 
 impl SubscriptionQuery {
@@ -108,8 +172,10 @@ impl SubscriptionQuery {
         Ok(())
     }
 
-    /// Canonical v2 query identity. Struct field order matches the server and
-    /// filters use a BTreeMap so equivalent insertion orders serialize equally.
+    /// Canonical v2 query identity. Struct field order matches the server
+    /// (`view, key, partition, filters, take, skip, after, snapshotLimit`) and
+    /// filters use a BTreeMap so equivalent insertion orders serialize equally,
+    /// emitted in `localeCompare` order to stay byte-identical to TypeScript.
     pub fn canonical_identity(&self) -> Result<String, AreteError> {
         self.validate()?;
         serde_json::to_string(self).map_err(AreteError::from)
@@ -401,6 +467,75 @@ mod tests {
         first.partition = Some("a".to_string());
         second.partition = Some("b".to_string());
         assert_ne!(
+            first.canonical_identity().unwrap(),
+            second.canonical_identity().unwrap()
+        );
+    }
+
+    /// Regression: filter keys serialize — and therefore hash for canonical
+    /// identity — in `localeCompare` order, not the `BTreeMap`'s code-point
+    /// order.
+    ///
+    /// `BTreeMap` iteration puts `"zone"` (U+007A) before `"état"` (U+00E9);
+    /// TypeScript's `left.localeCompare(right)` puts `"état"` first, so the
+    /// canonical identity string — the query dedup/refcount key — differed
+    /// between SDKs for any non-ASCII or mixed-case filter path.
+    #[test]
+    fn filter_keys_serialize_in_collation_order_not_byte_order() {
+        let query = SubscriptionQuery::new("Order/list")
+            .with_filter("zone", "west")
+            .with_filter("état", "ouvert");
+
+        // Byte order — what a plain BTreeMap emits — is the opposite.
+        assert_eq!(
+            query.filters.keys().collect::<Vec<_>>(),
+            vec!["zone", "état"]
+        );
+
+        assert_eq!(
+            query.canonical_identity().unwrap(),
+            r#"{"view":"Order/list","filters":{"état":"ouvert","zone":"west"}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&query).unwrap(),
+            r#"{"view":"Order/list","filters":{"état":"ouvert","zone":"west"}}"#
+        );
+
+        // Mixed-case base58-shaped keys are the case that occurs in practice.
+        let keys = SubscriptionQuery::new("Account/list")
+            .with_filter("Zap1", 1)
+            .with_filter("aBc1", 1)
+            .with_filter("Bqq", 1)
+            .with_filter("apple", 1);
+        let encoded = serde_json::to_string(&keys).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"view":"Account/list","filters":{"aBc1":1,"apple":1,"Bqq":1,"Zap1":1}}"#
+        );
+
+        // Nested object keys inside a filter value collate as well.
+        let nested = SubscriptionQuery::new("Order/list")
+            .with_filter("scope", json!({"zone": 1, "état": 2}));
+        assert_eq!(
+            serde_json::to_string(&nested).unwrap(),
+            r#"{"view":"Order/list","filters":{"scope":{"état":2,"zone":1}}}"#
+        );
+    }
+
+    /// The property the `BTreeMap` exists for survives the collation ordering:
+    /// equivalent insertion orders still produce one canonical identity.
+    #[test]
+    fn collation_ordering_preserves_insertion_order_independence() {
+        let first = SubscriptionQuery::new("Order/list")
+            .with_filter("zone", "west")
+            .with_filter("état", "ouvert")
+            .with_filter("Zap1", 1);
+        let second = SubscriptionQuery::new("Order/list")
+            .with_filter("Zap1", 1)
+            .with_filter("état", "ouvert")
+            .with_filter("zone", "west");
+
+        assert_eq!(
             first.canonical_identity().unwrap(),
             second.canonical_identity().unwrap()
         );

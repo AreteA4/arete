@@ -34,7 +34,7 @@ pub fn create(
     let selected_template = match template {
         Some(t) => Template::from_str(&t).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown template: {}. Available: react-ore, rust-ore, typescript-ore",
+                "Unknown template: {}. Available: react-ore, rust-ore, typescript-ore, python-ore",
                 t
             )
         })?,
@@ -102,6 +102,9 @@ pub fn create(
     if selected_template.is_rust() {
         println!();
         print_rust_next_steps(&project_name);
+    } else if selected_template.is_python() {
+        println!();
+        print_python_next_steps(&project_name);
     } else if selected_template.is_typescript_cli() {
         let pm = detect_package_manager();
         let install_succeeded = if skip_install {
@@ -210,6 +213,24 @@ fn print_rust_next_steps(project_name: &str) {
         "$".dimmed(),
         format!("cd {}", project_name).cyan(),
         "cargo run".cyan()
+    );
+    println!();
+}
+
+fn print_python_next_steps(project_name: &str) {
+    println!(
+        "{} {}",
+        ui::symbols::SUCCESS.green().bold(),
+        "Ready!".bold()
+    );
+    println!();
+    println!("Run the client:");
+    println!();
+    println!(
+        "  {} {} && {}",
+        "$".dimmed(),
+        format!("cd {}", project_name).cyan(),
+        "python main.py".cyan()
     );
     println!();
 }

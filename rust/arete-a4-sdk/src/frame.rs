@@ -3,6 +3,7 @@ use crate::subscription::{SubscriptionQuery, PROTOCOL_VERSION};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::io::Read;
 
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
@@ -182,6 +183,53 @@ impl ServerFrame {
 
 pub type Frame = ServerFrame;
 
+/// Split a `slot:index` sequence string into its two leading segments.
+///
+/// `frame-processor.ts:313` uses `split(':', 2)` and `wire.py:83` takes
+/// `parts[1]`: both keep only the *second* segment as the index, so anything
+/// after a second colon is dropped rather than folded into the index.
+fn split_seq(value: &str) -> (&str, &str) {
+    let mut segments = value.split(':');
+    let slot = segments.next().unwrap_or("");
+    let index = segments.next().unwrap_or("");
+    (slot, index)
+}
+
+fn is_ascii_digits(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Order two protocol sequence strings (`"<slot>:<index>"`).
+///
+/// Mirrors `compareSeq` (`typescript/core/src/frame-processor.ts:312`) and
+/// `compare_seq` (`python/arete-sdk/arete/wire.py:98`): the slot is compared
+/// numerically when *both* slots are all ASCII digits, and the index is
+/// compared by code point. A non-numeric slot on either side makes the slot
+/// irrelevant and the index decides.
+///
+/// The slot is compared as a digit string rather than through an integer parse
+/// because TypeScript uses `BigInt` and Python uses `int`: neither has a width
+/// limit, so a `u64::parse` would overflow on long slots.
+pub(crate) fn compare_seq(left: &str, right: &str) -> Ordering {
+    let (left_slot, left_index) = split_seq(left);
+    let (right_slot, right_index) = split_seq(right);
+    if is_ascii_digits(left_slot) && is_ascii_digits(right_slot) {
+        let left_digits = left_slot.trim_start_matches('0');
+        let right_digits = right_slot.trim_start_matches('0');
+        let slot_order = left_digits
+            .len()
+            .cmp(&right_digits.len())
+            .then_with(|| left_digits.cmp(right_digits));
+        if slot_order != Ordering::Equal {
+            return slot_order;
+        }
+    }
+    // Code-point order, matching Python's `<` on `str`. `collation.rs` models
+    // JS `localeCompare` for sort keys and filter keys; seq indices are opaque
+    // fixed-width counters and are not collated.
+    left_index.cmp(right_index)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProtocolErrorFrame {
@@ -352,6 +400,44 @@ mod tests {
             parse_frame(&encoder.finish().unwrap()).unwrap(),
             ServerFrame::Upsert { .. }
         ));
+    }
+
+    #[test]
+    fn compare_seq_orders_slot_numerically() {
+        // Numeric slots never compare as text: "9" > "10" lexicographically.
+        assert_eq!(compare_seq("9:0001", "10:0001"), Ordering::Less);
+        assert_eq!(compare_seq("50:0001", "49:9999"), Ordering::Greater);
+        // Leading zeros and unbounded width (TS `BigInt` / Python `int`).
+        assert_eq!(compare_seq("007:a", "7:a"), Ordering::Equal);
+        assert_eq!(
+            compare_seq("99999999999999999999999:a", "100000000000000000000000:a"),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn compare_seq_falls_back_to_index_lexicographically() {
+        assert_eq!(
+            compare_seq("50:000000000001", "50:000000000002"),
+            Ordering::Less
+        );
+        assert_eq!(compare_seq("50:0002", "50:0002"), Ordering::Equal);
+        // Only the second segment is the index; anything past it is ignored.
+        assert_eq!(compare_seq("50:0002:zzz", "50:0002:aaa"), Ordering::Equal);
+        // A missing index is the empty string, which sorts first.
+        assert_eq!(compare_seq("50", "50:0001"), Ordering::Less);
+    }
+
+    #[test]
+    fn compare_seq_ignores_non_numeric_slots() {
+        // One non-digit slot disables the numeric slot comparison entirely, so
+        // the index decides even though "b" > "a".
+        assert_eq!(compare_seq("b:0001", "a:0002"), Ordering::Less);
+        assert_eq!(compare_seq("b:0002", "9:0001"), Ordering::Greater);
+        // An empty slot is not "all digits" either.
+        assert_eq!(compare_seq(":0002", "50:0001"), Ordering::Greater);
+        // Non-ASCII digits are not digits (`/^\d+$/`, `^[0-9]+$`).
+        assert_eq!(compare_seq("١٢:0001", "9:0002"), Ordering::Less);
     }
 
     #[test]

@@ -27,12 +27,12 @@ pub struct OreRoundState {
     pub total_winnings: Option<Option<f64>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
     pub total_miners: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_vec_u64")]
+    pub deployed_per_square: Option<Option<Vec<u64>>>,
     #[serde(default)]
-    pub deployed_per_square: Option<Option<Vec<serde_json::Value>>>,
-    #[serde(default)]
-    pub deployed_per_square_ui: Option<Option<Vec<serde_json::Value>>>,
-    #[serde(default)]
-    pub count_per_square: Option<Option<Vec<serde_json::Value>>>,
+    pub deployed_per_square_ui: Option<Option<Vec<f64>>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_vec_u64")]
+    pub count_per_square: Option<Option<Vec<u64>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -46,7 +46,7 @@ pub struct OreRoundResults {
     #[serde(default)]
     pub slot_hash: Option<Option<String>>,
     #[serde(default)]
-    pub expires_at_slot_hash: Option<Option<serde_json::Value>>,
+    pub expires_at_slot_hash: Option<Option<SlotHashBytes>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
     pub rng: Option<Option<u64>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
@@ -91,8 +91,8 @@ pub struct OreRoundEntropy {
     pub entropy_samples: Option<Option<u64>>,
     #[serde(default)]
     pub entropy_var_address: Option<Option<String>>,
-    #[serde(default)]
-    pub resolved_seed: Option<Option<Vec<serde_json::Value>>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_vec_u64")]
+    pub resolved_seed: Option<Option<Vec<u64>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -110,7 +110,7 @@ pub struct OreRound {
     #[serde(default)]
     pub entropy: OreRoundEntropy,
     #[serde(default)]
-    pub ore_metadata: Option<Option<serde_json::Value>>,
+    pub ore_metadata: Option<Option<TokenMetadata>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -138,7 +138,7 @@ pub struct OreBoard {
     #[serde(default)]
     pub state: OreBoardState,
     #[serde(default)]
-    pub board_snapshot: Option<Option<serde_json::Value>>,
+    pub board_snapshot: Option<Option<CaptureWrapper<Board>>>,
 }
 
 
@@ -178,7 +178,7 @@ pub struct OreTreasury {
     #[serde(default)]
     pub state: OreTreasuryState,
     #[serde(default)]
-    pub treasury_snapshot: Option<Option<serde_json::Value>>,
+    pub treasury_snapshot: Option<Option<CaptureWrapper<Treasury>>>,
 }
 
 
@@ -225,10 +225,10 @@ pub struct OreMinerRewards {
 pub struct OreMinerState {
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
     pub round_id: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_vec_u64")]
+    pub deployed_per_square: Option<Option<Vec<u64>>>,
     #[serde(default)]
-    pub deployed_per_square: Option<Option<Vec<serde_json::Value>>>,
-    #[serde(default)]
-    pub deployed_per_square_ui: Option<Option<Vec<serde_json::Value>>>,
+    pub deployed_per_square_ui: Option<Option<Vec<f64>>>,
     #[serde(default)]
     pub total_deployed: Option<Option<f64>>,
     #[serde(default, deserialize_with = "serde_utils::deserialize_option_option_u64")]
@@ -270,9 +270,9 @@ pub struct OreMiner {
     #[serde(default)]
     pub automation: OreMinerAutomation,
     #[serde(default)]
-    pub miner_snapshot: Option<Option<serde_json::Value>>,
+    pub miner_snapshot: Option<Option<CaptureWrapper<Miner>>>,
     #[serde(default)]
-    pub automation_snapshot: Option<Option<serde_json::Value>>,
+    pub automation_snapshot: Option<Option<CaptureWrapper<Automation>>>,
 }
 
 
@@ -341,14 +341,43 @@ pub struct Automation {
     pub conditions: Option<serde_json::Value>,
 }
 
+/// Slot hash resolved by the builtin `SlotHash` resolver.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SlotHashBytes {
+    /// 32-byte slot hash.
+    #[serde(default)]
+    pub bytes: Vec<u8>,
+}
 
+/// Token metadata resolved by the builtin `TokenMetadata` resolver.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TokenMetadata {
+    #[serde(default)]
+    pub mint: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub symbol: Option<String>,
+    #[serde(default)]
+    pub decimals: Option<u8>,
+    #[serde(default)]
+    pub logo_uri: Option<String>,
+}
+
+
+/// Wrapper for event data that includes context metadata.
+/// Events are automatically wrapped in this structure at runtime.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventWrapper<T> {
+    /// Unix timestamp when the event was processed.
     #[serde(default, deserialize_with = "serde_utils::deserialize_i64")]
     pub timestamp: i64,
+    /// The event-specific data.
     pub data: T,
-    #[serde(default)]
-    pub slot: Option<f64>,
+    /// Optional blockchain slot number.
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub slot: Option<u64>,
+    /// Optional transaction signature.
     #[serde(default)]
     pub signature: Option<String>,
 }
@@ -357,6 +386,39 @@ impl<T: Default> Default for EventWrapper<T> {
     fn default() -> Self {
         Self {
             timestamp: 0,
+            data: T::default(),
+            slot: None,
+            signature: None,
+        }
+    }
+}
+
+/// Wrapper for account data captured with `#[capture]`, including context
+/// metadata. Captured accounts are automatically wrapped in this structure at
+/// runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureWrapper<T> {
+    /// Unix timestamp when the account was captured.
+    #[serde(default, deserialize_with = "serde_utils::deserialize_i64")]
+    pub timestamp: i64,
+    /// The account address (base58 encoded public key).
+    #[serde(default)]
+    pub account_address: String,
+    /// The captured account data.
+    pub data: T,
+    /// Optional blockchain slot number.
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub slot: Option<u64>,
+    /// Optional transaction signature.
+    #[serde(default)]
+    pub signature: Option<String>,
+}
+
+impl<T: Default> Default for CaptureWrapper<T> {
+    fn default() -> Self {
+        Self {
+            timestamp: 0,
+            account_address: String::new(),
             data: T::default(),
             slot: None,
             signature: None,

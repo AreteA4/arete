@@ -1,5 +1,9 @@
 # SDK API Surface & Wire Formats — TypeScript ⇄ Rust Alignment
 
+> The language-neutral canonical surface now lives in `sdk-core-api.md`; this document
+> remains the recorded TypeScript surface (§3), wire formats (§2), and the TS ⇄ Rust
+> alignment history. Python's projection is `sdk-python-alignment.md`.
+
 Status: reference + alignment spec. Sources of truth surveyed 2026-08-04:
 `typescript/core` (`@usearete/sdk` 0.4.1), `typescript/react` (`@usearete/react` 0.4.1),
 `rust/arete-a4-sdk` (0.4.1), `docs/websocket-v2-protocol.md`, generated output in
@@ -344,6 +348,108 @@ adapters (Rust's `SharedStore` remains internal), and the React layer (browser-o
    with a `[patch.crates-io]` override onto the local SDK; `main.rs` demos offline
    instruction building + `a4.programs.ore.deploy(...)`. Regeneration helper:
    `cargo test -p arete-interpreter regenerate_ore_example -- --ignored`.
+
+### String ordering — fixed 2026-08-04
+
+Rust used byte/code-point order where the canonical ordering rule (`sdk-core-api.md` §2)
+requires JS `localeCompare` semantics — the same defect Python carried until the same day.
+`rust/arete-a4-sdk/src/collation.rs` now provides `collation_key` / `locale_compare`
+(`CollationKey`'s derived `Ord` is level-by-level, so `sort_by_key` ≡ `sort_by`), ported
+from the Python reference with an identical fidelity envelope: cross-checked over 8,465
+pairs with **0 mismatches vs Python**, and the same 34 documented deviations from Node ICU
+(all `ð`/`ı`/`ŋ`, the recorded "undecomposable Latin, no fold entry" approximation).
+Dependencies are `unicode-normalization` + `unicode-properties`, both already resolved in
+the workspace lockfile; no ICU crate.
+
+- `subscription.rs` — `filters` stays a public `BTreeMap` (preserving
+  insertion-order-independent identity); a `serialize_with` hook emits entries in
+  collation order, which fixes canonical identity and wire key order together. A
+  `CanonicalValue` wrapper extends the same ordering to nested object keys inside filter
+  values, matching TS `canonicalJsonValue`.
+- `store.rs` — collation applies to the string sort-field branch, the `to_string()`
+  fallback, and the key tie-break (keys are decorated with their `CollationKey` once per
+  sort rather than recompared).
+
+**Second divergence found and fixed in the same expression**: Rust applied the `desc`
+negation to the key tie-break, so descending lists tie-broke in reverse. TS
+(`query-store.ts:387`) applies the tie-break *after* the negation, making it always
+ascending; Python already matched TS. Rust now does too.
+
+Residual, documented: for two distinct keys that *collate equal* (e.g. NFC vs NFD
+spellings used as separate filter paths), Rust's stable sort falls back to BTreeMap byte
+order while TS/Python fall back to insertion order — Rust is strictly more deterministic;
+unreachable from real filter paths.
+
+### Stale-sequence guard — added to Rust 2026-08-04
+
+The Rust store had **no** duplicate/stale-sequence guard for live `upsert`/`patch`
+frames: `apply_frame` destructured `ServerFrame::Upsert`/`::Patch` with `..`, discarding
+the `seq` the frame carries, and `apply_live` wrote storage unconditionally — so an
+older-sequence frame could overwrite newer cached data, which the TS and Python suites
+both forbid. Ported from `typescript/core/src/frame-processor.ts:623-712` and
+`python/arete-sdk/arete/store.py:341-391`: `frame::compare_seq` (slot compared as a digit
+string, so long slots cannot overflow a `u64` parse; only the second `:` segment is the
+index), per-key sequences in `ViewData::seqs` (a sibling map — **not** injected into the
+`serde_json::Value`, which would leak into user data and break typed deserialization),
+and the guard itself. A stale frame still grants query membership and emits an update
+carrying the **cached** value, exactly as TS does; snapshot rows still bypass the guard,
+which is the authoritative-replacement semantics.
+
+**Unsequenced upserts — reconciled across all three SDKs 2026-08-04.** On an upsert with
+no sequence (neither `frame.seq` nor a payload `_seq`), TypeScript used to drop the
+entity's tracked sequence — a side effect of carrying `__seq` on the entity object it
+replaces, not a designed behavior. That disarmed the guard for that key until the next
+sequenced frame, letting a later older frame overwrite newer data. The giveaway was
+internal inconsistency: the *patch* branch of the same function already fell back to
+`getInternalSeq(existing)`, while *upsert* did not. Reachable in practice — the server's
+`seq` is `Option<String>` at every layer (`rust/arete-server/src/websocket/frame.rs:93`).
+
+All three now retain the sequence: `frame-processor.ts` upsert gained
+`?? this.getInternalSeq(previousValue)`, Python already did this
+(`store.py::_set_entity` writes only when `seq is not None`), and Rust matches
+(`ViewData::set_seq`). Regression tests in all three drive `seq 50:…09` → unsequenced →
+`seq 50:…01` and assert the unsequenced value survives; each fails if its fallback is
+removed.
+
+### Resolved-field typing — fixed 2026-08-04
+
+`RustCompiler::field_type_to_rust` never consulted `field.resolved_type` (the
+`resolved_name_map` was plumbed in only to *name* emitted structs), so every
+resolved-struct field fell through to `serde_json::Value` and the generated `Board` /
+`Treasury` / `Miner` / `Automation` structs were referenced by nothing. `EventWrapper<T>`
+was emitted and reserved but likewise unreachable — dead code, exactly as in Python
+before its fix.
+
+Now fixed: `capture_field_targets` + `wrapper_kind_for` ported from
+`interpreter/src/python.rs`, so `#[capture]` fields emit `CaptureWrapper<T>` (exposing
+`timestamp` / `account_address` / `slot` / `signature` beside `data`, matching TS and
+Python), `is_event` / array-of-instruction fields emit `EventWrapper<T>`, and plain
+resolved fields emit the bare struct. `CaptureWrapper` joined the reserved type-name set;
+both wrapper literals collapsed into one `WRAPPER_TYPES` const; wrapper `slot` moved to
+`Option<u64>` with the string-or-number deserializer (the wire sends u64 as a decimal
+string, which the previous dead `Option<f64>` would have rejected). `regenerate_ore_example`
+was also not writing `types.rs`, making regeneration a silent no-op for this file — fixed.
+
+Two adjacent typing gaps closed in the same pass:
+
+- **Scalar arrays** — `BaseType::Array` mapped unconditionally to `Vec<serde_json::Value>`;
+  `integer_kind` / `inner_type` were never read. Now `rust_scalar_field_shape` +
+  `rust_scalar_array_element` (ports of the Python fix) derive the type *and* the
+  `serde_utils` deserializer from one call, so a typed `Vec<u64>` can't be paired with a
+  scalar deserializer. Reuses the existing `deserialize_option_vec_*` matrix; element
+  kinds widen exactly as scalar integers already do (so `Vec<u8>` → `Vec<u64>`; a
+  byte-accurate `Vec<u8>` would need a new SDK deserializer and a policy change).
+- **Builtin resolver types** — `SlotHashBytes` / `TokenMetadata` now emit as structs.
+  This needed the TS `add_unmapped_fields` override ported too: a computed field keeps the
+  user's declared type in the section (`ResolvedSlotHash`), and only
+  `spec.field_mappings["results.expires_at_slot_hash"]` records the real resolver output
+  type. `KeccakRngValue` is deliberately **not** ported from TS — TS models it as `string`
+  only because a u64 rides the wire as a decimal string; typing it that way in Rust would
+  regress `results.rng` from `u64` to `String`. The builtin branch is therefore gated on a
+  local struct table, not on the resolver registry alone.
+
+Note for whoever owns it: `examples/ore-typescript/src/generated/ore-stack-core.ts`
+predates commit `ff44e714` and is due a regeneration pass.
 
 Still open (tracked as roadmap, see §5.5): execution layer (wallet/transaction/receipts),
 HTTP program reads + chain client, sessions, stack runtime extensions (`read`/`flows`/

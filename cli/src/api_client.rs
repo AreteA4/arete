@@ -584,9 +584,9 @@ pub struct RegistrySdkExtensionManifest {
     pub input_kind: Option<RegistrySdkExtensionInputKind>,
     pub input_hash: Option<String>,
     pub sdk_range: Option<String>,
-    /// Target SDK language of the hosted bundle (`"rust"` or absent /
-    /// `"typescript"`). Optional until the registry exposes a language
-    /// dimension on sdk_extension_contents.
+    /// Target SDK language of the hosted bundle (`"rust"`, `"python"`, or
+    /// absent / `"typescript"`). Optional until the registry exposes a
+    /// language dimension on sdk_extension_contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 }
@@ -988,7 +988,8 @@ impl ApiClient {
     ///
     /// `language` selects the hosted devex-extension bundle language. The
     /// TypeScript path passes `None`, keeping the request byte-identical to
-    /// pre-selector CLIs; Rust generation passes `Some("rust")`.
+    /// pre-selector CLIs; Rust generation passes `Some("rust")` and Python
+    /// generation passes `Some("python")`.
     pub fn get_registry_stack_install(
         &self,
         stack: &str,
@@ -1605,6 +1606,15 @@ mod tests {
                 Some("rust")
             ),
             "https://api.example.test/api/registry/stacks/ore/install?language=rust"
+        );
+        // ...and the Python rung uses the same selector mechanism.
+        assert_eq!(
+            registry_install_url(
+                "https://api.example.test",
+                "/api/registry/stacks/ore/install",
+                Some("python")
+            ),
+            "https://api.example.test/api/registry/stacks/ore/install?language=python"
         );
     }
 

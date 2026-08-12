@@ -1,5 +1,7 @@
 """Authentication support for Arete Python SDK."""
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
@@ -7,8 +9,9 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, Optional, Coroutine
-import aiohttp
+from typing import Any, Callable, Coroutine, Dict, List, Mapping, Optional, Sequence
+
+import httpx
 
 from arete.errors import AreteError, AuthError
 
@@ -30,10 +33,15 @@ class TokenTransport(Enum):
 
 @dataclass
 class AuthToken:
-    """Represents an authentication token with optional expiry."""
+    """Represents an authentication token with optional expiry.
+
+    ``scopes`` optionally records the scopes the token was granted (targeted
+    tokens); ``None`` means "assume the requested scopes were granted".
+    """
 
     token: str
     expires_at: Optional[int] = None  # Unix timestamp in seconds
+    scopes: Optional[List[str]] = None
 
     def is_expiring(self, buffer_seconds: int = TOKEN_REFRESH_BUFFER_SECONDS) -> bool:
         """Check if token is expired or about to expire."""
@@ -252,6 +260,114 @@ def is_hosted_arete_websocket_url(websocket_url: str) -> bool:
         return False
 
 
+def resolve_token_endpoint(
+    config: Optional[AuthConfig], websocket_url: Optional[str]
+) -> Optional[str]:
+    """Determine the token endpoint for a configuration + stack URL.
+
+    Explicit ``token_endpoint`` wins; hosted Arete stack URLs fall back to the
+    hosted default endpoint (anonymous minting is allowed without a key).
+    """
+    if config is not None and config.token_endpoint:
+        return config.token_endpoint
+    if websocket_url and is_hosted_arete_websocket_url(websocket_url):
+        return DEFAULT_HOSTED_TOKEN_ENDPOINT
+    return None
+
+
+def build_token_endpoint_request_body(
+    *,
+    websocket_url: Optional[str],
+    scopes: Sequence[str],
+    target_kind: Optional[str] = None,
+    target_id: Optional[str] = None,
+    program_release_hash: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build the token endpoint POST body.
+
+    Untargeted: ``{"websocket_url", "scopes"}``. Targeted
+    (program-read-binding / solana-gateway-binding):
+    ``{"targetKind", "targetId", "scopes"[, "programReleaseHash"]}``.
+    """
+    if target_kind is not None:
+        body: Dict[str, Any] = {
+            "targetKind": target_kind,
+            "targetId": target_id,
+            "scopes": list(scopes),
+        }
+        if program_release_hash is not None:
+            body["programReleaseHash"] = program_release_hash
+        return body
+    return {"websocket_url": websocket_url or "", "scopes": list(scopes)}
+
+
+async def request_token_from_endpoint(
+    http_client: httpx.AsyncClient,
+    endpoint: str,
+    config: Optional[AuthConfig],
+    body: Mapping[str, Any],
+) -> AuthToken:
+    """POST the token endpoint and parse ``{token, expires_at[, scopes]}``.
+
+    Sends ``Authorization: Bearer <publishable key>`` plus any configured
+    endpoint headers. Raises :class:`AuthError` on failure.
+    """
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    if config is not None:
+        if config.publishable_key:
+            headers["Authorization"] = f"Bearer {config.publishable_key}"
+        headers.update(config.token_endpoint_headers or {})
+
+    try:
+        response = await http_client.post(endpoint, headers=headers, json=dict(body))
+    except httpx.HTTPError as e:
+        raise AuthError(
+            f"Token endpoint request failed: {e}", AuthErrorCode.INTERNAL_ERROR
+        ) from e
+
+    error_code_header = response.headers.get("X-Error-Code")
+    if response.status_code < 200 or response.status_code >= 300:
+        raw = response.text
+        error_code = None
+        error_message = raw or response.reason_phrase
+        try:
+            error_data = json.loads(raw)
+            if isinstance(error_data, dict):
+                error_code_str = error_data.get("code") or error_code_header
+                if error_code_str:
+                    error_code = AuthErrorCode.from_wire(str(error_code_str))
+                error_message = error_data.get("error") or error_message
+        except json.JSONDecodeError:
+            pass
+        if error_code is None:
+            if error_code_header:
+                error_code = AuthErrorCode.from_wire(error_code_header)
+            elif response.status_code == 429:
+                error_code = AuthErrorCode.QUOTA_EXCEEDED
+            else:
+                error_code = AuthErrorCode.AUTH_REQUIRED
+        raise AuthError(
+            f"Token endpoint returned {response.status_code}: {error_message}",
+            error_code,
+            {"status": response.status_code, "wire_error_code": error_code_header},
+        )
+
+    data = response.json()
+    token = data.get("token") if isinstance(data, dict) else None
+    if not token:
+        raise AuthError(
+            "Token endpoint did not return a token",
+            AuthErrorCode.TOKEN_INVALID_FORMAT,
+        )
+    expires_at = data.get("expires_at") or data.get("expiresAt")
+    scopes = data.get("scopes")
+    return AuthToken(
+        token=token,
+        expires_at=int(expires_at) if expires_at else None,
+        scopes=list(scopes) if isinstance(scopes, list) else None,
+    )
+
+
 def build_websocket_url(
     websocket_url: str,
     token: Optional[str] = None,
@@ -299,12 +415,12 @@ class AuthState:
         self._current_token: Optional[str] = None
         self._token_expiry: Optional[int] = None
         self._refresh_timer: Optional[asyncio.Task] = None
-        self._http_session: Optional[aiohttp.ClientSession] = None
+        self._http_session: Optional[httpx.AsyncClient] = None
 
-    def _get_http_session(self) -> aiohttp.ClientSession:
-        """Get or create HTTP session for token requests."""
-        if self._http_session is None or self._http_session.closed:
-            self._http_session = aiohttp.ClientSession()
+    def _get_http_session(self) -> httpx.AsyncClient:
+        """Get or create HTTP client for token requests."""
+        if self._http_session is None or self._http_session.is_closed:
+            self._http_session = httpx.AsyncClient()
         return self._http_session
 
     async def close(self):
@@ -315,8 +431,8 @@ class AuthState:
                 await self._refresh_timer
             except asyncio.CancelledError:
                 pass
-        if self._http_session and not self._http_session.closed:
-            await self._http_session.close()
+        if self._http_session and not self._http_session.is_closed:
+            await self._http_session.aclose()
 
     def has_refreshable_auth(self) -> bool:
         """Check if auth strategy supports token refresh."""
@@ -443,82 +559,12 @@ class AuthState:
 
     async def _fetch_token_from_endpoint(self, endpoint: str) -> AuthToken:
         """Fetch token from token endpoint."""
-        session = self._get_http_session()
-
-        headers: Dict[str, str] = {
-            "Content-Type": "application/json",
-        }
-
-        # Add custom endpoint headers
-        if self.config and self.config.token_endpoint_headers:
-            headers.update(self.config.token_endpoint_headers)
-
-        # Add publishable key as Authorization header if present
-        if self.config and self.config.publishable_key:
-            headers["Authorization"] = f"Bearer {self.config.publishable_key}"
-
-        payload = {"websocket_url": self.websocket_url}
-
-        try:
-            async with session.post(
-                endpoint, headers=headers, json=payload
-            ) as response:
-                # Check for error code in headers
-                error_code_header = response.headers.get("X-Error-Code")
-
-                if not response.ok:
-                    body = await response.text()
-
-                    # Try to parse error from body
-                    error_code = None
-                    error_message = body or response.reason
-
-                    try:
-                        error_data = json.loads(body)
-                        if isinstance(error_data, dict):
-                            error_code_str = error_data.get("code") or error_code_header
-                            if error_code_str:
-                                error_code = AuthErrorCode.from_wire(error_code_str)
-                            error_message = error_data.get("error") or error_message
-                    except json.JSONDecodeError:
-                        pass
-
-                    if error_code is None:
-                        # Infer from status code
-                        if response.status == 429:
-                            error_code = AuthErrorCode.QUOTA_EXCEEDED
-                        else:
-                            error_code = AuthErrorCode.AUTH_REQUIRED
-
-                    raise AuthError(
-                        f"Token endpoint returned {response.status}: {error_message}",
-                        error_code,
-                        {
-                            "status": response.status,
-                            "wire_error_code": error_code_header,
-                        },
-                    )
-
-                data = await response.json()
-
-                token = data.get("token")
-                if not token:
-                    raise AuthError(
-                        "Token endpoint did not return a token",
-                        AuthErrorCode.TOKEN_INVALID_FORMAT,
-                    )
-
-                # Support both camelCase and snake_case for expires_at
-                expires_at = data.get("expires_at") or data.get("expiresAt")
-                if expires_at:
-                    expires_at = int(expires_at)
-
-                return AuthToken(token=token, expires_at=expires_at)
-
-        except aiohttp.ClientError as e:
-            raise AuthError(
-                f"Token endpoint request failed: {e}", AuthErrorCode.INTERNAL_ERROR
-            ) from e
+        return await request_token_from_endpoint(
+            self._get_http_session(),
+            endpoint,
+            self.config,
+            {"websocket_url": self.websocket_url},
+        )
 
     def get_refresh_delay(self) -> Optional[float]:
         """Calculate delay until token refresh is needed.

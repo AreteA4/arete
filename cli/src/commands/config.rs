@@ -52,6 +52,8 @@ pub fn init(config_path: &str) -> Result<()> {
             typescript_output_file: None,
             rust_output_crate: None,
             rust_module: None,
+            python_output_package: None,
+            python_module: None,
             url: None,
         })
         .collect();
@@ -65,9 +67,11 @@ pub fn init(config_path: &str) -> Result<()> {
             output_dir: "./generated".to_string(),
             typescript_output_dir: None,
             rust_output_dir: None,
+            python_output_dir: None,
             typescript_package: None,
             rust_crate_prefix: None,
             rust_module_mode: false,
+            python_module_mode: false,
         }),
         build: None,
     };
