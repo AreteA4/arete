@@ -148,12 +148,14 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite 0.21.0",
  "tracing",
+ "unicode-normalization",
+ "unicode-properties",
  "url",
 ]
 
 [[package]]
 name = "arete-artifacts"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arete-hash",
  "arete-idl",
@@ -197,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "arete-idl"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bs58",
  "serde",
@@ -3852,6 +3854,21 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
+name = "unicode-properties"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
 
 [[package]]
 name = "untrusted"
