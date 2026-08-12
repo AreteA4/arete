@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.2.0...arete-hash-npm-v0.3.0) (2026-08-12)
+
+
+### Features
+
+* add managed release v2 contracts ([8d86427](https://github.com/AreteA4/arete/commit/8d864276f0267898ec70912b89e8fd2147a26b12))
+* add managed release v2 contracts ([16db61a](https://github.com/AreteA4/arete/commit/16db61aea9658ceabff66cb672b195fe09848f5e))
+
 ## [0.2.0](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.1.0...arete-hash-npm-v0.2.0) (2026-07-31)
 
 

@@ -6,6 +6,35 @@
 
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.4.1...a4-cli-v0.5.0) (2026-08-12)
+
+
+### Features
+
+* add managed release v2 contracts ([8d86427](https://github.com/AreteA4/arete/commit/8d864276f0267898ec70912b89e8fd2147a26b12))
+* add managed release v2 contracts ([16db61a](https://github.com/AreteA4/arete/commit/16db61aea9658ceabff66cb672b195fe09848f5e))
+* add Rust SDK program execution parity ([128df06](https://github.com/AreteA4/arete/commit/128df064631a8fe640dfb67bb56ea9fe767ba06a))
+* **cli:** explore pinned stack and program descriptors ([eb23df2](https://github.com/AreteA4/arete/commit/eb23df299042d464a5bef32779563ff30241cffe))
+* explore pinned stack and program descriptors ([8358911](https://github.com/AreteA4/arete/commit/8358911d486ef381b207623faebd00f86a7611d6))
+* generate Python SDKs and align cross-language workflows ([e12471b](https://github.com/AreteA4/arete/commit/e12471b0ef149cd80c4d2b6fcd6c6530803d998f))
+* generate Python SDKs and align cross-language workflows ([ed7938b](https://github.com/AreteA4/arete/commit/ed7938b18c519214c471015cb11e20cd7ab2f319))
+* generate Rust program SDKs and extensions ([ff44e71](https://github.com/AreteA4/arete/commit/ff44e7140ddf6a4d9f61b8fba62fc1bdc141f105))
+
+
+### Bug Fixes
+
+* keep generated SDK artifacts reproducible ([b29c9b8](https://github.com/AreteA4/arete/commit/b29c9b89bf9f883685105291e6bb3417a740f56d))
+* resolve linked event data fields in exploration ([e5d07ba](https://github.com/AreteA4/arete/commit/e5d07ba0f99f0128310085b6bbd8a6457c72074b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.4.1 to 0.5.0
+    * arete-artifacts bumped from 0.1.1 to 0.2.0
+    * arete-idl bumped from 0.2.0 to 0.3.0
+
 ## [0.4.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.4.0...a4-cli-v0.4.1) (2026-08-02)
 
 
