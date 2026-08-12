@@ -19,6 +19,8 @@ profile, which rejects duplicate keys, malformed UTF-8, unsafe integer tokens,
 non-finite numbers, and non-JSON values. Artifact trees sort canonical POSIX
 paths by raw UTF-8 bytes and never normalize file contents.
 
-The `decoder-fixture-set` kind remains available to internal conformance
-tooling, but its fixture DTOs and validators are deliberately not exported from
-the package root.
+The package root exports the address-free `arete.decoder-fixtures/v2` DTO,
+strict parser, validator, and hash function. It also exports strict
+`arete.solana-executable-identity/v1` and hosted managed
+`arete.program-release/v2` contracts. OSS-generated Program Release V1 hashes
+remain byte-compatible and use the same `program-release`/`h1` domain.

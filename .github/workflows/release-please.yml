@@ -1,11 +1,19 @@
 name: Release Please
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact reviewed main commit to release (40 lowercase hexadecimal characters)
+        required: true
+        type: string
+      rust_toolchain:
+        description: Exact Rust toolchain version used for release builds (for example 1.89.0)
+        required: true
+        type: string
 
 permissions:
+  actions: read
   contents: write
   pull-requests: write
 
@@ -20,6 +28,7 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    environment: oss-release-publication
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       arete_release_created: ${{ steps.release.outputs['arete--release_created'] }}
@@ -44,15 +53,36 @@ jobs:
       prs_created: ${{ steps.release.outputs.prs_created }}
       pr: ${{ steps.release.outputs.pr }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact reviewed main commit and successful CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${{ inputs.rust_toolchain }}" =~ ^1\.[0-9]+\.[0-9]+$ ]]
+          test "$SOURCE_COMMIT" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          git show-ref --verify --quiet refs/remotes/origin/main
+          git merge-base --is-ancestor "$SOURCE_COMMIT" refs/remotes/origin/main
+          test "$(gh run list --workflow ci.yml --commit "$SOURCE_COMMIT" --json conclusion --jq 'map(select(.conclusion == "success")) | length')" -gt 0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
 
       - name: Validate Rust release metadata
         run: cargo metadata --locked --format-version 1 > /dev/null
 
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         id: release
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -68,10 +98,12 @@ jobs:
       actions: write
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
 
       - name: Synchronize release PR artifacts
         env:
@@ -107,10 +139,12 @@ jobs:
     runs-on: ubuntu-latest
     if: needs.release-please.outputs.releases_created == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
 
       - name: Login to crates.io
         run: cargo login ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -174,10 +208,10 @@ jobs:
       needs.release-please.outputs.adapter_kit_release_created == 'true' ||
       needs.release-please.outputs.adapter_web3js_release_created == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -294,15 +328,17 @@ jobs:
     runs-on: ubuntu-latest
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "20"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
 
       - name: Prepare example templates
         run: |
@@ -367,25 +403,26 @@ jobs:
             binary_name: a4-win32-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: ${{ inputs.rust_toolchain }}
           targets: ${{ matrix.target }}
 
       - name: Install cargo-zigbuild
         if: matrix.cross
         run: |
-          pip3 install ziglang
-          cargo install cargo-zigbuild
+          pip3 install ziglang==0.16.0
+          cargo install cargo-zigbuild --version 0.23.0 --locked
 
       - name: Build binary
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} --package a4-cli
+            cargo zigbuild --locked --release --target ${{ matrix.target }} --package a4-cli
           else
-            cargo build --release --target ${{ matrix.target }} --package a4-cli
+            cargo build --locked --release --target ${{ matrix.target }} --package a4-cli
           fi
         shell: bash
 
@@ -405,7 +442,7 @@ jobs:
           "$hash  ${{ matrix.binary_name }}" | Out-File -FilePath "${{ matrix.binary_name }}.sha256" -Encoding ascii
 
       - name: Upload checksum artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cli-sha256-${{ matrix.binary_name }}
           path: ${{ matrix.binary_name }}.sha256
@@ -426,10 +463,10 @@ jobs:
     runs-on: ubuntu-latest
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Download checksum artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: cli-sha256-*
           path: checksums
@@ -474,25 +511,26 @@ jobs:
             binary_name: a4-mcp-win32-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: ${{ inputs.rust_toolchain }}
           targets: ${{ matrix.target }}
 
       - name: Install cargo-zigbuild
         if: matrix.cross
         run: |
-          pip3 install ziglang
-          cargo install cargo-zigbuild
+          pip3 install ziglang==0.16.0
+          cargo install cargo-zigbuild --version 0.23.0 --locked
 
       - name: Build binary
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} --package arete-mcp
+            cargo zigbuild --locked --release --target ${{ matrix.target }} --package arete-mcp
           else
-            cargo build --release --target ${{ matrix.target }} --package arete-mcp
+            cargo build --locked --release --target ${{ matrix.target }} --package arete-mcp
           fi
         shell: bash
 
@@ -512,7 +550,7 @@ jobs:
           "$hash  ${{ matrix.binary_name }}" | Out-File -FilePath "${{ matrix.binary_name }}.sha256" -Encoding ascii
 
       - name: Upload checksum artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mcp-sha256-${{ matrix.binary_name }}
           path: ${{ matrix.binary_name }}.sha256
@@ -533,10 +571,10 @@ jobs:
     runs-on: ubuntu-latest
     if: needs.release-please.outputs.mcp_release_created == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Download checksum artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: mcp-sha256-*
           path: checksums
@@ -570,10 +608,10 @@ jobs:
       id-token: write
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -595,10 +633,10 @@ jobs:
       id-token: write
     if: needs.release-please.outputs.mcp_release_created == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"

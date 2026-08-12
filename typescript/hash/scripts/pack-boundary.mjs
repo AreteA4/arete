@@ -27,18 +27,10 @@ const expectedFiles = [
   "dist/index.js.map",
   "package.json",
 ];
-const privateArtifactNeedles = [
-  "DECODER_FIXTURE_",
-  "DecoderFixtureAccountDecodeErrorCategory",
-  "DecoderFixtureCaseV1",
-  "DecoderFixtureExpectedV1",
-  "DecoderFixturePrivateDiagnosticsV1",
-  "DecoderFixturePublicValueDigest",
-  "DecoderFixtureSetV1",
-  "digestDecoderFixturePublicValueV1",
-  "hashDecoderFixtureSetV1",
-  "validateDecoderFixtureSetV1",
-  "fixture.ts",
+const removedContractPatterns = [
+  /DecoderFixture(?:Case|Expected|PrivateDiagnostics|Set)V1/,
+  /(?:digestDecoderFixturePublicValue|hashDecoderFixtureSet|validateDecoderFixtureSet)V1/,
+  /arete\.decoder-fixtures\/v1/,
 ];
 
 function npm(args, cwd, stdio = ["ignore", "pipe", "pipe"]) {
@@ -72,17 +64,31 @@ function listPackageFiles(root, current = root) {
   return files.sort();
 }
 
-function assertPublicArtifactsOnly(unpackedRoot) {
+function assertCurrentContractsOnly(unpackedRoot) {
   for (const file of expectedFiles.filter((path) => /\.(?:cjs|js|d\.ts|map)$/.test(path))) {
     const contents = readFileSync(join(unpackedRoot, file), "utf8");
-    for (const needle of privateArtifactNeedles) {
+    for (const pattern of removedContractPatterns) {
       assert.equal(
-        contents.includes(needle),
+        pattern.test(contents),
         false,
-        `${file} exposes private decoder fixture detail ${needle}`,
+        `${file} exposes removed fixture V1 contract ${pattern}`,
       );
     }
   }
+
+  const declarations = readFileSync(join(unpackedRoot, "dist/index.d.ts"), "utf8");
+  assert(declarations.includes("interface DecoderFixtureSetV2"));
+  assert(declarations.includes("interface HostedManagedProgramReleaseV2"));
+  assert(declarations.includes("interface SolanaExecutableIdentityV1"));
+  const fixtureCase = declarations.match(
+    /interface DecoderFixtureCaseV2 \{([\s\S]*?)\n\}/,
+  );
+  assert(fixtureCase, "packed declarations must expose DecoderFixtureCaseV2");
+  assert.equal(
+    /readonly address\??:/.test(fixtureCase[1]),
+    false,
+    "DecoderFixtureCaseV2 must remain address-free",
+  );
 }
 
 try {
@@ -112,7 +118,7 @@ try {
   assert.equal(manifest.main, "./dist/index.cjs");
   assert.equal(manifest.module, "./dist/index.js");
   assert.equal(manifest.types, "./dist/index.d.ts");
-  assertPublicArtifactsOnly(unpackedRoot);
+  assertCurrentContractsOnly(unpackedRoot);
 
   mkdirSync(consumerRoot);
   writeFileSync(

@@ -8,7 +8,7 @@ use crate::{
     IdlNormalized,
 };
 
-pub const DECODER_FIXTURE_SCHEMA_V1: &str = "arete.decoder-fixtures/v1";
+pub const DECODER_FIXTURE_SCHEMA_V2: &str = "arete.decoder-fixtures/v2";
 pub const DECODER_FIXTURE_PUBLIC_VALUE_DIGEST_PREFIX: &str = "sha256:";
 pub const DECODER_FIXTURE_MAX_CASES: usize = 256;
 pub const DECODER_FIXTURE_MAX_ACCOUNT_BYTES: usize = 1024 * 1024;
@@ -23,31 +23,30 @@ pub const DECODER_FIXTURE_ACCOUNT_DECODE_ERROR_CATEGORIES: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DecoderFixtureSetV1 {
+pub struct DecoderFixtureSetV2 {
     pub schema: String,
     pub program_id: String,
     pub normalized_idl_hash: HashId<IdlNormalized>,
     pub decoder_engine_id: String,
     pub decoder_abi_version: String,
-    pub cases: Vec<DecoderFixtureCaseV1>,
+    pub cases: Vec<DecoderFixtureCaseV2>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DecoderFixtureCaseV1 {
+pub struct DecoderFixtureCaseV2 {
     pub id: String,
     pub account_type: String,
     pub owner: String,
-    pub address: String,
     pub account_data_hex: String,
-    pub expected: DecoderFixtureExpectedV1,
+    pub expected: DecoderFixtureExpectedV2,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_private_diagnostics: Option<DecoderFixturePrivateDiagnosticsV1>,
+    pub expected_private_diagnostics: Option<DecoderFixturePrivateDiagnosticsV2>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-pub enum DecoderFixtureExpectedV1 {
+pub enum DecoderFixtureExpectedV2 {
     Decoded {
         #[serde(rename = "publicValueDigest")]
         public_value_digest: String,
@@ -81,16 +80,16 @@ impl DecoderFixtureAccountDecodeErrorCategory {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DecoderFixturePrivateDiagnosticsV1 {
+pub struct DecoderFixturePrivateDiagnosticsV2 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trailing_bytes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_count: Option<u32>,
 }
 
-impl DecoderFixtureSetV1 {
+impl DecoderFixtureSetV2 {
     pub fn canonical_projection(&self) -> Result<Self, HashError> {
-        validate_decoder_fixture_set_v1(self)?;
+        validate_decoder_fixture_set_v2(self)?;
         let mut projection = self.clone();
         projection
             .cases
@@ -99,20 +98,20 @@ impl DecoderFixtureSetV1 {
     }
 
     pub fn hash(&self) -> Result<HashId<DecoderFixtureSet>, HashError> {
-        hash_decoder_fixture_set_v1(self)
+        hash_decoder_fixture_set_v2(self)
     }
 }
 
-pub fn parse_decoder_fixture_set_v1(bytes: &[u8]) -> Result<DecoderFixtureSetV1, HashError> {
+pub fn parse_decoder_fixture_set_v2(bytes: &[u8]) -> Result<DecoderFixtureSetV2, HashError> {
     let value = parse_json_bytes_strict(bytes)?;
-    let fixture: DecoderFixtureSetV1 =
+    let fixture: DecoderFixtureSetV2 =
         serde_json::from_value(value).map_err(|error| projection_error(error.to_string()))?;
-    validate_decoder_fixture_set_v1(&fixture)?;
+    validate_decoder_fixture_set_v2(&fixture)?;
     Ok(fixture)
 }
 
-pub fn validate_decoder_fixture_set_v1(fixture: &DecoderFixtureSetV1) -> Result<(), HashError> {
-    if fixture.schema != DECODER_FIXTURE_SCHEMA_V1 {
+pub fn validate_decoder_fixture_set_v2(fixture: &DecoderFixtureSetV2) -> Result<(), HashError> {
+    if fixture.schema != DECODER_FIXTURE_SCHEMA_V2 {
         return Err(HashError::UnknownVersion(fixture.schema.clone()));
     }
     validate_pubkey(&fixture.program_id, "programId")?;
@@ -133,7 +132,6 @@ pub fn validate_decoder_fixture_set_v1(fixture: &DecoderFixtureSetV1) -> Result<
         }
         validate_nonempty_identifier(&case.account_type, "accountType", 128)?;
         validate_pubkey(&case.owner, "owner")?;
-        validate_pubkey(&case.address, "address")?;
         validate_account_data_hex(&case.account_data_hex)?;
         let account_bytes = case.account_data_hex.len() / 2;
         if account_bytes > DECODER_FIXTURE_MAX_ACCOUNT_BYTES {
@@ -152,10 +150,10 @@ pub fn validate_decoder_fixture_set_v1(fixture: &DecoderFixtureSetV1) -> Result<
         }
 
         match &case.expected {
-            DecoderFixtureExpectedV1::Decoded {
+            DecoderFixtureExpectedV2::Decoded {
                 public_value_digest,
             } => validate_public_value_digest(public_value_digest)?,
-            DecoderFixtureExpectedV1::Error { .. } => {}
+            DecoderFixtureExpectedV2::Error { .. } => {}
         }
 
         if let Some(diagnostics) = &case.expected_private_diagnostics {
@@ -176,13 +174,13 @@ pub fn validate_decoder_fixture_set_v1(fixture: &DecoderFixtureSetV1) -> Result<
     Ok(())
 }
 
-pub fn hash_decoder_fixture_set_v1(
-    fixture: &DecoderFixtureSetV1,
+pub fn hash_decoder_fixture_set_v2(
+    fixture: &DecoderFixtureSetV2,
 ) -> Result<HashId<DecoderFixtureSet>, HashError> {
     hash_jcs(&fixture.canonical_projection()?)
 }
 
-pub fn digest_decoder_fixture_public_value_v1<T: Serialize>(
+pub fn digest_decoder_fixture_public_value_v2<T: Serialize>(
     value: &T,
 ) -> Result<String, HashError> {
     let canonical = canonicalize_jcs(value)?;

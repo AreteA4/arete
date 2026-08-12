@@ -27,7 +27,7 @@ MAJOR_MINOR="${VERSION%.*}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-EXAMPLES_DIR="$ROOT_DIR/examples"
+EXAMPLES_DIR="${ARETE_EXAMPLES_DIR:-$ROOT_DIR/examples}"
 
 echo "Updating examples to version: $VERSION (semver range: ^$MAJOR_MINOR)"
 echo "Examples directory: $EXAMPLES_DIR"
@@ -82,15 +82,129 @@ update_cargo_toml() {
         return
     fi
     
-    sed -i.bak -E "s/(arete-[a-z-]+) = \"[0-9]+\.[0-9]+(\.[0-9]+)?\"/\1 = \"$MAJOR_MINOR\"/g" "$file"
-    sed -i.bak -E "s/(arete-[a-z-]+ = \{[^}]*version = \")[0-9]+\.[0-9]+(\.[0-9]+)?(\".*)$/\1$MAJOR_MINOR\3/g" "$file"
-    perl -i.bak -pe 'if (/^\s*arete-[^=]+\s*=\s*\{/) { s/path = "[^"]+",\s*//; s/,\s*path = "[^"]+"//; }' "$file"
+    local status=0
+    node - "$file" "$MAJOR_MINOR" <<'EOF' || status=$?
+const fs = require('node:fs');
 
-    # Clean up backup files
-    rm -f "$file.bak"
-    
-    echo "  Updated Arete Rust dependencies to $MAJOR_MINOR"
-    UPDATED_FILES+=("$file")
+const [file, version] = process.argv.slice(2);
+const source = fs.readFileSync(file, 'utf8');
+const lines = source.split('\n');
+const output = [];
+let section = '';
+let patchBlock = null;
+let changed = false;
+
+function isAreteCrate(name) {
+  return name === 'arete' || name.startsWith('arete-');
+}
+
+function assignment(line) {
+  const match = line.match(/^(\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*=\s*)(.*)$/);
+  if (!match) return null;
+  return {
+    prefix: match[1],
+    name: match[2] ?? match[3] ?? match[4],
+    value: match[5],
+  };
+}
+
+function targetsArete(line) {
+  const entry = assignment(line);
+  if (!entry) return false;
+  const packageName = entry.value.match(/\bpackage\s*=\s*"([^"]+)"/)?.[1];
+  return isAreteCrate(entry.name) || (packageName && isAreteCrate(packageName));
+}
+
+function isDependencySection(name) {
+  return /^(?:dependencies|dev-dependencies|build-dependencies)$/.test(name)
+    || /\.(?:dependencies|dev-dependencies|build-dependencies)$/.test(name);
+}
+
+function convertDependency(line) {
+  if (!targetsArete(line)) return line;
+  const entry = assignment(line);
+  let value = entry.value;
+
+  if (/^"[^"]*"/.test(value)) {
+    value = value.replace(/^"[^"]*"/, `"${version}"`);
+  } else if (value.trimStart().startsWith('{')) {
+    value = value
+      .replace(/\bpath\s*=\s*"[^"]*"\s*,\s*/g, '')
+      .replace(/,\s*path\s*=\s*"[^"]*"(?=\s*})/g, '')
+      .replace(/\bpath\s*=\s*"[^"]*"(?=\s*})/g, '');
+
+    if (/\bversion\s*=\s*"[^"]*"/.test(value)) {
+      value = value.replace(/\bversion\s*=\s*"[^"]*"/, `version = "${version}"`);
+    } else if (/^\s*\{\s*}\s*(?:#.*)?$/.test(value)) {
+      value = value.replace(/\{\s*}/, `{ version = "${version}" }`);
+    } else {
+      value = value.replace(/\{\s*/, `{ version = "${version}", `);
+    }
+  } else {
+    return line;
+  }
+
+  const converted = `${entry.prefix}${value}`;
+  if (converted !== line) changed = true;
+  return converted;
+}
+
+function flushPatchBlock() {
+  if (!patchBlock) return;
+  const body = patchBlock.lines.filter((line) => !targetsArete(line));
+  if (body.length !== patchBlock.lines.length) changed = true;
+
+  const hasEntries = body.some((line) => {
+    const trimmed = line.trim();
+    return trimmed !== '' && !trimmed.startsWith('#');
+  });
+
+  if (hasEntries) {
+    output.push(patchBlock.header, ...body);
+  } else {
+    changed = true;
+    while (output.at(-1)?.trim() === '') output.pop();
+    while (output.at(-1)?.trim().startsWith('#')) output.pop();
+    output.push('');
+  }
+  patchBlock = null;
+}
+
+for (const line of lines) {
+  const sectionMatch = line.trim().match(/^\[([^[]+)]$/);
+  if (sectionMatch) {
+    flushPatchBlock();
+    section = sectionMatch[1];
+    if (section === 'patch.crates-io') {
+      patchBlock = { header: line, lines: [] };
+    } else {
+      output.push(line);
+    }
+    continue;
+  }
+
+  if (patchBlock) {
+    patchBlock.lines.push(line);
+  } else {
+    output.push(isDependencySection(section) ? convertDependency(line) : line);
+  }
+}
+flushPatchBlock();
+
+const converted = output.join('\n');
+const modified = changed && converted !== source;
+if (modified) fs.writeFileSync(file, converted);
+process.exit(modified ? 0 : 3);
+EOF
+
+    if [[ "$status" -eq 0 ]]; then
+        echo "  Updated Arete Rust dependencies to $MAJOR_MINOR"
+        UPDATED_FILES+=("$file")
+    elif [[ "$status" -eq 3 ]]; then
+        echo "  No Arete Rust dependency changes needed"
+    else
+        return "$status"
+    fi
 }
 
 # Find and update all package.json files in examples (excluding node_modules)
@@ -104,12 +218,7 @@ echo ""
 # Find and update all Cargo.toml files in examples (excluding target)
 echo "=== Updating Cargo.toml files ==="
 while IFS= read -r -d '' file; do
-    # Skip files that only use path dependencies (like ore-server)
-    if grep -q 'arete-.*=.*"[0-9]' "$file" 2>/dev/null; then
-        update_cargo_toml "$file"
-    else
-        echo "Skipping $file (no semver arete deps)"
-    fi
+    update_cargo_toml "$file"
 done < <(find "$EXAMPLES_DIR" -name "Cargo.toml" -not -path "*/target/*" -print0)
 
 echo ""

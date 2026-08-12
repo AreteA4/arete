@@ -279,7 +279,7 @@ const fn projection(kind: HashKindName) -> &'static str {
         HashKindName::LiveSpec => "arete.artifact-envelope/live-spec-v1",
         HashKindName::StackManifest => "arete.artifact-envelope/stack-manifest-v1",
         HashKindName::DeploymentRelease => "arete.deployment-release/v1",
-        HashKindName::DecoderFixtureSet => "arete.decoder-fixtures/v1",
+        HashKindName::DecoderFixtureSet => "arete.decoder-fixtures/v2",
     }
 }
 

@@ -3,9 +3,10 @@
 set -euo pipefail
 
 CRATE_DIR="${1:-}"
+EXISTING_POLICY="${2:-}"
 
-if [[ -z "$CRATE_DIR" ]]; then
-  echo "Usage: $0 <crate-directory>"
+if [[ -z "$CRATE_DIR" || ( -n "$EXISTING_POLICY" && "$EXISTING_POLICY" != "--allow-existing" ) ]]; then
+  echo "Usage: $0 <crate-directory> [--allow-existing]"
   exit 1
 fi
 
@@ -44,8 +45,12 @@ case "$STATUS" in
       echo "$PACKAGE_NAME@$PACKAGE_VERSION exists on crates.io but is yanked"
       exit 1
     fi
-    echo "Skipping $PACKAGE_NAME@$PACKAGE_VERSION; already published"
-    exit 0
+    if [[ "$EXISTING_POLICY" == "--allow-existing" ]]; then
+      echo "Skipping $PACKAGE_NAME@$PACKAGE_VERSION; already published"
+      exit 0
+    fi
+    echo "$PACKAGE_NAME@$PACKAGE_VERSION is already published; refusing to reuse a version for new source"
+    exit 1
     ;;
   404)
     ;;
