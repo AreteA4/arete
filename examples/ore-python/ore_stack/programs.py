@@ -124,10 +124,10 @@ __all__ = [
 ORE_PROGRAM_ID = "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
 
 #: Content hash of the exact program specification captured at generation time.
-ORE_PROGRAM_SPEC_HASH = "arete:h1:program-spec:sha256:3bfd8a90dcb0bdab01235344fb61e35912990942396295e5546f242c56e9ea97"
+ORE_PROGRAM_SPEC_HASH = "arete:h1:program-spec:sha256:fe539d6dbef9a3df17c40c97090ce8bd4608e90ef65bb665f8f72e693aa8fd0e"
 
 #: Release identity addressing hosted account reads for this program.
-ORE_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:a6d6453e013dc0a8d725e3d351557a08a7203381b9fac78c6218a3926a1b467b"
+ORE_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:27a3c47c61e0a916eb3e2dba100fbe3cc09679c4ab6e78d5997692c9f818cf49"
 
 
 def ore_read_descriptor() -> ProgramReadDescriptor:
@@ -727,9 +727,9 @@ OreDeployParams = TypedDict(
         "authority": str,
         # Address of the `round` account.
         "round": str,
-        # Address of the `entropyVar` account.
+        # Optional address of the `entropyVar` account.
         "entropyVar": str,
-        # Address of the `entropyProgram` account.
+        # Optional address of the `entropyProgram` account.
         "entropyProgram": str,
     },
     total=False,
@@ -845,14 +845,14 @@ def ore_deploy_handler() -> InstructionHandler:
                 is_signer=False,
                 is_writable=True,
                 resolution=UserProvided(),
-                is_optional=False,
+                is_optional=True,
             ),
             AccountMeta(
                 name="entropyProgram",
                 is_signer=False,
                 is_writable=False,
                 resolution=UserProvided(),
-                is_optional=False,
+                is_optional=True,
             ),
         ],
         args=[
