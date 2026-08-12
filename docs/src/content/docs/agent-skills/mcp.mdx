@@ -110,7 +110,7 @@ Read-only lookups against the public `/api/registry/*` endpoints. No signup requ
 
 | Tool                   | Purpose                                                                                            |
 | ---------------------- | -------------------------------------------------------------------------------------------------- |
-| `explore_stacks`       | List stacks in the registry. The `websocket_url` in each entry is what `connect` takes.            |
+| `explore_stacks`       | List stacks in the registry. The `websocketUrl` in each entry is what `connect` takes.             |
 | `explore_stack`        | Pinned install descriptor for one stack — the exact identities `a4 install` would consume.         |
 | `explore_stack_schema` | Entity and view schema: field paths, types, primary keys, and the view ids `subscribe` accepts.    |
 | `explore_programs`     | List standalone Solana programs installable independent of any stack.                              |
@@ -119,16 +119,17 @@ Read-only lookups against the public `/api/registry/*` endpoints. No signup requ
 
 Responses are the registry's JSON, passed through unchanged. Bodies over 512 KB are refused rather than truncated — use `a4 explore` for payloads that large.
 
-:::caution[Key casing is not uniform across these tools]
-Read the keys you actually receive rather than assuming one convention:
+:::note[Discovery keys are camelCase]
+Every discovery tool returns camelCase keys — `websocketUrl`, `httpAuth`, `stackName`,
+`primaryKeys`, `rustType`, `installName`, `programSpecHash`, `stackManifestHash`. `a4 explore
+--json` uses the same names, so CLI output and tool output transfer field-for-field.
 
-| Tool                                                   | Casing                                                                                                                                                                                          |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `explore_stacks`, `explore_stack_schema`               | **snake_case** — `websocket_url`, `http_auth`, `stack_name`, `primary_keys`, `rust_type`                                                                                                        |
-| `explore_stack`, `explore_programs`, `explore_program` | **camelCase** — `websocketUrl`, `installName`, `programSpecHash`, `stackManifestHash`                                                                                                           |
-| `resolve_artifact`                                     | camelCase envelope (`artifactHash`, `artifactVersion`, `kind`, `payload`); the payload is the stored artifact and may be snake_case inside, e.g. an embedded IDL's `program_id` and `is_signer` |
-
-Separately, `a4 explore --json` is camelCase throughout, so CLI field names do not transfer to `explore_stacks` or `explore_stack_schema` field-for-field.
+The one exception is content-addressed payloads. `resolve_artifact` returns a camelCase
+envelope (`artifactHash`, `artifactVersion`, `kind`, `payload`), but `payload` is the stored
+artifact passed through byte-for-byte and may be snake_case inside — an embedded IDL's
+`program_id` and `is_signer`, for example. The same applies to the `astPayload`,
+`stackManifest` and `liveSpec` values inside `explore_stack`: the key is camelCase, the value
+is frozen. Those bytes are hash input, so their casing cannot change.
 :::
 
 ### Streaming tools
@@ -154,7 +155,7 @@ View ids follow the `<EntityName>/<view>` template — e.g. `OreRound/list`, `Or
 ### Typical session
 
 ```
-explore_stacks()                        → pick a stack, note its websocket_url
+explore_stacks()                        → pick a stack, note its websocketUrl
 explore_stack_schema({ stack: "ore" })  → get the exact view id
 connect({ url })                        → connection_id
 subscribe({ connection_id, view })      → subscription_id

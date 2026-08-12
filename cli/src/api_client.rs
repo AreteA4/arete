@@ -51,6 +51,7 @@ pub struct ApiClient {
 
 // DTOs matching backend models
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Spec {
     pub id: i32,
     pub user_id: i32,
@@ -78,6 +79,7 @@ impl Spec {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSpecRequest {
     pub name: String,
     pub entity_name: String,
@@ -89,6 +91,7 @@ pub struct CreateSpecRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateSpecRequest {
     pub name: Option<String>,
     pub entity_name: Option<String>,
@@ -105,6 +108,7 @@ pub struct UpdateSpecRequest {
 
 /// Combined view of spec version with its AST content
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SpecVersionWithContent {
     pub id: i32,
     pub spec_id: i32,
@@ -135,11 +139,13 @@ impl SpecVersionWithContent {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSpecVersionRequest {
     pub ast_payload: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSpecVersionResponse {
     pub version: SpecVersionWithContent,
     /// True if the AST content already existed globally
@@ -151,6 +157,7 @@ pub struct CreateSpecVersionResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SpecWithVersion {
     #[serde(flatten)]
     #[allow(dead_code)]
@@ -159,6 +166,7 @@ pub struct SpecWithVersion {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ErrorResponse {
     error: String,
 }
@@ -209,6 +217,7 @@ impl BuildStatus {
 
 /// Sanitized Build response from API (excludes AWS internals)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Build {
     pub id: i32,
     pub spec_id: Option<i32>,
@@ -235,6 +244,7 @@ pub struct Build {
 
 /// Sanitized BuildEvent response from API (excludes raw_payload and event_source)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BuildEvent {
     pub id: i32,
     pub build_id: i32,
@@ -246,6 +256,7 @@ pub struct BuildEvent {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateBuildRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spec_id: Option<i32>,
@@ -282,6 +293,7 @@ pub struct CreateAliasedLiveSpecArtifact {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateBuildResponse {
     pub build_id: i32,
     pub status: BuildStatus,
@@ -294,6 +306,7 @@ pub struct CreateBuildResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BuildStatusResponse {
     pub build: Build,
     pub events: Vec<BuildEvent>,
@@ -396,6 +409,7 @@ impl std::fmt::Display for DeploymentStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentResponse {
     pub id: i32,
     pub spec_id: i32,
@@ -439,6 +453,7 @@ pub enum DeploymentPhase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentLiveStatus {
     pub phase: DeploymentPhase,
     pub desired_replicas: Option<i32>,
@@ -490,6 +505,7 @@ pub struct CompositionLiveBindingResponse {
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApiKey {
     pub id: i32,
     pub user_id: i32,
@@ -502,6 +518,7 @@ pub struct ApiKey {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreatePublishableKeyRequest {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -511,6 +528,7 @@ pub struct CreatePublishableKeyRequest {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateApiKeyResponse {
     pub id: i32,
     pub key: String,
@@ -522,6 +540,7 @@ pub struct CreateApiKeyResponse {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StopDeploymentResponse {
     pub message: String,
     pub deployment_id: i32,
@@ -533,6 +552,7 @@ pub struct StopDeploymentResponse {
 // ========================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RegistryStackItem {
     pub name: String,
     pub description: Option<String>,
@@ -555,6 +575,7 @@ pub struct RegistryProgramItem {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RegistryAstResponse {
     pub name: String,
     pub stack: String,
@@ -1538,6 +1559,164 @@ fn registry_install_url(base_url: &str, path: &str, language: Option<&str>) -> S
     match language {
         Some(language) => format!("{base_url}{path}?language={language}"),
         None => format!("{base_url}{path}"),
+    }
+}
+
+/// Casing guards for the API DTOs above.
+///
+/// Deliberately a separate module from `mod tests` below, which is `cfg(all(test, unix))` —
+/// a wire-format guard must not be platform-gated.
+#[cfg(test)]
+mod casing {
+    use super::*;
+
+    /// The server emits camelCase for every JSON response and accepts camelCase for every
+    /// request body. These fixtures are the real wire shape, so a DTO that loses
+    /// `rename_all` stops deserializing instead of silently reading `None`.
+    ///
+    /// Every struct asserted here has at least one non-`Option` multi-word field, which is
+    /// what makes the assertion sharp: snake casing fails the `from_value` outright.
+    #[test]
+    fn api_dtos_deserialize_the_servers_camel_case_wire_format() {
+        let spec: Spec = serde_json::from_value(serde_json::json!({
+            "id": 7, "userId": 3, "name": "Ore", "entityName": "Pool",
+            "crateName": "ore", "modulePath": "ore::pool", "description": null,
+            "packageName": null, "outputPath": null, "urlSlug": "r4xj7y",
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-02T00:00:00Z",
+        }))
+        .expect("Spec must decode the server's camelCase payload");
+        assert_eq!(spec.user_id, 3);
+        assert_eq!(spec.entity_name, "Pool");
+        assert_eq!(spec.url_slug, "r4xj7y");
+
+        let stack: RegistryStackItem = serde_json::from_value(serde_json::json!({
+            "name": "ore", "description": null,
+            "websocketUrl": "wss://ore-r4xj7y.stack.arete.run",
+            "entities": ["Pool"],
+        }))
+        .expect("RegistryStackItem must decode the server's camelCase payload");
+        assert_eq!(stack.websocket_url, "wss://ore-r4xj7y.stack.arete.run");
+
+        let deployment: DeploymentResponse = serde_json::from_value(serde_json::json!({
+            "id": 11, "specId": 7, "specName": "Ore", "atomName": "ore-r4xj7y",
+            "branch": null, "currentBuildId": 21, "currentSpecVersionId": 4,
+            "currentVersion": 4, "portableAstHash": null, "deploymentReleaseHash": null,
+            "currentImageTag": null,
+            "websocketUrl": "wss://ore-r4xj7y.stack.arete.run",
+            "httpUrl": "https://ore-r4xj7y.stack.arete.run",
+            "status": "active", "statusMessage": null,
+            "firstDeployedAt": "2026-01-01T00:00:00Z",
+            "lastDeployedAt": "2026-01-02T00:00:00Z",
+            "liveStatus": {
+                "phase": "scaled_down",
+                "desiredReplicas": 1, "readyReplicas": 0,
+                "availableReplicas": 0, "updatedReplicas": 1,
+                "lastTransitionTime": "2026-01-02T00:00:00Z",
+                "source": "kubernetes", "errorCategory": null,
+            },
+        }))
+        .expect("DeploymentResponse must decode the server's camelCase payload");
+        assert_eq!(deployment.atom_name, "ore-r4xj7y");
+        assert_eq!(deployment.spec_name, "Ore");
+        assert_eq!(deployment.live_status.desired_replicas, Some(1));
+        // Enum *values* are not part of this migration — `scaled_down` stays snake_case.
+        assert_eq!(deployment.live_status.phase, DeploymentPhase::ScaledDown);
+        assert_eq!(deployment.status, DeploymentStatus::Active);
+
+        let build: Build = serde_json::from_value(serde_json::json!({
+            "id": 21, "specId": 7, "specVersionId": 4, "status": "completed",
+            "statusMessage": null, "phase": null, "progress": 100,
+            "websocketUrl": null, "startedAt": null, "completedAt": null,
+            "createdAt": "2026-01-01T00:00:00Z",
+        }))
+        .expect("Build must decode the server's camelCase payload");
+        assert_eq!(build.spec_version_id, Some(4));
+        assert_eq!(build.created_at, "2026-01-01T00:00:00Z");
+    }
+
+    /// Requests the CLI *sends* must serialize to camelCase too — the server's request
+    /// structs are camelCase and several carry `deny_unknown_fields`, so a snake key is a
+    /// hard 400 rather than a silently ignored field.
+    #[test]
+    fn api_requests_serialize_to_camel_case() {
+        let body = serde_json::to_value(CreateSpecRequest {
+            name: "Ore".into(),
+            entity_name: "Pool".into(),
+            crate_name: "ore".into(),
+            module_path: "ore::pool".into(),
+            description: None,
+            package_name: None,
+            output_path: None,
+        })
+        .unwrap();
+        let keys = body
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            keys.iter().all(|key| !key.contains('_')),
+            "CreateSpecRequest must send camelCase keys, got {keys:?}"
+        );
+        assert!(keys.contains("entityName") && keys.contains("modulePath"));
+    }
+
+    /// Guard: every API DTO in this module declares its casing. Without this the next
+    /// struct someone adds silently reintroduces the snake/camel split.
+    ///
+    /// Scoped to column-0 items, which is exactly the API-facing surface: the
+    /// `LegacyCredentials` helpers are function-local (indented) and MUST stay snake_case
+    /// because they parse the on-disk `credentials.toml`.
+    #[test]
+    fn every_api_client_dto_declares_its_casing() {
+        let source = include_str!("api_client.rs");
+        let lines = source.lines().collect::<Vec<_>>();
+        let mut checked = 0usize;
+        let mut offenders = Vec::new();
+
+        for (index, line) in lines.iter().enumerate() {
+            let Some(item) = line
+                .strip_prefix("pub struct ")
+                .or_else(|| line.strip_prefix("struct "))
+                .and_then(|rest| {
+                    rest.split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                })
+            else {
+                continue;
+            };
+
+            let mut start = index;
+            while start > 0 {
+                let previous = lines[start - 1].trim_start();
+                if previous.starts_with("#[") || previous.starts_with("//") {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            let attributes = lines[start..index].join("\n");
+            if !attributes.contains("Serialize") && !attributes.contains("Deserialize") {
+                continue;
+            }
+
+            checked += 1;
+            if !attributes.contains("rename_all") {
+                offenders.push(format!("{}: {item}", index + 1));
+            }
+        }
+
+        assert!(
+            checked > 30,
+            "source scan matched only {checked} DTOs — the parser drifted, fix it before \
+             trusting this guard"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these API DTOs are missing #[serde(rename_all = \"camelCase\")] and would speak \
+             snake_case to a camelCase server: {offenders:#?}"
+        );
     }
 }
 

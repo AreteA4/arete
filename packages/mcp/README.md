@@ -81,7 +81,7 @@ If you install the package globally, it provides the same `a4-mcp` command as th
 
 | Tool                   | Purpose                                                          |
 | ---------------------- | ---------------------------------------------------------------- |
-| `explore_stacks`       | List stacks. Returns the `websocket_url` that `connect` takes.   |
+| `explore_stacks`       | List stacks. Returns the `websocketUrl` that `connect` takes.    |
 | `explore_stack`        | Pinned install descriptor for one stack                          |
 | `explore_stack_schema` | Entity/view schema — the `<EntityName>/<view>` ids for subscribe |
 | `explore_programs`     | List installable standalone programs                             |

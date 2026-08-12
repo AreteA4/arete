@@ -40,6 +40,12 @@ pub fn redact_hs_token_for_display(url: &str) -> String {
     u.into()
 }
 
+// Deliberately NOT `rename_all = "camelCase"`. Every released SDK posts
+// `{"websocket_url": …}` to the session-mint endpoint — TypeScript
+// (`core/src/connection.ts`), Python (`arete/auth.py`) and Rust
+// (`arete-a4-sdk/src/http.rs`) — so the server pins this one key in
+// `arete-platform/backend/api/src/api/ws.rs`. Renaming it here would speak a dialect the
+// server does not accept. See docs/json-casing-migration.md, Phase 3.
 #[derive(Serialize)]
 struct MintBody<'a> {
     websocket_url: &'a str,
@@ -146,4 +152,24 @@ pub fn ensure_hosted_ws_token(url: String) -> Result<String> {
     let mut u = Url::parse(&url).context("Invalid WebSocket URL")?;
     u.query_pairs_mut().append_pair("hs_token", token);
     Ok(u.to_string())
+}
+
+#[cfg(test)]
+mod casing {
+    use super::*;
+
+    /// The session-mint body keeps its legacy snake_case key while the rest of the API
+    /// speaks camelCase. If this ever flips, every deployed SDK stops minting tokens.
+    #[test]
+    fn session_mint_body_keeps_the_pinned_legacy_key() {
+        let body = serde_json::to_value(MintBody {
+            websocket_url: "wss://ore-r4xj7y.stack.arete.run",
+        })
+        .unwrap();
+        assert_eq!(
+            body["websocket_url"], "wss://ore-r4xj7y.stack.arete.run",
+            "session mint must keep the legacy snake_case key, got {body}"
+        );
+        assert!(body.get("websocketUrl").is_none());
+    }
 }

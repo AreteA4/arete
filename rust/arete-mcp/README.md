@@ -293,7 +293,7 @@ a key happens to resolve (see [Authentication](#authentication)), it is attached
 so `explore_stacks` also returns global stacks — but a missing key is never an
 error here.
 
-- `explore_stacks()` — stacks in the registry. The `websocket_url` in each entry
+- `explore_stacks()` — stacks in the registry. The `websocketUrl` in each entry
   is what `connect` takes; `entities` tells you what to look for in the schema.
 - `explore_stack({ stack })` — pinned install descriptor for one stack: the exact
   StackManifest, AST, LiveSpec, view, and Program Release identities `a4 install`
@@ -313,16 +313,17 @@ Responses are the registry's JSON, passed through unchanged. Bodies over 512 KB
 are refused rather than truncated — use `a4 explore` or `a4 install` on the
 command line for payloads that large.
 
-**Key casing is not uniform.** `explore_stacks` and `explore_stack_schema` return
-snake_case (`websocket_url`, `stack_name`, `primary_keys`, `rust_type`).
-`explore_stack`, `explore_programs` and `explore_program` return camelCase
-(`websocketUrl`, `installName`, `programSpecHash`, `stackManifestHash`) — the CLI
-deserializes those three with `deny_unknown_fields`, so their shape is pinned.
-`resolve_artifact` returns a camelCase envelope (`artifactHash`, `artifactVersion`,
-`kind`, `payload`) wrapping a stored payload that may be snake_case inside, such as an
-embedded IDL's `program_id` and `is_signer`. Separately, `a4 explore --json` is
-camelCase throughout. Read the keys you actually receive rather than assuming one
-convention.
+**Keys are camelCase.** Every discovery tool returns camelCase — `websocketUrl`,
+`httpAuth`, `stackName`, `primaryKeys`, `rustType`, `installName`, `programSpecHash`,
+`stackManifestHash` — and `a4 explore --json` uses the same names, so CLI output and tool
+output transfer field-for-field. The CLI deserializes `explore_stack`, `explore_programs`
+and `explore_program` with `deny_unknown_fields`, so those three shapes are pinned.
+
+The exception is content-addressed payloads. `resolve_artifact` returns a camelCase envelope
+(`artifactHash`, `artifactVersion`, `kind`, `payload`) wrapping a stored payload that may be
+snake_case inside, such as an embedded IDL's `program_id` and `is_signer`. The same holds for
+the `astPayload`, `stackManifest` and `liveSpec` values inside `explore_stack`: the key is
+camelCase, the value is frozen because those bytes are hash input.
 
 These tools cover discovery only. SDK generation (`a4 install`) and transaction
 construction live in the CLI and the generated SDKs, not here.
@@ -457,7 +458,7 @@ view. Equivalent subscriptions share one reference-counted wire subscription.
 ```jsonc
 // 1. Discover what exists
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explore_stacks","arguments":{}}}
-// → [{"name":"ore","websocket_url":"wss://ore-r4xj7y.stack.arete.run","entities":["OreRound",...]}, ...]
+// → [{"name":"ore","websocketUrl":"wss://ore-r4xj7y.stack.arete.run","entities":["OreRound",...]}, ...]
 
 // 2. Get the exact view ids for the stack you picked
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"explore_stack_schema","arguments":{"stack":"ore"}}}
