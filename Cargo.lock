@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "arete-hash"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arete-idl",
  "bs58",
@@ -324,7 +324,9 @@ dependencies = [
  "arete-a4-sdk",
  "dashmap",
  "dirs",
+ "http 1.4.0",
  "regex",
+ "reqwest 0.12.28",
  "rmcp",
  "serde",
  "serde_json",

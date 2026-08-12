@@ -1,6 +1,7 @@
 import { sha256 } from "@noble/hashes/sha256";
 
-import { canonicalizeJcs } from "./canonical.js";
+import { isCanonicalBase58_32 } from "./base58.js";
+import { canonicalizeJcs, parseJsonBytesStrict } from "./canonical.js";
 import { hashError } from "./error.js";
 import { bytesToHex, hashCanonicalPayload } from "./hash.js";
 import type {
@@ -9,7 +10,7 @@ import type {
   JsonValue,
 } from "./types.js";
 
-export const DECODER_FIXTURE_SCHEMA_V1 = "arete.decoder-fixtures/v1" as const;
+export const DECODER_FIXTURE_SCHEMA_V2 = "arete.decoder-fixtures/v2" as const;
 export const DECODER_FIXTURE_PUBLIC_VALUE_DIGEST_PREFIX = "sha256:" as const;
 export const DECODER_FIXTURE_MAX_CASES = 256;
 export const DECODER_FIXTURE_MAX_ACCOUNT_BYTES = 1024 * 1024;
@@ -26,26 +27,25 @@ export type DecoderFixturePublicValueDigest = `sha256:${string}`;
 export type DecoderFixtureAccountDecodeErrorCategory =
   (typeof DECODER_FIXTURE_ACCOUNT_DECODE_ERROR_CATEGORIES)[number];
 
-export interface DecoderFixtureSetV1 {
-  readonly schema: typeof DECODER_FIXTURE_SCHEMA_V1;
+export interface DecoderFixtureSetV2 {
+  readonly schema: typeof DECODER_FIXTURE_SCHEMA_V2;
   readonly programId: string;
   readonly normalizedIdlHash: IdlNormalizedHash;
   readonly decoderEngineId: string;
   readonly decoderAbiVersion: string;
-  readonly cases: readonly DecoderFixtureCaseV1[];
+  readonly cases: readonly DecoderFixtureCaseV2[];
 }
 
-export interface DecoderFixtureCaseV1 {
+export interface DecoderFixtureCaseV2 {
   readonly id: string;
   readonly accountType: string;
   readonly owner: string;
-  readonly address: string;
   readonly accountDataHex: string;
-  readonly expected: DecoderFixtureExpectedV1;
-  readonly expectedPrivateDiagnostics?: DecoderFixturePrivateDiagnosticsV1;
+  readonly expected: DecoderFixtureExpectedV2;
+  readonly expectedPrivateDiagnostics?: DecoderFixturePrivateDiagnosticsV2;
 }
 
-export type DecoderFixtureExpectedV1 =
+export type DecoderFixtureExpectedV2 =
   | {
       readonly kind: "decoded";
       readonly publicValueDigest: DecoderFixturePublicValueDigest;
@@ -55,12 +55,16 @@ export type DecoderFixtureExpectedV1 =
       readonly category: DecoderFixtureAccountDecodeErrorCategory;
     };
 
-export interface DecoderFixturePrivateDiagnosticsV1 {
+export interface DecoderFixturePrivateDiagnosticsV2 {
   readonly trailingBytes?: number;
   readonly candidateCount?: number;
 }
 
-export function validateDecoderFixtureSetV1(value: unknown): DecoderFixtureSetV1 {
+export function parseDecoderFixtureSetV2(bytes: Uint8Array): DecoderFixtureSetV2 {
+  return validateDecoderFixtureSetV2(parseJsonBytesStrict(bytes));
+}
+
+export function validateDecoderFixtureSetV2(value: unknown): DecoderFixtureSetV2 {
   const fixture = expectObject(value, "decoder fixture set");
   expectKeys(
     fixture,
@@ -74,7 +78,7 @@ export function validateDecoderFixtureSetV1(value: unknown): DecoderFixtureSetV1
     ],
     "decoder fixture set",
   );
-  if (fixture.schema !== DECODER_FIXTURE_SCHEMA_V1) {
+  if (fixture.schema !== DECODER_FIXTURE_SCHEMA_V2) {
     return hashError(
       "unknown-version",
       `unknown decoder fixture schema '${String(fixture.schema)}'`,
@@ -94,8 +98,8 @@ export function validateDecoderFixtureSetV1(value: unknown): DecoderFixtureSetV1
 
   const ids = new Set<string>();
   let totalBytes = 0;
-  const cases: DecoderFixtureCaseV1[] = fixture.cases.map(
-    (caseValue, index): DecoderFixtureCaseV1 => {
+  const cases: DecoderFixtureCaseV2[] = fixture.cases.map(
+    (caseValue, index): DecoderFixtureCaseV2 => {
       const item = expectObject(caseValue, `cases[${index}]`);
       expectKeys(
         item,
@@ -103,7 +107,6 @@ export function validateDecoderFixtureSetV1(value: unknown): DecoderFixtureSetV1
           "id",
           "accountType",
           "owner",
-          "address",
           "accountDataHex",
           "expected",
           "expectedPrivateDiagnostics",
@@ -120,7 +123,6 @@ export function validateDecoderFixtureSetV1(value: unknown): DecoderFixtureSetV1
         128,
       );
       const owner = expectPubkey(item.owner, `case '${id}' owner`);
-      const address = expectPubkey(item.address, `case '${id}' address`);
       const accountDataHex = expectAccountDataHex(item.accountDataHex, id);
       const accountBytes = accountDataHex.length / 2;
       if (accountBytes > DECODER_FIXTURE_MAX_ACCOUNT_BYTES) {
@@ -144,7 +146,6 @@ export function validateDecoderFixtureSetV1(value: unknown): DecoderFixtureSetV1
         id,
         accountType,
         owner,
-        address,
         accountDataHex,
         expected,
         ...(expectedPrivateDiagnostics === undefined ? {} : { expectedPrivateDiagnostics }),
@@ -154,7 +155,7 @@ export function validateDecoderFixtureSetV1(value: unknown): DecoderFixtureSetV1
 
   cases.sort((left, right) => compareUtf8(left.id, right.id));
   return {
-    schema: DECODER_FIXTURE_SCHEMA_V1,
+    schema: DECODER_FIXTURE_SCHEMA_V2,
     programId,
     normalizedIdlHash,
     decoderEngineId,
@@ -163,8 +164,8 @@ export function validateDecoderFixtureSetV1(value: unknown): DecoderFixtureSetV1
   };
 }
 
-export function hashDecoderFixtureSetV1(value: unknown): DecoderFixtureSetHash {
-  const projection = validateDecoderFixtureSetV1(value);
+export function hashDecoderFixtureSetV2(value: unknown): DecoderFixtureSetHash {
+  const projection = validateDecoderFixtureSetV2(value);
   return hashCanonicalPayload(
     "decoder-fixture-set",
     "arete-jcs-v1",
@@ -172,7 +173,7 @@ export function hashDecoderFixtureSetV1(value: unknown): DecoderFixtureSetHash {
   );
 }
 
-export function digestDecoderFixturePublicValueV1(
+export function digestDecoderFixturePublicValueV2(
   value: JsonValue,
 ): DecoderFixturePublicValueDigest {
   return `${DECODER_FIXTURE_PUBLIC_VALUE_DIGEST_PREFIX}${bytesToHex(
@@ -180,7 +181,7 @@ export function digestDecoderFixturePublicValueV1(
   )}`;
 }
 
-function validateExpected(value: unknown, id: string): DecoderFixtureExpectedV1 {
+function validateExpected(value: unknown, id: string): DecoderFixtureExpectedV2 {
   const expected = expectObject(value, `case '${id}' expected`);
   if (expected.kind === "decoded") {
     expectKeys(expected, ["kind", "publicValueDigest"], `case '${id}' expected`);
@@ -202,7 +203,7 @@ function validateExpected(value: unknown, id: string): DecoderFixtureExpectedV1 
 function validatePrivateDiagnostics(
   value: unknown,
   id: string,
-): DecoderFixturePrivateDiagnosticsV1 {
+): DecoderFixturePrivateDiagnosticsV2 {
   const diagnostics = expectObject(value, `case '${id}' expectedPrivateDiagnostics`);
   expectKeys(
     diagnostics,
@@ -267,19 +268,9 @@ function expectAccountDataHex(value: unknown, id: string): string {
 }
 
 function expectPubkey(value: unknown, field: string): string {
-  if (typeof value !== "string" || !/^[1-9A-HJ-NP-Za-km-z]+$/.test(value)) {
+  if (!isCanonicalBase58_32(value)) {
     return invalid(`${field} must be a base58 Solana public key`);
   }
-  let decoded = 0n;
-  for (const character of value) {
-    decoded = decoded * 58n + BigInt(BASE58_ALPHABET.indexOf(character));
-  }
-  let decodedLength = value.match(/^1*/)?.[0].length ?? 0;
-  while (decoded > 0n) {
-    decodedLength += 1;
-    decoded >>= 8n;
-  }
-  if (decodedLength !== 32) return invalid(`${field} must be a base58 Solana public key`);
   return value;
 }
 
@@ -359,5 +350,3 @@ function byteLength(value: string): number {
 function invalid<T>(reason: string): T {
   return hashError("invalid-projection", `invalid decoder fixture set projection: ${reason}`);
 }
-
-const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";

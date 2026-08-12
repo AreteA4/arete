@@ -36,8 +36,8 @@ STATUS="$(curl --silent --show-error --retry 3 --retry-all-errors \
 
 case "$STATUS" in
   200)
-    echo "Skipping $PACKAGE_NAME@$PACKAGE_VERSION; already published"
-    exit 0
+    echo "$PACKAGE_NAME@$PACKAGE_VERSION is already published; refusing to reuse a version for new source"
+    exit 1
     ;;
   404)
     ;;

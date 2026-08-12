@@ -268,6 +268,8 @@ pub struct CreateArtifactBuildRequest {
     pub live_specs: Vec<CreateAliasedLiveSpecArtifact>,
     pub stack_manifest: arete_artifacts::StackManifestArtifactV2,
     pub target_live_alias: String,
+    pub deployment_plan_id: String,
+    pub selection_digest: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
 }
@@ -279,12 +281,16 @@ pub struct CreateAliasedLiveSpecArtifact {
     pub artifact: arete_artifacts::LiveSpecArtifactV2,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CreateBuildResponse {
     pub build_id: i32,
     pub status: BuildStatus,
     #[allow(dead_code)]
     pub message: String,
+    #[serde(default, alias = "deploymentPlanId")]
+    pub deployment_plan_id: Option<String>,
+    #[serde(default, alias = "selectionDigest")]
+    pub selection_digest: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -300,6 +306,74 @@ pub struct BuildStatusResponse {
 // ============================================================================
 // Deployment DTOs
 // ============================================================================
+
+pub const STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA: &str = "arete.stack-deployment-plan-request/v1";
+pub const STACK_DEPLOYMENT_PREFLIGHT_SCHEMA: &str = "arete.stack-deployment-preflight/v1";
+pub const STACK_DEPLOYMENT_PLAN_SCHEMA: &str = "arete.stack-deployment-plan/v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StackDeploymentPreflightRequest {
+    pub schema: String,
+    pub program_specs: Vec<arete_artifacts::ProgramSpecArtifact>,
+    pub live_specs: Vec<CreateAliasedLiveSpecArtifact>,
+    pub stack_manifest: arete_artifacts::StackManifestArtifactV2,
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StackDeploymentPlanRequest {
+    pub schema: String,
+    pub program_specs: Vec<arete_artifacts::ProgramSpecArtifact>,
+    pub live_specs: Vec<CreateAliasedLiveSpecArtifact>,
+    pub stack_manifest: arete_artifacts::StackManifestArtifactV2,
+    pub branch: Option<String>,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StackDeploymentTarget {
+    pub alias: String,
+    pub live_spec_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelectedProgramRelease {
+    pub program_id: String,
+    pub program_spec_hash: String,
+    pub program_release_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StackDeploymentPreflightResponse {
+    pub schema: String,
+    pub persisted: bool,
+    pub stack_manifest_hash: String,
+    pub branch: Option<String>,
+    pub targets: Vec<StackDeploymentTarget>,
+    pub selection_digest: String,
+    pub releases: Vec<SelectedProgramRelease>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StackDeploymentPlanResponse {
+    pub schema: String,
+    pub persisted: bool,
+    pub deployment_plan_id: String,
+    pub stack_manifest_hash: String,
+    pub branch: Option<String>,
+    pub targets: Vec<StackDeploymentTarget>,
+    pub selection_digest: String,
+    pub releases: Vec<SelectedProgramRelease>,
+    pub created_at: String,
+    pub expires_at: String,
+    pub idempotent: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -381,6 +455,8 @@ pub struct DeploymentLiveStatus {
 pub struct BindStackCompositionRequest {
     pub stack_manifest_hash: String,
     pub deployments: BTreeMap<String, i32>,
+    pub deployment_plan_id: String,
+    pub selection_digest: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
 }
@@ -390,6 +466,8 @@ pub struct BindStackCompositionRequest {
 pub struct BindStackCompositionResponse {
     pub composition_id: i64,
     pub stack_manifest_hash: String,
+    pub deployment_plan_id: String,
+    pub selection_digest: String,
     pub branch: Option<String>,
     pub live_specs: Vec<CompositionLiveBindingResponse>,
 }
@@ -1045,6 +1123,42 @@ impl ApiClient {
     // Deployment endpoints
     // ========================================================================
 
+    /// Validate one complete StackManifest without persisting a deployment plan.
+    pub fn preflight_stack_deployment(
+        &self,
+        req: StackDeploymentPreflightRequest,
+    ) -> Result<StackDeploymentPreflightResponse> {
+        let api_key = self.require_api_key()?;
+
+        let response = self
+            .client
+            .post(format!("{}/api/deployments/plans/preflight", self.base_url))
+            .bearer_auth(api_key)
+            .json(&req)
+            .send()
+            .context("Failed to send stack deployment preflight request")?;
+
+        Self::handle_response(response)
+    }
+
+    /// Resolve and persist one immutable release selection for a StackManifest.
+    pub fn create_stack_deployment_plan(
+        &self,
+        req: StackDeploymentPlanRequest,
+    ) -> Result<StackDeploymentPlanResponse> {
+        let api_key = self.require_api_key()?;
+
+        let response = self
+            .client
+            .post(format!("{}/api/deployments/plans", self.base_url))
+            .bearer_auth(api_key)
+            .json(&req)
+            .send()
+            .context("Failed to send stack deployment plan request")?;
+
+        Self::handle_response(response)
+    }
+
     /// List all deployments for the authenticated user
     pub fn list_deployments(&self, limit: i64) -> Result<Vec<DeploymentResponse>> {
         self.list_deployments_page(limit, 0)
@@ -1682,6 +1796,8 @@ mod tests {
             live_specs,
             stack_manifest,
             target_live_alias: format!("live-{}", live_count - 1),
+            deployment_plan_id: "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a".into(),
+            selection_digest: format!("sha256:{}", "a".repeat(64)),
             branch: Some("preview-contract".into()),
         }
     }
@@ -1709,6 +1825,8 @@ mod tests {
                     "liveSpecs": expected_lives,
                     "stackManifest": request.stack_manifest,
                     "targetLiveAlias": format!("live-{}", live_count - 1),
+                    "deploymentPlanId": "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a",
+                    "selectionDigest": format!("sha256:{}", "a".repeat(64)),
                     "branch": "preview-contract",
                 })
             );
@@ -1717,11 +1835,139 @@ mod tests {
         }
     }
 
+    fn preflight_response_snapshot() -> serde_json::Value {
+        json!({
+            "schema": "arete.stack-deployment-preflight/v1",
+            "persisted": false,
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:manifest",
+            "branch": null,
+            "targets": [
+                {"alias": "first", "liveSpecHash": "arete:h1:live-spec:sha256:first"},
+                {"alias": "second", "liveSpecHash": "arete:h1:live-spec:sha256:second"},
+            ],
+            "selectionDigest": format!("sha256:{}", "a".repeat(64)),
+            "releases": [{
+                "programId": "Program111",
+                "programSpecHash": "arete:h1:program-spec:sha256:spec",
+                "programReleaseHash": "arete:h1:program-release:sha256:release",
+            }],
+        })
+    }
+
+    fn plan_response_snapshot() -> serde_json::Value {
+        let preflight = preflight_response_snapshot();
+        json!({
+            "schema": "arete.stack-deployment-plan/v1",
+            "persisted": true,
+            "deploymentPlanId": "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a",
+            "stackManifestHash": preflight["stackManifestHash"],
+            "branch": preflight["branch"],
+            "targets": preflight["targets"],
+            "selectionDigest": preflight["selectionDigest"],
+            "releases": preflight["releases"],
+            "createdAt": "2026-08-10T12:00:00Z",
+            "expiresAt": "2026-08-10T12:30:00Z",
+            "idempotent": false,
+        })
+    }
+
+    #[test]
+    fn deployment_plan_request_snapshots_are_exact_and_branch_is_explicit() {
+        let build = artifact_build_request(2);
+        let preflight = StackDeploymentPreflightRequest {
+            schema: STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA.into(),
+            program_specs: build.program_specs.clone(),
+            live_specs: build.live_specs.clone(),
+            stack_manifest: build.stack_manifest.clone(),
+            branch: None,
+        };
+        let preflight_value = serde_json::to_value(&preflight).unwrap();
+        assert_eq!(
+            preflight_value,
+            json!({
+                "schema": "arete.stack-deployment-plan-request/v1",
+                "programSpecs": build.program_specs,
+                "liveSpecs": build.live_specs,
+                "stackManifest": build.stack_manifest,
+                "branch": null,
+            })
+        );
+        assert!(preflight_value.get("idempotencyKey").is_none());
+
+        let plan = StackDeploymentPlanRequest {
+            schema: preflight.schema,
+            program_specs: preflight.program_specs,
+            live_specs: preflight.live_specs,
+            stack_manifest: preflight.stack_manifest,
+            branch: preflight.branch,
+            idempotency_key: "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a".into(),
+        };
+        let mut expected = preflight_value;
+        expected["idempotencyKey"] = json!("8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a");
+        assert_eq!(serde_json::to_value(plan).unwrap(), expected);
+    }
+
+    #[test]
+    fn deployment_plan_response_snapshots_are_exact() {
+        let preflight_value = preflight_response_snapshot();
+        let preflight: StackDeploymentPreflightResponse =
+            serde_json::from_value(preflight_value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(preflight).unwrap(), preflight_value);
+
+        let plan_value = plan_response_snapshot();
+        let plan: StackDeploymentPlanResponse = serde_json::from_value(plan_value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(plan).unwrap(), plan_value);
+    }
+
+    #[test]
+    fn deployment_selection_responses_reject_private_and_lifecycle_fields() {
+        for field in [
+            "relationId",
+            "relation",
+            "programReleaseRelationId",
+            "attestationId",
+            "attestation",
+            "promotionAttestationId",
+            "route",
+            "routeId",
+            "rpc",
+            "rpcUrl",
+            "fixture",
+            "fixtureSetHash",
+            "executableIdentity",
+        ] {
+            let mut preflight = preflight_response_snapshot();
+            preflight["releases"][0][field] = json!("private");
+            assert!(
+                serde_json::from_value::<StackDeploymentPreflightResponse>(preflight).is_err(),
+                "accepted private release field {field}"
+            );
+
+            let mut plan = plan_response_snapshot();
+            plan["releases"][0][field] = json!("private");
+            assert!(
+                serde_json::from_value::<StackDeploymentPlanResponse>(plan).is_err(),
+                "accepted private release field {field}"
+            );
+        }
+
+        for field in ["deploymentPlanId", "createdAt", "expiresAt"] {
+            let mut preflight = preflight_response_snapshot();
+            preflight[field] = json!("not-public-in-preflight");
+            assert!(
+                serde_json::from_value::<StackDeploymentPreflightResponse>(preflight).is_err(),
+                "accepted preflight lifecycle field {field}"
+            );
+        }
+    }
+
     #[test]
     fn composition_bind_request_and_response_snapshots_are_exact() {
         let request = BindStackCompositionRequest {
             stack_manifest_hash: "manifest-hash".into(),
             deployments: BTreeMap::from([("first".into(), 11), ("second".into(), 12)]),
+            deployment_plan_id: "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a".into(),
+            selection_digest: format!("sha256:{}", "a".repeat(64)),
             branch: Some("preview-contract".into()),
         };
         assert_eq!(
@@ -1729,6 +1975,8 @@ mod tests {
             json!({
                 "stackManifestHash": "manifest-hash",
                 "deployments": {"first": 11, "second": 12},
+                "deploymentPlanId": "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a",
+                "selectionDigest": format!("sha256:{}", "a".repeat(64)),
                 "branch": "preview-contract",
             })
         );
@@ -1736,6 +1984,8 @@ mod tests {
         let response_value = json!({
             "compositionId": 91,
             "stackManifestHash": "manifest-hash",
+            "deploymentPlanId": "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a",
+            "selectionDigest": format!("sha256:{}", "a".repeat(64)),
             "branch": "preview-contract",
             "liveSpecs": [{
                 "alias": "first",
@@ -1879,7 +2129,9 @@ mod tests {
 
         let mut bind = json!({
             "stackManifestHash": "manifest-hash",
-            "deployments": {"live-0": 11}
+            "deployments": {"live-0": 11},
+            "deploymentPlanId": "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a",
+            "selectionDigest": format!("sha256:{}", "a".repeat(64)),
         });
         bind["authSecret"] = json!("private");
         assert!(serde_json::from_value::<BindStackCompositionRequest>(bind).is_err());

@@ -1,4 +1,5 @@
-import { hashFramedTuple, hashJcs } from "./canonical.js";
+import { isCanonicalBase58_32 } from "./base58.js";
+import { hashFramedTuple, hashJcs, parseJsonBytesStrict } from "./canonical.js";
 import { hashError } from "./error.js";
 import { parseHashId } from "./hash.js";
 import type {
@@ -17,11 +18,46 @@ export const SDK_DEFINITION_SCHEMA_V1 = "arete.sdk-definition/v1" as const;
 export const SDK_DEFINITION_PROGRAM_SPEC_INPUT_KIND = "program-spec" as const;
 export const OSS_DECODER_ENGINE_ID = "arete-oss-generated-decoder/v1" as const;
 export const PROGRAM_RELEASE_SCHEMA_V1 = "arete.program-release/v1" as const;
+export const PROGRAM_RELEASE_SCHEMA_V2 = "arete.program-release/v2" as const;
 export const HOSTED_MANAGED_RELEASE_PROFILE = "hosted-managed" as const;
 export const OSS_GENERATED_RELEASE_PROFILE = "oss-generated" as const;
+export const SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1 =
+  "arete.solana-executable-identity/v1" as const;
+export const SOLANA_BPF_LOADER_V2_PROGRAM_ID =
+  "BPFLoader2111111111111111111111111111111111" as const;
+export const SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID =
+  "BPFLoaderUpgradeab1e11111111111111111111111" as const;
+export const SOLANA_EXECUTABLE_PAYLOAD_SHA256_PREFIX = "sha256:" as const;
 
-export interface HostedManagedProgramReleaseV1 {
-  readonly schema: typeof PROGRAM_RELEASE_SCHEMA_V1;
+export type SolanaExecutablePayloadSha256 = `sha256:${string}`;
+
+export type SolanaUpgradeAuthorityV1 =
+  | { readonly kind: "none" }
+  | { readonly kind: "address"; readonly address: string };
+
+export type SolanaExecutableLoaderV1 =
+  | {
+      readonly kind: "bpf-loader-v2";
+      readonly loaderProgramId: typeof SOLANA_BPF_LOADER_V2_PROGRAM_ID;
+      readonly executablePayloadSha256: SolanaExecutablePayloadSha256;
+    }
+  | {
+      readonly kind: "bpf-upgradeable-loader";
+      readonly loaderProgramId: typeof SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID;
+      readonly programDataAddress: string;
+      readonly deploymentSlot: string;
+      readonly upgradeAuthority: SolanaUpgradeAuthorityV1;
+      readonly executablePayloadSha256: SolanaExecutablePayloadSha256;
+    };
+
+export interface SolanaExecutableIdentityV1 {
+  readonly schema: typeof SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1;
+  readonly genesisHash: string;
+  readonly loader: SolanaExecutableLoaderV1;
+}
+
+export interface HostedManagedProgramReleaseV2 {
+  readonly schema: typeof PROGRAM_RELEASE_SCHEMA_V2;
   readonly releaseProfile: typeof HOSTED_MANAGED_RELEASE_PROFILE;
   readonly programId: string;
   readonly programSpecHash: ProgramSpecHash;
@@ -30,6 +66,7 @@ export interface HostedManagedProgramReleaseV1 {
   readonly decoderAbiVersion: string;
   readonly decoderEngineId: string;
   readonly decoderBindingId: string;
+  readonly executableIdentity: SolanaExecutableIdentityV1;
 }
 
 export interface OssGeneratedProgramReleaseV1 {
@@ -186,7 +223,74 @@ export function createOssGeneratedProgramReleaseV1(
   };
 }
 
-export function createHostedManagedProgramReleaseV1(
+export function createBpfLoaderV2ExecutableIdentityV1(
+  genesisHash: string,
+  executablePayloadSha256: string,
+): SolanaExecutableIdentityV1 {
+  return validateSolanaExecutableIdentityV1({
+    schema: SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1,
+    genesisHash,
+    loader: {
+      kind: "bpf-loader-v2",
+      loaderProgramId: SOLANA_BPF_LOADER_V2_PROGRAM_ID,
+      executablePayloadSha256,
+    },
+  });
+}
+
+export function createBpfUpgradeableLoaderExecutableIdentityV1(
+  genesisHash: string,
+  programDataAddress: string,
+  deploymentSlot: bigint,
+  upgradeAuthority: SolanaUpgradeAuthorityV1,
+  executablePayloadSha256: string,
+): SolanaExecutableIdentityV1 {
+  if (deploymentSlot < 0n || deploymentSlot > U64_MAX) {
+    return invalidProgramRelease(
+      "deploymentSlot must be a canonical unsigned decimal u64 string",
+    );
+  }
+  return validateSolanaExecutableIdentityV1({
+    schema: SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1,
+    genesisHash,
+    loader: {
+      kind: "bpf-upgradeable-loader",
+      loaderProgramId: SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID,
+      programDataAddress,
+      deploymentSlot: deploymentSlot.toString(),
+      upgradeAuthority,
+      executablePayloadSha256,
+    },
+  });
+}
+
+export function parseSolanaExecutableIdentityV1(
+  bytes: Uint8Array,
+): SolanaExecutableIdentityV1 {
+  return validateSolanaExecutableIdentityV1(parseJsonBytesStrict(bytes));
+}
+
+export function validateSolanaExecutableIdentityV1(
+  value: unknown,
+): SolanaExecutableIdentityV1 {
+  const identity = expectObject(value, "executableIdentity");
+  expectKeys(identity, ["schema", "genesisHash", "loader"], "executableIdentity");
+  if (identity.schema !== SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1) {
+    return hashError(
+      "unknown-version",
+      `unknown Solana executable identity schema '${String(identity.schema)}'`,
+    );
+  }
+  const genesisHash = expectBase58_32(identity.genesisHash, "genesisHash");
+  const loader = validateSolanaExecutableLoaderV1(identity.loader);
+  return {
+    schema: SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1,
+    genesisHash,
+    loader,
+  };
+}
+
+export function createHostedManagedProgramReleaseV2(
   programId: string,
   programSpecHash: ProgramSpecHash,
   idlContentHash: IdlContentHash,
@@ -194,9 +298,10 @@ export function createHostedManagedProgramReleaseV1(
   decoderAbiVersion: string,
   decoderEngineId: string,
   decoderBindingId: string,
-): HostedManagedProgramReleaseV1 {
-  return {
-    schema: PROGRAM_RELEASE_SCHEMA_V1,
+  executableIdentity: SolanaExecutableIdentityV1,
+): HostedManagedProgramReleaseV2 {
+  return validateHostedManagedProgramReleaseV2({
+    schema: PROGRAM_RELEASE_SCHEMA_V2,
     releaseProfile: HOSTED_MANAGED_RELEASE_PROFILE,
     programId,
     programSpecHash,
@@ -205,7 +310,8 @@ export function createHostedManagedProgramReleaseV1(
     decoderAbiVersion,
     decoderEngineId,
     decoderBindingId,
-  };
+    executableIdentity,
+  });
 }
 
 export function hashOssGeneratedProgramReleaseV1(
@@ -215,15 +321,274 @@ export function hashOssGeneratedProgramReleaseV1(
   return hashJcs("program-release", projection as unknown as JsonValue);
 }
 
-export function hashHostedManagedProgramReleaseV1(
-  projection: HostedManagedProgramReleaseV1,
-): ProgramReleaseHash {
-  validateReleaseProjection(projection, HOSTED_MANAGED_RELEASE_PROFILE);
-  return hashJcs("program-release", projection as unknown as JsonValue);
+export function parseHostedManagedProgramReleaseV2(
+  bytes: Uint8Array,
+): HostedManagedProgramReleaseV2 {
+  return validateHostedManagedProgramReleaseV2(parseJsonBytesStrict(bytes));
 }
 
+export function hashHostedManagedProgramReleaseV2(
+  projection: unknown,
+): ProgramReleaseHash {
+  const validated = validateHostedManagedProgramReleaseV2(projection);
+  return hashJcs("program-release", validated as unknown as JsonValue);
+}
+
+export function validateHostedManagedProgramReleaseV2(
+  value: unknown,
+): HostedManagedProgramReleaseV2 {
+  const release = expectObject(value, "program release");
+  expectKeys(
+    release,
+    [
+      "schema",
+      "releaseProfile",
+      "programId",
+      "programSpecHash",
+      "idlContentHash",
+      "normalizedIdlHash",
+      "decoderAbiVersion",
+      "decoderEngineId",
+      "decoderBindingId",
+      "executableIdentity",
+    ],
+    "program release",
+  );
+  if (release.schema !== PROGRAM_RELEASE_SCHEMA_V2) {
+    return hashError(
+      "unknown-version",
+      `unknown program release schema '${String(release.schema)}'`,
+    );
+  }
+  if (release.releaseProfile !== HOSTED_MANAGED_RELEASE_PROFILE) {
+    return invalidProgramRelease(
+      `releaseProfile must be '${HOSTED_MANAGED_RELEASE_PROFILE}', not '${String(release.releaseProfile)}'`,
+    );
+  }
+
+  const programId = expectBase58_32(release.programId, "programId");
+  const programSpecHash = expectTypedHash(
+    release.programSpecHash,
+    "program-spec",
+    "programSpecHash",
+  ) as ProgramSpecHash;
+  const idlContentHash = expectTypedHash(
+    release.idlContentHash,
+    "idl-content",
+    "idlContentHash",
+  ) as IdlContentHash;
+  const normalizedIdlHash = expectTypedHash(
+    release.normalizedIdlHash,
+    "idl-normalized",
+    "normalizedIdlHash",
+  ) as IdlNormalizedHash;
+  const decoderAbiVersion = expectIdentifier(
+    release.decoderAbiVersion,
+    "decoderAbiVersion",
+    64,
+  );
+  const decoderEngineId = expectIdentifier(
+    release.decoderEngineId,
+    "decoderEngineId",
+    128,
+  );
+  const decoderBindingId = expectIdentifier(
+    release.decoderBindingId,
+    "decoderBindingId",
+    128,
+  );
+  const executableIdentity = validateSolanaExecutableIdentityV1(
+    release.executableIdentity,
+  );
+
+  return {
+    schema: PROGRAM_RELEASE_SCHEMA_V2,
+    releaseProfile: HOSTED_MANAGED_RELEASE_PROFILE,
+    programId,
+    programSpecHash,
+    idlContentHash,
+    normalizedIdlHash,
+    decoderAbiVersion,
+    decoderEngineId,
+    decoderBindingId,
+    executableIdentity,
+  };
+}
+
+function validateSolanaExecutableLoaderV1(
+  value: unknown,
+): SolanaExecutableLoaderV1 {
+  const loader = expectObject(value, "executableIdentity.loader");
+  if (loader.kind === "bpf-loader-v2") {
+    expectKeys(
+      loader,
+      ["kind", "loaderProgramId", "executablePayloadSha256"],
+      "executableIdentity.loader",
+    );
+    expectExactString(
+      loader.loaderProgramId,
+      SOLANA_BPF_LOADER_V2_PROGRAM_ID,
+      "loaderProgramId for 'bpf-loader-v2'",
+    );
+    return {
+      kind: "bpf-loader-v2",
+      loaderProgramId: SOLANA_BPF_LOADER_V2_PROGRAM_ID,
+      executablePayloadSha256: expectSha256Digest(loader.executablePayloadSha256),
+    };
+  }
+  if (loader.kind === "bpf-upgradeable-loader") {
+    expectKeys(
+      loader,
+      [
+        "kind",
+        "loaderProgramId",
+        "programDataAddress",
+        "deploymentSlot",
+        "upgradeAuthority",
+        "executablePayloadSha256",
+      ],
+      "executableIdentity.loader",
+    );
+    expectExactString(
+      loader.loaderProgramId,
+      SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID,
+      "loaderProgramId for 'bpf-upgradeable-loader'",
+    );
+    return {
+      kind: "bpf-upgradeable-loader",
+      loaderProgramId: SOLANA_BPF_UPGRADEABLE_LOADER_PROGRAM_ID,
+      programDataAddress: expectBase58_32(
+        loader.programDataAddress,
+        "programDataAddress",
+      ),
+      deploymentSlot: expectDeploymentSlot(loader.deploymentSlot),
+      upgradeAuthority: validateUpgradeAuthorityV1(loader.upgradeAuthority),
+      executablePayloadSha256: expectSha256Digest(loader.executablePayloadSha256),
+    };
+  }
+  return invalidProgramRelease(
+    "executableIdentity.loader.kind must be 'bpf-loader-v2' or 'bpf-upgradeable-loader'",
+  );
+}
+
+function validateUpgradeAuthorityV1(value: unknown): SolanaUpgradeAuthorityV1 {
+  const authority = expectObject(value, "upgradeAuthority");
+  if (authority.kind === "none") {
+    expectKeys(authority, ["kind"], "upgradeAuthority");
+    return { kind: "none" };
+  }
+  if (authority.kind === "address") {
+    expectKeys(authority, ["kind", "address"], "upgradeAuthority");
+    return {
+      kind: "address",
+      address: expectBase58_32(authority.address, "upgradeAuthority.address"),
+    };
+  }
+  return invalidProgramRelease(
+    "upgradeAuthority.kind must be 'none' or 'address'",
+  );
+}
+
+function expectObject(value: unknown, field: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return invalidProgramRelease(`${field} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function expectKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+  field: string,
+): void {
+  const allowed = new Set(keys);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      invalidProgramRelease(`${field} contains unknown field '${key}'`);
+    }
+  }
+  for (const key of keys) {
+    if (!Object.hasOwn(value, key)) {
+      invalidProgramRelease(`${field} is missing '${key}'`);
+    }
+  }
+}
+
+function expectExactString(
+  value: unknown,
+  expected: string,
+  field: string,
+): void {
+  if (value !== expected) {
+    invalidProgramRelease(`${field} must be '${expected}', not '${String(value)}'`);
+  }
+}
+
+function expectTypedHash(value: unknown, kind: Parameters<typeof parseHashId>[1], field: string): string {
+  if (typeof value !== "string") {
+    return invalidProgramRelease(`${field} must be a ${kind} typed hash`);
+  }
+  try {
+    return parseHashId(value, kind).id;
+  } catch {
+    return invalidProgramRelease(`${field} must be a ${kind} typed hash`);
+  }
+}
+
+function expectIdentifier(value: unknown, field: string, maxLength: number): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.trim() !== value ||
+    encoder.encode(value).length > maxLength
+  ) {
+    return invalidProgramRelease(
+      `${field} must be a nonempty, trimmed string of at most ${maxLength} bytes`,
+    );
+  }
+  return value;
+}
+
+function expectDeploymentSlot(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(value) ||
+    BigInt(value) > U64_MAX
+  ) {
+    return invalidProgramRelease(
+      "deploymentSlot must be a canonical unsigned decimal u64 string",
+    );
+  }
+  return value;
+}
+
+function expectSha256Digest(value: unknown): SolanaExecutablePayloadSha256 {
+  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) {
+    return invalidProgramRelease(
+      "executablePayloadSha256 must use the sha256:<lowercase-hex> format",
+    );
+  }
+  return value as SolanaExecutablePayloadSha256;
+}
+
+function expectBase58_32(value: unknown, field: string): string {
+  if (!isCanonicalBase58_32(value)) {
+    return invalidProgramRelease(`${field} must be a canonical 32-byte base58 value`);
+  }
+  return value;
+}
+
+function invalidProgramRelease<T>(reason: string): T {
+  return hashError(
+    "invalid-projection",
+    `invalid program release projection: ${reason}`,
+  );
+}
+
+const U64_MAX = 18_446_744_073_709_551_615n;
+
 function validateReleaseProjection(
-  projection: HostedManagedProgramReleaseV1 | OssGeneratedProgramReleaseV1,
+  projection: OssGeneratedProgramReleaseV1,
   expectedProfile: string,
 ): void {
   if (projection.schema !== PROGRAM_RELEASE_SCHEMA_V1) {
@@ -248,26 +613,6 @@ function validateReleaseProjection(
     hashError(
       "invalid-projection",
       "invalid program release projection: decoderEngineId must not be empty",
-    );
-  }
-  if (
-    projection.releaseProfile === HOSTED_MANAGED_RELEASE_PROFILE &&
-    "decoderAbiVersion" in projection &&
-    projection.decoderAbiVersion.length === 0
-  ) {
-    hashError(
-      "invalid-projection",
-      "invalid program release projection: decoderAbiVersion must not be empty",
-    );
-  }
-  if (
-    projection.releaseProfile === HOSTED_MANAGED_RELEASE_PROFILE &&
-    "decoderBindingId" in projection &&
-    projection.decoderBindingId.length === 0
-  ) {
-    hashError(
-      "invalid-projection",
-      "invalid program release projection: decoderBindingId must not be empty",
     );
   }
   parseHashId(projection.programSpecHash, "program-spec");

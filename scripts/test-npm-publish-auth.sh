@@ -111,6 +111,19 @@ assert_contains "$package_output" "with npm trusted publishing"
 
 rm -f "$WHOAMI_MARKER" "$PUBLISH_MARKER"
 
+if collision_output="$(
+  env -u NPM_TOKEN \
+    PATH="$FAKE_BIN:$PATH" \
+    FAKE_CURL_STATUS=200 \
+    NPM_PUBLISH_MARKER="$PUBLISH_MARKER" \
+    "$ROOT_DIR/scripts/publish-npm-package.sh" "$PACKAGE_DIR" 2>&1
+)"; then
+  printf 'Normal npm publication unexpectedly accepted an existing version\n' >&2
+  exit 1
+fi
+assert_contains "$collision_output" "refusing to reuse a version for new source"
+[[ ! -e "$PUBLISH_MARKER" ]]
+
 version_output="$(
   env -u NPM_TOKEN \
     PATH="$FAKE_BIN:$PATH" \

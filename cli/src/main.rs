@@ -105,6 +105,10 @@ enum Commands {
         /// Show what would be deployed without actually deploying
         #[arg(long)]
         dry_run: bool,
+
+        /// Plan only from local artifacts; requires --dry-run and skips server checks
+        #[arg(long, requires = "dry_run")]
+        local_only: bool,
     },
 
     /// Show overview of stacks, builds, and deployments
@@ -670,7 +674,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             branch,
             preview,
             dry_run,
-        } => commands::up::up(&cli.config, stack_name.as_deref(), branch, preview, dry_run),
+            local_only,
+        } => commands::up::up(
+            &cli.config,
+            stack_name.as_deref(),
+            branch,
+            preview,
+            dry_run,
+            local_only,
+            cli.json,
+        ),
         Commands::Status => commands::status::status(cli.json),
         Commands::Explore {
             target,
@@ -865,6 +878,54 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_only_is_restricted_to_dry_run() {
+        assert!(
+            Cli::try_parse_from(["a4", "up", "stack.stack-manifest.json", "--local-only"]).is_err()
+        );
+
+        let cli = Cli::try_parse_from([
+            "a4",
+            "up",
+            "stack.stack-manifest.json",
+            "--dry-run",
+            "--local-only",
+        ])
+        .expect("local-only dry run should parse");
+        match cli.command {
+            Some(Commands::Up {
+                dry_run,
+                local_only,
+                ..
+            }) => {
+                assert!(dry_run);
+                assert!(local_only);
+            }
+            _ => panic!("expected up command"),
+        }
+    }
+
+    #[test]
+    fn global_json_is_available_to_manifest_native_up() {
+        let cli = Cli::try_parse_from([
+            "a4",
+            "--json",
+            "up",
+            "stack.stack-manifest.json",
+            "--dry-run",
+        ])
+        .expect("manifest-native JSON dry run should parse");
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Up {
+                dry_run: true,
+                local_only: false,
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn parse_install_stack_shorthand() {

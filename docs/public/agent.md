@@ -150,7 +150,71 @@ For field-level detail on a specific entity:
 a4 explore <stack-name> <EntityName> --json
 ```
 
-## Step 4: You Are Ready
+Exploration is descriptor-backed: it reads the same pinned descriptors `a4 install`
+consumes. It never picks a "latest" AST on its own and never falls back when a
+descriptor is incomplete — it fails instead. A refusal means the resource is not
+installable. Do not work around it.
+
+## Step 4: Generate a Typed SDK
+
+Turn what you discovered into a client. This works against public resources without
+owning a stack.
+
+```
+a4 install <stack-ref> --ts
+a4 install <stack-ref> --rust
+```
+
+Both targets above generate typed program clients — instruction building, PDA resolution,
+account readers, and program reads. A program SDK packaged on its own is TypeScript today:
+
+```
+a4 install program <program-ref> --ts
+```
+
+Generated SDKs cover more than stream reads. They expose PDA derivation, account
+resolution, instruction building, and transaction execution for the programs in scope.
+
+## Step 5: Optional — Add the Stream MCP Server
+
+Only do this if you want to discover registry resources and read live entity data
+inside your own loop (exploration, debugging, answering questions about current chain
+state). For code that ships, use the SDK from Step 4 instead.
+
+```
+npx -y @usearete/mcp
+```
+
+Add to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "arete": {
+      "command": "npx",
+      "args": ["-y", "@usearete/mcp"]
+    }
+  }
+}
+```
+
+Discovery tools (no auth needed): `explore_stacks`, `explore_stack`,
+`explore_stack_schema`, `explore_programs`, `explore_program`, `resolve_artifact`.
+
+Streaming tools: `ping`, `connect`, `disconnect`, `subscribe`, `unsubscribe`,
+`query_entities`, `get_entity`, `list_entities`, `get_recent`, `list_subscriptions`,
+`list_connections`.
+
+Typical order: `explore_stacks` to pick a stack, `explore_stack_schema` to get the
+exact view id, then `connect` -> `subscribe` -> `query_entities`.
+
+Do not pass `api_key` in tool calls. Run `a4 auth login` once and let the server resolve
+credentials from the credentials file or `ARETE_API_KEY`.
+
+There is also a documentation MCP server at `https://docs.arete.run/mcp`
+(`search_docs`, `fetch_page`) if you want doc search without scraping.
+
+## Step 6: You Are Ready
 
 You now have everything needed to build with Arete.
 
@@ -158,6 +222,7 @@ Key rules:
 - ALWAYS run `a4 explore stack <stack-ref> --json` before writing any Arete code. Never guess descriptor identities, aliases, selected views, or Program Releases.
 - Use `a4 explore <stack> <Entity> --json` to get exact field names, types, and view definitions.
 - Run `a4 explore program <program-ref> --json` before generating code against a standalone program.
+- Generate clients with `a4 install <ref> --ts|--rust` rather than hand-writing types.
 - The primary public stack is `ore` (ORE mining data). Run `a4 explore stack ore --json` to inspect it.
 - For React apps with generated stacks: install `@usearete/react @usearete/sdk zod` (not `zustand`) and generate from the exact local artifact with `a4 sdk create --manifest <path.stack-manifest.json> --ts`
 - Hosted ORE browser clients require `VITE_ARETE_PUBLISHABLE_KEY` passed as `auth={{ publishableKey }}`. Read-only viewing requires authentication but not a wallet.

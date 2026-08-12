@@ -8,6 +8,7 @@
 mod connections;
 mod credentials;
 mod filter;
+mod registry;
 mod subscriptions;
 
 /// LLM-friendly deserializers that accept both the typed form and a string
@@ -118,6 +119,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::connections::ConnectionRegistry;
 use crate::filter::{Filter, StructuredPredicate};
+use crate::registry::RegistryClient;
 use crate::subscriptions::SubscriptionRegistry;
 
 #[derive(Clone)]
@@ -125,6 +127,7 @@ pub struct AreteMcp {
     tool_router: ToolRouter<AreteMcp>,
     connections: ConnectionRegistry,
     subscriptions: SubscriptionRegistry,
+    registry: RegistryClient,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -165,6 +168,28 @@ pub struct SubscribeArgs {
 pub struct UnsubscribeArgs {
     /// Subscription ID returned from a previous `subscribe` call.
     pub subscription_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExploreStackArgs {
+    /// Bare stack reference as listed by `explore_stacks` (e.g. `ore`).
+    /// Not a URL and not a path.
+    pub stack: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExploreProgramArgs {
+    /// Bare program reference as listed by `explore_programs`
+    /// (e.g. `spl-token`), or a program ID.
+    pub program: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ResolveArtifactArgs {
+    /// One of `program-spec`, `live-spec`, `stack-manifest`.
+    pub kind: String,
+    /// Artifact hash taken from an install descriptor.
+    pub hash: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -259,12 +284,96 @@ impl AreteMcp {
             tool_router: Self::tool_router(),
             connections: ConnectionRegistry::new(),
             subscriptions: SubscriptionRegistry::new(),
+            registry: RegistryClient::new(),
         }
     }
 
     #[tool(description = "Health check. Returns \"pong\" if the server is alive.")]
     async fn ping(&self) -> Result<CallToolResult, McpError> {
         Ok(CallToolResult::success(vec![Content::text("pong")]))
+    }
+
+    #[tool(description = "List stacks available in the Arete registry. \
+                          Start here: the returned `websocket_url` is what `connect` \
+                          takes, and `entities` tells you which `<EntityName>/<view>` \
+                          ids to look for.\n\n\
+                          NOTE: casing is not uniform across these tools. This endpoint \
+                          and `explore_stack_schema` return snake_case \
+                          (`websocket_url`, `primary_keys`, `rust_type`); \
+                          `explore_stack`, `explore_programs` and `explore_program` \
+                          return camelCase (`websocketUrl`, `installName`, \
+                          `programSpecHash`). `resolve_artifact` has a camelCase \
+                          envelope over a stored payload that may be snake_case inside. \
+                          Read the keys you actually get rather than assuming one \
+                          convention, and note `a4 explore --json` is camelCase \
+                          throughout, so it does not match this tool field-for-field.\n\n\
+                          No auth required — public stacks are always listed. If an \
+                          api key is resolvable (ARETE_API_KEY or `a4 auth login`), \
+                          global stacks are included too.")]
+    async fn explore_stacks(&self) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.list_stacks().await)
+    }
+
+    #[tool(
+        description = "Fetch the pinned install descriptor for one stack: the exact \
+                          StackManifest, AST, LiveSpec, view, and Program Release \
+                          identities that `a4 install` would consume.\n\n\
+                          Pass a bare stack reference (e.g. `ore`), not a URL."
+    )]
+    async fn explore_stack(
+        &self,
+        Parameters(args): Parameters<ExploreStackArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.stack_install(&args.stack).await)
+    }
+
+    #[tool(
+        description = "Fetch the entity and view schema for one stack — field paths, \
+                          types, primary keys, and the view ids `subscribe` accepts.\n\n\
+                          Use this to resolve a `<EntityName>/<view>` id before calling \
+                          subscribe, instead of guessing from a template."
+    )]
+    async fn explore_stack_schema(
+        &self,
+        Parameters(args): Parameters<ExploreStackArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.stack_schema(&args.stack).await)
+    }
+
+    #[tool(
+        description = "List standalone Solana programs installable from the Arete \
+                          registry, independent of any stack. No auth required."
+    )]
+    async fn explore_programs(&self) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.list_programs().await)
+    }
+
+    #[tool(
+        description = "Fetch the pinned install descriptor for one standalone program: \
+                          program identity and hashes, accounts, instructions, events, \
+                          types, and Program Read availability.\n\n\
+                          Pass a bare program reference (e.g. `spl-token`), not a URL."
+    )]
+    async fn explore_program(
+        &self,
+        Parameters(args): Parameters<ExploreProgramArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.program_install(&args.program).await)
+    }
+
+    #[tool(
+        description = "Fetch a content-addressed artifact by hash. `kind` must be one \
+                          of `program-spec`, `live-spec`, or `stack-manifest`; the hash \
+                          comes from an install descriptor returned by explore_stack or \
+                          explore_program.\n\n\
+                          Large artifacts are refused rather than truncated — use the \
+                          `a4` CLI for those."
+    )]
+    async fn resolve_artifact(
+        &self,
+        Parameters(args): Parameters<ResolveArtifactArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.artifact(&args.kind, &args.hash).await)
     }
 
     #[tool(description = "Open a WebSocket connection to a Arete stack. \
@@ -611,6 +720,39 @@ impl AreteMcp {
     }
 }
 
+/// Render a registry lookup as a tool result.
+///
+/// Registry failures split cleanly by cause: a bad `stack`/`program`/`kind`
+/// argument is the agent's to fix and maps to `invalid_params`, while a
+/// transport failure or a non-2xx from the platform is not, and maps to
+/// `internal_error`. Getting this split wrong matters — agents retry
+/// `invalid_params` with different arguments and give up on `internal_error`.
+///
+/// The body is emitted exactly as the registry sent it. `registry` already bounds
+/// it to 512 KiB, and re-serializing would break that bound rather than preserve
+/// it: JSON number formatting is not length-preserving, so `1e9` becomes
+/// `1000000000.0` and an array of them grows over 3x — enough to carry a legal
+/// body well past the cap. Pretty-printing is worse again. Passing the accepted
+/// bytes through keeps the advertised bound true by construction and makes the
+/// documented raw pass-through actually raw.
+fn registry_result(result: anyhow::Result<String>) -> Result<CallToolResult, McpError> {
+    match result {
+        Ok(body) => Ok(CallToolResult::success(vec![Content::text(body)])),
+        Err(error) => {
+            let message = error.to_string();
+            let caller_fixable = message.contains("must not be empty")
+                || message.contains("invalid character")
+                || message.contains("must not be a relative path segment")
+                || message.contains("unknown artifact kind");
+            Err(if caller_fixable {
+                McpError::invalid_params(message, None)
+            } else {
+                McpError::internal_error(message, None)
+            })
+        }
+    }
+}
+
 /// Validate that a subscribe `view` argument has the expected
 /// `<EntityName>/<mode>` shape. Catches two real agent failure modes:
 ///
@@ -761,5 +903,69 @@ mod view_validation_tests {
     #[test]
     fn rejects_empty_entity_with_mode() {
         assert!(validate_view_name("/list").is_err());
+    }
+}
+
+#[cfg(test)]
+mod registry_result_tests {
+    use super::registry_result;
+    use rmcp::model::ErrorCode;
+
+    /// Every rejection a bad path segment can produce must classify as
+    /// `invalid_params`. This is the difference between an agent retrying with
+    /// a corrected reference and giving up: agents treat `internal_error` as
+    /// "the server is broken, stop". The check is substring-based, so a reworded
+    /// validation error silently falls through to `internal_error` — this test
+    /// is what catches that.
+    #[test]
+    fn argument_rejections_are_invalid_params() {
+        let client = crate::registry::RegistryClient::new();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        for hash in [
+            "",                    // empty
+            "ore/../../agents",    // invalid character
+            r"..\..\..\agents\me", // backslash traversal
+            "..",                  // dot-only segment
+        ] {
+            // `path_segment` rejects before any request, so this never leaves
+            // the process and needs no network.
+            let err = registry_result(rt.block_on(client.artifact("program-spec", hash)))
+                .expect_err("expected {hash:?} to be refused");
+            assert_eq!(
+                err.code,
+                ErrorCode::INVALID_PARAMS,
+                "{hash:?} should be caller-fixable, got: {}",
+                err.message
+            );
+        }
+
+        let err = registry_result(rt.block_on(client.artifact("not-a-kind", "abc")))
+            .expect_err("unknown kind should be refused");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    /// The tool result must be the registry's bytes, unchanged.
+    ///
+    /// Re-serializing a parsed `Value` would silently break both the documented
+    /// raw pass-through and the 512 KiB bound, because JSON number formatting is
+    /// not length-preserving: `1e9` comes back as `1000000000.0`, over 3x longer.
+    /// An array of those turns a legal body into an oversized tool result.
+    #[test]
+    fn body_passes_through_verbatim() {
+        let body = r#"{"big":1e9,"kept":"as-sent"}"#.to_string();
+        let result = registry_result(Ok(body.clone())).expect("should succeed");
+        let rendered = serde_json::to_string(&result).expect("result serializes");
+
+        assert!(
+            rendered.contains("1e9"),
+            "number must survive as sent: {rendered}"
+        );
+        assert!(
+            !rendered.contains("1000000000.0"),
+            "number must not be reformatted: {rendered}"
+        );
     }
 }

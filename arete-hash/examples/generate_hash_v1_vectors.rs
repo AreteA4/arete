@@ -123,7 +123,7 @@ impl Generator {
                 "programSpecSchema": PROGRAM_SPEC_SCHEMA_V1,
                 "programReleaseSchema": PROGRAM_RELEASE_SCHEMA_V1,
                 "ossDecoderEngineId": OSS_DECODER_ENGINE_ID,
-                "decoderFixtureSchema": DECODER_FIXTURE_SCHEMA_V1,
+                "decoderFixtureSchema": DECODER_FIXTURE_SCHEMA_V2,
             },
             "inputEncodings": {
                 "utf8": "UTF-8 bytes of data; JCS inputs are parsed with duplicate-key and unsafe-integer rejection",
@@ -1199,15 +1199,17 @@ impl Generator {
             &["release-oss-macro-cli"],
         );
 
-        let hosted = HostedManagedProgramReleaseV1::new(
-            baseline.program_id.clone(),
-            baseline.program_spec_hash,
-            baseline.idl_content_hash,
-            baseline.normalized_idl_hash,
-            "1",
-            "arete-hosted-decoder-engine/v1",
-            "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
-        );
+        let hosted = json!({
+            "schema": PROGRAM_RELEASE_SCHEMA_V1,
+            "releaseProfile": HOSTED_MANAGED_RELEASE_PROFILE,
+            "programId": baseline.program_id,
+            "programSpecHash": baseline.program_spec_hash,
+            "idlContentHash": baseline.idl_content_hash,
+            "normalizedIdlHash": baseline.normalized_idl_hash,
+            "decoderAbiVersion": "1",
+            "decoderEngineId": "arete-hosted-decoder-engine/v1",
+            "decoderBindingId": "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY",
+        });
         self.add_release_vector(
             "release-hosted-managed",
             "Exact hosted internal projection includes immutable random binding and engine IDs.",
@@ -1219,6 +1221,298 @@ impl Generator {
             None,
             &[],
         );
+
+        let upgradeable_identity = SolanaExecutableIdentityV1::new(
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            SolanaExecutableLoaderV1::bpf_upgradeable_loader(
+                "So11111111111111111111111111111111111111112",
+                9_007_199_254_740_993,
+                SolanaUpgradeAuthorityV1::address("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv")
+                    .expect("upgrade authority"),
+                format!("sha256:{}", "ab".repeat(32)),
+            )
+            .expect("upgradeable loader identity"),
+        )
+        .expect("executable identity");
+        let hosted_upgradeable =
+            HostedManagedProgramReleaseV2::new(HostedManagedProgramReleaseV2Fields {
+                program_id: "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
+                program_spec_hash: baseline.program_spec_hash,
+                idl_content_hash: baseline.idl_content_hash,
+                normalized_idl_hash: baseline.normalized_idl_hash,
+                decoder_abi_version: "1".to_string(),
+                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
+                executable_identity: upgradeable_identity,
+            })
+            .expect("hosted upgradeable release");
+        self.add_release_vector(
+            "release-hosted-managed-v2-upgradeable",
+            "Hosted V2 binds an upgradeable executable without lossy deployment-slot numbers.",
+            &hosted_upgradeable,
+            json!({"loader": "bpf-upgradeable-loader"}),
+            None,
+            &[],
+        );
+
+        let no_authority_identity = SolanaExecutableIdentityV1::new(
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            SolanaExecutableLoaderV1::bpf_upgradeable_loader(
+                "So11111111111111111111111111111111111111112",
+                9_007_199_254_740_993,
+                SolanaUpgradeAuthorityV1::none(),
+                format!("sha256:{}", "ab".repeat(32)),
+            )
+            .expect("upgradeable loader identity without authority"),
+        )
+        .expect("executable identity without authority");
+        let hosted_no_authority =
+            HostedManagedProgramReleaseV2::new(HostedManagedProgramReleaseV2Fields {
+                program_id: "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
+                program_spec_hash: baseline.program_spec_hash,
+                idl_content_hash: baseline.idl_content_hash,
+                normalized_idl_hash: baseline.normalized_idl_hash,
+                decoder_abi_version: "1".to_string(),
+                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
+                executable_identity: no_authority_identity,
+            })
+            .expect("hosted release without upgrade authority");
+        self.add_release_vector(
+            "release-hosted-managed-v2-upgradeable-no-authority",
+            "Hosted V2 canonically represents a permanently immutable upgradeable executable.",
+            &hosted_no_authority,
+            json!({
+                "loader": "bpf-upgradeable-loader",
+                "upgradeAuthority": "none"
+            }),
+            None,
+            &[],
+        );
+
+        let legacy_identity = SolanaExecutableIdentityV1::new(
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            SolanaExecutableLoaderV1::bpf_loader_v2(format!("sha256:{}", "cd".repeat(32)))
+                .expect("legacy loader identity"),
+        )
+        .expect("executable identity");
+        let hosted_legacy =
+            HostedManagedProgramReleaseV2::new(HostedManagedProgramReleaseV2Fields {
+                program_id: "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string(),
+                program_spec_hash: baseline.program_spec_hash,
+                idl_content_hash: baseline.idl_content_hash,
+                normalized_idl_hash: baseline.normalized_idl_hash,
+                decoder_abi_version: "1".to_string(),
+                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
+                executable_identity: legacy_identity,
+            })
+            .expect("hosted legacy release");
+        self.add_release_vector(
+            "release-hosted-managed-v2-legacy-loader",
+            "Hosted V2 binds an immutable legacy BPF loader executable.",
+            &hosted_legacy,
+            json!({"loader": "bpf-loader-v2"}),
+            None,
+            &[],
+        );
+
+        self.hosted_release_failure_vectors(&hosted_upgradeable, &hosted_legacy);
+    }
+
+    fn hosted_release_failure_vectors(
+        &mut self,
+        upgradeable: &HostedManagedProgramReleaseV2,
+        legacy: &HostedManagedProgramReleaseV2,
+    ) {
+        let upgradeable_value = serde_json::to_value(upgradeable).expect("release serializes");
+        let legacy_value = serde_json::to_value(legacy).expect("release serializes");
+        for (id, description, use_legacy, mutation, expected_code) in [
+            (
+                "hosted-release-v2-rejects-v1-schema",
+                "Hosted managed release V1 is not accepted by the primary V2 API.",
+                false,
+                "schema",
+                "unknown-version",
+            ),
+            (
+                "hosted-release-v2-rejects-unknown-field",
+                "Hosted V2 rejects unknown release fields.",
+                false,
+                "release-field",
+                "invalid-projection",
+            ),
+            (
+                "hosted-release-v2-rejects-invalid-program-id",
+                "Hosted V2 requires a Solana program public key.",
+                false,
+                "program-id",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-invalid-genesis",
+                "Executable identity requires a canonical 32-byte base58 genesis hash.",
+                false,
+                "genesis",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-leading-zero-genesis",
+                "Executable identity rejects a Base58 value with an extra leading zero byte.",
+                false,
+                "genesis-leading-zero",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-unknown-field",
+                "Executable identity rejects unknown fields.",
+                false,
+                "identity-field",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-unknown-loader",
+                "Executable identity rejects future loader variants until explicitly versioned.",
+                false,
+                "loader-kind",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-loader-id-mismatch",
+                "Each loader variant requires its fixed Solana loader program ID.",
+                false,
+                "loader-id",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-invalid-program-data",
+                "Upgradeable identities require a ProgramData public key.",
+                false,
+                "program-data",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-missing-deployment-slot",
+                "Upgradeable identities require a deployment slot.",
+                false,
+                "missing-slot",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-numeric-deployment-slot",
+                "Deployment slots are strings so JavaScript cannot lose precision.",
+                false,
+                "numeric-slot",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-noncanonical-deployment-slot",
+                "Deployment slot strings reject leading zeroes.",
+                false,
+                "leading-zero-slot",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-overflowing-deployment-slot",
+                "Deployment slot strings are bounded to u64.",
+                false,
+                "overflow-slot",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-invalid-authority",
+                "Upgrade authority variants reject incompatible fields.",
+                false,
+                "authority",
+                "invalid-projection",
+            ),
+            (
+                "executable-identity-rejects-invalid-payload-digest",
+                "Executable payload digests require lowercase SHA-256 hexadecimal.",
+                false,
+                "digest",
+                "invalid-projection",
+            ),
+            (
+                "legacy-loader-rejects-program-data",
+                "Immutable loader identities cannot carry upgradeable-loader fields.",
+                true,
+                "legacy-program-data",
+                "invalid-projection",
+            ),
+        ] {
+            let mut value = if use_legacy {
+                legacy_value.clone()
+            } else {
+                upgradeable_value.clone()
+            };
+            match mutation {
+                "schema" => value["schema"] = json!(PROGRAM_RELEASE_SCHEMA_V1),
+                "release-field" => value["observationId"] = json!("private"),
+                "program-id" => value["programId"] = json!("invalid"),
+                "genesis" => value["executableIdentity"]["genesisHash"] = json!("invalid"),
+                "genesis-leading-zero" => {
+                    value["executableIdentity"]["genesisHash"] =
+                        json!("1TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+                }
+                "identity-field" => {
+                    value["executableIdentity"]["rpcUrl"] = json!("https://private.invalid")
+                }
+                "loader-kind" => value["executableIdentity"]["loader"]["kind"] = json!("loader-v4"),
+                "loader-id" => {
+                    value["executableIdentity"]["loader"]["loaderProgramId"] =
+                        json!(SOLANA_BPF_LOADER_V2_PROGRAM_ID)
+                }
+                "program-data" => {
+                    value["executableIdentity"]["loader"]["programDataAddress"] = json!("invalid")
+                }
+                "missing-slot" => {
+                    value["executableIdentity"]["loader"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("deploymentSlot");
+                }
+                "numeric-slot" => {
+                    value["executableIdentity"]["loader"]["deploymentSlot"] = json!(1)
+                }
+                "leading-zero-slot" => {
+                    value["executableIdentity"]["loader"]["deploymentSlot"] = json!("01")
+                }
+                "overflow-slot" => {
+                    value["executableIdentity"]["loader"]["deploymentSlot"] =
+                        json!("18446744073709551616")
+                }
+                "authority" => {
+                    value["executableIdentity"]["loader"]["upgradeAuthority"] = json!({
+                        "kind": "none",
+                        "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
+                    })
+                }
+                "digest" => {
+                    value["executableIdentity"]["loader"]["executablePayloadSha256"] =
+                        json!(format!("sha256:{}", "AB".repeat(32)))
+                }
+                "legacy-program-data" => {
+                    value["executableIdentity"]["loader"]["programDataAddress"] =
+                        json!("So11111111111111111111111111111111111111112")
+                }
+                _ => unreachable!(),
+            }
+            let error = match parse_hosted_managed_program_release_v2(
+                &serde_json::to_vec(&value).expect("release JSON"),
+            ) {
+                Ok(_) => panic!("invalid hosted release vector '{id}' was accepted"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), expected_code);
+            self.add_failure(
+                id,
+                description,
+                "hosted-program-release-v2",
+                json!({"projection": value}),
+                &error,
+            );
+        }
     }
 
     fn decoder_fixture_vectors(&mut self) {
@@ -1226,39 +1520,37 @@ impl Generator {
             "fixture": "decoder-fixture-vectors"
         }))
         .expect("normalized fixture identity");
-        let public_value_digest = digest_decoder_fixture_public_value_v1(&json!({
+        let public_value_digest = digest_decoder_fixture_public_value_v2(&json!({
             "amount": "0",
             "state": "uninitialized"
         }))
         .expect("public fixture value digest");
-        let baseline = DecoderFixtureSetV1 {
-            schema: DECODER_FIXTURE_SCHEMA_V1.to_string(),
+        let baseline = DecoderFixtureSetV2 {
+            schema: DECODER_FIXTURE_SCHEMA_V2.to_string(),
             program_id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
             normalized_idl_hash,
             decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
             decoder_abi_version: "1".to_string(),
             cases: vec![
-                DecoderFixtureCaseV1 {
+                DecoderFixtureCaseV2 {
                     id: "account-decoded".to_string(),
                     account_type: "Account".to_string(),
                     owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
-                    address: "So11111111111111111111111111111111111111112".to_string(),
                     account_data_hex: "00".to_string(),
-                    expected: DecoderFixtureExpectedV1::Decoded {
+                    expected: DecoderFixtureExpectedV2::Decoded {
                         public_value_digest,
                     },
                     expected_private_diagnostics: None,
                 },
-                DecoderFixtureCaseV1 {
+                DecoderFixtureCaseV2 {
                     id: "mint-too-short".to_string(),
                     account_type: "Mint".to_string(),
                     owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
-                    address: "11111111111111111111111111111111".to_string(),
                     account_data_hex: "0102".to_string(),
-                    expected: DecoderFixtureExpectedV1::Error {
+                    expected: DecoderFixtureExpectedV2::Error {
                         category: DecoderFixtureAccountDecodeErrorCategory::AccountTypeMismatch,
                     },
-                    expected_private_diagnostics: Some(DecoderFixturePrivateDiagnosticsV1 {
+                    expected_private_diagnostics: Some(DecoderFixturePrivateDiagnosticsV2 {
                         trailing_bytes: None,
                         candidate_count: Some(1),
                     }),
@@ -1311,10 +1603,28 @@ impl Generator {
         let baseline_value = serde_json::to_value(&baseline).expect("fixture serializes");
         for (id, description, mutate, code) in [
             (
-                "decoder-fixture-invalid-schema",
-                "Unknown fixture schemas fail closed.",
-                "schema",
+                "decoder-fixture-v1-rejected",
+                "Address-bearing fixture V1 fails closed.",
+                "schema-v1",
                 "unknown-version",
+            ),
+            (
+                "decoder-fixture-v3-rejected",
+                "Unknown future fixture schemas fail closed.",
+                "schema-v3",
+                "unknown-version",
+            ),
+            (
+                "decoder-fixture-address-rejected",
+                "Operational account addresses cannot enter V2 fixture bytes.",
+                "address",
+                "invalid-projection",
+            ),
+            (
+                "decoder-fixture-provenance-rejected",
+                "Private capture provenance cannot enter V2 fixture bytes.",
+                "provenance",
+                "invalid-projection",
             ),
             (
                 "decoder-fixture-invalid-normalized-hash",
@@ -1352,10 +1662,58 @@ impl Generator {
                 "category",
                 "invalid-projection",
             ),
+            (
+                "decoder-fixture-invalid-program-id",
+                "programId must be a Solana public key.",
+                "program-id",
+                "invalid-projection",
+            ),
+            (
+                "decoder-fixture-leading-zero-program-id",
+                "programId rejects a Base58 value with an extra leading zero byte.",
+                "program-id-leading-zero",
+                "invalid-projection",
+            ),
+            (
+                "decoder-fixture-invalid-owner",
+                "owner must be a Solana public key.",
+                "owner",
+                "invalid-projection",
+            ),
+            (
+                "decoder-fixture-invalid-public-value-digest",
+                "Decoded expectations require lowercase SHA-256 digests.",
+                "digest",
+                "invalid-projection",
+            ),
+            (
+                "decoder-fixture-empty-diagnostics",
+                "Private diagnostics must contain a bounded diagnostic.",
+                "diagnostics-empty",
+                "invalid-projection",
+            ),
+            (
+                "decoder-fixture-zero-candidate-count",
+                "candidateCount must be nonzero when present.",
+                "candidate-zero",
+                "invalid-projection",
+            ),
+            (
+                "decoder-fixture-empty-cases",
+                "Fixture sets require at least one case.",
+                "cases-empty",
+                "invalid-projection",
+            ),
         ] {
             let mut value = baseline_value.clone();
             match mutate {
-                "schema" => value["schema"] = json!("arete.decoder-fixtures/v2"),
+                "schema-v1" => value["schema"] = json!("arete.decoder-fixtures/v1"),
+                "schema-v3" => value["schema"] = json!("arete.decoder-fixtures/v3"),
+                "address" => {
+                    value["cases"][0]["address"] =
+                        json!("So11111111111111111111111111111111111111112")
+                }
+                "provenance" => value["rpcUrl"] = json!("https://private.invalid"),
                 "hash" => {
                     value["normalizedIdlHash"] =
                         json!(hash_jcs::<IdlContent, _>(&json!({"wrong": "kind"})).unwrap())
@@ -1367,16 +1725,30 @@ impl Generator {
                 "category" => {
                     value["cases"][1]["expected"]["category"] = json!("account-data-too-short")
                 }
+                "program-id" => value["programId"] = json!("invalid"),
+                "program-id-leading-zero" => {
+                    value["programId"] = json!("1TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+                }
+                "owner" => value["cases"][0]["owner"] = json!("invalid"),
+                "digest" => {
+                    value["cases"][0]["expected"]["publicValueDigest"] =
+                        json!(format!("sha256:{}", "AB".repeat(32)))
+                }
+                "diagnostics-empty" => value["cases"][1]["expectedPrivateDiagnostics"] = json!({}),
+                "candidate-zero" => {
+                    value["cases"][1]["expectedPrivateDiagnostics"]["candidateCount"] = json!(0)
+                }
+                "cases-empty" => value["cases"] = json!([]),
                 _ => unreachable!(),
             }
             let bytes = serde_json::to_vec(&value).unwrap();
-            let error = parse_decoder_fixture_set_v1(&bytes)
+            let error = parse_decoder_fixture_set_v2(&bytes)
                 .expect_err("invalid decoder fixture must fail");
             assert_eq!(error.code(), code);
             self.add_failure(
                 id,
                 description,
-                "decoder-fixture-set-v1",
+                "decoder-fixture-set-v2",
                 json!({"projection": value}),
                 &error,
             );
@@ -1387,7 +1759,7 @@ impl Generator {
         &mut self,
         id: &str,
         description: &str,
-        fixture: &DecoderFixtureSetV1,
+        fixture: &DecoderFixtureSetV2,
         equivalence_group: Option<&str>,
         differs_from: &[&str],
     ) {

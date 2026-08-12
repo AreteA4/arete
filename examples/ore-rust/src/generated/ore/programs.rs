@@ -16,10 +16,10 @@ pub mod ore {
     pub const PROGRAM_ID: &str = "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv";
 
     /// Content hash of the exact program specification captured at generation time.
-    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:b37beb6e8df0a55316f39cea21f3f3f5bc827aa7e6a54291398edbf1db58ff6b";
+    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:fe539d6dbef9a3df17c40c97090ce8bd4608e90ef65bb665f8f72e693aa8fd0e";
 
     /// Release identity addressing hosted account reads for this program.
-    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:adff79886735a8cacfb69bd3a5371f5cfeec18d099a289cce4755b9104ffd986";
+    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:27a3c47c61e0a916eb3e2dba100fbe3cc09679c4ab6e78d5997692c9f818cf49";
 
     /// Release-addressed read descriptor for this program (HTTP reads over
     /// the client's HTTP base URL).

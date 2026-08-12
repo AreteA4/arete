@@ -1,9 +1,10 @@
 # arete-mcp
 
 MCP (Model Context Protocol) server that wraps Arete streams for AI agent
-integration. Lets Claude, GPT, and other MCP-compatible agents connect to a
-Arete stack, subscribe to views, and query cached entities — using the
-same primitives a human operator uses through `a4 stream`.
+integration. Lets Claude, GPT, and other MCP-compatible agents discover what
+stacks and programs exist, connect to a Arete stack, subscribe to views, and
+query cached entities — using the same primitives a human operator uses through
+`a4 explore` and `a4 stream`.
 
 The binary is `a4-mcp` and speaks MCP over stdio.
 
@@ -279,9 +280,52 @@ MCP tools in Continue are only available in **agent mode**, not chat or edit.
 
 ## Tool reference
 
-All tools are stateful: a typical session calls `connect` once, then
+A typical session starts with discovery — `explore_stacks` to see what exists,
+`explore_stack_schema` to get the view ids — then calls `connect` once, then
 `subscribe`, then queries the cache via `get_entity` / `list_entities` /
-`get_recent` / `query_entities`.
+`get_recent` / `query_entities`. Everything from `connect` onward is stateful.
+
+### Discovery
+
+Read-only lookups against the public `/api/registry/*` endpoints. No signup
+required: public stacks and programs are visible to unauthenticated callers. When
+a key happens to resolve (see [Authentication](#authentication)), it is attached
+so `explore_stacks` also returns global stacks — but a missing key is never an
+error here.
+
+- `explore_stacks()` — stacks in the registry. The `websocket_url` in each entry
+  is what `connect` takes; `entities` tells you what to look for in the schema.
+- `explore_stack({ stack })` — pinned install descriptor for one stack: the exact
+  StackManifest, AST, LiveSpec, view, and Program Release identities `a4 install`
+  would consume.
+- `explore_stack_schema({ stack })` — entity and view schema: field paths, types,
+  primary keys, and the `<EntityName>/<view>` ids `subscribe` accepts. Use this
+  instead of guessing a view id from the template.
+- `explore_programs()` — standalone Solana programs installable independent of
+  any stack.
+- `explore_program({ program })` — pinned install descriptor for one program:
+  identity hashes, accounts, instructions, events, types, Program Read.
+- `resolve_artifact({ kind, hash })` — fetch a content-addressed artifact.
+  `kind` is one of `program-spec`, `live-spec`, `stack-manifest`; the hash comes
+  from an install descriptor.
+
+Responses are the registry's JSON, passed through unchanged. Bodies over 512 KB
+are refused rather than truncated — use `a4 explore` or `a4 install` on the
+command line for payloads that large.
+
+**Key casing is not uniform.** `explore_stacks` and `explore_stack_schema` return
+snake_case (`websocket_url`, `stack_name`, `primary_keys`, `rust_type`).
+`explore_stack`, `explore_programs` and `explore_program` return camelCase
+(`websocketUrl`, `installName`, `programSpecHash`, `stackManifestHash`) — the CLI
+deserializes those three with `deny_unknown_fields`, so their shape is pinned.
+`resolve_artifact` returns a camelCase envelope (`artifactHash`, `artifactVersion`,
+`kind`, `payload`) wrapping a stored payload that may be snake_case inside, such as an
+embedded IDL's `program_id` and `is_signer`. Separately, `a4 explore --json` is
+camelCase throughout. Read the keys you actually receive rather than assuming one
+convention.
+
+These tools cover discovery only. SDK generation (`a4 install`) and transaction
+construction live in the CLI and the generated SDKs, not here.
 
 ### Connection management
 
@@ -411,16 +455,24 @@ view. Equivalent subscriptions share one reference-counted wire subscription.
 ## Example session (JSON-RPC over stdio)
 
 ```jsonc
-// 1. Open connection
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"connect","arguments":{"url":"wss://demo.stack.arete.run"}}}
+// 1. Discover what exists
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explore_stacks","arguments":{}}}
+// → [{"name":"ore","websocket_url":"wss://ore-r4xj7y.stack.arete.run","entities":["OreRound",...]}, ...]
+
+// 2. Get the exact view ids for the stack you picked
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"explore_stack_schema","arguments":{"stack":"ore"}}}
+// → entities, fields, primary keys, and view ids like "OreRound/latest"
+
+// 3. Open connection
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"connect","arguments":{"url":"wss://ore-r4xj7y.stack.arete.run"}}}
 // → {"connection_id":"a1b2..."}
 
-// 2. Subscribe to a view
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"subscribe","arguments":{"connection_id":"a1b2...","view":"OreRound/latest"}}}
+// 4. Subscribe to a view
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"subscribe","arguments":{"connection_id":"a1b2...","view":"OreRound/latest"}}}
 // → {"subscription_id":"c3d4..."}
 
-// 3. Query
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_entities","arguments":{
+// 5. Query
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"query_entities","arguments":{
   "subscription_id":"c3d4...",
   "filters":[{"path":"reward","op":"gt","value":1000}],
   "select":"key,reward,winner",
@@ -436,6 +488,22 @@ transport on stdout. Set the standard `RUST_LOG` env var to control verbosity:
 ```bash
 RUST_LOG=hs_mcp=debug,arete_sdk=info a4-mcp
 ```
+
+## Environment
+
+| Variable        | Purpose                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| `ARETE_API_KEY` | API key for `connect`, and for widening `explore_stacks` to global stacks                     |
+| `ARETE_API_URL` | API base for the discovery tools and credentials lookup. Defaults to `https://api.arete.run`  |
+| `RUST_LOG`      | Log verbosity (stderr only)                                                                   |
+
+A resolved API key is attached to discovery requests **only when `ARETE_API_URL`
+names an Arete origin over HTTPS** — `https://arete.run` or any
+`https://*.arete.run` subdomain. Plain HTTP is permitted only for loopback
+(`localhost`, `127.0.0.1`, `[::1]`), where the request never leaves the machine.
+Anything else — including `http://api.arete.run`, which would put the key on the
+wire in cleartext — gets an unauthenticated request instead. Every endpoint the
+discovery tools touch is public, so you still get the public result set.
 
 ## Status
 
