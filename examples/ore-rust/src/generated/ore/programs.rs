@@ -6,7 +6,8 @@
 //! `pdas` module with PDA derivation helpers. Programs with a recorded
 //! program spec additionally expose `PROGRAM_SPEC_HASH` /
 //! `PROGRAM_RELEASE_HASH`, a `read_descriptor()` for release-addressed HTTP
-//! reads, and typed `*_accounts()` readers on the program accessor.
+//! reads, and typed `*_accounts()` readers on the program accessor. Standalone
+//! output also exports a `ProgramSdk` aggregate for direct/session composition.
 
 /// Program SDK for `ore` (program ID `oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv`).
 pub mod ore {
@@ -21,8 +22,7 @@ pub mod ore {
     /// Release identity addressing hosted account reads for this program.
     pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:27a3c47c61e0a916eb3e2dba100fbe3cc09679c4ab6e78d5997692c9f818cf49";
 
-    /// Release-addressed read descriptor for this program (HTTP reads over
-    /// the client's HTTP base URL).
+    /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
         arete_sdk::ProgramReadDescriptor::LocalHttp {
             release: arete_sdk::ProgramReleaseReference {
@@ -1615,8 +1615,7 @@ pub mod entropy {
     /// Release identity addressing hosted account reads for this program.
     pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:9e7d6811735b35f9fd144c1eaa21ac1a48720b706d81bd0d0cd9ad6ec7f32b6c";
 
-    /// Release-addressed read descriptor for this program (HTTP reads over
-    /// the client's HTTP base URL).
+    /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
         arete_sdk::ProgramReadDescriptor::LocalHttp {
             release: arete_sdk::ProgramReleaseReference {

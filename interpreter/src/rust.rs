@@ -15,6 +15,20 @@ pub struct RustOutput {
     pub programs_rs: Option<String>,
 }
 
+/// Rust output for a standalone program SDK.
+///
+/// Unlike [`RustOutput`], this deliberately has no entity/view module or
+/// generated `Stack` implementation. The exported
+/// aggregate implements `arete_sdk::ProgramSdk`, so it can be connected on
+/// its own or added to a session alongside live stacks.
+#[derive(Debug, Clone)]
+pub struct RustProgramOutput {
+    pub cargo_toml: String,
+    pub lib_rs: String,
+    pub types_rs: String,
+    pub programs_rs: String,
+}
+
 impl RustOutput {
     pub fn full_lib(&self) -> String {
         let mut output = format!(
@@ -89,6 +103,29 @@ pub fn write_rust_module(
     if let Some(programs) = &output.programs_rs {
         std::fs::write(module_dir.join("programs.rs"), programs)?;
     }
+    Ok(())
+}
+
+pub fn write_rust_program_crate(
+    output: &RustProgramOutput,
+    crate_dir: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(crate_dir.join("src"))?;
+    std::fs::write(crate_dir.join("Cargo.toml"), &output.cargo_toml)?;
+    std::fs::write(crate_dir.join("src/lib.rs"), &output.lib_rs)?;
+    std::fs::write(crate_dir.join("src/types.rs"), &output.types_rs)?;
+    std::fs::write(crate_dir.join("src/programs.rs"), &output.programs_rs)?;
+    Ok(())
+}
+
+pub fn write_rust_program_module(
+    output: &RustProgramOutput,
+    module_dir: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(module_dir)?;
+    std::fs::write(module_dir.join("mod.rs"), &output.lib_rs)?;
+    std::fs::write(module_dir.join("types.rs"), &output.types_rs)?;
+    std::fs::write(module_dir.join("programs.rs"), &output.programs_rs)?;
     Ok(())
 }
 
@@ -1075,6 +1112,7 @@ fn normalized_integer_kind(rust_type_name: &str) -> &'static str {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::process::Command;
 
     fn identity_spec() -> IdentitySpec {
         IdentitySpec {
@@ -1821,6 +1859,113 @@ mod tests {
     }
 
     #[test]
+    fn rust_program_compiler_emits_no_view_or_stack_shell() {
+        let output = compile_program_modules(
+            programs_stack_spec(),
+            Some(RustStackConfig {
+                crate_name: "demo-program".to_string(),
+                sdk_version: env!("CARGO_PKG_VERSION").to_string(),
+                program_reads: vec![RustProgramReadConfig {
+                    program_id: TEST_PROGRAM_ID.to_string(),
+                    program_spec_hash: "arete:h1:program-spec:sha256:test".to_string(),
+                    program_release_hash: "arete:h1:program-release:sha256:test".to_string(),
+                    descriptor: Some(serde_json::json!({
+                        "release": {
+                            "programReleaseHash": "arete:h1:program-release:sha256:test",
+                            "programSpecHash": "arete:h1:program-spec:sha256:test"
+                        },
+                        "transport": {
+                            "kind": "hosted-binding",
+                            "binding": {
+                                "endpoint": "https://reads.example.test",
+                                "programReadBindingId": "prb_00000000000000000000000000000001",
+                                "auth": {
+                                    "sessionEndpoint": "https://auth.example.test/session",
+                                    "targetKind": "program-read-binding",
+                                    "targetId": "prb_00000000000000000000000000000001"
+                                }
+                            }
+                        }
+                    })),
+                }],
+                ..Default::default()
+            }),
+        )
+        .expect("standalone program generation should succeed");
+
+        assert!(!output.lib_rs.contains("mod entity"));
+        assert!(!output.lib_rs.contains("StackViews"));
+        assert!(!output.programs_rs.contains("EntityViews"));
+        assert!(output.lib_rs.contains("pub use programs::DemoPrograms;"));
+        assert!(output
+            .programs_rs
+            .contains("impl arete_sdk::ProgramSdk for DemoPrograms"));
+        assert!(output
+            .programs_rs
+            .contains("impl arete_sdk::Programs for DemoPrograms"));
+
+        let base = std::env::temp_dir().join(format!(
+            "arete-rust-program-codegen-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        write_rust_program_crate(&output, &base).expect("program crate should write");
+        assert!(base.join("src/programs.rs").is_file());
+        assert!(base.join("src/types.rs").is_file());
+        assert!(!base.join("src/entity.rs").exists());
+
+        // Consumer smoke test: compile the generated crate against this
+        // checkout's runtime. This catches invalid generated expressions,
+        // module paths, re-exports, and dependency declarations.
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("interpreter crate lives in the repo root");
+        let runtime_path = repo_root.join("rust/arete-a4-sdk");
+        let manifest_path = base.join("Cargo.toml");
+        let mut manifest = std::fs::read_to_string(&manifest_path).expect("generated Cargo.toml");
+        let generated_dependency = format!(
+            "arete-sdk = {{ package = \"arete-a4-sdk\", version = {:?} }}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(
+            manifest.contains(&generated_dependency),
+            "generated manifest must expose the expected runtime dependency"
+        );
+        manifest.push_str(&format!(
+            "\n[patch.crates-io]\narete-a4-sdk = {{ path = {:?} }}\n",
+            runtime_path
+        ));
+        std::fs::write(&manifest_path, manifest).expect("localize generated dependency");
+
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let checked = Command::new(cargo)
+            .args(["check", "--quiet", "--offline", "--manifest-path"])
+            .arg(&manifest_path)
+            .env("CARGO_TARGET_DIR", base.join("target"))
+            .output()
+            .expect("cargo must be available for generated consumer smoke tests");
+        assert!(
+            checked.status.success(),
+            "generated standalone Rust crate failed cargo check:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&checked.stdout),
+            String::from_utf8_lossy(&checked.stderr),
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rust_program_compiler_keeps_idl_only_programs() {
+        let mut spec = programs_stack_spec();
+        spec.instructions.clear();
+        let output = compile_program_modules(spec, None)
+            .expect("an IDL-only standalone program should still be emitted");
+        assert!(output.programs_rs.contains("pub mod demo"));
+        assert!(output.programs_rs.contains("pub struct DemoProgram"));
+        assert!(output.programs_rs.contains("pub struct DemoPrograms"));
+    }
+
+    #[test]
     fn rust_generator_without_instructions_binds_unit_programs() {
         let mut spec = programs_stack_spec();
         spec.instructions.clear();
@@ -1992,6 +2137,21 @@ mod tests {
                 program_id: TEST_PROGRAM_ID.to_string(),
                 program_spec_hash: platform_spec.clone(),
                 program_release_hash: platform_release.clone(),
+                descriptor: Some(serde_json::json!({
+                    "release": {
+                        "programReleaseHash": platform_release.clone(),
+                        "programSpecHash": platform_spec.clone(),
+                    },
+                    "transport": {"kind": "hosted-binding", "binding": {
+                        "endpoint": "https://reads.example.test",
+                        "programReadBindingId": "prb_00000000000000000000000000000001",
+                        "auth": {
+                            "sessionEndpoint": "https://auth.example.test/session",
+                            "targetKind": "program-read-binding",
+                            "targetId": "prb_00000000000000000000000000000001"
+                        }
+                    }}
+                })),
             }],
             ..Default::default()
         };
@@ -2007,6 +2167,7 @@ mod tests {
             "pub const PROGRAM_RELEASE_HASH: &str = \"{platform_release}\";"
         )));
         assert!(programs.contains("pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor"));
+        assert!(programs.contains("\\\"kind\\\":\\\"hosted-binding\\\""));
     }
 
     #[test]
@@ -2214,9 +2375,9 @@ pub struct RustStackConfig {
     /// entry matches a program, its exact `program_spec_hash` /
     /// `program_release_hash` (from a hosted platform release) are used for
     /// the program read layer instead of the OSS-derived release identity.
-    /// Absent programs keep the default OSS/local-HTTP read layer. The read
-    /// transport is still `LocalHttp` (connect-http-url); the client is
-    /// pointed at the hosted Program Read endpoint via `http_url`.
+    /// Absent programs keep the default OSS/local-HTTP read layer. Published
+    /// standalone programs may additionally carry their exact hosted-binding
+    /// descriptor so they do not inherit a stack HTTP endpoint.
     pub program_reads: Vec<RustProgramReadConfig>,
 }
 
@@ -2225,6 +2386,9 @@ pub struct RustProgramReadConfig {
     pub program_id: String,
     pub program_spec_hash: String,
     pub program_release_hash: String,
+    /// Exact wire descriptor for a published hosted binding. `None` keeps
+    /// the local-HTTP descriptor used by locally generated stack SDKs.
+    pub descriptor: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2313,6 +2477,7 @@ fn compile_stack_spec_with_view_selection(
         &account_structs,
         config.module_mode,
         &config.program_reads,
+        false,
     );
     let entity_rs = generate_stack_entity_rs(
         stack_name,
@@ -2350,6 +2515,76 @@ pub fn compile_stack_spec_with_exact_views(
     config: Option<RustStackConfig>,
 ) -> Result<RustOutput, String> {
     compile_stack_spec_with_view_selection(stack_spec, config, true)
+}
+
+/// Compile only the portable program surface: generated account/model types,
+/// instruction builders, PDA helpers, read descriptors, and a `ProgramSdk`
+/// aggregate. No entity, view, or stack binding is emitted.
+pub fn compile_program_modules(
+    stack_spec: SerializableStackSpec,
+    config: Option<RustStackConfig>,
+) -> Result<RustProgramOutput, String> {
+    let config = config.unwrap_or_default();
+    if stack_spec.idls.is_empty() {
+        return Err(format!(
+            "Stack '{}' carries no IDLs; a program-only SDK has nothing to emit",
+            stack_spec.stack_name
+        ));
+    }
+
+    let entity_names = stack_spec
+        .entities
+        .iter()
+        .map(|entity| entity.state_name.clone())
+        .collect::<Vec<_>>();
+    let (types_rs, account_structs) = generate_stack_types_rs(&stack_spec.entities, &entity_names);
+    let mut programs = generate_stack_programs_rs(
+        &stack_spec.stack_name,
+        &stack_spec.instructions,
+        &stack_spec.idls,
+        &stack_spec.pdas,
+        &stack_spec.program_ids,
+        &stack_spec.program_specs,
+        &account_structs,
+        config.module_mode,
+        &config.program_reads,
+        true,
+    )
+    .ok_or_else(|| {
+        format!(
+            "Stack '{}' contains no programs to emit",
+            stack_spec.stack_name
+        )
+    })?;
+
+    validate_extension_modules(&config, true)?;
+    let aggregate_name = format!("{}Programs", to_pascal_case(&stack_spec.stack_name));
+    programs.code.push('\n');
+    programs.code.push_str(&generate_programs_accessor_struct(
+        &aggregate_name,
+        &programs,
+        "self",
+    ));
+    programs.code.push_str(&format!(
+        "\n\nimpl arete_sdk::ProgramSdk for {aggregate_name} {{\n    fn name() -> &'static str {{\n        {}\n    }}\n}}\n",
+        rust_string_literal(&to_kebab_case(&stack_spec.stack_name)),
+    ));
+
+    let mut lib_rs = format!(
+        "mod types;\npub mod programs;\n\npub use programs::{aggregate_name};\npub use types::*;\n\npub use arete_sdk::{{ProgramSdk, Programs}};\n"
+    );
+    append_rust_extension_exports(
+        &mut lib_rs,
+        &config.extension_modules,
+        config.extension_entry.as_deref(),
+    );
+
+    Ok(RustProgramOutput {
+        cargo_toml: generate_stack_cargo_toml(&config),
+        lib_rs,
+        types_rs,
+        programs_rs: programs.code,
+    })
 }
 
 /// Compile Rust output from an explicit StackManifest and its public dependencies.
@@ -2542,6 +2777,16 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         all_exports = all_exports
     );
 
+    append_rust_extension_exports(&mut output, extension_modules, extension_entry);
+
+    output
+}
+
+fn append_rust_extension_exports(
+    output: &mut String,
+    extension_modules: &[String],
+    extension_entry: Option<&str>,
+) {
     if let Some(entry) = extension_entry {
         output.push_str(
             "\n// Hand-authored devex extensions (staged from extensions.json; not generated).\n",
@@ -2551,8 +2796,6 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
         }
         output.push_str(&format!("pub use {entry}::*;\n"));
     }
-
-    output
 }
 
 /// Generate types.rs containing structs for ALL entities in the stack.
@@ -2794,61 +3037,19 @@ impl {entity}EntityViews {{
 
     // Program SDK binding: stacks with generated programs bind a generated
     // accessor struct; program-less stacks bind `()`.
-    let programs_root = if config.module_mode { "super" } else { "crate" };
     let (programs_assoc, programs_struct) = match programs {
         Some(codegen) => {
-            let fields: Vec<String> = codegen
-                .modules
-                .iter()
-                .map(|module| {
-                    format!(
-                        "    pub {}: {root}::programs::{}::{},",
-                        module.module_name,
-                        module.module_name,
-                        module.struct_name,
-                        root = programs_root
-                    )
-                })
-                .collect();
-            let inits: Vec<String> = codegen
-                .modules
-                .iter()
-                .enumerate()
-                .map(|(index, module)| {
-                    let builder_expr = if index < codegen.modules.len() - 1 {
-                        "builder.clone()"
-                    } else {
-                        "builder"
-                    };
-                    format!(
-                        "            {}: {root}::programs::{}::{}::from_builder({builder_expr}),",
-                        module.module_name,
-                        module.module_name,
-                        module.struct_name,
-                        root = programs_root,
-                        builder_expr = builder_expr
-                    )
-                })
-                .collect();
+            let programs_root = if config.module_mode { "super" } else { "crate" };
+            let aggregate_name = format!("{}StackPrograms", stack_name);
             (
-                format!("type Programs = {}StackPrograms;", stack_name),
+                format!("type Programs = {aggregate_name};"),
                 format!(
-                    r#"
-
-pub struct {stack}StackPrograms {{
-{fields}
-}}
-
-impl arete_sdk::Programs for {stack}StackPrograms {{
-    fn from_builder(builder: arete_sdk::ProgramBuilder) -> Self {{
-        Self {{
-{inits}
-        }}
-    }}
-}}"#,
-                    stack = stack_name,
-                    fields = fields.join("\n"),
-                    inits = inits.join("\n")
+                    "\n{}",
+                    generate_programs_accessor_struct(
+                        &aggregate_name,
+                        codegen,
+                        &format!("{programs_root}::programs"),
+                    )
                 ),
             )
         }
@@ -2894,6 +3095,55 @@ impl Views for {stack}StackViews {{
         entity_views = entity_views_structs.join("\n"),
         empty_builder = empty_builder,
         programs_struct = programs_struct,
+    )
+}
+
+fn generate_programs_accessor_struct(
+    aggregate_name: &str,
+    codegen: &ProgramsCodegen,
+    programs_root: &str,
+) -> String {
+    let fields = codegen
+        .modules
+        .iter()
+        .map(|module| {
+            format!(
+                "    pub {}: {programs_root}::{}::{},",
+                module.module_name, module.module_name, module.struct_name,
+            )
+        })
+        .collect::<Vec<_>>();
+    let inits = codegen
+        .modules
+        .iter()
+        .enumerate()
+        .map(|(index, module)| {
+            let builder_expr = if index < codegen.modules.len() - 1 {
+                "builder.clone()"
+            } else {
+                "builder"
+            };
+            format!(
+                "            {}: {programs_root}::{}::{}::from_builder({builder_expr}),",
+                module.module_name, module.module_name, module.struct_name,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!(
+        r#"pub struct {aggregate_name} {{
+{fields}
+}}
+
+impl arete_sdk::Programs for {aggregate_name} {{
+    fn from_builder(builder: arete_sdk::ProgramBuilder) -> Self {{
+        Self {{
+{inits}
+        }}
+    }}
+}}"#,
+        fields = fields.join("\n"),
+        inits = inits.join("\n"),
     )
 }
 
@@ -3867,7 +4117,7 @@ fn generate_rust_pdas_module(pdas: &BTreeMap<String, PdaDefinition>) -> Option<S
 
 /// Release identity computed at generation time for one program, or the
 /// reason the program's read layer is omitted.
-type ProgramReadLayer = Result<(String, String), String>;
+type ProgramReadLayer = Result<(String, String, Option<serde_json::Value>), String>;
 
 /// Resolve the release identity (`PROGRAM_SPEC_HASH`, `PROGRAM_RELEASE_HASH`)
 /// for one program from the stack's recorded program specs.
@@ -3887,7 +4137,7 @@ fn resolve_program_read_layer(
     let release_hash = spec
         .oss_release_hash()
         .map_err(|error| format!("failed to compute the release hash ({error})"))?;
-    Ok((spec_hash.to_string(), release_hash.to_string()))
+    Ok((spec_hash.to_string(), release_hash.to_string(), None))
 }
 
 /// Generate `programs.rs`: one module per program with typed instruction
@@ -3905,8 +4155,9 @@ fn generate_stack_programs_rs(
     account_structs: &BTreeMap<String, String>,
     module_mode: bool,
     reads: &[RustProgramReadConfig],
+    include_idl_only_programs: bool,
 ) -> Option<ProgramsCodegen> {
-    if instructions.is_empty() {
+    if instructions.is_empty() && !include_idl_only_programs {
         return None;
     }
 
@@ -3922,6 +4173,18 @@ fn generate_stack_programs_rs(
 
     // Group instructions by resolved program id, preserving first-seen order.
     let mut groups: Vec<(String, Vec<&InstructionDef>)> = Vec::new();
+    if include_idl_only_programs {
+        for (index, idl) in idls.iter().enumerate() {
+            let program_id = idl
+                .program_id
+                .clone()
+                .or_else(|| program_ids.get(index).cloned())
+                .unwrap_or_default();
+            if !groups.iter().any(|(existing, _)| *existing == program_id) {
+                groups.push((program_id, Vec::new()));
+            }
+        }
+    }
     for instr in instructions {
         let pid = instr
             .program_id
@@ -4003,7 +4266,11 @@ fn generate_stack_programs_rs(
 
         // --- Program read layer: release identity + typed account readers. ---
         let read_layer = match reads.iter().find(|r| r.program_id == *program_id) {
-            Some(r) => Ok((r.program_spec_hash.clone(), r.program_release_hash.clone())),
+            Some(r) => Ok((
+                r.program_spec_hash.clone(),
+                r.program_release_hash.clone(),
+                r.descriptor.clone(),
+            )),
             None => resolve_program_read_layer(program_specs, program_id),
         };
         let mut reader_methods: Vec<String> = Vec::new();
@@ -4073,9 +4340,20 @@ fn generate_stack_programs_rs(
             "    pub const PROGRAM_ID: &str = {};",
             rust_string_literal(program_id)
         ));
-        if let Ok((spec_hash, release_hash)) = &read_layer {
+        if let Ok((spec_hash, release_hash, descriptor)) = &read_layer {
+            let descriptor_body = match descriptor {
+                Some(descriptor) => {
+                    let json = serde_json::to_string(descriptor)
+                        .expect("program read descriptor must serialize");
+                    format!(
+                        "        serde_json::from_str({}).expect(\"generated hosted program read descriptor must be valid\")",
+                        rust_string_literal(&json),
+                    )
+                }
+                None => "        arete_sdk::ProgramReadDescriptor::LocalHttp {\n            release: arete_sdk::ProgramReleaseReference {\n                program_release_hash: PROGRAM_RELEASE_HASH.to_string(),\n                program_spec_hash: PROGRAM_SPEC_HASH.to_string(),\n            },\n        }".to_string(),
+            };
             sections.push(format!(
-                "    /// Content hash of the exact program specification captured at generation time.\n    pub const PROGRAM_SPEC_HASH: &str = {spec};\n\n    /// Release identity addressing hosted account reads for this program.\n    pub const PROGRAM_RELEASE_HASH: &str = {release};\n\n    /// Release-addressed read descriptor for this program (HTTP reads over\n    /// the client's HTTP base URL).\n    pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {{\n        arete_sdk::ProgramReadDescriptor::LocalHttp {{\n            release: arete_sdk::ProgramReleaseReference {{\n                program_release_hash: PROGRAM_RELEASE_HASH.to_string(),\n                program_spec_hash: PROGRAM_SPEC_HASH.to_string(),\n            }},\n        }}\n    }}",
+                "    /// Content hash of the exact program specification captured at generation time.\n    pub const PROGRAM_SPEC_HASH: &str = {spec};\n\n    /// Release identity addressing hosted account reads for this program.\n    pub const PROGRAM_RELEASE_HASH: &str = {release};\n\n    /// Exact release-addressed read descriptor for this program.\n    pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {{\n{descriptor_body}\n    }}",
                 spec = rust_string_literal(spec_hash),
                 release = rust_string_literal(release_hash),
             ));
@@ -4143,7 +4421,7 @@ fn generate_stack_programs_rs(
     }
 
     let code = format!(
-        "//! Generated program SDK: typed instruction builders grouped per program.\n//!\n//! Instruction building is pure (no network access). Each program module\n//! exposes `PROGRAM_ID`, typed `*Params` structs, `fn <instruction>(params)`\n//! builders returning `BuiltInstruction`, raw `*_handler()` accessors, and a\n//! `pdas` module with PDA derivation helpers. Programs with a recorded\n//! program spec additionally expose `PROGRAM_SPEC_HASH` /\n//! `PROGRAM_RELEASE_HASH`, a `read_descriptor()` for release-addressed HTTP\n//! reads, and typed `*_accounts()` readers on the program accessor.\n\n{}\n",
+        "//! Generated program SDK: typed instruction builders grouped per program.\n//!\n//! Instruction building is pure (no network access). Each program module\n//! exposes `PROGRAM_ID`, typed `*Params` structs, `fn <instruction>(params)`\n//! builders returning `BuiltInstruction`, raw `*_handler()` accessors, and a\n//! `pdas` module with PDA derivation helpers. Programs with a recorded\n//! program spec additionally expose `PROGRAM_SPEC_HASH` /\n//! `PROGRAM_RELEASE_HASH`, a `read_descriptor()` for release-addressed HTTP\n//! reads, and typed `*_accounts()` readers on the program accessor. Standalone\n//! output also exports a `ProgramSdk` aggregate for direct/session composition.\n\n{}\n",
         module_blocks.join("\n\n")
     );
 
