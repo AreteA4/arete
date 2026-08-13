@@ -1112,6 +1112,7 @@ fn normalized_integer_kind(rust_type_name: &str) -> &'static str {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::process::Command;
 
     fn identity_spec() -> IdentitySpec {
         IdentitySpec {
@@ -1863,6 +1864,30 @@ mod tests {
             programs_stack_spec(),
             Some(RustStackConfig {
                 crate_name: "demo-program".to_string(),
+                sdk_version: env!("CARGO_PKG_VERSION").to_string(),
+                program_reads: vec![RustProgramReadConfig {
+                    program_id: TEST_PROGRAM_ID.to_string(),
+                    program_spec_hash: "arete:h1:program-spec:sha256:test".to_string(),
+                    program_release_hash: "arete:h1:program-release:sha256:test".to_string(),
+                    descriptor: Some(serde_json::json!({
+                        "release": {
+                            "programReleaseHash": "arete:h1:program-release:sha256:test",
+                            "programSpecHash": "arete:h1:program-spec:sha256:test"
+                        },
+                        "transport": {
+                            "kind": "hosted-binding",
+                            "binding": {
+                                "endpoint": "https://reads.example.test",
+                                "programReadBindingId": "prb_00000000000000000000000000000001",
+                                "auth": {
+                                    "sessionEndpoint": "https://auth.example.test/session",
+                                    "targetKind": "program-read-binding",
+                                    "targetId": "prb_00000000000000000000000000000001"
+                                }
+                            }
+                        }
+                    })),
+                }],
                 ..Default::default()
             }),
         )
@@ -1889,6 +1914,43 @@ mod tests {
         assert!(base.join("src/programs.rs").is_file());
         assert!(base.join("src/types.rs").is_file());
         assert!(!base.join("src/entity.rs").exists());
+
+        // Consumer smoke test: compile the generated crate against this
+        // checkout's runtime. This catches invalid generated expressions,
+        // module paths, re-exports, and dependency declarations.
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("interpreter crate lives in the repo root");
+        let runtime_path = repo_root.join("rust/arete-a4-sdk");
+        let manifest_path = base.join("Cargo.toml");
+        let mut manifest = std::fs::read_to_string(&manifest_path).expect("generated Cargo.toml");
+        let generated_dependency = format!(
+            "arete-sdk = {{ package = \"arete-a4-sdk\", version = {:?} }}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(
+            manifest.contains(&generated_dependency),
+            "generated manifest must expose the expected runtime dependency"
+        );
+        manifest.push_str(&format!(
+            "\n[patch.crates-io]\narete-a4-sdk = {{ path = {:?} }}\n",
+            runtime_path
+        ));
+        std::fs::write(&manifest_path, manifest).expect("localize generated dependency");
+
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let checked = Command::new(cargo)
+            .args(["check", "--quiet", "--offline", "--manifest-path"])
+            .arg(&manifest_path)
+            .env("CARGO_TARGET_DIR", base.join("target"))
+            .output()
+            .expect("cargo must be available for generated consumer smoke tests");
+        assert!(
+            checked.status.success(),
+            "generated standalone Rust crate failed cargo check:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&checked.stdout),
+            String::from_utf8_lossy(&checked.stderr),
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -2497,7 +2559,7 @@ pub fn compile_program_modules(
 
     validate_extension_modules(&config, true)?;
     let aggregate_name = format!("{}Programs", to_pascal_case(&stack_spec.stack_name));
-    programs.code.push_str("\n");
+    programs.code.push('\n');
     programs.code.push_str(&generate_programs_accessor_struct(
         &aggregate_name,
         &programs,

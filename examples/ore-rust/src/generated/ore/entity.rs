@@ -113,7 +113,6 @@ impl OreMinerEntityViews {
         self.builder.view("OreMiner/list")
     }
 }
-
 pub struct OreStreamStackPrograms {
     pub ore: super::programs::ore::OreProgram,
     pub entropy: super::programs::entropy::EntropyProgram,

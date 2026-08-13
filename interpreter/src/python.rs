@@ -3150,6 +3150,7 @@ pub fn python_module_name(value: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::process::Command;
 
     fn identity_spec() -> IdentitySpec {
         IdentitySpec {
@@ -3730,6 +3731,29 @@ mod tests {
             programs_stack_spec(),
             Some(PythonStackConfig {
                 package_name: "demo-program".to_string(),
+                program_reads: vec![PythonProgramReadConfig {
+                    program_id: TEST_PROGRAM_ID.to_string(),
+                    program_spec_hash: "arete:h1:program-spec:sha256:test".to_string(),
+                    program_release_hash: "arete:h1:program-release:sha256:test".to_string(),
+                    descriptor: Some(serde_json::json!({
+                        "release": {
+                            "programReleaseHash": "arete:h1:program-release:sha256:test",
+                            "programSpecHash": "arete:h1:program-spec:sha256:test"
+                        },
+                        "transport": {
+                            "kind": "hosted-binding",
+                            "binding": {
+                                "endpoint": "https://reads.example.test",
+                                "programReadBindingId": "prb_00000000000000000000000000000001",
+                                "auth": {
+                                    "sessionEndpoint": "https://auth.example.test/session",
+                                    "targetKind": "program-read-binding",
+                                    "targetId": "prb_00000000000000000000000000000001"
+                                }
+                            }
+                        }
+                    })),
+                }],
                 ..Default::default()
             }),
         )
@@ -3754,6 +3778,39 @@ mod tests {
         assert!(base.join("demo_program/programs.py").is_file());
         assert!(base.join("demo_program/models.py").is_file());
         assert!(!base.join("demo_program/views.py").exists());
+
+        // Consumer smoke test: import the written package against the real
+        // local Python SDK. `httpx` is stubbed because generated program
+        // definitions are pure and the Rust CI job intentionally does not
+        // install Python's optional network dependencies.
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("interpreter crate lives in the repo root");
+        let stubs = base.join("consumer-stubs");
+        std::fs::create_dir_all(&stubs).expect("consumer stub directory");
+        std::fs::write(stubs.join("httpx.py"), "# Import-only consumer stub.\n")
+            .expect("httpx import stub");
+        let mut python_paths = vec![base.clone(), stubs, repo_root.join("python/arete-sdk")];
+        if let Some(existing) = std::env::var_os("PYTHONPATH") {
+            python_paths.extend(std::env::split_paths(&existing));
+        }
+        let python_path = std::env::join_paths(python_paths).expect("valid Python import paths");
+        let python = std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into());
+        let imported = Command::new(python)
+            .args([
+                "-c",
+                "import demo_program; from demo_program import PROGRAMS, PROGRAM_READS; assert set(PROGRAMS) == {'demo'}; assert set(PROGRAM_READS) == {'demo'}",
+            ])
+            .env("PYTHONPATH", python_path)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .expect("Python must be available for generated consumer smoke tests");
+        assert!(
+            imported.status.success(),
+            "generated standalone Python package failed to import:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&imported.stdout),
+            String::from_utf8_lossy(&imported.stderr),
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
