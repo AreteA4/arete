@@ -63,6 +63,19 @@ pub struct PythonStackConfig {
     /// `__init__.py` star-imports the entry (`from .<entry> import *`) so
     /// extension helpers come into scope with the stack's own import.
     pub extension_entry: Option<String>,
+    /// Published-platform program read overrides keyed by program ID. Mirrors
+    /// [`RustStackConfig::program_reads`](crate::rust::RustStackConfig): when
+    /// a matching entry exists, its exact `program_spec_hash` /
+    /// `program_release_hash` drive the program read layer instead of the
+    /// OSS-derived release identity. Transport remains local-http.
+    pub program_reads: Vec<PythonProgramReadConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PythonProgramReadConfig {
+    pub program_id: String,
+    pub program_spec_hash: String,
+    pub program_release_hash: String,
 }
 
 impl Default for PythonStackConfig {
@@ -75,6 +88,7 @@ impl Default for PythonStackConfig {
             http_url: None,
             extension_modules: Vec::new(),
             extension_entry: None,
+            program_reads: Vec::new(),
         }
     }
 }
@@ -287,6 +301,7 @@ fn compile_stack_spec_with_view_selection(
         &stack_spec.program_ids,
         &stack_spec.program_specs,
         &account_structs,
+        &config.program_reads,
     );
 
     let views_py = generate_stack_views_py(&stack_name, &entity_specs, &entity_names, exact_views);
@@ -2401,6 +2416,7 @@ fn generate_stack_programs_py(
     program_ids: &[String],
     program_specs: &[arete_hash::ProgramSpecV1],
     account_structs: &BTreeMap<String, String>,
+    reads: &[PythonProgramReadConfig],
 ) -> Option<PythonProgramsCodegen> {
     if instructions.is_empty() {
         return None;
@@ -2518,7 +2534,10 @@ fn generate_stack_programs_py(
         }
 
         // --- Program read layer: release identity + typed account read defs. ---
-        let read_layer = resolve_program_read_layer(program_specs, program_id);
+        let read_layer = match reads.iter().find(|r| r.program_id == *program_id) {
+            Some(r) => Ok((r.program_spec_hash.clone(), r.program_release_hash.clone())),
+            None => resolve_program_read_layer(program_specs, program_id),
+        };
         let mut account_read_entries: Vec<String> = Vec::new();
         if read_layer.is_ok() {
             needs.reads = true;
@@ -3700,6 +3719,56 @@ mod tests {
     }
 
     #[test]
+    fn python_generator_emits_platform_release_override() {
+        let idl_json = format!(
+            r#"{{
+              "address": "{TEST_PROGRAM_ID}",
+              "version": "0.1.0",
+              "name": "demo",
+              "instructions": [
+                {{
+                  "name": "doThing",
+                  "accounts": [{{ "name": "payer", "isMut": true, "isSigner": true }}],
+                  "args": [{{ "name": "amount", "type": "u64" }}],
+                  "discriminant": {{ "type": "u8", "value": 1 }}
+                }}
+              ],
+              "accounts": [],
+              "types": [],
+              "events": [],
+              "errors": []
+            }}"#
+        );
+        let spec = crate::program_sdk::build_program_only_stack_spec_from_idl_bytes(
+            idl_json.as_bytes(),
+            None,
+            "Demo",
+        )
+        .expect("program-only stack spec should build");
+
+        let platform_spec = "arete:h1:program-spec:sha256:platformspec".to_string();
+        let platform_release = "arete:h1:program-release:sha256:platformrelease".to_string();
+        let config = PythonStackConfig {
+            program_reads: vec![PythonProgramReadConfig {
+                program_id: TEST_PROGRAM_ID.to_string(),
+                program_spec_hash: platform_spec.clone(),
+                program_release_hash: platform_release.clone(),
+            }],
+            ..Default::default()
+        };
+
+        let output =
+            compile_stack_spec(spec, Some(config)).expect("python stack generation should succeed");
+        let programs = output.programs_py.expect("programs.py should be generated");
+
+        assert!(programs.contains(&format!("DEMO_PROGRAM_SPEC_HASH = \"{platform_spec}\"")));
+        assert!(programs.contains(&format!(
+            "DEMO_PROGRAM_RELEASE_HASH = \"{platform_release}\""
+        )));
+        assert!(programs.contains("def demo_read_descriptor() -> ProgramReadDescriptor:"));
+    }
+
+    #[test]
     fn python_generator_emits_stack_urls() {
         let output = compile_stack_spec(programs_stack_spec(), None)
             .expect("python stack generation should succeed");
@@ -4012,6 +4081,7 @@ mod tests {
             http_url: Some("https://ore.stack.arete.run".to_string()),
             extension_modules,
             extension_entry,
+            program_reads: Vec::new(),
         };
         let output =
             compile_stack_spec(spec, Some(config)).expect("ore stack should compile to Python");

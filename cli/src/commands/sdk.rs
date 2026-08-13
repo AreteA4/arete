@@ -1123,6 +1123,8 @@ pub fn install_command(
             python,
             output_override,
             package_name_override,
+            crate_name_override,
+            module_flag,
             extensions_override,
         );
     }
@@ -1334,6 +1336,7 @@ fn install_rust(
                     http_url: None,
                     extension_modules: Vec::new(),
                     extension_entry: None,
+                    program_reads: Vec::new(),
                 },
                 live_urls,
             }),
@@ -1464,6 +1467,7 @@ fn install_python(
                     http_url: None,
                     extension_modules: Vec::new(),
                     extension_entry: None,
+                    program_reads: Vec::new(),
                 },
                 live_urls,
             }),
@@ -1515,6 +1519,7 @@ fn install_python(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn install_program(
     program: &str,
     ts: bool,
@@ -1522,6 +1527,8 @@ pub fn install_program(
     python: bool,
     output_override: Option<String>,
     package_name_override: Option<String>,
+    crate_name_override: Option<String>,
+    module_flag: bool,
     extensions_override: Option<String>,
 ) -> Result<()> {
     match select_sdk_target(ts, rust, python, "Install which SDK?")? {
@@ -1531,9 +1538,20 @@ pub fn install_program(
             package_name_override,
             extensions_override,
         ),
-        SdkTarget::Rust | SdkTarget::Python => Err(anyhow::anyhow!(
-            "Published program SDK install currently supports TypeScript only"
-        )),
+        SdkTarget::Rust => install_program_rust(
+            program,
+            output_override,
+            crate_name_override,
+            module_flag,
+            extensions_override,
+        ),
+        SdkTarget::Python => install_program_python(
+            program,
+            output_override,
+            package_name_override,
+            module_flag,
+            extensions_override,
+        ),
     }
 }
 
@@ -1606,6 +1624,232 @@ fn install_program_typescript(
     println!("  Output: {}", output_path.display().to_string().bold());
 
     telemetry::record_sdk_generated("typescript");
+
+    Ok(())
+}
+
+fn resolve_hosted_binding_endpoint(install: &RegistryProgramInstallResponse) -> Result<String> {
+    let RegistryProgramInstallTransport::HostedBinding { binding } = &install.transport;
+    let endpoint = binding.endpoint.trim().to_string();
+    if endpoint.is_empty() {
+        anyhow::bail!(
+            "Program '{}' returned a hosted Program Read binding without an endpoint",
+            install.install_name
+        );
+    }
+    Ok(endpoint)
+}
+
+fn program_read_override(
+    install: &RegistryProgramInstallResponse,
+) -> arete_interpreter::rust::RustProgramReadConfig {
+    arete_interpreter::rust::RustProgramReadConfig {
+        program_id: install.definition.program_id.clone(),
+        program_spec_hash: install.release.program_spec_hash.clone(),
+        program_release_hash: install.release.program_release_hash.clone(),
+    }
+}
+
+fn program_read_input_pin(install: &RegistryProgramInstallResponse) -> ResolvedExtensionsInputPin {
+    ResolvedExtensionsInputPin {
+        kind: ExtensionsInputKind::ProgramSpec,
+        hash: install.definition.program_spec_hash.clone(),
+    }
+}
+
+fn install_program_rust(
+    program: &str,
+    output_override: Option<String>,
+    crate_name_override: Option<String>,
+    module_flag: bool,
+    _extensions_override: Option<String>,
+) -> Result<()> {
+    println!(
+        "{} Looking up hosted program '{}'...",
+        "→".blue().bold(),
+        program
+    );
+
+    let client = ApiClient::new()?;
+    let install = client
+        .get_registry_program_install(program, Some(EXTENSIONS_LANGUAGE_RUST))
+        .with_context(|| {
+            format!(
+                "No accessible hosted program SDK with identifier '{}' was found.",
+                program
+            )
+        })?;
+
+    let sdk_name = install.install_name.clone();
+    let crate_name = crate_name_override.unwrap_or_else(|| format!("{}-program", sdk_name));
+    let output_dir = output_override
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-program", sdk_name)));
+    let http_url = Some(resolve_hosted_binding_endpoint(&install)?);
+
+    let program_spec = program_spec_artifact_from_registry(&install)?;
+    let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
+        &sdk_name,
+        std::slice::from_ref(&program_spec),
+    )
+    .map_err(anyhow::Error::msg)?;
+
+    let rust_config = arete_interpreter::rust::RustStackConfig {
+        crate_name: crate_name.clone(),
+        sdk_version: "0.4".to_string(),
+        module_mode: module_flag,
+        url: None,
+        http_url,
+        extension_modules: Vec::new(),
+        extension_entry: None,
+        program_reads: vec![program_read_override(&install)],
+    };
+
+    println!(
+        "{} Found hosted program: {}",
+        "✓".green().bold(),
+        install.install_name.as_str().bold()
+    );
+    println!("  Program ID: {}", install.definition.program_id);
+    println!("  Output: {}", output_dir.display());
+
+    let hosted_artifact = install
+        .definition
+        .extensions
+        .as_ref()
+        .map(resolved_extensions_artifact_from_registry)
+        .transpose()?;
+
+    println!("\n{} Generating Rust program SDK...", "→".blue().bold());
+
+    let output =
+        arete_interpreter::rust::compile_stack_spec_with_exact_views(stack_spec, Some(rust_config))
+            .map_err(|e| anyhow::anyhow!("Failed to compile Rust program SDK: {}", e))?;
+
+    if module_flag {
+        arete_interpreter::rust::write_rust_module(&output, &output_dir)
+            .with_context(|| format!("Failed to write Rust module to {}", output_dir.display()))?;
+    } else {
+        arete_interpreter::rust::write_rust_crate(&output, &output_dir)
+            .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))?;
+    }
+
+    if let Some(artifact) = hosted_artifact.as_ref() {
+        let dir = if module_flag {
+            output_dir.clone()
+        } else {
+            output_dir.join("src")
+        };
+        stage_rust_extensions_artifact(artifact, &dir, &program_read_input_pin(&install))?;
+    }
+
+    println!("{} Successfully generated Rust SDK!", "✓".green().bold());
+    println!("  Output: {}", output_dir.display().to_string().bold());
+
+    telemetry::record_sdk_generated("rust");
+
+    Ok(())
+}
+
+fn install_program_python(
+    program: &str,
+    output_override: Option<String>,
+    package_name_override: Option<String>,
+    module_flag: bool,
+    _extensions_override: Option<String>,
+) -> Result<()> {
+    println!(
+        "{} Looking up hosted program '{}'...",
+        "→".blue().bold(),
+        program
+    );
+
+    let client = ApiClient::new()?;
+    let install = client
+        .get_registry_program_install(program, Some(EXTENSIONS_LANGUAGE_PYTHON))
+        .with_context(|| {
+            format!(
+                "No accessible hosted program SDK with identifier '{}' was found.",
+                program
+            )
+        })?;
+
+    let sdk_name = install.install_name.clone();
+    let package_name = package_name_override.unwrap_or_else(|| format!("{}-program", sdk_name));
+    let output_dir = output_override
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-py-program", sdk_name)));
+    let http_url = Some(resolve_hosted_binding_endpoint(&install)?);
+
+    let program_spec = program_spec_artifact_from_registry(&install)?;
+    let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
+        &sdk_name,
+        std::slice::from_ref(&program_spec),
+    )
+    .map_err(anyhow::Error::msg)?;
+
+    let rust_override = program_read_override(&install);
+    let python_config = arete_interpreter::python::PythonStackConfig {
+        package_name: package_name.clone(),
+        sdk_version: "0.4".to_string(),
+        module_mode: module_flag,
+        url: None,
+        http_url,
+        extension_modules: Vec::new(),
+        extension_entry: None,
+        program_reads: vec![arete_interpreter::python::PythonProgramReadConfig {
+            program_id: rust_override.program_id,
+            program_spec_hash: rust_override.program_spec_hash,
+            program_release_hash: rust_override.program_release_hash,
+        }],
+    };
+
+    println!(
+        "{} Found hosted program: {}",
+        "✓".green().bold(),
+        install.install_name.as_str().bold()
+    );
+    println!("  Program ID: {}", install.definition.program_id);
+    println!("  Output: {}", output_dir.display());
+
+    let hosted_artifact = install
+        .definition
+        .extensions
+        .as_ref()
+        .map(resolved_extensions_artifact_from_registry)
+        .transpose()?;
+
+    println!("\n{} Generating Python program SDK...", "→".blue().bold());
+
+    let output = arete_interpreter::python::compile_stack_spec_with_exact_views(
+        stack_spec,
+        Some(python_config),
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to compile Python program SDK: {}", e))?;
+
+    if module_flag {
+        arete_interpreter::python::write_python_module(&output, &output_dir).with_context(
+            || format!("Failed to write Python module to {}", output_dir.display()),
+        )?;
+    } else {
+        arete_interpreter::python::write_python_package(&output, &output_dir).with_context(
+            || format!("Failed to write Python package to {}", output_dir.display()),
+        )?;
+    }
+
+    if let Some(artifact) = hosted_artifact.as_ref() {
+        let pkg_dir = arete_interpreter::python::python_module_name(&package_name);
+        stage_python_extensions_artifact(
+            artifact,
+            &output_dir.join(pkg_dir),
+            &program_read_input_pin(&install),
+        )?;
+    }
+
+    println!("{} Successfully generated Python SDK!", "✓".green().bold());
+    println!("  Output: {}", output_dir.display().to_string().bold());
+
+    telemetry::record_sdk_generated("python");
 
     Ok(())
 }
@@ -4211,6 +4455,7 @@ pub fn create_rust(
                     http_url: None,
                     extension_modules: Vec::new(),
                     extension_entry: None,
+                    program_reads: Vec::new(),
                 },
                 live_urls,
             }),
@@ -4301,6 +4546,7 @@ fn generate_rust_stack_sdk(
         http_url: source.default_http_url(),
         extension_modules,
         extension_entry,
+        program_reads: Vec::new(),
     };
 
     let output = match source {
@@ -4557,6 +4803,7 @@ pub fn create_python(
                     http_url: None,
                     extension_modules: Vec::new(),
                     extension_entry: None,
+                    program_reads: Vec::new(),
                 },
                 live_urls,
             }),
@@ -4649,6 +4896,7 @@ fn generate_python_stack_sdk(
         http_url: source.default_http_url(),
         extension_modules,
         extension_entry,
+        program_reads: Vec::new(),
     };
 
     let output = match source {
