@@ -1957,6 +1957,59 @@ mod tests {
     }
 
     #[test]
+    fn rust_generator_emits_platform_release_override() {
+        let idl_json = format!(
+            r#"{{
+              "address": "{TEST_PROGRAM_ID}",
+              "version": "0.1.0",
+              "name": "demo",
+              "instructions": [
+                {{
+                  "name": "doThing",
+                  "accounts": [{{ "name": "payer", "isMut": true, "isSigner": true }}],
+                  "args": [{{ "name": "amount", "type": "u64" }}],
+                  "discriminant": {{ "type": "u8", "value": 1 }}
+                }}
+              ],
+              "accounts": [],
+              "types": [],
+              "events": [],
+              "errors": []
+            }}"#
+        );
+        let spec = crate::program_sdk::build_program_only_stack_spec_from_idl_bytes(
+            idl_json.as_bytes(),
+            None,
+            "Demo",
+        )
+        .expect("program-only stack spec should build");
+
+        // A platform release override must win over the OSS-derived hash.
+        let platform_spec = "arete:h1:program-spec:sha256:platformspec".to_string();
+        let platform_release = "arete:h1:program-release:sha256:platformrelease".to_string();
+        let config = RustStackConfig {
+            program_reads: vec![RustProgramReadConfig {
+                program_id: TEST_PROGRAM_ID.to_string(),
+                program_spec_hash: platform_spec.clone(),
+                program_release_hash: platform_release.clone(),
+            }],
+            ..Default::default()
+        };
+
+        let output =
+            compile_stack_spec(spec, Some(config)).expect("rust stack generation should succeed");
+        let programs = output.programs_rs.expect("programs.rs should be generated");
+
+        assert!(programs.contains(&format!(
+            "pub const PROGRAM_SPEC_HASH: &str = \"{platform_spec}\";"
+        )));
+        assert!(programs.contains(&format!(
+            "pub const PROGRAM_RELEASE_HASH: &str = \"{platform_release}\";"
+        )));
+        assert!(programs.contains("pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor"));
+    }
+
+    #[test]
     fn rust_generator_emits_stack_http_url_override() {
         let output = compile_stack_spec(programs_stack_spec(), None)
             .expect("rust stack generation should succeed");
@@ -2117,6 +2170,7 @@ mod tests {
             http_url: Some("https://ore.stack.arete.run".to_string()),
             extension_modules,
             extension_entry,
+            program_reads: Vec::new(),
         };
         let output =
             compile_stack_spec(spec, Some(config)).expect("ore stack should compile to Rust");
@@ -2156,6 +2210,21 @@ pub struct RustStackConfig {
     /// (`pub use <entry>::*;`) so extension traits come into scope with the
     /// stack's own glob import.
     pub extension_entry: Option<String>,
+    /// Published-platform program read overrides keyed by program ID. When an
+    /// entry matches a program, its exact `program_spec_hash` /
+    /// `program_release_hash` (from a hosted platform release) are used for
+    /// the program read layer instead of the OSS-derived release identity.
+    /// Absent programs keep the default OSS/local-HTTP read layer. The read
+    /// transport is still `LocalHttp` (connect-http-url); the client is
+    /// pointed at the hosted Program Read endpoint via `http_url`.
+    pub program_reads: Vec<RustProgramReadConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RustProgramReadConfig {
+    pub program_id: String,
+    pub program_spec_hash: String,
+    pub program_release_hash: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2189,6 +2258,7 @@ impl Default for RustStackConfig {
             http_url: None,
             extension_modules: Vec::new(),
             extension_entry: None,
+            program_reads: Vec::new(),
         }
     }
 }
@@ -2242,6 +2312,7 @@ fn compile_stack_spec_with_view_selection(
         &stack_spec.program_specs,
         &account_structs,
         config.module_mode,
+        &config.program_reads,
     );
     let entity_rs = generate_stack_entity_rs(
         stack_name,
@@ -3833,6 +3904,7 @@ fn generate_stack_programs_rs(
     program_specs: &[arete_hash::ProgramSpecV1],
     account_structs: &BTreeMap<String, String>,
     module_mode: bool,
+    reads: &[RustProgramReadConfig],
 ) -> Option<ProgramsCodegen> {
     if instructions.is_empty() {
         return None;
@@ -3930,7 +4002,10 @@ fn generate_stack_programs_rs(
         }
 
         // --- Program read layer: release identity + typed account readers. ---
-        let read_layer = resolve_program_read_layer(program_specs, program_id);
+        let read_layer = match reads.iter().find(|r| r.program_id == *program_id) {
+            Some(r) => Ok((r.program_spec_hash.clone(), r.program_release_hash.clone())),
+            None => resolve_program_read_layer(program_specs, program_id),
+        };
         let mut reader_methods: Vec<String> = Vec::new();
         let mut reader_notes: Vec<String> = Vec::new();
         if read_layer.is_ok() {
