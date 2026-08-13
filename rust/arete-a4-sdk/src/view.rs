@@ -621,6 +621,11 @@ pub trait Views: Sized + Send + Sync + 'static {
     fn from_builder(builder: ViewBuilder) -> Self;
 }
 
+/// Standalone program SDKs have no live views.
+impl Views for () {
+    fn from_builder(_builder: ViewBuilder) -> Self {}
+}
+
 /// A state view handle that requires a key for access.
 pub struct StateView<T> {
     connection: ConnectionManager,

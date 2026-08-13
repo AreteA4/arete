@@ -99,7 +99,9 @@ pub use operations::{
     PreparedTransactionInstruction, ProgramError, Signer, SignerRegistry,
     TransactionFailureOutcome, TransactionOutcome,
 };
-pub use program::{ProgramBuilder, Programs};
+pub use program::{
+    AttachedPrograms, ProgramBuilder, ProgramSdk, ProgramStack, Programs, StackWithPrograms,
+};
 pub use program_read_transport::{
     BearerTokenSource, ProgramReadRequest, ProgramReadTransport, ReadAuthTarget,
 };

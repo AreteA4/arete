@@ -9,6 +9,7 @@
 //!
 //! Stacks without bundled programs use `()` as their `Programs` type.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::auth::AuthConfig;
@@ -179,6 +180,79 @@ impl ProgramBuilder {
 /// Trait for generated program accessor structs, mirroring [`crate::view::Views`].
 pub trait Programs: Sized + Send + Sync + 'static {
     fn from_builder(builder: ProgramBuilder) -> Self;
+}
+
+/// A generated standalone program-SDK aggregate.
+///
+/// Program SDK crates implement this trait on their exported aggregate so it
+/// can be connected through [`ProgramStack`] or registered directly with a
+/// multi-member [`Session`](crate::Session).
+pub trait ProgramSdk: Programs {
+    fn name() -> &'static str;
+}
+
+/// HTTP-only stack adapter used internally to connect a standalone program
+/// SDK through the same client/runtime machinery as a live stack. It carries
+/// no view definition or view data.
+pub struct ProgramStack<P: ProgramSdk>(PhantomData<fn() -> P>);
+
+impl<P: ProgramSdk> crate::Stack for ProgramStack<P> {
+    type Views = ();
+    type Programs = P;
+
+    fn name() -> &'static str {
+        P::name()
+    }
+
+    fn url() -> &'static str {
+        ""
+    }
+}
+
+/// Program namespace produced by [`StackWithPrograms`]. Existing stack
+/// programs remain under `stack`; the attached standalone SDK is under
+/// `attached`, avoiding compile-time field-name collisions.
+pub struct AttachedPrograms<Base: Programs, Attached: ProgramSdk> {
+    pub stack: Base,
+    pub attached: Attached,
+}
+
+impl<Base: Programs, Attached: ProgramSdk> Programs for AttachedPrograms<Base, Attached> {
+    fn from_builder(builder: ProgramBuilder) -> Self {
+        Self {
+            stack: Base::from_builder(builder.clone()),
+            attached: Attached::from_builder(builder),
+        }
+    }
+}
+
+/// A live stack with an independently generated program SDK attached.
+///
+/// ```ignore
+/// type OreWithSpl = StackWithPrograms<OreStack, SplPrograms>;
+/// let client = Arete::<OreWithSpl>::connect().await?;
+/// let ix = client.programs.attached.spl.transfer(params)?;
+/// ```
+///
+/// Views and endpoints come exclusively from `S`; attaching a program never
+/// creates or changes view data.
+pub struct StackWithPrograms<S: crate::Stack, P: ProgramSdk>(PhantomData<fn() -> (S, P)>);
+
+impl<S: crate::Stack, P: ProgramSdk> crate::Stack for StackWithPrograms<S, P> {
+    type Views = S::Views;
+    type Programs = AttachedPrograms<S::Programs, P>;
+
+    fn name() -> &'static str {
+        S::name()
+    }
+
+    fn url() -> &'static str {
+        S::url()
+    }
+
+    fn http_url() -> &'static str {
+        S::http_url()
+    }
 }
 
 /// Program-less stacks bind `()`.

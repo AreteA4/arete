@@ -10,6 +10,7 @@
 //! ```ignore
 //! let session = Session::builder()
 //!     .stack::<OreStack>("ore")
+//!     .program::<SplPrograms>("spl")
 //!     .stack_with::<OtherStack>("other", |m| m.url("wss://…").transport(Transport::Http))
 //!     .wallet(wallet)
 //!     .endpoints_http("http://127.0.0.1:4000")
@@ -27,11 +28,10 @@
 //!   registered with a string key and recovered with the typed accessor
 //!   [`Session::stack::<S>(key)`](Session::stack), which downcasts via `Any`
 //!   and errors on an unknown key or a mismatched stack type.
-//! - **No standalone `programs:` members.** TS promotes standalone program
-//!   SDKs to synthetic HTTP-only stacks and hoists bundled programs onto
-//!   `session.programs.<key>` (first-stack-wins). Rust program SDKs are
-//!   generated per stack, so bundled programs are reached through their stack
-//!   member: `session.stack::<S>(key)?.programs`.
+//! - **Typed standalone programs.** Generated program SDK aggregates are
+//!   registered with [`SessionBuilder::program`] and recovered with
+//!   [`Session::program`]. Rust keeps the concrete program type in the
+//!   accessor instead of building a runtime-keyed `session.programs` object.
 //! - **Composition mode** maps to [`SessionBuilder::chain`] +
 //!   [`SessionBuilder::transactions`]: the overrides are applied to every
 //!   member client, so no member ever falls back to a live endpoint for chain
@@ -62,6 +62,7 @@ use crate::instruction::BuiltInstruction;
 use crate::operations::{
     ExecuteOptions, OperationExecutionError, OperationReceipt, PreparedOperation, SignerRegistry,
 };
+use crate::program::{ProgramSdk, ProgramStack};
 use crate::transactions::TransactionTransport;
 use crate::wallet::WalletAdapter;
 
@@ -194,6 +195,27 @@ impl SessionBuilder {
     /// Add a stack member under `key` with default member options.
     pub fn stack<S: Stack>(self, key: impl Into<String>) -> Self {
         self.stack_with::<S>(key, |member| member)
+    }
+
+    /// Add a standalone generated program SDK as an HTTP-only member.
+    pub fn program<P: ProgramSdk>(self, key: impl Into<String>) -> Self {
+        self.program_with::<P>(key, |member| member)
+    }
+
+    /// Add and configure a standalone generated program SDK. HTTP transport
+    /// is the default because standalone programs carry no live views.
+    pub fn program_with<P: ProgramSdk>(
+        self,
+        key: impl Into<String>,
+        configure: impl FnOnce(SessionMemberOptions) -> SessionMemberOptions,
+    ) -> Self {
+        self.stack_with::<ProgramStack<P>>(key, |member| {
+            let mut member = configure(member);
+            if member.transport.is_none() {
+                member.transport = Some(Transport::Http);
+            }
+            member
+        })
     }
 
     /// Add a stack member under `key`, configuring its
@@ -404,6 +426,12 @@ impl Session {
         })
     }
 
+    /// Typed accessor for a standalone program SDK registered with
+    /// [`SessionBuilder::program`].
+    pub fn program<P: ProgramSdk>(&self, key: &str) -> Result<&P, AreteError> {
+        Ok(&self.stack::<ProgramStack<P>>(key)?.programs)
+    }
+
     /// The member keys, in definition (connection) order.
     pub fn keys(&self) -> Vec<&str> {
         self.members.iter().map(|(key, _)| key.as_str()).collect()
@@ -470,5 +498,71 @@ impl Session {
         for (_, member) in &self.members {
             member.disconnect().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ProgramBuilder, Programs, StackWithPrograms};
+
+    struct TestProgramSdk;
+
+    impl Programs for TestProgramSdk {
+        fn from_builder(_builder: ProgramBuilder) -> Self {
+            Self
+        }
+    }
+
+    impl ProgramSdk for TestProgramSdk {
+        fn name() -> &'static str {
+            "test-program"
+        }
+    }
+
+    struct TestLiveStack;
+
+    impl Stack for TestLiveStack {
+        type Views = ();
+        type Programs = ();
+
+        fn name() -> &'static str {
+            "test-live"
+        }
+
+        fn url() -> &'static str {
+            ""
+        }
+    }
+
+    #[tokio::test]
+    async fn standalone_programs_compose_as_http_only_session_members() {
+        let session = Session::builder()
+            .program::<TestProgramSdk>("test")
+            .connect()
+            .await
+            .expect("standalone program session should connect without a live URL");
+
+        assert_eq!(session.keys(), vec!["test"]);
+        let _program: &TestProgramSdk = session
+            .program("test")
+            .expect("typed standalone program accessor");
+        session.close().await;
+    }
+
+    #[tokio::test]
+    async fn standalone_programs_attach_to_live_stack_types() {
+        type EnrichedStack = StackWithPrograms<TestLiveStack, TestProgramSdk>;
+        let session = Session::builder()
+            .stack_with::<EnrichedStack>("live", |member| member.transport(Transport::Http))
+            .connect()
+            .await
+            .expect("attached program stack should connect");
+
+        let client = session
+            .stack::<EnrichedStack>("live")
+            .expect("enriched stack accessor");
+        let _attached: &TestProgramSdk = &client.programs.attached;
+        session.close().await;
     }
 }

@@ -1628,26 +1628,28 @@ fn install_program_typescript(
     Ok(())
 }
 
-fn resolve_hosted_binding_endpoint(install: &RegistryProgramInstallResponse) -> Result<String> {
-    let RegistryProgramInstallTransport::HostedBinding { binding } = &install.transport;
-    let endpoint = binding.endpoint.trim().to_string();
-    if endpoint.is_empty() {
-        anyhow::bail!(
-            "Program '{}' returned a hosted Program Read binding without an endpoint",
-            install.install_name
-        );
-    }
-    Ok(endpoint)
-}
-
 fn program_read_override(
     install: &RegistryProgramInstallResponse,
-) -> arete_interpreter::rust::RustProgramReadConfig {
-    arete_interpreter::rust::RustProgramReadConfig {
+) -> Result<arete_interpreter::rust::RustProgramReadConfig> {
+    // Reuse the canonical transport validation used by TypeScript before
+    // carrying the exact hosted descriptor into Rust/Python codegen.
+    let _ = typescript_program_config_from_registry(install)?;
+    let RegistryProgramInstallTransport::HostedBinding { binding } = &install.transport;
+    Ok(arete_interpreter::rust::RustProgramReadConfig {
         program_id: install.definition.program_id.clone(),
         program_spec_hash: install.release.program_spec_hash.clone(),
         program_release_hash: install.release.program_release_hash.clone(),
-    }
+        descriptor: Some(serde_json::json!({
+            "release": {
+                "programReleaseHash": install.release.program_release_hash,
+                "programSpecHash": install.release.program_spec_hash,
+            },
+            "transport": {
+                "kind": "hosted-binding",
+                "binding": binding,
+            },
+        })),
+    })
 }
 
 fn program_read_input_pin(install: &RegistryProgramInstallResponse) -> ResolvedExtensionsInputPin {
@@ -1685,8 +1687,6 @@ fn install_program_rust(
     let output_dir = output_override
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-program", sdk_name)));
-    let http_url = Some(resolve_hosted_binding_endpoint(&install)?);
-
     let program_spec = program_spec_artifact_from_registry(&install)?;
     let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
         &sdk_name,
@@ -1725,10 +1725,10 @@ fn install_program_rust(
         sdk_version: "0.4".to_string(),
         module_mode: module_flag,
         url: None,
-        http_url,
+        http_url: None,
         extension_modules,
         extension_entry,
-        program_reads: vec![program_read_override(&install)],
+        program_reads: vec![program_read_override(&install)?],
     };
 
     println!(
@@ -1741,15 +1741,14 @@ fn install_program_rust(
 
     println!("\n{} Generating Rust program SDK...", "→".blue().bold());
 
-    let output =
-        arete_interpreter::rust::compile_stack_spec_with_exact_views(stack_spec, Some(rust_config))
-            .map_err(|e| anyhow::anyhow!("Failed to compile Rust program SDK: {}", e))?;
+    let output = arete_interpreter::rust::compile_program_modules(stack_spec, Some(rust_config))
+        .map_err(|e| anyhow::anyhow!("Failed to compile Rust program SDK: {}", e))?;
 
     if module_flag {
-        arete_interpreter::rust::write_rust_module(&output, &output_dir)
+        arete_interpreter::rust::write_rust_program_module(&output, &output_dir)
             .with_context(|| format!("Failed to write Rust module to {}", output_dir.display()))?;
     } else {
-        arete_interpreter::rust::write_rust_crate(&output, &output_dir)
+        arete_interpreter::rust::write_rust_program_crate(&output, &output_dir)
             .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))?;
     }
 
@@ -1793,8 +1792,6 @@ fn install_program_python(
     let output_dir = output_override
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-py-program", sdk_name)));
-    let http_url = Some(resolve_hosted_binding_endpoint(&install)?);
-
     let program_spec = program_spec_artifact_from_registry(&install)?;
     let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
         &sdk_name,
@@ -1829,19 +1826,20 @@ fn install_program_python(
         None => (Vec::new(), None),
     };
 
-    let rust_override = program_read_override(&install);
+    let rust_override = program_read_override(&install)?;
     let python_config = arete_interpreter::python::PythonStackConfig {
         package_name: package_name.clone(),
         sdk_version: "0.4".to_string(),
         module_mode: module_flag,
         url: None,
-        http_url,
+        http_url: None,
         extension_modules,
         extension_entry,
         program_reads: vec![arete_interpreter::python::PythonProgramReadConfig {
             program_id: rust_override.program_id,
             program_spec_hash: rust_override.program_spec_hash,
             program_release_hash: rust_override.program_release_hash,
+            descriptor: rust_override.descriptor,
         }],
     };
 
@@ -1855,20 +1853,19 @@ fn install_program_python(
 
     println!("\n{} Generating Python program SDK...", "→".blue().bold());
 
-    let output = arete_interpreter::python::compile_stack_spec_with_exact_views(
-        stack_spec,
-        Some(python_config),
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to compile Python program SDK: {}", e))?;
+    let output =
+        arete_interpreter::python::compile_program_modules(stack_spec, Some(python_config))
+            .map_err(|e| anyhow::anyhow!("Failed to compile Python program SDK: {}", e))?;
 
     if module_flag {
-        arete_interpreter::python::write_python_module(&output, &output_dir).with_context(
+        arete_interpreter::python::write_python_program_module(&output, &output_dir).with_context(
             || format!("Failed to write Python module to {}", output_dir.display()),
         )?;
     } else {
-        arete_interpreter::python::write_python_package(&output, &output_dir).with_context(
-            || format!("Failed to write Python package to {}", output_dir.display()),
-        )?;
+        arete_interpreter::python::write_python_program_package(&output, &output_dir)
+            .with_context(|| {
+                format!("Failed to write Python package to {}", output_dir.display())
+            })?;
     }
 
     if let Some(artifact) = artifact.as_ref() {
@@ -7362,6 +7359,23 @@ mod tests {
             arete_interpreter::program_sdk::build_program_only_stack_spec_from_identity(
                 &identity, "Presale",
             );
+        let portable_read = program_read_override(&install).expect("portable read config");
+        let descriptor = portable_read
+            .descriptor
+            .as_ref()
+            .expect("published programs carry their hosted descriptor");
+        assert_eq!(
+            descriptor
+                .pointer("/transport/kind")
+                .and_then(|value| value.as_str()),
+            Some("hosted-binding")
+        );
+        assert_eq!(
+            descriptor
+                .pointer("/transport/binding/endpoint")
+                .and_then(|value| value.as_str()),
+            Some("https://reads.example.test/exact/prefix/")
+        );
         let output = arete_interpreter::typescript::compile_program_modules(
             stack_spec,
             Some(arete_interpreter::typescript::TypeScriptStackConfig {
