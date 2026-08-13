@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.5.0...arete-interpreter-v0.6.0) (2026-08-13)
+
+
+### Features
+
+* support rust and python published program SDK installs ([61ecf58](https://github.com/AreteA4/arete/commit/61ecf58493f1ab7066600e4def84f502e07a9678))
+* support rust and python published program SDK installs ([a39335e](https://github.com/AreteA4/arete/commit/a39335e2d4820bcbff0ebba41edefff5615f5b19))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.5.0 to 0.6.0
+
 ## [0.5.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.4.1...arete-interpreter-v0.5.0) (2026-08-12)
 
 
