@@ -1662,7 +1662,7 @@ fn install_program_rust(
     output_override: Option<String>,
     crate_name_override: Option<String>,
     module_flag: bool,
-    _extensions_override: Option<String>,
+    extensions_override: Option<String>,
 ) -> Result<()> {
     println!(
         "{} Looking up hosted program '{}'...",
@@ -1694,14 +1694,40 @@ fn install_program_rust(
     )
     .map_err(anyhow::Error::msg)?;
 
+    let input_pin = program_read_input_pin(&install);
+    let hosted_artifact = install
+        .definition
+        .extensions
+        .as_ref()
+        .map(resolved_extensions_artifact_from_registry)
+        .transpose()?;
+    let module_dir = if module_flag {
+        output_dir.to_path_buf()
+    } else {
+        output_dir.join("src")
+    };
+    let artifact = resolve_rust_extensions_artifact(
+        extensions_override.as_deref().map(Path::new),
+        hosted_artifact.as_ref(),
+        &module_dir,
+        &sdk_name,
+    )?;
+    let (extension_modules, extension_entry) = match artifact.as_ref() {
+        Some(artifact) => {
+            let (modules, entry) = rust_extension_wiring(artifact)?;
+            (modules, Some(entry))
+        }
+        None => (Vec::new(), None),
+    };
+
     let rust_config = arete_interpreter::rust::RustStackConfig {
         crate_name: crate_name.clone(),
         sdk_version: "0.4".to_string(),
         module_mode: module_flag,
         url: None,
         http_url,
-        extension_modules: Vec::new(),
-        extension_entry: None,
+        extension_modules,
+        extension_entry,
         program_reads: vec![program_read_override(&install)],
     };
 
@@ -1712,13 +1738,6 @@ fn install_program_rust(
     );
     println!("  Program ID: {}", install.definition.program_id);
     println!("  Output: {}", output_dir.display());
-
-    let hosted_artifact = install
-        .definition
-        .extensions
-        .as_ref()
-        .map(resolved_extensions_artifact_from_registry)
-        .transpose()?;
 
     println!("\n{} Generating Rust program SDK...", "→".blue().bold());
 
@@ -1734,13 +1753,8 @@ fn install_program_rust(
             .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))?;
     }
 
-    if let Some(artifact) = hosted_artifact.as_ref() {
-        let dir = if module_flag {
-            output_dir.clone()
-        } else {
-            output_dir.join("src")
-        };
-        stage_rust_extensions_artifact(artifact, &dir, &program_read_input_pin(&install))?;
+    if let Some(artifact) = artifact.as_ref() {
+        stage_rust_extensions_artifact(artifact, &module_dir, &input_pin)?;
     }
 
     println!("{} Successfully generated Rust SDK!", "✓".green().bold());
@@ -1756,7 +1770,7 @@ fn install_program_python(
     output_override: Option<String>,
     package_name_override: Option<String>,
     module_flag: bool,
-    _extensions_override: Option<String>,
+    extensions_override: Option<String>,
 ) -> Result<()> {
     println!(
         "{} Looking up hosted program '{}'...",
@@ -1788,6 +1802,33 @@ fn install_program_python(
     )
     .map_err(anyhow::Error::msg)?;
 
+    let input_pin = program_read_input_pin(&install);
+    let hosted_artifact = install
+        .definition
+        .extensions
+        .as_ref()
+        .map(resolved_extensions_artifact_from_registry)
+        .transpose()?;
+    let import_module_name = arete_interpreter::python::python_module_name(&package_name);
+    let module_dir = if module_flag {
+        output_dir.to_path_buf()
+    } else {
+        output_dir.join(&import_module_name)
+    };
+    let artifact = resolve_python_extensions_artifact(
+        extensions_override.as_deref().map(Path::new),
+        hosted_artifact.as_ref(),
+        &module_dir,
+        &sdk_name,
+    )?;
+    let (extension_modules, extension_entry) = match artifact.as_ref() {
+        Some(artifact) => {
+            let (modules, entry) = python_extension_wiring(artifact)?;
+            (modules, Some(entry))
+        }
+        None => (Vec::new(), None),
+    };
+
     let rust_override = program_read_override(&install);
     let python_config = arete_interpreter::python::PythonStackConfig {
         package_name: package_name.clone(),
@@ -1795,8 +1836,8 @@ fn install_program_python(
         module_mode: module_flag,
         url: None,
         http_url,
-        extension_modules: Vec::new(),
-        extension_entry: None,
+        extension_modules,
+        extension_entry,
         program_reads: vec![arete_interpreter::python::PythonProgramReadConfig {
             program_id: rust_override.program_id,
             program_spec_hash: rust_override.program_spec_hash,
@@ -1811,13 +1852,6 @@ fn install_program_python(
     );
     println!("  Program ID: {}", install.definition.program_id);
     println!("  Output: {}", output_dir.display());
-
-    let hosted_artifact = install
-        .definition
-        .extensions
-        .as_ref()
-        .map(resolved_extensions_artifact_from_registry)
-        .transpose()?;
 
     println!("\n{} Generating Python program SDK...", "→".blue().bold());
 
@@ -1837,13 +1871,8 @@ fn install_program_python(
         )?;
     }
 
-    if let Some(artifact) = hosted_artifact.as_ref() {
-        let pkg_dir = arete_interpreter::python::python_module_name(&package_name);
-        stage_python_extensions_artifact(
-            artifact,
-            &output_dir.join(pkg_dir),
-            &program_read_input_pin(&install),
-        )?;
+    if let Some(artifact) = artifact.as_ref() {
+        stage_python_extensions_artifact(artifact, &module_dir, &input_pin)?;
     }
 
     println!("{} Successfully generated Python SDK!", "✓".green().bold());
