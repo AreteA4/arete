@@ -24,6 +24,8 @@ export interface AccountMeta {
   isWritable: boolean;
   /** Category of this account */
   category: AccountCategory;
+  /** How a signer account is satisfied. Unspecified signers are caller-provided. */
+  signerKind?: 'wallet' | 'provided' | 'generated';
   /** Fixed address for "known" accounts (e.g., "11111111111111111111111111111111") */
   knownAddress?: string;
   /** PDA configuration for "pda" accounts */
@@ -38,9 +40,15 @@ export interface AccountMeta {
 export interface PdaConfig {
   /** Program ID that owns this PDA (defaults to instruction's programId) */
   programId?: string;
+  /** Dynamic program selector for cross-program PDA derivation. */
+  program?: PdaProgram;
   /** Seed definitions for PDA derivation */
   seeds: PdaSeed[];
 }
+
+export type PdaProgram =
+  | { type: 'accountRef'; accountName: string }
+  | { type: 'argRef'; argName: string };
 
 /**
  * Single seed in a PDA derivation.
@@ -83,7 +91,7 @@ export interface AccountResolutionOptions {
   accounts?: Record<string, string>;
   /** Helper-only PDA seed inputs */
   resolve?: Record<string, unknown>;
-  /** Wallet adapter for signer accounts */
+  /** Wallet adapter for accounts explicitly marked with signerKind: 'wallet' */
   wallet?: WalletAdapter;
   /** Program ID for PDA derivation (required if any PDAs exist) */
   programId?: string;
@@ -115,6 +123,9 @@ function sortAccountsByDependency(accountMetas: AccountMeta[]): AccountMeta[] {
         if (seed.type === 'accountRef') {
           deps.add(seed.accountName);
         }
+      }
+      if (meta.pdaConfig.program?.type === 'accountRef') {
+        deps.add(meta.pdaConfig.program.accountName);
       }
     }
     pdaDeps.set(meta.name, deps);
@@ -235,9 +246,20 @@ function resolveSingleAccount(
   options: AccountResolutionOptions,
   resolvedMap: Record<string, ResolvedAccount>
 ): ResolvedAccount | null {
+  const explicit = options.accounts?.[meta.name];
+  if (explicit !== undefined) {
+    validateAccountAddress(meta.name, explicit);
+    return {
+      name: meta.name,
+      address: explicit,
+      isSigner: meta.isSigner,
+      isWritable: meta.isWritable,
+    };
+  }
+
   switch (meta.category) {
     case 'signer':
-      return resolveSignerAccount(meta, options.accounts, options.wallet);
+      return resolveSignerAccount(meta, options.wallet);
     case 'known':
       return resolveKnownAccount(meta);
     case 'pda':
@@ -249,12 +271,27 @@ function resolveSingleAccount(
   }
 }
 
+function validateAccountAddress(name: string, address: string): void {
+  let decoded: Uint8Array;
+  try {
+    decoded = decodeBase58(address);
+  } catch {
+    throw new Error(`Invalid account override for "${name}": expected a base58 public key`);
+  }
+  if (decoded.length !== 32) {
+    throw new Error(
+      `Invalid account override for "${name}": expected a 32-byte public key, got ${decoded.length} bytes`
+    );
+  }
+}
+
 function resolveSignerAccount(
   meta: AccountMeta,
-  accounts?: Record<string, string>,
   wallet?: WalletAdapter
 ): ResolvedAccount | null {
-  const address = accounts?.[meta.name] ?? wallet?.publicKey;
+  // An IDL only tells us that an account signs; it cannot prove that the
+  // account is the connected wallet. Wallet fallback is therefore opt-in.
+  const address = meta.signerKind === 'wallet' ? wallet?.publicKey : undefined;
 
   if (!address) {
     return null;
@@ -293,7 +330,13 @@ function resolvePdaAccount(
   }
 
   // Determine which program to derive against
-  const pdaProgramId = meta.pdaConfig.programId || programId;
+  const pdaProgramId = resolvePdaProgram(
+    meta.pdaConfig,
+    args,
+    resolvedMap,
+    programId,
+    resolve
+  );
   if (!pdaProgramId) {
     throw new Error(
       'Cannot derive PDA for "' + meta.name + '": no programId specified. ' +
@@ -353,6 +396,35 @@ function resolvePdaAccount(
     isSigner: meta.isSigner,
     isWritable: meta.isWritable,
   };
+}
+
+function resolvePdaProgram(
+  config: PdaConfig,
+  args: Record<string, unknown>,
+  resolvedMap: Record<string, ResolvedAccount>,
+  defaultProgramId?: string,
+  resolve?: Record<string, unknown>
+): string | undefined {
+  if (config.program?.type === 'accountRef') {
+    const account = resolvedMap[config.program.accountName];
+    if (!account) {
+      throw new Error(
+        'PDA program references unresolved account: ' + config.program.accountName
+      );
+    }
+    return account.address;
+  }
+  if (config.program?.type === 'argRef') {
+    const value = getValueByPath(args, config.program.argName)
+      ?? getValueByPath(resolve, config.program.argName);
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new Error(
+        'PDA program references missing or non-address argument: ' + config.program.argName
+      );
+    }
+    return value;
+  }
+  return config.programId || defaultProgramId;
 }
 
 function resolveUserProvidedAccount(

@@ -15,9 +15,15 @@ export interface PdaDeriveContext {
   programId?: string;
 }
 
+export type PdaProgramSelector =
+  | string
+  | { type: 'accountRef'; accountName: string }
+  | { type: 'argRef'; argName: string };
+
 export interface PdaFactory {
   readonly seeds: readonly SeedDef[];
-  readonly programId: string;
+  readonly programId?: string;
+  readonly programSelector: PdaProgramSelector;
   program(programId: string): PdaFactory;
   derive(context: PdaDeriveContext): Promise<string>;
   deriveSync(context: PdaDeriveContext): string;
@@ -64,10 +70,29 @@ function resolveSeeds(seeds: readonly SeedDef[], context: PdaDeriveContext): Uin
   });
 }
 
-export function pda(programId: string, ...seeds: SeedDef[]): PdaFactory {
+function resolveProgram(
+  selector: PdaProgramSelector,
+  context: PdaDeriveContext
+): string {
+  if (typeof selector === 'string') return context.programId ?? selector;
+  if (selector.type === 'accountRef') {
+    const address = context.accounts?.[selector.accountName];
+    if (!address) throw new Error(`Missing account for PDA program: ${selector.accountName}`);
+    return address;
+  }
+  const value = getValueByPath(context.args, selector.argName)
+    ?? getValueByPath(context.resolve, selector.argName);
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Missing argument for PDA program: ${selector.argName}`);
+  }
+  return value;
+}
+
+export function pda(programSelector: PdaProgramSelector, ...seeds: SeedDef[]): PdaFactory {
   return {
     seeds,
-    programId,
+    programId: typeof programSelector === 'string' ? programSelector : undefined,
+    programSelector,
 
     program(newProgramId: string): PdaFactory {
       return pda(newProgramId, ...seeds);
@@ -75,14 +100,14 @@ export function pda(programId: string, ...seeds: SeedDef[]): PdaFactory {
 
     async derive(context: PdaDeriveContext): Promise<string> {
       const resolvedSeeds = resolveSeeds(this.seeds, context);
-      const pid = context.programId ?? this.programId;
+      const pid = resolveProgram(this.programSelector, context);
       const [address] = await findProgramAddress(resolvedSeeds, pid);
       return address;
     },
 
     deriveSync(context: PdaDeriveContext): string {
       const resolvedSeeds = resolveSeeds(this.seeds, context);
-      const pid = context.programId ?? this.programId;
+      const pid = resolveProgram(this.programSelector, context);
       const [address] = findProgramAddressSync(resolvedSeeds, pid);
       return address;
     },

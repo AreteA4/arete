@@ -238,7 +238,7 @@ describe('Arete instructions (namespaced stacks)', () => {
         programId,
         discriminator: [9],
         args: [],
-        accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+        accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
         errors,
       });
 
@@ -290,7 +290,7 @@ describe('Arete instructions (namespaced stacks)', () => {
       programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
       discriminator: [7],
       args: [],
-      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
       errors: [],
     });
     const attachedProgram = extendProgram(
@@ -341,14 +341,14 @@ describe('Arete instructions (namespaced stacks)', () => {
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
       discriminator: [9],
       args: [],
-      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
       errors: [],
     });
     const attachedHandler = createInstructionHandler({
       programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
       discriminator: [7],
       args: [],
-      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
       errors: [],
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -404,7 +404,7 @@ describe('Arete instructions (namespaced stacks)', () => {
       programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
       discriminator: [7],
       args: [],
-      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
       errors: [{ code: 7000, name: 'AttachedProgramError', msg: 'attached failure' }],
     });
     const client = await Arete.connect(
@@ -555,7 +555,7 @@ describe('Arete instructions (namespaced stacks)', () => {
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
       discriminator: [9],
       args: [],
-      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
       errors: [],
     });
 
@@ -644,7 +644,7 @@ describe('Arete instructions (namespaced stacks)', () => {
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
       discriminator: [9],
       args: [],
-      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+      accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
       errors: [],
     });
     const stack = {

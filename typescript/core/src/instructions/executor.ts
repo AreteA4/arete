@@ -125,7 +125,7 @@ export function createInstructionHandler<
  * Options for building an instruction (no network access).
  */
 export interface BuildOptions {
-  /** Wallet, used only for `publicKey` to resolve signer accounts. */
+  /** Wallet, used only for accounts explicitly marked with signerKind: 'wallet'. */
   wallet?: WalletAdapter;
   /** Explicit account-address overrides, including signer slots when needed. */
   accounts?: Record<string, string>;
@@ -164,10 +164,10 @@ export interface ExecutionResult {
  *
  * Keys matching a declared argument name are args; keys matching a declared
  * account name (with a string value) are account address overrides. This
- * applies to signer slots too, allowing explicit signer addresses to override
- * the wallet fallback. Anything else throws — a typo'd key silently dropped
+ * applies to signer slots too, allowing explicit signer addresses to fill or
+ * override those slots. Anything else throws — a typo'd key silently dropped
  * here would otherwise change the built instruction. `options.accounts` on
- * {@link BuildOptions} remains an unvalidated escape hatch for advanced callers.
+ * {@link BuildOptions} is the explicit override map and wins over merged params.
  */
 function splitParams(
   handler: InstructionHandler<any, any>,

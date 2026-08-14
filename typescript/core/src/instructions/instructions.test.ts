@@ -408,7 +408,7 @@ describe('resolveAccounts', () => {
 
   it('resolves signer, known, and userProvided categories', () => {
     const metas: AccountMeta[] = [
-      { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+      { name: 'authority', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' },
       {
         name: 'systemProgram',
         isSigner: false,
@@ -432,7 +432,7 @@ describe('resolveAccounts', () => {
   it('prefers explicit signer overrides over the wallet public key', () => {
     const alternateSigner = TOKEN_PROGRAM;
     const metas: AccountMeta[] = [
-      { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+      { name: 'authority', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' },
       { name: 'mint', isSigner: false, isWritable: false, category: 'userProvided' },
     ];
     const result = resolveAccounts(metas, {}, {
@@ -452,7 +452,7 @@ describe('resolveAccounts', () => {
 
   it('derives a PDA referencing a signer account and keeps original order', () => {
     const metas: AccountMeta[] = [
-      { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+      { name: 'authority', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' },
       {
         name: 'state',
         isSigner: false,
@@ -557,7 +557,7 @@ describe('resolveAccounts', () => {
 
   it('substitutes the program id for omitted non-trailing optional accounts', () => {
     const metas: AccountMeta[] = [
-      { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+      { name: 'authority', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' },
       {
         name: 'referrer',
         isSigner: false,
@@ -582,7 +582,7 @@ describe('resolveAccounts', () => {
 
   it('drops omitted trailing optional accounts', () => {
     const metas: AccountMeta[] = [
-      { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+      { name: 'authority', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' },
       {
         name: 'referrer',
         isSigner: false,
@@ -598,7 +598,7 @@ describe('resolveAccounts', () => {
 
   it('resolves provided optional accounts normally', () => {
     const metas: AccountMeta[] = [
-      { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+      { name: 'authority', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' },
       {
         name: 'referrer',
         isSigner: false,
@@ -795,7 +795,13 @@ describe('createInstructionHandler + buildInstruction', () => {
       programId: TOKEN_PROGRAM,
       discriminator: [1],
       accounts: [
-        { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+        {
+          name: 'authority',
+          isSigner: true,
+          isWritable: true,
+          category: 'signer',
+          signerKind: 'wallet',
+        },
         { name: 'mint', isSigner: false, isWritable: false, category: 'userProvided' },
         {
           name: 'state',
@@ -858,6 +864,86 @@ describe('createInstructionHandler + buildInstruction', () => {
     ]);
   });
 
+  it('lets an explicit PDA override win over automatic derivation', () => {
+    const built = buildInstruction(
+      makeHandler(),
+      { amount: 7n, mint: SYSTEM_PROGRAM },
+      { wallet, accounts: { state: TOKEN_PROGRAM } }
+    );
+    expect(built.keys[2]!.pubkey).toBe(TOKEN_PROGRAM);
+  });
+
+  it('rejects an invalid explicit account override while building', () => {
+    for (const state of ['', 'not-a-public-key']) {
+      expect(() => buildInstruction(
+        makeHandler(),
+        { amount: 7n, mint: SYSTEM_PROGRAM },
+        { wallet, accounts: { state } }
+      )).toThrow(/Invalid account override for "state"/);
+    }
+  });
+
+  it('does not assign an unannotated signer slot to the wallet', () => {
+    const handler = createInstructionHandler({
+      programId: TOKEN_PROGRAM,
+      discriminator: [3],
+      accounts: [
+        { name: 'new_mint', isSigner: true, isWritable: true, category: 'signer' },
+      ],
+      args: [],
+    });
+    expect(() => buildInstruction(handler, {}, { wallet })).toThrow(/new_mint/);
+  });
+
+  it('derives a PDA under a program selected from another account', () => {
+    const handler = createInstructionHandler({
+      programId: SYSTEM_PROGRAM,
+      discriminator: [4],
+      accounts: [
+        {
+          name: 'metadata',
+          isSigner: false,
+          isWritable: true,
+          category: 'pda',
+          pdaConfig: {
+            program: { type: 'accountRef', accountName: 'metadata_program' },
+            seeds: [
+              { type: 'literal', value: 'metadata' },
+              { type: 'accountRef', accountName: 'metadata_program' },
+              { type: 'accountRef', accountName: 'mint' },
+            ],
+          },
+        },
+        {
+          name: 'metadata_program',
+          isSigner: false,
+          isWritable: false,
+          category: 'known',
+          knownAddress: TOKEN_PROGRAM,
+        },
+        {
+          name: 'mint',
+          isSigner: false,
+          isWritable: false,
+          category: 'userProvided',
+        },
+      ],
+      args: [],
+    });
+    const built = buildInstruction(handler, { mint: WSOL_MINT });
+    const expected = findProgramAddressSync(
+      [createSeed('metadata'), decodeBase58(TOKEN_PROGRAM), decodeBase58(WSOL_MINT)],
+      TOKEN_PROGRAM
+    )[0];
+    expect(built.keys[0]!.pubkey).toBe(expected);
+    expect(built.keys[0]!.pubkey).not.toBe(
+      findProgramAddressSync(
+        [createSeed('metadata'), decodeBase58(TOKEN_PROGRAM), decodeBase58(WSOL_MINT)],
+        SYSTEM_PROGRAM
+      )[0]
+    );
+  });
+
   it('throws when a non-arg param is not a string address', () => {
     const handler = makeHandler();
     expect(() =>
@@ -870,7 +956,7 @@ describe('createInstructionHandler + buildInstruction', () => {
       programId: TOKEN_PROGRAM,
       discriminator: [2],
       accounts: [
-        { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
+        { name: 'authority', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' },
         {
           name: 'proposal',
           isSigner: false,
