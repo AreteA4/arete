@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.6.0...arete-interpreter-v0.7.0) (2026-08-14)
+
+
+### Bug Fixes
+
+* preserve hosted read descriptors in Rust and Python SDKs ([e317b27](https://github.com/AreteA4/arete/commit/e317b27035c5e6992475c80316151a0de385a2a2))
+* preserve hosted read descriptors in Rust and Python SDKs ([94f9f80](https://github.com/AreteA4/arete/commit/94f9f801ad54f5cb0710f4cabf0eb244d576ad02))
+* preserve safe instruction account metadata ([3cb4ad5](https://github.com/AreteA4/arete/commit/3cb4ad56095af56e3e28e574d1301e90e6a25c7f))
+* validate generated SDK consumers ([aa8e5b1](https://github.com/AreteA4/arete/commit/aa8e5b104aae2c41360bf3242c2ef7e05c01419a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.6.0 to 0.7.0
+    * arete-hash bumped from 0.2.0 to 0.2.1
+    * arete-artifacts bumped from 0.2.0 to 0.2.1
+
 ## [0.6.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.5.0...arete-interpreter-v0.6.0) (2026-08-13)
 
 

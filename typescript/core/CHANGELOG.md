@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.6.0...arete-typescript-v0.7.0) (2026-08-14)
+
+
+### Features
+
+* bind generated signers to prepared transactions ([88189dd](https://github.com/AreteA4/arete/commit/88189dd685bddd96077598b601c64f1ade906d98))
+
+
+### Bug Fixes
+
+* preserve composed signers and binary fallback ([75991e0](https://github.com/AreteA4/arete/commit/75991e06bb89b423e7088311cadad65db936178f))
+* resolve explicit and dynamic instruction accounts ([508435b](https://github.com/AreteA4/arete/commit/508435bb33fe9ff06e5a722999804d040ae4d17c))
+
 ## [0.6.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.5.0...arete-typescript-v0.6.0) (2026-08-13)
 
 

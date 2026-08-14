@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.6.0...arete-sdk-v0.7.0) (2026-08-14)
+
+
+### Bug Fixes
+
+* preserve hosted read descriptors in Rust and Python SDKs ([e317b27](https://github.com/AreteA4/arete/commit/e317b27035c5e6992475c80316151a0de385a2a2))
+* preserve hosted read descriptors in Rust and Python SDKs ([94f9f80](https://github.com/AreteA4/arete/commit/94f9f801ad54f5cb0710f4cabf0eb244d576ad02))
+
 ## [0.6.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.5.0...arete-sdk-v0.6.0) (2026-08-13)
 
 
