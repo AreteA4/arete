@@ -343,6 +343,7 @@ export type {
   AccountCategory,
   AccountMeta,
   PdaConfig,
+  PdaProgram,
   PdaSeed,
   ResolvedAccount,
   ResolvedAccounts,
@@ -367,6 +368,7 @@ export type {
   ExecutionResult,
   SeedDef,
   PdaDeriveContext,
+  PdaProgramSelector,
   PdaFactory,
   ProgramPdas,
 } from './instructions';

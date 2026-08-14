@@ -3,7 +3,8 @@ use crate::ast::{
     IdlArrayElementSnapshot, IdlArrayTypeSnapshot, IdlDefinedInnerSnapshot, IdlDefinedTypeSnapshot,
     IdlHashMapTypeSnapshot, IdlOptionTypeSnapshot, IdlSnapshot, IdlTypeSnapshot,
     IdlVecTypeSnapshot, InstructionAccountDef, InstructionAmountHint, InstructionArgDef,
-    InstructionDef, PdaDefinition, PdaSeedDef, SerializableStackSpec, CURRENT_AST_VERSION,
+    InstructionDef, PdaDefinition, PdaProgramDef, PdaSeedDef, SerializableStackSpec,
+    CURRENT_AST_VERSION,
 };
 use arete_idl as idl_parser;
 use std::collections::BTreeMap;
@@ -324,16 +325,25 @@ fn convert_idl_pda_to_def(
         })
         .collect();
 
-    let program_id = pda_program.and_then(|program| match program {
-        idl_parser::IdlPdaProgram::Literal { value, .. } => Some(value.clone()),
-        idl_parser::IdlPdaProgram::Const { value, .. } => Some(bs58::encode(value).into_string()),
-        idl_parser::IdlPdaProgram::Account { .. } => None,
-    });
+    let (program_id, program) = match pda_program {
+        Some(idl_parser::IdlPdaProgram::Literal { value, .. }) => (Some(value.clone()), None),
+        Some(idl_parser::IdlPdaProgram::Const { value, .. }) => {
+            (Some(bs58::encode(value).into_string()), None)
+        }
+        Some(idl_parser::IdlPdaProgram::Account { path, .. }) => (
+            None,
+            Some(PdaProgramDef::AccountRef {
+                account_name: sanitize_seed_path(path),
+            }),
+        ),
+        None => (None, None),
+    };
 
     PdaDefinition {
         name: name.to_string(),
         seeds,
         program_id,
+        program,
     }
 }
 
@@ -365,6 +375,7 @@ fn convert_account_to_def(
             AccountResolution::PdaInline {
                 seeds: pda_def.seeds,
                 program_id: pda_def.program_id,
+                program: pda_def.program,
             }
         } else {
             AccountResolution::UserProvided

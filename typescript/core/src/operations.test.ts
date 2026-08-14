@@ -19,6 +19,25 @@ const instruction = {
 };
 
 describe('executePreparedOperation', () => {
+  it('executes with signer material attached while preparing the operation', async () => {
+    const signer = { publicKey: { toBase58: () => 'generated-signer' } };
+    const transaction = vi.fn(async () => ({ signature: 'signature' }));
+    const operation = createPreparedInstruction({
+      name: 'generated-signer-operation',
+      instruction,
+      artifacts: undefined,
+      requiredSignerAddresses: ['generated-signer'],
+      signers: [signer],
+    });
+
+    await executePreparedOperation({ transaction }, operation);
+
+    expect(transaction).toHaveBeenCalledWith(
+      [instruction],
+      expect.objectContaining({ signers: [signer] })
+    );
+  });
+
   it('rejects required signers when no signer address can be inferred', async () => {
     const transaction = vi.fn(async () => ({ signature: 'signature' }));
     const operation = createPreparedFlow({

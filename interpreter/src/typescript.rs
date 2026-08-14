@@ -4772,13 +4772,25 @@ fn generate_program_pda_entries(
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let pid = pda_def.program_id.as_deref().unwrap_or(default_program_id);
+            let program = match (&pda_def.program_id, &pda_def.program) {
+                (Some(pid), _) => format!("'{}'", pid),
+                (None, Some(PdaProgramDef::AccountRef { account_name })) => {
+                    format!("{{ type: 'accountRef', accountName: '{}' }}", account_name)
+                }
+                (None, Some(PdaProgramDef::ArgRef { arg_name })) => {
+                    format!("{{ type: 'argRef', argName: '{}' }}", arg_name)
+                }
+                (None, None) => format!("'{}'", default_program_id),
+            };
             let rendered_seeds = if seeds_str.is_empty() {
                 String::new()
             } else {
                 format!(", {}", seeds_str)
             };
-            format!("{}{}: pda('{}'{}),", indent, pda_name, pid, rendered_seeds)
+            format!(
+                "{}{}: pda({}{}),",
+                indent, pda_name, program, rendered_seeds
+            )
         })
         .collect()
 }
@@ -5309,6 +5321,7 @@ mod tests {
                     name: "singleton".to_string(),
                     seeds: vec![],
                     program_id: None,
+                    program: None,
                 },
             )]),
         )]);
@@ -5338,6 +5351,7 @@ mod tests {
                         },
                     ],
                     program_id: None,
+                    program: None,
                 },
             )]),
         )]);
@@ -5365,6 +5379,7 @@ mod tests {
                         },
                     ],
                     program_id: None,
+                    program: None,
                 },
             )]),
         )]);

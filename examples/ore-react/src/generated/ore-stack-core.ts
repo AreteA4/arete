@@ -1329,6 +1329,7 @@ export interface OreAutomateParams {
   mask: bigint;
   strategy: number;
   reload: bigint;
+  signer: string;
   automation: string;
   executor: string;
   miner: string;
@@ -1353,7 +1354,7 @@ export const oreAutomateInstruction = createInstructionHandler<OreAutomateParams
     { name: 'reload', type: 'u64' },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     // [arete codegen] instruction 'automate': account 'automation' PDA 'automation' degraded to userProvided (seed references account 'authority' not present in this instruction)
     { name: 'automation', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'executor', isSigner: false, isWritable: false, category: 'userProvided' },
@@ -1365,6 +1366,7 @@ export const oreAutomateInstruction = createInstructionHandler<OreAutomateParams
 });
 
 export interface OreCheckpointParams {
+  signer: string;
   authority: string;
   automation?: string;
   board?: string;
@@ -1384,7 +1386,7 @@ export const oreCheckpointInstruction = createInstructionHandler<OreCheckpointPa
   discriminator: [2],
   args: [],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'authority', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'automation', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'automation' }, { type: 'accountRef', accountName: 'authority' }] } },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
@@ -1397,6 +1399,7 @@ export const oreCheckpointInstruction = createInstructionHandler<OreCheckpointPa
 });
 
 export interface OreClaimSolParams {
+  signer: string;
   board?: string;
   miner: string;
 }
@@ -1411,7 +1414,7 @@ export const oreClaimSolInstruction = createInstructionHandler<OreClaimSolParams
   discriminator: [3],
   args: [],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     // [arete codegen] instruction 'claimSol': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
     { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
@@ -1423,6 +1426,7 @@ export const oreClaimSolInstruction = createInstructionHandler<OreClaimSolParams
 
 export interface OreClaimOreParams {
   bps: bigint;
+  signer: string;
   board?: string;
   miner: string;
   recipient: string;
@@ -1443,7 +1447,7 @@ export const oreClaimOreInstruction = createInstructionHandler<OreClaimOreParams
     { name: 'bps', type: 'u64' },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     // [arete codegen] instruction 'claimOre': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
     { name: 'miner', isSigner: false, isWritable: true, category: 'userProvided' },
@@ -1460,6 +1464,7 @@ export const oreClaimOreInstruction = createInstructionHandler<OreClaimOreParams
 });
 
 export interface OreCloseParams {
+  signer: string;
   board?: string;
   rentPayer: string;
   round: string;
@@ -1478,7 +1483,7 @@ export const oreCloseInstruction = createInstructionHandler<OreCloseParams, OreC
   discriminator: [5],
   args: [],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     { name: 'rentPayer', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
@@ -1491,6 +1496,7 @@ export const oreCloseInstruction = createInstructionHandler<OreCloseParams, OreC
 export interface OreDeployParams {
   amount: bigint;
   squares: number;
+  signer: string;
   authority: string;
   automation?: string;
   board?: string;
@@ -1519,7 +1525,7 @@ export const oreDeployInstruction = createInstructionHandler<OreDeployParams, Or
     { name: 'squares', type: 'u32' },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'authority', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'automation', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'automation' }, { type: 'accountRef', accountName: 'authority' }] } },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
@@ -1536,7 +1542,7 @@ export const oreDeployInstruction = createInstructionHandler<OreDeployParams, Or
 });
 
 export interface OreLogParams {
-  // This instruction takes no arguments or user-provided accounts.
+  signer: string;
 }
 
 export type OreLogError = OreStreamOreProgramError;
@@ -1550,12 +1556,13 @@ export const oreLogInstruction = createInstructionHandler<OreLogParams, OreLogEr
   discriminator: [8],
   args: [],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
   ],
   errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
 });
 
 export interface OreResetParams {
+  signer: string;
   board?: string;
   config?: string;
   feeCollector: string;
@@ -1581,7 +1588,7 @@ export const oreResetInstruction = createInstructionHandler<OreResetParams, OreR
   discriminator: [9],
   args: [],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
     { name: 'feeCollector', isSigner: false, isWritable: true, category: 'userProvided' },
@@ -1648,6 +1655,7 @@ export const oreBuybackInstruction = createInstructionHandler<OreBuybackParams, 
 
 export interface OreBuryParams {
   amount: bigint;
+  signer: string;
   sender: string;
   board?: string;
   treasury?: string;
@@ -1671,7 +1679,7 @@ export const oreBuryInstruction = createInstructionHandler<OreBuryParams, OreBur
     { name: 'amount', type: 'u64' },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'sender', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     { name: 'mint', isSigner: false, isWritable: true, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
@@ -1718,6 +1726,7 @@ export const oreWrapInstruction = createInstructionHandler<OreWrapParams, OreWra
 
 export interface OreSetAdminParams {
   admin: string;
+  signer: string;
   config?: string;
 }
 
@@ -1733,7 +1742,7 @@ export const oreSetAdminInstruction = createInstructionHandler<OreSetAdminParams
     { name: 'admin', type: 'pubkey' },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
     { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
   ],
@@ -1744,6 +1753,7 @@ export interface OreNewVarParams {
   id: bigint;
   commit: number[];
   samples: bigint;
+  signer: string;
   board?: string;
   config?: string;
   provider: string;
@@ -1764,7 +1774,7 @@ export const oreNewVarInstruction = createInstructionHandler<OreNewVarParams, Or
     { name: 'samples', type: 'u64' },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     { name: 'config', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
     { name: 'provider', isSigner: false, isWritable: true, category: 'userProvided' },
@@ -1776,6 +1786,7 @@ export const oreNewVarInstruction = createInstructionHandler<OreNewVarParams, Or
 });
 
 export interface OreReloadSolParams {
+  signer: string;
   automation: string;
   miner: string;
 }
@@ -1790,7 +1801,7 @@ export const oreReloadSolInstruction = createInstructionHandler<OreReloadSolPara
   discriminator: [21],
   args: [],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     // [arete codegen] instruction 'reloadSol': account 'automation' PDA 'automation' degraded to userProvided (seed references account 'authority' not present in this instruction)
     { name: 'automation', isSigner: false, isWritable: true, category: 'userProvided' },
     // [arete codegen] instruction 'reloadSol': account 'miner' PDA 'miner' degraded to userProvided (seed references account 'authority' not present in this instruction)
@@ -1806,6 +1817,8 @@ export interface EntropyOpenParams {
   isAuto: bigint;
   samples: bigint;
   endAt: bigint;
+  authority: string;
+  payer: string;
   provider: string;
   var: string;
 }
@@ -1827,8 +1840,8 @@ export const entropyOpenInstruction = createInstructionHandler<EntropyOpenParams
     { name: 'endAt', type: 'u64' },
   ],
   accounts: [
-    { name: 'authority', isSigner: true, isWritable: true, category: 'signer' },
-    { name: 'payer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'authority', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
+    { name: 'payer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'provider', isSigner: false, isWritable: false, category: 'userProvided' },
     { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
@@ -1837,6 +1850,7 @@ export const entropyOpenInstruction = createInstructionHandler<EntropyOpenParams
 });
 
 export interface EntropyCloseParams {
+  signer: string;
   var: string;
 }
 
@@ -1850,7 +1864,7 @@ export const entropyCloseInstruction = createInstructionHandler<EntropyClosePara
   discriminator: [1],
   args: [],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: '11111111111111111111111111111111' },
   ],
@@ -1859,6 +1873,7 @@ export const entropyCloseInstruction = createInstructionHandler<EntropyClosePara
 
 export interface EntropyNextParams {
   endAt: bigint;
+  signer: string;
   var: string;
 }
 
@@ -1875,7 +1890,7 @@ export const entropyNextInstruction = createInstructionHandler<EntropyNextParams
     { name: 'endAt', type: 'u64' },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
   ],
   errors: ORE_STREAM_ENTROPY_PROGRAM_ERRORS,
@@ -1883,6 +1898,7 @@ export const entropyNextInstruction = createInstructionHandler<EntropyNextParams
 
 export interface EntropyRevealParams {
   seed: number[];
+  signer: string;
   var: string;
 }
 
@@ -1899,13 +1915,14 @@ export const entropyRevealInstruction = createInstructionHandler<EntropyRevealPa
     { name: 'seed', type: { array: ['u8', 32] } },
   ],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
   ],
   errors: ORE_STREAM_ENTROPY_PROGRAM_ERRORS,
 });
 
 export interface EntropySampleParams {
+  signer: string;
   var: string;
 }
 
@@ -1920,7 +1937,7 @@ export const entropySampleInstruction = createInstructionHandler<EntropySamplePa
   discriminator: [5],
   args: [],
   accounts: [
-    { name: 'signer', isSigner: true, isWritable: true, category: 'signer' },
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
     { name: 'var', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'slotHashesSysvar', isSigner: false, isWritable: false, category: 'known', knownAddress: 'SysvarS1otHashes111111111111111111111111111' },
   ],
@@ -2040,7 +2057,7 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:03df15f98a2cebaee34f54f9a4151916fce6d4609ec3208618cb105ab1441740',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:0ecf78945c70bb0e3527038b5aa83790b54851c7ddb201a284e9b7bd22e1d378',
       programSpecHash: 'arete:h1:program-spec:sha256:fe539d6dbef9a3df17c40c97090ce8bd4608e90ef65bb665f8f72e693aa8fd0e',
       idlContentHash: 'arete:h1:idl-content:sha256:98b3cfcdeb2ad1a6a67a6a15d1b42979628da7bbabec1f30adc22958ead2ead6',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:4ad55eb4df42e150fb8004e52180ad2722f3a893847a828c48cd7da5eeccbc42',
@@ -2220,7 +2237,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:73259e77a124e9ab7bc23948d419ca9b3921e4d9de92483d003a1f0c79730cd6',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:50e0d66631f9efa5dd82fe4c10c109f4f227dd9f9d35c3100f852c9a92e87b66',
       programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
       idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',

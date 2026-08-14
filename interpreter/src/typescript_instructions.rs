@@ -11,7 +11,7 @@ use crate::ast::{
     AccountResolution, AmountDecimalsSource, IdlArrayElementSnapshot, IdlDefinedInnerSnapshot,
     IdlErrorSnapshot, IdlInstructionSnapshot, IdlSnapshot, IdlTypeDefKindSnapshot,
     IdlTypeDefSnapshot, IdlTypeSnapshot, InstructionAccountDef, InstructionDef, PdaDefinition,
-    PdaSeedDef,
+    PdaProgramDef, PdaSeedDef,
 };
 use crate::typescript::{to_pascal_case, to_screaming_snake_case};
 use arete_idl::{IdlAmountDecimalsSource, IdlAmountHint};
@@ -447,7 +447,10 @@ pub fn generate_instructions_code(
         } else {
             param_lines.join("\n")
         };
-        let params_type = format!("{}Params", pascal);
+        let params_type = defined_types.claim_generated_ts_name(
+            &format!("{}Params", pascal),
+            &format!("{}InstructionParams", pascal),
+        );
         let params_interface = format!("export interface {} {{\n{}\n}}", params_type, params_body);
 
         let mut semantic_specs = collect_semantic_amount_args(
@@ -581,7 +584,10 @@ pub fn generate_instructions_code(
             Some((params_type.clone(), None))
         } else {
             needs_build_options = true;
-            let type_name = format!("{}SemanticParams", pascal);
+            let type_name = defined_types.claim_generated_ts_name(
+                &format!("{}SemanticParams", pascal),
+                &format!("{}OperationParams", pascal),
+            );
             let interface = render_semantic_params_interface(
                 &type_name,
                 &parsed_args,
@@ -601,7 +607,10 @@ pub fn generate_instructions_code(
         // --- Error type. Program errors are stack-wide (IDLs do not scope
         // errors to instructions), so each handler's typed error is an alias of
         // the program-wide union. ---
-        let error_type = format!("{}Error", pascal);
+        let error_type = defined_types.claim_generated_ts_name(
+            &format!("{}Error", pascal),
+            &format!("{}InstructionError", pascal),
+        );
         let error_decl = format!("export type {} = {};", error_type, program_error_type);
 
         // --- Args schema literal. ---
@@ -892,6 +901,36 @@ impl<'a> DefinedTypes<'a> {
     #[cfg(test)]
     fn empty() -> DefinedTypes<'static> {
         DefinedTypes::new(&[], &HashSet::new())
+    }
+
+    fn claim_generated_ts_name(&mut self, preferred: &str, fallback: &str) -> String {
+        let declared_names = self
+            .defs
+            .keys()
+            .map(|name| to_pascal_case(name))
+            .collect::<HashSet<_>>();
+        let available = |candidate: &str, taken: &HashSet<String>| {
+            !taken.contains(candidate) && !declared_names.contains(candidate)
+        };
+
+        let mut candidate = if available(preferred, &self.taken_names) {
+            preferred.to_string()
+        } else {
+            fallback.to_string()
+        };
+        let mut counter = 2;
+        while !available(&candidate, &self.taken_names) {
+            candidate = format!("{}{}", fallback, counter);
+            counter += 1;
+        }
+        if candidate != preferred {
+            self.warnings.push(format!(
+                "generated identifier '{}' collides with another export; emitted as '{}'",
+                preferred, candidate
+            ));
+        }
+        self.taken_names.insert(candidate.clone());
+        candidate
     }
 
     /// Parse a stringified Rust-ish arg type (what `to_rust_type_string`
@@ -1367,8 +1406,14 @@ fn map_account(
 
     match &acc.resolution {
         AccountResolution::Signer => MappedAccount {
-            literal: format!("    {{ {}, category: 'signer'{} }},", base, optional_suffix),
-            param: None,
+            literal: format!(
+                "    {{ {}, category: 'signer', signerKind: 'provided'{} }},",
+                base, optional_suffix
+            ),
+            param: Some(UserParam {
+                name: acc.name.clone(),
+                optional: acc.is_optional,
+            }),
             resolve_params: Vec::new(),
         },
         AccountResolution::Known { address } => MappedAccount {
@@ -1380,10 +1425,15 @@ fn map_account(
             resolve_params: Vec::new(),
         },
         AccountResolution::UserProvided => user_provided(None, warnings, degradations),
-        AccountResolution::PdaInline { seeds, program_id } => {
+        AccountResolution::PdaInline {
+            seeds,
+            program_id,
+            program,
+        } => {
             match build_pda_config(
                 seeds,
                 program_id.as_deref(),
+                program.as_ref(),
                 instr_account_names,
                 instr_arg_types,
             ) {
@@ -1423,6 +1473,7 @@ fn map_account(
             Some(def) => match build_pda_config(
                 &def.seeds,
                 def.program_id.as_deref(),
+                def.program.as_ref(),
                 instr_account_names,
                 instr_arg_types,
             ) {
@@ -1482,6 +1533,7 @@ fn map_account(
 fn build_pda_config(
     seeds: &[PdaSeedDef],
     program_id: Option<&str>,
+    program: Option<&PdaProgramDef>,
     instr_account_names: &HashSet<&str>,
     instr_arg_types: &BTreeMap<&str, &str>,
 ) -> Result<(String, Vec<String>, Vec<ResolveParam>), String> {
@@ -1574,10 +1626,40 @@ fn build_pda_config(
     }
 
     let seeds_str = seed_literals.join(", ");
-    let config = match program_id {
-        Some(pid) => format!("{{ programId: '{}', seeds: [{}] }}", pid, seeds_str),
-        None => format!("{{ seeds: [{}] }}", seeds_str),
+    let program_field = match program {
+        Some(PdaProgramDef::AccountRef { account_name }) => {
+            if !instr_account_names.contains(account_name.as_str()) {
+                return Err(format!(
+                    "PDA program references account '{}' not present in this instruction",
+                    account_name
+                ));
+            }
+            format!(
+                "program: {{ type: 'accountRef', accountName: '{}' }}, ",
+                account_name
+            )
+        }
+        Some(PdaProgramDef::ArgRef { arg_name }) => {
+            let arg_root = arg_name.split('.').next().unwrap_or(arg_name.as_str());
+            if !instr_arg_types.contains_key(arg_name.as_str())
+                && !instr_arg_types.contains_key(arg_root)
+            {
+                return Err(format!(
+                    "PDA program references argument '{}' not present in this instruction",
+                    arg_name
+                ));
+            }
+            format!("program: {{ type: 'argRef', argName: '{}' }}, ", arg_name)
+        }
+        None => String::new(),
     };
+    let static_program_field = program_id
+        .map(|pid| format!("programId: '{}', ", pid))
+        .unwrap_or_default();
+    let config = format!(
+        "{{ {}{}seeds: [{}] }}",
+        static_program_field, program_field, seeds_str
+    );
     Ok((config, soft_warnings, resolve_params))
 }
 
@@ -3143,6 +3225,7 @@ mod tests {
         assert!(code.contains("export interface CloseSubscriptionAuthorityParams"));
         assert!(code.contains("subscriptionAuthority: string;"));
         assert!(code.contains("category: 'signer'"));
+        assert!(code.contains("signerKind: 'provided'"));
         assert!(code.contains("category: 'userProvided'"));
         assert!(code.contains(
             "export const closeSubscriptionAuthorityInstruction = createInstructionHandler<CloseSubscriptionAuthorityParams, CloseSubscriptionAuthorityError>"
@@ -3173,6 +3256,7 @@ mod tests {
                     },
                 ],
                 program_id: None,
+                program: None,
             },
         );
         let mut pdas = BTreeMap::new();
@@ -3240,6 +3324,73 @@ mod tests {
     }
 
     #[test]
+    fn emits_dynamic_pda_program_account_selector() {
+        let mut program_pdas: BTreeMap<String, PdaDefinition> = BTreeMap::new();
+        program_pdas.insert(
+            "metadata".to_string(),
+            PdaDefinition {
+                name: "metadata".to_string(),
+                seeds: vec![PdaSeedDef::Literal {
+                    value: "metadata".to_string(),
+                }],
+                program_id: None,
+                program: Some(PdaProgramDef::AccountRef {
+                    account_name: "metadataProgram".to_string(),
+                }),
+            },
+        );
+        let pdas = BTreeMap::from([("demo".to_string(), program_pdas)]);
+        let instr = InstructionDef {
+            name: "createMetadata".to_string(),
+            discriminator: vec![7],
+            discriminator_size: 1,
+            accounts: vec![
+                InstructionAccountDef {
+                    name: "metadataProgram".to_string(),
+                    is_signer: false,
+                    is_writable: false,
+                    resolution: AccountResolution::UserProvided,
+                    is_optional: false,
+                    docs: vec![],
+                },
+                InstructionAccountDef {
+                    name: "metadata".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::PdaRef {
+                        pda_name: "metadata".to_string(),
+                    },
+                    is_optional: false,
+                    docs: vec![],
+                },
+            ],
+            args: vec![],
+            errors: vec![],
+            program_id: Some("Prog111".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Demo",
+            &[instr],
+            &[],
+            &pdas,
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(out
+            .code
+            .contains("program: { type: 'accountRef', accountName: 'metadataProgram' }"));
+        assert!(out.code.contains("metadata?: string;"));
+        assert!(
+            out.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
     fn emits_typed_arg_seeds_with_instr_args_fallback() {
         let mut program_pdas: BTreeMap<String, PdaDefinition> = BTreeMap::new();
         program_pdas.insert(
@@ -3262,6 +3413,7 @@ mod tests {
                     },
                 ],
                 program_id: None,
+                program: None,
             },
         );
         let mut pdas = BTreeMap::new();
@@ -3316,6 +3468,7 @@ mod tests {
                     arg_type: None,
                 }],
                 program_id: None,
+                program: None,
             },
         );
         let mut pdas = BTreeMap::new();
@@ -3371,6 +3524,7 @@ mod tests {
                     arg_type: Some("u64".to_string()),
                 }],
                 program_id: None,
+                program: None,
             },
         );
         let mut pdas = BTreeMap::new();
@@ -3428,6 +3582,7 @@ mod tests {
                     arg_type: Some("u64".to_string()),
                 }],
                 program_id: None,
+                program: None,
             },
         );
         let mut pdas = BTreeMap::new();
@@ -3491,6 +3646,7 @@ mod tests {
                     account_name: "transaction.index".to_string(),
                 }],
                 program_id: None,
+                program: None,
             },
         );
         let mut pdas = BTreeMap::new();
@@ -3850,6 +4006,53 @@ mod tests {
         assert!(out.stack_entries[0].semantic_amount_args[0]
             .raw_expression
             .contains("params.params.quoteMint"));
+    }
+
+    #[test]
+    fn renames_generated_params_when_an_idl_type_owns_the_preferred_name() {
+        let mut snapshot = idl("demo", "Prog111", vec![]);
+        snapshot.types = vec![IdlTypeDefSnapshot {
+            name: "initializeLaunchParams".to_string(),
+            docs: vec![],
+            serialization: None,
+            type_def: IdlTypeDefKindSnapshot::Struct {
+                kind: "struct".to_string(),
+                fields: vec![field("launchId", simple("u64"))],
+            },
+        }];
+        snapshot.instructions = vec![instruction_snapshot(
+            "initializeLaunch",
+            vec![8],
+            vec![field("params", defined("initializeLaunchParams"))],
+        )];
+
+        let out = generate_instructions_code(
+            "Demo",
+            &[InstructionDef {
+                name: "initializeLaunch".to_string(),
+                discriminator: vec![8],
+                discriminator_size: 1,
+                accounts: vec![],
+                args: vec![arg("params", "initializeLaunchParams")],
+                errors: vec![],
+                program_id: Some("Prog111".to_string()),
+                docs: vec![],
+            }],
+            &[snapshot],
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(out.code.contains("export interface InitializeLaunchParams"));
+        assert!(out
+            .code
+            .contains("export interface InitializeLaunchInstructionParams"));
+        assert!(out.code.contains("params: InitializeLaunchParams;"));
+        assert_eq!(
+            out.stack_entries[0].params_type,
+            "InitializeLaunchInstructionParams"
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ export type {
   AccountCategory,
   AccountMeta,
   PdaConfig,
+  PdaProgram,
   PdaSeed,
   ResolvedAccount,
   AccountResolutionResult,
@@ -67,5 +68,11 @@ export {
   createInstructionHandler,
   createInstructionExecutor,
 } from './executor';
-export type { SeedDef, PdaDeriveContext, PdaFactory, ProgramPdas } from './pda-dsl';
+export type {
+  SeedDef,
+  PdaDeriveContext,
+  PdaProgramSelector,
+  PdaFactory,
+  ProgramPdas,
+} from './pda-dsl';
 export { literal, account, arg, bytes, pda, createProgramPdas } from './pda-dsl';

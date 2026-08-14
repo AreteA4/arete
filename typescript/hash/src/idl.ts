@@ -62,17 +62,27 @@ export type PdaSeedV1 =
   | { type: "argRef"; arg_name: string; arg_type?: string }
   | { type: "accountRef"; account_name: string };
 
+export type PdaProgramV1 =
+  | { type: "accountRef"; account_name: string }
+  | { type: "argRef"; arg_name: string };
+
 export interface PdaDefinitionV1 {
   name: string;
   seeds: PdaSeedV1[];
   program_id?: string;
+  program?: PdaProgramV1;
 }
 
 export type AccountResolutionV1 =
   | { category: "signer" }
   | { category: "known"; address: string }
   | { category: "pdaRef"; pda_name: string }
-  | { category: "pdaInline"; seeds: PdaSeedV1[]; program_id?: string }
+  | {
+      category: "pdaInline";
+      seeds: PdaSeedV1[];
+      program_id?: string;
+      program?: PdaProgramV1;
+    }
   | { category: "userProvided" };
 
 export interface InstructionAccountV1 {
@@ -705,15 +715,26 @@ function createProgramSpecV1(
   },
 ): ProgramSpecV1 {
   const pdas: { [name: string]: PdaDefinitionV1 } = {};
+  const namedPdas = new Set<string>();
   for (const pda of idl.pdas) {
     const name = sanitizeIdentifier(pda.name);
+    namedPdas.add(name);
     pdas[name] = convertPda(name, pda);
   }
+  const conflictingAccountPdas = new Set<string>();
   for (const instruction of idl.instructions) {
     for (const account of flattenAccounts(instruction.accounts)) {
       if (!account.pda) continue;
       const name = sanitizeIdentifier(account.pda.name ?? account.name);
-      pdas[name] ??= convertPda(name, account.pda);
+      if (namedPdas.has(name) || conflictingAccountPdas.has(name)) continue;
+      const candidate = convertPda(name, account.pda);
+      const existing = pdas[name];
+      if (existing === undefined) {
+        pdas[name] = candidate;
+      } else if (JSON.stringify(existing) !== JSON.stringify(candidate)) {
+        delete pdas[name];
+        conflictingAccountPdas.add(name);
+      }
     }
   }
   const usesSteel = idl.instructions.some(
@@ -762,12 +783,15 @@ function accountResolution(
   if (account.address !== undefined) return { category: "known", address: account.address };
   if (account.pda !== undefined) {
     const name = sanitizeIdentifier(account.pda.name ?? account.name);
-    if (Object.hasOwn(pdas, name)) return { category: "pdaRef", pda_name: name };
     const pda = convertPda(name, account.pda);
+    if (JSON.stringify(pdas[name]) === JSON.stringify(pda)) {
+      return { category: "pdaRef", pda_name: name };
+    }
     return {
       category: "pdaInline",
       seeds: pda.seeds,
       ...(pda.program_id === undefined ? {} : { program_id: pda.program_id }),
+      ...(pda.program === undefined ? {} : { program: pda.program }),
     };
   }
   const name = sanitizeIdentifier(account.name);
@@ -778,6 +802,7 @@ function accountResolution(
 
 function convertPda(name: string, pda: ParsedPda): PdaDefinitionV1 {
   const programId = pdaProgramId(pda.program);
+  const program = pdaProgramSelector(pda.program);
   return {
     name,
     seeds: pda.seeds.map((seed) => {
@@ -801,6 +826,7 @@ function convertPda(name: string, pda: ParsedPda): PdaDefinitionV1 {
       }
     }),
     ...(programId === undefined ? {} : { program_id: programId }),
+    ...(program === undefined ? {} : { program }),
   };
 }
 
@@ -809,6 +835,14 @@ function pdaProgramId(program?: UnknownObject): string | undefined {
   if (typeof program.value === "string") return program.value;
   if (Array.isArray(program.value)) return encodeBase58(byteArray(program.value, "pda.program.value", true));
   return undefined;
+}
+
+function pdaProgramSelector(program?: UnknownObject): PdaProgramV1 | undefined {
+  if (!program || program.kind !== "account") return undefined;
+  return {
+    type: "accountRef",
+    account_name: sanitizeSeedPath(requiredString(program.path, "pda.program.path")),
+  };
 }
 
 function flattenAccounts(

@@ -1733,6 +1733,7 @@ mod tests {
                     },
                 ],
                 program_id: None,
+                program: None,
             },
         );
         let mut pdas = BTreeMap::new();
@@ -3612,7 +3613,17 @@ fn map_rust_account(
             notes: Vec::new(),
             uses_pda: false,
         },
-        AccountResolution::PdaInline { seeds, program_id } => {
+        AccountResolution::PdaInline {
+            seeds,
+            program_id,
+            program,
+        } => {
+            if program.is_some() {
+                return degraded(
+                    "uses a dynamic PDA program selector not supported by the Rust low-level resolver"
+                        .to_string(),
+                );
+            }
             match build_rust_pda_config(seeds, program_id.as_deref(), account_names, arg_types) {
                 Ok((resolution, notes)) => MappedRustAccount {
                     literal: rust_account_meta_literal(acc, &resolution, None),
@@ -3625,6 +3636,12 @@ fn map_rust_account(
         }
         AccountResolution::PdaRef { pda_name } => match pda_lookup.get(pda_name.as_str()) {
             Some(def) => {
+                if def.program.is_some() {
+                    return degraded(format!(
+                        "PDA '{}' uses a dynamic program selector not supported by the Rust low-level resolver",
+                        pda_name
+                    ));
+                }
                 match build_rust_pda_config(
                     &def.seeds,
                     def.program_id.as_deref(),
@@ -4060,9 +4077,23 @@ fn generate_rust_pdas_module(pdas: &BTreeMap<String, PdaDefinition>) -> Option<S
             }
         }
 
-        let program_expr = match &def.program_id {
-            Some(pid) => rust_string_literal(pid),
-            None => {
+        let program_expr = match (&def.program_id, &def.program) {
+            (Some(pid), _) => rust_string_literal(pid),
+            (None, Some(PdaProgramDef::AccountRef { account_name })) => {
+                let param = to_snake_case(account_name);
+                if !params.iter().any(|(name, _)| *name == param) {
+                    params.push((param.clone(), "&str".to_string()));
+                }
+                param
+            }
+            (None, Some(PdaProgramDef::ArgRef { arg_name })) => {
+                let param = to_snake_case(arg_name);
+                if !params.iter().any(|(name, _)| *name == param) {
+                    params.push((param.clone(), "&str".to_string()));
+                }
+                param
+            }
+            (None, None) => {
                 needs_program_id = true;
                 "PROGRAM_ID".to_string()
             }

@@ -6,7 +6,8 @@
     "a4": "bin/a4.js"
   },
   "scripts": {
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "test": "node --test bin/*.test.js"
   },
   "repository": {
     "type": "git",

@@ -39,7 +39,7 @@ const closeHandler = createInstructionHandler({
   programId: ORE_PROGRAM,
   discriminator: [9],
   args: [],
-  accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer' }],
+  accounts: [{ name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' }],
   errors: [],
 });
 
