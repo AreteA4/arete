@@ -66,6 +66,8 @@ export interface PreparedTransactionBody {
   readonly name: string;
   readonly instructions: NonEmptyReadonlyArray<BuiltInstruction>;
   readonly requiredSignerAddresses: readonly string[];
+  /** Signer material created while preparing this transaction. */
+  readonly signers?: readonly unknown[];
   readonly errors: readonly ErrorMetadata[];
 }
 
@@ -106,6 +108,7 @@ export interface CreatePreparedInstructionInput<TArtifacts> {
   instruction: BuiltInstruction;
   artifacts: TArtifacts;
   requiredSignerAddresses?: readonly string[];
+  signers?: readonly unknown[];
   errors?: readonly ErrorMetadata[];
 }
 
@@ -129,6 +132,7 @@ interface CreatePreparedTransactionBaseInput<TArtifacts> {
   name: string;
   artifacts: TArtifacts;
   requiredSignerAddresses?: readonly string[];
+  signers?: readonly unknown[];
   errors?: readonly ErrorMetadata[];
 }
 
@@ -173,6 +177,7 @@ export function createPreparedTransactionBody(input: {
   name: string;
   instructions: readonly BuiltInstruction[];
   requiredSignerAddresses?: readonly string[];
+  signers?: readonly unknown[];
   errors?: readonly ErrorMetadata[];
 }): PreparedTransactionBody {
   const instructions = nonEmpty(input.instructions, `Transaction '${input.name}'`);
@@ -182,6 +187,7 @@ export function createPreparedTransactionBody(input: {
     requiredSignerAddresses: dedupe(
       input.requiredSignerAddresses ?? inferSignerAddresses(instructions)
     ),
+    signers: [...new Set(input.signers ?? [])],
     errors: [...(input.errors ?? [])],
   };
 }
@@ -205,6 +211,7 @@ export function createPreparedInstruction<TArtifacts>(
     name: input.name,
     instructions: [input.instruction],
     requiredSignerAddresses: input.requiredSignerAddresses,
+    signers: input.signers,
     errors: input.errors,
   });
   return {
@@ -242,6 +249,7 @@ export function createPreparedTransaction<TArtifacts>(
     instructions: transactionParts.flatMap((part) => part.instructions),
     requiredSignerAddresses: input.requiredSignerAddresses
       ?? transactionParts.flatMap((part) => part.requiredSignerAddresses),
+    signers: input.signers ?? transactionParts.flatMap((part) => part.signers),
     errors: input.errors ?? transactionParts.flatMap((part) => part.errors),
   });
   return {
@@ -438,9 +446,10 @@ function validateTransactionSigners<
 >(
   transaction: PreparedTransactionBody,
   host: OperationExecutionHost<TSigner>,
-  options: OperationExecutionOptions<TSigner, TPrepared>
+  options: OperationExecutionOptions<TSigner, TPrepared>,
+  signers: readonly unknown[]
 ) {
-  const signerAddresses = (options.signers ?? []).map(inferSignerAddress);
+  const signerAddresses = signers.map(inferSignerAddress);
   const available = new Set(options.availableSignerAddresses ?? []);
   for (const address of options.signerRegistry?.addresses() ?? []) {
     available.add(address);
@@ -588,15 +597,16 @@ export async function executePreparedOperation<
 ): Promise<OperationReceiptFor<TPrepared>> {
   const receipts: OperationTransactionReceipt[] = [];
   const callbackErrors: OperationCallbackError<TPrepared>[] = [];
-  const signers = [
-    ...new Set([
-      ...(options.signerRegistry?.values() ?? []),
-      ...(options.signers ?? []),
-    ]),
-  ];
   for (const [transactionIndex, transaction] of operation.plan.transactions.entries()) {
+    const signers = [
+      ...new Set([
+        ...(transaction.signers ?? []),
+        ...(options.signerRegistry?.values() ?? []),
+        ...(options.signers ?? []),
+      ]),
+    ];
     try {
-      validateTransactionSigners(transaction, host, options);
+      validateTransactionSigners(transaction, host, options, signers);
     } catch (cause) {
       throw new OperationExecutionError({
         operation,
@@ -628,7 +638,7 @@ export async function executePreparedOperation<
         wallet: options.wallet,
         send: options.send,
         errors: [...transaction.errors],
-        signers: signers.length > 0 ? signers : undefined,
+        signers: signers.length > 0 ? signers as readonly TSigner[] : undefined,
         transactionTransport: options.transactionTransport,
       });
     } catch (cause) {
