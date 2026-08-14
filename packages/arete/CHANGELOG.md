@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/AreteA4/arete/compare/a4-npm-v0.6.0...a4-npm-v0.7.0) (2026-08-14)
+
+
+### Bug Fixes
+
+* preserve composed signers and binary fallback ([75991e0](https://github.com/AreteA4/arete/commit/75991e06bb89b423e7088311cadad65db936178f))
+* prevent recursive npm CLI launches ([bb6398d](https://github.com/AreteA4/arete/commit/bb6398df59c0d337881d39adc31a7b5316eb75d9))
+
 ## [0.6.0](https://github.com/AreteA4/arete/compare/a4-npm-v0.5.0...a4-npm-v0.6.0) (2026-08-13)
 
 

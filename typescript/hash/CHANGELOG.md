@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.3.0...arete-hash-npm-v0.3.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* preserve safe instruction account metadata ([3cb4ad5](https://github.com/AreteA4/arete/commit/3cb4ad56095af56e3e28e574d1301e90e6a25c7f))
+
 ## [0.3.0](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.2.0...arete-hash-npm-v0.3.0) (2026-08-12)
 
 
