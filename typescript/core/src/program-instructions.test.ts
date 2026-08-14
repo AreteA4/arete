@@ -163,6 +163,26 @@ describe('operation helpers', () => {
     ]);
   });
 
+  it('preserves child signer material when composition adds signers', () => {
+    const childSigner = { publicKey: { toBase58: () => 'signer-1' } };
+    const outerSigner = { publicKey: { toBase58: () => 'signer-2' } };
+    const child = createPreparedInstruction({
+      name: 'child',
+      instruction,
+      artifacts: {},
+      signers: [childSigner],
+    });
+
+    const prepared = createPreparedTransaction({
+      name: 'composed-signers',
+      instructions: [child, secondInstruction],
+      artifacts: {},
+      signers: [outerSigner],
+    });
+
+    expect(prepared.transaction.signers).toEqual([childSigner, outerSigner]);
+  });
+
   it('requires exactly one transaction composition source', () => {
     expect(() => createPreparedTransaction({
       name: 'invalid',

@@ -249,7 +249,10 @@ export function createPreparedTransaction<TArtifacts>(
     instructions: transactionParts.flatMap((part) => part.instructions),
     requiredSignerAddresses: input.requiredSignerAddresses
       ?? transactionParts.flatMap((part) => part.requiredSignerAddresses),
-    signers: input.signers ?? transactionParts.flatMap((part) => part.signers),
+    signers: [
+      ...transactionParts.flatMap((part) => part.signers),
+      ...(input.signers ?? []),
+    ],
     errors: input.errors ?? transactionParts.flatMap((part) => part.errors),
   });
   return {

@@ -18,13 +18,23 @@ function canonicalPath(candidate) {
 }
 
 function pathCandidates(env = process.env, platform = process.platform) {
-  const names = platform === "win32"
-    ? ["a4.exe", "a4.cmd", "a4.bat", "a4"]
-    : ["a4"];
+  const names = platform === "win32" ? ["a4.exe"] : ["a4"];
   return (env.PATH || "")
     .split(path.delimiter)
     .filter(Boolean)
     .flatMap((directory) => names.map((name) => path.join(directory, name)));
+}
+
+function isExecutableFile(candidate, platform = process.platform) {
+  try {
+    if (!fs.statSync(candidate).isFile()) return false;
+    if (platform !== "win32") {
+      fs.accessSync(candidate, fs.constants.X_OK);
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Try the concrete postinstall destination first, then every PATH candidate
@@ -35,13 +45,16 @@ function getBinaryPath(env = process.env, platform = process.platform) {
   );
 
   // 1. Check for bundled binary (npm postinstall)
-  if (fs.existsSync(localBinPath) && !launcherPaths.has(canonicalPath(localBinPath))) {
+  if (
+    isExecutableFile(localBinPath, platform)
+    && !launcherPaths.has(canonicalPath(localBinPath))
+  ) {
     return localBinPath;
   }
 
   // 2. Check system PATH (cargo install, manual install)
   for (const candidate of pathCandidates(env, platform)) {
-    if (!fs.existsSync(candidate)) continue;
+    if (!isExecutableFile(candidate, platform)) continue;
     if (launcherPaths.has(canonicalPath(candidate))) continue;
     return candidate;
   }
