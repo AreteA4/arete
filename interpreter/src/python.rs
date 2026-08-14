@@ -2070,7 +2070,17 @@ fn map_py_account(
             notes: Vec::new(),
             uses_pda: false,
         },
-        AccountResolution::PdaInline { seeds, program_id } => {
+        AccountResolution::PdaInline {
+            seeds,
+            program_id,
+            program,
+        } => {
+            if program.is_some() {
+                return degraded(
+                    "uses a dynamic PDA program selector not supported by the Python low-level resolver"
+                        .to_string(),
+                );
+            }
             match build_py_pda_config(seeds, program_id.as_deref(), account_names, arg_types) {
                 Ok((config, notes)) => MappedPyAccount {
                     literal: py_account_meta_literal(acc, &format!("Pda({config})"), None),
@@ -2083,6 +2093,12 @@ fn map_py_account(
         }
         AccountResolution::PdaRef { pda_name } => match pda_lookup.get(pda_name.as_str()) {
             Some(def) => {
+                if def.program.is_some() {
+                    return degraded(format!(
+                        "PDA '{}' uses a dynamic program selector not supported by the Python low-level resolver",
+                        pda_name
+                    ));
+                }
                 match build_py_pda_config(
                     &def.seeds,
                     def.program_id.as_deref(),
@@ -2448,7 +2464,11 @@ fn generate_py_pdas(
     pascal_prefix: &str,
     needs: &mut PythonProgramImports,
 ) -> Option<(String, String, String)> {
-    if pdas.is_empty() {
+    let supported_pdas = pdas
+        .iter()
+        .filter(|(_, definition)| definition.program.is_none())
+        .collect::<Vec<_>>();
+    if supported_pdas.is_empty() {
         return None;
     }
     needs.pda = true;
@@ -2461,7 +2481,7 @@ fn generate_py_pdas(
 
     let mut dict_entries: Vec<String> = Vec::new();
     let mut class_attrs: Vec<String> = Vec::new();
-    for def in pdas.values() {
+    for (_, def) in supported_pdas {
         let key = to_snake_case(&def.name);
         let seed_exprs: Vec<String> = def.seeds.iter().map(py_seed_expr).collect();
         let config = match &def.program_id {
@@ -3242,6 +3262,7 @@ mod tests {
                     },
                 ],
                 program_id: None,
+                program: None,
             },
         );
         let mut pdas = BTreeMap::new();

@@ -46,6 +46,7 @@ fn adapted_live(program: &ProgramSpecArtifact, entity: &str, pda_name: &str) -> 
                         value: pda_name.to_string(),
                     }],
                     program_id: None,
+                    program: None,
                 },
             )]),
             instruction_resolutions: Vec::new(),

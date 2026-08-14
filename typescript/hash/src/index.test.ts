@@ -42,6 +42,7 @@ import {
   parseHashId,
   parseProgramReadBindingId,
   parseIdlV1,
+  projectIdlV1,
   projectWithoutArtifactHash,
   type ArtifactTreeEntry,
   type AuthenticatedOwnerHashKind,
@@ -55,6 +56,55 @@ import {
   type RawBytesHashKind,
   type TupleField,
 } from "./index.js";
+
+test("projects conflicting instruction-local PDAs inline", () => {
+  const source = {
+    address: "11111111111111111111111111111111",
+    metadata: { name: "pda_conflict", version: "0.1.0" },
+    instructions: [
+      {
+        name: "initialize",
+        discriminator: [1],
+        accounts: [
+          {
+            name: "launch",
+            pda: {
+              seeds: [
+                { kind: "const", value: [108, 97, 117, 110, 99, 104] },
+                { kind: "account", path: "admin" },
+              ],
+            },
+          },
+        ],
+        args: [],
+      },
+      {
+        name: "contribute",
+        discriminator: [2],
+        accounts: [
+          {
+            name: "launch",
+            pda: {
+              seeds: [
+                { kind: "const", value: [108, 97, 117, 110, 99, 104] },
+                { kind: "account", path: "launch.admin" },
+              ],
+            },
+          },
+        ],
+        args: [],
+      },
+    ],
+  };
+
+  const bytes = new TextEncoder().encode(JSON.stringify(source));
+  const { programId } = projectIdlV1(bytes);
+  const spec = parseIdlV1(bytes, programId).programSpec;
+
+  expect(spec.pdas).not.toHaveProperty("launch");
+  expect(spec.instructions[0]?.accounts[0]?.resolution.category).toBe("pdaInline");
+  expect(spec.instructions[1]?.accounts[0]?.resolution.category).toBe("pdaInline");
+});
 
 test("reports a known but unexpected hash kind consistently", () => {
   const value = `arete:h1:program-spec:sha256:${"ab".repeat(32)}`;

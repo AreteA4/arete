@@ -349,8 +349,21 @@ pub fn build_program_spec_v1_from_idl(
 pub struct PdaDefinitionV1 {
     pub name: String,
     pub seeds: Vec<PdaSeedV1>,
+    /// Legacy/static PDA program. Retained so existing ProgramSpec hashes do
+    /// not change when the PDA program is a literal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program_id: Option<String>,
+    /// Dynamic PDA program selector. This is emitted only when the owning
+    /// program must be resolved from another account or instruction argument.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<PdaProgramV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PdaProgramV1 {
+    AccountRef { account_name: String },
+    ArgRef { arg_name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -386,6 +399,8 @@ pub enum AccountResolutionV1 {
         seeds: Vec<PdaSeedV1>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         program_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        program: Option<PdaProgramV1>,
     },
     UserProvided,
 }
@@ -456,19 +471,37 @@ pub struct InstructionDefinitionV1 {
 
 fn extract_pdas(idl: &IdlSpec) -> BTreeMap<String, PdaDefinitionV1> {
     let mut pdas = BTreeMap::new();
+    let mut named_pdas = BTreeSet::new();
     for pda in &idl.pdas {
         let name = sanitize_identifier(&pda.name);
+        named_pdas.insert(name.clone());
         pdas.insert(
             name.clone(),
             convert_pda(&name, &pda.seeds, pda.program.as_ref()),
         );
     }
+    let mut conflicting_account_pdas = BTreeSet::new();
     for instruction in &idl.instructions {
         for account in instruction.flattened_accounts() {
             if let Some(pda) = &account.pda {
                 let name = sanitize_identifier(pda.name.as_deref().unwrap_or(&account.name));
-                pdas.entry(name.clone())
-                    .or_insert_with(|| convert_pda(&name, &pda.seeds, pda.program.as_ref()));
+                if named_pdas.contains(&name) || conflicting_account_pdas.contains(&name) {
+                    continue;
+                }
+                let candidate = convert_pda(&name, &pda.seeds, pda.program.as_ref());
+                match pdas.get(&name) {
+                    None => {
+                        pdas.insert(name, candidate);
+                    }
+                    Some(existing) if existing == &candidate => {}
+                    Some(_) => {
+                        // Account-level PDAs are instruction-local. Publishing one
+                        // arbitrary definition under a shared name makes other
+                        // instructions derive a plausible but incorrect address.
+                        pdas.remove(&name);
+                        conflicting_account_pdas.insert(name);
+                    }
+                }
             }
         }
     }
@@ -539,15 +572,24 @@ fn convert_pda(
             },
         })
         .collect();
-    let program_id = program.and_then(|program| match program {
-        arete_idl::IdlPdaProgram::Literal { value, .. } => Some(value.clone()),
-        arete_idl::IdlPdaProgram::Const { value, .. } => Some(bs58::encode(value).into_string()),
-        arete_idl::IdlPdaProgram::Account { .. } => None,
-    });
+    let (program_id, program) = match program {
+        Some(arete_idl::IdlPdaProgram::Literal { value, .. }) => (Some(value.clone()), None),
+        Some(arete_idl::IdlPdaProgram::Const { value, .. }) => {
+            (Some(bs58::encode(value).into_string()), None)
+        }
+        Some(arete_idl::IdlPdaProgram::Account { path, .. }) => (
+            None,
+            Some(PdaProgramV1::AccountRef {
+                account_name: sanitize_seed_path(path),
+            }),
+        ),
+        None => (None, None),
+    };
     PdaDefinitionV1 {
         name: name.to_string(),
         seeds,
         program_id,
+        program,
     }
 }
 
@@ -563,13 +605,14 @@ fn convert_account(
         }
     } else if let Some(pda) = &account.pda {
         let name = sanitize_identifier(pda.name.as_deref().unwrap_or(&account.name));
-        if pdas.contains_key(&name) {
+        let converted = convert_pda(&name, &pda.seeds, pda.program.as_ref());
+        if pdas.get(&name) == Some(&converted) {
             AccountResolutionV1::PdaRef { pda_name: name }
         } else {
-            let pda = convert_pda(&name, &pda.seeds, pda.program.as_ref());
             AccountResolutionV1::PdaInline {
-                seeds: pda.seeds,
-                program_id: pda.program_id,
+                seeds: converted.seeds,
+                program_id: converted.program_id,
+                program: converted.program,
             }
         }
     } else {
@@ -677,5 +720,59 @@ fn idl_type_to_rust_string(idl_type: &IdlType) -> String {
             IdlTypeDefinedInner::Named { name } => name.clone(),
             IdlTypeDefinedInner::Simple(simple) => simple.clone(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preserves_account_selected_pda_programs() {
+        let definition = convert_pda(
+            "metadata",
+            &[arete_idl::IdlPdaSeed::Const {
+                value: b"metadata".to_vec(),
+            }],
+            Some(&arete_idl::IdlPdaProgram::Account {
+                kind: "account".to_string(),
+                path: "metadata_program".to_string(),
+            }),
+        );
+
+        assert_eq!(definition.program_id, None);
+        assert_eq!(
+            definition.program,
+            Some(PdaProgramV1::AccountRef {
+                account_name: "metadata_program".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn keeps_conflicting_account_pdas_inline_per_instruction() {
+        let source = br#"{
+            "address":"11111111111111111111111111111111",
+            "metadata":{"name":"demo","version":"0.1.0","spec":"0.1.0"},
+            "instructions":[
+                {"name":"create","discriminator":[1,0,0,0,0,0,0,0],"accounts":[
+                    {"name":"state","pda":{"seeds":[{"kind":"const","value":[99,114,101,97,116,101]}]}}
+                ],"args":[]},
+                {"name":"update","discriminator":[2,0,0,0,0,0,0,0],"accounts":[
+                    {"name":"state","pda":{"seeds":[{"kind":"const","value":[117,112,100,97,116,101]}]}}
+                ],"args":[]}
+            ],
+            "accounts":[],"types":[],"events":[],"errors":[]
+        }"#;
+        let document = CanonicalIdlDocument::parse(source, None).unwrap();
+        let spec = ProgramSpecV1::from_document(&document);
+
+        assert!(!spec.pdas.contains_key("state"));
+        for instruction in &spec.instructions {
+            assert!(matches!(
+                &instruction.accounts[0].resolution,
+                AccountResolutionV1::PdaInline { .. }
+            ));
+        }
     }
 }

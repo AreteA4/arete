@@ -1366,6 +1366,18 @@ pub struct PdaDefinition {
     /// If None, uses the stack's primary programId.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program_id: Option<String>,
+
+    /// Dynamic program selector for cross-program PDAs. Static programs stay
+    /// in `program_id` for backward-compatible artifact serialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<PdaProgramDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PdaProgramDef {
+    AccountRef { account_name: String },
+    ArgRef { arg_name: String },
 }
 
 /// Single seed in a PDA derivation.
@@ -1394,7 +1406,9 @@ pub enum PdaSeedDef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "category", rename_all = "camelCase")]
 pub enum AccountResolution {
-    /// Must sign the transaction (uses wallet.publicKey)
+    /// Must sign the transaction. Generated handlers require the caller to
+    /// provide this account unless the account metadata explicitly opts into
+    /// wallet or generated signer behavior.
     Signer,
 
     /// Fixed known address (e.g., System Program, Token Program)
@@ -1408,6 +1422,8 @@ pub enum AccountResolution {
         seeds: Vec<PdaSeedDef>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         program_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        program: Option<PdaProgramDef>,
     },
 
     /// User must provide at call time via options.accounts
