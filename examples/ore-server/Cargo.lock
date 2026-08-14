@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "arete-artifacts"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arete-hash",
  "arete-idl",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "arete-hash"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arete-idl",
  "bs58",
