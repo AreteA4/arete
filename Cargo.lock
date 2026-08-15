@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "a4-cli"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -127,7 +127,7 @@ checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
 name = "arete"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "arete-a4-sdk"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "arete-interpreter"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "arete-artifacts",
  "arete-hash",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "arete-macros"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "arete-artifacts",
  "arete-hash",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "arete-mcp"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "arete-server"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "arete-auth",

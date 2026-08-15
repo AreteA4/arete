@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.2](https://github.com/AreteA4/arete/compare/arete-macros-v0.7.1...arete-macros-v0.7.2) (2026-08-15)
+
+
+### Bug Fixes
+
+* support update-context fields as event mapping sources and primary keys ([6d1c6ad](https://github.com/AreteA4/arete/commit/6d1c6ada1d48a11d20893fd0ebaa62adb6ba3d0d))
+* support update-context fields as event mapping sources and primary keys ([c308a58](https://github.com/AreteA4/arete/commit/c308a58570d381dd2e14c9c4906b833a3f7d592e))
+
 ## [0.7.1](https://github.com/AreteA4/arete/compare/arete-macros-v0.7.0...arete-macros-v0.7.1) (2026-08-15)
 
 
