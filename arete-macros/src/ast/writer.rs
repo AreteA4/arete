@@ -124,6 +124,19 @@ pub fn parse_population_strategy(strategy_str: &str) -> PopulationStrategy {
     }
 }
 
+/// Resolve reserved update-context fields used by the Rust DSL.
+///
+/// These values live in the runtime's `__update_context` envelope rather than
+/// in an account, instruction, or CPI-event payload.
+pub fn context_field_name(source_field_name: &str) -> Option<&'static str> {
+    match source_field_name {
+        "__signature" => Some("signature"),
+        "__slot" => Some("slot"),
+        "__timestamp" => Some("timestamp"),
+        _ => None,
+    }
+}
+
 /// Convert idl_parser::IdlSpec to ast::IdlSnapshot for embedding in AST
 pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
     // Build types list: start with explicit types from idl.types
@@ -477,6 +490,7 @@ pub fn build_handlers_from_sources(
                 continue;
             }
 
+            let context_field = context_field_name(&mapping.source_field_name);
             let source = if mapping.is_whole_source {
                 let field_transforms = if mapping
                     .source_field_name
@@ -502,6 +516,10 @@ pub fn build_handlers_from_sources(
                 };
 
                 MappingSource::AsCapture { field_transforms }
+            } else if let Some(field) = context_field {
+                MappingSource::FromContext {
+                    field: field.to_string(),
+                }
             } else {
                 let field_path = if is_cpi_event {
                     // CPI events: all fields are under "data"
@@ -569,7 +587,9 @@ pub fn build_handlers_from_sources(
 
             if mapping.is_primary_key {
                 has_primary_key = true;
-                if is_cpi_event {
+                if let Some(field) = context_field {
+                    primary_field = Some(format!("__update_context.{field}"));
+                } else if is_cpi_event {
                     // CPI event fields are always in "data"
                     primary_field = Some(format!("data.{}", mapping.source_field_name));
                 } else if is_instruction {
