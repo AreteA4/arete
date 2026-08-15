@@ -844,6 +844,7 @@ pub fn up(
                             &stack,
                             branch.as_deref(),
                             deployment_name.as_deref(),
+                            json,
                         )?;
                         if json {
                             println!("{}", serde_json::to_string(&result)?);
@@ -881,6 +882,7 @@ pub fn up(
                     stack,
                     branch.as_deref(),
                     deployment_name.as_deref(),
+                    json,
                 )?)
             }
             LocalDeploymentSource::Legacy(ast) => {
@@ -892,8 +894,9 @@ pub fn up(
             if let Some(result) = result {
                 println!("{}", serde_json::to_string(&result)?);
             }
+        } else {
+            println!();
         }
-        println!();
     }
 
     telemetry::record_stack_deployed(stack_name.unwrap_or(""), start.elapsed());
@@ -950,7 +953,7 @@ fn dry_run_artifact_stack<A: HostedDeploymentApi + ?Sized>(
     stack: &LocalArtifactStack,
     branch: Option<&str>,
 ) -> Result<StackDeploymentResult> {
-    dry_run_artifact_stack_with_deployment_name(client, stack, branch, None)
+    dry_run_artifact_stack_with_deployment_name(client, stack, branch, None, false)
 }
 
 fn dry_run_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
@@ -958,6 +961,7 @@ fn dry_run_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
     stack: &LocalArtifactStack,
     branch: Option<&str>,
     deployment_name: Option<&str>,
+    quiet: bool,
 ) -> Result<StackDeploymentResult> {
     let plan =
         HostedDeploymentPlan::from_stack_with_deployment_name(stack, branch, deployment_name)?;
@@ -965,13 +969,15 @@ fn dry_run_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
         client.preflight_stack_deployment(deployment_preflight_request(stack, branch))?;
     let selection = validate_preflight_response(&plan, stack, &response)?;
     let result = StackDeploymentResult::preflight(&plan, &selection)?;
-    ui::print_section("Dry Run - No changes will be made");
-    println!();
-    print_artifact_plan_details(stack, &plan, branch);
-    println!();
-    print_selection(&selection, false);
-    println!();
-    println!("{}", "Run without --dry-run to deploy.".dimmed());
+    if !quiet {
+        ui::print_section("Dry Run - No changes will be made");
+        println!();
+        print_artifact_plan_details(stack, &plan, branch);
+        println!();
+        print_selection(&selection, false);
+        println!();
+        println!("{}", "Run without --dry-run to deploy.".dimmed());
+    }
     Ok(result)
 }
 
@@ -1047,7 +1053,7 @@ fn deploy_artifact_stack<A: HostedDeploymentApi + ?Sized>(
     stack: LocalArtifactStack,
     branch: Option<&str>,
 ) -> Result<StackDeploymentResult> {
-    deploy_artifact_stack_with_deployment_name(client, stack, branch, None)
+    deploy_artifact_stack_with_deployment_name(client, stack, branch, None, false)
 }
 
 fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
@@ -1055,6 +1061,7 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
     stack: LocalArtifactStack,
     branch: Option<&str>,
     deployment_name: Option<&str>,
+    quiet: bool,
 ) -> Result<StackDeploymentResult> {
     let plan =
         HostedDeploymentPlan::from_stack_with_deployment_name(&stack, branch, deployment_name)?;
@@ -1074,32 +1081,38 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
         deployment_plan_id.clone(),
         selection.selection_digest.clone(),
     );
-    ui::print_divider();
-    println!(
-        "{} Deploying {} from StackManifest",
-        ui::symbols::ARROW.blue().bold(),
-        plan.stack_name.bold()
-    );
-    ui::print_divider();
-    println!("  StackManifest: {}", plan.stack_manifest_hash);
-    println!("  ProgramSpecs: {}", stack.program_specs.len());
-    print_selection(&selection, true);
-    if let Some(branch_name) = branch {
-        println!("  Branch: {}", branch_name.cyan());
+    if !quiet {
+        ui::print_divider();
+        println!(
+            "{} Deploying {} from StackManifest",
+            ui::symbols::ARROW.blue().bold(),
+            plan.stack_name.bold()
+        );
+        ui::print_divider();
+        println!("  StackManifest: {}", plan.stack_manifest_hash);
+        println!("  ProgramSpecs: {}", stack.program_specs.len());
+        print_selection(&selection, true);
+        if let Some(branch_name) = branch {
+            println!("  Branch: {}", branch_name.cyan());
+        }
     }
 
     for (index, target) in plan.targets.iter().enumerate() {
-        ui::print_numbered_step(
-            (index + 1) as u32,
-            &format!("Deploying live alias '{}'...", target.alias),
-        );
-        let spec_id = if let Some(spec) = client.get_spec_by_name(&target.spec_name)? {
-            println!(
-                "  {} Reusing exact spec '{}' (id={})",
-                ui::symbols::SUCCESS.green(),
-                target.spec_name,
-                spec.id
+        if !quiet {
+            ui::print_numbered_step(
+                (index + 1) as u32,
+                &format!("Deploying live alias '{}'...", target.alias),
             );
+        }
+        let spec_id = if let Some(spec) = client.get_spec_by_name(&target.spec_name)? {
+            if !quiet {
+                println!(
+                    "  {} Reusing exact spec '{}' (id={})",
+                    ui::symbols::SUCCESS.green(),
+                    target.spec_name,
+                    spec.id
+                );
+            }
             spec.id
         } else {
             let spinner = ui::create_spinner(&format!("Creating spec '{}'...", target.spec_name));
@@ -1156,11 +1169,13 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
                 target.alias
             );
         }
-        println!("  Alias: {}", target.alias);
-        println!("  LiveSpec: {}", target.live_spec_hash);
-        println!("  Build ID: {}", response.build_id.to_string().bold());
-        println!();
-        let build = match watch_build_progress(client, response.build_id) {
+        if !quiet {
+            println!("  Alias: {}", target.alias);
+            println!("  LiveSpec: {}", target.live_spec_hash);
+            println!("  Build ID: {}", response.build_id.to_string().bold());
+            println!();
+        }
+        let build = match watch_build_progress(client, response.build_id, quiet) {
             Ok(build) => build,
             Err(error) => {
                 orchestration.record_failure(&target.alias)?;
@@ -1179,35 +1194,41 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
             build.related_deployment_id,
         )?;
         orchestration.record_success(&target.alias, response.build_id, deployment.id)?;
-        println!(
-            "  {} Alias '{}' is healthy on deployment {}",
-            ui::symbols::SUCCESS.green(),
-            target.alias,
-            deployment.id
-        );
-        println!();
+        if !quiet {
+            println!(
+                "  {} Alias '{}' is healthy on deployment {}",
+                ui::symbols::SUCCESS.green(),
+                target.alias,
+                deployment.id
+            );
+            println!();
+        }
     }
 
-    ui::print_numbered_step(
-        (plan.targets.len() + 1) as u32,
-        "Binding stack composition...",
-    );
+    if !quiet {
+        ui::print_numbered_step(
+            (plan.targets.len() + 1) as u32,
+            "Binding stack composition...",
+        );
+    }
     let request = orchestration.composition_request().ok_or_else(|| {
         anyhow::anyhow!("Not every hosted target completed; composition not bound")
     })?;
     let response = client.bind_stack_composition(request)?;
     let result = StackDeploymentResult::healthy(&orchestration, &selection, &response)?;
-    ui::print_success("Stack composition bound successfully!");
-    println!("  Composition ID: {}", response.composition_id);
-    for binding in &response.live_specs {
-        println!(
-            "  {} {} -> deployment {}",
-            ui::symbols::SUCCESS.green(),
-            binding.alias,
-            binding.deployment_id
-        );
-        println!("    WebSocket: {}", binding.websocket_endpoint.cyan());
-        println!("    Query: {}", binding.query_endpoint.cyan());
+    if !quiet {
+        ui::print_success("Stack composition bound successfully!");
+        println!("  Composition ID: {}", response.composition_id);
+        for binding in &response.live_specs {
+            println!(
+                "  {} {} -> deployment {}",
+                ui::symbols::SUCCESS.green(),
+                binding.alias,
+                binding.deployment_id
+            );
+            println!("    WebSocket: {}", binding.websocket_endpoint.cyan());
+            println!("    Query: {}", binding.query_endpoint.cyan());
+        }
     }
     Ok(result)
 }
@@ -1385,7 +1406,7 @@ fn deploy_single_stack(
     ui::print_numbered_step(3, "Building & deploying...");
     println!();
 
-    watch_build_progress(client, build_response.build_id)?;
+    watch_build_progress(client, build_response.build_id, false)?;
 
     Ok(())
 }
@@ -1469,6 +1490,7 @@ fn find_deployment<A: HostedDeploymentApi + ?Sized>(
 fn watch_build_progress<A: HostedDeploymentApi + ?Sized>(
     client: &A,
     build_id: i32,
+    quiet: bool,
 ) -> Result<BuildStatusResponse> {
     let mut last_phase: Option<String> = None;
     let progress_bar = ProgressBar::new(100);
@@ -1510,31 +1532,37 @@ fn watch_build_progress<A: HostedDeploymentApi + ?Sized>(
 
         if build.status.is_terminal() {
             progress_bar.finish_and_clear();
-            println!();
 
             match build.status {
                 BuildStatus::Completed => {
-                    ui::print_success("Deployed successfully!");
-
-                    if let Some(ws_url) = &build.websocket_url {
+                    if !quiet {
                         println!();
-                        println!("  {} {}", "WebSocket:".bold(), ws_url.cyan().bold());
+                        ui::print_success("Deployed successfully!");
+
+                        if let Some(ws_url) = &build.websocket_url {
+                            println!();
+                            println!("  {} {}", "WebSocket:".bold(), ws_url.cyan().bold());
+                        }
                     }
                     return Ok(response);
                 }
                 BuildStatus::Failed => {
-                    ui::print_error("Build failed!");
+                    if !quiet {
+                        ui::print_error("Build failed!");
 
-                    if let Some(msg) = &build.status_message {
-                        println!("  {}", msg);
-                    } else if let Some(category) = &build.error_category {
-                        println!("  Error category: {}", category);
+                        if let Some(msg) = &build.status_message {
+                            println!("  {}", msg);
+                        } else if let Some(category) = &build.error_category {
+                            println!("  Error category: {}", category);
+                        }
                     }
 
                     anyhow::bail!("Deployment failed");
                 }
                 BuildStatus::Cancelled => {
-                    ui::print_warning("Build was cancelled.");
+                    if !quiet {
+                        ui::print_warning("Build was cancelled.");
+                    }
                     anyhow::bail!("Deployment cancelled");
                 }
                 _ => {}
@@ -2258,6 +2286,48 @@ mod tests {
         assert!(api.plan_requests.borrow().is_empty());
         assert!(api.build_requests.borrow().is_empty());
         assert!(api.bind_requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn quiet_dry_run_returns_the_same_preflight_result() {
+        let stack = local_stack(&["first"]);
+        let api = FakeHostedApi::new(&stack);
+
+        let result =
+            dry_run_artifact_stack_with_deployment_name(&api, &stack, None, None, true).unwrap();
+
+        assert_eq!(result.schema, STACK_DEPLOYMENT_RESULT_SCHEMA);
+        assert_eq!(api.calls.borrow().as_slice(), &[ApiCall::Preflight]);
+        assert!(api.plan_requests.borrow().is_empty());
+        assert!(api.build_requests.borrow().is_empty());
+        assert!(api.bind_requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn quiet_deployment_still_binds_and_returns_a_healthy_result() {
+        let stack = local_stack(&["primary", "replica"]);
+        let api = FakeHostedApi::new(&stack);
+
+        let result =
+            deploy_artifact_stack_with_deployment_name(&api, stack, None, None, true).unwrap();
+
+        assert_eq!(result.schema, STACK_DEPLOYMENT_RESULT_SCHEMA);
+        let calls = api.calls.borrow();
+        assert_eq!(
+            calls.iter().filter(|call| **call == ApiCall::Plan).count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| matches!(call, ApiCall::Build(_)))
+                .count(),
+            2
+        );
+        assert_eq!(
+            calls.iter().filter(|call| **call == ApiCall::Bind).count(),
+            1
+        );
     }
 
     #[test]
