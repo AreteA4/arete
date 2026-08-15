@@ -85,17 +85,29 @@ const localPackages = new Map(packageFiles.map(relativeManifest => {
 for (const relativeManifest of packageFiles) {
   const manifestPath = path.join(root, relativeManifest);
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  // Private packages (the examples) are never published, so their registry
+  // ranges must stay installable from the current registry at all times —
+  // including inside a release PR, before the new version exists on npm.
+  // Pin them to the release line (^major.minor, matching
+  // scripts/update-example-versions.sh) instead of an exact patch version
+  // so the checked-in lockfile keeps satisfying the manifest.
+  const privatePackage = manifest.private === true;
   let changed = false;
 
   for (const section of dependencySections) {
     for (const [name, spec] of Object.entries(manifest[section] ?? {})) {
       const targetVersion = localPackages.get(name);
-      const registryRange = typeof spec === 'string'
-        ? spec.match(/^([~^]?)\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/)
-        : null;
-      if (!targetVersion || !registryRange) continue;
+      if (!targetVersion || typeof spec !== 'string') continue;
 
-      const targetSpec = `${registryRange[1]}${targetVersion}`;
+      let targetSpec = null;
+      if (privatePackage) {
+        if (!/^[~^]?\d+\.\d+(?:\.\d+(?:-[0-9A-Za-z.-]+)?)?$/.test(spec)) continue;
+        targetSpec = `^${targetVersion.split('.').slice(0, 2).join('.')}`;
+      } else {
+        const registryRange = spec.match(/^([~^]?)\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+        if (!registryRange) continue;
+        targetSpec = `${registryRange[1]}${targetVersion}`;
+      }
       if (spec === targetSpec) continue;
 
       manifest[section][name] = targetSpec;
