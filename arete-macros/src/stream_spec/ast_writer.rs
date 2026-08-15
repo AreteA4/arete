@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::ast::writer::{
-    convert_idl_to_snapshot, parse_population_strategy, parse_transformation,
+    context_field_name, convert_idl_to_snapshot, parse_population_strategy, parse_transformation,
 };
 use crate::ast::{
     ComputedFieldSpec, ConditionExpr, EntitySection, FieldPath, HookAction, IdentitySpec,
@@ -502,6 +502,7 @@ fn build_source_handler(
             continue;
         }
 
+        let context_field = context_field_name(&mapping.source_field_name);
         let source = if mapping.is_whole_source {
             let field_transforms = if mapping
                 .source_field_name
@@ -527,6 +528,10 @@ fn build_source_handler(
             };
 
             MappingSource::AsCapture { field_transforms }
+        } else if let Some(field) = context_field {
+            MappingSource::FromContext {
+                field: field.to_string(),
+            }
         } else {
             let field_path = if is_cpi_event {
                 // CPI events: all fields (including identifiers like lb_pair, from) are under "data"
@@ -607,7 +612,9 @@ fn build_source_handler(
 
         if mapping.is_primary_key {
             has_primary_key = true;
-            if is_cpi_event {
+            if let Some(field) = context_field {
+                primary_field = Some(format!("__update_context.{field}"));
+            } else if is_cpi_event {
                 // CPI event fields are always in "data"
                 primary_field = Some(format!("data.{}", mapping.source_field_name));
             } else if is_instruction {

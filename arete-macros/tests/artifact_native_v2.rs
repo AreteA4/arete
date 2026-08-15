@@ -2,7 +2,10 @@ mod support;
 
 use std::fs;
 
-use arete_artifacts::{load_live_spec_v2, load_stack_manifest_v2, STACK_MANIFEST_SCHEMA_V2};
+use arete_artifacts::{
+    load_live_spec_v2, load_stack_manifest_v2, PortableKeyResolutionStrategy,
+    PortableMappingSource, STACK_MANIFEST_SCHEMA_V2,
+};
 use support::{arete_dir, cargo_toml, escape_path, macro_manifest_dir, TempCrate};
 
 fn dependencies() -> Vec<String> {
@@ -112,6 +115,93 @@ fn main() {
         .payload
         .validate_selected_views([("live", &live)])
         .unwrap();
+}
+
+#[test]
+fn event_context_fields_can_populate_and_key_an_entity() {
+    let idl_path = macro_manifest_dir()
+        .parent()
+        .unwrap()
+        .join("arete-idl/tests/fixtures/pump.json");
+    let source = format!(
+        r#"use arete_macros::arete;
+
+#[arete(idl = "{}")]
+mod stream {{
+    #[entity(name = "Trade")]
+    struct Trade {{
+        #[map(pump_sdk::events::TradeEvent::__signature, primary_key, strategy = SetOnce)]
+        signature: String,
+
+        #[map(pump_sdk::events::TradeEvent::__slot, strategy = SetOnce)]
+        slot: u64,
+
+        #[map(pump_sdk::events::TradeEvent::__timestamp, strategy = SetOnce)]
+        timestamp: i64,
+
+        #[map(pump_sdk::events::TradeEvent::mint, strategy = SetOnce)]
+        mint: String,
+    }}
+}}
+
+fn main() {{
+    let _ = stream::create_multi_entity_bytecode();
+}}
+"#,
+        escape_path(&idl_path)
+    );
+    let temp = TempCrate::new(
+        "artifact-native-v2",
+        "event-context-primary-key",
+        cargo_toml("event-context-primary-key", &dependencies()),
+        &source,
+        &[],
+    );
+    let output = temp.cargo_check();
+    assert!(
+        output.status.success(),
+        "event context macro failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let live =
+        load_live_spec_v2(&fs::read(temp.path().join(".arete/Stream.live-spec.json")).unwrap())
+            .unwrap()
+            .artifact;
+    let entity = live
+        .payload
+        .entities
+        .iter()
+        .find(|entity| entity.state_name == "Trade")
+        .expect("Trade entity");
+    assert_eq!(entity.identity.primary_keys, ["signature"]);
+    assert_eq!(entity.handlers.len(), 1);
+
+    let handler = &entity.handlers[0];
+    match &handler.key_resolution {
+        PortableKeyResolutionStrategy::Embedded { primary_field } => {
+            assert_eq!(primary_field.segments, ["__update_context", "signature"]);
+        }
+        other => panic!("unexpected key resolution: {other:?}"),
+    }
+
+    for (target_path, context_field) in [
+        ("signature", "signature"),
+        ("slot", "slot"),
+        ("timestamp", "timestamp"),
+    ] {
+        let mapping = handler
+            .mappings
+            .iter()
+            .find(|mapping| mapping.target_path == target_path)
+            .unwrap_or_else(|| panic!("missing mapping for {target_path}"));
+        assert_eq!(
+            mapping.source,
+            PortableMappingSource::FromContext {
+                field: context_field.to_string(),
+            }
+        );
+    }
 }
 
 #[test]

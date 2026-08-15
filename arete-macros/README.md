@@ -71,11 +71,19 @@ IDL events are valid mapping sources anywhere you can reference a generated SDK 
 Typical patterns:
 
 - `#[map(my_program_sdk::events::TradeExecuted::amount, strategy = LastWrite)]`
+- `#[map(my_program_sdk::events::TradeExecuted::__signature, primary_key, strategy = SetOnce)]`
 - `#[aggregate(from = my_program_sdk::events::TradeExecuted, field = amount, strategy = Sum)]`
 - `#[derive_from(from = my_program_sdk::events::TradeExecuted, field = amount, strategy = LastWrite)]`
 - `#[event(from = my_program_sdk::events::TradeExecuted, fields = [id, amount])]`
 
-When an IDL omits inline event fields, the macro resolves them from the event's backing type or a same-name struct in `types[]`. Event sources expose payload fields only; `accounts::...` is not valid on an event source.
+When an IDL omits inline event fields, the macro resolves them from the event's backing type or a same-name struct in `types[]`. Event sources do not expose instruction accounts, so `accounts::...` is not valid on an event source.
+
+The reserved fields `__signature`, `__slot`, and `__timestamp` come from the
+runtime update context rather than the IDL payload. They can be mapped onto
+ordinary entity fields, and a context-backed field can be used as an embedded
+primary key. A transaction signature identifies the transaction, so use a
+compound action identity when one transaction may emit multiple records of the
+same entity type.
 
 ## Generated Output
 
