@@ -205,10 +205,15 @@ impl HealthMonitor {
     pub async fn is_healthy(&self) -> bool {
         let status = self.stream_status.read().await;
 
-        matches!(
-            *status,
-            StreamStatus::Connected | StreamStatus::Reconnecting
-        )
+        match *status {
+            // Event silence is valid for low-traffic programs and account filters.
+            // Connectivity transitions are recorded explicitly by the stream
+            // driver, so readiness should follow that state instead of treating a
+            // quiet but connected stream as failed.
+            StreamStatus::Connected => true,
+            StreamStatus::Reconnecting => true, // Considered healthy if actively reconnecting
+            _ => false,
+        }
     }
 
     /// Get the current stream status
@@ -271,11 +276,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connected_stream_remains_healthy_when_events_are_quiet() {
+        let monitor = HealthMonitor::new(
+            HealthConfig::new().with_heartbeat_interval(Duration::from_millis(1)),
+        );
+        monitor.record_connection().await;
+        monitor.record_event().await;
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        assert!(monitor.is_healthy().await);
+    }
+
+    #[tokio::test]
     async fn connected_low_traffic_stream_remains_healthy_after_an_old_event() {
         let monitor = HealthMonitor::new(HealthConfig::default());
         monitor.record_connection().await;
         *monitor.last_event_time.write().await = Some(SystemTime::now() - Duration::from_secs(61));
 
         assert!(monitor.is_healthy().await);
+    }
+
+    #[tokio::test]
+    async fn disconnected_stream_is_not_healthy() {
+        let monitor = HealthMonitor::new(HealthConfig::new());
+        monitor.record_connection().await;
+        monitor.record_disconnection().await;
+
+        assert!(!monitor.is_healthy().await);
     }
 }
