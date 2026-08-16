@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.8.1](https://github.com/AreteA4/arete/compare/arete-server-v0.8.0...arete-server-v0.8.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* Arete server health check ([16d4cad](https://github.com/AreteA4/arete/commit/16d4cad2333e130a94d9ef582755a8d16d71aec0))
+* harden CLI and server runtime behavior ([df6f4b9](https://github.com/AreteA4/arete/commit/df6f4b944552f02b481fd35ea5ef9950883aa66e))
+* keep idle connected streams healthy ([6e73084](https://github.com/AreteA4/arete/commit/6e73084b9af9d030fdd608b4c555bd489d6d86af))
+* keep quiet connected streams healthy ([2cb5e5d](https://github.com/AreteA4/arete/commit/2cb5e5dfbfa6b88abacf803077643904c126e794))
+* preserve native canonical entity views ([baf4505](https://github.com/AreteA4/arete/commit/baf4505990e432327fc8d4128eca70553f966482))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.8.0 to 0.8.1
+
 ## [0.8.0](https://github.com/AreteA4/arete/compare/arete-server-v0.7.2...arete-server-v0.8.0) (2026-08-16)
 
 
