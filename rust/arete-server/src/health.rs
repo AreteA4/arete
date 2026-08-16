@@ -204,33 +204,11 @@ impl HealthMonitor {
     /// Check if the stream is currently healthy
     pub async fn is_healthy(&self) -> bool {
         let status = self.stream_status.read().await;
-        let last_event_time = *self.last_event_time.read().await;
 
-        match *status {
-            StreamStatus::Connected => {
-                // Check if we've received events recently
-                if let Some(last_event) = last_event_time {
-                    let time_since_last_event = SystemTime::now()
-                        .duration_since(last_event)
-                        .unwrap_or(Duration::from_secs(u64::MAX));
-
-                    // Consider unhealthy if no events for 2x heartbeat interval
-                    time_since_last_event < (self.config.heartbeat_interval * 2)
-                } else {
-                    // No events yet, but connected - might be waiting for first event
-                    let connection_time = self.connection_start_time.read().await;
-                    if let Some(start_time) = *connection_time {
-                        let time_since_connection = start_time.elapsed();
-                        // Give it some time to receive first event
-                        time_since_connection < Duration::from_secs(60)
-                    } else {
-                        false
-                    }
-                }
-            }
-            StreamStatus::Reconnecting => true, // Considered healthy if actively reconnecting
-            _ => false,
-        }
+        matches!(
+            *status,
+            StreamStatus::Connected | StreamStatus::Reconnecting
+        )
     }
 
     /// Get the current stream status
@@ -275,5 +253,29 @@ impl Clone for HealthMonitor {
             error_count: Arc::clone(&self.error_count),
             connection_start_time: Arc::clone(&self.connection_start_time),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connected_idle_stream_remains_healthy() {
+        let monitor = HealthMonitor::new(HealthConfig::default());
+        monitor.record_connection().await;
+        *monitor.connection_start_time.write().await =
+            Some(Instant::now() - Duration::from_secs(61));
+
+        assert!(monitor.is_healthy().await);
+    }
+
+    #[tokio::test]
+    async fn connected_low_traffic_stream_remains_healthy_after_an_old_event() {
+        let monitor = HealthMonitor::new(HealthConfig::default());
+        monitor.record_connection().await;
+        *monitor.last_event_time.write().await = Some(SystemTime::now() - Duration::from_secs(61));
+
+        assert!(monitor.is_healthy().await);
     }
 }
