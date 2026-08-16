@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.7.2...arete-typescript-v0.8.0) (2026-08-16)
+
+
+### Features
+
+* bundle read capabilities with program SDKs ([4dbea76](https://github.com/AreteA4/arete/commit/4dbea76f21b792bcf94b80858947f20753e88d4c))
+* generate self-contained program SDKs ([835904e](https://github.com/AreteA4/arete/commit/835904eeadb9d293b54b1f363974cf2df5cf97aa))
+
 ## [0.7.2](https://github.com/AreteA4/arete/compare/arete-typescript-v0.7.1...arete-typescript-v0.7.2) (2026-08-15)
 
 

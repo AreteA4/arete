@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.8.0](https://github.com/AreteA4/arete/compare/arete-react-v0.7.2...arete-react-v0.8.0) (2026-08-16)
+
+
+### Features
+
+* generate self-contained program SDKs ([835904e](https://github.com/AreteA4/arete/commit/835904eeadb9d293b54b1f363974cf2df5cf97aa))
+
+
+### Bug Fixes
+
+* confine SDK cleanup to generated output ([4b31b56](https://github.com/AreteA4/arete/commit/4b31b5663ddaa55fcb266a7e6f7bea34b2545856))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @usearete/sdk bumped from ^0.7.2 to ^0.8.0
+
 ## [0.7.2](https://github.com/AreteA4/arete/compare/arete-react-v0.7.1...arete-react-v0.7.2) (2026-08-15)
 
 
