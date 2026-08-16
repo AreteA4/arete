@@ -1,4 +1,4 @@
-import { SQUARE_COUNT, type SquareIndex } from '../generated/ore-stack';
+import { SQUARE_COUNT, type SquareIndex } from '../generated/ore-devex';
 import { MinerIcon, SolanaIcon } from './icons';
 
 interface BlockGridProps {

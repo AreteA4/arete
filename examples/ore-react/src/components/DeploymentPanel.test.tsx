@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ManualDeploymentQuote, SquareIndex } from '../generated/ore-stack';
+import type { ManualDeploymentQuote, SquareIndex } from '../generated/ore-devex';
 import { DeploymentPanel } from './DeploymentPanel';
 
 const mocks = vi.hoisted(() => ({

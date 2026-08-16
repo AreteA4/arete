@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { summarizeStatuses, useArete } from '@usearete/react';
-import { ORE_STREAM_STACK, type SquareIndex } from '../generated/ore-stack';
+import type { SquareIndex } from '../generated/ore-devex';
+import { ORE_STREAM_STACK } from '../generated/ore-stack';
 import { BlockGrid } from './BlockGrid';
 import { ConnectionBadge } from './ConnectionBadge';
 import { DeploymentPanel } from './DeploymentPanel';

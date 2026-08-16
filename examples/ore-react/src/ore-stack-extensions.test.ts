@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  ORE_STREAM_STACK,
-  SYSTEM_PROGRAM_ADDRESS,
-  oreProgramExtensions,
-} from './generated/ore-stack';
+import { SYSTEM_PROGRAM_ADDRESS } from './generated/ore-devex';
+import { oreProgramExtensions } from './generated/ore-stack-extensions';
+import { ORE_STREAM_STACK } from './generated/ore-stack';
 
 describe('ORE stream schemas', () => {
   it('accepts production-shaped sparse patches used for live state updates', () => {

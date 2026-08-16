@@ -35,6 +35,7 @@ describe('program hook parity', () => {
     const addresses = { vault: (owner: string) => `vault:${owner}` };
     const constants = { CloseMode: { Immediate: 0 } };
     const defaults = { closeMemo: 'prepared-close' };
+    const read = { balance: jest.fn(async () => 42n) };
     const client = {
       transaction: jest.fn(async () => ({ signature: 'raw-signature', slot: 11 })),
       execute: jest.fn(async () => ({ kind: 'instruction', operationName: 'close', artifacts: { ok: true }, signatures: ['semantic-signature'], transaction: { transactionIndex: 0, transactionName: 'close', signature: 'semantic-signature', slot: 22 } })),
@@ -51,6 +52,7 @@ describe('program hook parity', () => {
         addresses,
         constants,
         defaults,
+        read,
         raw: { close: rawInstruction },
         instructions: {
           admin: {
@@ -65,6 +67,7 @@ describe('program hook parity', () => {
     expect(programs.ore.addresses).toBe(addresses);
     expect(programs.ore.constants).toBe(constants);
     expect(programs.ore.defaults).toBe(defaults);
+    expect(programs.ore.read).toBe(read);
 
     expect(programs.ore.raw.close.build).toBe(rawInstruction.build);
     await programs.ore.raw.close.execute({});

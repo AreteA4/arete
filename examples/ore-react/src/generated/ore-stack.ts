@@ -4,8 +4,6 @@ import { ORE_STREAM_STACK_CORE } from './ore-stack-core.js';
 import stackExtensions, { oreProgramExtensions } from './ore-stack-extensions.js';
 
 export * from './ore-stack-core.js';
-export * from './ore-devex.js';
-export * from './ore-stack-extensions.js';
 
 const CORE = {
   ...ORE_STREAM_STACK_CORE,

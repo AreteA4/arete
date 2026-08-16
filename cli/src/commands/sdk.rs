@@ -2935,6 +2935,22 @@ fn write_sdk_provenance_manifest_file(
     })
 }
 
+fn stale_sdk_artifact_path(output_dir: &Path, relative: &str) -> Option<PathBuf> {
+    let relative = Path::new(relative);
+    let mut current = output_dir.to_path_buf();
+    for component in relative.parent()?.components() {
+        let Component::Normal(part) = component else {
+            return None;
+        };
+        current.push(part);
+        let metadata = fs::symlink_metadata(&current).ok()?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return None;
+        }
+    }
+    Some(output_dir.join(relative))
+}
+
 fn prune_stale_sdk_artifacts(output_dir: &Path, next_artifacts: &[String]) -> Result<()> {
     let provenance_path = output_dir.join(SDK_PROVENANCE_FILE);
     let Ok(contents) = fs::read_to_string(&provenance_path) else {
@@ -2959,7 +2975,9 @@ fn prune_stale_sdk_artifacts(output_dir: &Path, next_artifacts: &[String]) -> Re
         let Ok(relative) = normalize_extension_relative_path(stale) else {
             continue;
         };
-        let path = output_dir.join(relative);
+        let Some(path) = stale_sdk_artifact_path(output_dir, &relative) else {
+            continue;
+        };
         let Ok(metadata) = fs::symlink_metadata(&path) else {
             continue;
         };
@@ -5903,6 +5921,48 @@ mod tests {
         assert!(output_dir.join("keep.ts").is_file());
         assert!(output_dir.join("user.ts").is_file());
         let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sdk_provenance_pruning_does_not_follow_intermediate_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = std::env::temp_dir();
+        let output_dir = temp_dir.join(format!("a4-sdk-pruning-symlink-{}", std::process::id()));
+        let external_dir = temp_dir.join(format!(
+            "a4-sdk-pruning-symlink-target-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&external_dir);
+        fs::create_dir_all(output_dir.join("programs")).expect("nested output directory");
+        fs::create_dir_all(&external_dir).expect("external directory");
+        let external_artifact = external_dir.join("stale.ts");
+        fs::write(&external_artifact, "external").expect("external artifact");
+        symlink(&external_dir, output_dir.join("programs/escaped"))
+            .expect("intermediate directory symlink");
+
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: format!("arete:h1:stack-manifest:sha256:{}", "55".repeat(32)),
+        };
+        let mut previous =
+            build_sdk_provenance_manifest_from_artifacts(BTreeSet::new(), "", &input_pin, None)
+                .expect("previous provenance");
+        previous.artifacts = vec!["programs/escaped/stale.ts".to_string()];
+        write_sdk_provenance_manifest_file(&output_dir, &previous)
+            .expect("previous provenance should be written");
+
+        let mut next = previous.clone();
+        next.artifacts.clear();
+        write_sdk_provenance_manifest_file(&output_dir, &next)
+            .expect("next provenance should be written");
+
+        assert!(external_artifact.is_file());
+        fs::remove_file(output_dir.join("programs/escaped")).expect("remove test symlink");
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&external_dir);
     }
 
     #[test]
