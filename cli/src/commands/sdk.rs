@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use cap_std::{ambient_authority, fs::Dir};
 use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Select};
 use regex::Regex;
@@ -63,6 +64,12 @@ enum SdkTarget {
     TypeScript,
     Rust,
     Python,
+}
+
+#[derive(Clone, Copy)]
+enum OutputExtensionsFallback {
+    Reuse,
+    Ignore,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,12 +165,14 @@ struct ProgramExtensionBinding {
 }
 
 #[derive(Debug, Clone)]
-struct HostedProgramExtension {
+struct HostedProgramModule {
     program_key: String,
     program_const_name: String,
     import_name: String,
     input_pin: ResolvedExtensionsInputPin,
-    artifact: ResolvedExtensionsArtifact,
+    extension: Option<ResolvedExtensionsArtifact>,
+    program_spec: arete_artifacts::ProgramSpecArtifact,
+    program_config: arete_interpreter::typescript::TypeScriptProgramConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +224,8 @@ struct SdkProvenanceManifestV2 {
     input: SdkProvenanceInputV2,
     generator: SdkProvenanceGeneratorV2,
     extensions: Option<SdkProvenanceExtensionsV2>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    program_extensions: BTreeMap<String, SdkProvenanceProgramExtensionV2>,
     artifacts: Vec<String>,
 }
 
@@ -235,6 +246,17 @@ struct SdkProvenanceGeneratorV2 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SdkProvenanceExtensionsV2 {
+    legacy_provenance_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sdk_extension_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sdk_output_tree_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkProvenanceProgramExtensionV2 {
+    input: SdkProvenanceInputV2,
     legacy_provenance_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sdk_extension_hash: Option<String>,
@@ -287,6 +309,13 @@ struct ResolvedExtensionsInputPin {
 }
 
 impl ResolvedStackSource {
+    fn output_extensions_fallback(&self) -> OutputExtensionsFallback {
+        match self {
+            Self::Remote(_) => OutputExtensionsFallback::Ignore,
+            Self::Local(_) | Self::LocalArtifacts(_) => OutputExtensionsFallback::Reuse,
+        }
+    }
+
     fn stack_id(&self) -> &str {
         match self {
             Self::Local(ast) => ast.stack_id.as_str(),
@@ -1711,6 +1740,7 @@ fn install_program_rust(
         hosted_artifact.as_ref(),
         &module_dir,
         &sdk_name,
+        OutputExtensionsFallback::Ignore,
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
@@ -1817,6 +1847,7 @@ fn install_program_python(
         hosted_artifact.as_ref(),
         &module_dir,
         &sdk_name,
+        OutputExtensionsFallback::Ignore,
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
@@ -2236,22 +2267,25 @@ fn resolve_explicit_extensions_artifact(
 /// Resolve the devex extensions bundle for a TypeScript SDK generation.
 ///
 /// Precedence: explicit `--extensions` path, then a hosted registry
-/// artifact, then an `extensions.json` already staged in the output
-/// directory, then bare entry-file inference from the output directory.
-/// Reusing the staged manifest keeps its input pins and helper files
-/// intact instead of silently nulling them via entry-file inference.
-/// Mirroring the Rust rung, a staged manifest declaring the other SDK
-/// language is a hard error rather than a silent skip.
+/// artifact, then (when `output_fallback` permits it) an `extensions.json`
+/// already staged in the output directory, then bare entry-file inference
+/// from the output directory. Local regeneration reuses staged bundles to
+/// keep their input pins and helper files intact. Registry installs ignore
+/// staged bundles so the hosted response, including the absence of a bundle,
+/// is authoritative. Mirroring the Rust rung, a reused staged manifest
+/// declaring the other SDK language is a hard error rather than a silent
+/// skip.
 fn resolve_extensions_artifact(
     explicit_path: Option<&Path>,
     layout: &TypeScriptLayout,
     hosted_artifact: Option<&ResolvedExtensionsArtifact>,
+    output_fallback: OutputExtensionsFallback,
 ) -> Result<Option<ResolvedExtensionsArtifact>> {
     let artifact = if let Some(path) = explicit_path {
         Some(resolve_explicit_extensions_artifact(path, layout)?)
     } else if let Some(artifact) = hosted_artifact {
         Some(artifact.clone())
-    } else {
+    } else if matches!(output_fallback, OutputExtensionsFallback::Reuse) {
         let manifest_path = layout.output_dir.join("extensions.json");
         if manifest_path.exists() {
             let manifest = read_extensions_manifest(&manifest_path)?;
@@ -2269,6 +2303,8 @@ fn resolve_extensions_artifact(
                 None
             }
         }
+    } else {
+        None
     };
 
     if let Some(ref artifact) = artifact {
@@ -2281,15 +2317,16 @@ fn resolve_extensions_artifact(
 ///
 /// Precedence: explicit `--extensions` path, then a hosted registry artifact
 /// (only when its manifest declares `language: "rust"`), then an
-/// `extensions.json` already staged in the output module directory —
-/// reusing the staged manifest keeps its input pins intact instead of
-/// silently nulling them. Unlike the TypeScript pipeline there is no
-/// final bare entry-file inference from the output directory.
+/// `extensions.json` already staged in the output module directory when
+/// `output_fallback` permits it. Registry installs ignore staged bundles so
+/// the hosted response is authoritative. Unlike the TypeScript pipeline
+/// there is no final bare entry-file inference from the output directory.
 fn resolve_rust_extensions_artifact(
     explicit_path: Option<&Path>,
     hosted_artifact: Option<&ResolvedExtensionsArtifact>,
     output_module_dir: &Path,
     base_stem: &str,
+    output_fallback: OutputExtensionsFallback,
 ) -> Result<Option<ResolvedExtensionsArtifact>> {
     let artifact = if let Some(path) = explicit_path {
         Some(resolve_explicit_rust_extensions_artifact(path, base_stem)?)
@@ -2297,7 +2334,7 @@ fn resolve_rust_extensions_artifact(
         .filter(|artifact| artifact.language.as_deref() == Some(EXTENSIONS_LANGUAGE_RUST))
     {
         Some(artifact.clone())
-    } else {
+    } else if matches!(output_fallback, OutputExtensionsFallback::Reuse) {
         let manifest_path = output_module_dir.join("extensions.json");
         if manifest_path.exists() {
             let manifest = read_extensions_manifest(&manifest_path)?;
@@ -2308,6 +2345,8 @@ fn resolve_rust_extensions_artifact(
         } else {
             None
         }
+    } else {
+        None
     };
 
     if let Some(ref artifact) = artifact {
@@ -2392,14 +2431,15 @@ fn resolve_explicit_rust_extensions_artifact(
 /// Mirror of [`resolve_rust_extensions_artifact`]: explicit `--extensions`
 /// path, then a hosted registry artifact (only when its manifest declares
 /// `language: "python"`), then an `extensions.json` already staged in the
-/// output module directory — reusing the staged manifest keeps its input
-/// pins intact instead of silently nulling them. There is no final bare
-/// entry-file inference from the output directory.
+/// output module directory when `output_fallback` permits it. Registry
+/// installs ignore staged bundles so the hosted response is authoritative.
+/// There is no final bare entry-file inference from the output directory.
 fn resolve_python_extensions_artifact(
     explicit_path: Option<&Path>,
     hosted_artifact: Option<&ResolvedExtensionsArtifact>,
     output_module_dir: &Path,
     base_stem: &str,
+    output_fallback: OutputExtensionsFallback,
 ) -> Result<Option<ResolvedExtensionsArtifact>> {
     let artifact = if let Some(path) = explicit_path {
         Some(resolve_explicit_python_extensions_artifact(
@@ -2409,7 +2449,7 @@ fn resolve_python_extensions_artifact(
         .filter(|artifact| artifact.language.as_deref() == Some(EXTENSIONS_LANGUAGE_PYTHON))
     {
         Some(artifact.clone())
-    } else {
+    } else if matches!(output_fallback, OutputExtensionsFallback::Reuse) {
         let manifest_path = output_module_dir.join("extensions.json");
         if manifest_path.exists() {
             let manifest = read_extensions_manifest(&manifest_path)?;
@@ -2420,6 +2460,8 @@ fn resolve_python_extensions_artifact(
         } else {
             None
         }
+    } else {
+        None
     };
 
     if let Some(ref artifact) = artifact {
@@ -2702,7 +2744,16 @@ fn build_sdk_provenance_manifest(
     input_pin: &ResolvedExtensionsInputPin,
     extensions: Option<&ResolvedExtensionsArtifact>,
 ) -> Result<SdkProvenanceManifestV2> {
-    build_sdk_provenance_manifest_from_artifacts(
+    build_sdk_provenance_manifest_with_program_extensions(layout, input_pin, extensions, &[])
+}
+
+fn build_sdk_provenance_manifest_with_program_extensions(
+    layout: &TypeScriptLayout,
+    input_pin: &ResolvedExtensionsInputPin,
+    extensions: Option<&ResolvedExtensionsArtifact>,
+    program_modules: &[HostedProgramModule],
+) -> Result<SdkProvenanceManifestV2> {
+    let mut manifest = build_sdk_provenance_manifest_from_artifacts(
         BTreeSet::from([
             generated_artifact_name(&layout.core_path)?,
             generated_artifact_name(&layout.entry_path)?,
@@ -2710,7 +2761,41 @@ fn build_sdk_provenance_manifest(
         "",
         input_pin,
         extensions,
-    )
+    )?;
+    for program in program_modules {
+        let relative_dir = hosted_program_directory(program);
+        let prefix = format!("{}/", relative_dir.to_string_lossy());
+        manifest
+            .artifacts
+            .push(format!("{prefix}{HOSTED_PROGRAM_ENTRY}"));
+        for path in hosted_program_core_paths(program)? {
+            manifest.artifacts.push(format!("{prefix}{path}"));
+        }
+        if let Some(extension) = &program.extension {
+            manifest.artifacts.push(format!("{prefix}extensions.json"));
+            for file in &extension.files {
+                manifest.artifacts.push(format!(
+                    "{prefix}{}",
+                    normalize_extension_relative_path(&file.path)?
+                ));
+            }
+            manifest.program_extensions.insert(
+                program.program_key.clone(),
+                SdkProvenanceProgramExtensionV2 {
+                    input: SdkProvenanceInputV2 {
+                        kind: program.input_pin.kind,
+                        hash: program.input_pin.hash.clone(),
+                    },
+                    legacy_provenance_sha256: extensions_artifact_hash(extension),
+                    sdk_extension_hash: extension.sdk_extension_hash.clone(),
+                    sdk_output_tree_hash: extension.sdk_output_tree_hash.clone(),
+                },
+            );
+        }
+    }
+    manifest.artifacts.sort();
+    manifest.artifacts.dedup();
+    Ok(manifest)
 }
 
 /// Shared provenance builder for TypeScript and Rust outputs. `generated`
@@ -2752,6 +2837,7 @@ fn build_sdk_provenance_manifest_from_artifacts(
             sdk_extension_hash: artifact.sdk_extension_hash.clone(),
             sdk_output_tree_hash: artifact.sdk_output_tree_hash.clone(),
         }),
+        program_extensions: BTreeMap::new(),
         artifacts: artifacts.into_iter().collect(),
     })
 }
@@ -2796,6 +2882,21 @@ fn write_sdk_provenance_manifest(
     write_sdk_provenance_manifest_file(&layout.output_dir, &manifest)
 }
 
+fn write_sdk_provenance_manifest_with_program_extensions(
+    layout: &TypeScriptLayout,
+    input_pin: &ResolvedExtensionsInputPin,
+    extensions: Option<&ResolvedExtensionsArtifact>,
+    program_modules: &[HostedProgramModule],
+) -> Result<()> {
+    let manifest = build_sdk_provenance_manifest_with_program_extensions(
+        layout,
+        input_pin,
+        extensions,
+        program_modules,
+    )?;
+    write_sdk_provenance_manifest_file(&layout.output_dir, &manifest)
+}
+
 /// Write `sdk-provenance.json` for a Rust or Python output directory.
 /// `generated` lists the generated file names relative to `output_dir` (for
 /// example `mod.rs` in Rust module mode, `src/lib.rs` in crate mode, or
@@ -2820,18 +2921,89 @@ fn write_sdk_provenance_manifest_file(
     output_dir: &Path,
     manifest: &SdkProvenanceManifestV2,
 ) -> Result<()> {
+    let output = Dir::open_ambient_dir(output_dir, ambient_authority()).with_context(|| {
+        format!(
+            "Failed to open SDK output directory {}",
+            output_dir.display()
+        )
+    })?;
+    prune_stale_sdk_artifacts(&output, output_dir, &manifest.artifacts)?;
     let contents = format!(
         "{}\n",
         serde_json::to_string_pretty(manifest)
             .context("Failed to serialize SDK provenance manifest")?
     );
     let path = output_dir.join(SDK_PROVENANCE_FILE);
-    fs::write(&path, contents).with_context(|| {
+    output
+        .write(SDK_PROVENANCE_FILE, contents)
+        .with_context(|| {
+            format!(
+                "Failed to write SDK provenance manifest to {}",
+                path.display()
+            )
+        })
+}
+
+fn is_removable_stale_sdk_artifact(output: &Dir, relative: &Path) -> bool {
+    output
+        .symlink_metadata(relative)
+        .is_ok_and(|metadata| metadata.is_file() || metadata.file_type().is_symlink())
+}
+
+fn remove_stale_sdk_artifact(output: &Dir, output_dir: &Path, relative: &Path) -> Result<()> {
+    output.remove_file(relative).with_context(|| {
         format!(
-            "Failed to write SDK provenance manifest to {}",
-            path.display()
+            "Failed to remove stale generated artifact {}",
+            output_dir.join(relative).display()
         )
     })
+}
+
+fn prune_stale_sdk_artifacts(
+    output: &Dir,
+    output_dir: &Path,
+    next_artifacts: &[String],
+) -> Result<()> {
+    let Ok(contents) = output.read_to_string(SDK_PROVENANCE_FILE) else {
+        return Ok(());
+    };
+    let Ok(previous) = parse_sdk_provenance_manifest(&contents) else {
+        return Ok(());
+    };
+    let previous_artifacts = match &previous {
+        SdkProvenanceManifest::V1(manifest) => &manifest.artifacts,
+        SdkProvenanceManifest::V2(manifest) => &manifest.artifacts,
+    };
+    let next = next_artifacts
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+
+    for stale in previous_artifacts {
+        if next.contains(stale.as_str()) {
+            continue;
+        }
+        let Ok(relative) = normalize_extension_relative_path(stale) else {
+            continue;
+        };
+        let relative = Path::new(&relative);
+        if !is_removable_stale_sdk_artifact(output, relative) {
+            continue;
+        }
+        remove_stale_sdk_artifact(output, output_dir, relative)?;
+
+        let mut parent = relative.parent();
+        while let Some(directory) = parent {
+            if directory.as_os_str().is_empty() {
+                break;
+            }
+            if output.remove_dir(directory).is_err() {
+                break;
+            }
+            parent = directory.parent();
+        }
+    }
+    Ok(())
 }
 
 fn stack_input_pin(
@@ -3020,126 +3192,232 @@ fn program_spec_artifact_from_registry(
     Ok(artifact)
 }
 
-fn hosted_program_extensions(
+fn hosted_program_modules(
     source: &ResolvedStackSource,
     stack_spec: &arete_interpreter::ast::SerializableStackSpec,
-) -> Result<Vec<HostedProgramExtension>> {
+) -> Result<Vec<HostedProgramModule>> {
     let ResolvedStackSource::Remote(remote) = source else {
         return Ok(Vec::new());
     };
     if remote.programs.len() != stack_spec.idls.len() {
         return Err(anyhow::anyhow!(
-            "Hosted program extension descriptor count mismatch: expected {}, received {}",
+            "Hosted program descriptor count mismatch: expected {}, received {}",
             stack_spec.idls.len(),
             remote.programs.len()
         ));
     }
 
-    remote
-        .programs
-        .iter()
-        .zip(&stack_spec.idls)
-        .filter_map(|(install, idl)| {
-            install.definition.extensions.as_ref().map(|artifact| {
-                let program_key = to_camel_case(&idl.name);
-                Ok(HostedProgramExtension {
-                    import_name: format!("hosted{}ProgramExtensions", to_pascal_case(&program_key)),
-                    program_const_name: to_screaming_snake_case(&idl.name),
-                    program_key,
-                    input_pin: ResolvedExtensionsInputPin {
-                        kind: ExtensionsInputKind::ProgramSpec,
-                        hash: install.definition.program_spec_hash.clone(),
-                    },
-                    artifact: resolved_extensions_artifact_from_registry(artifact)?,
-                })
-            })
-        })
-        .collect()
-}
-
-fn stage_hosted_program_extensions(
-    extensions: &[HostedProgramExtension],
-    layout: &TypeScriptLayout,
-    stack_name: &str,
-    program_only: bool,
-) -> Result<()> {
-    for extension in extensions {
-        stage_extensions_artifact_with_manifest(
-            &extension.artifact,
-            &layout.output_dir,
-            &extension.input_pin,
-            &format!("{}-extensions.json", extension.program_key),
-        )?;
-        stage_program_extension_core_proxies(extension, layout, stack_name, program_only)?;
+    let mut hosted = Vec::new();
+    let mut program_keys = BTreeSet::new();
+    for install in &remote.programs {
+        let index = stack_spec
+            .program_ids
+            .iter()
+            .position(|program_id| program_id == &install.definition.program_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Hosted program '{}' is not present in the generated stack",
+                    install.install_name
+                )
+            })?;
+        let idl = &stack_spec.idls[index];
+        let program_spec_hash = stack_spec.program_specs[index]
+            .hash()
+            .map_err(anyhow::Error::msg)?
+            .to_string();
+        if program_spec_hash != install.definition.program_spec_hash {
+            anyhow::bail!(
+                "Hosted program '{}' does not match the stack ProgramSpec",
+                install.install_name
+            );
+        }
+        let program_key = to_camel_case(&idl.name);
+        if !program_keys.insert(program_key.clone()) {
+            anyhow::bail!(
+                "Hosted programs use duplicate generated key '{}'",
+                program_key
+            );
+        }
+        hosted.push(HostedProgramModule {
+            import_name: format!("hosted{}Program", to_pascal_case(&program_key)),
+            program_const_name: to_screaming_snake_case(&idl.name),
+            program_key,
+            input_pin: ResolvedExtensionsInputPin {
+                kind: ExtensionsInputKind::ProgramSpec,
+                hash: install.definition.program_spec_hash.clone(),
+            },
+            extension: install
+                .definition
+                .extensions
+                .as_ref()
+                .map(resolved_extensions_artifact_from_registry)
+                .transpose()?,
+            program_spec: program_spec_artifact_from_registry(install)?,
+            program_config: typescript_program_config_from_registry(install)?,
+        });
     }
-    Ok(())
+    Ok(hosted)
 }
 
-fn stage_program_extension_core_proxies(
-    extension: &HostedProgramExtension,
-    layout: &TypeScriptLayout,
-    stack_name: &str,
-    program_only: bool,
-) -> Result<()> {
+const HOSTED_PROGRAM_ENTRY: &str = "__arete-program.ts";
+
+fn hosted_program_directory(program: &HostedProgramModule) -> PathBuf {
+    PathBuf::from("programs").join(to_kebab_case(&program.program_key))
+}
+
+fn hosted_program_core_name(program: &HostedProgramModule) -> String {
+    format!("{}-core.ts", to_kebab_case(&program.program_key))
+}
+
+fn hosted_program_entry_import(program: &HostedProgramModule) -> String {
+    format!(
+        "./{}/{}",
+        hosted_program_directory(program).to_string_lossy(),
+        HOSTED_PROGRAM_ENTRY.trim_end_matches(".ts")
+    )
+}
+
+fn hosted_program_core_paths(program: &HostedProgramModule) -> Result<BTreeSet<String>> {
     let import_regex =
         Regex::new(r#"from\s+['\"]\./([^'\"]*?(?:-core|core))(?:\.(?:js|ts))?['\"]"#)
             .expect("program core import regex should compile");
-    let mut proxy_paths = BTreeSet::new();
-    for file in &extension.artifact.files {
-        let source_parent = Path::new(&file.path).parent().unwrap_or(Path::new(""));
-        for captures in import_regex.captures_iter(&file.contents) {
-            let relative = source_parent.join(format!("{}.ts", &captures[1]));
-            proxy_paths.insert(normalize_extension_relative_path(
-                &relative.to_string_lossy(),
-            )?);
+    let mut core_paths = BTreeSet::from([hosted_program_core_name(program)]);
+    if let Some(extension) = &program.extension {
+        for file in &extension.files {
+            let source_parent = Path::new(&file.path).parent().unwrap_or(Path::new(""));
+            for captures in import_regex.captures_iter(&file.contents) {
+                let relative = source_parent.join(format!("{}.ts", &captures[1]));
+                core_paths.insert(normalize_extension_relative_path(
+                    &relative.to_string_lossy(),
+                )?);
+            }
         }
     }
-    let actual_core_stem = layout
-        .core_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Invalid generated core path: {}",
-                layout.core_path.display()
+    Ok(core_paths)
+}
+
+fn render_hosted_program_entry(program: &HostedProgramModule) -> String {
+    let core_stem = hosted_program_core_name(program)
+        .trim_end_matches(".ts")
+        .to_string();
+    let export_name = format!("{}_PROGRAM", program.program_const_name);
+    let read_const_name = format!("{}_READ", program.program_const_name);
+    if let Some(extension) = &program.extension {
+        let extension_entry = extension.entry.trim_end_matches(".ts").to_string();
+        return finish_typescript_module(format!(
+            r#"import {{ extendProgram, withProgramRead }} from '@usearete/sdk';
+
+import {{ {program_const} as BASE_PROGRAM, {read_const_name} as BASE_PROGRAM_READ }} from './{core_stem}.js';
+import programExtensions from './{extension_entry}.js';
+
+export * from './{core_stem}.js';
+
+export const {export_name} = withProgramRead(
+  extendProgram(BASE_PROGRAM, programExtensions),
+  BASE_PROGRAM_READ,
+);
+
+export default {export_name};"#,
+            program_const = program.program_const_name,
+        ));
+    }
+    finish_typescript_module(format!(
+        r#"import {{ withProgramRead }} from '@usearete/sdk';
+
+import {{ {program_const} as BASE_PROGRAM, {read_const_name} as BASE_PROGRAM_READ }} from './{core_stem}.js';
+
+export * from './{core_stem}.js';
+
+export const {export_name} = withProgramRead(BASE_PROGRAM, BASE_PROGRAM_READ);
+
+export default {export_name};"#,
+        program_const = program.program_const_name,
+    ))
+}
+
+fn stage_hosted_program_modules(
+    programs: &[HostedProgramModule],
+    layout: &TypeScriptLayout,
+    package_name: &str,
+) -> Result<()> {
+    for program in programs {
+        let relative_dir = hosted_program_directory(program);
+        let output_dir = layout.output_dir.join(&relative_dir);
+        fs::create_dir_all(&output_dir).with_context(|| {
+            format!(
+                "Failed to create hosted program directory {}",
+                output_dir.display()
             )
         })?;
-
-    for proxy_relative in proxy_paths {
-        let proxy_path = layout.output_dir.join(&proxy_relative);
-        if proxy_path == layout.core_path {
-            continue;
+        let core_paths = hosted_program_core_paths(program)?;
+        let mut reserved = core_paths
+            .iter()
+            .cloned()
+            .chain(std::iter::once(HOSTED_PROGRAM_ENTRY.to_string()))
+            .collect::<BTreeSet<_>>();
+        if let Some(extension) = &program.extension {
+            reserved.insert("extensions.json".to_string());
+            let collision = extension.files.iter().find_map(|file| {
+                normalize_extension_relative_path(&file.path)
+                    .ok()
+                    .filter(|path| reserved.contains(path))
+                    .map(|_| file.path.as_str())
+            });
+            if let Some(path) = collision {
+                anyhow::bail!(
+                    "Hosted program extension '{}' collides with generated program artifact '{}'",
+                    program.program_key,
+                    path
+                );
+            }
+            stage_extensions_artifact_with_manifest(
+                extension,
+                &output_dir,
+                &program.input_pin,
+                "extensions.json",
+            )?;
         }
-        if proxy_path.exists() {
-            continue;
-        }
-        if let Some(parent) = proxy_path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
+        let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
+            to_pascal_case(&program.program_key),
+            std::slice::from_ref(&program.program_spec),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let output = arete_interpreter::typescript::compile_program_modules(
+            stack_spec,
+            Some(arete_interpreter::typescript::TypeScriptStackConfig {
+                package_name: package_name.to_string(),
+                generate_helpers: false,
+                export_const_name: "PROGRAMS".to_string(),
+                websocket_url: None,
+                http_url: None,
+                extension_import: None,
+                programs: Some(vec![program.program_config.clone()]),
+            }),
+        )
+        .map_err(|error| anyhow::anyhow!("Failed to compile hosted program SDK: {error}"))?;
+        let core = output.full_file();
+        for core_relative in core_paths {
+            let core_path = output_dir.join(&core_relative);
+            if let Some(parent) = core_path.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "Failed to create hosted program core directory {}",
+                        parent.display()
+                    )
+                })?;
+            }
+            fs::write(&core_path, &core).with_context(|| {
                 format!(
-                    "Failed to create hosted program core proxy directory {}",
-                    parent.display()
+                    "Failed to write hosted program core {}",
+                    core_path.display()
                 )
             })?;
         }
-        let parent_depth = Path::new(&proxy_relative)
-            .parent()
-            .map(|parent| parent.components().count())
-            .unwrap_or(0);
-        let core_import = format!("{}{}.js", "../".repeat(parent_depth), actual_core_stem);
-        let contents = if program_only {
-            format!("export * from './{core_import}';\n")
-        } else {
-            let stack_core_export = format!("{}_STACK_CORE", to_screaming_snake_case(stack_name));
+        let entry_path = output_dir.join(HOSTED_PROGRAM_ENTRY);
+        fs::write(&entry_path, render_hosted_program_entry(program)).with_context(|| {
             format!(
-                "export * from './{core_import}';\nimport {{ {stack_core_export} }} from './{core_import}';\n\nexport const {program_const} = {stack_core_export}.programs.{program_key};\n",
-                program_const = extension.program_const_name,
-                program_key = extension.program_key,
-            )
-        };
-        fs::write(&proxy_path, contents).with_context(|| {
-            format!(
-                "Failed to write hosted program core proxy {}",
-                proxy_path.display()
+                "Failed to write hosted program entry {}",
+                entry_path.display()
             )
         })?;
     }
@@ -3340,36 +3618,38 @@ fn render_typescript_stack_entry(
     layout: &TypeScriptLayout,
     stack_name: &str,
     extension_entry: Option<&str>,
-    extension_files: &[&str],
+    _extension_files: &[&str],
     program_extension_bindings: &[ProgramExtensionBinding],
-    hosted_program_extensions: &[HostedProgramExtension],
+    hosted_program_modules: &[HostedProgramModule],
 ) -> String {
     let export_name = format!("{}_STACK", to_screaming_snake_case(stack_name));
     let core_export_name = format!("{}_CORE", export_name);
     let type_name = format!("{}Stack", stack_name);
     let core_import = format!("./{}-core.js", layout.base_name);
-    let extension_exports = extension_files
-        .iter()
-        .filter_map(|path| path.strip_suffix(".ts"))
-        .map(|path| format!("export * from './{path}.js';"))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if !hosted_program_extensions.is_empty() {
-        let sdk_import = if extension_entry.is_some() {
-            "import { extendPrograms, extendStack } from '@usearete/sdk';"
+    if !hosted_program_modules.is_empty() {
+        let mut sdk_imports = Vec::new();
+        if !program_extension_bindings.is_empty() {
+            sdk_imports.push("extendPrograms");
+        }
+        if extension_entry.is_some() {
+            sdk_imports.push("extendStack");
+        }
+        let sdk_import = if sdk_imports.is_empty() {
+            String::new()
         } else {
-            "import { extendPrograms } from '@usearete/sdk';"
+            format!(
+                "import {{ {} }} from '@usearete/sdk';",
+                sdk_imports.join(", ")
+            )
         };
-        let hosted_imports = hosted_program_extensions
+        let hosted_imports = hosted_program_modules
             .iter()
             .map(|extension| {
-                let entry = extension
-                    .artifact
-                    .entry
-                    .strip_suffix(".ts")
-                    .unwrap_or(&extension.artifact.entry);
-                format!("import {} from './{}.js';", extension.import_name, entry)
+                format!(
+                    "import {} from '{}.js';",
+                    extension.import_name,
+                    hosted_program_entry_import(extension)
+                )
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -3377,7 +3657,7 @@ fn render_typescript_stack_entry(
             .iter()
             .map(|binding| format!("    {}: {},", binding.program_key, binding.export_name))
             .collect::<Vec<_>>();
-        let hosted_program_lines = hosted_program_extensions
+        let hosted_program_lines = hosted_program_modules
             .iter()
             .map(|extension| format!("    {}: {},", extension.program_key, extension.import_name))
             .collect::<Vec<_>>();
@@ -3424,11 +3704,11 @@ import {{ {core_export_name} }} from '{core_import}';
 {hosted_imports}
 
 export * from '{core_import}';
-{extension_exports}
 
-const HOSTED_PROGRAMS = extendPrograms({core_export_name}.programs, {{
+const HOSTED_PROGRAMS = {{
+  ...{core_export_name}.programs,
 {hosted_program_lines}
-}});{stack_program_layer}
+}} as const;{stack_program_layer}
 
 const CORE = {{
   ...{core_export_name},
@@ -3457,7 +3737,6 @@ import {{ {core_export_name} }} from '{core_import}';
 import stackExtensions from './{extension_runtime_import}';
 
 export * from '{core_import}';
-{extension_exports}
 
 export const {export_name} = extendStack(
   {core_export_name},
@@ -3469,7 +3748,6 @@ export type {type_name} = typeof {export_name};
 export default {export_name};"#,
                 core_export_name = core_export_name,
                 core_import = core_import,
-                extension_exports = extension_exports,
                 extension_runtime_import = extension_runtime_import,
                 export_name = export_name,
                 type_name = type_name,
@@ -3493,7 +3771,6 @@ import {{ {core_export_name} }} from '{core_import}';
 import stackExtensions, {{ {named_imports} }} from './{extension_runtime_import}';
 
 export * from '{core_import}';
-{extension_exports}
 
 const CORE = {{
   ...{core_export_name},
@@ -3512,7 +3789,6 @@ export type {type_name} = typeof {export_name};
 export default {export_name};"#,
                 core_export_name = core_export_name,
                 core_import = core_import,
-                extension_exports = extension_exports,
                 named_imports = named_imports,
                 extension_runtime_import = extension_runtime_import,
                 program_extension_lines = program_extension_lines,
@@ -3580,16 +3856,18 @@ fn render_typescript_program_entry(
             .unwrap_or(extension_entry);
         let extension_runtime_import = format!("{}.js", extension_import);
         finish_typescript_module(format!(
-            r#"import {{ extendProgram }} from '@usearete/sdk';
+            r#"import {{ extendProgram, withProgramRead }} from '@usearete/sdk';
 
 import {{ {core_const_name} as {core_import_name}, {core_read_const_name} as {core_read_import_name} }} from '{core_import}';
 import programExtensions from './{extension_runtime_import}';
 
 export * from '{core_import}';
 export {{ {core_const_name} as {core_import_name} }} from '{core_import}';
-export * from './{extension_runtime_import}';
 
-export const {export_name} = extendProgram({core_import_name}, programExtensions);
+export const {export_name} = withProgramRead(
+  extendProgram({core_import_name}, programExtensions),
+  {core_read_import_name},
+);
 export const {read_export_name} = {core_read_import_name};
 
 export type {type_name} = typeof {export_name};
@@ -3607,12 +3885,14 @@ export default {export_name};"#,
         ))
     } else {
         finish_typescript_module(format!(
-            r#"import {{ {core_const_name} as {core_import_name}, {core_read_const_name} as {core_read_import_name} }} from '{core_import}';
+            r#"import {{ withProgramRead }} from '@usearete/sdk';
+
+import {{ {core_const_name} as {core_import_name}, {core_read_const_name} as {core_read_import_name} }} from '{core_import}';
 
 export * from '{core_import}';
 export {{ {core_const_name} as {core_import_name} }} from '{core_import}';
 
-export const {export_name} = {core_import_name};
+export const {export_name} = withProgramRead({core_import_name}, {core_read_import_name});
 export const {read_export_name} = {core_read_import_name};
 
 export type {type_name} = typeof {export_name};
@@ -3634,57 +3914,58 @@ fn render_typescript_program_collection_entry(
     layout: &TypeScriptLayout,
     stack_name: &str,
     extension_entry: Option<&str>,
-    hosted_program_extensions: &[HostedProgramExtension],
+    hosted_program_modules: &[HostedProgramModule],
 ) -> String {
     let export_name = format!("{}_PROGRAMS", to_screaming_snake_case(stack_name));
     let core_export_name = format!("{}_CORE", export_name);
     let type_name = format!("{}Programs", stack_name);
     let core_import = format!("./{}-core.js", layout.base_name);
 
-    if !hosted_program_extensions.is_empty() {
-        let hosted_imports = hosted_program_extensions
+    if !hosted_program_modules.is_empty() {
+        let sdk_import = if extension_entry.is_some() {
+            "import { extendPrograms } from '@usearete/sdk';\n\n"
+        } else {
+            ""
+        };
+        let hosted_imports = hosted_program_modules
             .iter()
             .map(|extension| {
-                let entry = extension
-                    .artifact
-                    .entry
-                    .strip_suffix(".ts")
-                    .unwrap_or(&extension.artifact.entry);
-                format!("import {} from './{}.js';", extension.import_name, entry)
+                format!(
+                    "import {} from '{}.js';",
+                    extension.import_name,
+                    hosted_program_entry_import(extension)
+                )
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let hosted_lines = hosted_program_extensions
+        let hosted_lines = hosted_program_modules
             .iter()
             .map(|extension| format!("  {}: {},", extension.program_key, extension.import_name))
             .collect::<Vec<_>>()
             .join("\n");
-        let (explicit_import, base_expression, extension_export) = extension_entry
+        let (explicit_import, base_expression) = extension_entry
             .map(|entry| entry.strip_suffix(".ts").unwrap_or(entry))
             .map(|entry| {
                 (
                     format!("import programExtensions from './{entry}.js';"),
                     format!("extendPrograms({core_export_name}, programExtensions)"),
-                    format!("export * from './{entry}.js';"),
                 )
             })
-            .unwrap_or_else(|| (String::new(), core_export_name.clone(), String::new()));
+            .unwrap_or_else(|| (String::new(), core_export_name.clone()));
 
         return finish_typescript_module(format!(
-            r#"import {{ extendPrograms }} from '@usearete/sdk';
-
-import {{ {export_name} as {core_export_name} }} from '{core_import}';
+            r#"{sdk_import}import {{ {export_name} as {core_export_name} }} from '{core_import}';
 {explicit_import}
 {hosted_imports}
 
 export * from '{core_import}';
-{extension_export}
 
 const BASE_PROGRAMS = {base_expression};
 
-export const {export_name} = extendPrograms(BASE_PROGRAMS, {{
+export const {export_name} = {{
+  ...BASE_PROGRAMS,
 {hosted_lines}
-}});
+}} as const;
 
 export type {type_name} = typeof {export_name};
 
@@ -3704,7 +3985,6 @@ import {{ {export_name} as {core_export_name} }} from '{core_import}';
 import programExtensions from './{extension_runtime_import}';
 
 export * from '{core_import}';
-export * from './{extension_runtime_import}';
 
 export const {export_name} = extendPrograms({core_export_name}, programExtensions);
 
@@ -3885,8 +4165,12 @@ fn write_typescript_program_sdk(
         )
     })?;
 
-    let artifact =
-        resolve_extensions_artifact(extensions.path, &layout, extensions.hosted_artifact)?;
+    let artifact = resolve_extensions_artifact(
+        extensions.path,
+        &layout,
+        extensions.hosted_artifact,
+        OutputExtensionsFallback::Ignore,
+    )?;
     if let Some(ref artifact) = artifact {
         stage_extensions_artifact(artifact, &layout.output_dir, extensions.input_pin)?;
     }
@@ -3977,7 +4261,7 @@ fn generate_typescript_sdk_from_source(
     }
     let stack_spec = source.load_stack_spec(!program_only)?;
     let input_pin = stack_input_pin(source, &stack_spec)?;
-    let hosted_program_extensions = hosted_program_extensions(source, &stack_spec)?;
+    let hosted_program_modules = hosted_program_modules(source, &stack_spec)?;
 
     if program_only {
         let stack_name = stack_spec.stack_name.clone();
@@ -4033,17 +4317,22 @@ fn generate_typescript_sdk_from_source(
             )
         })?;
 
-        let artifact = resolve_extensions_artifact(extensions_path, &layout, None)?;
+        let artifact = resolve_extensions_artifact(
+            extensions_path,
+            &layout,
+            None,
+            source.output_extensions_fallback(),
+        )?;
         if let Some(ref artifact) = artifact {
             stage_extensions_artifact(artifact, &layout.output_dir, &input_pin)?;
         }
-        stage_hosted_program_extensions(&hosted_program_extensions, &layout, &stack_name, true)?;
+        stage_hosted_program_modules(&hosted_program_modules, &layout, package_name)?;
 
         let entry_contents = render_typescript_program_collection_entry(
             &layout,
             &stack_name,
             artifact.as_ref().map(|artifact| artifact.entry.as_str()),
-            &hosted_program_extensions,
+            &hosted_program_modules,
         );
 
         fs::write(&layout.entry_path, entry_contents).with_context(|| {
@@ -4052,7 +4341,12 @@ fn generate_typescript_sdk_from_source(
                 layout.entry_path.display()
             )
         })?;
-        write_sdk_provenance_manifest(&layout, &input_pin, artifact.as_ref())?;
+        write_sdk_provenance_manifest_with_program_extensions(
+            &layout,
+            &input_pin,
+            artifact.as_ref(),
+            &hosted_program_modules,
+        )?;
     } else {
         let entity_count = stack_spec.entities.len();
         let total_views: usize = stack_spec.entities.iter().map(|e| e.views.len()).sum();
@@ -4132,11 +4426,12 @@ fn generate_typescript_sdk_from_source(
             } else {
                 source.hosted_extensions()
             },
+            source.output_extensions_fallback(),
         )?;
         if let Some(ref artifact) = artifact {
             stage_extensions_artifact(artifact, &layout.output_dir, &input_pin)?;
         }
-        stage_hosted_program_extensions(&hosted_program_extensions, &layout, &stack_name, false)?;
+        stage_hosted_program_modules(&hosted_program_modules, &layout, package_name)?;
         let extension_files = artifact
             .as_ref()
             .map(|artifact| {
@@ -4157,7 +4452,7 @@ fn generate_typescript_sdk_from_source(
                 .as_ref()
                 .map(|artifact| artifact.program_extension_bindings.as_slice())
                 .unwrap_or(&[]),
-            &hosted_program_extensions,
+            &hosted_program_modules,
         );
         fs::write(&layout.entry_path, entry_contents).with_context(|| {
             format!(
@@ -4165,7 +4460,12 @@ fn generate_typescript_sdk_from_source(
                 layout.entry_path.display()
             )
         })?;
-        write_sdk_provenance_manifest(&layout, &input_pin, artifact.as_ref())?;
+        write_sdk_provenance_manifest_with_program_extensions(
+            &layout,
+            &input_pin,
+            artifact.as_ref(),
+            &hosted_program_modules,
+        )?;
     }
 
     Ok(())
@@ -4555,6 +4855,7 @@ fn generate_rust_stack_sdk(
         source.hosted_extensions(),
         &module_dir,
         source.sdk_name(),
+        source.output_extensions_fallback(),
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
@@ -4905,6 +5206,7 @@ fn generate_python_stack_sdk(
         source.hosted_extensions(),
         &module_dir,
         source.sdk_name(),
+        source.output_extensions_fallback(),
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
         Some(artifact) => {
@@ -5454,6 +5756,54 @@ mod tests {
         }
     }
 
+    fn test_hosted_program_module_for(
+        program_key: &str,
+        program_name: &str,
+        address: &str,
+        extension: Option<ResolvedExtensionsArtifact>,
+    ) -> HostedProgramModule {
+        let source = format!(
+            r#"{{
+              "address":"{address}",
+              "metadata":{{"name":"{program_name}","version":"1.0.0","spec":"0.1.0"}},
+              "instructions":[],"accounts":[],"types":[],"events":[],"errors":[]
+            }}"#
+        );
+        let identity =
+            arete_interpreter::program_sdk::build_oss_program_identity_v1_from_idl_bytes(
+                source.as_bytes(),
+                None,
+            )
+            .expect("test program identity");
+        let program_spec = arete_artifacts::ProgramSpecArtifact::new(identity.program_spec.clone())
+            .expect("test ProgramSpec artifact");
+        let input_hash = extension
+            .as_ref()
+            .and_then(|artifact| artifact.input_hash.clone())
+            .unwrap_or_else(|| program_spec.artifact_hash.to_string());
+        HostedProgramModule {
+            program_key: program_key.to_string(),
+            program_const_name: to_screaming_snake_case(program_name),
+            import_name: format!("hosted{}Program", to_pascal_case(program_key)),
+            input_pin: ResolvedExtensionsInputPin {
+                kind: ExtensionsInputKind::ProgramSpec,
+                hash: input_hash,
+            },
+            extension,
+            program_spec,
+            program_config: arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity),
+        }
+    }
+
+    fn test_hosted_program_module(artifact: ResolvedExtensionsArtifact) -> HostedProgramModule {
+        test_hosted_program_module_for(
+            "splToken",
+            "token",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            Some(artifact),
+        )
+    }
+
     #[test]
     fn sdk_provenance_is_deterministic_and_contains_only_relative_artifact_names() {
         let input_pin = ResolvedExtensionsInputPin {
@@ -5538,6 +5888,131 @@ mod tests {
         assert_eq!(manifest.extensions, None);
         assert_eq!(manifest.artifacts, vec!["demo-core.ts", "demo.ts"]);
         assert!(!first.contains(&output_dir.display().to_string()));
+    }
+
+    #[test]
+    fn sdk_provenance_prunes_only_previously_owned_stale_artifacts() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-sdk-pruning-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        fs::create_dir_all(output_dir.join("programs/old")).expect("nested output directory");
+        fs::write(output_dir.join("programs/old/stale.ts"), "stale")
+            .expect("stale generated artifact");
+        fs::write(output_dir.join("keep.ts"), "keep").expect("retained generated artifact");
+        fs::write(output_dir.join("user.ts"), "user").expect("unowned user artifact");
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: format!("arete:h1:stack-manifest:sha256:{}", "44".repeat(32)),
+        };
+        let mut previous =
+            build_sdk_provenance_manifest_from_artifacts(BTreeSet::new(), "", &input_pin, None)
+                .expect("previous provenance");
+        previous.artifacts = vec!["keep.ts".to_string(), "programs/old/stale.ts".to_string()];
+        write_sdk_provenance_manifest_file(&output_dir, &previous)
+            .expect("previous provenance should be written");
+
+        let mut next = previous.clone();
+        next.artifacts = vec!["keep.ts".to_string(), "new.ts".to_string()];
+        write_sdk_provenance_manifest_file(&output_dir, &next)
+            .expect("next provenance should be written");
+
+        assert!(!output_dir.join("programs/old/stale.ts").exists());
+        assert!(!output_dir.join("programs/old").exists());
+        assert!(output_dir.join("keep.ts").is_file());
+        assert!(output_dir.join("user.ts").is_file());
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sdk_provenance_pruning_does_not_follow_intermediate_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = std::env::temp_dir();
+        let output_dir = temp_dir.join(format!("a4-sdk-pruning-symlink-{}", std::process::id()));
+        let external_dir = temp_dir.join(format!(
+            "a4-sdk-pruning-symlink-target-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&external_dir);
+        fs::create_dir_all(output_dir.join("programs")).expect("nested output directory");
+        fs::create_dir_all(&external_dir).expect("external directory");
+        let external_artifact = external_dir.join("stale.ts");
+        fs::write(&external_artifact, "external").expect("external artifact");
+        symlink(&external_dir, output_dir.join("programs/escaped"))
+            .expect("intermediate directory symlink");
+
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: format!("arete:h1:stack-manifest:sha256:{}", "55".repeat(32)),
+        };
+        let mut previous =
+            build_sdk_provenance_manifest_from_artifacts(BTreeSet::new(), "", &input_pin, None)
+                .expect("previous provenance");
+        previous.artifacts = vec!["programs/escaped/stale.ts".to_string()];
+        write_sdk_provenance_manifest_file(&output_dir, &previous)
+            .expect("previous provenance should be written");
+
+        let mut next = previous.clone();
+        next.artifacts.clear();
+        write_sdk_provenance_manifest_file(&output_dir, &next)
+            .expect("next provenance should be written");
+
+        assert!(external_artifact.is_file());
+        fs::remove_file(output_dir.join("programs/escaped")).expect("remove test symlink");
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&external_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sdk_provenance_removal_resists_symlink_swap_after_validation() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = std::env::temp_dir();
+        let output_dir = temp_dir.join(format!(
+            "a4-sdk-pruning-symlink-swap-{}",
+            std::process::id()
+        ));
+        let external_dir = temp_dir.join(format!(
+            "a4-sdk-pruning-symlink-swap-target-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&external_dir);
+        fs::create_dir_all(output_dir.join("programs/old")).expect("nested output directory");
+        fs::create_dir_all(&external_dir).expect("external directory");
+        fs::write(output_dir.join("programs/old/stale.ts"), "generated")
+            .expect("generated artifact");
+        let external_artifact = external_dir.join("stale.ts");
+        fs::write(&external_artifact, "external").expect("external artifact");
+
+        let output = Dir::open_ambient_dir(&output_dir, ambient_authority())
+            .expect("open output capability");
+        let relative = Path::new("programs/old/stale.ts");
+        assert!(is_removable_stale_sdk_artifact(&output, relative));
+
+        fs::rename(
+            output_dir.join("programs/old"),
+            output_dir.join("programs/old-original"),
+        )
+        .expect("move validated directory");
+        symlink(&external_dir, output_dir.join("programs/old"))
+            .expect("replace validated directory with symlink");
+        assert!(
+            remove_stale_sdk_artifact(&output, &output_dir, relative).is_err(),
+            "capability-scoped removal must reject the escaped path"
+        );
+
+        assert_eq!(
+            fs::read_to_string(&external_artifact).expect("external artifact survives"),
+            "external"
+        );
+        assert!(output_dir.join("programs/old-original/stale.ts").is_file());
+        fs::remove_file(output_dir.join("programs/old")).expect("remove test symlink");
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&external_dir);
     }
 
     #[test]
@@ -5704,14 +6179,25 @@ mod tests {
         let output_dir =
             std::env::temp_dir().join(format!("a4-rust-hosted-route-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output_dir);
-        let resolved = resolve_rust_extensions_artifact(None, Some(hosted), &output_dir, "ore")
-            .expect("hosted Rust bundle should resolve")
-            .expect("hosted Rust bundle should be present");
+        let resolved = resolve_rust_extensions_artifact(
+            None,
+            Some(hosted),
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted Rust bundle should resolve")
+        .expect("hosted Rust bundle should be present");
         assert_eq!(resolved.entry, "extensions.rs");
 
         // ...while the TypeScript rung rejects it outright.
-        let error = resolve_extensions_artifact(None, &layout("ore"), Some(hosted))
-            .expect_err("TypeScript generation must reject a Rust hosted bundle");
+        let error = resolve_extensions_artifact(
+            None,
+            &layout("ore"),
+            Some(hosted),
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect_err("TypeScript generation must reject a Rust hosted bundle");
         assert!(error.to_string().contains("declares language 'rust'"));
     }
 
@@ -5751,7 +6237,7 @@ mod tests {
         assert!(rendered
             .contains("import { SQUADS_V4_STREAM_STACK_CORE } from './squads-v4-stream-core.js';"));
         assert!(rendered.contains("import stackExtensions from './squads-v4-extensions.js';"));
-        assert!(rendered.contains("export * from './squads-v4-extensions.js';"));
+        assert!(!rendered.contains("export * from './squads-v4-extensions.js';"));
         assert!(rendered.contains("export const SQUADS_V4_STREAM_STACK = extendStack("));
         assert!(rendered.contains("export default SQUADS_V4_STREAM_STACK;"));
     }
@@ -5774,8 +6260,8 @@ mod tests {
         assert!(rendered.contains(
             "import stackExtensions, { squadsProgramExtensions } from './squads-v4-extensions.js';"
         ));
-        assert!(rendered.contains("export * from './squads-v4-devex.js';"));
-        assert!(rendered.contains("export * from './squads-v4-extensions.js';"));
+        assert!(!rendered.contains("export * from './squads-v4-devex.js';"));
+        assert!(!rendered.contains("export * from './squads-v4-extensions.js';"));
         assert!(rendered.contains("const CORE = {"));
         assert!(
             rendered.contains("programs: extendPrograms(SQUADS_V4_STREAM_STACK_CORE.programs, {")
@@ -5790,16 +6276,7 @@ mod tests {
         let mut artifact = test_artifact(ExtensionsInputKind::ProgramSpec, "program-spec-hash");
         artifact.entry = "spl-token-extensions.ts".to_string();
         artifact.files[0].path = artifact.entry.clone();
-        let hosted = HostedProgramExtension {
-            program_key: "splToken".to_string(),
-            program_const_name: "TOKEN".to_string(),
-            import_name: "hostedSplTokenProgramExtensions".to_string(),
-            input_pin: ResolvedExtensionsInputPin {
-                kind: ExtensionsInputKind::ProgramSpec,
-                hash: "program-spec-hash".to_string(),
-            },
-            artifact,
-        };
+        let hosted = test_hosted_program_module(artifact);
         let rendered = render_typescript_stack_entry(
             &layout("token-stack"),
             "TokenStack",
@@ -5809,18 +6286,37 @@ mod tests {
             &[hosted],
         );
 
-        assert!(rendered
-            .contains("import hostedSplTokenProgramExtensions from './spl-token-extensions.js';"));
+        assert!(rendered.contains(
+            "import hostedSplTokenProgram from './programs/spl-token/__arete-program.js';"
+        ));
         assert!(rendered.contains("...TOKEN_STACK_STACK_CORE,"));
-        assert!(rendered
-            .contains("const HOSTED_PROGRAMS = extendPrograms(TOKEN_STACK_STACK_CORE.programs, {"));
+        assert!(rendered.contains("const HOSTED_PROGRAMS = {"));
+        assert!(rendered.contains("...TOKEN_STACK_STACK_CORE.programs,"));
         assert!(rendered.contains("programs: HOSTED_PROGRAMS,"));
-        assert!(rendered.contains("splToken: hostedSplTokenProgramExtensions,"));
+        assert!(rendered.contains("splToken: hostedSplTokenProgram,"));
         assert!(!rendered.contains("programReads:"));
     }
 
     #[test]
-    fn hosted_program_extension_staging_writes_a_stack_core_proxy() {
+    fn hosted_program_without_extensions_still_bundles_its_read_descriptor() {
+        let hosted = test_hosted_program_module_for(
+            "entropy",
+            "entropy",
+            "Vote111111111111111111111111111111111111111",
+            None,
+        );
+        let rendered = render_hosted_program_entry(&hosted);
+
+        assert!(rendered.contains("import { withProgramRead } from '@usearete/sdk';"));
+        assert!(rendered.contains("ENTROPY_READ as BASE_PROGRAM_READ"));
+        assert!(rendered.contains(
+            "export const ENTROPY_PROGRAM = withProgramRead(BASE_PROGRAM, BASE_PROGRAM_READ);"
+        ));
+        assert!(!rendered.contains("programExtensions"));
+    }
+
+    #[test]
+    fn hosted_program_extension_staging_writes_an_isolated_program_sdk() {
         let output_dir = std::env::temp_dir().join(format!(
             "a4-hosted-program-extension-{}",
             std::process::id()
@@ -5833,31 +6329,118 @@ mod tests {
             entry_path: output_dir.join("ordered-stream.ts"),
             core_path: output_dir.join("ordered-stream-core.ts"),
         };
-        let mut artifact = test_artifact(ExtensionsInputKind::ProgramSpec, "typed-hash");
+        let program_hash = format!("arete:h1:program-spec:sha256:{}", "22".repeat(32));
+        let mut artifact = test_artifact(ExtensionsInputKind::ProgramSpec, &program_hash);
         artifact.entry = "spl-token-extensions.ts".to_string();
         artifact.files[0] = ResolvedExtensionsFile {
             path: artifact.entry.clone(),
             contents: "import { TOKEN } from './spl-token-core';\nexport default {};".to_string(),
         };
-        let hosted = HostedProgramExtension {
-            program_key: "splToken".to_string(),
-            program_const_name: "TOKEN".to_string(),
-            import_name: "hostedSplTokenProgramExtensions".to_string(),
-            input_pin: ResolvedExtensionsInputPin {
-                kind: ExtensionsInputKind::ProgramSpec,
-                hash: "typed-hash".to_string(),
-            },
-            artifact,
-        };
+        let hosted = test_hosted_program_module(artifact);
 
-        stage_hosted_program_extensions(&[hosted], &layout, "OrderedStream", false)
+        stage_hosted_program_modules(std::slice::from_ref(&hosted), &layout, "@usearete/sdk")
             .expect("hosted program extension should stage");
-        let proxy =
-            fs::read_to_string(output_dir.join("spl-token-core.ts")).expect("program core proxy");
+        let stack_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::StackManifest,
+            hash: format!("arete:h1:stack-manifest:sha256:{}", "11".repeat(32)),
+        };
+        let provenance = build_sdk_provenance_manifest_with_program_extensions(
+            &layout,
+            &stack_pin,
+            None,
+            std::slice::from_ref(&hosted),
+        )
+        .expect("hosted program provenance should build");
+        let program_dir = output_dir.join("programs/spl-token");
+        let core = fs::read_to_string(program_dir.join("spl-token-core.ts"))
+            .expect("isolated program core");
+        let entry = fs::read_to_string(program_dir.join(HOSTED_PROGRAM_ENTRY))
+            .expect("isolated program entry");
+        let extension_exists = program_dir.join("spl-token-extensions.ts").is_file();
         let _ = fs::remove_dir_all(&output_dir);
 
-        assert!(proxy.contains("export * from './ordered-stream-core.js';"));
-        assert!(proxy.contains("export const TOKEN = ORDERED_STREAM_STACK_CORE.programs.splToken;"));
+        assert!(core.contains("export const TOKEN = {"));
+        assert!(!core.contains("ORDERED_STREAM_STACK_CORE"));
+        assert!(entry.contains("import { extendProgram, withProgramRead }"));
+        assert!(entry.contains("extendProgram(BASE_PROGRAM, programExtensions)"));
+        assert!(entry.contains("BASE_PROGRAM_READ"));
+        assert!(!entry.contains("export * from './spl-token-extensions.js';"));
+        assert!(extension_exists);
+        assert!(provenance.program_extensions.contains_key("splToken"));
+        assert!(provenance
+            .artifacts
+            .contains(&"programs/spl-token/__arete-program.ts".to_string()));
+        assert!(provenance
+            .artifacts
+            .contains(&"programs/spl-token/spl-token-core.ts".to_string()));
+    }
+
+    #[test]
+    fn hosted_program_staging_namespaces_identical_extension_paths() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "a4-hosted-program-namespaces-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        fs::create_dir_all(&output_dir).expect("output directory");
+        let layout = TypeScriptLayout {
+            output_dir: output_dir.clone(),
+            base_name: "collision-stack".to_string(),
+            entry_path: output_dir.join("collision-stack.ts"),
+            core_path: output_dir.join("collision-stack-core.ts"),
+        };
+        let extension = |name: &str, hash: &str| {
+            ResolvedExtensionsArtifact {
+                entry: "extensions.ts".to_string(),
+                files: vec![
+                    ResolvedExtensionsFile {
+                        path: "shared-devex.ts".to_string(),
+                        contents: format!(
+                            "import * as low from './{name}-core.js';\nexport const marker = '{}';\nexport {{ low }};",
+                            name
+                        ),
+                    },
+                    ResolvedExtensionsFile {
+                        path: "extensions.ts".to_string(),
+                        contents:
+                            "export { marker } from './shared-devex.js';\nexport default {};"
+                                .to_string(),
+                    },
+                ],
+                input_kind: Some(ExtensionsInputKind::ProgramSpec),
+                input_hash: Some(hash.to_string()),
+                sdk_range: None,
+                language: None,
+                sdk_extension_hash: None,
+                sdk_output_tree_hash: None,
+                program_extension_bindings: vec![],
+            }
+        };
+        let alpha = test_hosted_program_module_for(
+            "alpha",
+            "alpha",
+            "11111111111111111111111111111111",
+            Some(extension("alpha", "alpha-hash")),
+        );
+        let beta = test_hosted_program_module_for(
+            "beta",
+            "beta",
+            "Vote111111111111111111111111111111111111111",
+            Some(extension("beta", "beta-hash")),
+        );
+
+        stage_hosted_program_modules(&[alpha, beta], &layout, "@usearete/sdk")
+            .expect("both hosted programs should stage");
+        let alpha_devex = fs::read_to_string(output_dir.join("programs/alpha/shared-devex.ts"))
+            .expect("alpha devex");
+        let beta_devex = fs::read_to_string(output_dir.join("programs/beta/shared-devex.ts"))
+            .expect("beta devex");
+        let root_collision = output_dir.join("shared-devex.ts").exists();
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert!(alpha_devex.contains("marker = 'alpha'"));
+        assert!(beta_devex.contains("marker = 'beta'"));
+        assert!(!root_collision);
     }
 
     #[test]
@@ -5867,7 +6450,10 @@ mod tests {
         assert!(rendered.contains("import { TOKEN as SPL_TOKEN_PROGRAM_CORE, TOKEN_READ as SPL_TOKEN_PROGRAM_READ_CORE } from './spl-token-core.js';"));
         assert!(rendered
             .contains("export { TOKEN as SPL_TOKEN_PROGRAM_CORE } from './spl-token-core.js';"));
-        assert!(rendered.contains("export const SPL_TOKEN_PROGRAM = SPL_TOKEN_PROGRAM_CORE;"));
+        assert!(rendered.contains("import { withProgramRead } from '@usearete/sdk';"));
+        assert!(rendered.contains(
+            "export const SPL_TOKEN_PROGRAM = withProgramRead(SPL_TOKEN_PROGRAM_CORE, SPL_TOKEN_PROGRAM_READ_CORE);"
+        ));
         assert!(
             rendered.contains("export const SPL_TOKEN_PROGRAM_READ = SPL_TOKEN_PROGRAM_READ_CORE;")
         );
@@ -5882,7 +6468,9 @@ mod tests {
             Some("system-program-extensions.ts"),
         );
 
-        assert!(rendered.contains("import { extendProgram } from '@usearete/sdk';"));
+        assert!(
+            rendered.contains("import { extendProgram, withProgramRead } from '@usearete/sdk';")
+        );
         assert!(rendered.contains("import { SYSTEM_PROGRAM as SYSTEM_PROGRAM_CORE, SYSTEM_PROGRAM_READ as SYSTEM_PROGRAM_READ_CORE } from './system-program-core.js';"));
         assert!(rendered.contains(
             "export { SYSTEM_PROGRAM as SYSTEM_PROGRAM_CORE } from './system-program-core.js';"
@@ -5890,10 +6478,10 @@ mod tests {
         assert!(
             rendered.contains("import programExtensions from './system-program-extensions.js';")
         );
-        assert!(rendered.contains("export * from './system-program-extensions.js';"));
-        assert!(rendered.contains(
-            "export const SYSTEM_PROGRAM = extendProgram(SYSTEM_PROGRAM_CORE, programExtensions);"
-        ));
+        assert!(!rendered.contains("export * from './system-program-extensions.js';"));
+        assert!(rendered.contains("export const SYSTEM_PROGRAM = withProgramRead("));
+        assert!(rendered.contains("extendProgram(SYSTEM_PROGRAM_CORE, programExtensions),"));
+        assert!(rendered.contains("SYSTEM_PROGRAM_READ_CORE,"));
         assert!(rendered.contains("export default SYSTEM_PROGRAM;"));
     }
 
@@ -5922,7 +6510,7 @@ mod tests {
 
         assert!(rendered.contains("import { extendPrograms } from '@usearete/sdk';"));
         assert!(rendered.contains("import programExtensions from './ore-program-extensions.js';"));
-        assert!(rendered.contains("export * from './ore-program-extensions.js';"));
+        assert!(!rendered.contains("export * from './ore-program-extensions.js';"));
         assert!(rendered.contains("export const ORE_STREAM_PROGRAMS = extendPrograms(ORE_STREAM_PROGRAMS_CORE, programExtensions);"));
     }
 
@@ -6223,10 +6811,15 @@ mod tests {
         write_bundle_dir(&bundle_dir, &explicit);
         write_bundle_dir(&output_dir, &staged);
 
-        let resolved =
-            resolve_rust_extensions_artifact(Some(&bundle_dir), None, &output_dir, "ore")
-                .expect("explicit bundle should resolve")
-                .expect("explicit bundle should be present");
+        let resolved = resolve_rust_extensions_artifact(
+            Some(&bundle_dir),
+            None,
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("explicit bundle should resolve")
+        .expect("explicit bundle should be present");
         let _ = fs::remove_dir_all(&root);
 
         assert_eq!(resolved.input_hash.as_deref(), Some("explicit-hash"));
@@ -6245,6 +6838,7 @@ mod tests {
             None,
             &root.join("missing-output"),
             "ore",
+            OutputExtensionsFallback::Ignore,
         )
         .expect("single-entry bundle should resolve")
         .expect("single-entry bundle should be present");
@@ -6271,9 +6865,15 @@ mod tests {
         let staged = rust_test_artifact("staged-pin-hash");
         write_bundle_dir(&output_dir, &staged);
 
-        let resolved = resolve_rust_extensions_artifact(None, None, &output_dir, "ore")
-            .expect("staged manifest should resolve")
-            .expect("staged manifest should be present");
+        let resolved = resolve_rust_extensions_artifact(
+            None,
+            None,
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Reuse,
+        )
+        .expect("staged manifest should resolve")
+        .expect("staged manifest should be present");
         let _ = fs::remove_dir_all(&output_dir);
 
         assert_eq!(
@@ -6285,13 +6885,41 @@ mod tests {
     }
 
     #[test]
+    fn rust_hosted_resolution_ignores_stale_output_dir_manifest() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "a4-rust-ext-hosted-authoritative-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        write_bundle_dir(&output_dir, &rust_test_artifact("stale-rust-hash"));
+
+        let resolved = resolve_rust_extensions_artifact(
+            None,
+            None,
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted resolution should succeed");
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert!(resolved.is_none());
+    }
+
+    #[test]
     fn rust_resolution_returns_none_without_sources() {
         let output_dir =
             std::env::temp_dir().join(format!("a4-rust-ext-none-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output_dir);
 
-        let resolved = resolve_rust_extensions_artifact(None, None, &output_dir, "ore")
-            .expect("empty resolution should succeed");
+        let resolved = resolve_rust_extensions_artifact(
+            None,
+            None,
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Reuse,
+        )
+        .expect("empty resolution should succeed");
 
         assert!(resolved.is_none());
     }
@@ -6310,6 +6938,7 @@ mod tests {
             None,
             &bundle_dir.join("missing-output"),
             "ore",
+            OutputExtensionsFallback::Ignore,
         )
         .expect_err("TypeScript bundle must be rejected for Rust generation");
         let _ = fs::remove_dir_all(&bundle_dir);
@@ -6324,8 +6953,13 @@ mod tests {
         let _ = fs::remove_dir_all(&bundle_dir);
         write_bundle_dir(&bundle_dir, &rust_test_artifact("hash-1"));
 
-        let error = resolve_extensions_artifact(Some(&bundle_dir), &layout("ore"), None)
-            .expect_err("Rust bundle must be rejected for TypeScript generation");
+        let error = resolve_extensions_artifact(
+            Some(&bundle_dir),
+            &layout("ore"),
+            None,
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect_err("Rust bundle must be rejected for TypeScript generation");
         let _ = fs::remove_dir_all(&bundle_dir);
 
         assert!(error.to_string().contains("declares language 'rust'"));
@@ -6342,9 +6976,14 @@ mod tests {
         let _ = fs::remove_dir_all(&output_dir);
         write_bundle_dir(&output_dir, &ts_bundle_artifact("ts-staged-pin-hash"));
 
-        let resolved = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), None)
-            .expect("staged manifest should resolve")
-            .expect("staged manifest should be present");
+        let resolved = resolve_extensions_artifact(
+            None,
+            &layout_in(&output_dir, "ore"),
+            None,
+            OutputExtensionsFallback::Reuse,
+        )
+        .expect("staged manifest should resolve")
+        .expect("staged manifest should be present");
         let _ = fs::remove_dir_all(&output_dir);
 
         assert_eq!(resolved.entry, "ore-extensions.ts");
@@ -6364,6 +7003,27 @@ mod tests {
         assert_eq!(resolved.sdk_range.as_deref(), Some("^0.2.0 || ^0.3.0"));
     }
 
+    #[test]
+    fn typescript_hosted_resolution_ignores_stale_output_dir_manifest() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "a4-ts-ext-hosted-authoritative-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        write_bundle_dir(&output_dir, &ts_bundle_artifact("stale-hosted-hash"));
+
+        let resolved = resolve_extensions_artifact(
+            None,
+            &layout_in(&output_dir, "ore"),
+            None,
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted resolution should succeed");
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert!(resolved.is_none());
+    }
+
     /// Mirrors `rust_resolution_rejects_typescript_bundles` for the staged
     /// output-dir rung: the Rust path hard-errors on a wrong-language
     /// manifest found in the output dir, so the TypeScript path does the
@@ -6377,14 +7037,24 @@ mod tests {
         write_bundle_dir(&output_dir, &rust_test_artifact("hash-1"));
         fs::write(output_dir.join("ore-extensions.ts"), "export default {};").expect("entry file");
 
-        let error = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), None)
-            .expect_err("Rust manifest in output dir must be rejected for TypeScript generation");
+        let error = resolve_extensions_artifact(
+            None,
+            &layout_in(&output_dir, "ore"),
+            None,
+            OutputExtensionsFallback::Reuse,
+        )
+        .expect_err("Rust manifest in output dir must be rejected for TypeScript generation");
         assert!(error.to_string().contains("declares language 'rust'"));
 
         fs::remove_file(output_dir.join("extensions.json")).expect("remove manifest");
-        let resolved = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), None)
-            .expect("entry inference should resolve")
-            .expect("entry inference should be present");
+        let resolved = resolve_extensions_artifact(
+            None,
+            &layout_in(&output_dir, "ore"),
+            None,
+            OutputExtensionsFallback::Reuse,
+        )
+        .expect("entry inference should resolve")
+        .expect("entry inference should be present");
         let _ = fs::remove_dir_all(&output_dir);
 
         assert_eq!(resolved.entry, "ore-extensions.ts");
@@ -6399,9 +7069,14 @@ mod tests {
         fs::create_dir_all(&output_dir).expect("output directory");
         fs::write(output_dir.join("ore-extensions.ts"), "export default {};").expect("entry file");
 
-        let resolved = resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), None)
-            .expect("entry inference should resolve")
-            .expect("entry inference should be present");
+        let resolved = resolve_extensions_artifact(
+            None,
+            &layout_in(&output_dir, "ore"),
+            None,
+            OutputExtensionsFallback::Reuse,
+        )
+        .expect("entry inference should resolve")
+        .expect("entry inference should be present");
         let _ = fs::remove_dir_all(&output_dir);
 
         assert_eq!(resolved.entry, "ore-extensions.ts");
@@ -6426,10 +7101,14 @@ mod tests {
         write_bundle_dir(&output_dir, &ts_bundle_artifact("staged-hash"));
         let hosted = test_artifact(ExtensionsInputKind::StackManifest, "hosted-hash");
 
-        let resolved =
-            resolve_extensions_artifact(None, &layout_in(&output_dir, "ore"), Some(&hosted))
-                .expect("hosted bundle should resolve")
-                .expect("hosted bundle should be present");
+        let resolved = resolve_extensions_artifact(
+            None,
+            &layout_in(&output_dir, "ore"),
+            Some(&hosted),
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted bundle should resolve")
+        .expect("hosted bundle should be present");
         let _ = fs::remove_dir_all(&output_dir);
 
         assert_eq!(resolved.input_hash.as_deref(), Some("hosted-hash"));
@@ -6468,10 +7147,14 @@ mod tests {
         )
         .expect("entry file");
 
-        let resolved =
-            resolve_extensions_artifact(None, &layout_in(&output_dir, "ore-stack"), None)
-                .expect("staged manifest should resolve")
-                .expect("staged manifest should be present");
+        let resolved = resolve_extensions_artifact(
+            None,
+            &layout_in(&output_dir, "ore-stack"),
+            None,
+            OutputExtensionsFallback::Reuse,
+        )
+        .expect("staged manifest should resolve")
+        .expect("staged manifest should be present");
         assert_eq!(
             serde_json::to_string_pretty(&resolved.manifest()).unwrap(),
             staged_manifest
@@ -6497,16 +7180,26 @@ mod tests {
         let _ = fs::remove_dir_all(&output_dir);
         let hosted_typescript = test_artifact(ExtensionsInputKind::StackManifest, "hash-1");
 
-        let resolved =
-            resolve_rust_extensions_artifact(None, Some(&hosted_typescript), &output_dir, "ore")
-                .expect("hosted TypeScript bundle should be skipped, not fatal");
+        let resolved = resolve_rust_extensions_artifact(
+            None,
+            Some(&hosted_typescript),
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted TypeScript bundle should be skipped, not fatal");
         assert!(resolved.is_none());
 
         let hosted_rust = rust_test_artifact("hash-2");
-        let resolved =
-            resolve_rust_extensions_artifact(None, Some(&hosted_rust), &output_dir, "ore")
-                .expect("hosted Rust bundle should resolve")
-                .expect("hosted Rust bundle should be present");
+        let resolved = resolve_rust_extensions_artifact(
+            None,
+            Some(&hosted_rust),
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted Rust bundle should resolve")
+        .expect("hosted Rust bundle should be present");
         assert_eq!(resolved.input_hash.as_deref(), Some("hash-2"));
     }
 
@@ -6724,20 +7417,37 @@ mod tests {
         let output_dir =
             std::env::temp_dir().join(format!("a4-python-hosted-route-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output_dir);
-        let resolved = resolve_python_extensions_artifact(None, Some(hosted), &output_dir, "ore")
-            .expect("hosted Python bundle should resolve")
-            .expect("hosted Python bundle should be present");
+        let resolved = resolve_python_extensions_artifact(
+            None,
+            Some(hosted),
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted Python bundle should resolve")
+        .expect("hosted Python bundle should be present");
         assert_eq!(resolved.entry, "extensions.py");
 
         // ...the Rust rung skips it (hosted wrong-language bundles are
         // non-fatal there, mirroring the TypeScript-bundle behaviour)...
-        let skipped = resolve_rust_extensions_artifact(None, Some(hosted), &output_dir, "ore")
-            .expect("hosted Python bundle should be skipped by the Rust rung");
+        let skipped = resolve_rust_extensions_artifact(
+            None,
+            Some(hosted),
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted Python bundle should be skipped by the Rust rung");
         assert!(skipped.is_none());
 
         // ...while the TypeScript rung rejects it outright.
-        let error = resolve_extensions_artifact(None, &layout("ore"), Some(hosted))
-            .expect_err("TypeScript generation must reject a Python hosted bundle");
+        let error = resolve_extensions_artifact(
+            None,
+            &layout("ore"),
+            Some(hosted),
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect_err("TypeScript generation must reject a Python hosted bundle");
         assert!(error.to_string().contains("declares language 'python'"));
     }
 
@@ -6753,10 +7463,15 @@ mod tests {
         write_bundle_dir(&bundle_dir, &explicit);
         write_bundle_dir(&output_dir, &staged);
 
-        let resolved =
-            resolve_python_extensions_artifact(Some(&bundle_dir), None, &output_dir, "ore")
-                .expect("explicit bundle should resolve")
-                .expect("explicit bundle should be present");
+        let resolved = resolve_python_extensions_artifact(
+            Some(&bundle_dir),
+            None,
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("explicit bundle should resolve")
+        .expect("explicit bundle should be present");
         let _ = fs::remove_dir_all(&root);
 
         assert_eq!(resolved.input_hash.as_deref(), Some("explicit-hash"));
@@ -6783,6 +7498,7 @@ mod tests {
             None,
             &root.join("missing-output"),
             "ore",
+            OutputExtensionsFallback::Ignore,
         )
         .expect("single-entry bundle should resolve")
         .expect("single-entry bundle should be present");
@@ -6816,9 +7532,15 @@ mod tests {
         let staged = python_test_artifact("staged-pin-hash");
         write_bundle_dir(&output_dir, &staged);
 
-        let resolved = resolve_python_extensions_artifact(None, None, &output_dir, "ore")
-            .expect("staged manifest should resolve")
-            .expect("staged manifest should be present");
+        let resolved = resolve_python_extensions_artifact(
+            None,
+            None,
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Reuse,
+        )
+        .expect("staged manifest should resolve")
+        .expect("staged manifest should be present");
         let _ = fs::remove_dir_all(&output_dir);
 
         assert_eq!(
@@ -6830,13 +7552,41 @@ mod tests {
     }
 
     #[test]
+    fn python_hosted_resolution_ignores_stale_output_dir_manifest() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "a4-python-ext-hosted-authoritative-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        write_bundle_dir(&output_dir, &python_test_artifact("stale-python-hash"));
+
+        let resolved = resolve_python_extensions_artifact(
+            None,
+            None,
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted resolution should succeed");
+        let _ = fs::remove_dir_all(&output_dir);
+
+        assert!(resolved.is_none());
+    }
+
+    #[test]
     fn python_resolution_returns_none_without_sources() {
         let output_dir =
             std::env::temp_dir().join(format!("a4-python-ext-none-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output_dir);
 
-        let resolved = resolve_python_extensions_artifact(None, None, &output_dir, "ore")
-            .expect("empty resolution should succeed");
+        let resolved = resolve_python_extensions_artifact(
+            None,
+            None,
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Reuse,
+        )
+        .expect("empty resolution should succeed");
 
         assert!(resolved.is_none());
     }
@@ -6856,6 +7606,7 @@ mod tests {
             None,
             &root.join("missing-output"),
             "ore",
+            OutputExtensionsFallback::Ignore,
         )
         .expect_err("TypeScript bundle must be rejected for Python generation");
         assert!(error.to_string().contains("declares language 'typescript'"));
@@ -6867,6 +7618,7 @@ mod tests {
             None,
             &root.join("missing-output"),
             "ore",
+            OutputExtensionsFallback::Ignore,
         )
         .expect_err("Rust bundle must be rejected for Python generation");
         let _ = fs::remove_dir_all(&root);
@@ -6881,8 +7633,13 @@ mod tests {
         let _ = fs::remove_dir_all(&bundle_dir);
         write_bundle_dir(&bundle_dir, &python_test_artifact("hash-1"));
 
-        let error = resolve_extensions_artifact(Some(&bundle_dir), &layout("ore"), None)
-            .expect_err("Python bundle must be rejected for TypeScript generation");
+        let error = resolve_extensions_artifact(
+            Some(&bundle_dir),
+            &layout("ore"),
+            None,
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect_err("Python bundle must be rejected for TypeScript generation");
         let _ = fs::remove_dir_all(&bundle_dir);
 
         assert!(error.to_string().contains("declares language 'python'"));
@@ -6895,22 +7652,37 @@ mod tests {
         let _ = fs::remove_dir_all(&output_dir);
         let hosted_typescript = test_artifact(ExtensionsInputKind::StackManifest, "hash-1");
 
-        let resolved =
-            resolve_python_extensions_artifact(None, Some(&hosted_typescript), &output_dir, "ore")
-                .expect("hosted TypeScript bundle should be skipped, not fatal");
+        let resolved = resolve_python_extensions_artifact(
+            None,
+            Some(&hosted_typescript),
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted TypeScript bundle should be skipped, not fatal");
         assert!(resolved.is_none());
 
         let hosted_rust = rust_test_artifact("hash-2");
-        let resolved =
-            resolve_python_extensions_artifact(None, Some(&hosted_rust), &output_dir, "ore")
-                .expect("hosted Rust bundle should be skipped, not fatal");
+        let resolved = resolve_python_extensions_artifact(
+            None,
+            Some(&hosted_rust),
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted Rust bundle should be skipped, not fatal");
         assert!(resolved.is_none());
 
         let hosted_python = python_test_artifact("hash-3");
-        let resolved =
-            resolve_python_extensions_artifact(None, Some(&hosted_python), &output_dir, "ore")
-                .expect("hosted Python bundle should resolve")
-                .expect("hosted Python bundle should be present");
+        let resolved = resolve_python_extensions_artifact(
+            None,
+            Some(&hosted_python),
+            &output_dir,
+            "ore",
+            OutputExtensionsFallback::Ignore,
+        )
+        .expect("hosted Python bundle should resolve")
+        .expect("hosted Python bundle should be present");
         assert_eq!(resolved.input_hash.as_deref(), Some("hash-3"));
     }
 
@@ -7126,10 +7898,15 @@ mod tests {
         // A pinless re-read of the staged output keeps the manifest intact
         // (the sync sharp edge): resolution against the module dir reuses
         // the staged bundle with its pins.
-        let resolved =
-            resolve_python_extensions_artifact(None, None, &output_dir.join("ore_stack"), "ore")
-                .expect("staged manifest should resolve")
-                .expect("staged manifest should be present");
+        let resolved = resolve_python_extensions_artifact(
+            None,
+            None,
+            &output_dir.join("ore_stack"),
+            "ore",
+            OutputExtensionsFallback::Reuse,
+        )
+        .expect("staged manifest should resolve")
+        .expect("staged manifest should be present");
         assert_eq!(resolved.input_hash.as_deref(), Some(manifest_hash.as_str()));
 
         let _ = fs::remove_dir_all(&directory);

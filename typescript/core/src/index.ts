@@ -8,6 +8,7 @@ import { createSession } from './session';
 const Arete = Object.assign(BaseArete, { session: createSession });
 
 export { Arete, withPrograms, createSession, validateProgramReadDescriptor };
+export { withProgramRead } from './program-sdk';
 export type {
   ConnectOptions,
   AreteOptionsWithStorage,
@@ -50,6 +51,7 @@ export type {
   ProgramExtensionInput,
   ProgramOperations,
   ProgramOperationsOf,
+  ProgramReadOf,
   ProgramOperationContext,
   ReadArgumentCount,
   ReadArgumentCounts,

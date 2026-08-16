@@ -4,12 +4,12 @@ import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import { safeToRawAmount, useArete } from '@usearete/react';
 import { transactionExplorerUrl } from '../config';
 import {
-  ORE_STREAM_STACK,
   SQUARE_COUNT,
   SOL_DECIMALS,
-  type ManualDeploymentQuoteReadInput,
   type SquareIndex,
-} from '../generated/ore-stack';
+} from '../generated/ore-devex';
+import type { ManualDeploymentQuoteReadInput } from '../generated/ore-stack-extensions';
+import { ORE_STREAM_STACK } from '../generated/ore-stack';
 
 interface DeploymentPanelProps {
   currentRoundId: bigint | undefined;

@@ -13,8 +13,8 @@ import {
   quoteManualDeployment,
   previewSolClaim,
   reverseBits64,
-  ORE_STREAM_STACK,
-} from './generated/ore-stack.js';
+} from './generated/ore-devex.js';
+import { ORE_STREAM_STACK } from './generated/ore-stack.js';
 
 function deployed(entries: ReadonlyArray<readonly [number, bigint]> = []): bigint[] {
   const amounts = Array<bigint>(25).fill(0n);

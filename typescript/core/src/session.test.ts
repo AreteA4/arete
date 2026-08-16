@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createSession } from './session';
+import { withProgramRead } from './program-sdk';
+import { extendProgram } from './stack-extensions';
 import { createSignerRegistry } from './signer-registry';
 import { withPrograms } from './client';
 import { createInstructionHandler } from './instructions';
@@ -87,6 +89,50 @@ function makeFetch() {
 }
 
 describe('createSession', () => {
+  it('discovers bundled reads and optional extensions from one standalone program SDK', async () => {
+    const program = withProgramRead(
+      extendProgram(
+        SQUADS_STACK.programs.squads,
+        {
+          createRead(context) {
+            return {
+              multisig: (address: string) => context.program.accounts.Multisig.fetch(address),
+            };
+          },
+        },
+      ),
+      SQUADS_STACK.programReads.squads,
+    );
+    const fetchMock = makeFetch();
+
+    const session = await createSession(
+      { programs: { squads: program } },
+      { fetch: fetchMock },
+    );
+
+    await expect(session.programs.squads.read.multisig('address'))
+      .resolves.toEqual({ threshold: 2 });
+    expect(Object.keys(program)).not.toContain('__areteProgramReadDescriptor');
+    session.close();
+  });
+
+  it('uses the identical standalone API when a bundled program has no extensions', async () => {
+    const program = withProgramRead(
+      SQUADS_STACK.programs.squads,
+      SQUADS_STACK.programReads.squads,
+    );
+    const fetchMock = makeFetch();
+
+    const session = await createSession(
+      { programs: { squads: program } },
+      { fetch: fetchMock },
+    );
+
+    await expect(session.programs.squads.accounts.Multisig.fetch('address'))
+      .resolves.toEqual({ threshold: 2 });
+    session.close();
+  });
+
   it('rejects an empty definition', async () => {
     await expect(createSession({})).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
   });
