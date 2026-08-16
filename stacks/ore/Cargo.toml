@@ -10,7 +10,7 @@ path = "src/lib.rs"
 [workspace]
 
 [dependencies]
-arete = { version = "0.7.2", path = "../../arete", features = ["full"] }
+arete = { version = "0.8.0", path = "../../arete", features = ["full"] }
 
 # Required for user struct definitions and IDL-generated types
 serde = { version = "1.0", features = ["derive"] }

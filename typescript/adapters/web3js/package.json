@@ -1,6 +1,6 @@
 {
   "name": "@usearete/adapter-web3js",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "type": "module",
   "description": "@solana/web3.js wallet adapter for the Arete SDK instruction boundary",
   "main": "./dist/index.cjs",
@@ -50,7 +50,7 @@
   "peerDependencies": {
     "@solana/wallet-adapter-react": "^0.15.0",
     "@solana/web3.js": "^1.95.0",
-    "@usearete/sdk": "^0.7.2",
+    "@usearete/sdk": "^0.8.0",
     "react": "^18.0.0 || ^19.0.0",
     "rpc-websockets": "9.3.4"
   },
@@ -71,7 +71,7 @@
     "@solana/web3.js": "^1.95.0",
     "@types/node": "^20.0.0",
     "@types/react": "^19.0.0",
-    "@usearete/sdk": "^0.7.2",
+    "@usearete/sdk": "^0.8.0",
     "react": "^19.0.0",
     "rollup": "^3.0.0",
     "rollup-plugin-dts": "^6.0.0",
