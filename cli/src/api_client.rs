@@ -523,9 +523,9 @@ pub struct CreateApiKeyResponse {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct StopDeploymentResponse {
+    pub operation_id: i32,
+    pub status: String,
     pub message: String,
-    pub deployment_id: i32,
-    pub status: DeploymentStatus,
 }
 
 // ========================================================================
@@ -1228,11 +1228,14 @@ impl ApiClient {
 
         let response = self
             .client
-            .delete(format!(
-                "{}/api/deployments/{}",
+            .post(format!(
+                "{}/api/deployments/{}/stop",
                 self.base_url, deployment_id
             ))
             .bearer_auth(api_key)
+            .json(&serde_json::json!({
+                "reason": "Requested from a4 CLI"
+            }))
             .send()
             .context("Failed to send stop deployment request")?;
 

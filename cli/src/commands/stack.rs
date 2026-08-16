@@ -3,11 +3,11 @@ use colored::Colorize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::api_client::{
-    ApiClient, Build, BuildStatus, CreateBuildRequest, CreateSpecRequest, DeploymentResponse,
-    DeploymentStatus, Spec as ApiSpec, DEFAULT_DOMAIN_SUFFIX,
+    ApiClient, Build, BuildStatus, CreateBuildRequest, CreateSpecRequest, DeploymentPhase,
+    DeploymentResponse, DeploymentStatus, Spec as ApiSpec, DEFAULT_DOMAIN_SUFFIX,
 };
 use crate::config::{resolve_stacks_to_push, AreteConfig, DiscoveredAst};
 use crate::telemetry;
@@ -756,7 +756,17 @@ pub fn stop(stack_name: &str, branch: Option<&str>, force: bool) -> Result<()> {
 
     println!("{} Stopping deployment...", "→".blue().bold());
 
-    client.stop_deployment(deployment.id)?;
+    let response = client.stop_deployment(deployment.id)?;
+
+    if response.operation_id != 0 {
+        println!(
+            "{} {} (operation #{})",
+            "→".blue().bold(),
+            response.message,
+            response.operation_id
+        );
+        wait_for_deployment_to_stop(&client, deployment.id)?;
+    }
 
     println!(
         "{} Deployment for '{}' ({}) stopped successfully.",
@@ -772,18 +782,40 @@ pub fn stop(stack_name: &str, branch: Option<&str>, force: bool) -> Result<()> {
     Ok(())
 }
 
+fn wait_for_deployment_to_stop(client: &ApiClient, deployment_id: i32) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let deployment = client.get_deployment(deployment_id)?;
+        if deployment.live_status.phase == DeploymentPhase::ScaledDown {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "Timed out waiting for deployment operation to scale deployment {} to zero",
+                deployment_id
+            );
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
 fn find_deployment<'a>(
     deployments: &'a [DeploymentResponse],
     spec_id: i32,
     branch: Option<&str>,
 ) -> Option<&'a DeploymentResponse> {
-    deployments.iter().find(|d| {
-        d.spec_id == spec_id
-            && match branch {
-                Some(b) => d.branch.as_deref() == Some(b),
-                None => d.branch.is_none(), // production deployment has no branch
-            }
-    })
+    deployments
+        .iter()
+        .filter(|deployment| {
+            deployment.spec_id == spec_id
+                && match branch {
+                    Some(branch) => deployment.branch.as_deref() == Some(branch),
+                    None => deployment.branch.is_none(), // production deployment has no branch
+                }
+        })
+        // Deployment history can contain multiple records for the same spec and
+        // branch. The newest record owns the current Kubernetes workload.
+        .max_by_key(|deployment| deployment.id)
 }
 
 fn format_deployment_status(status: DeploymentStatus) -> String {
@@ -918,4 +950,66 @@ fn format_build_status(status: BuildStatus) -> String {
 
 fn chrono_now() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api_client::DeploymentLiveStatus;
+
+    fn deployment(id: i32, spec_id: i32, branch: Option<&str>) -> DeploymentResponse {
+        DeploymentResponse {
+            id,
+            spec_id,
+            spec_name: format!("spec-{spec_id}"),
+            atom_name: format!("atom-{id}"),
+            branch: branch.map(str::to_string),
+            current_build_id: None,
+            current_spec_version_id: None,
+            current_version: None,
+            portable_ast_hash: None,
+            deployment_release_hash: None,
+            current_idl_program_ids: Vec::new(),
+            current_image_tag: None,
+            websocket_url: format!("wss://atom-{id}.example.test"),
+            http_url: format!("https://atom-{id}.example.test"),
+            websocket_auth: serde_json::json!({}),
+            http_auth: serde_json::json!({}),
+            transaction_relay_enabled: false,
+            status: DeploymentStatus::Active,
+            status_message: None,
+            first_deployed_at: None,
+            last_deployed_at: None,
+            live_status: DeploymentLiveStatus {
+                phase: DeploymentPhase::Running,
+                desired_replicas: Some(1),
+                ready_replicas: Some(1),
+                available_replicas: Some(1),
+                updated_replicas: Some(1),
+                last_transition_time: None,
+                source: "test".to_string(),
+                error_category: None,
+            },
+            latest_operation: None,
+        }
+    }
+
+    #[test]
+    fn find_deployment_selects_newest_record_for_spec_and_branch() {
+        let deployments = vec![
+            deployment(9, 42, None),
+            deployment(12, 42, Some("preview")),
+            deployment(15, 7, None),
+            deployment(18, 42, None),
+        ];
+
+        assert_eq!(
+            find_deployment(&deployments, 42, None).map(|item| item.id),
+            Some(18)
+        );
+        assert_eq!(
+            find_deployment(&deployments, 42, Some("preview")).map(|item| item.id),
+            Some(12)
+        );
+    }
 }

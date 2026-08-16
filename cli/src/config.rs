@@ -439,8 +439,32 @@ pub fn resolve_stacks_to_push(
     config: Option<&AreteConfig>,
     stack_name: Option<&str>,
 ) -> Result<Vec<DiscoveredAst>> {
+    resolve_stacks_to_push_at(config, stack_name, None)
+}
+
+fn resolve_stacks_to_push_at(
+    config: Option<&AreteConfig>,
+    stack_name: Option<&str>,
+    base_path: Option<&Path>,
+) -> Result<Vec<DiscoveredAst>> {
     if let Some(name) = stack_name {
-        let ast = find_ast_file(name, None)?.ok_or_else(|| {
+        if let Some(stack) = config.and_then(|config| config.find_stack(name)) {
+            let mut ast = find_ast_file(&stack.stack, base_path)?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Stack file not found for stack '{}' (stack: '{}')\n\
+                     Make sure your stack is compiled and the stack file exists.",
+                    stack.name.as_deref().unwrap_or(&stack.stack),
+                    stack.stack
+                )
+            })?;
+
+            if let Some(alias) = &stack.name {
+                ast.stack_name = alias.clone();
+            }
+            return Ok(vec![ast]);
+        }
+
+        let ast = find_ast_file(name, base_path)?.ok_or_else(|| {
             anyhow::anyhow!(
                 "Stack file not found for '{}'\n\nSearched in .arete/ directories.\n\
                  Make sure your stack is compiled (cargo build) and the stack file exists.",
@@ -454,7 +478,7 @@ pub fn resolve_stacks_to_push(
         if !config.stacks.is_empty() {
             let mut result = Vec::new();
             for stack in &config.stacks {
-                let ast = find_ast_file(&stack.stack, None)?.ok_or_else(|| {
+                let ast = find_ast_file(&stack.stack, base_path)?.ok_or_else(|| {
                     anyhow::anyhow!(
                         "Stack file not found for stack '{}' (stack: '{}')\n\
                          Make sure your stack is compiled and the stack file exists.",
@@ -473,7 +497,7 @@ pub fn resolve_stacks_to_push(
         }
     }
 
-    let discovered = discover_ast_files(None)?;
+    let discovered = discover_ast_files(base_path)?;
 
     if discovered.is_empty() {
         anyhow::bail!(
@@ -534,6 +558,55 @@ mod tests {
                 .file_name()
                 .and_then(|name| name.to_str()),
             Some("DemoStack.stack.json")
+        );
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn named_stack_uses_configured_source_and_deployment_alias() {
+        let temp = std::env::temp_dir().join(format!(
+            "arete-config-alias-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        let arete_dir = temp.join(".arete");
+        fs::create_dir_all(&arete_dir).expect(".arete dir should create");
+        fs::write(
+            arete_dir.join("OreStream.stack.json"),
+            r#"{
+              "stack_name": "OreStream",
+              "program_ids": ["Prog111"],
+              "idls": [],
+              "entities": [],
+              "pdas": {},
+              "instructions": []
+            }"#,
+        )
+        .expect("stack should write");
+
+        let config: AreteConfig = toml::from_str(
+            r#"
+                [project]
+                name = "ore"
+
+                [[stacks]]
+                name = "ore"
+                stack = "OreStream"
+            "#,
+        )
+        .expect("config should parse");
+
+        let resolved = resolve_stacks_to_push_at(Some(&config), Some("ore"), Some(&temp))
+            .expect("configured alias should resolve");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].stack_id, "OreStream");
+        assert_eq!(resolved[0].stack_name, "ore");
+        assert_eq!(
+            resolved[0].path.file_name().and_then(|name| name.to_str()),
+            Some("OreStream.stack.json")
         );
 
         let _ = fs::remove_dir_all(&temp);
