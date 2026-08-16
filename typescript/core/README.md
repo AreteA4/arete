@@ -75,6 +75,7 @@ Each packaged, attached, or standalone program is canonically available under `s
 - `addresses` - semantic address derivations, when defined
 - `accounts` - typed point reads for program accounts
 - `queries` - program-level HTTP queries
+- `read` - optional program-oriented convenience reads supplied by the SDK
 - `raw` - exact IDL instruction builders with synchronous `.build(...)`
 - `instructions` - semantic one-instruction operations with `.prepare(...)`
 - `transactions` - semantic one-transaction operations with `.prepare(...)`
@@ -96,11 +97,14 @@ const client = await Arete.connect(LOCAL_STACK, {
 });
 ```
 
-Installed hosted SDKs instead contain a complete `hosted-binding` descriptor:
-the release, read endpoint, binding ID, and auth metadata are pinned together.
-Hosted account reads ignore `httpUrl` and stack HTTP endpoints. A
-`programReads` runtime override must replace that complete descriptor; release,
-binding, and endpoint fields are never patched independently.
+Installed hosted program SDKs instead carry a complete `hosted-binding`
+descriptor opaquely inside the exported program cartridge. Passing that one
+program object to `createSession` or `ConnectOptions.programs` automatically
+activates its release-pinned account reads; consumers do not import or register
+the descriptor separately. Hosted account reads ignore `httpUrl` and stack HTTP
+endpoints. The advanced `programReads` override remains available, but it must
+replace the complete descriptor; release, binding, and endpoint fields are never
+patched independently.
 
 Stack and program queries remain stack-HTTP operations. They continue to use
 `httpUrl` or `stack.endpoints.http` and do not use a hosted Program Read binding.

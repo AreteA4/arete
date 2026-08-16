@@ -10,6 +10,7 @@ import {
   programQuery,
   stackQuery,
   validateProgramReadDescriptor,
+  withProgramRead,
   type ProgramReadDescriptor,
   type ProgramSdkDefinition,
 } from './index';
@@ -888,6 +889,35 @@ describe('program read transports', () => {
       .resolves.toEqual({ value: 'attached' });
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
       'https://attached.example.test/read/v1/releases/release-attached/accounts/State/address'
+    );
+    session.close();
+  });
+
+  it('discovers the bundled descriptor when a complete program SDK is attached to a stack', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ value: 'bundled' })));
+    const baseStack = {
+      name: 'attached-program-cartridge',
+      endpoints: { ws: '', http: 'https://stack.example.test' },
+      views: {},
+      programs: {},
+    } as const;
+    const bundled = withProgramRead(
+      alphaProgram,
+      descriptor('alpha', 'https://bundled.example.test/read'),
+    );
+    const session = await createSession(
+      { stacks: { member: baseStack } },
+      {
+        transport: 'http',
+        fetch: fetchMock as typeof fetch,
+        stacks: { member: { programs: { alpha: bundled } } },
+      },
+    );
+
+    await expect(session.programs.alpha.accounts.State.fetch('address'))
+      .resolves.toEqual({ value: 'bundled' });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'https://bundled.example.test/read/v1/releases/release-alpha/accounts/State/address'
     );
     session.close();
   });

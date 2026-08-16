@@ -47,6 +47,7 @@ import {
   applyConnectedStackExtensions,
   getProgramRuntimeExtensions,
   type ProgramOperationsOf,
+  type ProgramReadOf,
   type StackConnectedExtensions,
 } from './stack-extensions';
 import {
@@ -63,6 +64,7 @@ import {
   createProgramReadTransport,
   type ProgramReadTransport,
 } from './program-read-transport';
+import { getProgramReadDescriptor } from './program-sdk';
 import {
   createTransactionTransport,
   type TransactionAuthScope,
@@ -89,7 +91,9 @@ function effectiveProgramRead(
   name: string,
   override: ProgramReadOverride | undefined
 ): ProgramReadDescriptor | undefined {
-  return override ?? stack.programReads?.[name];
+  return override
+    ?? stack.programReads?.[name]
+    ?? getProgramReadDescriptor(stack.programs?.[name]);
 }
 
 function validateReleaseIdentity(
@@ -210,7 +214,9 @@ function validateProgramReads(
     validateProgramReadDescriptor(key, overrides![key]!);
   }
   for (const [name, definition] of Object.entries(stack.programs ?? {})) {
-    validateReleaseIdentity(name, definition, stack.programReads?.[name]?.release);
+    const bundled = getProgramReadDescriptor(definition);
+    if (bundled) validateProgramReadDescriptor(name, bundled);
+    validateReleaseIdentity(name, definition, effectiveProgramRead(stack, name, overrides?.[name])?.release);
     validateReleaseIdentity(name, definition, overrides?.[name]?.release);
   }
 }
@@ -475,6 +481,7 @@ export type ProgramInterface<TProgram extends ProgramSdkDefinition> = {
   constants: ProgramNamespace<TProgram['constants']>;
   defaults: ProgramNamespace<TProgram['defaults']>;
   math: ProgramNamespace<TProgram['math']>;
+  read: ProgramNamespace<ProgramReadOf<TProgram>>;
   instructions: OperationField<ProgramOperationsOf<TProgram>, 'instructions'>;
   transactions: OperationField<ProgramOperationsOf<TProgram>, 'transactions'>;
   flows: OperationField<ProgramOperationsOf<TProgram>, 'flows'>;
@@ -641,7 +648,7 @@ export class Arete<TStack extends StackDefinition> {
   }
 
   private buildPrograms(): ProgramsInterface<TStack['programs']> {
-    const bases: Record<string, Omit<ProgramInterface<ProgramSdkDefinition>, 'instructions' | 'transactions' | 'flows'>> = {};
+    const bases: Record<string, Omit<ProgramInterface<ProgramSdkDefinition>, 'read' | 'instructions' | 'transactions' | 'flows'>> = {};
 
     for (const [name, definition] of Object.entries(this.stack.programs ?? {})) {
       const transport = this.createProgramTransport(name, definition);
@@ -675,7 +682,7 @@ export class Arete<TStack extends StackDefinition> {
         constants: definition.constants ?? {},
         defaults: definition.defaults ?? {},
         math: definition.math ?? {},
-      } as Omit<ProgramInterface<ProgramSdkDefinition>, 'instructions' | 'transactions' | 'flows'>;
+      } as Omit<ProgramInterface<ProgramSdkDefinition>, 'read' | 'instructions' | 'transactions' | 'flows'>;
     }
 
     const programs: Record<string, ProgramInterface<ProgramSdkDefinition>> = {};
@@ -684,18 +691,21 @@ export class Arete<TStack extends StackDefinition> {
       const base = bases[name]!;
       const connectedProgram = {
         ...base,
+        read: {},
         instructions: {},
         transactions: {},
         flows: {},
       } as ProgramInterface<ProgramSdkDefinition>;
       const runtime = getProgramRuntimeExtensions(definition);
-      const operations = runtime?.createOperations({
+      const context = {
         chain: this._chain,
         get wallet() {
           return client._wallet;
         },
         program: connectedProgram,
-      });
+      };
+      connectedProgram.read = runtime?.createRead?.(context) ?? {};
+      const operations = runtime?.createOperations?.(context);
       connectedProgram.instructions = operations?.instructions ?? {};
       connectedProgram.transactions = operations?.transactions ?? {};
       connectedProgram.flows = operations?.flows ?? {};

@@ -15,7 +15,9 @@ import {
   getStackRuntimeExtensions,
   instructionOperation,
   transactionOperation,
+  withProgramRead,
 } from './index';
+import { getProgramReadDescriptor } from './program-sdk';
 import type { ProgramSdkDefinition, StackDefinition } from './types';
 
 const BASE_STACK = {
@@ -284,6 +286,47 @@ describe('extendProgram', () => {
 
     expect(operations?.instructions?.position.create).toBeDefined();
     expect(operations?.instructions?.position.close).toBeDefined();
+  });
+
+  it('deep-merges program read namespaces across extension layers', () => {
+    const base = extendProgram(BASE_PROGRAM, {
+      createRead: () => ({
+        account: { board: () => 'board', shared: () => 'base' },
+      }),
+    });
+    const extended = extendProgram(base, {
+      createRead: (context) => ({
+        account: {
+          miner: () => `${context.program.read.account.board()}:miner`,
+          shared: () => 'extension',
+        },
+      }),
+    });
+
+    const context = { program: { read: {} } } as never;
+    const read = getProgramRuntimeExtensions(extended)?.createRead?.(context);
+
+    expect(read?.account.board()).toBe('board');
+    expect(read?.account.miner()).toBe('board:miner');
+    expect(read?.account.shared()).toBe('extension');
+  });
+
+  it('preserves an opaque bundled read descriptor through later extensions', () => {
+    const descriptor = {
+      release: {
+        programReleaseHash: 'release-ore',
+        programSpecHash: 'spec-ore',
+      },
+      transport: {
+        kind: 'local-http',
+        endpointSource: 'connect-http-url',
+      },
+    } as const;
+    const bundled = withProgramRead(BASE_PROGRAM, descriptor);
+    const extended = extendProgram(bundled, { constants: { unit: 1 } });
+
+    expect(getProgramReadDescriptor(extended)).toBe(descriptor);
+    expect(Object.keys(extended)).not.toContain('__areteProgramReadDescriptor');
   });
 });
 

@@ -754,11 +754,17 @@ describe('Arete instructions (namespaced stacks)', () => {
       addresses: { vault: (owner: string) => `vault:${owner}` },
       defaults: { operationName: 'close-via-context' as const },
       math: { double: (value: number) => value * 2 },
+      createRead(context) {
+        return {
+          identity: () => context.program.programId,
+        };
+      },
       createOperations(context) {
         context.program.instructions.close.kind satisfies 'instruction';
         context.program.addresses.vault('typecheck');
         context.program.defaults.operationName satisfies 'close-via-context';
         context.program.math.double(3) satisfies number;
+        context.program.read.identity() satisfies string | undefined;
         context.program.raw.close.build;
         // @ts-expect-error operations being created are available after the factory returns
         context.program.instructions.closeViaContext;
@@ -787,6 +793,9 @@ describe('Arete instructions (namespaced stacks)', () => {
     } as const;
 
     const client = await Arete.connect(stack, { autoConnect: false });
+    expect(client.programs.ore.read.identity()).toBe(
+      'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv'
+    );
     const prepared = await client.programs.ore.instructions.closeViaContext.prepare({});
 
     expect(prepared.artifacts).toEqual({ source: 'base', vault: 'vault:alice' });

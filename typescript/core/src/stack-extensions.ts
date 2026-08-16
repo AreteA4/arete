@@ -6,6 +6,7 @@ import type {
   TransactionOperationNamespace,
 } from './program-instructions';
 import type { ProgramSdkDefinition, StackDefinition } from './types';
+import { PROGRAM_READ_DESCRIPTOR } from './program-sdk';
 import type { WalletAdapter } from './wallet/types';
 
 export const STACK_RUNTIME_EXTENSIONS = '__areteStackRuntimeExtensions' as const;
@@ -117,22 +118,32 @@ export interface ProgramOperationContext<
 export interface ProgramRuntimeExtensions<
   TOperations extends AnyProgramOperations = ProgramOperations,
   TProgram extends ProgramSdkDefinition = ProgramSdkDefinition,
+  TRead = EmptyRecord,
 > {
-  readonly createOperations: (
+  readonly createOperations?: (
     context: ProgramOperationContext<TProgram>
   ) => TOperations;
+  readonly createRead?: (
+    context: ProgramOperationContext<TProgram>
+  ) => TRead;
 }
 
 export interface ProgramRuntimeExtensionCarrier<
   TOperations extends AnyProgramOperations = ProgramOperations,
+  TRead = EmptyRecord,
 > {
-  readonly [PROGRAM_OPERATION_EXTENSIONS]?: ProgramRuntimeExtensions<TOperations, any>;
+  readonly [PROGRAM_OPERATION_EXTENSIONS]?: ProgramRuntimeExtensions<TOperations, any, TRead>;
 }
 
 export type ProgramOperationsOf<TProgram> =
-  TProgram extends ProgramRuntimeExtensionCarrier<infer TOperations>
+  TProgram extends ProgramRuntimeExtensionCarrier<infer TOperations, any>
     ? TOperations
     : ProgramOperations;
+
+export type ProgramReadOf<TProgram> =
+  TProgram extends ProgramRuntimeExtensionCarrier<any, infer TRead>
+    ? TRead
+    : EmptyRecord;
 
 type MergeProgramOperations<
   TBase extends AnyProgramOperations,
@@ -159,13 +170,15 @@ export type ExtendedProgramDefinition<
   TDefaults = never,
   TOperations extends AnyProgramOperations = ProgramOperations,
   TMath = never,
+  TRead = never,
 > = Omit<TBase, 'sdkDefinitionHash'>
   & MaybeField<'addresses', TAddresses>
   & MaybeField<'constants', TConstants>
   & MaybeField<'defaults', TDefaults>
   & MaybeField<'math', TMath>
   & ProgramRuntimeExtensionCarrier<
-      MergeProgramOperations<ProgramOperationsOf<TBase>, TOperations>
+      MergeProgramOperations<ProgramOperationsOf<TBase>, TOperations>,
+      MergeField<ProgramReadOf<TBase>, TRead>
     >;
 
 export interface ProgramExtensionInput<
@@ -175,6 +188,7 @@ export interface ProgramExtensionInput<
   TOperations extends AnyProgramOperations = ProgramOperations,
   TProgram extends ProgramSdkDefinition = ProgramSdkDefinition,
   TMath = never,
+  TRead = never,
 > {
   readonly pdas?: Record<string, unknown>;
   readonly accounts?: Record<string, unknown>;
@@ -187,7 +201,54 @@ export interface ProgramExtensionInput<
   readonly createOperations?: (
     context: ProgramOperationContext<TProgram>
   ) => TOperations;
+  readonly createRead?: (
+    context: ProgramOperationContext<TProgram>
+  ) => TRead;
 }
+
+type DefinedProgramExtensions<
+  TBase extends ProgramSdkDefinition,
+  TAddresses,
+  TConstants,
+  TDefaults,
+  TOperations extends AnyProgramOperations,
+  TMath,
+  TRead,
+> = Omit<
+  ProgramExtensionInput<any, any, any, any, any, any, any>,
+  'addresses' | 'constants' | 'defaults' | 'math' | 'createOperations' | 'createRead'
+> & {
+  readonly addresses?: TAddresses;
+  readonly constants?: TConstants;
+  readonly defaults?: TDefaults;
+  readonly math?: TMath;
+  readonly createOperations?: (
+    context: ProgramOperationContext<
+      ExtendedProgramDefinition<
+        TBase,
+        TAddresses,
+        TConstants,
+        TDefaults,
+        ProgramOperations,
+        TMath,
+        TRead
+      >
+    >
+  ) => TOperations;
+  readonly createRead?: (
+    context: ProgramOperationContext<
+      ExtendedProgramDefinition<
+        TBase,
+        TAddresses,
+        TConstants,
+        TDefaults,
+        ProgramOperations,
+        TMath,
+        never
+      >
+    >
+  ) => TRead;
+};
 
 export function defineProgramExtensions<TBase extends ProgramSdkDefinition>() {
   return <
@@ -196,35 +257,25 @@ export function defineProgramExtensions<TBase extends ProgramSdkDefinition>() {
     TDefaults = never,
     TOperations extends AnyProgramOperations = ProgramOperations,
     TMath = never,
+    TRead = never,
   >(
-    extensions: Omit<
-      ProgramExtensionInput<any, any, any, any, any, any>,
-      'addresses' | 'constants' | 'defaults' | 'math' | 'createOperations'
-    > & {
-      readonly addresses?: TAddresses;
-      readonly constants?: TConstants;
-      readonly defaults?: TDefaults;
-      readonly math?: TMath;
-      readonly createOperations?: (
-        context: ProgramOperationContext<
-          ExtendedProgramDefinition<
-            TBase,
-            TAddresses,
-            TConstants,
-            TDefaults,
-            ProgramOperations,
-            TMath
-          >
-        >
-      ) => TOperations;
-    }
-  ): ProgramExtensionInput<
+    extensions: DefinedProgramExtensions<
+      TBase,
+      TAddresses,
+      TConstants,
+      TDefaults,
+      TOperations,
+      TMath,
+      TRead
+    >
+  ): DefinedProgramExtensions<
+    TBase,
     TAddresses,
     TConstants,
     TDefaults,
     TOperations,
-    ExtendedProgramDefinition<TBase, TAddresses, TConstants, TDefaults, ProgramOperations, TMath>,
-    TMath
+    TMath,
+    TRead
   > => extensions;
 }
 
@@ -255,7 +306,7 @@ function mergeOperations(
 
 export function extendProgram<
   TBase extends ProgramSdkDefinition,
-  TExtension extends ProgramExtensionInput<any, any, any, any, any, any>,
+  TExtension extends ProgramExtensionInput<any, any, any, any, any, any, any>,
 >(
   program: TBase,
   extensions: TExtension
@@ -265,10 +316,15 @@ export function extendProgram<
   MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
   MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
   Extract<FactoryReturn<TExtension, 'createOperations'>, AnyProgramOperations>,
-  MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>
+  MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+  FactoryReturn<TExtension, 'createRead'>
 > {
   const base = program as Record<PropertyKey, unknown> & ProgramRuntimeExtensionCarrier;
   const extended = { ...program } as Record<PropertyKey, unknown>;
+  const readDescriptor = Object.getOwnPropertyDescriptor(program, PROGRAM_READ_DESCRIPTOR);
+  if (readDescriptor) {
+    Object.defineProperty(extended, PROGRAM_READ_DESCRIPTOR, readDescriptor);
+  }
   delete extended.sdkDefinitionHash;
 
   for (const key of ['pdas', 'accounts', 'queries', 'addresses', 'constants', 'defaults', 'math'] as const) {
@@ -283,7 +339,9 @@ export function extendProgram<
 
   const baseFactory = base[PROGRAM_OPERATION_EXTENSIONS]?.createOperations;
   const extensionFactory = extensions.createOperations;
-  if (baseFactory || extensionFactory) {
+  const baseReadFactory = base[PROGRAM_OPERATION_EXTENSIONS]?.createRead;
+  const extensionReadFactory = extensions.createRead;
+  if (baseFactory || extensionFactory || baseReadFactory || extensionReadFactory) {
     Object.defineProperty(extended, PROGRAM_OPERATION_EXTENSIONS, {
       value: {
         createOperations(
@@ -294,7 +352,8 @@ export function extendProgram<
               MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
               MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
               ProgramOperations,
-              MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>
+              MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+              FactoryReturn<TExtension, 'createRead'>
             >
           >
         ) {
@@ -320,6 +379,29 @@ export function extendProgram<
           }
           return mergeOperations(baseOperations, extensionFactory?.(context));
         },
+        createRead(
+          context: ProgramOperationContext<
+            ExtendedProgramDefinition<
+              TBase,
+              MergeField<Field<TBase, 'addresses'>, Field<TExtension, 'addresses'>>,
+              MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
+              MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
+              ProgramOperations,
+              MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+              FactoryReturn<TExtension, 'createRead'>
+            >
+          >
+        ) {
+          const baseRead = baseReadFactory?.(context);
+          if (baseRead) {
+            const connectedProgram = context.program as unknown as { read: unknown };
+            connectedProgram.read = mergeNamespace(connectedProgram.read, baseRead);
+          }
+          return mergeNamespace(
+            baseRead,
+            extensionReadFactory?.(context)
+          );
+        },
       },
       enumerable: false,
       configurable: false,
@@ -333,14 +415,15 @@ export function extendProgram<
     MergeField<Field<TBase, 'constants'>, Field<TExtension, 'constants'>>,
     MergeField<Field<TBase, 'defaults'>, Field<TExtension, 'defaults'>>,
     Extract<FactoryReturn<TExtension, 'createOperations'>, AnyProgramOperations>,
-    MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>
+    MergeField<Field<TBase, 'math'>, Field<TExtension, 'math'>>,
+    FactoryReturn<TExtension, 'createRead'>
   >;
 }
 
 export function extendPrograms<
   TPrograms extends Record<string, ProgramSdkDefinition>,
   TExtensions extends Partial<{
-    [K in keyof TPrograms]: ProgramExtensionInput<any, any, any, any, any, any>;
+    [K in keyof TPrograms]: ProgramExtensionInput<any, any, any, any, any, any, any>;
   }>,
 >(
   programs: TPrograms,
@@ -353,9 +436,10 @@ export function extendPrograms<
         infer TTypes,
         infer TOperations,
         any,
-        infer TMath
+        infer TMath,
+        infer TRead
       >
-      ? ExtendedProgramDefinition<TPrograms[K], TAddresses, THelpers, TTypes, TOperations, TMath>
+      ? ExtendedProgramDefinition<TPrograms[K], TAddresses, THelpers, TTypes, TOperations, TMath, TRead>
       : TPrograms[K]
     : TPrograms[K];
 } {
@@ -363,7 +447,7 @@ export function extendPrograms<
   for (const [name, program] of Object.entries(programs)) {
     const extension = extensions[name as keyof TExtensions];
     merged[name] = extension
-      ? extendProgram(program, extension as ProgramExtensionInput<any, any, any, any, any, any>)
+      ? extendProgram(program, extension as ProgramExtensionInput<any, any, any, any, any, any, any>)
       : program;
   }
   return merged as any;
@@ -371,10 +455,10 @@ export function extendPrograms<
 
 export function getProgramRuntimeExtensions<TProgram extends ProgramSdkDefinition>(
   program: TProgram
-): ProgramRuntimeExtensions<ProgramOperationsOf<TProgram>, TProgram> | undefined {
-  return (program as ProgramRuntimeExtensionCarrier<ProgramOperationsOf<TProgram>>)[
+): ProgramRuntimeExtensions<ProgramOperationsOf<TProgram>, TProgram, ProgramReadOf<TProgram>> | undefined {
+  return (program as ProgramRuntimeExtensionCarrier<ProgramOperationsOf<TProgram>, ProgramReadOf<TProgram>>)[
     PROGRAM_OPERATION_EXTENSIONS
-  ] as ProgramRuntimeExtensions<ProgramOperationsOf<TProgram>, TProgram> | undefined;
+  ] as ProgramRuntimeExtensions<ProgramOperationsOf<TProgram>, TProgram, ProgramReadOf<TProgram>> | undefined;
 }
 
 export interface StackRuntimeExtensions<

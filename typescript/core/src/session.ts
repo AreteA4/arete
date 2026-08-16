@@ -9,6 +9,7 @@ import {
   type TransactionOptions,
 } from './client';
 import { createChainClient, type ChainClient } from './chain';
+import { getProgramReadDescriptor } from './program-sdk';
 import {
   AreteError,
   type AuthConfig,
@@ -43,7 +44,7 @@ export interface SessionDefinition<
   readonly mode?: 'composition';
   readonly stacks?: Record<string, StackDefinition>;
   readonly programs?: TPrograms;
-  /** Generated descriptors keyed in parallel with standalone `programs`. */
+  /** @deprecated Generated program cartridges carry defaults; use only for complete overrides. */
   readonly programReads?: ProgramReadDescriptors<TPrograms>;
 }
 
@@ -301,7 +302,9 @@ function validateCompositionProgramReads(
 ): void {
   const overrides = resolveSessionProgramReads(stack, member, options);
   for (const [name, program] of Object.entries(stack.programs ?? {})) {
-    const descriptor = overrides?.[name] ?? stack.programReads?.[name];
+    const descriptor = overrides?.[name]
+      ?? stack.programReads?.[name]
+      ?? getProgramReadDescriptor(program);
     if (descriptor) validateProgramReadDescriptor(name, descriptor);
     if (Object.keys(program.accounts ?? {}).length === 0) continue;
     const binding = descriptor?.transport.kind === 'hosted-binding'
