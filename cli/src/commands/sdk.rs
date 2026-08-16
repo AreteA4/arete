@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use cap_std::{ambient_authority, fs::Dir};
 use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Select};
 use regex::Regex;
@@ -2920,40 +2921,50 @@ fn write_sdk_provenance_manifest_file(
     output_dir: &Path,
     manifest: &SdkProvenanceManifestV2,
 ) -> Result<()> {
-    prune_stale_sdk_artifacts(output_dir, &manifest.artifacts)?;
+    let output = Dir::open_ambient_dir(output_dir, ambient_authority()).with_context(|| {
+        format!(
+            "Failed to open SDK output directory {}",
+            output_dir.display()
+        )
+    })?;
+    prune_stale_sdk_artifacts(&output, output_dir, &manifest.artifacts)?;
     let contents = format!(
         "{}\n",
         serde_json::to_string_pretty(manifest)
             .context("Failed to serialize SDK provenance manifest")?
     );
     let path = output_dir.join(SDK_PROVENANCE_FILE);
-    fs::write(&path, contents).with_context(|| {
+    output
+        .write(SDK_PROVENANCE_FILE, contents)
+        .with_context(|| {
+            format!(
+                "Failed to write SDK provenance manifest to {}",
+                path.display()
+            )
+        })
+}
+
+fn is_removable_stale_sdk_artifact(output: &Dir, relative: &Path) -> bool {
+    output
+        .symlink_metadata(relative)
+        .is_ok_and(|metadata| metadata.is_file() || metadata.file_type().is_symlink())
+}
+
+fn remove_stale_sdk_artifact(output: &Dir, output_dir: &Path, relative: &Path) -> Result<()> {
+    output.remove_file(relative).with_context(|| {
         format!(
-            "Failed to write SDK provenance manifest to {}",
-            path.display()
+            "Failed to remove stale generated artifact {}",
+            output_dir.join(relative).display()
         )
     })
 }
 
-fn stale_sdk_artifact_path(output_dir: &Path, relative: &str) -> Option<PathBuf> {
-    let relative = Path::new(relative);
-    let mut current = output_dir.to_path_buf();
-    for component in relative.parent()?.components() {
-        let Component::Normal(part) = component else {
-            return None;
-        };
-        current.push(part);
-        let metadata = fs::symlink_metadata(&current).ok()?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return None;
-        }
-    }
-    Some(output_dir.join(relative))
-}
-
-fn prune_stale_sdk_artifacts(output_dir: &Path, next_artifacts: &[String]) -> Result<()> {
-    let provenance_path = output_dir.join(SDK_PROVENANCE_FILE);
-    let Ok(contents) = fs::read_to_string(&provenance_path) else {
+fn prune_stale_sdk_artifacts(
+    output: &Dir,
+    output_dir: &Path,
+    next_artifacts: &[String],
+) -> Result<()> {
+    let Ok(contents) = output.read_to_string(SDK_PROVENANCE_FILE) else {
         return Ok(());
     };
     let Ok(previous) = parse_sdk_provenance_manifest(&contents) else {
@@ -2975,29 +2986,18 @@ fn prune_stale_sdk_artifacts(output_dir: &Path, next_artifacts: &[String]) -> Re
         let Ok(relative) = normalize_extension_relative_path(stale) else {
             continue;
         };
-        let Some(path) = stale_sdk_artifact_path(output_dir, &relative) else {
-            continue;
-        };
-        let Ok(metadata) = fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if metadata.is_file() || metadata.file_type().is_symlink() {
-            fs::remove_file(&path).with_context(|| {
-                format!(
-                    "Failed to remove stale generated artifact {}",
-                    path.display()
-                )
-            })?;
-        } else {
+        let relative = Path::new(&relative);
+        if !is_removable_stale_sdk_artifact(output, relative) {
             continue;
         }
+        remove_stale_sdk_artifact(output, output_dir, relative)?;
 
-        let mut parent = path.parent();
+        let mut parent = relative.parent();
         while let Some(directory) = parent {
-            if directory == output_dir {
+            if directory.as_os_str().is_empty() {
                 break;
             }
-            if fs::remove_dir(directory).is_err() {
+            if output.remove_dir(directory).is_err() {
                 break;
             }
             parent = directory.parent();
@@ -5961,6 +5961,56 @@ mod tests {
 
         assert!(external_artifact.is_file());
         fs::remove_file(output_dir.join("programs/escaped")).expect("remove test symlink");
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&external_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sdk_provenance_removal_resists_symlink_swap_after_validation() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = std::env::temp_dir();
+        let output_dir = temp_dir.join(format!(
+            "a4-sdk-pruning-symlink-swap-{}",
+            std::process::id()
+        ));
+        let external_dir = temp_dir.join(format!(
+            "a4-sdk-pruning-symlink-swap-target-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&external_dir);
+        fs::create_dir_all(output_dir.join("programs/old")).expect("nested output directory");
+        fs::create_dir_all(&external_dir).expect("external directory");
+        fs::write(output_dir.join("programs/old/stale.ts"), "generated")
+            .expect("generated artifact");
+        let external_artifact = external_dir.join("stale.ts");
+        fs::write(&external_artifact, "external").expect("external artifact");
+
+        let output = Dir::open_ambient_dir(&output_dir, ambient_authority())
+            .expect("open output capability");
+        let relative = Path::new("programs/old/stale.ts");
+        assert!(is_removable_stale_sdk_artifact(&output, relative));
+
+        fs::rename(
+            output_dir.join("programs/old"),
+            output_dir.join("programs/old-original"),
+        )
+        .expect("move validated directory");
+        symlink(&external_dir, output_dir.join("programs/old"))
+            .expect("replace validated directory with symlink");
+        assert!(
+            remove_stale_sdk_artifact(&output, &output_dir, relative).is_err(),
+            "capability-scoped removal must reject the escaped path"
+        );
+
+        assert_eq!(
+            fs::read_to_string(&external_artifact).expect("external artifact survives"),
+            "external"
+        );
+        assert!(output_dir.join("programs/old-original/stale.ts").is_file());
+        fs::remove_file(output_dir.join("programs/old")).expect("remove test symlink");
         let _ = fs::remove_dir_all(&output_dir);
         let _ = fs::remove_dir_all(&external_dir);
     }
