@@ -612,6 +612,20 @@ impl ServerBuilder {
                         }
                     };
 
+                    // The compiler includes the canonical entity list/state views in
+                    // `spec.views`. They are already registered above as native views
+                    // backed directly by EntityCache. Registering them again through
+                    // `from_view_def` marks them as derived and replaces the native
+                    // by-id entry, so subscribers read an unpopulated derived cache
+                    // while the projector continues writing to the native cache.
+                    if Self::is_canonical_entity_view(view_def, &export) {
+                        tracing::debug!(
+                            view_id = %view_def.id,
+                            "Keeping canonical entity view backed by the native cache"
+                        );
+                        continue;
+                    }
+
                     let wire_format = entity_wire_formats
                         .get(&export)
                         .cloned()
@@ -635,6 +649,24 @@ impl ServerBuilder {
         }
 
         (index, registry)
+    }
+
+    fn is_canonical_entity_view(view_def: &ViewDef, export: &str) -> bool {
+        use arete_interpreter::ast::{ViewOutput, ViewSource};
+
+        let ViewSource::Entity { name } = &view_def.source else {
+            return false;
+        };
+        if name != export || !view_def.pipeline.is_empty() {
+            return false;
+        }
+
+        match &view_def.output {
+            ViewOutput::Collection => view_def.id == format!("{export}/list"),
+            ViewOutput::Single | ViewOutput::Keyed { .. } => {
+                view_def.id == format!("{export}/state")
+            }
+        }
     }
 
     pub fn build(self) -> Result<Runtime> {
@@ -783,5 +815,55 @@ mod tests {
             Spec::new(bytecode, "Program111").with_program_runtime_definitions(vec![definition]);
 
         assert!(Server::builder().spec(spec).build().is_err());
+    }
+
+    #[test]
+    fn canonical_entity_views_are_not_reclassified_as_derived_views() {
+        use arete_interpreter::ast::{IdentitySpec, TypedStreamSpec, ViewDef, ViewSource};
+
+        let list = ViewDef::list("OreBoard");
+        let state = ViewDef::state("OreBoard", &["id", "address"]);
+        assert!(ServerBuilder::is_canonical_entity_view(&list, "OreBoard"));
+        assert!(ServerBuilder::is_canonical_entity_view(&state, "OreBoard"));
+
+        let mut named_view = ViewDef::list("OreBoard");
+        named_view.id = "OreBoard/all".to_string();
+        assert!(!ServerBuilder::is_canonical_entity_view(
+            &named_view,
+            "OreBoard"
+        ));
+
+        let mut chained_view = ViewDef::list("OreBoard");
+        chained_view.source = ViewSource::View {
+            id: "OreBoard/list".to_string(),
+        };
+        assert!(!ServerBuilder::is_canonical_entity_view(
+            &chained_view,
+            "OreBoard"
+        ));
+
+        let entity_spec = TypedStreamSpec::<serde_json::Value>::new(
+            "OreBoard".to_string(),
+            IdentitySpec {
+                primary_keys: vec!["id.address".to_string()],
+                lookup_indexes: Vec::new(),
+            },
+            Vec::new(),
+        );
+        let bytecode = arete_interpreter::compiler::MultiEntityBytecode::new()
+            .add_entity("OreBoard".to_string(), entity_spec, 1)
+            .build();
+        let spec = Some(Spec::new(bytecode, "Program111").with_views(vec![list, state]));
+
+        let (index, _) = ServerBuilder::build_view_index_and_registry(None, None, &spec);
+        assert!(!index
+            .get_view("OreBoard/list")
+            .expect("list view should exist")
+            .is_derived());
+        assert!(!index
+            .get_view("OreBoard/state")
+            .expect("state view should exist")
+            .is_derived());
+        assert_eq!(index.by_export("OreBoard").len(), 3);
     }
 }
