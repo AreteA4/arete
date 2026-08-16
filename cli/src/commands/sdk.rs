@@ -2753,15 +2753,10 @@ fn build_sdk_provenance_manifest_with_program_extensions(
     extensions: Option<&ResolvedExtensionsArtifact>,
     program_modules: &[HostedProgramModule],
 ) -> Result<SdkProvenanceManifestV2> {
-    let mut manifest = build_sdk_provenance_manifest_from_artifacts(
-        BTreeSet::from([
-            generated_artifact_name(&layout.core_path)?,
-            generated_artifact_name(&layout.entry_path)?,
-        ]),
-        "",
-        input_pin,
-        extensions,
-    )?;
+    let mut generated = typescript_core_paths(layout, extensions)?;
+    generated.insert(generated_artifact_name(&layout.entry_path)?);
+    let mut manifest =
+        build_sdk_provenance_manifest_from_artifacts(generated, "", input_pin, extensions)?;
     for program in program_modules {
         let relative_dir = hosted_program_directory(program);
         let prefix = format!("{}/", relative_dir.to_string_lossy());
@@ -3277,23 +3272,85 @@ fn hosted_program_entry_import(program: &HostedProgramModule) -> String {
     )
 }
 
-fn hosted_program_core_paths(program: &HostedProgramModule) -> Result<BTreeSet<String>> {
+fn extension_core_import_paths(extension: &ResolvedExtensionsArtifact) -> Result<BTreeSet<String>> {
     let import_regex =
         Regex::new(r#"from\s+['\"]\./([^'\"]*?(?:-core|core))(?:\.(?:js|ts))?['\"]"#)
             .expect("program core import regex should compile");
-    let mut core_paths = BTreeSet::from([hosted_program_core_name(program)]);
-    if let Some(extension) = &program.extension {
-        for file in &extension.files {
-            let source_parent = Path::new(&file.path).parent().unwrap_or(Path::new(""));
-            for captures in import_regex.captures_iter(&file.contents) {
-                let relative = source_parent.join(format!("{}.ts", &captures[1]));
-                core_paths.insert(normalize_extension_relative_path(
-                    &relative.to_string_lossy(),
-                )?);
-            }
+    let mut core_paths = BTreeSet::new();
+    for file in &extension.files {
+        let source_parent = Path::new(&file.path).parent().unwrap_or(Path::new(""));
+        for captures in import_regex.captures_iter(&file.contents) {
+            let relative = source_parent.join(format!("{}.ts", &captures[1]));
+            core_paths.insert(normalize_extension_relative_path(
+                &relative.to_string_lossy(),
+            )?);
         }
     }
     Ok(core_paths)
+}
+
+fn hosted_program_core_paths(program: &HostedProgramModule) -> Result<BTreeSet<String>> {
+    let mut core_paths = BTreeSet::from([hosted_program_core_name(program)]);
+    if let Some(extension) = &program.extension {
+        core_paths.extend(extension_core_import_paths(extension)?);
+    }
+    Ok(core_paths)
+}
+
+fn typescript_core_paths(
+    layout: &TypeScriptLayout,
+    extension: Option<&ResolvedExtensionsArtifact>,
+) -> Result<BTreeSet<String>> {
+    let mut core_paths = BTreeSet::from([generated_artifact_name(&layout.core_path)?]);
+    if let Some(extension) = extension {
+        core_paths.extend(extension_core_import_paths(extension)?);
+    }
+    Ok(core_paths)
+}
+
+fn write_typescript_core_modules(
+    layout: &TypeScriptLayout,
+    contents: &str,
+    extension: Option<&ResolvedExtensionsArtifact>,
+) -> Result<()> {
+    let core_paths = typescript_core_paths(layout, extension)?;
+    if let Some(extension) = extension {
+        let mut reserved = core_paths.clone();
+        reserved.insert(generated_artifact_name(&layout.entry_path)?);
+        reserved.insert("extensions.json".to_string());
+        reserved.insert(SDK_PROVENANCE_FILE.to_string());
+        if let Some(path) = extension.files.iter().find_map(|file| {
+            normalize_extension_relative_path(&file.path)
+                .ok()
+                .filter(|path| reserved.contains(path))
+                .map(|_| file.path.as_str())
+        }) {
+            anyhow::bail!(
+                "TypeScript extension '{}' collides with generated SDK artifact '{}'",
+                extension.entry,
+                path
+            );
+        }
+    }
+
+    for core_relative in core_paths {
+        let core_path = layout.output_dir.join(&core_relative);
+        if let Some(parent) = core_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create TypeScript core directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::write(&core_path, contents).with_context(|| {
+            format!(
+                "Failed to write TypeScript core module to {}",
+                core_path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn render_hosted_program_entry(program: &HostedProgramModule) -> String {
@@ -4158,19 +4215,13 @@ fn write_typescript_program_sdk(
         )
     })?;
 
-    fs::write(&layout.core_path, output.full_file()).with_context(|| {
-        format!(
-            "Failed to write TypeScript core module to {}",
-            layout.core_path.display()
-        )
-    })?;
-
     let artifact = resolve_extensions_artifact(
         extensions.path,
         &layout,
         extensions.hosted_artifact,
         OutputExtensionsFallback::Ignore,
     )?;
+    write_typescript_core_modules(&layout, &output.full_file(), artifact.as_ref())?;
     if let Some(ref artifact) = artifact {
         stage_extensions_artifact(artifact, &layout.output_dir, extensions.input_pin)?;
     }
@@ -4310,19 +4361,13 @@ fn generate_typescript_sdk_from_source(
             )
         })?;
 
-        fs::write(&layout.core_path, output.full_file()).with_context(|| {
-            format!(
-                "Failed to write TypeScript core module to {}",
-                layout.core_path.display()
-            )
-        })?;
-
         let artifact = resolve_extensions_artifact(
             extensions_path,
             &layout,
             None,
             source.output_extensions_fallback(),
         )?;
+        write_typescript_core_modules(&layout, &output.full_file(), artifact.as_ref())?;
         if let Some(ref artifact) = artifact {
             stage_extensions_artifact(artifact, &layout.output_dir, &input_pin)?;
         }
@@ -4411,13 +4456,6 @@ fn generate_typescript_sdk_from_source(
             )
         })?;
 
-        fs::write(&layout.core_path, output.full_file()).with_context(|| {
-            format!(
-                "Failed to write TypeScript core module to {}",
-                layout.core_path.display()
-            )
-        })?;
-
         let artifact = resolve_extensions_artifact(
             extensions_path,
             &layout,
@@ -4428,6 +4466,7 @@ fn generate_typescript_sdk_from_source(
             },
             source.output_extensions_fallback(),
         )?;
+        write_typescript_core_modules(&layout, &output.full_file(), artifact.as_ref())?;
         if let Some(ref artifact) = artifact {
             stage_extensions_artifact(artifact, &layout.output_dir, &input_pin)?;
         }
@@ -5850,6 +5889,120 @@ mod tests {
         assert!(!json.contains("/another/"));
         assert!(!json.to_ascii_lowercase().contains("timestamp"));
         assert!(!json.contains("createdAt"));
+    }
+
+    #[test]
+    fn typescript_core_paths_cover_default_program_stack_and_custom_output_names() {
+        let cases = [
+            ("jurassic-launchpad", "jurassic-fi-token-sale-core"),
+            ("ore-stream", "ore-stack-core"),
+            ("custom-output", "ore-core"),
+        ];
+
+        for (base_name, imported_core) in cases {
+            let mut artifact = test_artifact(
+                ExtensionsInputKind::ProgramSpec,
+                &format!("arete:h1:program-spec:sha256:{}", "22".repeat(32)),
+            );
+            artifact.files[0].contents =
+                format!("import {{ CORE }} from './{imported_core}.js';\nexport default CORE;");
+            let paths = typescript_core_paths(&layout(base_name), Some(&artifact))
+                .expect("core aliases should resolve");
+
+            assert_eq!(
+                paths,
+                BTreeSet::from([
+                    format!("{base_name}-core.ts"),
+                    format!("{imported_core}.ts"),
+                ])
+            );
+        }
+    }
+
+    #[test]
+    fn typescript_core_staging_preserves_extensions_and_records_aliases() {
+        let output_dir =
+            std::env::temp_dir().join(format!("a4-typescript-core-aliases-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output_dir);
+        fs::create_dir_all(&output_dir).expect("output directory");
+        let layout = TypeScriptLayout {
+            output_dir: output_dir.clone(),
+            base_name: "jurassic-launchpad".to_string(),
+            entry_path: output_dir.join("jurassic-launchpad.ts"),
+            core_path: output_dir.join("jurassic-launchpad-core.ts"),
+        };
+        let input_pin = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::ProgramSpec,
+            hash: format!("arete:h1:program-spec:sha256:{}", "22".repeat(32)),
+        };
+        let mut artifact = test_artifact(ExtensionsInputKind::ProgramSpec, &input_pin.hash);
+        let extension_source =
+            "import { CORE } from './jurassic-fi-token-sale-core.js';\nexport default CORE;";
+        artifact.files[0].contents = extension_source.to_string();
+
+        write_typescript_core_modules(&layout, "export const CORE = {};\n", Some(&artifact))
+            .expect("core and alias should stage");
+        stage_extensions_artifact(&artifact, &output_dir, &input_pin)
+            .expect("extension should stage unchanged");
+        let provenance = build_sdk_provenance_manifest(&layout, &input_pin, Some(&artifact))
+            .expect("provenance should include aliases");
+
+        assert_eq!(
+            fs::read_to_string(output_dir.join("jurassic-launchpad-core.ts")).expect("layout core"),
+            "export const CORE = {};\n"
+        );
+        assert_eq!(
+            fs::read_to_string(output_dir.join("jurassic-fi-token-sale-core.ts"))
+                .expect("extension core alias"),
+            "export const CORE = {};\n"
+        );
+        assert_eq!(
+            fs::read_to_string(output_dir.join("index.ts")).expect("staged extension"),
+            extension_source
+        );
+        assert!(provenance
+            .artifacts
+            .contains(&"jurassic-launchpad-core.ts".to_string()));
+        assert!(provenance
+            .artifacts
+            .contains(&"jurassic-fi-token-sale-core.ts".to_string()));
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn typescript_core_staging_rejects_extension_alias_collisions() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "a4-typescript-core-collision-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&output_dir);
+        fs::create_dir_all(&output_dir).expect("output directory");
+        let layout = TypeScriptLayout {
+            output_dir: output_dir.clone(),
+            base_name: "ore-stream".to_string(),
+            entry_path: output_dir.join("ore-stream.ts"),
+            core_path: output_dir.join("ore-stream-core.ts"),
+        };
+        let mut artifact = test_artifact(
+            ExtensionsInputKind::StackManifest,
+            &format!("arete:h1:stack-manifest:sha256:{}", "11".repeat(32)),
+        );
+        artifact.files[0].contents =
+            "import { CORE } from './ore-stack-core.js';\nexport default CORE;".to_string();
+        artifact.files.push(ResolvedExtensionsFile {
+            path: "ore-stack-core.ts".to_string(),
+            contents: "export const userOwned = true;".to_string(),
+        });
+
+        let error =
+            write_typescript_core_modules(&layout, "export const CORE = {};\n", Some(&artifact))
+                .expect_err("extension-owned alias path must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("collides with generated SDK artifact"));
+        assert!(!output_dir.join("ore-stream-core.ts").exists());
+        let _ = fs::remove_dir_all(&output_dir);
     }
 
     #[test]
