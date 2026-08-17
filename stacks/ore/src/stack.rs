@@ -40,7 +40,12 @@ pub mod ore_stream {
 
     #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
     pub struct RoundId {
-        #[map(ore_sdk::accounts::Round::id, primary_key, strategy = SetOnce)]
+        // Board carries the authoritative active round id, so its updates can
+        // populate the matching OreRound deadline before the round closes.
+        #[map([
+            ore_sdk::accounts::Round::id,
+            ore_sdk::accounts::Board::round_id
+        ], primary_key, strategy = SetOnce)]
         pub round_id: u64,
 
         #[map(ore_sdk::accounts::Round::__account_address, lookup_index, strategy = SetOnce)]
@@ -52,8 +57,10 @@ pub mod ore_stream {
         #[map(ore_sdk::accounts::Round::expires_at, strategy = LastWrite)]
         pub closes_at: Option<u64>,
 
-        // Entropy deadline for the active round. This remains `expires_at` in the
-        // public schema because existing clients use it for the round countdown.
+        #[map(ore_sdk::accounts::Board::end_slot, strategy = LastWrite, emit = false)]
+        pub countdown_end_slot: Option<u64>,
+
+        // Entropy deadline retained for slot-hash and seed resolution.
         #[map(entropy_sdk::accounts::Var::end_at,
               lookup_index(register_from = [
                   (ore_sdk::instructions::Deploy, accounts::entropyVar, accounts::round),
@@ -63,7 +70,7 @@ pub mod ore_stream {
         pub expires_at: Option<u64>,
 
         #[computed({
-            let expires_at_slot = state.expires_at.unwrap_or(0) as u64;
+            let expires_at_slot = state.countdown_end_slot.unwrap_or(0) as u64;
             let current_slot = __slot;
             if current_slot > 0 && expires_at_slot > current_slot {
                 Some(__timestamp + (((expires_at_slot - current_slot) * 400 / 1000) as i64))
@@ -505,7 +512,7 @@ mod tests {
     fn round_expiry_computes_unix_timestamp_from_update_context() {
         let mut state = json!({
             "id": { "round_id": "0" },
-            "state": { "expires_at": "1150" },
+            "state": { "countdown_end_slot": "1150" },
             "entropy": {},
             "results": {},
         });
@@ -517,6 +524,42 @@ mod tests {
                 .pointer("/state/estimated_expires_at_unix")
                 .and_then(|value| value.as_i64()),
             Some(1_060)
+        );
+    }
+
+    #[test]
+    fn board_deadline_populates_active_round_countdown() {
+        let bytecode = ore_stream::create_multi_entity_bytecode();
+        let mut vm = VmContext::new();
+        let mut context = UpdateContext::new_account(1_000, "board".to_string(), 1);
+        context.timestamp = Some(10_000);
+
+        vm.process_event(
+            &bytecode,
+            json!({
+                "__account_address": "11111111111111111111111111111111",
+                "round_id": 42,
+                "start_slot": "900",
+                "end_slot": "1150",
+                "production_cost_ema": "1000",
+            }),
+            "ore::BoardState",
+            Some(&context),
+            None,
+        )
+        .unwrap();
+
+        let round = vm.get_entity_state(0, &json!(42)).unwrap();
+        assert_eq!(
+            round.pointer("/state/countdown_end_slot"),
+            Some(&json!("1150"))
+        );
+        assert!(round.pointer("/state/expires_at").is_none());
+        assert_eq!(
+            round
+                .pointer("/state/estimated_expires_at_unix")
+                .and_then(|value| value.as_i64()),
+            Some(10_060)
         );
     }
 
