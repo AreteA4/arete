@@ -7358,15 +7358,11 @@
             "temporal_field": null
           },
           {
-            "field_name": "state.expires_at",
+            "field_name": "state.end_at",
             "temporal_field": null
           },
           {
             "field_name": "treasury.__motherlode_raw",
-            "temporal_field": null
-          },
-          {
-            "field_name": "entropy.entropy_value",
             "temporal_field": null
           }
         ]
@@ -7385,30 +7381,13 @@
             "Lookup": {
               "primary_field": {
                 "segments": [
-                  "__account_address"
+                  "end_at"
                 ],
                 "offsets": null
               }
             }
           },
           "mappings": [
-            {
-              "target_path": "state.expires_at",
-              "source": {
-                "FromSource": {
-                  "path": {
-                    "segments": [
-                      "end_at"
-                    ],
-                    "offsets": null
-                  },
-                  "default": null,
-                  "transform": null
-                }
-              },
-              "transform": null,
-              "population": "SetOnce"
-            },
             {
               "target_path": "entropy.entropy_value",
               "source": {
@@ -7619,7 +7598,7 @@
               "population": "SetOnce"
             },
             {
-              "target_path": "state.countdown_end_slot",
+              "target_path": "state.end_at",
               "source": {
                 "FromSource": {
                   "path": {
@@ -8084,11 +8063,11 @@
               "resolved_type": null
             },
             {
-              "field_name": "countdown_end_slot",
-              "raw_name": "countdown_end_slot",
-              "canonical_name": "countdownEndSlot",
+              "field_name": "end_at",
+              "raw_name": "end_at",
+              "canonical_name": "endAt",
               "rust_type_name": "Option < u64 >",
-              "base_type": "Integer",
+              "base_type": "Timestamp",
               "integer_kind": "U64",
               "is_optional": true,
               "is_array": false,
@@ -8932,20 +8911,6 @@
           "source_path": null,
           "resolved_type": null
         },
-        "state.countdown_end_slot": {
-          "field_name": "countdown_end_slot",
-          "raw_name": "countdown_end_slot",
-          "canonical_name": "countdownEndSlot",
-          "rust_type_name": "Option < u64 >",
-          "base_type": "Integer",
-          "integer_kind": "U64",
-          "is_optional": true,
-          "is_array": false,
-          "inner_type": "u64",
-          "source_path": null,
-          "resolved_type": null,
-          "emit": false
-        },
         "state.deployed_per_square": {
           "field_name": "deployed_per_square",
           "raw_name": "deployed_per_square",
@@ -8970,6 +8935,20 @@
           "inner_type": "Vec < f64 >",
           "source_path": null,
           "resolved_type": null
+        },
+        "state.end_at": {
+          "field_name": "end_at",
+          "raw_name": "end_at",
+          "canonical_name": "endAt",
+          "rust_type_name": "Option < u64 >",
+          "base_type": "Timestamp",
+          "integer_kind": "U64",
+          "is_optional": true,
+          "is_array": false,
+          "inner_type": "u64",
+          "source_path": null,
+          "resolved_type": null,
+          "emit": false
         },
         "state.estimated_expires_at_unix": {
           "field_name": "estimated_expires_at_unix",
@@ -9073,15 +9052,6 @@
       },
       "resolver_hooks": [
         {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        },
-        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -9097,71 +9067,8 @@
       ],
       "instruction_hooks": [
         {
-          "instruction_type": "ore::DeployIxState",
-          "actions": [
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            },
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            }
-          ],
-          "lookup_by": null
-        },
-        {
           "instruction_type": "ore::ResetIxState",
           "actions": [
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            },
             {
               "RegisterPdaMapping": {
                 "pda_field": {
@@ -9175,25 +9082,6 @@
                   "segments": [
                     "accounts",
                     "roundNext"
-                  ],
-                  "offsets": null
-                },
-                "lookup_name": "default_pda_lookup"
-              }
-            },
-            {
-              "RegisterPdaMapping": {
-                "pda_field": {
-                  "segments": [
-                    "accounts",
-                    "entropyVar"
-                  ],
-                  "offsets": null
-                },
-                "seed_field": {
-                  "segments": [
-                    "accounts",
-                    "round"
                   ],
                   "offsets": null
                 },
@@ -9250,10 +9138,11 @@
             "op": "Equal",
             "value": null
           },
-          "schedule_at": "state.expires_at"
+          "schedule_at": "entropy.entropy_end_at"
         }
       ],
       "computed_fields": [
+        "state.expires_at",
         "state.estimated_expires_at_unix",
         "state.motherlode",
         "state.total_deployed",
@@ -9272,6 +9161,15 @@
       ],
       "computed_field_specs": [
         {
+          "target_path": "state.expires_at",
+          "expression": {
+            "FieldRef": {
+              "path": "state.end_at"
+            }
+          },
+          "result_type": "Option < u64 >"
+        },
+        {
           "target_path": "state.estimated_expires_at_unix",
           "expression": {
             "Let": {
@@ -9282,7 +9180,7 @@
                     "UnwrapOr": {
                       "expr": {
                         "FieldRef": {
-                          "path": "state.countdown_end_slot"
+                          "path": "state.end_at"
                         }
                       },
                       "default": 0
@@ -9573,7 +9471,7 @@
               "args": [
                 {
                   "FieldRef": {
-                    "path": "state.expires_at"
+                    "path": "state.end_at"
                   }
                 }
               ]
@@ -10193,7 +10091,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "e32b5cf15f55b10c0332e8013d8da6b6a8626ced863bb67c630396e6b46946a8",
+      "content_hash": "cf2a20f838e91274b03c9cd35b0a04b75633d79eb593bb7c9ecc5d905a5efebd",
       "views": [
         {
           "id": "OreRound/latest",
@@ -10629,15 +10527,6 @@
       },
       "resolver_hooks": [
         {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        },
-        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -10655,7 +10544,7 @@
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "2c2cc014ef9231791fedbd2a6411cf0538d44977417fc8abe0e5f855420ef7a2",
+      "content_hash": "88de7908843f6acc1b7fec86ba64f9a3bc6eb48cfbc1a8bc9102d5c20bd976f5",
       "views": []
     },
     {
@@ -11019,15 +10908,6 @@
       },
       "resolver_hooks": [
         {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        },
-        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -11116,7 +10996,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "3bc899246276d3ed9af027a9136b43f439b5c84b72134d15df7c36f0c079d97a",
+      "content_hash": "71bf8097a342003753d8b40ad1c34306ee356239890abe289512389fd8f9d38f",
       "views": []
     },
     {
@@ -12889,15 +12769,6 @@
       },
       "resolver_hooks": [
         {
-          "account_type": "entropy::VarState",
-          "strategy": {
-            "PdaReverseLookup": {
-              "lookup_name": "default_pda_lookup",
-              "queue_discriminators": []
-            }
-          }
-        },
-        {
           "account_type": "ore::TreasuryState",
           "strategy": {
             "PdaReverseLookup": {
@@ -12986,7 +12857,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "089c685f8663523f298319fe125d3c612309d598b93488807e9255e3183c456e",
+      "content_hash": "da17901c6e7f182199546ac4c489ecc4675e69c94f38f14899ef1233094d32c8",
       "views": []
     }
   ],
@@ -14650,5 +14521,5 @@
       ]
     }
   ],
-  "content_hash": "94384b7e846a3e0ac007a2cadf9964c18041c4019ba2190bad0028ec8c7dcea8"
+  "content_hash": "4c8b41425774b24c443756ad2c843c7ded0e5fd8fafc6400d7b3e732a0d64cdd"
 }
