@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.2](https://github.com/AreteA4/arete/compare/arete-server-v0.8.1...arete-server-v0.8.2) (2026-08-17)
+
+
+### Miscellaneous Chores
+
+* **arete-server:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.8.1 to 0.8.2
+
 ## [0.8.1](https://github.com/AreteA4/arete/compare/arete-server-v0.8.0...arete-server-v0.8.1) (2026-08-16)
 
 
