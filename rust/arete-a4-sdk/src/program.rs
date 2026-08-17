@@ -189,6 +189,10 @@ pub trait Programs: Sized + Send + Sync + 'static {
 /// multi-member [`Session`](crate::Session).
 pub trait ProgramSdk: Programs {
     fn name() -> &'static str;
+
+    fn gateway() -> Option<crate::HostedSolanaGatewayBindings> {
+        None
+    }
 }
 
 /// HTTP-only stack adapter used internally to connect a standalone program
@@ -206,6 +210,10 @@ impl<P: ProgramSdk> crate::Stack for ProgramStack<P> {
 
     fn url() -> &'static str {
         ""
+    }
+
+    fn gateway() -> Option<crate::HostedSolanaGatewayBindings> {
+        P::gateway()
     }
 }
 
@@ -252,6 +260,10 @@ impl<S: crate::Stack, P: ProgramSdk> crate::Stack for StackWithPrograms<S, P> {
 
     fn http_url() -> &'static str {
         S::http_url()
+    }
+
+    fn gateway() -> Option<crate::HostedSolanaGatewayBindings> {
+        S::gateway().or_else(P::gateway)
     }
 }
 

@@ -631,9 +631,9 @@ pub struct RegistryStackInstallResponse {
     pub live_specs: Vec<RegistryLiveSpecInstallDescriptor>,
     pub stack_manifest_hash: String,
     pub stack_manifest: serde_json::Value,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_binding: Option<RegistryCapabilityInstallBinding>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_binding: Option<RegistryCapabilityInstallBinding>,
     pub extensions: Option<RegistrySdkExtensionArtifact>,
     pub programs: Vec<RegistryProgramInstallResponse>,
@@ -694,6 +694,10 @@ pub struct RegistryProgramInstallResponse {
     pub definition: RegistryProgramInstallDefinition,
     pub release: RegistryProgramInstallRelease,
     pub transport: RegistryProgramInstallTransport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_binding: Option<RegistryCapabilityInstallBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_binding: Option<RegistryCapabilityInstallBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1532,15 +1536,15 @@ impl ApiClient {
     }
 }
 
-/// Build a registry install URL, appending the optional `language` selector.
-///
-/// With `language: None` the URL is byte-identical to the pre-selector
-/// request, so default TypeScript installs keep hitting the registry exactly
-/// as released CLIs do.
+/// Build a registry install URL and request the managed Solana gateway
+/// capability contract. Hosted generation must never silently inherit a
+/// tenant HTTP endpoint for chain reads or transaction dispatch.
 fn registry_install_url(base_url: &str, path: &str, language: Option<&str>) -> String {
     match language {
-        Some(language) => format!("{base_url}{path}?language={language}"),
-        None => format!("{base_url}{path}"),
+        Some(language) => {
+            format!("{base_url}{path}?language={language}&capabilities=managed-solana-gateway-v1")
+        }
+        None => format!("{base_url}{path}?capabilities=managed-solana-gateway-v1"),
     }
 }
 
@@ -1582,16 +1586,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_install_urls_omit_language_by_default_and_pass_rust_selector() {
-        // TypeScript/default installs must issue byte-identical requests to
-        // released CLIs: no query string at all.
+    fn registry_install_urls_require_managed_gateway_capabilities() {
         assert_eq!(
             registry_install_url(
                 "https://api.example.test",
                 "/api/registry/stacks/ore/install",
                 None
             ),
-            "https://api.example.test/api/registry/stacks/ore/install"
+            "https://api.example.test/api/registry/stacks/ore/install?capabilities=managed-solana-gateway-v1"
         );
         assert_eq!(
             registry_install_url(
@@ -1599,7 +1601,7 @@ mod tests {
                 "/api/registry/programs/spl-token/install",
                 None
             ),
-            "https://api.example.test/api/registry/programs/spl-token/install"
+            "https://api.example.test/api/registry/programs/spl-token/install?capabilities=managed-solana-gateway-v1"
         );
         // The Rust rung opts in explicitly.
         assert_eq!(
@@ -1608,7 +1610,7 @@ mod tests {
                 "/api/registry/stacks/ore/install",
                 Some("rust")
             ),
-            "https://api.example.test/api/registry/stacks/ore/install?language=rust"
+            "https://api.example.test/api/registry/stacks/ore/install?language=rust&capabilities=managed-solana-gateway-v1"
         );
         // ...and the Python rung uses the same selector mechanism.
         assert_eq!(
@@ -1617,7 +1619,7 @@ mod tests {
                 "/api/registry/stacks/ore/install",
                 Some("python")
             ),
-            "https://api.example.test/api/registry/stacks/ore/install?language=python"
+            "https://api.example.test/api/registry/stacks/ore/install?language=python&capabilities=managed-solana-gateway-v1"
         );
     }
 

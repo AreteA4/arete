@@ -227,6 +227,51 @@ fn main() {}
 }
 
 #[test]
+fn account_join_accepts_nested_lookup_index_leaf() {
+    let source = r#"use arete_macros::arete;
+
+#[arete(idl = "fixture/minimal.json")]
+mod valid {
+    use arete::macros::Stream;
+    use serde::{Deserialize, Serialize};
+
+    #[entity(name = "Thing")]
+    struct Thing {
+        id: ThingId,
+        routing: Routing,
+        state: State,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Stream)]
+    struct ThingId {
+        #[map(fake_sdk::accounts::Thing::id, primary_key, strategy = SetOnce)]
+        id: String,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Stream)]
+    struct Routing {
+        #[map(fake_sdk::accounts::Thing::id, lookup_index, strategy = LastWrite)]
+        amount: String,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Stream)]
+    struct State {
+        #[map(fake_sdk::accounts::Position::amount, join_on = amount, strategy = LastWrite)]
+        amount: u64,
+    }
+}
+
+fn main() {}
+"#;
+
+    compile_success_with_files(
+        "account_join_accepts_nested_lookup_index_leaf",
+        source,
+        &[("fixture/minimal.json", minimal_idl())],
+    );
+}
+
+#[test]
 fn event_source_without_lookup_or_join_is_rejected() {
     let source = r#"use arete_macros::arete;
 

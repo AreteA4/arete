@@ -19,9 +19,9 @@ Semantics:
 - Programs bundled by stack members are promoted onto ``session.programs``
   by reference; on key collisions the first-connected stack wins (with a
   warning). Explicit standalone programs always win over promoted keys.
-- ``mode="composition"`` requires explicit ``chain`` + ``transactions``
-  transports and forbids shared fallback endpoints — chain reads and program
-  reads never inherit a live member's HTTP endpoint.
+- ``mode="composition"`` requires generated or explicit ``chain`` +
+  ``transactions`` transports and forbids shared fallback endpoints — chain
+  reads and program reads never inherit a live member's HTTP endpoint.
 - The execution host is the first connected member; ``set_wallet`` fans out
   to every member; ``close()`` disconnects all.
 """
@@ -44,6 +44,7 @@ from arete.auth import AuthConfig
 from arete.chain import ChainClient, HttpChainClient
 from arete.client import Arete
 from arete.errors import AreteError
+from arete.gateway import create_hosted_solana_gateway_transports
 from arete.http import HttpAuthClient
 from arete.instructions import BuiltInstruction, ErrorMetadata
 from arete.operations import (
@@ -136,6 +137,7 @@ def _program_as_stack(
         views={},
         programs={name: program},
         program_reads={name: descriptor} if descriptor is not None else {},
+        gateway=program.gateway,
     )
 
 
@@ -376,8 +378,8 @@ async def create_session(
     overrides (``url``, ``http_url``, ``transport``, ``auth``,
     ``auto_connect``, ``auto_reconnect``, ``programs``, ``program_read``,
     ``program_reads``); ``program_read`` / ``program_read_overrides`` are the
-    session-wide layers. ``mode="composition"`` requires explicit ``chain`` +
-    ``transactions`` and forbids ``endpoints`` fallback.
+    session-wide layers. ``mode="composition"`` requires generated or explicit
+    ``chain`` + ``transactions`` and forbids ``endpoints`` fallback.
     """
     stack_entries = list((stacks or {}).items())
     program_entries = list((programs or {}).items())
@@ -392,15 +394,30 @@ async def create_session(
     if mode not in (None, "composition"):
         raise SessionError(f"Unknown session mode {mode!r}")
     composition = mode == "composition"
-    if composition and (chain is None or transactions is None):
-        raise SessionError(
-            "composition sessions require explicit chain and transaction transports"
-        )
     if composition and endpoints is not None:
         raise SessionError(
             "composition sessions require per-member live endpoints, not "
             "shared fallback endpoints"
         )
+    if composition and (chain is None or transactions is None):
+        gateways = [stack.gateway for _, stack in stack_entries] + [
+            program.gateway for _, program in program_entries
+        ]
+        generated_gateway = gateways[0] if gateways else None
+        if generated_gateway is None or any(
+            gateway != generated_gateway for gateway in gateways
+        ):
+            raise SessionError(
+                "composition sessions require one consistent generated gateway "
+                "or explicit chain and transaction transports"
+            )
+        generated_transports = create_hosted_solana_gateway_transports(
+            generated_gateway,
+            auth=auth,
+            http_client=http_client,
+        )
+        chain = chain or generated_transports.chain
+        transactions = transactions or generated_transports.transactions
     if program_reads:
         program_keys = [key for key, _ in program_entries]
         descriptor_keys = list(program_reads)

@@ -94,6 +94,8 @@ export interface ProgramSdkDefinition {
   readonly constants?: unknown;
   readonly defaults?: unknown;
   readonly math?: unknown;
+  /** Managed-hosting transports. Absent for local/self-hosted generation. */
+  readonly gateway?: HostedSolanaGatewayBindings;
 }
 
 export interface ProgramReleaseReference {
@@ -200,6 +202,8 @@ export interface StackDefinition<
   readonly programs?: TPrograms;
   /** Release and transport metadata keyed in parallel with `programs`. */
   readonly programReads?: ProgramReadDescriptors<TPrograms>;
+  /** Managed-hosting transports. Absent for local/self-hosted generation. */
+  readonly gateway?: HostedSolanaGatewayBindings;
 }
 
 export interface ViewGroup {

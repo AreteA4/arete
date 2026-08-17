@@ -57,20 +57,21 @@ pub mod ore_stream {
         #[map(ore_sdk::accounts::Round::expires_at, strategy = LastWrite)]
         pub closes_at: Option<u64>,
 
-        #[map(ore_sdk::accounts::Board::end_slot, strategy = LastWrite, emit = false)]
-        pub countdown_end_slot: Option<u64>,
+        // Board.end_slot and Entropy Var.end_at identify the same round. Indexing
+        // the board value lets an early Var update wait for the matching board
+        // update instead of depending on Deploy/Reset account-address remapping.
+        #[map(ore_sdk::accounts::Board::end_slot,
+              lookup_index,
+              strategy = LastWrite,
+              emit = false)]
+        pub end_at: Option<u64>,
 
-        // Entropy deadline retained for slot-hash and seed resolution.
-        #[map(entropy_sdk::accounts::Var::end_at,
-              lookup_index(register_from = [
-                  (ore_sdk::instructions::Deploy, accounts::entropyVar, accounts::round),
-                  (ore_sdk::instructions::Reset, accounts::entropyVar, accounts::round)
-              ]),
-              strategy = SetOnce)]
+        // Preserve the public field name used by existing clients.
+        #[computed(state.end_at)]
         pub expires_at: Option<u64>,
 
         #[computed({
-            let expires_at_slot = state.countdown_end_slot.unwrap_or(0) as u64;
+            let expires_at_slot = state.end_at.unwrap_or(0) as u64;
             let current_slot = __slot;
             if current_slot > 0 && expires_at_slot > current_slot {
                 Some(__timestamp + (((expires_at_slot - current_slot) * 400 / 1000) as i64))
@@ -133,7 +134,7 @@ pub mod ore_stream {
 
         // Computed field that fetches the slot hash at expires_at from our cache
         // This is populated from the SlotHashes sysvar via gRPC subscription
-        #[computed(state.expires_at.slot_hash())]
+        #[computed(state.end_at.slot_hash())]
         pub expires_at_slot_hash: Option<ResolvedSlotHash>,
 
         #[computed(
@@ -205,46 +206,51 @@ pub mod ore_stream {
     }
 
     // ========================================================================
-    // Entropy — Cross-program randomness state from the Entropy program
-    // Linked to OreRound via Deploy/Reset instructions that reference both
-    // accounts::round and accounts::entropyVar in the same transaction.
+    // Entropy — Cross-program randomness state from the Entropy program.
+    // Var.end_at joins to the matching Board.end_slot lookup index. This remains
+    // correct when the shared entropy account updates before the Deploy instruction.
     // ========================================================================
 
     #[derive(Debug, Clone, Serialize, Deserialize, Stream)]
     pub struct EntropyState {
         #[map(entropy_sdk::accounts::Var::value,
-              lookup_index(register_from = [
-                  (ore_sdk::instructions::Deploy, accounts::entropyVar, accounts::round),
-                  (ore_sdk::instructions::Reset, accounts::entropyVar, accounts::round)
-              ]),
+              join_on = end_at,
               when = entropy_sdk::instructions::Reveal,
               condition = "value != ZERO_32",
               strategy = LastWrite,
               transform = Base58Encode)]
         pub entropy_value: Option<String>,
 
-        #[map(entropy_sdk::accounts::Var::seed, strategy = LastWrite, transform = Base58Encode)]
+        #[map(entropy_sdk::accounts::Var::seed,
+              join_on = end_at,
+              strategy = LastWrite,
+              transform = Base58Encode)]
         pub entropy_seed: Option<String>,
 
-        #[map(entropy_sdk::accounts::Var::slot_hash, strategy = LastWrite, transform = Base58Encode)]
+        #[map(entropy_sdk::accounts::Var::slot_hash,
+              join_on = end_at,
+              strategy = LastWrite,
+              transform = Base58Encode)]
         pub entropy_slot_hash: Option<String>,
 
-        #[map(entropy_sdk::accounts::Var::start_at, strategy = LastWrite)]
+        #[map(entropy_sdk::accounts::Var::start_at, join_on = end_at, strategy = LastWrite)]
         pub entropy_start_at: Option<u64>,
 
-        #[map(entropy_sdk::accounts::Var::end_at, strategy = LastWrite)]
+        #[map(entropy_sdk::accounts::Var::end_at, join_on = end_at, strategy = LastWrite)]
         pub entropy_end_at: Option<u64>,
 
-        #[map(entropy_sdk::accounts::Var::samples, strategy = LastWrite)]
+        #[map(entropy_sdk::accounts::Var::samples, join_on = end_at, strategy = LastWrite)]
         pub entropy_samples: Option<u64>,
 
-        #[map(entropy_sdk::accounts::Var::__account_address, strategy = SetOnce)]
+        #[map(entropy_sdk::accounts::Var::__account_address,
+              join_on = end_at,
+              strategy = SetOnce)]
         pub entropy_var_address: Option<String>,
 
         #[resolve(
             url = "https://entropy-api.onrender.com/var/{entropy.entropy_var_address}/seed?samples={entropy.entropy_samples}",
             extract = "seed",
-            schedule_at = state.expires_at,
+            schedule_at = entropy.entropy_end_at,
             condition = "entropy.entropy_value == null",
             strategy = SetOnce
         )]
@@ -438,7 +444,7 @@ mod tests {
 
         let mut state = json!({
             "id": { "round_id": "0" },
-            "state": { "expires_at": slot.to_string() },
+            "state": { "end_at": slot.to_string() },
             "entropy": {},
             "results": {},
         });
@@ -512,7 +518,7 @@ mod tests {
     fn round_expiry_computes_unix_timestamp_from_update_context() {
         let mut state = json!({
             "id": { "round_id": "0" },
-            "state": { "countdown_end_slot": "1150" },
+            "state": { "end_at": "1150" },
             "entropy": {},
             "results": {},
         });
@@ -550,11 +556,8 @@ mod tests {
         .unwrap();
 
         let round = vm.get_entity_state(0, &json!(42)).unwrap();
-        assert_eq!(
-            round.pointer("/state/countdown_end_slot"),
-            Some(&json!("1150"))
-        );
-        assert!(round.pointer("/state/expires_at").is_none());
+        assert_eq!(round.pointer("/state/end_at"), Some(&json!("1150")));
+        assert_eq!(round.pointer("/state/expires_at"), Some(&json!("1150")));
         assert_eq!(
             round
                 .pointer("/state/estimated_expires_at_unix")
@@ -793,7 +796,7 @@ mod tests {
 
         let mut state = json!({
             "id": { "round_id": "0" },
-            "state": { "expires_at": slot.to_string() },
+            "state": { "end_at": slot.to_string() },
             "entropy": {
                 "resolved_seed": vec![0_u8; 32],
                 "entropy_samples": "1",
@@ -837,351 +840,138 @@ mod tests {
     }
 
     #[test]
-    fn queued_entropy_update_schedules_seed_resolution_after_deploy_mapping() {
+    fn entropy_update_waits_for_matching_board_end_slot() {
         let bytecode = ore_stream::create_multi_entity_bytecode();
         let mut vm = VmContext::new();
-        let round_address = "11111111111111111111111111111111";
         let entropy_address = "SysvarRent111111111111111111111111111111111";
 
-        vm.process_event(
-            &bytecode,
-            json!({
-                "__account_address": round_address,
-                "id": 42,
-                "top_miner": vec![0_u8; 32],
-                "rent_payer": vec![0_u8; 32],
-                "slot_hash": vec![0_u8; 32],
-            }),
-            "ore::RoundState",
-            Some(&UpdateContext::new_account(100, "round".to_string(), 1)),
-            None,
-        )
-        .unwrap();
-        let _ = vm.take_resolver_requests();
-
-        vm.process_event(
-            &bytecode,
-            json!({
-                "__account_address": entropy_address,
-                "end_at": "200",
-                "samples": 1,
-                "value": vec![0_u8; 32],
-                "seed": vec![0_u8; 32],
-                "slot_hash": vec![0_u8; 32],
-            }),
-            "entropy::VarState",
-            Some(&UpdateContext::new_account(101, "entropy".to_string(), 2)),
-            None,
-        )
-        .unwrap();
-
-        vm.process_event(
-            &bytecode,
-            json!({
-                "accounts": {
-                    "round": round_address,
-                    "entropyVar": entropy_address,
-                },
-                "data": {},
-            }),
-            "ore::DeployIxState",
-            Some(&UpdateContext::new_instruction(
-                102,
-                "deploy".to_string(),
-                1,
-            )),
-            None,
-        )
-        .unwrap();
-
-        let scheduled = vm.take_scheduled_callbacks();
-        assert_eq!(scheduled.len(), 1);
-        assert_eq!(scheduled[0].0, 200);
-        assert_eq!(scheduled[0].1.primary_key, json!(42));
-    }
-
-    #[test]
-    fn remapped_entropy_update_can_schedule_future_seed_resolution() {
-        let bytecode = ore_stream::create_multi_entity_bytecode();
-        let mut vm = VmContext::new();
-        let round_address = "11111111111111111111111111111111";
-
-        vm.process_event(
-            &bytecode,
-            json!({
-                "__account_address": round_address,
-                "id": 42,
-                "top_miner": vec![0_u8; 32],
-                "rent_payer": vec![0_u8; 32],
-                "slot_hash": vec![0_u8; 32],
-            }),
-            "ore::RoundState",
-            Some(&UpdateContext::new_account(100, "round".to_string(), 1)),
-            None,
-        )
-        .unwrap();
-        let _ = vm.take_resolver_requests();
-
-        vm.process_event(
-            &bytecode,
-            json!({
-                "__account_address": "SysvarRent111111111111111111111111111111111",
-                "__resolved_primary_key": round_address,
-                "end_at": "200",
-                "samples": 1,
-                "value": vec![0_u8; 32],
-                "seed": vec![0_u8; 32],
-                "slot_hash": vec![0_u8; 32],
-            }),
-            "entropy::VarState",
-            Some(&UpdateContext::new_reprocessed(101, 2)),
-            None,
-        )
-        .unwrap();
-
-        let scheduled = vm.take_scheduled_callbacks();
-        assert_eq!(scheduled.len(), 1);
-        assert_eq!(scheduled[0].0, 200);
-        assert_eq!(scheduled[0].1.primary_key, json!(42));
-        assert!(vm.take_resolver_requests().is_empty());
-    }
-
-    #[test]
-    fn reset_keeps_current_deadline_until_next_round_deploy() {
-        let bytecode = ore_stream::create_multi_entity_bytecode();
-        let mut vm = VmContext::new();
-        let current_round = "11111111111111111111111111111111";
-        let next_round = "SysvarC1ock11111111111111111111111111111111";
-        let following_round = "SysvarS1otHashes111111111111111111111111111";
-        let entropy_address = "SysvarRent111111111111111111111111111111111";
-
-        for (slot, id, address) in [
-            (100, 41, current_round),
-            (101, 42, next_round),
-            (102, 43, following_round),
-        ] {
-            vm.process_event(
+        let mutations = vm
+            .process_event(
                 &bytecode,
                 json!({
-                    "__account_address": address,
-                    "id": id,
-                    "top_miner": vec![0_u8; 32],
-                    "rent_payer": vec![0_u8; 32],
+                    "__account_address": entropy_address,
+                    "start_at": "150",
+                    "end_at": "200",
+                    "samples": 1,
+                    "value": vec![0_u8; 32],
+                    "seed": vec![0_u8; 32],
                     "slot_hash": vec![0_u8; 32],
                 }),
-                "ore::RoundState",
-                Some(&UpdateContext::new_account(slot, format!("round-{id}"), id)),
+                "entropy::VarState",
+                Some(&UpdateContext::new_account(100, "entropy".to_string(), 1)),
                 None,
             )
             .unwrap();
-        }
 
-        let entropy_update = |end_at: u64| {
-            json!({
-                "__account_address": entropy_address,
-                "end_at": end_at.to_string(),
-                "samples": 1,
-                "value": vec![0_u8; 32],
-                "seed": vec![0_u8; 32],
-                "slot_hash": vec![0_u8; 32],
-            })
-        };
-
-        vm.process_event(
-            &bytecode,
-            entropy_update(200),
-            "entropy::VarState",
-            Some(&UpdateContext::new_account(103, "entropy-1".to_string(), 1)),
-            None,
-        )
-        .unwrap();
+        assert!(mutations.is_empty());
+        assert!(vm.get_entity_state(0, &json!(42)).is_none());
+        assert!(vm.take_scheduled_callbacks().is_empty());
 
         vm.process_event(
             &bytecode,
             json!({
-                "accounts": {
-                    "round": current_round,
-                    "entropyVar": entropy_address,
-                },
-                "data": {},
+                "__account_address": "11111111111111111111111111111111",
+                "round_id": 42,
+                "start_slot": "150",
+                "end_slot": "200",
+                "production_cost_ema": "1000",
             }),
-            "ore::DeployIxState",
-            Some(&UpdateContext::new_instruction(
-                104,
-                "deploy-1".to_string(),
-                1,
-            )),
+            "ore::BoardState",
+            Some(&UpdateContext::new_account(101, "board".to_string(), 2)),
             None,
         )
         .unwrap();
-        let _ = vm.take_scheduled_callbacks();
 
-        vm.process_event(
-            &bytecode,
-            json!({
-                "__resolved_primary_key": 41,
-                "accounts": {
-                    "round": current_round,
-                    "roundNext": next_round,
-                    "entropyVar": entropy_address,
-                },
-                "data": {},
-            }),
-            "ore::ResetIxState",
-            Some(&UpdateContext::new_instruction(105, "reset".to_string(), 2)),
-            None,
-        )
-        .unwrap();
+        let round = vm.get_entity_state(0, &json!(42)).unwrap();
+        assert_eq!(round.pointer("/state/end_at"), Some(&json!("200")));
+        assert_eq!(round.pointer("/state/expires_at"), Some(&json!("200")));
         assert_eq!(
-            vm.get_entity_state(0, &json!(41))
-                .and_then(|state| state.pointer("/state/expires_at").cloned()),
-            Some(json!("200"))
+            round.pointer("/entropy/entropy_end_at"),
+            Some(&json!("200"))
         );
-        let _ = vm.take_scheduled_callbacks();
-        assert!(vm
-            .get_entity_state(0, &json!(42))
-            .and_then(|state| state.pointer("/state/expires_at").cloned())
-            .is_none());
-
-        vm.process_event(
-            &bytecode,
-            entropy_update(300),
-            "entropy::VarState",
-            Some(&UpdateContext::new_account(106, "entropy-2".to_string(), 2)),
-            None,
-        )
-        .unwrap();
+        assert_eq!(round.pointer("/entropy/entropy_samples"), Some(&json!(1)));
         assert_eq!(
-            vm.get_entity_state(0, &json!(41))
-                .and_then(|state| state.pointer("/state/expires_at").cloned()),
-            Some(json!("200"))
+            round.pointer("/entropy/entropy_var_address"),
+            Some(&json!(entropy_address))
         );
-        let _ = vm.take_scheduled_callbacks();
 
-        vm.process_event(
-            &bytecode,
-            json!({
-                "accounts": {
-                    "round": next_round,
-                    "entropyVar": entropy_address,
-                },
-                "data": {},
-            }),
-            "ore::DeployIxState",
-            Some(&UpdateContext::new_instruction(
-                107,
-                "deploy-2".to_string(),
-                3,
-            )),
-            None,
-        )
-        .unwrap();
-
-        assert!(vm
-            .get_entity_state(0, &json!(42))
-            .and_then(|state| state.pointer("/state/expires_at").cloned())
-            .is_none());
-
-        vm.process_event(
-            &bytecode,
-            entropy_update(300),
-            "entropy::VarState",
-            Some(&UpdateContext::new_account(
-                108,
-                "entropy-2b".to_string(),
-                3,
-            )),
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(
-            vm.get_entity_state(0, &json!(42))
-                .and_then(|state| state.pointer("/state/expires_at").cloned()),
-            Some(json!("300"))
-        );
         let scheduled = vm.take_scheduled_callbacks();
         assert_eq!(scheduled.len(), 1);
-        assert_eq!(scheduled[0].0, 300);
+        assert_eq!(scheduled[0].0, 200);
         assert_eq!(scheduled[0].1.primary_key, json!(42));
-        assert!(vm
-            .get_entity_state(0, &json!(43))
-            .and_then(|state| state.pointer("/state/expires_at").cloned())
-            .is_none());
+    }
 
-        vm.process_event(
-            &bytecode,
-            json!({
-                "__resolved_primary_key": 42,
-                "accounts": {
-                    "round": next_round,
-                    "roundNext": following_round,
-                    "entropyVar": entropy_address,
-                },
-                "data": {},
-            }),
-            "ore::ResetIxState",
-            Some(&UpdateContext::new_instruction(
-                109,
-                "reset-2".to_string(),
-                4,
-            )),
-            None,
-        )
-        .unwrap();
+    #[test]
+    fn shared_entropy_account_routes_consecutive_rounds_by_end_slot() {
+        let bytecode = ore_stream::create_multi_entity_bytecode();
+        let mut vm = VmContext::new();
+        let entropy_address = "SysvarRent111111111111111111111111111111111";
 
-        vm.process_event(
-            &bytecode,
-            entropy_update(400),
-            "entropy::VarState",
-            Some(&UpdateContext::new_account(110, "entropy-3".to_string(), 4)),
-            None,
-        )
-        .unwrap();
+        for (slot, round_id, end_slot) in [(100, 41, 200), (300, 42, 400)] {
+            vm.process_event(
+                &bytecode,
+                json!({
+                    "__account_address": entropy_address,
+                    "start_at": (end_slot - 50).to_string(),
+                    "end_at": end_slot.to_string(),
+                    "samples": round_id,
+                    "value": vec![0_u8; 32],
+                    "seed": vec![0_u8; 32],
+                    "slot_hash": vec![0_u8; 32],
+                }),
+                "entropy::VarState",
+                Some(&UpdateContext::new_account(
+                    slot,
+                    format!("entropy-{round_id}"),
+                    round_id,
+                )),
+                None,
+            )
+            .unwrap();
 
+            vm.process_event(
+                &bytecode,
+                json!({
+                    "__account_address": "11111111111111111111111111111111",
+                    "round_id": round_id,
+                    "start_slot": (end_slot - 50).to_string(),
+                    "end_slot": end_slot.to_string(),
+                    "production_cost_ema": "1000",
+                }),
+                "ore::BoardState",
+                Some(&UpdateContext::new_account(
+                    slot + 1,
+                    format!("board-{round_id}"),
+                    round_id + 100,
+                )),
+                None,
+            )
+            .unwrap();
+
+            let scheduled = vm.take_scheduled_callbacks();
+            assert_eq!(scheduled.len(), 1);
+            assert_eq!(scheduled[0].0, end_slot);
+            assert_eq!(scheduled[0].1.primary_key, json!(round_id));
+        }
+
+        let previous_round = vm.get_entity_state(0, &json!(41)).unwrap();
         assert_eq!(
-            vm.get_entity_state(0, &json!(42))
-                .and_then(|state| state.pointer("/state/expires_at").cloned()),
-            Some(json!("300"))
+            previous_round.pointer("/state/expires_at"),
+            Some(&json!("200"))
         );
-        let _ = vm.take_scheduled_callbacks();
-
-        vm.process_event(
-            &bytecode,
-            json!({
-                "accounts": {
-                    "round": following_round,
-                    "entropyVar": entropy_address,
-                },
-                "data": {},
-            }),
-            "ore::DeployIxState",
-            Some(&UpdateContext::new_instruction(
-                111,
-                "deploy-3".to_string(),
-                5,
-            )),
-            None,
-        )
-        .unwrap();
-
-        vm.process_event(
-            &bytecode,
-            entropy_update(400),
-            "entropy::VarState",
-            Some(&UpdateContext::new_account(
-                112,
-                "entropy-3b".to_string(),
-                5,
-            )),
-            None,
-        )
-        .unwrap();
-
         assert_eq!(
-            vm.get_entity_state(0, &json!(43))
-                .and_then(|state| state.pointer("/state/expires_at").cloned()),
-            Some(json!("400"))
+            previous_round.pointer("/entropy/entropy_samples"),
+            Some(&json!(41))
+        );
+
+        let current_round = vm.get_entity_state(0, &json!(42)).unwrap();
+        assert_eq!(
+            current_round.pointer("/state/expires_at"),
+            Some(&json!("400"))
+        );
+        assert_eq!(
+            current_round.pointer("/entropy/entropy_samples"),
+            Some(&json!(42))
         );
     }
 }

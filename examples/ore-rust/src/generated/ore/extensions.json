@@ -5,7 +5,7 @@
     "extensions.rs"
   ],
   "inputKind": "stack-manifest",
-  "inputHash": "arete:h1:stack-manifest:sha256:ebf9bc4aac38b97c44282ae060d4470231793861b8819ad63b66afcefdebc577",
+  "inputHash": "arete:h1:stack-manifest:sha256:11c7590e33cfcaf76ae6dd7b6ba7b5a0402d40a963e68ae20cd7108f2d4b1c02",
   "sdkRange": null,
   "language": "rust"
 }

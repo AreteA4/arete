@@ -113,9 +113,11 @@ overrides, and never infer Program Read endpoints from their members.
 
 ### Hosted Solana Gateway Transports
 
-Hosted composition installs also emit complete, independent `chain` and
-`transactions` gateway bindings. Construct both authenticated transports from
-those generated descriptors instead of using a LiveSpec query endpoint:
+Hosted stack and program installs embed complete, independent `chain` and
+`transactions` gateway bindings. `Arete.connect`, standalone program sessions,
+and generated composition sessions select those authenticated transports by
+default instead of using a LiveSpec query endpoint. Explicit transports always
+remain available as overrides:
 
 ```ts
 import { createHostedSolanaGatewayTransports } from '@usearete/sdk';
@@ -139,11 +141,11 @@ replayed only when the gateway explicitly reports that upstream dispatch did
 not begin. Chain and transaction descriptors may intentionally share the same
 endpoint and binding ID.
 
-Generated hosted compositions additionally export
-`create<StackName>HostedSession(options)`. It constructs these transports and
-passes them to the explicit composition session; the lower-level
-`create<StackName>Session(options)` continues to require caller-supplied `chain`
-and `transactions` transports.
+Generated hosted compositions additionally retain
+`create<StackName>HostedSession(options)` as an explicit convenience helper.
+The ordinary `create<StackName>Session(options)` now uses the embedded gateway
+too. Local/self-hosted compositions carry no gateway descriptor and continue to
+require caller-supplied `chain` and `transactions` transports.
 
 ### Raw Instructions
 
