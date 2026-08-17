@@ -14,6 +14,8 @@ use crate::api_client::{
 use crate::commands::stack::deployment_selection_key;
 
 const EXPLORE_SCHEMA_VERSION: u32 = 1;
+const DEPLOYMENT_PAGE_SIZE: i64 = 100;
+const MAX_DEPLOYMENT_PAGES: i64 = 100;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -499,28 +501,49 @@ fn resolve_stack_descriptor(
     // Private and global user stacks are intentionally absent from the public
     // registry listing. Resolve their display name through the authenticated
     // deployment list and retry with the stable atom/install reference.
-    if let Ok(deployments) = client.list_deployments(100) {
-        if let Some(install_ref) = deployment_install_ref(reference, &deployments) {
-            return client
-                .get_registry_stack_install(install_ref, language)
-                .with_context(|| descriptor_diagnostic(install_ref));
-        }
+    if let Ok(Some(install_ref)) = paginated_deployment_install_ref(reference, |limit, offset| {
+        client.list_deployments_page(limit, offset)
+    }) {
+        return client
+            .get_registry_stack_install(&install_ref, language)
+            .with_context(|| descriptor_diagnostic(&install_ref));
     }
 
     Err(direct_error).with_context(|| descriptor_diagnostic(reference))
 }
 
-fn deployment_install_ref<'a>(
+fn matching_deployment<'a>(
     reference: &str,
     deployments: &'a [DeploymentResponse],
-) -> Option<&'a str> {
+) -> Option<&'a DeploymentResponse> {
     deployments
         .iter()
         .filter(|deployment| {
             deployment.branch.is_none() && deployment.spec_name.eq_ignore_ascii_case(reference)
         })
         .max_by_key(|deployment| deployment_selection_key(deployment))
-        .map(|deployment| deployment.atom_name.as_str())
+}
+
+fn paginated_deployment_install_ref<F>(reference: &str, mut list_page: F) -> Result<Option<String>>
+where
+    F: FnMut(i64, i64) -> Result<Vec<DeploymentResponse>>,
+{
+    let mut selected = None;
+    for page in 0..MAX_DEPLOYMENT_PAGES {
+        let deployments = list_page(DEPLOYMENT_PAGE_SIZE, page * DEPLOYMENT_PAGE_SIZE)?;
+        if let Some(candidate) = matching_deployment(reference, &deployments) {
+            let should_replace = selected.as_ref().is_none_or(|current| {
+                deployment_selection_key(candidate) > deployment_selection_key(current)
+            });
+            if should_replace {
+                selected = Some(candidate.clone());
+            }
+        }
+        if deployments.len() < DEPLOYMENT_PAGE_SIZE as usize {
+            return Ok(selected.map(|deployment| deployment.atom_name));
+        }
+    }
+    anyhow::bail!("Deployment lookup exceeded the bounded pagination limit")
 }
 
 fn descriptor_diagnostic(reference: &str) -> String {
@@ -1726,8 +1749,47 @@ mod tests {
         ];
 
         assert_eq!(
-            deployment_install_ref("JURASSIC", &deployments),
+            matching_deployment("JURASSIC", &deployments)
+                .map(|deployment| deployment.atom_name.as_str()),
             Some("jurassic-live")
+        );
+    }
+
+    #[test]
+    fn private_stack_name_lookup_paginates_beyond_the_first_page() {
+        let first_page = (0..DEPLOYMENT_PAGE_SIZE)
+            .map(|id| {
+                deployment(
+                    id as i32,
+                    "Other",
+                    "other",
+                    DeploymentStatus::Active,
+                    DeploymentPhase::Running,
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        let second_page = vec![deployment(
+            101,
+            "Jurassic",
+            "jurassic-live",
+            DeploymentStatus::Active,
+            DeploymentPhase::Running,
+            None,
+        )];
+        let mut pages = vec![first_page, second_page].into_iter();
+        let mut requests = Vec::new();
+
+        let install_ref = paginated_deployment_install_ref("JURASSIC", |limit, offset| {
+            requests.push((limit, offset));
+            Ok(pages.next().unwrap_or_default())
+        })
+        .unwrap();
+
+        assert_eq!(install_ref.as_deref(), Some("jurassic-live"));
+        assert_eq!(
+            requests,
+            vec![(DEPLOYMENT_PAGE_SIZE, 0), (DEPLOYMENT_PAGE_SIZE, 100)]
         );
     }
 
