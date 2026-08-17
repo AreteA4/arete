@@ -139,6 +139,8 @@ export interface ClientLookupOptions<TPrograms extends ProgramMap | undefined = 
   transport?: CoreConnectOptions<TPrograms>['transport'];
   /** Override the transaction transport independently from the stack HTTP endpoint. */
   transactions?: CoreConnectOptions<TPrograms>['transactions'];
+  /** Override the chain transport independently from the stack HTTP endpoint. */
+  chain?: CoreConnectOptions<TPrograms>['chain'];
   /** Attach additional program SDKs to the connected client. */
   programs?: TPrograms;
 }

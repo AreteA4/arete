@@ -49,6 +49,9 @@ export function createClientCacheKey<
     options?.transport ?? 'ws',
     options?.url ?? stack.endpoints.ws,
     options?.httpUrl ?? stack.endpoints.http ?? '',
+    options?.chain
+      ? getObjectKey(options.chain as object, 'chain')
+      : 'chain-default',
     options?.transactions
       ? getObjectKey(options.transactions as object, 'transactions')
       : 'transactions-default',
