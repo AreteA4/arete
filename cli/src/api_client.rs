@@ -631,9 +631,9 @@ pub struct RegistryStackInstallResponse {
     pub live_specs: Vec<RegistryLiveSpecInstallDescriptor>,
     pub stack_manifest_hash: String,
     pub stack_manifest: serde_json::Value,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_binding: Option<RegistryCapabilityInstallBinding>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_binding: Option<RegistryCapabilityInstallBinding>,
     pub extensions: Option<RegistrySdkExtensionArtifact>,
     pub programs: Vec<RegistryProgramInstallResponse>,
@@ -694,9 +694,9 @@ pub struct RegistryProgramInstallResponse {
     pub definition: RegistryProgramInstallDefinition,
     pub release: RegistryProgramInstallRelease,
     pub transport: RegistryProgramInstallTransport,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_binding: Option<RegistryCapabilityInstallBinding>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_binding: Option<RegistryCapabilityInstallBinding>,
 }
 

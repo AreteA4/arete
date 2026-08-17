@@ -2,15 +2,15 @@
   "schemaVersion": 2,
   "input": {
     "kind": "stack-manifest",
-    "hash": "arete:h1:stack-manifest:sha256:ebf9bc4aac38b97c44282ae060d4470231793861b8819ad63b66afcefdebc577"
+    "hash": "arete:h1:stack-manifest:sha256:11c7590e33cfcaf76ae6dd7b6ba7b5a0402d40a963e68ae20cd7108f2d4b1c02"
   },
   "generator": {
     "name": "a4-cli",
     "version": "0.8.2",
-    "compilerHash": "arete:h1:compiler:sha256:d25c66054b0981e2bbd7d540db747382104d00dba074ace21a530cb3fe9ed50b"
+    "compilerHash": "arete:h1:compiler:sha256:2d8ed368fab445a94e0b8b3cffabe1ced426bc5cac765c605b16411130443170"
   },
   "extensions": {
-    "legacyProvenanceSha256": "7e188787cb716fc4cb8a2961f17f809e9b80c7efb0073a250bf5184018488e50"
+    "legacyProvenanceSha256": "de72cf6756d59cd5bda0488cc4287b47882bd5d216bbe822dea4f24e6565dbf3"
   },
   "artifacts": [
     "extensions.json",
