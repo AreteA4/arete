@@ -39,4 +39,10 @@ pub trait Stack: Sized + Send + Sync + 'static {
     fn http_url() -> &'static str {
         ""
     }
+
+    /// Managed-hosting transports. Generated local/self-hosted stacks leave
+    /// this unset and continue to use their HTTP endpoint.
+    fn gateway() -> Option<crate::HostedSolanaGatewayBindings> {
+        None
+    }
 }

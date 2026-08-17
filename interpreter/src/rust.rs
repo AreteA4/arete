@@ -2333,6 +2333,7 @@ mod tests {
             extension_modules,
             extension_entry,
             program_reads: Vec::new(),
+            gateway: None,
         };
         let output =
             compile_stack_spec(spec, Some(config)).expect("ore stack should compile to Rust");
@@ -2380,6 +2381,8 @@ pub struct RustStackConfig {
     /// standalone programs may additionally carry their exact hosted-binding
     /// descriptor so they do not inherit a stack HTTP endpoint.
     pub program_reads: Vec<RustProgramReadConfig>,
+    /// Managed-hosting transports. Local generation leaves this unset.
+    pub gateway: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -2424,6 +2427,7 @@ impl Default for RustStackConfig {
             extension_modules: Vec::new(),
             extension_entry: None,
             program_reads: Vec::new(),
+            gateway: None,
         }
     }
 }
@@ -2566,8 +2570,9 @@ pub fn compile_program_modules(
         &programs,
         "self",
     ));
+    let gateway_impl = rust_gateway_impl(config.gateway.as_ref(), "    ");
     programs.code.push_str(&format!(
-        "\n\nimpl arete_sdk::ProgramSdk for {aggregate_name} {{\n    fn name() -> &'static str {{\n        {}\n    }}\n}}\n",
+        "\n\nimpl arete_sdk::ProgramSdk for {aggregate_name} {{\n    fn name() -> &'static str {{\n        {}\n    }}{gateway_impl}\n}}\n",
         rust_string_literal(&to_kebab_case(&stack_spec.stack_name)),
     ));
 
@@ -2912,6 +2917,7 @@ fn generate_stack_entity_rs(
         ),
         _ => String::new(),
     };
+    let gateway_impl = rust_gateway_impl(config.gateway.as_ref(), "    ");
 
     // StackViews struct fields
     let views_fields: Vec<String> = selected_entities
@@ -3070,7 +3076,7 @@ impl Stack for {stack}Stack {{
         "{stack_kebab}"
     }}
 
-    {url_impl}{http_url_impl}
+    {url_impl}{http_url_impl}{gateway_impl}
 }}
 
 pub struct {stack}StackViews {{
@@ -3091,6 +3097,7 @@ impl Views for {stack}StackViews {{
         programs_assoc = programs_assoc,
         url_impl = url_impl,
         http_url_impl = http_url_impl,
+        gateway_impl = gateway_impl,
         views_fields = views_fields.join("\n"),
         views_builder = views_builder_fields.join("\n"),
         entity_views = entity_views_structs.join("\n"),
@@ -3203,6 +3210,17 @@ fn rust_prim(schema: &str, param_type: &str) -> RustParsedArg {
 }
 
 /// Render a Rust string literal (quoted and escaped).
+fn rust_gateway_impl(gateway: Option<&serde_json::Value>, indent: &str) -> String {
+    let Some(gateway) = gateway else {
+        return String::new();
+    };
+    let json = serde_json::to_string(gateway).expect("gateway descriptor must serialize");
+    format!(
+        "\n\n{indent}fn gateway() -> Option<arete_sdk::HostedSolanaGatewayBindings> {{\n{indent}    Some(serde_json::from_str({}).expect(\"generated hosted Solana gateway descriptor must be valid\"))\n{indent}}}",
+        rust_string_literal(&json),
+    )
+}
+
 fn rust_string_literal(value: &str) -> String {
     format!("{:?}", value)
 }

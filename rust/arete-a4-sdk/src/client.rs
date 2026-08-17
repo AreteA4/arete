@@ -4,6 +4,7 @@ use crate::config::{AreteConfig, ConnectionConfig};
 use crate::connection::{ConnectionManager, ConnectionState};
 use crate::entity::Stack;
 use crate::error::{AreteError, SocketIssue};
+use crate::gateway::create_hosted_solana_gateway_transports;
 use crate::http::{HttpAuthClient, TokenSource};
 use crate::instruction::{BuiltInstruction, ErrorMetadata};
 use crate::operations::{
@@ -636,6 +637,25 @@ impl<S: Stack> AreteBuilder<S> {
             (!url.is_empty()).then(|| url.clone()),
             http.clone(),
         ));
+
+        let (hosted_chain, hosted_transactions) = if chain.is_none() || transactions.is_none() {
+            match S::gateway() {
+                Some(bindings) => {
+                    let (gateway_chain, gateway_transactions) =
+                        create_hosted_solana_gateway_transports(
+                            &bindings,
+                            config.auth.clone(),
+                            Some(http.clone()),
+                        )?;
+                    (Some(gateway_chain), Some(gateway_transactions))
+                }
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+        let chain = chain.or(hosted_chain);
+        let transactions = transactions.or(hosted_transactions);
 
         let chain: Arc<dyn ChainClient> = match chain {
             Some(chain) => chain,

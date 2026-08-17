@@ -32,6 +32,7 @@ import { createTypedViews } from './views';
 import type { Frame } from './frame';
 import type { WalletAdapter, BuiltInstruction, SendOptions } from './wallet/types';
 import { createChainClient, type ChainClient } from './chain';
+import { createHostedSolanaGatewayTransports } from './solana-gateway';
 import type {
   InstructionHandler,
   ExecutionResult,
@@ -606,7 +607,14 @@ export class Arete<TStack extends StackDefinition> {
 
     this._views = createTypedViews(this.stack, this.storage, this.subscriptionRegistry);
     this._queries = this.buildQueries();
-    this._chain = options.chain ?? createChainClient(
+    const hostedGateway = this.stack.gateway
+      && (options.chain === undefined || options.transactions === undefined)
+      ? createHostedSolanaGatewayTransports(this.stack.gateway, {
+          auth: options.auth,
+          fetch: this.fetchImpl,
+        })
+      : undefined;
+    this._chain = options.chain ?? hostedGateway?.chain ?? createChainClient(
         this.httpBaseUrl ?? '',
         ((input: RequestInfo | URL, init?: RequestInit) =>
           this.authenticatedStackFetch(
@@ -619,7 +627,7 @@ export class Arete<TStack extends StackDefinition> {
             ['read']
           )) as typeof fetch
       );
-    this._transactions = options.transactions ?? createTransactionTransport(
+    this._transactions = options.transactions ?? hostedGateway?.transactions ?? createTransactionTransport(
         this.httpBaseUrl ?? '',
         (input, init, scope, requirePreDispatchMarker) =>
           this.authenticatedStackFetch(input, init, [scope], requirePreDispatchMarker)

@@ -214,11 +214,13 @@ New SDK and deployment workflows pass an explicit StackManifest path.
 
 Live, Program Read, chain, and transaction endpoints are independent bindings.
 Operators map them through their chosen DNS/CDN provider and publish generated
-SDK packages manually. Hosted TypeScript composition output preserves the full
-Solana gateway descriptors and exports a `create<StackName>HostedSession`
-helper. That helper creates authenticated chain and transaction transports from
-the generated bindings; the generic composition helper still requires explicit
-transports.
+SDK packages manually. Hosted TypeScript, Python, and Rust installs preserve
+the full Solana gateway descriptors. Their ordinary clients select the hosted
+chain and transaction transports automatically; explicit transports are
+overrides. TypeScript compositions also retain a
+`create<StackName>HostedSession` convenience helper. Local/self-hosted output
+does not contain hosted bindings and keeps using explicitly configured or
+tenant-local transports.
 
 ## Environment Variables
 

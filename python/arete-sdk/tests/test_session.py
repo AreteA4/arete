@@ -10,6 +10,11 @@ import pytest
 
 from arete.client import Arete
 from arete.errors import AreteError
+from arete.gateway import (
+    HostedSolanaGatewayBindings,
+    HostedSolanaGatewayCapabilityBinding,
+    SolanaGatewayAuthMetadata,
+)
 from arete.instructions import (
     AccountMeta,
     ArgSchema,
@@ -42,6 +47,8 @@ OTHER_PROGRAM_ID = encode_base58(bytes([8] * 32))
 ALICE = encode_base58(bytes([1] * 32))
 BOB = encode_base58(bytes([2] * 32))
 BINDING_ID = "prb_00000000000000000000000000000001"
+GATEWAY_ID = "sgb_00000000000000000000000000000001"
+GATEWAY_ENDPOINT = "https://solana.example.test/gateway/"
 
 DEPLOY_HANDLER = InstructionHandler(
     program_id=PROGRAM_ID,
@@ -103,6 +110,37 @@ def hosted_descriptor():
     )
 
 
+def gateway_bindings():
+    def capability(scopes, transaction_entitlement_required):
+        return HostedSolanaGatewayCapabilityBinding(
+            endpoint=GATEWAY_ENDPOINT,
+            auth_policy="signed_session",
+            solana_gateway_binding_id=GATEWAY_ID,
+            cluster="mainnet-beta",
+            region="us-west-1",
+            auth=SolanaGatewayAuthMetadata(
+                required=True,
+                mode="signed_session",
+                session_endpoint="https://api.example.test/ws/sessions",
+                jwks_url="https://api.example.test/ws/.well-known/jwks.json",
+                token_transport="bearer",
+                audience="arete:solana-gateway",
+                target_kind="solana-gateway-binding",
+                target_id=GATEWAY_ID,
+                scopes=tuple(scopes),
+                accepted_key_classes=("publishable", "secret"),
+                transaction_entitlement_required=transaction_entitlement_required,
+            ),
+        )
+
+    return HostedSolanaGatewayBindings(
+        chain=capability(("read",), False),
+        transactions=capability(
+            ("transaction:inspect", "transaction:send"), True
+        ),
+    )
+
+
 class FakeWallet:
     def __init__(self, public_key=ALICE):
         self.public_key = public_key
@@ -128,6 +166,21 @@ class TestValidation:
     async def test_composition_requires_explicit_transports(self):
         with pytest.raises(SessionError, match="explicit chain and transaction"):
             await create_session(stacks={"ore": make_stack()}, mode="composition")
+
+    async def test_composition_uses_one_generated_gateway_for_every_member(self):
+        stack = make_stack(gateway=gateway_bindings())
+        session = await create_session(
+            stacks={"ore": stack},
+            mode="composition",
+            stack_options={"ore": {"transport": "http"}},
+        )
+        try:
+            assert session.chain._base_url == GATEWAY_ENDPOINT.rstrip("/")
+            assert session.transactions._root == (
+                GATEWAY_ENDPOINT.rstrip("/") + "/transactions/v1"
+            )
+        finally:
+            await session.close()
 
     async def test_composition_forbids_fallback_endpoints(self):
         with pytest.raises(SessionError, match="per-member live endpoints"):

@@ -116,6 +116,8 @@ class ProgramDef:
     # Provenance hashes (pin-validated by the extensions pipeline).
     program_spec_hash: Optional[str] = None
     sdk_definition_hash: Optional[str] = None
+    # Managed-hosting transports for standalone program sessions.
+    gateway: Optional[HostedSolanaGatewayBindings] = None
 
 
 @dataclass

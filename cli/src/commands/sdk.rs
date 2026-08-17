@@ -350,6 +350,40 @@ impl ResolvedStackSource {
         }
     }
 
+    fn hosted_gateway(&self) -> Result<Option<serde_json::Value>> {
+        match self {
+            Self::Local(_) | Self::LocalArtifacts(_) => Ok(None),
+            Self::Remote(stack) => Ok(Some(managed_gateway_descriptor(
+                stack.chain_binding.as_ref(),
+                stack.transaction_binding.as_ref(),
+                &format!("hosted stack '{}'", stack.stack),
+            )?)),
+        }
+    }
+
+    fn rust_program_reads(&self) -> Result<Vec<arete_interpreter::rust::RustProgramReadConfig>> {
+        match self {
+            Self::Local(_) | Self::LocalArtifacts(_) => Ok(Vec::new()),
+            Self::Remote(stack) => stack.programs.iter().map(program_read_override).collect(),
+        }
+    }
+
+    fn python_program_reads(
+        &self,
+    ) -> Result<Vec<arete_interpreter::python::PythonProgramReadConfig>> {
+        self.rust_program_reads()?
+            .into_iter()
+            .map(|read| {
+                Ok(arete_interpreter::python::PythonProgramReadConfig {
+                    program_id: read.program_id,
+                    program_spec_hash: read.program_spec_hash,
+                    program_release_hash: read.program_release_hash,
+                    descriptor: read.descriptor,
+                })
+            })
+            .collect()
+    }
+
     fn print_source_details(&self) {
         match self {
             Self::Local(ast) => {
@@ -1365,7 +1399,8 @@ fn install_rust(
                     http_url: None,
                     extension_modules: Vec::new(),
                     extension_entry: None,
-                    program_reads: Vec::new(),
+                    program_reads: source.rust_program_reads()?,
+                    gateway: source.hosted_gateway()?,
                 },
                 live_urls,
             }),
@@ -1496,7 +1531,8 @@ fn install_python(
                     http_url: None,
                     extension_modules: Vec::new(),
                     extension_entry: None,
-                    program_reads: Vec::new(),
+                    program_reads: source.python_program_reads()?,
+                    gateway: source.hosted_gateway()?,
                 },
                 live_urls,
             }),
@@ -1759,6 +1795,11 @@ fn install_program_rust(
         extension_modules,
         extension_entry,
         program_reads: vec![program_read_override(&install)?],
+        gateway: Some(managed_gateway_descriptor(
+            install.chain_binding.as_ref(),
+            install.transaction_binding.as_ref(),
+            &format!("hosted program '{}'", install.install_name),
+        )?),
     };
 
     println!(
@@ -1872,6 +1913,11 @@ fn install_program_python(
             program_release_hash: rust_override.program_release_hash,
             descriptor: rust_override.descriptor,
         }],
+        gateway: Some(managed_gateway_descriptor(
+            install.chain_binding.as_ref(),
+            install.transaction_binding.as_ref(),
+            &format!("hosted program '{}'", install.install_name),
+        )?),
     };
 
     println!(
@@ -3153,7 +3199,39 @@ fn typescript_program_config_from_registry(
                 auth: binding.auth.clone(),
             },
         ),
+        gateway: optional_gateway_descriptor(
+            install.chain_binding.as_ref(),
+            install.transaction_binding.as_ref(),
+            &format!("hosted program '{}'", install.install_name),
+        )?,
     })
+}
+
+fn managed_gateway_descriptor(
+    chain: Option<&RegistryCapabilityInstallBinding>,
+    transactions: Option<&RegistryCapabilityInstallBinding>,
+    source: &str,
+) -> Result<serde_json::Value> {
+    optional_gateway_descriptor(chain, transactions, source)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{source} omitted managed Solana gateway bindings; refusing tenant HTTP fallback"
+        )
+    })
+}
+
+fn optional_gateway_descriptor(
+    chain: Option<&RegistryCapabilityInstallBinding>,
+    transactions: Option<&RegistryCapabilityInstallBinding>,
+    source: &str,
+) -> Result<Option<serde_json::Value>> {
+    match (chain, transactions) {
+        (Some(chain), Some(transactions)) => Ok(Some(serde_json::json!({
+            "chain": chain,
+            "transactions": transactions,
+        }))),
+        (None, None) => Ok(None),
+        _ => anyhow::bail!("{source} returned only one managed Solana gateway capability binding"),
+    }
 }
 
 fn program_spec_artifact_from_registry(
@@ -3449,6 +3527,7 @@ fn stage_hosted_program_modules(
                 http_url: None,
                 extension_import: None,
                 programs: Some(vec![program.program_config.clone()]),
+                gateway: None,
             }),
         )
         .map_err(|error| anyhow::anyhow!("Failed to compile hosted program SDK: {error}"))?;
@@ -4127,6 +4206,7 @@ fn generate_typescript_program_sdk_from_idl(
         TypeScriptProgramSdkExtensions {
             input_pin: &input_pin,
             programs: Some(vec![program]),
+            gateway: None,
             path: extensions_path,
             hosted_artifact: None,
         },
@@ -4167,6 +4247,7 @@ fn generate_typescript_program_sdk_from_artifact(
         TypeScriptProgramSdkExtensions {
             input_pin: &input_pin,
             programs: Some(vec![program]),
+            gateway: None,
             path: extensions_path,
             hosted_artifact: None,
         },
@@ -4176,6 +4257,7 @@ fn generate_typescript_program_sdk_from_artifact(
 struct TypeScriptProgramSdkExtensions<'a> {
     input_pin: &'a ResolvedExtensionsInputPin,
     programs: Option<Vec<arete_interpreter::typescript::TypeScriptProgramConfig>>,
+    gateway: Option<serde_json::Value>,
     path: Option<&'a Path>,
     hosted_artifact: Option<&'a ResolvedExtensionsArtifact>,
 }
@@ -4198,6 +4280,7 @@ fn write_typescript_program_sdk(
             http_url: None,
             extension_import: None,
             programs: extensions.programs,
+            gateway: extensions.gateway,
         }),
     )
     .map_err(|e| anyhow::anyhow!("Failed to compile TypeScript: {}", e))?;
@@ -4272,6 +4355,11 @@ fn generate_typescript_program_sdk_from_install(
         TypeScriptProgramSdkExtensions {
             input_pin: &input_pin,
             programs: Some(vec![typescript_program_config_from_registry(install)?]),
+            gateway: Some(managed_gateway_descriptor(
+                install.chain_binding.as_ref(),
+                install.transaction_binding.as_ref(),
+                &format!("hosted program '{}'", install.install_name),
+            )?),
             path: extensions_path,
             hosted_artifact,
         },
@@ -4339,6 +4427,7 @@ fn generate_typescript_sdk_from_source(
             http_url,
             extension_import: None,
             programs: source.typescript_programs(&stack_spec)?,
+            gateway: source.hosted_gateway()?,
         };
 
         let output = arete_interpreter::typescript::compile_program_modules(
@@ -4422,6 +4511,7 @@ fn generate_typescript_sdk_from_source(
             http_url,
             extension_import: None,
             programs: source.typescript_programs(&stack_spec)?,
+            gateway: source.hosted_gateway()?,
         };
 
         let output = match source {
@@ -4548,6 +4638,7 @@ fn generate_typescript_composition_sdk(
             http_url: None,
             extension_import: None,
             programs: source.typescript_programs(&program_stack)?,
+            gateway: source.hosted_gateway()?,
         },
         live_endpoints: source.composition_live_endpoints(),
         live_module_imports: live_module_imports.clone(),
@@ -4820,7 +4911,8 @@ pub fn create_rust(
                     http_url: None,
                     extension_modules: Vec::new(),
                     extension_entry: None,
-                    program_reads: Vec::new(),
+                    program_reads: source.rust_program_reads()?,
+                    gateway: source.hosted_gateway()?,
                 },
                 live_urls,
             }),
@@ -4912,7 +5004,8 @@ fn generate_rust_stack_sdk(
         http_url: source.default_http_url(),
         extension_modules,
         extension_entry,
-        program_reads: Vec::new(),
+        program_reads: source.rust_program_reads()?,
+        gateway: source.hosted_gateway()?,
     };
 
     let output = match source {
@@ -5169,7 +5262,8 @@ pub fn create_python(
                     http_url: None,
                     extension_modules: Vec::new(),
                     extension_entry: None,
-                    program_reads: Vec::new(),
+                    program_reads: source.python_program_reads()?,
+                    gateway: source.hosted_gateway()?,
                 },
                 live_urls,
             }),
@@ -5263,7 +5357,8 @@ fn generate_python_stack_sdk(
         http_url: source.default_http_url(),
         extension_modules,
         extension_entry,
-        program_reads: Vec::new(),
+        program_reads: source.python_program_reads()?,
+        gateway: source.hosted_gateway()?,
     };
 
     let output = match source {
@@ -8284,6 +8379,8 @@ mod tests {
                     }),
                 },
             },
+            chain_binding: None,
+            transaction_binding: None,
         };
         let stack_spec =
             arete_interpreter::program_sdk::build_program_only_stack_spec_from_identity(
@@ -8362,6 +8459,8 @@ mod tests {
                     }),
                 },
             },
+            chain_binding: None,
+            transaction_binding: None,
         };
         assert!(typescript_program_config_from_registry(&install).is_ok());
 
@@ -8420,7 +8519,7 @@ mod tests {
         for (index, alias) in aliases.iter().enumerate() {
             let name = format!("program_{alias}");
             let idl = format!(
-                r#"{{"address":"{}","metadata":{{"name":"{}","version":"1.0.0","spec":"0.1.0"}},"instructions":[],"accounts":[],"types":[],"events":[],"errors":[]}}"#,
+                r#"{{"address":"{}","metadata":{{"name":"{}","version":"1.0.0","spec":"0.1.0"}},"instructions":[{{"name":"doThing","discriminator":[1,2,3,4,5,6,7,8],"accounts":[],"args":[]}}],"accounts":[{{"name":"Counter","discriminator":[8,7,6,5,4,3,2,1]}}],"types":[{{"name":"Counter","type":{{"kind":"struct","fields":[{{"name":"count","type":"u64"}}]}}}}],"events":[],"errors":[]}}"#,
                 addresses[index], name
             );
             let document = CanonicalIdlDocument::parse(idl.as_bytes(), None).unwrap();
@@ -8470,6 +8569,8 @@ mod tests {
                         }),
                     },
                 },
+                chain_binding: None,
+                transaction_binding: None,
             });
             live_specs.push(((*alias).to_string(), live));
             program_specs.push(program);
@@ -8612,6 +8713,7 @@ mod tests {
         }
         let session = fs::read_to_string(directory.join("hosted-three.ts")).unwrap();
         assert!(session.contains("createHostedThreeSession"));
+        assert!(session.contains("mode: 'composition',\n  gateway: {"));
         assert!(session.contains("HOSTED_THREE_HOSTED_BINDINGS"));
         assert!(session.contains("https://solana.example.test/gateway/"));
         assert!(session.contains("solanaGatewayBindingId"));
@@ -8623,6 +8725,77 @@ mod tests {
         assert!(session.contains("return createHostedThreeSession({ ...options, ...transports })"));
         assert!(!session.contains("query-alpha.example.test/v1\",\n  \"transactions"));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn remote_single_live_codegen_embeds_managed_routes_in_all_languages() {
+        let (install, program_endpoints, _) = hosted_v2_install(&["alpha"]);
+        let source = ResolvedStackSource::Remote(Box::new(remote_stack_install(install).unwrap()));
+        let stack_spec = source.load_stack_spec(true).unwrap();
+        let gateway = source.hosted_gateway().unwrap();
+
+        let typescript = arete_interpreter::typescript::compile_stack_spec_with_exact_views(
+            stack_spec.clone(),
+            Some(arete_interpreter::typescript::TypeScriptStackConfig {
+                websocket_url: source.default_websocket_url(),
+                http_url: source.default_http_url(),
+                programs: source.typescript_programs(&stack_spec).unwrap(),
+                gateway: gateway.clone(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert!(typescript.stack_definition.contains("gateway:"));
+        assert!(typescript
+            .stack_definition
+            .contains("https://solana.example.test/gateway/"));
+        assert!(typescript
+            .stack_definition
+            .contains(program_endpoints[0].as_str()));
+
+        let rust = arete_interpreter::rust::compile_stack_spec_with_exact_views(
+            stack_spec.clone(),
+            Some(arete_interpreter::rust::RustStackConfig {
+                url: source.default_websocket_url(),
+                http_url: source.default_http_url(),
+                program_reads: source.rust_program_reads().unwrap(),
+                gateway: gateway.clone(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert!(rust.entity_rs.contains("fn gateway()"));
+        assert!(rust
+            .entity_rs
+            .contains("https://solana.example.test/gateway/"));
+        assert!(rust
+            .programs_rs
+            .as_deref()
+            .unwrap()
+            .contains(program_endpoints[0].as_str()));
+
+        let python = arete_interpreter::python::compile_stack_spec_with_exact_views(
+            stack_spec,
+            Some(arete_interpreter::python::PythonStackConfig {
+                url: source.default_websocket_url(),
+                http_url: source.default_http_url(),
+                program_reads: source.python_program_reads().unwrap(),
+                gateway,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert!(python
+            .init_py
+            .contains("HostedSolanaGatewayBindings.from_dict"));
+        assert!(python
+            .init_py
+            .contains("https://solana.example.test/gateway/"));
+        assert!(python
+            .programs_py
+            .as_deref()
+            .unwrap()
+            .contains(program_endpoints[0].as_str()));
     }
 
     #[test]

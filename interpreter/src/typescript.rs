@@ -3116,6 +3116,8 @@ pub struct TypeScriptProgramConfig {
     pub definition: TypeScriptProgramDefinitionMetadata,
     pub release: TypeScriptProgramReleaseReference,
     pub transport: TypeScriptProgramReadTransport,
+    /// Managed-hosting transports carried by a standalone program cartridge.
+    pub gateway: Option<serde_json::Value>,
 }
 
 impl From<&arete_hash::OssProgramIdentityV1> for TypeScriptProgramConfig {
@@ -3133,6 +3135,7 @@ impl From<&arete_hash::OssProgramIdentityV1> for TypeScriptProgramConfig {
                 program_spec_hash: identity.program_spec_hash.to_string(),
             },
             transport: TypeScriptProgramReadTransport::LocalHttp,
+            gateway: None,
         }
     }
 }
@@ -3148,6 +3151,8 @@ pub struct TypeScriptStackConfig {
     /// Hosted metadata in exact AST program order. Local generation derives this from
     /// `SerializableStackSpec::program_specs` instead.
     pub programs: Option<Vec<TypeScriptProgramConfig>>,
+    /// Managed-hosting transports. Local generation leaves this unset.
+    pub gateway: Option<serde_json::Value>,
 }
 
 impl Default for TypeScriptStackConfig {
@@ -3160,6 +3165,7 @@ impl Default for TypeScriptStackConfig {
             http_url: None,
             extension_import: None,
             programs: None,
+            gateway: None,
         }
     }
 }
@@ -3748,6 +3754,7 @@ pub fn compile_composed_public_artifacts_v2(
         program_collection.as_ref(),
         &config.live_module_imports,
         &config.program_module_imports,
+        config.stack.gateway.as_ref(),
     );
     Ok(TypeScriptCompositionOutput {
         name: composed.name,
@@ -3798,6 +3805,7 @@ fn generate_session_definition(
     program_collection: Option<&TypeScriptProgramCollectionOutput>,
     live_module_imports: &BTreeMap<String, String>,
     program_module_imports: &BTreeMap<String, String>,
+    gateway: Option<&serde_json::Value>,
 ) -> String {
     let manifest_pascal = safe_pascal_identifier(manifest_name);
     let definition_name = format!(
@@ -3918,6 +3926,9 @@ fn generate_session_definition(
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let gateway_member = gateway
+        .map(|gateway| format!("  gateway: {},", gateway))
+        .unwrap_or_default();
     format!(
         r#"import {{ createSession, type CompositionSessionOptions }} from '@usearete/sdk';
 {imports}
@@ -3926,6 +3937,7 @@ fn generate_session_definition(
 
 export const {definition_name} = {{
   mode: 'composition',
+{gateway_member}
   stacks: {{
 {members}
   }},
@@ -3946,6 +3958,7 @@ export function create{manifest_pascal}Session(
         program_import = program_import,
         program_module_import_lines = program_module_import_lines,
         definition_name = definition_name,
+        gateway_member = gateway_member,
         members = members,
         program_members = program_members,
         manifest_pascal = manifest_pascal,
@@ -4250,6 +4263,16 @@ fn generate_stack_definition_multi(
         "  endpoints: {{\n{}\n{}\n  }},",
         websocket_endpoint, http_endpoint
     );
+    let gateway_block = config
+        .gateway
+        .as_ref()
+        .map(|gateway| {
+            format!(
+                "\n  gateway: {},",
+                serde_json::to_string(gateway).expect("gateway descriptor must serialize")
+            )
+        })
+        .unwrap_or_default();
 
     // Generate views block for each entity
     let mut entity_view_blocks = Vec::new();
@@ -4369,7 +4392,7 @@ fn generate_stack_definition_multi(
     let stack_export = format!(
         r#"export const {core_export_name} = {{
   name: '{stack_kebab}',
-{endpoints_block}
+{endpoints_block}{gateway_block}
   views: {{
 {views_body}
   }},{schemas_section}{patch_schemas_section}{programs_section}{program_reads_section}{addresses_section}
@@ -4377,6 +4400,7 @@ fn generate_stack_definition_multi(
         core_export_name = core_export_name,
         stack_kebab = stack_kebab,
         endpoints_block = endpoints_block,
+        gateway_block = gateway_block,
         views_body = views_body,
         schemas_section = schemas_block,
         patch_schemas_section = patch_schemas_block,
@@ -4536,6 +4560,13 @@ fn generate_single_program_sections(
             metadata.definition.normalized_idl_hash
         ),
     ]);
+
+    if let Some(gateway) = &metadata.gateway {
+        sections.push(format!(
+            "      gateway: {},",
+            serde_json::to_string(gateway).expect("gateway descriptor must serialize")
+        ));
+    }
 
     if let Some(program_pdas) = program_pdas {
         let pda_entries = generate_program_pda_entries(program_pdas, &program_id, "        ");

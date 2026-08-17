@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHostedSolanaGatewayTransports } from './solana-gateway';
+import { Arete } from './client';
+import { createSession } from './session';
 import type {
   AuthTokenRequest,
   HostedSolanaGatewayCapabilityBinding,
@@ -43,6 +45,93 @@ const BINDINGS = {
 } as const;
 
 describe('hosted Solana gateway transports', () => {
+  it('is selected automatically by a generated hosted stack', async () => {
+    const urls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.endsWith('/chain/exists/account')) {
+        return new Response(JSON.stringify({ exists: true }), { status: 200 });
+      }
+      if (url.endsWith('/transactions/v1/latest-blockhash')) {
+        return new Response(JSON.stringify({
+          blockhash: 'blockhash',
+          contextSlot: '42',
+          lastValidBlockHeight: '99',
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const stack = {
+      name: 'hosted',
+      endpoints: { ws: '', http: 'https://tenant.stack.arete.run' },
+      views: {},
+      gateway: BINDINGS,
+    } as const;
+    const client = await Arete.connect(stack, {
+      transport: 'http',
+      auth: {
+        getToken: async (request) => ({ token: 'gateway-token', scopes: request.scopes }),
+      },
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(client.chain.exists('account')).resolves.toBe(true);
+    await expect(client.transactions.getLatestBlockhash()).resolves.toMatchObject({
+      blockhash: 'blockhash',
+    });
+    expect(urls).toEqual([
+      `${ENDPOINT}chain/exists/account`,
+      `${ENDPOINT}transactions/v1/latest-blockhash`,
+    ]);
+    expect(urls.every((url) => !url.includes('tenant.stack.arete.run'))).toBe(true);
+  });
+
+  it('is selected automatically by a generated hosted composition', async () => {
+    const urls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.endsWith('/chain/exists/account')) {
+        return new Response(JSON.stringify({ exists: true }), { status: 200 });
+      }
+      if (url.endsWith('/transactions/v1/latest-blockhash')) {
+        return new Response(JSON.stringify({
+          blockhash: 'blockhash',
+          contextSlot: '42',
+          lastValidBlockHeight: '99',
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const definition = {
+      mode: 'composition',
+      gateway: BINDINGS,
+      stacks: {
+        hosted: {
+          name: 'hosted',
+          endpoints: { ws: '', http: 'https://tenant.stack.arete.run' },
+          views: {},
+          gateway: BINDINGS,
+        },
+      },
+    } as const;
+    const session = await createSession(definition, {
+      auth: {
+        getToken: async (request) => ({ token: 'gateway-token', scopes: request.scopes }),
+      },
+      fetch: fetchMock as typeof fetch,
+      stacks: { hosted: { transport: 'http' } },
+    });
+
+    await expect(session.chain.exists('account')).resolves.toBe(true);
+    await expect(session.transactions.getLatestBlockhash()).resolves.toMatchObject({
+      blockhash: 'blockhash',
+    });
+    expect(urls.every((url) => !url.includes('tenant.stack.arete.run'))).toBe(true);
+    session.close();
+  });
+
   it('shares one endpoint and binding while isolating exact target tokens per scope', async () => {
     const tokenRequests: AuthTokenRequest[] = [];
     const gatewayRequests: Array<{ url: string; authorization: string | null }> = [];

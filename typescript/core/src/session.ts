@@ -10,9 +10,11 @@ import {
 } from './client';
 import { createChainClient, type ChainClient } from './chain';
 import { getProgramReadDescriptor } from './program-sdk';
+import { createHostedSolanaGatewayTransports } from './solana-gateway';
 import {
   AreteError,
   type AuthConfig,
+  type HostedSolanaGatewayBindings,
   type ProgramReadDescriptor,
   type ProgramReadDescriptors,
   type ProgramReadOverride,
@@ -44,6 +46,8 @@ export interface SessionDefinition<
   readonly mode?: 'composition';
   readonly stacks?: Record<string, StackDefinition>;
   readonly programs?: TPrograms;
+  /** Hosted chain and transaction capabilities shared by a generated composition. */
+  readonly gateway?: HostedSolanaGatewayBindings;
   /** @deprecated Generated program cartridges carry defaults; use only for complete overrides. */
   readonly programReads?: ProgramReadDescriptors<TPrograms>;
 }
@@ -126,13 +130,22 @@ export interface SessionOptions<
 export type CompositionSessionOptions<
   TDef extends SessionDefinition = SessionDefinition,
   TStackPrograms extends SessionStackPrograms<TDef> = {},
-> = Omit<SessionOptions<TDef, TStackPrograms>, 'chain' | 'transactions' | 'endpoints'> & {
-  /** Chain reads never inherit a live member's HTTP endpoint. */
-  chain: ChainClient;
-  /** Transactions never inherit a live member's HTTP endpoint. */
-  transactions: TransactionTransport;
-  endpoints?: never;
-};
+> = Omit<SessionOptions<TDef, TStackPrograms>, 'chain' | 'transactions' | 'endpoints'>
+  & (TDef extends { readonly gateway: HostedSolanaGatewayBindings }
+    ? {
+        /** Explicit override for the generated hosted chain transport. */
+        chain?: ChainClient;
+        /** Explicit override for the generated hosted transaction transport. */
+        transactions?: TransactionTransport;
+        endpoints?: never;
+      }
+    : {
+        /** Chain reads never inherit a live member's HTTP endpoint. */
+        chain: ChainClient;
+        /** Transactions never inherit a live member's HTTP endpoint. */
+        transactions: TransactionTransport;
+        endpoints?: never;
+      });
 
 type SessionStacks<
   TDef extends SessionDefinition,
@@ -338,6 +351,7 @@ function programAsStack(
     views: {},
     programs: { [name]: program },
     ...(descriptor ? { programReads: { [name]: descriptor } } : {}),
+    ...(program.gateway ? { gateway: program.gateway } : {}),
   };
 }
 
@@ -356,9 +370,17 @@ export async function createSession<
   if (stackEntries.length === 0 && programEntries.length === 0) {
     throw new AreteError('createSession requires at least one stack or program member', 'INVALID_CONFIG');
   }
-  if (definition.mode === 'composition' && (!options?.chain || !options?.transactions)) {
+  const generatedGateway = definition.gateway && (!options?.chain || !options?.transactions)
+    ? createHostedSolanaGatewayTransports(definition.gateway, {
+        auth: options?.auth,
+        fetch: options?.fetch,
+      })
+    : undefined;
+  const sharedChain = options?.chain ?? generatedGateway?.chain;
+  const sharedTransactions = options?.transactions ?? generatedGateway?.transactions;
+  if (definition.mode === 'composition' && (!sharedChain || !sharedTransactions)) {
     throw new AreteError(
-      'composition sessions require explicit chain and transaction transports',
+      'composition sessions require generated or explicit chain and transaction transports',
       'INVALID_CONFIG'
     );
   }
@@ -412,7 +434,11 @@ export async function createSession<
       const connectOptions = resolveMemberConnectOptions(
         effectiveStack,
         memberOptions,
-        options,
+        {
+          ...options,
+          chain: sharedChain,
+          transactions: sharedTransactions,
+        },
         false
       );
       const client = await Arete.connect(stack, {
@@ -430,7 +456,11 @@ export async function createSession<
       const connectOptions = resolveMemberConnectOptions(
         syntheticStack,
         options?.programs?.[key],
-        options,
+        {
+          ...options,
+          chain: sharedChain,
+          transactions: sharedTransactions,
+        },
         true
       );
       const client = await Arete.connect(syntheticStack, connectOptions);
@@ -443,7 +473,7 @@ export async function createSession<
     ...connectedPrograms.map(([, client]) => client),
   ];
   const executionHost = memberClients[0]!;
-  const transactions = options?.transactions ?? executionHost.transactions;
+  const transactions = sharedTransactions ?? executionHost.transactions;
 
   const stacks = Object.fromEntries(connectedStacks) as unknown as SessionStacks<TDef, TStackPrograms>;
   const explicitProgramKeys = new Set(connectedPrograms.map(([key]) => key));
@@ -484,7 +514,7 @@ export async function createSession<
   const programs = promotedPrograms as SessionPrograms<TDef, TStackPrograms>;
 
   const chain =
-    options?.chain ?? (options?.endpoints?.http !== undefined
+    sharedChain ?? (options?.endpoints?.http !== undefined
       ? createChainClient(
           options.endpoints.http,
           (options?.fetch ?? globalThis.fetch?.bind(globalThis)) as typeof fetch
