@@ -6,12 +6,16 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::api_client::{
-    ApiClient, RegistryCapabilityInstallBinding, RegistryProgramInstallResponse,
-    RegistryProgramInstallTransport, RegistryProgramItem, RegistrySdkExtensionArtifact,
-    RegistryStackInstallResponse, RegistryStackItem, DEFAULT_DOMAIN_SUFFIX,
+    ApiClient, DeploymentResponse, RegistryCapabilityInstallBinding,
+    RegistryProgramInstallResponse, RegistryProgramInstallTransport, RegistryProgramItem,
+    RegistrySdkExtensionArtifact, RegistryStackInstallResponse, RegistryStackItem,
+    DEFAULT_DOMAIN_SUFFIX,
 };
+use crate::commands::stack::deployment_selection_key;
 
 const EXPLORE_SCHEMA_VERSION: u32 = 1;
+const DEPLOYMENT_PAGE_SIZE: i64 = 100;
+const MAX_DEPLOYMENT_PAGES: i64 = 100;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -494,7 +498,52 @@ fn resolve_stack_descriptor(
         }
     }
 
+    // Private and global user stacks are intentionally absent from the public
+    // registry listing. Resolve their display name through the authenticated
+    // deployment list and retry with the stable atom/install reference.
+    if let Ok(Some(install_ref)) = paginated_deployment_install_ref(reference, |limit, offset| {
+        client.list_deployments_page(limit, offset)
+    }) {
+        return client
+            .get_registry_stack_install(&install_ref, language)
+            .with_context(|| descriptor_diagnostic(&install_ref));
+    }
+
     Err(direct_error).with_context(|| descriptor_diagnostic(reference))
+}
+
+fn matching_deployment<'a>(
+    reference: &str,
+    deployments: &'a [DeploymentResponse],
+) -> Option<&'a DeploymentResponse> {
+    deployments
+        .iter()
+        .filter(|deployment| {
+            deployment.branch.is_none() && deployment.spec_name.eq_ignore_ascii_case(reference)
+        })
+        .max_by_key(|deployment| deployment_selection_key(deployment))
+}
+
+fn paginated_deployment_install_ref<F>(reference: &str, mut list_page: F) -> Result<Option<String>>
+where
+    F: FnMut(i64, i64) -> Result<Vec<DeploymentResponse>>,
+{
+    let mut selected = None;
+    for page in 0..MAX_DEPLOYMENT_PAGES {
+        let deployments = list_page(DEPLOYMENT_PAGE_SIZE, page * DEPLOYMENT_PAGE_SIZE)?;
+        if let Some(candidate) = matching_deployment(reference, &deployments) {
+            let should_replace = selected.as_ref().is_none_or(|current| {
+                deployment_selection_key(candidate) > deployment_selection_key(current)
+            });
+            if should_replace {
+                selected = Some(candidate.clone());
+            }
+        }
+        if deployments.len() < DEPLOYMENT_PAGE_SIZE as usize {
+            return Ok(selected.map(|deployment| deployment.atom_name));
+        }
+    }
+    anyhow::bail!("Deployment lookup exceeded the bounded pagination limit")
 }
 
 fn descriptor_diagnostic(reference: &str) -> String {
@@ -1423,7 +1472,52 @@ fn render_sdk_targets(targets: &[SdkTargetSummary]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api_client::{DeploymentLiveStatus, DeploymentPhase, DeploymentStatus};
     use serde_json::json;
+
+    fn deployment(
+        id: i32,
+        spec_name: &str,
+        atom_name: &str,
+        status: DeploymentStatus,
+        phase: DeploymentPhase,
+        branch: Option<&str>,
+    ) -> DeploymentResponse {
+        DeploymentResponse {
+            id,
+            spec_id: 29,
+            spec_name: spec_name.into(),
+            atom_name: atom_name.into(),
+            branch: branch.map(str::to_string),
+            current_build_id: None,
+            current_spec_version_id: None,
+            current_version: None,
+            portable_ast_hash: None,
+            deployment_release_hash: None,
+            current_idl_program_ids: Vec::new(),
+            current_image_tag: None,
+            websocket_url: format!("wss://{atom_name}.example.test"),
+            http_url: format!("https://{atom_name}.example.test"),
+            websocket_auth: json!({}),
+            http_auth: json!({}),
+            transaction_relay_enabled: false,
+            status,
+            status_message: None,
+            first_deployed_at: None,
+            last_deployed_at: None,
+            live_status: DeploymentLiveStatus {
+                phase,
+                desired_replicas: None,
+                ready_replicas: None,
+                available_replicas: None,
+                updated_replicas: None,
+                last_transition_time: None,
+                source: "test".into(),
+                error_category: None,
+            },
+            latest_operation: None,
+        }
+    }
 
     fn stack_descriptor() -> RegistryStackInstallResponse {
         serde_json::from_value(json!({
@@ -1622,6 +1716,80 @@ mod tests {
         assert_eq!(
             install_ref_from_websocket_url("wss://ore-stack-abc.stack.arete.run/ws").as_deref(),
             Some("ore-stack-abc")
+        );
+    }
+
+    #[test]
+    fn private_stack_name_resolves_to_serving_production_install_ref() {
+        let deployments = vec![
+            deployment(
+                24,
+                "Jurassic",
+                "jurassic-old",
+                DeploymentStatus::Stopped,
+                DeploymentPhase::Missing,
+                None,
+            ),
+            deployment(
+                25,
+                "jurassic",
+                "jurassic-live",
+                DeploymentStatus::Active,
+                DeploymentPhase::Running,
+                None,
+            ),
+            deployment(
+                26,
+                "jurassic",
+                "jurassic-preview",
+                DeploymentStatus::Active,
+                DeploymentPhase::Running,
+                Some("preview"),
+            ),
+        ];
+
+        assert_eq!(
+            matching_deployment("JURASSIC", &deployments)
+                .map(|deployment| deployment.atom_name.as_str()),
+            Some("jurassic-live")
+        );
+    }
+
+    #[test]
+    fn private_stack_name_lookup_paginates_beyond_the_first_page() {
+        let first_page = (0..DEPLOYMENT_PAGE_SIZE)
+            .map(|id| {
+                deployment(
+                    id as i32,
+                    "Other",
+                    "other",
+                    DeploymentStatus::Active,
+                    DeploymentPhase::Running,
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        let second_page = vec![deployment(
+            101,
+            "Jurassic",
+            "jurassic-live",
+            DeploymentStatus::Active,
+            DeploymentPhase::Running,
+            None,
+        )];
+        let mut pages = vec![first_page, second_page].into_iter();
+        let mut requests = Vec::new();
+
+        let install_ref = paginated_deployment_install_ref("JURASSIC", |limit, offset| {
+            requests.push((limit, offset));
+            Ok(pages.next().unwrap_or_default())
+        })
+        .unwrap();
+
+        assert_eq!(install_ref.as_deref(), Some("jurassic-live"));
+        assert_eq!(
+            requests,
+            vec![(DEPLOYMENT_PAGE_SIZE, 0), (DEPLOYMENT_PAGE_SIZE, 100)]
         );
     }
 

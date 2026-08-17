@@ -7349,6 +7349,7 @@
       "idl": null,
       "identity": {
         "primary_keys": [
+          "id.round_id",
           "id.round_id"
         ],
         "lookup_indexes": [
@@ -7575,6 +7576,65 @@
               },
               "transform": null,
               "population": "SetOnce"
+            }
+          ],
+          "conditions": [],
+          "emit": true
+        },
+        {
+          "source": {
+            "Source": {
+              "program_id": null,
+              "discriminator": null,
+              "type_name": "ore::BoardState",
+              "is_account": true
+            }
+          },
+          "key_resolution": {
+            "Embedded": {
+              "primary_field": {
+                "segments": [
+                  "round_id"
+                ],
+                "offsets": null
+              }
+            }
+          },
+          "mappings": [
+            {
+              "target_path": "id.round_id",
+              "source": {
+                "FromSource": {
+                  "path": {
+                    "segments": [
+                      "round_id"
+                    ],
+                    "offsets": null
+                  },
+                  "default": null,
+                  "transform": null
+                }
+              },
+              "transform": null,
+              "population": "SetOnce"
+            },
+            {
+              "target_path": "state.countdown_end_slot",
+              "source": {
+                "FromSource": {
+                  "path": {
+                    "segments": [
+                      "end_slot"
+                    ],
+                    "offsets": null
+                  },
+                  "default": null,
+                  "transform": null
+                }
+              },
+              "transform": null,
+              "population": "LastWrite",
+              "emit": false
             }
           ],
           "conditions": [],
@@ -8022,6 +8082,20 @@
               "inner_type": "u64",
               "source_path": null,
               "resolved_type": null
+            },
+            {
+              "field_name": "countdown_end_slot",
+              "raw_name": "countdown_end_slot",
+              "canonical_name": "countdownEndSlot",
+              "rust_type_name": "Option < u64 >",
+              "base_type": "Integer",
+              "integer_kind": "U64",
+              "is_optional": true,
+              "is_array": false,
+              "inner_type": "u64",
+              "source_path": null,
+              "resolved_type": null,
+              "emit": false
             },
             {
               "field_name": "expires_at",
@@ -8858,6 +8932,20 @@
           "source_path": null,
           "resolved_type": null
         },
+        "state.countdown_end_slot": {
+          "field_name": "countdown_end_slot",
+          "raw_name": "countdown_end_slot",
+          "canonical_name": "countdownEndSlot",
+          "rust_type_name": "Option < u64 >",
+          "base_type": "Integer",
+          "integer_kind": "U64",
+          "is_optional": true,
+          "is_array": false,
+          "inner_type": "u64",
+          "source_path": null,
+          "resolved_type": null,
+          "emit": false
+        },
         "state.deployed_per_square": {
           "field_name": "deployed_per_square",
           "raw_name": "deployed_per_square",
@@ -9194,7 +9282,7 @@
                     "UnwrapOr": {
                       "expr": {
                         "FieldRef": {
-                          "path": "state.expires_at"
+                          "path": "state.countdown_end_slot"
                         }
                       },
                       "default": 0
@@ -10105,7 +10193,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "86c64526fce93362912186fd1808d5c126e5f4d1df70a0fe86cd6235191afd27",
+      "content_hash": "e32b5cf15f55b10c0332e8013d8da6b6a8626ced863bb67c630396e6b46946a8",
       "views": [
         {
           "id": "OreRound/latest",
@@ -14562,5 +14650,5 @@
       ]
     }
   ],
-  "content_hash": "7b7566e4fd5987378f9e85c15995a2278bf5ed01e8e0d533349e07c517438a88"
+  "content_hash": "94384b7e846a3e0ac007a2cadf9964c18041c4019ba2190bad0028ec8c7dcea8"
 }

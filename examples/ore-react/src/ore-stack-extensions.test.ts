@@ -21,6 +21,10 @@ describe('ORE stream schemas', () => {
         total_miners: 181,
       },
     });
+    const roundDeadline = ORE_STREAM_STACK.patchSchemas.OreRound.safeParse({
+      id: { round_id: 339033 },
+      state: { estimated_expires_at_unix: 1784550188 },
+    });
     const miner = ORE_STREAM_STACK.patchSchemas.OreMiner.safeParse({
       state: {
         round_id: 339105,
@@ -68,6 +72,13 @@ describe('ORE stream schemas', () => {
           deployedPerSquare: [378259611n, 388890919n],
           totalMiners: 181n,
         },
+      },
+    });
+    expect(roundDeadline).toMatchObject({
+      success: true,
+      data: {
+        id: { roundId: 339033n },
+        state: { estimatedExpiresAtUnix: 1784550188n },
       },
     });
     expect(miner).toMatchObject({

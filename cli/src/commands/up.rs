@@ -16,6 +16,7 @@ use crate::api_client::{
     STACK_DEPLOYMENT_PLAN_SCHEMA, STACK_DEPLOYMENT_PREFLIGHT_SCHEMA,
 };
 use crate::commands::public_artifacts::{load_local_artifact_stack, LocalArtifactStack};
+use crate::commands::stack::deployment_selection_key;
 use crate::config::{resolve_stacks_to_push, AreteConfig, DiscoveredAst};
 use crate::telemetry;
 use crate::ui;
@@ -1473,15 +1474,21 @@ fn find_deployment<A: HostedDeploymentApi + ?Sized>(
 ) -> Result<Option<DeploymentResponse>> {
     const PAGE_SIZE: i64 = 100;
     const MAX_PAGES: i64 = 100;
+    let mut selected: Option<DeploymentResponse> = None;
     for page in 0..MAX_PAGES {
         let deployments = client.list_deployments_page(PAGE_SIZE, page * PAGE_SIZE)?;
-        if let Some(deployment) = deployments.iter().find(|deployment| {
+        for deployment in deployments.iter().filter(|deployment| {
             deployment.spec_id == spec_id && deployment.branch.as_deref() == branch
         }) {
-            return Ok(Some(deployment.clone()));
+            let should_replace = selected.as_ref().is_none_or(|current| {
+                deployment_selection_key(deployment) > deployment_selection_key(current)
+            });
+            if should_replace {
+                selected = Some(deployment.clone());
+            }
         }
         if deployments.len() < PAGE_SIZE as usize {
-            return Ok(None);
+            return Ok(selected);
         }
     }
     anyhow::bail!("Deployment lookup exceeded the bounded pagination limit")
