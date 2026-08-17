@@ -101,6 +101,8 @@ pub fn validate_semantics(input: ValidationInput<'_>) -> syn::Result<()> {
     validate_mapping_references(
         input.entity_name,
         input.sources_by_type,
+        input.primary_keys,
+        input.lookup_indexes,
         &known_fields,
         &available_fields,
         input.idls,
@@ -958,11 +960,15 @@ fn validate_instruction_hook_keys(
 fn validate_mapping_references(
     entity_name: &str,
     sources_by_type: &BTreeMap<String, Vec<parse::MapAttribute>>,
+    primary_keys: &[String],
+    lookup_indexes: &[(String, Option<String>)],
     known_fields: &HashSet<String>,
     available_fields: &[String],
     idls: IdlLookup,
     errors: &mut ErrorCollector,
 ) {
+    let primary_key_leafs = primary_key_leafs(primary_keys);
+    let lookup_index_leafs = lookup_index_leafs(lookup_indexes);
     let mut source_types: Vec<&String> = sources_by_type.keys().collect();
     source_types.sort();
 
@@ -980,7 +986,13 @@ fn validate_mapping_references(
         for mapping in &mappings {
             if let Some(join_on) = &mapping.join_on {
                 let reference = join_on.ident.to_string();
-                if !known_fields.contains(&reference) && reported_join_ons.insert(reference.clone())
+                if !known_fields.contains(&reference)
+                    && !source_field_can_resolve_key(
+                        &reference,
+                        &primary_key_leafs,
+                        &lookup_index_leafs,
+                    )
+                    && reported_join_ons.insert(reference.clone())
                 {
                     errors.push(entity_field_error(
                         entity_name,
