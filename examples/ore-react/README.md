@@ -53,7 +53,7 @@ The application keeps the complete ORE UI around that path: a responsive 5x5 boa
 ## Data authority
 
 - `OreBoard/state`, keyed by `{ address }`, is the authoritative singleton for the current `roundId`.
-- `OreRound/state`, keyed by `{ roundId }`, supplies the board and statistics for that exact active round.
+- `OreRound/state`, keyed by `{ roundId }`, supplies the board and statistics for that exact active round. Its `estimatedExpiresAtUnix` countdown is derived from the authoritative `OreBoard.endSlot`; the internal slot used for that calculation is not part of the emitted SDK shape.
 - `OreRound/latest` is a sorted history view. `RecentRounds` uses it for the recent-round list, but it must not choose the active round because delivery timing can briefly differ from Board rollover timing.
 - `OreTreasury/state`, keyed by `{ address }`, is the singleton treasury (motherlode).
 - `OreMiner/state`, keyed by `{ authority }`, is disabled by passing `undefined` until a wallet connects. A miner deployment is displayed only when its snapshot `roundId` matches the Board round — that check is domain logic, not SDK plumbing.
