@@ -166,7 +166,12 @@ pub fn list(json: bool) -> Result<()> {
     let specs = client.list_specs()?;
     let deployments = client.list_deployments(100)?;
 
-    let deployment_map: HashMap<i32, _> = deployments.into_iter().map(|d| (d.spec_id, d)).collect();
+    let deployment_map: HashMap<i32, _> = specs
+        .iter()
+        .filter_map(|spec| {
+            find_deployment(&deployments, spec.id, None).map(|deployment| (spec.id, deployment))
+        })
+        .collect();
 
     if json {
         #[derive(Serialize)]
@@ -261,7 +266,7 @@ pub fn show(stack_name: &str, version: Option<i32>, json: bool) -> Result<()> {
 
     let spec_with_version = client.get_spec_with_latest_version(spec.id)?;
     let deployments = client.list_deployments(100)?;
-    let deployment = deployments.iter().find(|d| d.spec_id == spec.id);
+    let deployment = find_deployment(&deployments, spec.id, None);
     let builds = client.list_builds_filtered(Some(5), None, Some(spec.id))?;
 
     if json {
@@ -814,8 +819,42 @@ fn find_deployment<'a>(
                 }
         })
         // Deployment history can contain multiple records for the same spec and
-        // branch. The newest record owns the current Kubernetes workload.
-        .max_by_key(|deployment| deployment.id)
+        // branch. Prefer the record that still owns a serving workload; only use
+        // timestamps and IDs to break ties between equivalent lifecycle states.
+        .max_by_key(|deployment| deployment_selection_key(deployment))
+}
+
+pub(crate) fn deployment_selection_key(
+    deployment: &DeploymentResponse,
+) -> (bool, u8, u8, Option<&str>, i32) {
+    let serving = matches!(
+        (deployment.status, deployment.live_status.phase),
+        (
+            DeploymentStatus::Active | DeploymentStatus::Updating,
+            DeploymentPhase::Running | DeploymentPhase::Updating
+        )
+    );
+    let status_priority = match deployment.status {
+        DeploymentStatus::Active => 4,
+        DeploymentStatus::Updating => 3,
+        DeploymentStatus::Failed => 2,
+        DeploymentStatus::Stopped => 1,
+    };
+    let phase_priority = match deployment.live_status.phase {
+        DeploymentPhase::Running => 5,
+        DeploymentPhase::Updating => 4,
+        DeploymentPhase::Degraded => 3,
+        DeploymentPhase::ScaledDown => 2,
+        DeploymentPhase::Missing => 1,
+        DeploymentPhase::Unknown => 0,
+    };
+    (
+        serving,
+        status_priority,
+        phase_priority,
+        deployment.last_deployed_at.as_deref(),
+        deployment.id,
+    )
 }
 
 fn format_deployment_status(status: DeploymentStatus) -> String {
@@ -1010,6 +1049,33 @@ mod tests {
         assert_eq!(
             find_deployment(&deployments, 42, Some("preview")).map(|item| item.id),
             Some(12)
+        );
+    }
+
+    #[test]
+    fn find_deployment_prefers_serving_record_over_newer_stopped_history() {
+        let mut active = deployment(19, 29, None);
+        active.last_deployed_at = Some("2026-08-16T23:46:43Z".into());
+
+        let mut stopped = deployment(24, 29, None);
+        stopped.status = DeploymentStatus::Stopped;
+        stopped.live_status.phase = DeploymentPhase::Missing;
+        stopped.last_deployed_at = Some("2026-07-19T23:07:30Z".into());
+
+        assert_eq!(
+            find_deployment(&[active, stopped], 29, None).map(|item| item.id),
+            Some(19)
+        );
+    }
+
+    #[test]
+    fn find_deployment_ignores_branch_records_for_production_lookup() {
+        let production = deployment(19, 29, None);
+        let preview = deployment(25, 29, Some("preview"));
+
+        assert_eq!(
+            find_deployment(&[production, preview], 29, None).map(|item| item.id),
+            Some(19)
         );
     }
 }
