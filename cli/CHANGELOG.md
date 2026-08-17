@@ -6,6 +6,23 @@
 
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.8.2](https://github.com/AreteA4/arete/compare/a4-cli-v0.8.1...a4-cli-v0.8.2) (2026-08-17)
+
+
+### Bug Fixes
+
+* CLI explore list ([cd8c2d7](https://github.com/AreteA4/arete/commit/cd8c2d738983c50ffb8a91b6c267c1efe6ef20da))
+* **cli:** prefer serving deployments over stale history ([2a6c4cc](https://github.com/AreteA4/arete/commit/2a6c4cc449951e53419862019f9888f327c0efa9))
+* **cli:** resolve private stacks by name in explore ([6366632](https://github.com/AreteA4/arete/commit/636663242cd36f91d6cf18c79a7f65b8de8eb861))
+* prefer serving stacks and correct ORE countdowns ([4b5e890](https://github.com/AreteA4/arete/commit/4b5e890cd9da7feba9517fc6afb0fc668d94fd5c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.8.1 to 0.8.2
+
 ## [0.8.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.8.0...a4-cli-v0.8.1) (2026-08-16)
 
 
