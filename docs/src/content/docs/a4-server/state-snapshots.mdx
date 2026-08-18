@@ -1,0 +1,113 @@
+---
+title: State Snapshots & Restore
+description: Recover in-memory server state across restarts without a database.
+sidebar:
+  order: 5
+---
+
+All server state — VM entity tables, projection caches, sorted views — lives
+in memory. By default a restarted server starts empty and rebuilds state only
+from new stream events. State snapshots change that: the server periodically
+writes its in-memory state to a pluggable store and, on startup, rehydrates
+from the latest snapshot and resumes the Yellowstone stream from a safe
+watermark. A restarted server comes back with its history in seconds.
+
+Snapshots are **opt-in** and off by default.
+
+## Enabling snapshots
+
+```bash
+export ARETE_SNAPSHOT_ENABLED=true
+export ARETE_SNAPSHOT_URL=file:///var/lib/arete/snapshots
+```
+
+Or configure programmatically:
+
+```rust
+use arete_server::{Server, SnapshotConfig};
+
+let mut snapshots = SnapshotConfig::default();
+snapshots.enabled = true;
+snapshots.url = Some("file:///var/lib/arete/snapshots".to_string());
+
+Server::builder()
+    .spec(my_stack::spec())
+    .websocket()
+    .http()
+    .snapshots(snapshots)
+    .start()
+    .await?;
+```
+
+## Configuration
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `ARETE_SNAPSHOT_ENABLED` | `false` | Master opt-in |
+| `ARETE_SNAPSHOT_URL` | — | `file:///var/lib/arete/snapshots` or a plain path |
+| `ARETE_SNAPSHOT_INTERVAL_SECS` | `60` | Periodic snapshot cadence |
+| `ARETE_SNAPSHOT_KEEP` | `4` | Retained snapshots (older ones are pruned) |
+| `ARETE_SNAPSHOT_ON_SHUTDOWN` | `true` | Final snapshot on SIGTERM/SIGINT |
+| `ARETE_SNAPSHOT_MIN_MUTATIONS` | `1` | Skip a cycle when fewer mutation batches were applied since the last snapshot |
+| `ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS` | `1500` | Snapshots older than this (estimated in slots) hydrate state but start the stream live |
+| `ARETE_SNAPSHOT_READY_MAX_LAG_SLOTS` | `50` | `/ready` stays 503 after a resume until the parser is within this many slots of the tip |
+| `ARETE_SNAPSHOT_READY_MAX_HOLD_SECS` | `60` | Upper bound on how long `/ready` can be gated after a resume |
+
+Only local filesystem URLs are supported in this build. A directory on a
+persistent volume (for Kubernetes, a PVC) is all a self-hosted deployment
+needs. An `object_store`-backed backend (S3/GCS/Azure) behind a
+`snapshot-object-store` cargo feature is planned.
+
+## How it works
+
+Each cycle the server:
+
+1. Dumps the VM's entity tables under a brief lock (state is cloned under the
+   lock; serialization and zstd compression happen outside it) and records the
+   **resume watermark** — the highest slot among mutation batches the
+   projector has applied.
+2. Pushes a flush marker through the projection channel and waits for it, so
+   the entity caches contain everything the VM produced before the dump.
+3. Dumps the projection caches, writes one atomic blob to the store
+   (temp file + rename), and prunes old snapshots.
+
+On startup, the server loads the newest snapshot, validates it, rehydrates
+the projection caches before the WebSocket server starts (so the first
+client's snapshot-on-subscribe is already warm), rebuilds sorted views, and
+hands the VM state to the stream runtime, which resumes the Yellowstone
+subscription with `from_slot = watermark`.
+
+The overlap between the watermark and whatever the old process saw after its
+last snapshot is replayed by the stream and deduplicated by the snapshotted
+version trackers — no gap, no double-applied events. Timestamps, resolver
+results, and append histories are preserved exactly, which pure replay cannot
+guarantee.
+
+## Snapshot invalidation
+
+A snapshot embeds a fingerprint of the compiled stack bytecode. If you deploy
+a build whose stack logic changed, the old snapshot is discarded and the
+server cold-starts (today's behavior) with a clear log line. The same applies
+to snapshots with a different format version, mismatched program ids, or
+corrupt/truncated blobs — restore problems never block startup.
+
+## Staleness and fallbacks
+
+- If the snapshot is older than `ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS`
+  (estimated from wall-clock age), state still hydrates but the stream starts
+  live: providers only support `from_slot` replay within a limited window.
+  Account-derived state self-heals from full account writes; only instruction
+  events inside the gap are missed.
+- If the provider repeatedly rejects the resume subscription, the runtime
+  falls back to a live subscription instead of crash-looping.
+- Snapshot write failures are logged and skipped — snapshotting never takes
+  down a healthy server.
+
+## What is not recovered
+
+- Slot-scheduled callbacks (documented as non-durable).
+- In-flight async resolver requests — they re-queue on the next relevant
+  event. Cached resolver results *are* preserved, honoring their original
+  TTLs across the restart.
+- WebSocket clients' broadcast backlog — clients receive a fresh snapshot on
+  reconnect anyway.

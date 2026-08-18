@@ -26,6 +26,19 @@ public deployment should configure `SignedSessionAuthPlugin`; transaction
 tokens need `transaction:inspect` and/or `transaction:send` independently.
 The relay never signs transactions and does not retry `sendTransaction`.
 
+State snapshots (restart recovery) are disabled by default. To have the
+server periodically persist its in-memory state and restore it on restart:
+
+```bash
+ARETE_SNAPSHOT_ENABLED=true \
+ARETE_SNAPSHOT_URL=file:///tmp/arete-ore-snapshots \
+cargo run
+```
+
+Restart the server and it resumes with its entity history intact, replaying
+the stream from the last snapshot's watermark. See the a4-server
+"State Snapshots & Restore" docs for all `ARETE_SNAPSHOT_*` options.
+
 Point the React example at it with:
 
 ```bash
