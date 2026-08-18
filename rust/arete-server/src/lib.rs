@@ -45,6 +45,7 @@ pub mod mutation_batch;
 pub mod program_runtime;
 pub mod projector;
 pub mod runtime;
+pub mod snapshot;
 pub mod sorted_cache;
 pub mod telemetry;
 pub mod view;
@@ -74,6 +75,7 @@ pub use program_runtime::{
 };
 pub use projector::Projector;
 pub use runtime::Runtime;
+pub use snapshot::{SnapshotConfig, SnapshotService};
 pub use telemetry::{init as init_telemetry, TelemetryConfig};
 #[cfg(feature = "otel")]
 pub use telemetry::{init_with_otel, TelemetryGuard};
@@ -378,6 +380,13 @@ impl ServerBuilder {
     pub fn health_config(mut self, config: HealthConfig) -> Self {
         self.config.health = Some(config);
         self.config.runtime_plan.health = true;
+        self
+    }
+
+    /// Configure state snapshots (restart recovery). Without this call the
+    /// server falls back to `SnapshotConfig::from_env()` (`ARETE_SNAPSHOT_*`).
+    pub fn snapshots(mut self, config: crate::snapshot::SnapshotConfig) -> Self {
+        self.config.snapshots = Some(config);
         self
     }
 

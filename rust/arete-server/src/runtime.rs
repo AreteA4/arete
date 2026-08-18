@@ -192,12 +192,50 @@ impl Runtime {
         let mut bus_cleanup_handle = None;
         let mut stats_handle = None;
         let mut mutations_tx_guard = None;
+        let mut snapshot_service: Option<Arc<crate::snapshot::SnapshotService>> = None;
+        let mut snapshot_manager_handle = None;
 
         if plan.live_runtime_enabled() {
             let (mutations_tx, mutations_rx) = mpsc::channel::<MutationBatch>(1024);
             mutations_tx_guard = Some(mutations_tx.clone());
             let bus_manager = BusManager::new();
             let entity_cache = EntityCache::new();
+
+            // Restore state from the latest snapshot (when enabled) before the
+            // WebSocket server spawns, so the first client's snapshot-on-subscribe
+            // is already warm. The VM portion is stashed for the generated
+            // runtime to hydrate before it connects to Yellowstone.
+            if let Some(spec) = self.spec.as_ref() {
+                let snapshot_config = match self.config.snapshots.clone() {
+                    Some(config) => Some(config),
+                    None => match crate::snapshot::SnapshotConfig::from_env() {
+                        Ok(config) => Some(config),
+                        Err(e) => {
+                            error!("Invalid snapshot configuration; snapshots disabled: {e:#}");
+                            None
+                        }
+                    },
+                };
+                if let Some(snapshot_config) = snapshot_config.filter(|c| c.enabled) {
+                    match crate::snapshot::SnapshotService::initialize(
+                        snapshot_config,
+                        spec,
+                        entity_cache.clone(),
+                        &self.view_index,
+                        mutations_tx.clone(),
+                    )
+                    .await
+                    {
+                        Ok(service) => {
+                            snapshot_manager_handle = Some(service.spawn());
+                            snapshot_service = Some(service);
+                        }
+                        Err(e) => {
+                            error!("Failed to initialize snapshots; continuing without: {e:#}")
+                        }
+                    }
+                }
+            }
 
             #[cfg(feature = "otel")]
             let projector = Projector::new(
@@ -401,6 +439,28 @@ impl Runtime {
             _ = wait_for_task(bus_cleanup_handle) => info!("Bus cleanup task completed"),
             _ = wait_for_task(stats_handle) => info!("Stats reporter task completed"),
             _ = shutdown_signal() => {}
+        }
+
+        // Final snapshot while the projector is still draining, so planned
+        // deploys restart near-lossless. Bounded to fit inside the platform's
+        // termination grace period.
+        if let Some(service) = snapshot_service.take() {
+            if let Some(handle) = snapshot_manager_handle.take() {
+                handle.abort();
+            }
+            if service.config().snapshot_on_shutdown {
+                info!("Taking final snapshot before shutdown");
+                match tokio::time::timeout(
+                    Duration::from_secs(20),
+                    service.snapshot_now(crate::snapshot::SnapshotTrigger::Shutdown),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => error!("Shutdown snapshot failed: {e:#}"),
+                    Err(_) => error!("Shutdown snapshot timed out"),
+                }
+            }
         }
         drop(mutations_tx_guard);
 

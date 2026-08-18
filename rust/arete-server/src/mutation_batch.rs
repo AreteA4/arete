@@ -41,6 +41,10 @@ pub struct MutationBatch {
     pub slot_context: Option<SlotContext>,
     /// Event metadata for logging and diagnostics
     pub event_context: Option<EventContext>,
+    /// When set, this batch is a flush marker: the projector acknowledges it
+    /// after every batch queued before it has been applied to the caches.
+    /// Used by the snapshot manager to establish a consistency cut.
+    pub flush_ack: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +63,7 @@ impl MutationBatch {
             mutations,
             slot_context: None,
             event_context: None,
+            flush_ack: None,
         }
     }
 
@@ -68,6 +73,7 @@ impl MutationBatch {
             mutations,
             slot_context: None,
             event_context: None,
+            flush_ack: None,
         }
     }
 
@@ -80,6 +86,19 @@ impl MutationBatch {
             mutations,
             slot_context: Some(slot_context),
             event_context: None,
+            flush_ack: None,
+        }
+    }
+
+    /// An empty batch whose only purpose is to be acknowledged once the
+    /// projector has drained everything queued before it.
+    pub fn flush_marker(ack: tokio::sync::oneshot::Sender<()>) -> Self {
+        Self {
+            span: Span::current(),
+            mutations: SmallVec::new(),
+            slot_context: None,
+            event_context: None,
+            flush_ack: Some(ack),
         }
     }
 

@@ -61,7 +61,7 @@ impl Projector {
 
         let mut json_buffer = Vec::with_capacity(4096);
 
-        while let Some(batch) = self.mutations_rx.recv().await {
+        while let Some(mut batch) = self.mutations_rx.recv().await {
             let _span_guard = batch.span.enter();
 
             let mut log = CanonicalLog::new();
@@ -80,7 +80,7 @@ impl Projector {
                     .set("accounts_count", ctx.accounts_count);
             }
 
-            for mutation in batch.mutations.into_iter() {
+            for mutation in std::mem::take(&mut batch.mutations).into_iter() {
                 #[cfg(feature = "otel")]
                 let export = mutation.export.clone();
 
@@ -99,6 +99,15 @@ impl Projector {
                 if let Some(ref metrics) = self.metrics {
                     metrics.record_mutation_processed(&export);
                 }
+            }
+
+            // The batch is now applied to the caches: advance the snapshot
+            // resume watermark, then acknowledge any pending flush marker.
+            if batch_size > 0 {
+                crate::snapshot::record_applied_batch(slot_context.map(|ctx| ctx.slot));
+            }
+            if let Some(ack) = batch.flush_ack.take() {
+                let _ = ack.send(());
             }
 
             log.set("batch_size", batch_size)

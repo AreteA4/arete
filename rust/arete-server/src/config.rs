@@ -187,7 +187,7 @@ fn first_nonempty(keys: &[&str]) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-fn env_parse<T>(key: &str) -> Result<Option<T>>
+pub(crate) fn env_parse<T>(key: &str) -> Result<Option<T>>
 where
     T: std::str::FromStr,
     T::Err: std::error::Error + Send + Sync + 'static,
@@ -198,7 +198,7 @@ where
         .transpose()
 }
 
-fn env_bool(key: &str) -> Result<Option<bool>> {
+pub(crate) fn env_bool(key: &str) -> Result<Option<bool>> {
     let Some(value) = std::env::var(key).ok() else {
         return Ok(None);
     };
@@ -332,6 +332,8 @@ pub struct ServerConfig {
     pub transactions: Option<TransactionConfig>,
     pub solana_gateway_target_id: Option<String>,
     pub program_read_binding_target_id: Option<String>,
+    /// State snapshot settings. `None` falls back to `SnapshotConfig::from_env()`.
+    pub snapshots: Option<crate::snapshot::SnapshotConfig>,
 }
 
 impl ServerConfig {
@@ -380,6 +382,11 @@ impl ServerConfig {
 
     pub fn with_runtime_plan(mut self, runtime_plan: RuntimePlan) -> Self {
         self.runtime_plan = runtime_plan;
+        self
+    }
+
+    pub fn with_snapshots(mut self, config: crate::snapshot::SnapshotConfig) -> Self {
+        self.snapshots = Some(config);
         self
     }
 }

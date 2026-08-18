@@ -260,27 +260,25 @@ async fn handle_request_inner(
                 .unwrap())
         }
         "/ready" | "/readiness" if runtime_plan.health => {
-            // Readiness check - check if stream is healthy
-            if let Some(monitor) = health_monitor.as_ref() {
-                if monitor.is_healthy().await {
-                    Ok(Response::builder()
-                        .status(StatusCode::OK)
-                        .header("Content-Type", "text/plain")
-                        .body(Full::new(Bytes::from("READY")))
-                        .unwrap())
-                } else {
-                    Ok(Response::builder()
-                        .status(StatusCode::SERVICE_UNAVAILABLE)
-                        .header("Content-Type", "text/plain")
-                        .body(Full::new(Bytes::from("NOT READY")))
-                        .unwrap())
-                }
-            } else {
+            // Readiness check - stream must be healthy, and after a snapshot
+            // resume the parser must have caught back up to the slot tip
+            // before this pod should take traffic.
+            let stream_ready = match health_monitor.as_ref() {
+                Some(monitor) => monitor.is_healthy().await,
                 // No health monitor configured, assume ready
+                None => true,
+            };
+            if stream_ready && crate::snapshot::resume_gate_ready() {
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "text/plain")
                     .body(Full::new(Bytes::from("READY")))
+                    .unwrap())
+            } else {
+                Ok(Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .header("Content-Type", "text/plain")
+                    .body(Full::new(Bytes::from("NOT READY")))
                     .unwrap())
             }
         }

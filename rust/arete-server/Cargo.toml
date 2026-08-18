@@ -34,6 +34,7 @@ arete-auth = { version = "0.3.0", path = "../arete-auth" }
 # Async utilities
 tokio-util = "0.7"
 smallvec = "1.15"
+zstd = "0.13"
 hex = "0.4"
 lru = "0.12"
 dashmap = "6.1"
