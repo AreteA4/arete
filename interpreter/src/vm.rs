@@ -512,6 +512,24 @@ impl LookupIndex {
     pub fn is_empty(&self) -> bool {
         self.index.lock().unwrap().is_empty()
     }
+
+    /// Dump entries most-recently-used first.
+    fn dump_entries(&self) -> Vec<(String, Value)> {
+        self.index
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
+    /// Load entries dumped by [`Self::dump_entries`], preserving recency order.
+    fn load_entries(&self, entries: &[(String, Value)]) {
+        let mut index = self.index.lock().unwrap();
+        for (key, value) in entries.iter().rev() {
+            index.put(key.clone(), value.clone());
+        }
+    }
 }
 
 impl Default for LookupIndex {
@@ -637,6 +655,24 @@ impl TemporalIndex {
 
         total_removed
     }
+
+    /// Dump entries most-recently-used first.
+    fn dump_entries(&self) -> Vec<(String, Vec<(Value, i64)>)> {
+        self.index
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(key, entries)| (key.clone(), entries.clone()))
+            .collect()
+    }
+
+    /// Load entries dumped by [`Self::dump_entries`], preserving recency order.
+    fn load_entries(&self, entries: &[(String, Vec<(Value, i64)>)]) {
+        let mut index = self.index.lock().unwrap();
+        for (key, values) in entries.iter().rev() {
+            index.put(key.clone(), values.clone());
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -678,6 +714,21 @@ impl PdaReverseLookup {
     pub fn contains(&self, pda_address: &str) -> bool {
         self.index.peek(pda_address).is_some()
     }
+
+    /// Dump entries most-recently-used first.
+    fn dump_entries(&self) -> Vec<(String, String)> {
+        self.index
+            .iter()
+            .map(|(pda, seed)| (pda.clone(), seed.clone()))
+            .collect()
+    }
+
+    /// Load entries dumped by [`Self::dump_entries`], preserving recency order.
+    fn load_entries(&mut self, entries: &[(String, String)]) {
+        for (pda, seed) in entries.iter().rev() {
+            self.index.put(pda.clone(), seed.clone());
+        }
+    }
 }
 
 /// Input for queueing an account update.
@@ -692,7 +743,7 @@ pub struct QueuedAccountUpdate {
 }
 
 /// Internal representation of a pending account update with queue metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PendingAccountUpdate {
     pub account_type: String,
     pub pda_address: String,
@@ -730,7 +781,7 @@ pub struct PendingInstructionEvent {
     pub queued_at: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeferredWhenOperation {
     pub entity_name: String,
     pub primary_key: Value,
@@ -905,6 +956,24 @@ impl VersionTracker {
     pub fn is_empty(&self) -> bool {
         self.cache.lock().unwrap().is_empty()
     }
+
+    /// Dump entries most-recently-used first.
+    fn dump_entries(&self) -> Vec<(String, u64, u64)> {
+        self.cache
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(key, (slot, ordering))| (key.clone(), *slot, *ordering))
+            .collect()
+    }
+
+    /// Load entries dumped by [`Self::dump_entries`], preserving recency order.
+    fn load_entries(&self, entries: &[(String, u64, u64)]) {
+        let mut cache = self.cache.lock().unwrap();
+        for (key, slot, ordering) in entries.iter().rev() {
+            cache.put(key.clone(), (*slot, *ordering));
+        }
+    }
 }
 
 impl Default for VersionTracker {
@@ -1063,6 +1132,145 @@ impl StateTable {
         self.instruction_dedup_cache
             .insert(primary_key, event_type, slot, txn_index);
         false
+    }
+
+    /// Dump the durable subset of this table into a serializable snapshot.
+    ///
+    /// Everything is cloned; serialization happens outside any VM lock.
+    /// Transient race buffers (`pending_updates`, `pending_instruction_events`)
+    /// and `access_times` are intentionally excluded — replay from the resume
+    /// watermark regenerates them.
+    pub fn dump(&self) -> crate::snapshot::StateTableSnapshot {
+        crate::snapshot::StateTableSnapshot {
+            entity_name: self.entity_name.clone(),
+            data: self
+                .data
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect(),
+            lookup_indexes: self
+                .lookup_indexes
+                .iter()
+                .map(|(name, index)| (name.clone(), index.dump_entries()))
+                .collect(),
+            temporal_indexes: self
+                .temporal_indexes
+                .iter()
+                .map(|(name, index)| (name.clone(), index.dump_entries()))
+                .collect(),
+            pda_reverse_lookups: self
+                .pda_reverse_lookups
+                .iter()
+                .map(|(name, index)| (name.clone(), index.dump_entries()))
+                .collect(),
+            last_account_data: self
+                .last_account_data
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect(),
+            version_tracker: self.version_tracker.dump_entries(),
+            instruction_dedup_cache: self.instruction_dedup_cache.dump_entries(),
+            recent_tx_instructions: self
+                .recent_tx_instructions
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(signature, instructions)| {
+                    let mut instructions: Vec<String> = instructions.iter().cloned().collect();
+                    instructions.sort();
+                    (signature.clone(), instructions)
+                })
+                .collect(),
+            deferred_when_ops: self
+                .deferred_when_ops
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect(),
+        }
+    }
+
+    /// Rebuild a table from a snapshot. `access_times` are reset to "now",
+    /// which only affects LRU tie-breaking after restore.
+    pub fn from_snapshot(
+        snapshot: &crate::snapshot::StateTableSnapshot,
+        config: StateTableConfig,
+    ) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let data = DashMap::new();
+        let access_times = DashMap::new();
+        for (key, value) in &snapshot.data {
+            data.insert(key.clone(), value.clone());
+            access_times.insert(key.clone(), now);
+        }
+
+        let mut lookup_indexes = HashMap::new();
+        for (name, entries) in &snapshot.lookup_indexes {
+            let index = LookupIndex::new();
+            index.load_entries(entries);
+            lookup_indexes.insert(name.clone(), index);
+        }
+
+        let mut temporal_indexes = HashMap::new();
+        for (name, entries) in &snapshot.temporal_indexes {
+            let index = TemporalIndex::new();
+            index.load_entries(entries);
+            temporal_indexes.insert(name.clone(), index);
+        }
+
+        let mut pda_reverse_lookups = HashMap::new();
+        for (name, entries) in &snapshot.pda_reverse_lookups {
+            let mut index = PdaReverseLookup::new(DEFAULT_MAX_PDA_REVERSE_LOOKUP_ENTRIES);
+            index.load_entries(entries);
+            pda_reverse_lookups.insert(name.clone(), index);
+        }
+
+        let last_account_data = DashMap::new();
+        for (pda, update) in &snapshot.last_account_data {
+            last_account_data.insert(pda.clone(), update.clone());
+        }
+
+        let version_tracker = VersionTracker::new();
+        version_tracker.load_entries(&snapshot.version_tracker);
+
+        let instruction_dedup_cache =
+            VersionTracker::with_capacity(DEFAULT_MAX_INSTRUCTION_DEDUP_ENTRIES);
+        instruction_dedup_cache.load_entries(&snapshot.instruction_dedup_cache);
+
+        let recent_tx_instructions = std::sync::Mutex::new(LruCache::new(
+            NonZeroUsize::new(1000).unwrap(),
+        ));
+        {
+            let mut cache = recent_tx_instructions.lock().unwrap();
+            for (signature, instructions) in snapshot.recent_tx_instructions.iter().rev() {
+                cache.put(signature.clone(), instructions.iter().cloned().collect());
+            }
+        }
+
+        let deferred_when_ops = DashMap::new();
+        for (key, ops) in &snapshot.deferred_when_ops {
+            deferred_when_ops.insert(key.clone(), ops.clone());
+        }
+
+        StateTable {
+            data,
+            access_times,
+            lookup_indexes,
+            temporal_indexes,
+            pda_reverse_lookups,
+            pending_updates: DashMap::new(),
+            pending_instruction_events: DashMap::new(),
+            last_account_data,
+            version_tracker,
+            instruction_dedup_cache,
+            config,
+            entity_name: snapshot.entity_name.clone(),
+            recent_tx_instructions,
+            deferred_when_ops,
+        }
     }
 }
 
@@ -1253,6 +1461,84 @@ impl VmContext {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Dump the durable subset of the VM into a serializable snapshot.
+    ///
+    /// Runs under the caller's VM lock; everything is cloned so serialization
+    /// and compression can happen after the lock is released.
+    pub fn dump(&self) -> crate::snapshot::VmSnapshot {
+        let now_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let resolver_cache = self
+            .resolver_cache
+            .iter()
+            .filter_map(|(key, entry)| {
+                // Convert the monotonic `cached_at` to an absolute wall-clock
+                // expiry; entries already past their TTL are not worth keeping.
+                let remaining = entry.ttl.checked_sub(entry.cached_at.elapsed())?;
+                Some(crate::snapshot::ResolverCacheEntrySnapshot {
+                    key: key.clone(),
+                    value: match &entry.value {
+                        ResolverCacheValue::Resolved(value) => Some(value.clone()),
+                        ResolverCacheValue::Negative => None,
+                    },
+                    expires_at_epoch_ms: now_epoch_ms.saturating_add(remaining.as_millis() as u64),
+                })
+            })
+            .collect();
+
+        crate::snapshot::VmSnapshot {
+            states: self
+                .states
+                .iter()
+                .map(|(state_id, table)| (*state_id, table.dump()))
+                .collect(),
+            resolver_cache,
+        }
+    }
+
+    /// Rebuild VM state from a snapshot taken by [`Self::dump`].
+    ///
+    /// Existing state tables with the same id are replaced (their configured
+    /// limits are kept). Resolver cache entries whose TTL lapsed while the
+    /// server was down are dropped.
+    pub fn hydrate(&mut self, snapshot: crate::snapshot::VmSnapshot) {
+        for (state_id, table_snapshot) in &snapshot.states {
+            let config = self
+                .states
+                .get(state_id)
+                .map(|table| table.config.clone())
+                .unwrap_or_default();
+            self.states
+                .insert(*state_id, StateTable::from_snapshot(table_snapshot, config));
+        }
+
+        let now_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        for entry in snapshot.resolver_cache.iter().rev() {
+            let remaining_ms = entry.expires_at_epoch_ms.saturating_sub(now_epoch_ms);
+            if remaining_ms == 0 {
+                continue;
+            }
+            self.resolver_cache.put(
+                entry.key.clone(),
+                ResolverCacheEntry {
+                    value: match &entry.value {
+                        Some(value) => ResolverCacheValue::Resolved(value.clone()),
+                        None => ResolverCacheValue::Negative,
+                    },
+                    cached_at: Instant::now(),
+                    ttl: Duration::from_millis(remaining_ms),
+                },
+            );
+        }
     }
 
     pub fn restore_resolver_requests(&mut self, requests: Vec<ResolverRequest>) {
@@ -6497,5 +6783,262 @@ mod tests {
                 .is_some(),
             "Mutation should include pre_reveal_winning_square"
         );
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::snapshot::{ResolverCacheEntrySnapshot, VmSnapshot};
+
+    fn epoch_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    fn populated_vm() -> VmContext {
+        let mut vm = VmContext::new();
+        let table = vm.states.get_mut(&0).unwrap();
+
+        table.insert_with_eviction(json!("mint1"), json!({"id": "mint1", "price": 10}));
+        table.insert_with_eviction(json!("mint2"), json!({"id": "mint2", "price": 20}));
+
+        let index = LookupIndex::new();
+        index.insert(json!("curve1"), json!("mint1"));
+        index.insert(json!("curve2"), json!("mint2"));
+        table.lookup_indexes.insert("by_curve".to_string(), index);
+
+        let temporal = TemporalIndex::new();
+        temporal.insert(json!("pool1"), json!("mint1"), 100);
+        temporal.insert(json!("pool1"), json!("mint2"), 200);
+        table
+            .temporal_indexes
+            .insert("by_pool".to_string(), temporal);
+
+        let mut pda = PdaReverseLookup::new(100);
+        pda.insert("pda_addr".to_string(), "mint1".to_string());
+        table.pda_reverse_lookups.insert("curve_pda".to_string(), pda);
+
+        table.last_account_data.insert(
+            "pda_addr".to_string(),
+            PendingAccountUpdate {
+                account_type: "BondingCurve".to_string(),
+                pda_address: "pda_addr".to_string(),
+                account_data: json!({"reserves": 5}),
+                slot: 90,
+                write_version: 7,
+                signature: "sig1".to_string(),
+                queued_at: 1_000,
+                is_stale_reprocess: false,
+            },
+        );
+
+        assert!(table.is_fresh_update(&json!("mint1"), "TokenState", 100, 5));
+        assert!(!table.is_duplicate_instruction(&json!("mint1"), "BuyIx", 100, 3));
+
+        table
+            .recent_tx_instructions
+            .lock()
+            .unwrap()
+            .put("sig1".to_string(), {
+                let mut set = HashSet::new();
+                set.insert("buy".to_string());
+                set
+            });
+
+        table.deferred_when_ops.insert(
+            ("mint1".to_string(), "BuyIx".to_string()),
+            vec![DeferredWhenOperation {
+                entity_name: "Token".to_string(),
+                primary_key: json!("mint1"),
+                field_path: "last_buy".to_string(),
+                field_value: json!(42),
+                when_instruction: "BuyIx".to_string(),
+                signature: "sig1".to_string(),
+                slot: 100,
+                deferred_at: 1_000,
+                emit: true,
+            }],
+        );
+
+        vm
+    }
+
+    #[test]
+    fn round_trip_preserves_state_and_dedup_guards() {
+        let vm = populated_vm();
+        let snapshot = vm.dump();
+
+        // Serialize through JSON to prove the DTOs are serde-clean.
+        let json_bytes = serde_json::to_vec(&snapshot).unwrap();
+        let decoded: VmSnapshot = serde_json::from_slice(&json_bytes).unwrap();
+
+        let mut restored = VmContext::new();
+        restored.hydrate(decoded);
+
+        assert_eq!(
+            restored.get_entity_state(0, &json!("mint1")),
+            Some(json!({"id": "mint1", "price": 10}))
+        );
+        assert_eq!(
+            restored.get_entity_state(0, &json!("mint2")),
+            Some(json!({"id": "mint2", "price": 20}))
+        );
+
+        let table = restored.states.get_mut(&0).unwrap();
+        assert_eq!(
+            table.lookup_indexes["by_curve"].lookup(&json!("curve1")),
+            Some(json!("mint1"))
+        );
+        assert_eq!(
+            table.temporal_indexes["by_pool"].lookup(&json!("pool1"), 150),
+            Some(json!("mint1"))
+        );
+        assert_eq!(
+            table.temporal_indexes["by_pool"].lookup_latest(&json!("pool1")),
+            Some(json!("mint2"))
+        );
+        assert_eq!(
+            table
+                .pda_reverse_lookups
+                .get_mut("curve_pda")
+                .unwrap()
+                .lookup("pda_addr"),
+            Some("mint1".to_string())
+        );
+        assert_eq!(
+            table.last_account_data.get("pda_addr").unwrap().slot,
+            90
+        );
+        assert_eq!(
+            table
+                .recent_tx_instructions
+                .lock()
+                .unwrap()
+                .get("sig1")
+                .map(|set| set.contains("buy")),
+            Some(true)
+        );
+        assert_eq!(
+            table
+                .deferred_when_ops
+                .get(&("mint1".to_string(), "BuyIx".to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Replay-overlap idempotency: the exact same updates must now be
+        // rejected as stale/duplicate, and newer ones accepted.
+        assert!(!table.is_fresh_update(&json!("mint1"), "TokenState", 100, 5));
+        assert!(!table.is_fresh_update(&json!("mint1"), "TokenState", 99, 9));
+        assert!(table.is_fresh_update(&json!("mint1"), "TokenState", 100, 6));
+        assert!(table.is_duplicate_instruction(&json!("mint1"), "BuyIx", 100, 3));
+        assert!(!table.is_duplicate_instruction(&json!("mint1"), "BuyIx", 100, 4));
+    }
+
+    #[test]
+    fn round_trip_preserves_lookup_index_lru_order() {
+        let index = LookupIndex::new();
+        index.insert(json!("a"), json!("pk_a"));
+        index.insert(json!("b"), json!("pk_b"));
+        index.insert(json!("c"), json!("pk_c"));
+        // Touch "a" so recency becomes a > c > b.
+        index.lookup(&json!("a"));
+
+        let dumped = index.dump_entries();
+        assert_eq!(
+            dumped.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["a", "c", "b"]
+        );
+
+        let restored = LookupIndex::new();
+        restored.load_entries(&dumped);
+        assert_eq!(restored.dump_entries(), dumped);
+    }
+
+    #[test]
+    fn hydrate_drops_expired_resolver_entries_and_keeps_live_ones() {
+        let now = epoch_ms();
+        let snapshot = VmSnapshot {
+            states: HashMap::new(),
+            resolver_cache: vec![
+                ResolverCacheEntrySnapshot {
+                    key: "token:live".to_string(),
+                    value: Some(json!({"symbol": "LIVE"})),
+                    expires_at_epoch_ms: now + 60_000,
+                },
+                ResolverCacheEntrySnapshot {
+                    key: "token:expired".to_string(),
+                    value: Some(json!({"symbol": "DEAD"})),
+                    expires_at_epoch_ms: now.saturating_sub(1),
+                },
+                ResolverCacheEntrySnapshot {
+                    key: "token:negative".to_string(),
+                    value: None,
+                    expires_at_epoch_ms: now + 10_000,
+                },
+            ],
+        };
+
+        let mut vm = VmContext::new();
+        vm.hydrate(snapshot);
+
+        assert!(matches!(
+            vm.get_cached_resolver_value("token:live"),
+            Some(CachedResolverValue::Resolved(_))
+        ));
+        assert!(vm.get_cached_resolver_value("token:expired").is_none());
+        assert!(matches!(
+            vm.get_cached_resolver_value("token:negative"),
+            Some(CachedResolverValue::Negative)
+        ));
+    }
+
+    #[test]
+    fn dump_converts_resolver_ttl_to_wall_clock() {
+        let mut vm = VmContext::new();
+        let resolver = ResolverType::Token;
+        vm.cache_resolver_value(&resolver, &json!("mint1"), &json!({"symbol": "T"}));
+        vm.cache_negative_resolver_value(&resolver, &json!("missing"));
+
+        let now = epoch_ms();
+        let snapshot = vm.dump();
+        assert_eq!(snapshot.resolver_cache.len(), 2);
+        for entry in &snapshot.resolver_cache {
+            assert!(entry.expires_at_epoch_ms > now);
+            match entry.key.as_str() {
+                "token:mint1" => assert!(entry.value.is_some()),
+                "token:missing" => assert!(entry.value.is_none()),
+                other => panic!("unexpected cache key {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn hydrate_replaces_tables_by_state_id() {
+        let mut source = VmContext::new();
+        source
+            .states
+            .get_mut(&0)
+            .unwrap()
+            .insert_with_eviction(json!("k"), json!({"v": 1}));
+        let snapshot = source.dump();
+
+        let mut target = VmContext::new();
+        target
+            .states
+            .get_mut(&0)
+            .unwrap()
+            .insert_with_eviction(json!("stale"), json!({"v": 0}));
+        target.hydrate(snapshot);
+
+        assert_eq!(
+            target.get_entity_state(0, &json!("k")),
+            Some(json!({"v": 1}))
+        );
+        assert_eq!(target.get_entity_state(0, &json!("stale")), None);
     }
 }
