@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.8.2...arete-sdk-v0.9.0) (2026-08-18)
+
+
+### Features
+
+* **sdk:** auto-wire managed Solana gateway transports ([ccab1b0](https://github.com/AreteA4/arete/commit/ccab1b0e1d011ef582918cbd789710538683bc99))
+
+
+### Bug Fixes
+
+* wire managed gateways and stabilize ORE entropy routing ([55b50bb](https://github.com/AreteA4/arete/commit/55b50bb15e92d2d2dbabc8dddb4fed835e4c8e15))
+
 ## [0.8.2](https://github.com/AreteA4/arete/compare/arete-sdk-v0.8.1...arete-sdk-v0.8.2) (2026-08-17)
 
 

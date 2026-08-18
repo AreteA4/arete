@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.9.0](https://github.com/AreteA4/arete/compare/arete-server-v0.8.2...arete-server-v0.9.0) (2026-08-18)
+
+
+### Features
+
+* **server:** add object_store snapshot backend behind snapshot-object-store ([f48ac7c](https://github.com/AreteA4/arete/commit/f48ac7ce5e08368e2113df4f286b7c0cdef44ce1))
+* **server:** add opt-in state snapshot manager and restart restore path ([e931543](https://github.com/AreteA4/arete/commit/e931543f629197a94b40509b91eac01486295fef))
+* **server:** add opt-in state snapshot restore ([d7ff8fc](https://github.com/AreteA4/arete/commit/d7ff8fc7849360eb9c9be2238f182fc8d3f056b0))
+
+
+### Bug Fixes
+
+* **server:** capture snapshots at one processing cut ([adc46dd](https://github.com/AreteA4/arete/commit/adc46dd27c6abcf24f65a4513c16eac712140ca9))
+* **server:** isolate snapshot state per runtime ([0276512](https://github.com/AreteA4/arete/commit/02765124544bd3d5ecd6624b21e97dd2efbc119d))
+* **server:** preserve snapshot replay checkpoints ([8238c7f](https://github.com/AreteA4/arete/commit/8238c7f986271d91c027d6c72ab236083ab08249))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.8.2 to 0.9.0
+
 ## [0.8.2](https://github.com/AreteA4/arete/compare/arete-server-v0.8.1...arete-server-v0.8.2) (2026-08-17)
 
 

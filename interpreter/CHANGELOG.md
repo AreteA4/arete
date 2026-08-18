@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.9.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.8.2...arete-interpreter-v0.9.0) (2026-08-18)
+
+
+### Features
+
+* **interpreter:** add VM snapshot DTOs, dump/hydrate, and bytecode fingerprint ([8dc3808](https://github.com/AreteA4/arete/commit/8dc380839cae7224d9adf842b54e314916360de7))
+* **sdk:** auto-wire managed Solana gateway transports ([ccab1b0](https://github.com/AreteA4/arete/commit/ccab1b0e1d011ef582918cbd789710538683bc99))
+* **server:** add opt-in state snapshot restore ([d7ff8fc](https://github.com/AreteA4/arete/commit/d7ff8fc7849360eb9c9be2238f182fc8d3f056b0))
+
+
+### Bug Fixes
+
+* wire managed gateways and stabilize ORE entropy routing ([55b50bb](https://github.com/AreteA4/arete/commit/55b50bb15e92d2d2dbabc8dddb4fed835e4c8e15))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.8.2 to 0.9.0
+
 ## [0.8.2](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.8.1...arete-interpreter-v0.8.2) (2026-08-17)
 
 

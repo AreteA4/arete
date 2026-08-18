@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.8.2...arete-macros-v0.9.0) (2026-08-18)
+
+
+### Features
+
+* **macros:** hydrate VM from snapshot before resuming the Yellowstone stream ([e20ecdb](https://github.com/AreteA4/arete/commit/e20ecdb96e4cc3232964d9d89b13d11fa2026589))
+* **server:** add opt-in state snapshot restore ([d7ff8fc](https://github.com/AreteA4/arete/commit/d7ff8fc7849360eb9c9be2238f182fc8d3f056b0))
+
+
+### Bug Fixes
+
+* allow joins to reference nested lookup index fields ([782b1eb](https://github.com/AreteA4/arete/commit/782b1eb7dadcd06bb06b784752f286aed573da6e))
+* satisfy macro validation clippy limit ([9f872d7](https://github.com/AreteA4/arete/commit/9f872d78ac3637f17e9be134855122b0cac35b6f))
+* **server:** capture snapshots at one processing cut ([adc46dd](https://github.com/AreteA4/arete/commit/adc46dd27c6abcf24f65a4513c16eac712140ca9))
+* **server:** preserve snapshot replay checkpoints ([8238c7f](https://github.com/AreteA4/arete/commit/8238c7f986271d91c027d6c72ab236083ab08249))
+* wire managed gateways and stabilize ORE entropy routing ([55b50bb](https://github.com/AreteA4/arete/commit/55b50bb15e92d2d2dbabc8dddb4fed835e4c8e15))
+
 ## [0.8.2](https://github.com/AreteA4/arete/compare/arete-macros-v0.8.1...arete-macros-v0.8.2) (2026-08-17)
 
 

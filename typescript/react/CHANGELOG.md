@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.0](https://github.com/AreteA4/arete/compare/arete-react-v0.8.2...arete-react-v0.9.0) (2026-08-18)
+
+
+### Bug Fixes
+
+* **react:** forward explicit chain transport overrides ([63dd125](https://github.com/AreteA4/arete/commit/63dd125c2f9098e04c6c294678defe835117b594))
+* wire managed gateways and stabilize ORE entropy routing ([55b50bb](https://github.com/AreteA4/arete/commit/55b50bb15e92d2d2dbabc8dddb4fed835e4c8e15))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @usearete/sdk bumped from ^0.8.2 to ^0.9.0
+
 ## [0.8.2](https://github.com/AreteA4/arete/compare/arete-react-v0.8.1...arete-react-v0.8.2) (2026-08-17)
 
 

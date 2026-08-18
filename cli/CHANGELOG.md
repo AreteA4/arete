@@ -6,6 +6,26 @@
 
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.9.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.8.2...a4-cli-v0.9.0) (2026-08-18)
+
+
+### Features
+
+* **sdk:** auto-wire managed Solana gateway transports ([ccab1b0](https://github.com/AreteA4/arete/commit/ccab1b0e1d011ef582918cbd789710538683bc99))
+
+
+### Bug Fixes
+
+* preserve install compatibility and refresh ORE SDKs ([99a0836](https://github.com/AreteA4/arete/commit/99a083654deffd14b0bd63a829c934b097749876))
+* wire managed gateways and stabilize ORE entropy routing ([55b50bb](https://github.com/AreteA4/arete/commit/55b50bb15e92d2d2dbabc8dddb4fed835e4c8e15))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.8.2 to 0.9.0
+
 ## [0.8.2](https://github.com/AreteA4/arete/compare/a4-cli-v0.8.1...a4-cli-v0.8.2) (2026-08-17)
 
 
