@@ -527,6 +527,10 @@ fn generate_managed_grpc_helpers() -> TokenStream {
 
         const RECONNECT_BACKOFF_RESET_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
         const HTTP2_KEEPALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+        /// After this many consecutive short-lived connection attempts, drop
+        /// `from_slot` and subscribe live instead of crash-looping on a
+        /// provider that rejects the requested replay slot.
+        const FROM_SLOT_LIVE_FALLBACK_ATTEMPTS: u32 = 3;
 
         fn install_managed_yellowstone_grpc_settings(settings: ManagedYellowstoneGrpcSettings) {
             let _ = MANAGED_YELLOWSTONE_GRPC_SETTINGS.set(settings);
@@ -1668,6 +1672,35 @@ pub fn generate_spec_function(
             let vm = Arc::new(Mutex::new(arete::runtime::arete_interpreter::vm::VmContext::new()));
             let bytecode_arc = Arc::new(bytecode);
 
+            // Snapshot restore hook: arete-server stashes restored VM state
+            // before spawning the parser; hydrate it here and resume the
+            // stream from the snapshot's watermark. When snapshots are
+            // disabled this is a no-op.
+            let mut restored_from_slot: Option<u64> = None;
+            if let Some(restored) = arete::runtime::arete_server::snapshot::take_restored() {
+                match vm.lock() {
+                    Ok(mut vm_guard) => {
+                        vm_guard.hydrate(restored.vm);
+                        restored_from_slot = restored.resume_watermark;
+                        if let Some(watermark) = restored_from_slot {
+                            slot_tracker.record(watermark);
+                            arete::runtime::tracing::info!(
+                                resume_watermark = watermark,
+                                "Hydrated VM state from snapshot; will resume stream from watermark"
+                            );
+                        } else {
+                            arete::runtime::tracing::info!(
+                                "Hydrated VM state from snapshot; starting stream live (no resume watermark)"
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        arete::runtime::tracing::warn!("VM mutex poisoned; skipping snapshot hydration");
+                    }
+                }
+            }
+            arete::runtime::arete_server::snapshot::register_runtime(vm.clone(), slot_tracker.clone());
+
             // Spawn slot scheduler background task
             #slot_scheduler_task
 
@@ -1675,7 +1708,22 @@ pub fn generate_spec_function(
             #slot_subscription_task
 
             loop {
-                let from_slot = {
+                let from_slot = if attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
+                    // The provider keeps rejecting us shortly after connect;
+                    // most likely the requested slot is outside its replay
+                    // window. Subscribe live rather than crash-looping.
+                    arete::runtime::tracing::warn!(
+                        attempt,
+                        "Repeated short-lived connections; subscribing live without from_slot"
+                    );
+                    restored_from_slot = None;
+                    None
+                } else if let Some(watermark) = restored_from_slot.take() {
+                    // First attempt after a snapshot restore: use the exact
+                    // watermark rather than the slot tracker, which the
+                    // dedicated slot subscription may already have advanced.
+                    Some(watermark)
+                } else {
                     let last = slot_tracker.get();
                     if last > 0 { Some(last) } else { None }
                 };
@@ -2982,6 +3030,35 @@ pub fn generate_multi_pipeline_spec_function(
             let vm = Arc::new(Mutex::new(arete::runtime::arete_interpreter::vm::VmContext::new()));
             let bytecode_arc = Arc::new(bytecode);
 
+            // Snapshot restore hook: arete-server stashes restored VM state
+            // before spawning the parser; hydrate it here and resume the
+            // stream from the snapshot's watermark. When snapshots are
+            // disabled this is a no-op.
+            let mut restored_from_slot: Option<u64> = None;
+            if let Some(restored) = arete::runtime::arete_server::snapshot::take_restored() {
+                match vm.lock() {
+                    Ok(mut vm_guard) => {
+                        vm_guard.hydrate(restored.vm);
+                        restored_from_slot = restored.resume_watermark;
+                        if let Some(watermark) = restored_from_slot {
+                            slot_tracker.record(watermark);
+                            arete::runtime::tracing::info!(
+                                resume_watermark = watermark,
+                                "Hydrated VM state from snapshot; will resume stream from watermark"
+                            );
+                        } else {
+                            arete::runtime::tracing::info!(
+                                "Hydrated VM state from snapshot; starting stream live (no resume watermark)"
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        arete::runtime::tracing::warn!("VM mutex poisoned; skipping snapshot hydration");
+                    }
+                }
+            }
+            arete::runtime::arete_server::snapshot::register_runtime(vm.clone(), slot_tracker.clone());
+
             // Spawn slot scheduler background task
             #slot_scheduler_task
 
@@ -2989,7 +3066,22 @@ pub fn generate_multi_pipeline_spec_function(
             #slot_subscription_task
 
             loop {
-                let from_slot = {
+                let from_slot = if attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
+                    // The provider keeps rejecting us shortly after connect;
+                    // most likely the requested slot is outside its replay
+                    // window. Subscribe live rather than crash-looping.
+                    arete::runtime::tracing::warn!(
+                        attempt,
+                        "Repeated short-lived connections; subscribing live without from_slot"
+                    );
+                    restored_from_slot = None;
+                    None
+                } else if let Some(watermark) = restored_from_slot.take() {
+                    // First attempt after a snapshot restore: use the exact
+                    // watermark rather than the slot tracker, which the
+                    // dedicated slot subscription may already have advanced.
+                    Some(watermark)
+                } else {
                     let last = slot_tracker.get();
                     if last > 0 { Some(last) } else { None }
                 };
