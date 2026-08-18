@@ -44,7 +44,7 @@ Server::builder()
 | Env var | Default | Meaning |
 |---|---|---|
 | `ARETE_SNAPSHOT_ENABLED` | `false` | Master opt-in |
-| `ARETE_SNAPSHOT_URL` | — | `file:///var/lib/arete/snapshots` or a plain path |
+| `ARETE_SNAPSHOT_URL` | — | `file:///var/lib/arete/snapshots`, a plain path, or `s3://bucket/prefix` (see below) |
 | `ARETE_SNAPSHOT_INTERVAL_SECS` | `60` | Periodic snapshot cadence |
 | `ARETE_SNAPSHOT_KEEP` | `4` | Retained snapshots (older ones are pruned) |
 | `ARETE_SNAPSHOT_ON_SHUTDOWN` | `true` | Final snapshot on SIGTERM/SIGINT |
@@ -53,10 +53,24 @@ Server::builder()
 | `ARETE_SNAPSHOT_READY_MAX_LAG_SLOTS` | `50` | `/ready` stays 503 after a resume until the parser is within this many slots of the tip |
 | `ARETE_SNAPSHOT_READY_MAX_HOLD_SECS` | `60` | Upper bound on how long `/ready` can be gated after a resume |
 
-Only local filesystem URLs are supported in this build. A directory on a
-persistent volume (for Kubernetes, a PVC) is all a self-hosted deployment
-needs. An `object_store`-backed backend (S3/GCS/Azure) behind a
-`snapshot-object-store` cargo feature is planned.
+The default build supports local filesystem URLs; a directory on a persistent
+volume (for Kubernetes, a PVC) is all a self-hosted deployment needs.
+
+### Object storage (S3, GCS, Azure)
+
+Enable the `snapshot-object-store` cargo feature to store snapshots in cloud
+object storage:
+
+```toml
+arete-server = { version = "0", features = ["snapshot-object-store"] }
+```
+
+Then point `ARETE_SNAPSHOT_URL` at an object prefix — `s3://bucket/prefix`,
+`gs://bucket/prefix`, or `az://container/prefix`. Credentials come from each
+provider's standard environment (for AWS: `AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, or instance/workload identity such as
+IRSA on EKS). Run one server per prefix — the snapshot manager assumes a
+single writer.
 
 ## How it works
 

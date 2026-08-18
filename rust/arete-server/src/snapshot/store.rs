@@ -1,8 +1,8 @@
 //! Pluggable snapshot blob storage.
 //!
-//! v1 ships the filesystem store (self-hosters, k8s PVCs). An
-//! `object_store`-backed implementation (S3/GCS/Azure) is planned behind a
-//! `snapshot-object-store` cargo feature; the trait is already shaped for it.
+//! The filesystem store (self-hosters, k8s PVCs) is always available. An
+//! `object_store`-backed implementation (S3/GCS/Azure) lives in
+//! [`super::object`] behind the `snapshot-object-store` cargo feature.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -113,8 +113,9 @@ impl SnapshotStore for FsStore {
 
 /// Build a store from a URL-ish string:
 /// - `file:///var/lib/arete/snapshots` or a plain path -> [`FsStore`]
-/// - `s3://` / `gs://` / `az://` -> requires the (not yet shipped)
-///   `snapshot-object-store` feature; rejected with a clear error.
+/// - `s3://` / `gs://` / `az://` -> [`super::object::ObjectSnapshotStore`],
+///   available behind the `snapshot-object-store` feature; rejected with a
+///   clear error when the feature is not compiled in.
 pub fn store_from_url(url: &str) -> Result<std::sync::Arc<dyn SnapshotStore>> {
     let trimmed = url.trim();
     if let Some(path) = trimmed.strip_prefix("file://") {
@@ -123,11 +124,17 @@ pub fn store_from_url(url: &str) -> Result<std::sync::Arc<dyn SnapshotStore>> {
         }
         return Ok(std::sync::Arc::new(FsStore::new(Path::new(path))));
     }
-    if let Some((scheme, _)) = trimmed.split_once("://") {
-        anyhow::bail!(
-            "snapshot URL scheme {scheme:?} requires the `snapshot-object-store` feature, \
-             which is not enabled in this build; use a file:// URL or a local path"
-        );
+    if trimmed.contains("://") {
+        #[cfg(feature = "snapshot-object-store")]
+        return super::object::from_url(trimmed);
+        #[cfg(not(feature = "snapshot-object-store"))]
+        {
+            let scheme = trimmed.split_once("://").map(|(s, _)| s).unwrap_or_default();
+            anyhow::bail!(
+                "snapshot URL scheme {scheme:?} requires the `snapshot-object-store` feature, \
+                 which is not enabled in this build; use a file:// URL or a local path"
+            );
+        }
     }
     if trimmed.is_empty() {
         anyhow::bail!("snapshot URL is empty");
@@ -193,7 +200,10 @@ mod tests {
         assert!(store_from_url("file:///tmp/snaps").is_ok());
         assert!(store_from_url("/tmp/snaps").is_ok());
         assert!(store_from_url("relative/snaps").is_ok());
+        // Cloud schemes only work when the object-store backend is compiled in.
+        #[cfg(not(feature = "snapshot-object-store"))]
         assert!(store_from_url("s3://bucket/prefix").is_err());
+        assert!(store_from_url("ftp://bucket/prefix").is_err());
         assert!(store_from_url("").is_err());
     }
 }

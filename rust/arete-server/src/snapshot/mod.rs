@@ -16,9 +16,13 @@
 //! `W`; the snapshotted version trackers drop the overlap.
 
 pub mod envelope;
+#[cfg(feature = "snapshot-object-store")]
+pub mod object;
 pub mod store;
 
 pub use envelope::{SnapshotHeader, SnapshotPayload};
+#[cfg(feature = "snapshot-object-store")]
+pub use object::ObjectSnapshotStore;
 pub use store::{FsStore, SnapshotStore};
 
 use crate::cache::EntityCache;
@@ -47,7 +51,8 @@ const FLUSH_MARKER_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct SnapshotConfig {
     /// Master opt-in.
     pub enabled: bool,
-    /// Where blobs live: `file:///var/lib/arete/snapshots` or a plain path.
+    /// Where blobs live: `file:///var/lib/arete/snapshots`, a plain path, or
+    /// (with the `snapshot-object-store` feature) `s3://`/`gs://`/`az://`.
     pub url: Option<String>,
     /// Periodic snapshot cadence.
     pub interval: Duration,
