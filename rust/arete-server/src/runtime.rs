@@ -194,6 +194,7 @@ impl Runtime {
         let mut mutations_tx_guard = None;
         let mut snapshot_service: Option<Arc<crate::snapshot::SnapshotService>> = None;
         let mut snapshot_manager_handle = None;
+        let mut snapshot_runtime = None;
 
         if plan.live_runtime_enabled() {
             let (mutations_tx, mutations_rx) = mpsc::channel::<MutationBatch>(1024);
@@ -227,6 +228,7 @@ impl Runtime {
                     .await
                     {
                         Ok(service) => {
+                            snapshot_runtime = Some(service.runtime());
                             snapshot_manager_handle = Some(service.spawn());
                             snapshot_service = Some(service);
                         }
@@ -252,6 +254,10 @@ impl Runtime {
                 entity_cache.clone(),
                 mutations_rx,
             );
+            let projector = match snapshot_runtime.clone() {
+                Some(runtime) => projector.with_snapshot_runtime(runtime),
+                None => projector,
+            };
 
             projector_handle = Some(tokio::spawn(
                 async move {
@@ -313,11 +319,17 @@ impl Runtime {
                     info!("Starting parser runtime for program: {}", program_id);
                     let health = health_monitor.clone();
                     let reconnection_config = self.config.reconnection.clone().unwrap_or_default();
+                    let parser_snapshot_runtime = snapshot_runtime.clone();
                     parser_handle = Some(tokio::spawn(
                         async move {
-                            if let Err(e) =
+                            let parser = async move {
                                 parser_setup(mutations_tx, health, reconnection_config).await
-                            {
+                            };
+                            let result = match parser_snapshot_runtime {
+                                Some(runtime) => runtime.scope(parser).await,
+                                None => parser.await,
+                            };
+                            if let Err(e) = result {
                                 error!("Vixen parser runtime error: {}", e);
                             }
                         }
@@ -381,6 +393,9 @@ impl Runtime {
             }
             if let Some(monitor) = health_monitor.clone() {
                 http_server = http_server.with_health_monitor(monitor);
+            }
+            if let Some(runtime) = snapshot_runtime.clone() {
+                http_server = http_server.with_snapshot_runtime(runtime);
             }
             if let Some(plugin) = self
                 .http_auth_plugin

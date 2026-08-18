@@ -19,6 +19,7 @@ pub struct Projector {
     bus_manager: BusManager,
     entity_cache: EntityCache,
     mutations_rx: mpsc::Receiver<MutationBatch>,
+    snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -37,6 +38,7 @@ impl Projector {
             bus_manager,
             entity_cache,
             mutations_rx,
+            snapshot_runtime: None,
             metrics,
         }
     }
@@ -53,7 +55,17 @@ impl Projector {
             bus_manager,
             entity_cache,
             mutations_rx,
+            snapshot_runtime: None,
         }
+    }
+
+    /// Associate projection progress with one server's snapshot lifecycle.
+    pub fn with_snapshot_runtime(
+        mut self,
+        snapshot_runtime: crate::snapshot::SnapshotRuntime,
+    ) -> Self {
+        self.snapshot_runtime = Some(snapshot_runtime);
+        self
     }
 
     pub async fn run(mut self) {
@@ -104,7 +116,9 @@ impl Projector {
             // The batch is now applied to the caches: advance the snapshot
             // resume watermark, then acknowledge any pending flush marker.
             if batch_size > 0 {
-                crate::snapshot::record_applied_batch(slot_context.map(|ctx| ctx.slot));
+                if let Some(snapshot_runtime) = &self.snapshot_runtime {
+                    snapshot_runtime.record_applied_batch(slot_context.map(|ctx| ctx.slot));
+                }
             }
             if let Some(ack) = batch.flush_ack.take() {
                 let _ = ack.send(());

@@ -5,9 +5,11 @@
 //! arete-server owns all snapshot logic. The generated runtime's only
 //! responsibilities are (1) registering the `VmContext`/`SlotTracker` it
 //! creates via [`register_runtime`] and (2) hydrating from a restored blob via
-//! [`take_restored`] before connecting to Yellowstone. A stack built with an
-//! older arete-macros simply never registers a VM; snapshots stay disabled
-//! with a warning.
+//! [`take_restored`] before connecting to Yellowstone. Those hooks resolve
+//! through a task-local [`SnapshotRuntime`], so multiple servers embedded in
+//! one process cannot consume or replace each other's snapshot state. A stack
+//! built with an older arete-macros simply never registers a VM; snapshots
+//! stay disabled with a warning.
 //!
 //! Consistency cut: the VM is dumped at watermark `W` (the highest slot among
 //! projector-applied mutation batches), then a flush marker is pushed through
@@ -32,7 +34,7 @@ use crate::view::ViewIndex;
 use anyhow::{Context, Result};
 use arete_interpreter::snapshot::{VmSnapshot, SNAPSHOT_FORMAT_VERSION};
 use arete_interpreter::vm::VmContext;
-use once_cell::sync::Lazy;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -109,12 +111,14 @@ impl SnapshotConfig {
         config.keep = crate::config::env_parse("ARETE_SNAPSHOT_KEEP")?.unwrap_or(config.keep);
         config.snapshot_on_shutdown = crate::config::env_bool("ARETE_SNAPSHOT_ON_SHUTDOWN")?
             .unwrap_or(config.snapshot_on_shutdown);
-        config.min_mutations =
-            crate::config::env_parse("ARETE_SNAPSHOT_MIN_MUTATIONS")?.unwrap_or(config.min_mutations);
-        config.max_resume_age_slots = crate::config::env_parse("ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS")?
-            .unwrap_or(config.max_resume_age_slots);
-        config.ready_max_lag_slots = crate::config::env_parse("ARETE_SNAPSHOT_READY_MAX_LAG_SLOTS")?
-            .unwrap_or(config.ready_max_lag_slots);
+        config.min_mutations = crate::config::env_parse("ARETE_SNAPSHOT_MIN_MUTATIONS")?
+            .unwrap_or(config.min_mutations);
+        config.max_resume_age_slots =
+            crate::config::env_parse("ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS")?
+                .unwrap_or(config.max_resume_age_slots);
+        config.ready_max_lag_slots =
+            crate::config::env_parse("ARETE_SNAPSHOT_READY_MAX_LAG_SLOTS")?
+                .unwrap_or(config.ready_max_lag_slots);
         config.ready_max_hold = Duration::from_secs(
             crate::config::env_parse("ARETE_SNAPSHOT_READY_MAX_HOLD_SECS")?
                 .unwrap_or(config.ready_max_hold.as_secs()),
@@ -156,75 +160,114 @@ struct ResumeGate {
     max_hold: Duration,
 }
 
-static REGISTERED: Lazy<StdMutex<Option<RuntimeRegistration>>> =
-    Lazy::new(|| StdMutex::new(None));
-static RESTORED: Lazy<StdMutex<Option<RestoredState>>> = Lazy::new(|| StdMutex::new(None));
-static RESUME_GATE: Lazy<StdMutex<Option<ResumeGate>>> = Lazy::new(|| StdMutex::new(None));
-/// Highest slot among mutation batches the projector has applied. This is the
-/// safe `from_slot` resume point (`SlotTracker` is not: it follows the raw
-/// slot subscription, not parser progress).
-static RESUME_WATERMARK: AtomicU64 = AtomicU64::new(0);
-static APPLIED_BATCHES: AtomicU64 = AtomicU64::new(0);
+#[derive(Default)]
+struct SnapshotRuntimeState {
+    registered: StdMutex<Option<RuntimeRegistration>>,
+    restored: StdMutex<Option<RestoredState>>,
+    resume_gate: StdMutex<Option<ResumeGate>>,
+    /// Highest slot among mutation batches this runtime's projector has
+    /// applied. This is the safe `from_slot` resume point (`SlotTracker` is
+    /// not: it follows the raw slot subscription, not parser progress).
+    resume_watermark: AtomicU64,
+    applied_batches: AtomicU64,
+}
+
+/// Per-server snapshot coordination shared by its parser, projector, snapshot
+/// manager, and readiness endpoint.
+///
+/// The generated parser hooks use [`scope`](Self::scope) so their existing
+/// argument-free calls cannot accidentally bind to another server running in
+/// the same process.
+#[derive(Clone, Default)]
+pub struct SnapshotRuntime {
+    state: Arc<SnapshotRuntimeState>,
+}
+
+tokio::task_local! {
+    static ACTIVE_SNAPSHOT_RUNTIME: SnapshotRuntime;
+}
+
+impl SnapshotRuntime {
+    /// Run a generated parser future with this server's snapshot state.
+    pub async fn scope<F>(&self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        ACTIVE_SNAPSHOT_RUNTIME.scope(self.clone(), future).await
+    }
+
+    /// Associate the parser's VM and slot tracker with this server only.
+    pub fn register_runtime(&self, vm: Arc<StdMutex<VmContext>>, slot_tracker: SlotTracker) {
+        let mut registered = self.state.registered.lock().unwrap();
+        if registered.is_some() {
+            debug!("Snapshot runtime registration replaced");
+        }
+        *registered = Some(RuntimeRegistration { vm, slot_tracker });
+    }
+
+    /// Consume this server's restored VM state exactly once.
+    pub fn take_restored(&self) -> Option<RestoredState> {
+        self.state.restored.lock().unwrap().take()
+    }
+
+    /// Record a batch applied by this server's projector.
+    pub(crate) fn record_applied_batch(&self, slot: Option<u64>) {
+        self.state.applied_batches.fetch_add(1, Ordering::Relaxed);
+        if let Some(slot) = slot {
+            self.state
+                .resume_watermark
+                .fetch_max(slot, Ordering::Relaxed);
+        }
+    }
+
+    /// Returns `true` unless this server's watermark resume is still catching
+    /// up to its observed slot tip.
+    pub fn resume_gate_ready(&self) -> bool {
+        let mut gate_slot = self.state.resume_gate.lock().unwrap();
+        let Some(gate) = gate_slot.as_ref() else {
+            return true;
+        };
+        if gate.started.elapsed() >= gate.max_hold {
+            info!("Snapshot resume readiness gate released (max hold reached)");
+            *gate_slot = None;
+            return true;
+        }
+        let tip = self
+            .state
+            .registered
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|registration| registration.slot_tracker.get())
+            .unwrap_or(0);
+        let applied = self.state.resume_watermark.load(Ordering::Relaxed);
+        if tip > 0 && tip.saturating_sub(applied) <= gate.max_lag_slots {
+            info!(tip, applied, "Snapshot resume caught up; marking ready");
+            *gate_slot = None;
+            return true;
+        }
+        false
+    }
+}
 
 /// Called by the generated runtime after it creates its `VmContext` and
 /// `SlotTracker`, so the snapshot manager can dump them later.
 pub fn register_runtime(vm: Arc<StdMutex<VmContext>>, slot_tracker: SlotTracker) {
-    let mut registered = REGISTERED.lock().unwrap();
-    if registered.is_some() {
-        debug!("Snapshot runtime registration replaced");
+    if ACTIVE_SNAPSHOT_RUNTIME
+        .try_with(|runtime| runtime.register_runtime(vm, slot_tracker))
+        .is_err()
+    {
+        debug!("Snapshot runtime registration ignored (snapshots disabled)");
     }
-    *registered = Some(RuntimeRegistration { vm, slot_tracker });
 }
 
 /// Called by the generated runtime before connecting: returns the restored VM
 /// state (if any) exactly once.
 pub fn take_restored() -> Option<RestoredState> {
-    RESTORED.lock().unwrap().take()
-}
-
-/// Called by the projector after applying a mutation batch to the caches.
-pub(crate) fn record_applied_batch(slot: Option<u64>) {
-    APPLIED_BATCHES.fetch_add(1, Ordering::Relaxed);
-    if let Some(slot) = slot {
-        RESUME_WATERMARK.fetch_max(slot, Ordering::Relaxed);
-    }
-}
-
-/// Readiness gate consulted by `/ready`. Returns `true` unless a watermark
-/// resume is still catching up to the observed slot tip.
-pub fn resume_gate_ready() -> bool {
-    let mut gate_slot = RESUME_GATE.lock().unwrap();
-    let Some(gate) = gate_slot.as_ref() else {
-        return true;
-    };
-    if gate.started.elapsed() >= gate.max_hold {
-        info!("Snapshot resume readiness gate released (max hold reached)");
-        *gate_slot = None;
-        return true;
-    }
-    let tip = REGISTERED
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|registration| registration.slot_tracker.get())
-        .unwrap_or(0);
-    let applied = RESUME_WATERMARK.load(Ordering::Relaxed);
-    if tip > 0 && tip.saturating_sub(applied) <= gate.max_lag_slots {
-        info!(tip, applied, "Snapshot resume caught up; marking ready");
-        *gate_slot = None;
-        return true;
-    }
-    false
-}
-
-/// Clear all module-global state. Test-only: the registry is process-wide.
-#[doc(hidden)]
-pub fn reset_for_tests() {
-    *REGISTERED.lock().unwrap() = None;
-    *RESTORED.lock().unwrap() = None;
-    *RESUME_GATE.lock().unwrap() = None;
-    RESUME_WATERMARK.store(0, Ordering::Relaxed);
-    APPLIED_BATCHES.store(0, Ordering::Relaxed);
+    ACTIVE_SNAPSHOT_RUNTIME
+        .try_with(SnapshotRuntime::take_restored)
+        .ok()
+        .flatten()
 }
 
 fn now_epoch_ms() -> u64 {
@@ -246,6 +289,7 @@ pub enum SnapshotTrigger {
 pub struct SnapshotService {
     config: SnapshotConfig,
     store: Arc<dyn SnapshotStore>,
+    runtime: SnapshotRuntime,
     bytecode_hash: String,
     program_ids: Vec<String>,
     entity_cache: EntityCache,
@@ -276,6 +320,7 @@ impl SnapshotService {
         let service = Arc::new(Self {
             config,
             store,
+            runtime: SnapshotRuntime::default(),
             bytecode_hash: spec.bytecode.fingerprint(),
             program_ids,
             entity_cache,
@@ -303,6 +348,12 @@ impl SnapshotService {
 
     pub fn config(&self) -> &SnapshotConfig {
         &self.config
+    }
+
+    /// Return the per-server coordination handle that must be shared with the
+    /// matching parser, projector, and readiness endpoint.
+    pub fn runtime(&self) -> SnapshotRuntime {
+        self.runtime.clone()
     }
 
     /// Load and validate the latest snapshot, hydrate the projection caches,
@@ -359,7 +410,10 @@ impl SnapshotService {
 
         // Even when the stream starts live, the watermark seeds the applied
         // position: the hydrated state already contains everything up to it.
-        RESUME_WATERMARK.fetch_max(header.resume_watermark, Ordering::Relaxed);
+        self.runtime
+            .state
+            .resume_watermark
+            .fetch_max(header.resume_watermark, Ordering::Relaxed);
 
         let age_ms = now_epoch_ms().saturating_sub(header.created_at_epoch_ms);
         let estimated_age_slots = age_ms / ESTIMATED_SLOT_MILLIS;
@@ -382,7 +436,7 @@ impl SnapshotService {
         };
 
         if resume_watermark.is_some() {
-            *RESUME_GATE.lock().unwrap() = Some(ResumeGate {
+            *self.runtime.state.resume_gate.lock().unwrap() = Some(ResumeGate {
                 started: Instant::now(),
                 max_lag_slots: self.config.ready_max_lag_slots,
                 max_hold: self.config.ready_max_hold,
@@ -400,7 +454,7 @@ impl SnapshotService {
             "Restored state from snapshot"
         );
 
-        *RESTORED.lock().unwrap() = Some(RestoredState {
+        *self.runtime.state.restored.lock().unwrap() = Some(RestoredState {
             vm: payload.vm,
             resume_watermark,
         });
@@ -435,7 +489,7 @@ impl SnapshotService {
     /// Run one snapshot cycle. Returns `Ok(false)` when skipped (no VM
     /// registered yet, or too few mutations since the last snapshot).
     pub async fn snapshot_now(&self, trigger: SnapshotTrigger) -> Result<bool> {
-        let Some(registration) = REGISTERED.lock().unwrap().clone() else {
+        let Some(registration) = self.runtime.state.registered.lock().unwrap().clone() else {
             if !self.warned_missing_vm.swap(true, Ordering::Relaxed) {
                 warn!(
                     "Snapshots are enabled but no VM has been registered; the stack \
@@ -445,27 +499,32 @@ impl SnapshotService {
             return Ok(false);
         };
 
-        let applied_batches = APPLIED_BATCHES.load(Ordering::Relaxed);
+        let applied_batches = self.runtime.state.applied_batches.load(Ordering::Relaxed);
         if trigger == SnapshotTrigger::Periodic {
-            let since_last =
-                applied_batches.saturating_sub(self.batches_at_last_snapshot.load(Ordering::Relaxed));
+            let since_last = applied_batches
+                .saturating_sub(self.batches_at_last_snapshot.load(Ordering::Relaxed));
             if since_last < self.config.min_mutations {
                 debug!(since_last, "Skipping snapshot cycle (too few mutations)");
                 return Ok(false);
             }
         }
 
-        // Dump under the VM lock; everything is cloned so serialization and
-        // compression run after release. Record the watermark *before* the
-        // flush marker: it must not include batches produced after the dump.
+        // Dump and capture the watermark in one VM-lock critical section.
+        // A parser batch cannot mutate the VM between these two operations,
+        // so the watermark can never describe state newer than the dump.
+        // Everything is cloned so serialization and compression run after
+        // release. The flush marker then catches projection up to this cut.
         let dump_started = Instant::now();
-        let vm_snapshot = registration
-            .vm
-            .lock()
-            .map_err(|_| anyhow::anyhow!("VM mutex poisoned"))?
-            .dump();
+        let (vm_snapshot, resume_watermark) = {
+            let vm = registration
+                .vm
+                .lock()
+                .map_err(|_| anyhow::anyhow!("VM mutex poisoned"))?;
+            let vm_snapshot = vm.dump();
+            let resume_watermark = self.runtime.state.resume_watermark.load(Ordering::Relaxed);
+            (vm_snapshot, resume_watermark)
+        };
         let vm_lock_held = dump_started.elapsed();
-        let resume_watermark = RESUME_WATERMARK.load(Ordering::Relaxed);
         let observed_slot = registration.slot_tracker.get();
 
         // Push a flush marker through the projector so every batch produced

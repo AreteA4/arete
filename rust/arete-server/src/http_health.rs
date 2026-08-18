@@ -58,6 +58,7 @@ impl HttpHealthConfig {
 #[derive(Clone)]
 struct HttpRequestState {
     health_monitor: Arc<Option<HealthMonitor>>,
+    snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
     runtime_plan: RuntimePlan,
     rpc_url: Arc<Option<String>>,
     rpc_client: Client,
@@ -73,6 +74,7 @@ struct HttpRequestState {
 pub struct HttpHealthServer {
     bind_addr: SocketAddr,
     health_monitor: Option<HealthMonitor>,
+    snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
     runtime_plan: RuntimePlan,
     program_runtime_catalog: ProgramRuntimeCatalog,
     auth_plugin: Option<Arc<dyn WebSocketAuthPlugin>>,
@@ -88,6 +90,7 @@ impl HttpHealthServer {
         Self {
             bind_addr,
             health_monitor: None,
+            snapshot_runtime: None,
             runtime_plan: RuntimePlan::http(),
             program_runtime_catalog: ProgramRuntimeCatalog::default(),
             auth_plugin: None,
@@ -101,6 +104,14 @@ impl HttpHealthServer {
 
     pub fn with_health_monitor(mut self, monitor: HealthMonitor) -> Self {
         self.health_monitor = Some(monitor);
+        self
+    }
+
+    pub fn with_snapshot_runtime(
+        mut self,
+        snapshot_runtime: crate::snapshot::SnapshotRuntime,
+    ) -> Self {
+        self.snapshot_runtime = Some(snapshot_runtime);
         self
     }
 
@@ -156,6 +167,7 @@ impl HttpHealthServer {
         let transaction_state = transaction_state.map(|state| state.with_metrics(self.metrics));
         let request_state = HttpRequestState {
             health_monitor: Arc::new(self.health_monitor),
+            snapshot_runtime: self.snapshot_runtime,
             runtime_plan: self.runtime_plan,
             rpc_url: Arc::new(resolve_rpc_url()),
             rpc_client: Client::builder().build()?,
@@ -238,6 +250,7 @@ async fn handle_request_inner(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let HttpRequestState {
         health_monitor,
+        snapshot_runtime,
         runtime_plan,
         rpc_url,
         rpc_client,
@@ -268,7 +281,10 @@ async fn handle_request_inner(
                 // No health monitor configured, assume ready
                 None => true,
             };
-            if stream_ready && crate::snapshot::resume_gate_ready() {
+            let snapshot_ready = snapshot_runtime
+                .as_ref()
+                .is_none_or(crate::snapshot::SnapshotRuntime::resume_gate_ready);
+            if stream_ready && snapshot_ready {
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "text/plain")

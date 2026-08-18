@@ -41,17 +41,17 @@ Server::builder()
 
 ## Configuration
 
-| Env var | Default | Meaning |
-|---|---|---|
-| `ARETE_SNAPSHOT_ENABLED` | `false` | Master opt-in |
-| `ARETE_SNAPSHOT_URL` | — | `file:///var/lib/arete/snapshots`, a plain path, or `s3://bucket/prefix` (see below) |
-| `ARETE_SNAPSHOT_INTERVAL_SECS` | `60` | Periodic snapshot cadence |
-| `ARETE_SNAPSHOT_KEEP` | `4` | Retained snapshots (older ones are pruned) |
-| `ARETE_SNAPSHOT_ON_SHUTDOWN` | `true` | Final snapshot on SIGTERM/SIGINT |
-| `ARETE_SNAPSHOT_MIN_MUTATIONS` | `1` | Skip a cycle when fewer mutation batches were applied since the last snapshot |
-| `ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS` | `1500` | Snapshots older than this (estimated in slots) hydrate state but start the stream live |
-| `ARETE_SNAPSHOT_READY_MAX_LAG_SLOTS` | `50` | `/ready` stays 503 after a resume until the parser is within this many slots of the tip |
-| `ARETE_SNAPSHOT_READY_MAX_HOLD_SECS` | `60` | Upper bound on how long `/ready` can be gated after a resume |
+| Env var                               | Default | Meaning                                                                                 |
+| ------------------------------------- | ------- | --------------------------------------------------------------------------------------- |
+| `ARETE_SNAPSHOT_ENABLED`              | `false` | Master opt-in                                                                           |
+| `ARETE_SNAPSHOT_URL`                  | —       | `file:///var/lib/arete/snapshots`, a plain path, or `s3://bucket/prefix` (see below)    |
+| `ARETE_SNAPSHOT_INTERVAL_SECS`        | `60`    | Periodic snapshot cadence                                                               |
+| `ARETE_SNAPSHOT_KEEP`                 | `4`     | Retained snapshots (older ones are pruned)                                              |
+| `ARETE_SNAPSHOT_ON_SHUTDOWN`          | `true`  | Final snapshot on SIGTERM/SIGINT                                                        |
+| `ARETE_SNAPSHOT_MIN_MUTATIONS`        | `1`     | Skip a cycle when fewer mutation batches were applied since the last snapshot           |
+| `ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS` | `1500`  | Snapshots older than this (estimated in slots) hydrate state but start the stream live  |
+| `ARETE_SNAPSHOT_READY_MAX_LAG_SLOTS`  | `50`    | `/ready` stays 503 after a resume until the parser is within this many slots of the tip |
+| `ARETE_SNAPSHOT_READY_MAX_HOLD_SECS`  | `60`    | Upper bound on how long `/ready` can be gated after a resume                            |
 
 The default build supports local filesystem URLs; a directory on a persistent
 volume (for Kubernetes, a PVC) is all a self-hosted deployment needs.
@@ -121,7 +121,7 @@ corrupt/truncated blobs — restore problems never block startup.
 
 - Slot-scheduled callbacks (documented as non-durable).
 - In-flight async resolver requests — they re-queue on the next relevant
-  event. Cached resolver results *are* preserved, honoring their original
+  event. Cached resolver results _are_ preserved, honoring their original
   TTLs across the restart.
 - WebSocket clients' broadcast backlog — clients receive a fresh snapshot on
   reconnect anyway.
