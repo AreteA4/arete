@@ -40,6 +40,7 @@ pub mod runtime_resolvers_factory;
 pub mod rust;
 pub mod scheduler;
 pub mod slot_hash_cache;
+pub mod snapshot;
 pub mod spec_trait;
 pub mod typescript;
 pub mod typescript_instructions;

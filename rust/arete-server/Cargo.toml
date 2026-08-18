@@ -34,6 +34,11 @@ arete-auth = { version = "0.3.0", path = "../arete-auth" }
 # Async utilities
 tokio-util = "0.7"
 smallvec = "1.15"
+zstd = "0.13"
+
+# Object-store snapshot backend (S3/GCS/Azure), behind 'snapshot-object-store'
+object_store = { version = "0.12", features = ["aws", "gcp", "azure"], optional = true }
+url = { version = "2.5", optional = true }
 hex = "0.4"
 lru = "0.12"
 dashmap = "6.1"
@@ -62,6 +67,7 @@ tracing-opentelemetry = { version = "0.23", optional = true }
 
 [features]
 default = []
+snapshot-object-store = ["object_store", "url"]
 otel = [
     "opentelemetry",
     "opentelemetry_sdk",

@@ -134,6 +134,11 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Test snapshot object-store feature
+        run: |
+          cargo test -p arete-server --features snapshot-object-store
+          cargo clippy -p arete-server --features snapshot-object-store -- -D warnings
+
       - name: Test direct artifact macros
         run: cargo test -p arete-macros --test artifact_native_v2
 

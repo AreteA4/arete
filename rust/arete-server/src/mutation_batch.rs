@@ -41,6 +41,13 @@ pub struct MutationBatch {
     pub slot_context: Option<SlotContext>,
     /// Event metadata for logging and diagnostics
     pub event_context: Option<EventContext>,
+    /// When set, this batch is a flush marker: the projector acknowledges it
+    /// after every batch queued before it has been applied to the caches.
+    /// Used by the snapshot manager to establish a consistency cut.
+    pub flush_ack: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Keeps snapshot capture blocked from the VM update that produced this
+    /// batch until the projector has applied it.
+    pub(crate) snapshot_guard: Option<crate::snapshot::SnapshotProcessingGuard>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +66,8 @@ impl MutationBatch {
             mutations,
             slot_context: None,
             event_context: None,
+            flush_ack: None,
+            snapshot_guard: None,
         }
     }
 
@@ -68,6 +77,8 @@ impl MutationBatch {
             mutations,
             slot_context: None,
             event_context: None,
+            flush_ack: None,
+            snapshot_guard: None,
         }
     }
 
@@ -80,7 +91,29 @@ impl MutationBatch {
             mutations,
             slot_context: Some(slot_context),
             event_context: None,
+            flush_ack: None,
+            snapshot_guard: None,
         }
+    }
+
+    /// An empty batch whose only purpose is to be acknowledged once the
+    /// projector has drained everything queued before it.
+    pub fn flush_marker(ack: tokio::sync::oneshot::Sender<()>) -> Self {
+        Self {
+            span: Span::current(),
+            mutations: SmallVec::new(),
+            slot_context: None,
+            event_context: None,
+            flush_ack: Some(ack),
+            snapshot_guard: None,
+        }
+    }
+
+    /// Transfer a VM processing guard to this batch. The projector retains it
+    /// until cache application and watermark advancement are complete.
+    pub fn with_snapshot_guard(mut self, guard: crate::snapshot::SnapshotProcessingGuard) -> Self {
+        self.snapshot_guard = Some(guard);
+        self
     }
 
     pub fn with_event_context(mut self, event_context: EventContext) -> Self {

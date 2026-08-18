@@ -87,7 +87,12 @@ These environment variables are read by the generated runtime and server code:
 | `ARETE_READ_RPC_URL`         | For RPC-backed reads   | —       | Upstream used by Program Read and chain-read routes      |
 | `ARETE_TRANSACTION_RPC_URL`  | For transaction routes | —       | Independent transaction inspect/send upstream            |
 | `ARETE_TRANSACTIONS_ENABLED` | No                     | `false` | Explicitly enables fixed transaction routes              |
+| `ARETE_SNAPSHOT_ENABLED`     | No                     | `false` | Enables state snapshots for restart recovery             |
+| `ARETE_SNAPSHOT_URL`         | For snapshots          | —       | Snapshot store location (`file://...` or local path)     |
 | `RUST_LOG`                   | No                     | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`) |
+
+The full set of `ARETE_SNAPSHOT_*` variables is documented in
+[State Snapshots & Restore](/a4-server/state-snapshots/).
 
 ## WebSocket Configuration
 

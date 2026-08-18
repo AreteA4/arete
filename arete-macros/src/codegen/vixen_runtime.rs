@@ -56,6 +56,7 @@ fn generate_slot_scheduler_task() -> TokenStream {
             let slot_tracker = slot_tracker.clone();
             let mutations_tx = mutations_tx.clone();
             let async_resolver_order = async_resolver_order.clone();
+            let snapshot_barrier = snapshot_barrier.clone();
 
             arete::runtime::tokio::spawn(async move {
                 arete::runtime::tracing::info!(
@@ -198,6 +199,21 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                 &arete::runtime::serde_json::Value::String(url.clone()),
                             );
 
+                            // A snapshot must not split this VM update from
+                            // the projection batch it produces. Acquire the
+                            // barrier before reserving capacity so a pending
+                            // exclusive snapshot cannot deadlock behind an
+                            // unsent reserved queue slot.
+                            let snapshot_guard = match &snapshot_barrier {
+                                Some(barrier) => Some(barrier.enter_processing().await),
+                                None => None,
+                            };
+                            let projector_permit = reserve_projector_batch_slot(
+                                mutations_tx.clone(),
+                                "scheduled resolver callback",
+                            )
+                            .await;
+
                             // IMPORTANT: enqueue + take must stay inside the same lock guard.
                             // Splitting them risks lost or duplicated requests during reconnects.
                             let requests = {
@@ -216,14 +232,6 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                 );
                                 vm_guard.take_resolver_requests()
                             };
-
-                            // Scheduled resolver application also mutates VM state, so reserve
-                            // projector capacity before applying it.
-                            let projector_permit = reserve_projector_batch_slot(
-                                mutations_tx.clone(),
-                                "scheduled resolver callback",
-                            )
-                            .await;
 
                             let url_mutations = runtime_resolver
                                 .resolve_and_apply(
@@ -255,10 +263,13 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                     current_slot,
                                     next_async_resolver_slot_index(async_resolver_order.as_ref()),
                                 );
-                                let batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
+                                let mut batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
                                     arete::runtime::smallvec::SmallVec::from_vec(url_mutations),
                                     slot_context,
                                 );
+                                if let Some(snapshot_guard) = snapshot_guard {
+                                    batch = batch.with_snapshot_guard(snapshot_guard);
+                                }
                                 projector_permit.send(batch);
                             }
                         }
@@ -527,6 +538,10 @@ fn generate_managed_grpc_helpers() -> TokenStream {
 
         const RECONNECT_BACKOFF_RESET_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
         const HTTP2_KEEPALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+        /// After this many consecutive short-lived connection attempts, a
+        /// cold/live runtime drops `from_slot` instead of crash-looping. A
+        /// restored snapshot replay never takes this lossy fallback.
+        const FROM_SLOT_LIVE_FALLBACK_ATTEMPTS: u32 = 3;
 
         fn install_managed_yellowstone_grpc_settings(settings: ManagedYellowstoneGrpcSettings) {
             let _ = MANAGED_YELLOWSTONE_GRPC_SETTINGS.set(settings);
@@ -998,7 +1013,8 @@ pub fn generate_vm_handler(
             bytecode: std::sync::Arc<arete::runtime::arete_interpreter::compiler::MultiEntityBytecode>,
             mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
             health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
-            slot_tracker: arete::runtime::arete_server::SlotTracker,
+            processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
+            snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier>,
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
             resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -1019,7 +1035,8 @@ pub fn generate_vm_handler(
                 bytecode: std::sync::Arc<arete::runtime::arete_interpreter::compiler::MultiEntityBytecode>,
                 mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
                 health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
-                slot_tracker: arete::runtime::arete_server::SlotTracker,
+                processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
+                snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier>,
                 runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
                 slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
                 resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -1029,7 +1046,8 @@ pub fn generate_vm_handler(
                     bytecode,
                     mutations_tx,
                     health_monitor,
-                    slot_tracker,
+                    processed_slot_tracker,
+                    snapshot_barrier,
                     runtime_resolver,
                     slot_scheduler,
                     resolver_apply_semaphore,
@@ -1043,6 +1061,7 @@ pub fn generate_vm_handler(
                 slot: u64,
                 ordering: u64,
                 event_context: Option<arete::runtime::arete_server::EventContext>,
+                snapshot_guard: Option<arete::runtime::arete_server::snapshot::SnapshotProcessingGuard>,
                 projector_permit: arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch>,
             ) {
                 if !mutations.is_empty() {
@@ -1053,6 +1072,9 @@ pub fn generate_vm_handler(
                     );
                     if let Some(ctx) = event_context {
                         batch = batch.with_event_context(ctx);
+                    }
+                    if let Some(snapshot_guard) = snapshot_guard {
+                        batch = batch.with_snapshot_guard(snapshot_guard);
                     }
                     projector_permit.send(batch);
                 }
@@ -1111,6 +1133,10 @@ pub fn generate_vm_handler(
                 let account_address = arete::runtime::bs58::encode(&account.pubkey).into_string();
 
                 let event_type = value.event_type();
+                let snapshot_guard = match &self.snapshot_barrier {
+                    Some(barrier) => Some(barrier.enter_processing().await),
+                    None => None,
+                };
                 // Reserve downstream capacity before mutating VM state so a wedged
                 // projector cannot leave the parser ahead of published batches.
                 let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
@@ -1286,10 +1312,11 @@ pub fn generate_vm_handler(
                             slot,
                             write_version,
                             Some(event_context),
+                            snapshot_guard,
                             projector_permit,
                         )
                         .await;
-                        self.slot_tracker.record(slot);
+                        self.processed_slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -1318,6 +1345,10 @@ pub fn generate_vm_handler(
 
                 let static_keys_vec = &raw_update.accounts;
                 let event_type = value.event_type();
+                let snapshot_guard = match &self.snapshot_barrier {
+                    Some(barrier) => Some(barrier.enter_processing().await),
+                    None => None,
+                };
                 // Reserve downstream capacity before mutating VM state so a wedged
                 // projector cannot leave the parser ahead of published batches.
                 let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
@@ -1525,10 +1556,11 @@ pub fn generate_vm_handler(
                             slot,
                             txn_index as u64,
                             Some(event_context),
+                            snapshot_guard,
                             projector_permit,
                         )
                         .await;
-                        self.slot_tracker.record(slot);
+                        self.processed_slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -1653,6 +1685,11 @@ pub fn generate_spec_function(
             let async_resolver_order = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
             let slot_tracker = arete::runtime::arete_server::SlotTracker::new();
+            // Unlike slot_tracker, this advances only after the main parser
+            // has finished processing an account/instruction event. It is the
+            // safe reconnect checkpoint; the dedicated slot subscription may
+            // be arbitrarily far ahead of parser work.
+            let processed_slot_tracker = arete::runtime::arete_server::SlotTracker::new();
             let slot_scheduler = Arc::new(Mutex::new(arete::runtime::arete_interpreter::scheduler::SlotScheduler::new()));
             let mut attempt = 0u32;
             let mut backoff = reconnection_config.initial_delay;
@@ -1668,6 +1705,39 @@ pub fn generate_spec_function(
             let vm = Arc::new(Mutex::new(arete::runtime::arete_interpreter::vm::VmContext::new()));
             let bytecode_arc = Arc::new(bytecode);
 
+            // Snapshot restore hook: arete-server stashes restored VM state
+            // before spawning the parser; hydrate it here and resume the
+            // stream from the snapshot's watermark. When snapshots are
+            // disabled this is a no-op.
+            let mut restored_from_slot: Option<u64> = None;
+            if let Some(restored) = arete::runtime::arete_server::snapshot::take_restored() {
+                match vm.lock() {
+                    Ok(mut vm_guard) => {
+                        vm_guard.hydrate(restored.vm);
+                        restored_from_slot = restored.resume_watermark;
+                        if let Some(watermark) = restored_from_slot {
+                            slot_tracker.record(watermark);
+                            processed_slot_tracker.record(watermark);
+                            arete::runtime::tracing::info!(
+                                resume_watermark = watermark,
+                                "Hydrated VM state from snapshot; will resume stream from watermark"
+                            );
+                        } else {
+                            arete::runtime::tracing::info!(
+                                "Hydrated VM state from snapshot; starting stream live (no resume watermark)"
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        arete::runtime::tracing::warn!("VM mutex poisoned; skipping snapshot hydration");
+                    }
+                }
+            }
+            let snapshot_barrier = arete::runtime::arete_server::snapshot::register_runtime(
+                vm.clone(),
+                slot_tracker.clone(),
+            );
+
             // Spawn slot scheduler background task
             #slot_scheduler_task
 
@@ -1675,10 +1745,30 @@ pub fn generate_spec_function(
             #slot_subscription_task
 
             loop {
-                let from_slot = {
-                    let last = slot_tracker.get();
-                    if last > 0 { Some(last) } else { None }
-                };
+                let from_slot = arete::runtime::arete_server::snapshot::select_reconnect_from_slot(
+                    restored_from_slot,
+                    processed_slot_tracker.get(),
+                    attempt,
+                    FROM_SLOT_LIVE_FALLBACK_ATTEMPTS,
+                );
+                if restored_from_slot.is_some() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
+                    // Correctness takes priority over the live fallback while
+                    // snapshot replay is active. The checkpoint advances only
+                    // with events completed by the main parser stream.
+                    arete::runtime::tracing::warn!(
+                        attempt,
+                        from_slot = ?from_slot,
+                        "Snapshot replay still active after repeated short-lived connections; retrying from processed checkpoint"
+                    );
+                } else if restored_from_slot.is_none() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
+                    // The provider keeps rejecting us shortly after connect;
+                    // most likely the requested slot is outside its replay
+                    // window. Subscribe live rather than crash-looping.
+                    arete::runtime::tracing::warn!(
+                        attempt,
+                        "Repeated short-lived connections; subscribing live without from_slot"
+                    );
+                }
 
                 if from_slot.is_some() {
                     arete::runtime::tracing::info!("Resuming from slot {}", from_slot.unwrap());
@@ -1702,7 +1792,8 @@ pub fn generate_spec_function(
                     bytecode_arc.clone(),
                     mutations_tx.clone(),
                     health_monitor.clone(),
-                    slot_tracker.clone(),
+                    processed_slot_tracker.clone(),
+                    snapshot_barrier.clone(),
                     runtime_resolver.clone(),
                     slot_scheduler.clone(),
                     resolver_apply_semaphore.clone(),
@@ -2049,7 +2140,8 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             bytecode: std::sync::Arc<arete::runtime::arete_interpreter::compiler::MultiEntityBytecode>,
             mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
             health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
-            slot_tracker: arete::runtime::arete_server::SlotTracker,
+            processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
+            snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier>,
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
             resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -2070,7 +2162,8 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 bytecode: std::sync::Arc<arete::runtime::arete_interpreter::compiler::MultiEntityBytecode>,
                 mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
                 health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
-                slot_tracker: arete::runtime::arete_server::SlotTracker,
+                processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
+                snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier>,
                 runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
                 slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
                 resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -2080,7 +2173,8 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                     bytecode,
                     mutations_tx,
                     health_monitor,
-                    slot_tracker,
+                    processed_slot_tracker,
+                    snapshot_barrier,
                     runtime_resolver,
                     slot_scheduler,
                     resolver_apply_semaphore,
@@ -2094,6 +2188,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 slot: u64,
                 ordering: u64,
                 event_context: Option<arete::runtime::arete_server::EventContext>,
+                snapshot_guard: Option<arete::runtime::arete_server::snapshot::SnapshotProcessingGuard>,
                 projector_permit: arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch>,
             ) {
                 if !mutations.is_empty() {
@@ -2104,6 +2199,9 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                     );
                     if let Some(ctx) = event_context {
                         batch = batch.with_event_context(ctx);
+                    }
+                    if let Some(snapshot_guard) = snapshot_guard {
+                        batch = batch.with_snapshot_guard(snapshot_guard);
                     }
                     projector_permit.send(batch);
                 }
@@ -2173,6 +2271,10 @@ pub fn generate_account_handler_impl(
                 let account_address = arete::runtime::bs58::encode(&account.pubkey).into_string();
 
                 let event_type = value.event_type();
+                let snapshot_guard = match &self.snapshot_barrier {
+                    Some(barrier) => Some(barrier.enter_processing().await),
+                    None => None,
+                };
                 // Reserve downstream capacity before mutating VM state so a wedged
                 // projector cannot leave the parser ahead of published batches.
                 let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
@@ -2336,10 +2438,11 @@ pub fn generate_account_handler_impl(
                             slot,
                             write_version,
                             Some(event_context),
+                            snapshot_guard,
                             projector_permit,
                         )
                         .await;
-                        self.slot_tracker.record(slot);
+                        self.processed_slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -2384,6 +2487,10 @@ pub fn generate_instruction_handler_impl(
                     "program_event"
                 } else {
                     "instruction"
+                };
+                let snapshot_guard = match &self.snapshot_barrier {
+                    Some(barrier) => Some(barrier.enter_processing().await),
+                    None => None,
                 };
                 // Reserve downstream capacity before mutating VM state so a wedged
                 // projector cannot leave the parser ahead of published batches.
@@ -2671,10 +2778,11 @@ pub fn generate_instruction_handler_impl(
                             slot,
                             txn_index as u64,
                             Some(event_context),
+                            snapshot_guard,
                             projector_permit,
                         )
                         .await;
-                        self.slot_tracker.record(slot);
+                        self.processed_slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -2967,6 +3075,11 @@ pub fn generate_multi_pipeline_spec_function(
             let async_resolver_order = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
             let slot_tracker = arete::runtime::arete_server::SlotTracker::new();
+            // Unlike slot_tracker, this advances only after the main parser
+            // has finished processing an account/instruction event. It is the
+            // safe reconnect checkpoint; the dedicated slot subscription may
+            // be arbitrarily far ahead of parser work.
+            let processed_slot_tracker = arete::runtime::arete_server::SlotTracker::new();
             let slot_scheduler = Arc::new(Mutex::new(arete::runtime::arete_interpreter::scheduler::SlotScheduler::new()));
             let mut attempt = 0u32;
             let mut backoff = reconnection_config.initial_delay;
@@ -2982,6 +3095,39 @@ pub fn generate_multi_pipeline_spec_function(
             let vm = Arc::new(Mutex::new(arete::runtime::arete_interpreter::vm::VmContext::new()));
             let bytecode_arc = Arc::new(bytecode);
 
+            // Snapshot restore hook: arete-server stashes restored VM state
+            // before spawning the parser; hydrate it here and resume the
+            // stream from the snapshot's watermark. When snapshots are
+            // disabled this is a no-op.
+            let mut restored_from_slot: Option<u64> = None;
+            if let Some(restored) = arete::runtime::arete_server::snapshot::take_restored() {
+                match vm.lock() {
+                    Ok(mut vm_guard) => {
+                        vm_guard.hydrate(restored.vm);
+                        restored_from_slot = restored.resume_watermark;
+                        if let Some(watermark) = restored_from_slot {
+                            slot_tracker.record(watermark);
+                            processed_slot_tracker.record(watermark);
+                            arete::runtime::tracing::info!(
+                                resume_watermark = watermark,
+                                "Hydrated VM state from snapshot; will resume stream from watermark"
+                            );
+                        } else {
+                            arete::runtime::tracing::info!(
+                                "Hydrated VM state from snapshot; starting stream live (no resume watermark)"
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        arete::runtime::tracing::warn!("VM mutex poisoned; skipping snapshot hydration");
+                    }
+                }
+            }
+            let snapshot_barrier = arete::runtime::arete_server::snapshot::register_runtime(
+                vm.clone(),
+                slot_tracker.clone(),
+            );
+
             // Spawn slot scheduler background task
             #slot_scheduler_task
 
@@ -2989,10 +3135,30 @@ pub fn generate_multi_pipeline_spec_function(
             #slot_subscription_task
 
             loop {
-                let from_slot = {
-                    let last = slot_tracker.get();
-                    if last > 0 { Some(last) } else { None }
-                };
+                let from_slot = arete::runtime::arete_server::snapshot::select_reconnect_from_slot(
+                    restored_from_slot,
+                    processed_slot_tracker.get(),
+                    attempt,
+                    FROM_SLOT_LIVE_FALLBACK_ATTEMPTS,
+                );
+                if restored_from_slot.is_some() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
+                    // Correctness takes priority over the live fallback while
+                    // snapshot replay is active. The checkpoint advances only
+                    // with events completed by the main parser stream.
+                    arete::runtime::tracing::warn!(
+                        attempt,
+                        from_slot = ?from_slot,
+                        "Snapshot replay still active after repeated short-lived connections; retrying from processed checkpoint"
+                    );
+                } else if restored_from_slot.is_none() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
+                    // The provider keeps rejecting us shortly after connect;
+                    // most likely the requested slot is outside its replay
+                    // window. Subscribe live rather than crash-looping.
+                    arete::runtime::tracing::warn!(
+                        attempt,
+                        "Repeated short-lived connections; subscribing live without from_slot"
+                    );
+                }
 
                 if from_slot.is_some() {
                     arete::runtime::tracing::info!("Resuming from slot {}", from_slot.unwrap());
@@ -3016,7 +3182,8 @@ pub fn generate_multi_pipeline_spec_function(
                     bytecode_arc.clone(),
                     mutations_tx.clone(),
                     health_monitor.clone(),
-                    slot_tracker.clone(),
+                    processed_slot_tracker.clone(),
+                    snapshot_barrier.clone(),
                     runtime_resolver.clone(),
                     slot_scheduler.clone(),
                     resolver_apply_semaphore.clone(),
@@ -3124,7 +3291,28 @@ pub fn generate_runtime(
 
 #[cfg(test)]
 mod tests {
-    use super::generate_instruction_handler_impl;
+    use super::{generate_instruction_handler_impl, generate_spec_function, RuntimeGenConfig};
+
+    #[test]
+    fn snapshot_reconnect_uses_parser_progress_without_consuming_restore_cut() {
+        let code = generate_spec_function(
+            "StateEnum",
+            "InstructionEnum",
+            "program",
+            &[],
+            &RuntimeGenConfig::default(),
+        )
+        .to_string();
+        let compact: String = code.split_whitespace().collect();
+
+        assert!(compact.contains("select_reconnect_from_slot"));
+        assert!(compact.contains("processed_slot_tracker.get()"));
+        assert!(compact.contains("processed_slot_tracker.clone()"));
+        assert!(!compact.contains("restored_from_slot.take()"));
+        assert!(compact.contains("letsnapshot_barrier="));
+        assert!(compact.contains("barrier.enter_processing().await"));
+        assert!(compact.contains("batch.with_snapshot_guard(snapshot_guard)"));
+    }
 
     #[test]
     fn instruction_handler_accepts_raydium_ray_log_prefix() {

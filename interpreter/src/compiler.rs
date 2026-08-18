@@ -333,6 +333,74 @@ impl MultiEntityBytecode {
             proto_router: crate::proto_router::ProtoRouter::new(),
         }
     }
+
+    /// Deterministic content hash of the compiled bytecode, used to invalidate
+    /// state snapshots when the stack's compiled logic changes.
+    ///
+    /// Covers state ids, handler opcode streams, routing, and field metadata.
+    /// Computed-field evaluators are opaque closures, so only their presence is
+    /// hashed — their bodies are generated from the same stack source as the
+    /// opcode streams, which change alongside them in practice.
+    pub fn fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+
+        fn update_sorted_set(hasher: &mut Sha256, set: &HashSet<String>) {
+            let mut items: Vec<&String> = set.iter().collect();
+            items.sort();
+            for item in items {
+                hasher.update(item.as_bytes());
+                hasher.update([0u8]);
+            }
+            hasher.update([1u8]);
+        }
+
+        let mut hasher = Sha256::new();
+
+        let mut entity_names: Vec<&String> = self.entities.keys().collect();
+        entity_names.sort();
+        for entity_name in entity_names {
+            let entity = &self.entities[entity_name];
+            hasher.update(entity_name.as_bytes());
+            hasher.update([0u8]);
+            hasher.update(entity.state_id.to_le_bytes());
+
+            let mut event_types: Vec<&String> = entity.handlers.keys().collect();
+            event_types.sort();
+            for event_type in event_types {
+                hasher.update(event_type.as_bytes());
+                hasher.update([0u8]);
+                hasher.update(format!("{:?}", entity.handlers[event_type]).as_bytes());
+                hasher.update([0u8]);
+            }
+            hasher.update([1u8]);
+
+            update_sorted_set(&mut hasher, &entity.when_events);
+            update_sorted_set(&mut hasher, &entity.non_emitted_fields);
+            for path in &entity.computed_paths {
+                hasher.update(path.as_bytes());
+                hasher.update([0u8]);
+            }
+            hasher.update([entity.computed_fields_evaluator.is_some() as u8]);
+        }
+
+        let mut routes: Vec<(&String, &Vec<String>)> = self.event_routing.iter().collect();
+        routes.sort_by_key(|(event_type, _)| *event_type);
+        for (event_type, entity_names) in routes {
+            hasher.update(event_type.as_bytes());
+            hasher.update([0u8]);
+            let mut sorted_names = entity_names.clone();
+            sorted_names.sort();
+            for name in sorted_names {
+                hasher.update(name.as_bytes());
+                hasher.update([0u8]);
+            }
+            hasher.update([1u8]);
+        }
+
+        update_sorted_set(&mut hasher, &self.when_events);
+
+        hex::encode(hasher.finalize())
+    }
 }
 
 pub struct MultiEntityBytecodeBuilder {

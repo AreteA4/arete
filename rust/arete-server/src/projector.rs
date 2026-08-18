@@ -19,6 +19,7 @@ pub struct Projector {
     bus_manager: BusManager,
     entity_cache: EntityCache,
     mutations_rx: mpsc::Receiver<MutationBatch>,
+    snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -37,6 +38,7 @@ impl Projector {
             bus_manager,
             entity_cache,
             mutations_rx,
+            snapshot_runtime: None,
             metrics,
         }
     }
@@ -53,7 +55,17 @@ impl Projector {
             bus_manager,
             entity_cache,
             mutations_rx,
+            snapshot_runtime: None,
         }
+    }
+
+    /// Associate projection progress with one server's snapshot lifecycle.
+    pub fn with_snapshot_runtime(
+        mut self,
+        snapshot_runtime: crate::snapshot::SnapshotRuntime,
+    ) -> Self {
+        self.snapshot_runtime = Some(snapshot_runtime);
+        self
     }
 
     pub async fn run(mut self) {
@@ -61,7 +73,7 @@ impl Projector {
 
         let mut json_buffer = Vec::with_capacity(4096);
 
-        while let Some(batch) = self.mutations_rx.recv().await {
+        while let Some(mut batch) = self.mutations_rx.recv().await {
             let _span_guard = batch.span.enter();
 
             let mut log = CanonicalLog::new();
@@ -80,7 +92,7 @@ impl Projector {
                     .set("accounts_count", ctx.accounts_count);
             }
 
-            for mutation in batch.mutations.into_iter() {
+            for mutation in std::mem::take(&mut batch.mutations).into_iter() {
                 #[cfg(feature = "otel")]
                 let export = mutation.export.clone();
 
@@ -99,6 +111,23 @@ impl Projector {
                 if let Some(ref metrics) = self.metrics {
                     metrics.record_mutation_processed(&export);
                 }
+            }
+
+            // The batch is now applied to the caches: advance the snapshot
+            // resume watermark, then release the processing guard transferred
+            // by the VM producer. An exclusive snapshot cut cannot begin until
+            // every earlier guarded batch reaches this point.
+            if batch_size > 0 {
+                if let Some(snapshot_runtime) = &self.snapshot_runtime {
+                    snapshot_runtime.record_applied_batch(slot_context.map(|ctx| ctx.slot));
+                }
+            }
+            drop(batch.snapshot_guard.take());
+
+            // Flush markers remain useful to non-snapshot callers that need
+            // to observe a drained projector queue.
+            if let Some(ack) = batch.flush_ack.take() {
+                let _ = ack.send(());
             }
 
             log.set("batch_size", batch_size)

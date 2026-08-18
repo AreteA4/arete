@@ -212,6 +212,45 @@ impl EntityCache {
         caches.clear();
     }
 
+    /// Dump every view's entities for a state snapshot.
+    ///
+    /// Entries are ordered most-recently-used first; [`Self::hydrate`] relies
+    /// on that to reconstruct LRU eviction order.
+    pub async fn dump(&self) -> Vec<(String, Vec<(String, Value)>)> {
+        let caches = self.caches.read().await;
+        caches
+            .iter()
+            .map(|(view_id, cache)| {
+                (
+                    view_id.clone(),
+                    cache
+                        .iter()
+                        .map(|(key, entity)| (key.clone(), entity.clone()))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Restore entities dumped by [`Self::dump`], preserving LRU order.
+    ///
+    /// Entities are inserted as-is (no merge): a snapshot holds fully
+    /// projected entities, not patches.
+    pub async fn hydrate(&self, views: Vec<(String, Vec<(String, Value)>)>) {
+        let mut caches = self.caches.write().await;
+        for (view_id, entries) in views {
+            let cache = caches.entry(view_id).or_insert_with(|| {
+                LruCache::new(
+                    NonZeroUsize::new(self.config.max_entities_per_view)
+                        .expect("max_entities_per_view must be > 0"),
+                )
+            });
+            for (key, entity) in entries.into_iter().rev() {
+                cache.put(key, entity);
+            }
+        }
+    }
+
     pub async fn stats(&self) -> CacheStats {
         let caches = self.caches.read().await;
         let mut total_entities = 0;
