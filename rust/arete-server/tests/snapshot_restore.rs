@@ -275,6 +275,90 @@ async fn snapshot_then_restore_recovers_vm_and_caches() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_waits_for_vm_updates_to_reach_the_projector() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("processing-cut");
+    let config = config_for(&dir);
+    let spec = make_spec("Token");
+    let view_index = make_view_index();
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let service =
+        SnapshotService::initialize(config.clone(), &spec, entity_cache, &view_index, tx.clone())
+            .await
+            .unwrap();
+
+    let vm = Arc::new(StdMutex::new(VmContext::new()));
+    let barrier = service
+        .runtime()
+        .register_runtime(vm.clone(), SlotTracker::new());
+
+    // Model a parser event that began before snapshot capture. Its shared
+    // guard remains attached to the queued batch until projection completes.
+    let processing_guard = barrier.enter_processing().await;
+    let snapshot_service = service.clone();
+    let mut snapshot_task = tokio::spawn(async move {
+        snapshot_service
+            .snapshot_now(SnapshotTrigger::Shutdown)
+            .await
+    });
+    tokio::task::yield_now().await;
+
+    vm.lock()
+        .unwrap()
+        .get_state_table_mut(0)
+        .unwrap()
+        .insert_with_eviction(json!("mint-race"), json!({"id": "mint-race", "price": 42}));
+    tx.send(token_batch("mint-race", 42, 200).with_snapshot_guard(processing_guard))
+        .await
+        .unwrap();
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut snapshot_task)
+            .await
+            .is_err(),
+        "snapshot must wait while the matching projection batch is queued"
+    );
+
+    tokio::spawn(projector.with_snapshot_runtime(service.runtime()).run());
+    assert!(snapshot_task.await.unwrap().unwrap());
+
+    // Restore the captured artifact and verify that the VM and projection
+    // cache contain the event from the same processing cut.
+    let restored_view = make_view_index();
+    let restored_cache = EntityCache::new();
+    let (restored_tx, _) = make_projector(&restored_view, &restored_cache);
+    let restored_service = SnapshotService::initialize(
+        config,
+        &spec,
+        restored_cache.clone(),
+        &restored_view,
+        restored_tx,
+    )
+    .await
+    .unwrap();
+    let restored_entities = restored_cache.get_all("Token/list").await;
+    assert_eq!(restored_entities.len(), 1);
+    assert_eq!(restored_entities[0].1["id"], "mint-race");
+    assert_eq!(restored_entities[0].1["price"], 42);
+
+    let restored = restored_service
+        .runtime()
+        .take_restored()
+        .expect("VM snapshot stashed");
+    assert_eq!(restored.resume_watermark, Some(200));
+    let mut restored_vm = VmContext::new();
+    restored_vm.hydrate(restored.vm);
+    assert_eq!(
+        restored_vm.get_entity_state(0, &json!("mint-race")),
+        Some(json!({"id": "mint-race", "price": 42}))
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn mismatched_bytecode_and_corrupt_blobs_cold_start() {
     let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());

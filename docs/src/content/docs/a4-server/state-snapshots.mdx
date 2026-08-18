@@ -76,14 +76,13 @@ single writer.
 
 Each cycle the server:
 
-1. Dumps the VM's entity tables under a brief lock (state is cloned under the
-   lock; serialization and zstd compression happen outside it) and records the
-   **resume watermark** — the highest slot among mutation batches the
-   projector has applied.
-2. Pushes a flush marker through the projection channel and waits for it, so
-   the entity caches contain everything the VM produced before the dump.
-3. Dumps the projection caches, writes one atomic blob to the store
-   (temp file + rename), and prunes old snapshots.
+1. Waits for in-flight VM updates and their queued projection batches to
+   finish, then briefly blocks new updates with a per-runtime consistency
+   barrier.
+2. Dumps the VM entity tables, projection caches, and **resume watermark** —
+   the highest slot the projector has applied — from that same processing cut.
+3. Releases processing, serializes and compresses the captured state, writes
+   one atomic blob to the store (temp file + rename), and prunes old snapshots.
 
 On startup, the server loads the newest snapshot, validates it, rehydrates
 the projection caches before the WebSocket server starts (so the first

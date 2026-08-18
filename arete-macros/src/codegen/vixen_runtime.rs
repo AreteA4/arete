@@ -56,6 +56,7 @@ fn generate_slot_scheduler_task() -> TokenStream {
             let slot_tracker = slot_tracker.clone();
             let mutations_tx = mutations_tx.clone();
             let async_resolver_order = async_resolver_order.clone();
+            let snapshot_barrier = snapshot_barrier.clone();
 
             arete::runtime::tokio::spawn(async move {
                 arete::runtime::tracing::info!(
@@ -198,6 +199,21 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                 &arete::runtime::serde_json::Value::String(url.clone()),
                             );
 
+                            // A snapshot must not split this VM update from
+                            // the projection batch it produces. Acquire the
+                            // barrier before reserving capacity so a pending
+                            // exclusive snapshot cannot deadlock behind an
+                            // unsent reserved queue slot.
+                            let snapshot_guard = match &snapshot_barrier {
+                                Some(barrier) => Some(barrier.enter_processing().await),
+                                None => None,
+                            };
+                            let projector_permit = reserve_projector_batch_slot(
+                                mutations_tx.clone(),
+                                "scheduled resolver callback",
+                            )
+                            .await;
+
                             // IMPORTANT: enqueue + take must stay inside the same lock guard.
                             // Splitting them risks lost or duplicated requests during reconnects.
                             let requests = {
@@ -216,14 +232,6 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                 );
                                 vm_guard.take_resolver_requests()
                             };
-
-                            // Scheduled resolver application also mutates VM state, so reserve
-                            // projector capacity before applying it.
-                            let projector_permit = reserve_projector_batch_slot(
-                                mutations_tx.clone(),
-                                "scheduled resolver callback",
-                            )
-                            .await;
 
                             let url_mutations = runtime_resolver
                                 .resolve_and_apply(
@@ -255,10 +263,13 @@ fn generate_slot_scheduler_task() -> TokenStream {
                                     current_slot,
                                     next_async_resolver_slot_index(async_resolver_order.as_ref()),
                                 );
-                                let batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
+                                let mut batch = arete::runtime::arete_server::MutationBatch::with_slot_context(
                                     arete::runtime::smallvec::SmallVec::from_vec(url_mutations),
                                     slot_context,
                                 );
+                                if let Some(snapshot_guard) = snapshot_guard {
+                                    batch = batch.with_snapshot_guard(snapshot_guard);
+                                }
                                 projector_permit.send(batch);
                             }
                         }
@@ -1003,6 +1014,7 @@ pub fn generate_vm_handler(
             mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
             health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
             processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
+            snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier>,
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
             resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -1024,6 +1036,7 @@ pub fn generate_vm_handler(
                 mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
                 health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
                 processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
+                snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier>,
                 runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
                 slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
                 resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -1034,6 +1047,7 @@ pub fn generate_vm_handler(
                     mutations_tx,
                     health_monitor,
                     processed_slot_tracker,
+                    snapshot_barrier,
                     runtime_resolver,
                     slot_scheduler,
                     resolver_apply_semaphore,
@@ -1047,6 +1061,7 @@ pub fn generate_vm_handler(
                 slot: u64,
                 ordering: u64,
                 event_context: Option<arete::runtime::arete_server::EventContext>,
+                snapshot_guard: Option<arete::runtime::arete_server::snapshot::SnapshotProcessingGuard>,
                 projector_permit: arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch>,
             ) {
                 if !mutations.is_empty() {
@@ -1057,6 +1072,9 @@ pub fn generate_vm_handler(
                     );
                     if let Some(ctx) = event_context {
                         batch = batch.with_event_context(ctx);
+                    }
+                    if let Some(snapshot_guard) = snapshot_guard {
+                        batch = batch.with_snapshot_guard(snapshot_guard);
                     }
                     projector_permit.send(batch);
                 }
@@ -1115,6 +1133,10 @@ pub fn generate_vm_handler(
                 let account_address = arete::runtime::bs58::encode(&account.pubkey).into_string();
 
                 let event_type = value.event_type();
+                let snapshot_guard = match &self.snapshot_barrier {
+                    Some(barrier) => Some(barrier.enter_processing().await),
+                    None => None,
+                };
                 // Reserve downstream capacity before mutating VM state so a wedged
                 // projector cannot leave the parser ahead of published batches.
                 let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
@@ -1290,6 +1312,7 @@ pub fn generate_vm_handler(
                             slot,
                             write_version,
                             Some(event_context),
+                            snapshot_guard,
                             projector_permit,
                         )
                         .await;
@@ -1322,6 +1345,10 @@ pub fn generate_vm_handler(
 
                 let static_keys_vec = &raw_update.accounts;
                 let event_type = value.event_type();
+                let snapshot_guard = match &self.snapshot_barrier {
+                    Some(barrier) => Some(barrier.enter_processing().await),
+                    None => None,
+                };
                 // Reserve downstream capacity before mutating VM state so a wedged
                 // projector cannot leave the parser ahead of published batches.
                 let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
@@ -1529,6 +1556,7 @@ pub fn generate_vm_handler(
                             slot,
                             txn_index as u64,
                             Some(event_context),
+                            snapshot_guard,
                             projector_permit,
                         )
                         .await;
@@ -1705,7 +1733,10 @@ pub fn generate_spec_function(
                     }
                 }
             }
-            arete::runtime::arete_server::snapshot::register_runtime(vm.clone(), slot_tracker.clone());
+            let snapshot_barrier = arete::runtime::arete_server::snapshot::register_runtime(
+                vm.clone(),
+                slot_tracker.clone(),
+            );
 
             // Spawn slot scheduler background task
             #slot_scheduler_task
@@ -1762,6 +1793,7 @@ pub fn generate_spec_function(
                     mutations_tx.clone(),
                     health_monitor.clone(),
                     processed_slot_tracker.clone(),
+                    snapshot_barrier.clone(),
                     runtime_resolver.clone(),
                     slot_scheduler.clone(),
                     resolver_apply_semaphore.clone(),
@@ -2109,6 +2141,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
             health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
             processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
+            snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier>,
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
             resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -2130,6 +2163,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
                 health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
                 processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
+                snapshot_barrier: Option<arete::runtime::arete_server::snapshot::SnapshotBarrier>,
                 runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
                 slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
                 resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -2140,6 +2174,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                     mutations_tx,
                     health_monitor,
                     processed_slot_tracker,
+                    snapshot_barrier,
                     runtime_resolver,
                     slot_scheduler,
                     resolver_apply_semaphore,
@@ -2153,6 +2188,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 slot: u64,
                 ordering: u64,
                 event_context: Option<arete::runtime::arete_server::EventContext>,
+                snapshot_guard: Option<arete::runtime::arete_server::snapshot::SnapshotProcessingGuard>,
                 projector_permit: arete::runtime::tokio::sync::mpsc::OwnedPermit<arete::runtime::arete_server::MutationBatch>,
             ) {
                 if !mutations.is_empty() {
@@ -2163,6 +2199,9 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                     );
                     if let Some(ctx) = event_context {
                         batch = batch.with_event_context(ctx);
+                    }
+                    if let Some(snapshot_guard) = snapshot_guard {
+                        batch = batch.with_snapshot_guard(snapshot_guard);
                     }
                     projector_permit.send(batch);
                 }
@@ -2232,6 +2271,10 @@ pub fn generate_account_handler_impl(
                 let account_address = arete::runtime::bs58::encode(&account.pubkey).into_string();
 
                 let event_type = value.event_type();
+                let snapshot_guard = match &self.snapshot_barrier {
+                    Some(barrier) => Some(barrier.enter_processing().await),
+                    None => None,
+                };
                 // Reserve downstream capacity before mutating VM state so a wedged
                 // projector cannot leave the parser ahead of published batches.
                 let projector_permit = self.reserve_mutation_batch_slot(event_type).await;
@@ -2395,6 +2438,7 @@ pub fn generate_account_handler_impl(
                             slot,
                             write_version,
                             Some(event_context),
+                            snapshot_guard,
                             projector_permit,
                         )
                         .await;
@@ -2443,6 +2487,10 @@ pub fn generate_instruction_handler_impl(
                     "program_event"
                 } else {
                     "instruction"
+                };
+                let snapshot_guard = match &self.snapshot_barrier {
+                    Some(barrier) => Some(barrier.enter_processing().await),
+                    None => None,
                 };
                 // Reserve downstream capacity before mutating VM state so a wedged
                 // projector cannot leave the parser ahead of published batches.
@@ -2730,6 +2778,7 @@ pub fn generate_instruction_handler_impl(
                             slot,
                             txn_index as u64,
                             Some(event_context),
+                            snapshot_guard,
                             projector_permit,
                         )
                         .await;
@@ -3074,7 +3123,10 @@ pub fn generate_multi_pipeline_spec_function(
                     }
                 }
             }
-            arete::runtime::arete_server::snapshot::register_runtime(vm.clone(), slot_tracker.clone());
+            let snapshot_barrier = arete::runtime::arete_server::snapshot::register_runtime(
+                vm.clone(),
+                slot_tracker.clone(),
+            );
 
             // Spawn slot scheduler background task
             #slot_scheduler_task
@@ -3131,6 +3183,7 @@ pub fn generate_multi_pipeline_spec_function(
                     mutations_tx.clone(),
                     health_monitor.clone(),
                     processed_slot_tracker.clone(),
+                    snapshot_barrier.clone(),
                     runtime_resolver.clone(),
                     slot_scheduler.clone(),
                     resolver_apply_semaphore.clone(),
@@ -3256,6 +3309,9 @@ mod tests {
         assert!(compact.contains("processed_slot_tracker.get()"));
         assert!(compact.contains("processed_slot_tracker.clone()"));
         assert!(!compact.contains("restored_from_slot.take()"));
+        assert!(compact.contains("letsnapshot_barrier="));
+        assert!(compact.contains("barrier.enter_processing().await"));
+        assert!(compact.contains("batch.with_snapshot_guard(snapshot_guard)"));
     }
 
     #[test]

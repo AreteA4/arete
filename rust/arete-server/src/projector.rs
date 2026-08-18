@@ -114,12 +114,18 @@ impl Projector {
             }
 
             // The batch is now applied to the caches: advance the snapshot
-            // resume watermark, then acknowledge any pending flush marker.
+            // resume watermark, then release the processing guard transferred
+            // by the VM producer. An exclusive snapshot cut cannot begin until
+            // every earlier guarded batch reaches this point.
             if batch_size > 0 {
                 if let Some(snapshot_runtime) = &self.snapshot_runtime {
                     snapshot_runtime.record_applied_batch(slot_context.map(|ctx| ctx.slot));
                 }
             }
+            drop(batch.snapshot_guard.take());
+
+            // Flush markers remain useful to non-snapshot callers that need
+            // to observe a drained projector queue.
             if let Some(ack) = batch.flush_ack.take() {
                 let _ = ack.send(());
             }

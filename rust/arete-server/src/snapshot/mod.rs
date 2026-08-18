@@ -11,11 +11,12 @@
 //! built with an older arete-macros simply never registers a VM; snapshots
 //! stay disabled with a warning.
 //!
-//! Consistency cut: the VM is dumped at watermark `W` (the highest slot among
-//! projector-applied mutation batches), then a flush marker is pushed through
-//! the projector channel, then the caches are dumped — so the caches contain
-//! every batch the VM produced up to `W`. On restore the stream replays from
-//! `W`; the snapshotted version trackers drop the overlap.
+//! Consistency cut: every generated VM update holds a shared snapshot barrier
+//! guard until its mutation batch has been applied by the projector. Snapshot
+//! capture takes the exclusive guard before dumping either side, so the VM,
+//! projection caches, and resume watermark all describe the same processing
+//! cut. On restore the stream replays from that watermark; the snapshotted
+//! version trackers drop the overlap.
 
 pub mod envelope;
 #[cfg(feature = "snapshot-object-store")]
@@ -38,14 +39,15 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use tracing::{debug, info, info_span, warn, Instrument};
 
 /// Rough Solana slot duration, used only to convert snapshot age into an
 /// estimated slot distance for the staleness clamp.
 const ESTIMATED_SLOT_MILLIS: u64 = 400;
-/// How long a snapshot cycle waits for the projector to drain the flush marker.
-const FLUSH_MARKER_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a snapshot cycle waits for in-flight VM updates and their queued
+/// projection batches to finish.
+const CONSISTENCY_CUT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Configuration for state snapshots. Disabled by default; enable via
 /// `ServerBuilder::snapshots(...)` or `ARETE_SNAPSHOT_*` env vars.
@@ -160,11 +162,45 @@ struct ResumeGate {
     max_hold: Duration,
 }
 
+/// Per-runtime barrier that keeps snapshot capture from splitting a VM update
+/// from the projection batch it produced.
+///
+/// Generated mutation producers enter the barrier in shared mode before
+/// touching the VM and transfer the guard to their [`MutationBatch`]. The
+/// projector releases it only after applying that batch. Snapshot capture
+/// enters in exclusive mode, which therefore waits for both in-flight parser
+/// work and queued projection work to finish.
+#[derive(Clone, Default)]
+pub struct SnapshotBarrier {
+    inner: Arc<RwLock<()>>,
+}
+
+impl SnapshotBarrier {
+    pub async fn enter_processing(&self) -> SnapshotProcessingGuard {
+        SnapshotProcessingGuard(self.inner.clone().read_owned().await)
+    }
+
+    async fn enter_snapshot(&self) -> OwnedRwLockWriteGuard<()> {
+        self.inner.clone().write_owned().await
+    }
+}
+
+/// Shared processing guard carried by a mutation batch until projection is
+/// complete. The inner guard is intentionally opaque outside arete-server.
+pub struct SnapshotProcessingGuard(#[allow(dead_code)] OwnedRwLockReadGuard<()>);
+
+impl std::fmt::Debug for SnapshotProcessingGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SnapshotProcessingGuard")
+    }
+}
+
 #[derive(Default)]
 struct SnapshotRuntimeState {
     registered: StdMutex<Option<RuntimeRegistration>>,
     restored: StdMutex<Option<RestoredState>>,
     resume_gate: StdMutex<Option<ResumeGate>>,
+    processing_barrier: SnapshotBarrier,
     /// Highest slot among mutation batches this runtime's projector has
     /// applied. This is the safe `from_slot` resume point (`SlotTracker` is
     /// not: it follows the raw slot subscription, not parser progress).
@@ -197,12 +233,17 @@ impl SnapshotRuntime {
     }
 
     /// Associate the parser's VM and slot tracker with this server only.
-    pub fn register_runtime(&self, vm: Arc<StdMutex<VmContext>>, slot_tracker: SlotTracker) {
+    pub fn register_runtime(
+        &self,
+        vm: Arc<StdMutex<VmContext>>,
+        slot_tracker: SlotTracker,
+    ) -> SnapshotBarrier {
         let mut registered = self.state.registered.lock().unwrap();
         if registered.is_some() {
             debug!("Snapshot runtime registration replaced");
         }
         *registered = Some(RuntimeRegistration { vm, slot_tracker });
+        self.state.processing_barrier.clone()
     }
 
     /// Consume this server's restored VM state exactly once.
@@ -252,12 +293,16 @@ impl SnapshotRuntime {
 
 /// Called by the generated runtime after it creates its `VmContext` and
 /// `SlotTracker`, so the snapshot manager can dump them later.
-pub fn register_runtime(vm: Arc<StdMutex<VmContext>>, slot_tracker: SlotTracker) {
-    if ACTIVE_SNAPSHOT_RUNTIME
-        .try_with(|runtime| runtime.register_runtime(vm, slot_tracker))
-        .is_err()
-    {
-        debug!("Snapshot runtime registration ignored (snapshots disabled)");
+pub fn register_runtime(
+    vm: Arc<StdMutex<VmContext>>,
+    slot_tracker: SlotTracker,
+) -> Option<SnapshotBarrier> {
+    match ACTIVE_SNAPSHOT_RUNTIME.try_with(|runtime| runtime.register_runtime(vm, slot_tracker)) {
+        Ok(barrier) => Some(barrier),
+        Err(_) => {
+            debug!("Snapshot runtime registration ignored (snapshots disabled)");
+            None
+        }
     }
 }
 
@@ -315,7 +360,6 @@ pub struct SnapshotService {
     bytecode_hash: String,
     program_ids: Vec<String>,
     entity_cache: EntityCache,
-    mutations_tx: mpsc::Sender<MutationBatch>,
     batches_at_last_snapshot: AtomicU64,
     warned_missing_vm: AtomicBool,
 }
@@ -328,7 +372,7 @@ impl SnapshotService {
         spec: &crate::Spec,
         entity_cache: EntityCache,
         view_index: &ViewIndex,
-        mutations_tx: mpsc::Sender<MutationBatch>,
+        _mutations_tx: mpsc::Sender<MutationBatch>,
     ) -> Result<Arc<Self>> {
         let url = config
             .url
@@ -346,7 +390,6 @@ impl SnapshotService {
             bytecode_hash: spec.bytecode.fingerprint(),
             program_ids,
             entity_cache,
-            mutations_tx,
             batches_at_last_snapshot: AtomicU64::new(0),
             warned_missing_vm: AtomicBool::new(false),
         });
@@ -531,12 +574,18 @@ impl SnapshotService {
             }
         }
 
-        // Capture the watermark before cloning the VM, in one VM-lock
-        // critical section. Projector progress is independent of this lock,
-        // so it may advance while dump() clones the VM; retaining the earlier
-        // watermark makes that overlap replay-safe. Everything is cloned so
-        // serialization and compression run after release. The flush marker
-        // then catches projection up to this cut.
+        // Wait for every in-flight VM update and its queued projection batch
+        // to finish, then block new updates until both sides have been dumped.
+        // Processing guards move with their mutation batches and are released
+        // by the projector only after cache application, so this exclusive
+        // guard establishes one exact cut without an enqueue race.
+        let consistency_guard = tokio::time::timeout(
+            CONSISTENCY_CUT_TIMEOUT,
+            self.runtime.state.processing_barrier.enter_snapshot(),
+        )
+        .await
+        .context("timed out waiting for a consistent VM/projection snapshot cut")?;
+
         let dump_started = Instant::now();
         let (vm_snapshot, resume_watermark) = {
             let vm = registration
@@ -549,20 +598,9 @@ impl SnapshotService {
         };
         let vm_lock_held = dump_started.elapsed();
         let observed_slot = registration.slot_tracker.get();
-
-        // Push a flush marker through the projector so every batch produced
-        // before the VM dump is applied to the caches before we dump them.
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.mutations_tx
-            .send(MutationBatch::flush_marker(ack_tx))
-            .await
-            .context("projector channel closed")?;
-        tokio::time::timeout(FLUSH_MARKER_TIMEOUT, ack_rx)
-            .await
-            .context("projector did not drain the flush marker in time")?
-            .context("projector dropped the flush marker")?;
-
         let entity_cache_dump = self.entity_cache.dump().await;
+        let applied_batches = self.runtime.state.applied_batches.load(Ordering::Relaxed);
+        drop(consistency_guard);
 
         let created_at_epoch_ms = now_epoch_ms();
         let header = SnapshotHeader {
