@@ -527,9 +527,9 @@ fn generate_managed_grpc_helpers() -> TokenStream {
 
         const RECONNECT_BACKOFF_RESET_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
         const HTTP2_KEEPALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-        /// After this many consecutive short-lived connection attempts, drop
-        /// `from_slot` and subscribe live instead of crash-looping on a
-        /// provider that rejects the requested replay slot.
+        /// After this many consecutive short-lived connection attempts, a
+        /// cold/live runtime drops `from_slot` instead of crash-looping. A
+        /// restored snapshot replay never takes this lossy fallback.
         const FROM_SLOT_LIVE_FALLBACK_ATTEMPTS: u32 = 3;
 
         fn install_managed_yellowstone_grpc_settings(settings: ManagedYellowstoneGrpcSettings) {
@@ -1002,7 +1002,7 @@ pub fn generate_vm_handler(
             bytecode: std::sync::Arc<arete::runtime::arete_interpreter::compiler::MultiEntityBytecode>,
             mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
             health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
-            slot_tracker: arete::runtime::arete_server::SlotTracker,
+            processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
             resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -1023,7 +1023,7 @@ pub fn generate_vm_handler(
                 bytecode: std::sync::Arc<arete::runtime::arete_interpreter::compiler::MultiEntityBytecode>,
                 mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
                 health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
-                slot_tracker: arete::runtime::arete_server::SlotTracker,
+                processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
                 runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
                 slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
                 resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -1033,7 +1033,7 @@ pub fn generate_vm_handler(
                     bytecode,
                     mutations_tx,
                     health_monitor,
-                    slot_tracker,
+                    processed_slot_tracker,
                     runtime_resolver,
                     slot_scheduler,
                     resolver_apply_semaphore,
@@ -1293,7 +1293,7 @@ pub fn generate_vm_handler(
                             projector_permit,
                         )
                         .await;
-                        self.slot_tracker.record(slot);
+                        self.processed_slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -1532,7 +1532,7 @@ pub fn generate_vm_handler(
                             projector_permit,
                         )
                         .await;
-                        self.slot_tracker.record(slot);
+                        self.processed_slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -1657,6 +1657,11 @@ pub fn generate_spec_function(
             let async_resolver_order = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
             let slot_tracker = arete::runtime::arete_server::SlotTracker::new();
+            // Unlike slot_tracker, this advances only after the main parser
+            // has finished processing an account/instruction event. It is the
+            // safe reconnect checkpoint; the dedicated slot subscription may
+            // be arbitrarily far ahead of parser work.
+            let processed_slot_tracker = arete::runtime::arete_server::SlotTracker::new();
             let slot_scheduler = Arc::new(Mutex::new(arete::runtime::arete_interpreter::scheduler::SlotScheduler::new()));
             let mut attempt = 0u32;
             let mut backoff = reconnection_config.initial_delay;
@@ -1684,6 +1689,7 @@ pub fn generate_spec_function(
                         restored_from_slot = restored.resume_watermark;
                         if let Some(watermark) = restored_from_slot {
                             slot_tracker.record(watermark);
+                            processed_slot_tracker.record(watermark);
                             arete::runtime::tracing::info!(
                                 resume_watermark = watermark,
                                 "Hydrated VM state from snapshot; will resume stream from watermark"
@@ -1708,7 +1714,22 @@ pub fn generate_spec_function(
             #slot_subscription_task
 
             loop {
-                let from_slot = if attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
+                let from_slot = arete::runtime::arete_server::snapshot::select_reconnect_from_slot(
+                    restored_from_slot,
+                    processed_slot_tracker.get(),
+                    attempt,
+                    FROM_SLOT_LIVE_FALLBACK_ATTEMPTS,
+                );
+                if restored_from_slot.is_some() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
+                    // Correctness takes priority over the live fallback while
+                    // snapshot replay is active. The checkpoint advances only
+                    // with events completed by the main parser stream.
+                    arete::runtime::tracing::warn!(
+                        attempt,
+                        from_slot = ?from_slot,
+                        "Snapshot replay still active after repeated short-lived connections; retrying from processed checkpoint"
+                    );
+                } else if restored_from_slot.is_none() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
                     // The provider keeps rejecting us shortly after connect;
                     // most likely the requested slot is outside its replay
                     // window. Subscribe live rather than crash-looping.
@@ -1716,17 +1737,7 @@ pub fn generate_spec_function(
                         attempt,
                         "Repeated short-lived connections; subscribing live without from_slot"
                     );
-                    restored_from_slot = None;
-                    None
-                } else if let Some(watermark) = restored_from_slot.take() {
-                    // First attempt after a snapshot restore: use the exact
-                    // watermark rather than the slot tracker, which the
-                    // dedicated slot subscription may already have advanced.
-                    Some(watermark)
-                } else {
-                    let last = slot_tracker.get();
-                    if last > 0 { Some(last) } else { None }
-                };
+                }
 
                 if from_slot.is_some() {
                     arete::runtime::tracing::info!("Resuming from slot {}", from_slot.unwrap());
@@ -1750,7 +1761,7 @@ pub fn generate_spec_function(
                     bytecode_arc.clone(),
                     mutations_tx.clone(),
                     health_monitor.clone(),
-                    slot_tracker.clone(),
+                    processed_slot_tracker.clone(),
                     runtime_resolver.clone(),
                     slot_scheduler.clone(),
                     resolver_apply_semaphore.clone(),
@@ -2097,7 +2108,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             bytecode: std::sync::Arc<arete::runtime::arete_interpreter::compiler::MultiEntityBytecode>,
             mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
             health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
-            slot_tracker: arete::runtime::arete_server::SlotTracker,
+            processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
             resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -2118,7 +2129,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                 bytecode: std::sync::Arc<arete::runtime::arete_interpreter::compiler::MultiEntityBytecode>,
                 mutations_tx: arete::runtime::tokio::sync::mpsc::Sender<arete::runtime::arete_server::MutationBatch>,
                 health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
-                slot_tracker: arete::runtime::arete_server::SlotTracker,
+                processed_slot_tracker: arete::runtime::arete_server::SlotTracker,
                 runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
                 slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
                 resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
@@ -2128,7 +2139,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                     bytecode,
                     mutations_tx,
                     health_monitor,
-                    slot_tracker,
+                    processed_slot_tracker,
                     runtime_resolver,
                     slot_scheduler,
                     resolver_apply_semaphore,
@@ -2387,7 +2398,7 @@ pub fn generate_account_handler_impl(
                             projector_permit,
                         )
                         .await;
-                        self.slot_tracker.record(slot);
+                        self.processed_slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -2722,7 +2733,7 @@ pub fn generate_instruction_handler_impl(
                             projector_permit,
                         )
                         .await;
-                        self.slot_tracker.record(slot);
+                        self.processed_slot_tracker.record(slot);
                         Ok(())
                     }
                     Err(e) => {
@@ -3015,6 +3026,11 @@ pub fn generate_multi_pipeline_spec_function(
             let async_resolver_order = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
             let slot_tracker = arete::runtime::arete_server::SlotTracker::new();
+            // Unlike slot_tracker, this advances only after the main parser
+            // has finished processing an account/instruction event. It is the
+            // safe reconnect checkpoint; the dedicated slot subscription may
+            // be arbitrarily far ahead of parser work.
+            let processed_slot_tracker = arete::runtime::arete_server::SlotTracker::new();
             let slot_scheduler = Arc::new(Mutex::new(arete::runtime::arete_interpreter::scheduler::SlotScheduler::new()));
             let mut attempt = 0u32;
             let mut backoff = reconnection_config.initial_delay;
@@ -3042,6 +3058,7 @@ pub fn generate_multi_pipeline_spec_function(
                         restored_from_slot = restored.resume_watermark;
                         if let Some(watermark) = restored_from_slot {
                             slot_tracker.record(watermark);
+                            processed_slot_tracker.record(watermark);
                             arete::runtime::tracing::info!(
                                 resume_watermark = watermark,
                                 "Hydrated VM state from snapshot; will resume stream from watermark"
@@ -3066,7 +3083,22 @@ pub fn generate_multi_pipeline_spec_function(
             #slot_subscription_task
 
             loop {
-                let from_slot = if attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
+                let from_slot = arete::runtime::arete_server::snapshot::select_reconnect_from_slot(
+                    restored_from_slot,
+                    processed_slot_tracker.get(),
+                    attempt,
+                    FROM_SLOT_LIVE_FALLBACK_ATTEMPTS,
+                );
+                if restored_from_slot.is_some() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
+                    // Correctness takes priority over the live fallback while
+                    // snapshot replay is active. The checkpoint advances only
+                    // with events completed by the main parser stream.
+                    arete::runtime::tracing::warn!(
+                        attempt,
+                        from_slot = ?from_slot,
+                        "Snapshot replay still active after repeated short-lived connections; retrying from processed checkpoint"
+                    );
+                } else if restored_from_slot.is_none() && attempt >= FROM_SLOT_LIVE_FALLBACK_ATTEMPTS {
                     // The provider keeps rejecting us shortly after connect;
                     // most likely the requested slot is outside its replay
                     // window. Subscribe live rather than crash-looping.
@@ -3074,17 +3106,7 @@ pub fn generate_multi_pipeline_spec_function(
                         attempt,
                         "Repeated short-lived connections; subscribing live without from_slot"
                     );
-                    restored_from_slot = None;
-                    None
-                } else if let Some(watermark) = restored_from_slot.take() {
-                    // First attempt after a snapshot restore: use the exact
-                    // watermark rather than the slot tracker, which the
-                    // dedicated slot subscription may already have advanced.
-                    Some(watermark)
-                } else {
-                    let last = slot_tracker.get();
-                    if last > 0 { Some(last) } else { None }
-                };
+                }
 
                 if from_slot.is_some() {
                     arete::runtime::tracing::info!("Resuming from slot {}", from_slot.unwrap());
@@ -3108,7 +3130,7 @@ pub fn generate_multi_pipeline_spec_function(
                     bytecode_arc.clone(),
                     mutations_tx.clone(),
                     health_monitor.clone(),
-                    slot_tracker.clone(),
+                    processed_slot_tracker.clone(),
                     runtime_resolver.clone(),
                     slot_scheduler.clone(),
                     resolver_apply_semaphore.clone(),
@@ -3216,7 +3238,25 @@ pub fn generate_runtime(
 
 #[cfg(test)]
 mod tests {
-    use super::generate_instruction_handler_impl;
+    use super::{generate_instruction_handler_impl, generate_spec_function, RuntimeGenConfig};
+
+    #[test]
+    fn snapshot_reconnect_uses_parser_progress_without_consuming_restore_cut() {
+        let code = generate_spec_function(
+            "StateEnum",
+            "InstructionEnum",
+            "program",
+            &[],
+            &RuntimeGenConfig::default(),
+        )
+        .to_string();
+        let compact: String = code.split_whitespace().collect();
+
+        assert!(compact.contains("select_reconnect_from_slot"));
+        assert!(compact.contains("processed_slot_tracker.get()"));
+        assert!(compact.contains("processed_slot_tracker.clone()"));
+        assert!(!compact.contains("restored_from_slot.take()"));
+    }
 
     #[test]
     fn instruction_handler_accepts_raydium_ray_log_prefix() {

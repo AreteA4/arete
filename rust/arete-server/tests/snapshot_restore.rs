@@ -569,3 +569,36 @@ fn snapshot_config_from_env_round_trip() {
     }
     assert!(!SnapshotConfig::from_env().unwrap().enabled);
 }
+
+#[test]
+fn restored_reconnects_keep_a_safe_replay_checkpoint() {
+    const FALLBACK_ATTEMPTS: u32 = 3;
+
+    // A restored replay keeps its original cut until the main parser—not the
+    // independent live slot subscription—has processed further slots.
+    assert_eq!(
+        snapshot::select_reconnect_from_slot(Some(100), 0, 0, FALLBACK_ATTEMPTS),
+        Some(100)
+    );
+    assert_eq!(
+        snapshot::select_reconnect_from_slot(Some(100), 140, 1, FALLBACK_ATTEMPTS),
+        Some(140)
+    );
+
+    // Repeated short-lived connections must not switch an unfinished
+    // restored replay to live mode.
+    assert_eq!(
+        snapshot::select_reconnect_from_slot(Some(100), 140, 99, FALLBACK_ATTEMPTS),
+        Some(140)
+    );
+
+    // Cold/live runtimes retain the existing bounded fallback behavior.
+    assert_eq!(
+        snapshot::select_reconnect_from_slot(None, 140, 2, FALLBACK_ATTEMPTS),
+        Some(140)
+    );
+    assert_eq!(
+        snapshot::select_reconnect_from_slot(None, 140, 3, FALLBACK_ATTEMPTS),
+        None
+    );
+}

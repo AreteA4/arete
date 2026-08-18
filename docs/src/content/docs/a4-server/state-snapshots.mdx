@@ -112,8 +112,11 @@ corrupt/truncated blobs — restore problems never block startup.
   live: providers only support `from_slot` replay within a limited window.
   Account-derived state self-heals from full account writes; only instruction
   events inside the gap are missed.
-- If the provider repeatedly rejects the resume subscription, the runtime
-  falls back to a live subscription instead of crash-looping.
+- A restored replay retains a parser-processed checkpoint across reconnects;
+  it never falls back to a live subscription while replay is active. This
+  avoids silently skipping unfinished history. Configure the maximum snapshot
+  age conservatively so the initial checkpoint remains inside the provider's
+  replay window.
 - Snapshot write failures are logged and skipped — snapshotting never takes
   down a healthy server.
 

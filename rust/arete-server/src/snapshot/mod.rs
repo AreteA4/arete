@@ -270,6 +270,28 @@ pub fn take_restored() -> Option<RestoredState> {
         .flatten()
 }
 
+/// Select a reconnect checkpoint for the generated Yellowstone runtime.
+///
+/// A restored replay never falls back to live: retries advance only to slots
+/// the main parser stream has finished processing. Without a restored replay,
+/// the existing live fallback remains available after repeated short-lived
+/// connections.
+#[doc(hidden)]
+pub fn select_reconnect_from_slot(
+    restored_watermark: Option<u64>,
+    processed_watermark: u64,
+    attempt: u32,
+    live_fallback_attempts: u32,
+) -> Option<u64> {
+    if let Some(restored_watermark) = restored_watermark {
+        return Some(restored_watermark.max(processed_watermark));
+    }
+    if attempt >= live_fallback_attempts {
+        return None;
+    }
+    (processed_watermark > 0).then_some(processed_watermark)
+}
+
 fn now_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -509,19 +531,20 @@ impl SnapshotService {
             }
         }
 
-        // Dump and capture the watermark in one VM-lock critical section.
-        // A parser batch cannot mutate the VM between these two operations,
-        // so the watermark can never describe state newer than the dump.
-        // Everything is cloned so serialization and compression run after
-        // release. The flush marker then catches projection up to this cut.
+        // Capture the watermark before cloning the VM, in one VM-lock
+        // critical section. Projector progress is independent of this lock,
+        // so it may advance while dump() clones the VM; retaining the earlier
+        // watermark makes that overlap replay-safe. Everything is cloned so
+        // serialization and compression run after release. The flush marker
+        // then catches projection up to this cut.
         let dump_started = Instant::now();
         let (vm_snapshot, resume_watermark) = {
             let vm = registration
                 .vm
                 .lock()
                 .map_err(|_| anyhow::anyhow!("VM mutex poisoned"))?;
-            let vm_snapshot = vm.dump();
             let resume_watermark = self.runtime.state.resume_watermark.load(Ordering::Relaxed);
+            let vm_snapshot = vm.dump();
             (vm_snapshot, resume_watermark)
         };
         let vm_lock_held = dump_started.elapsed();
