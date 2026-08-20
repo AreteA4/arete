@@ -375,21 +375,21 @@ impl MultiEntityBytecode {
                 Value::Object(map) => {
                     let mut keys: Vec<&String> = map.keys().collect();
                     keys.sort();
-                    hasher.update([b'{']);
+                    hasher.update(*b"{");
                     for key in keys {
                         hasher.update(key.as_bytes());
                         hasher.update([0u8]);
                         update_canonical_json(hasher, &map[key]);
                     }
-                    hasher.update([b'}']);
+                    hasher.update(*b"}");
                 }
                 Value::Array(items) => {
-                    hasher.update([b'[']);
+                    hasher.update(*b"[");
                     for item in items {
                         update_canonical_json(hasher, item);
                         hasher.update([0u8]);
                     }
-                    hasher.update([b']']);
+                    hasher.update(*b"]");
                 }
                 // Scalars: serde_json's rendering (itoa/ryu for numbers, JSON
                 // string escaping) is deterministic across platforms.
