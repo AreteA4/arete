@@ -1,4 +1,5 @@
 use crate::ast::*;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tracing;
@@ -9,7 +10,7 @@ fn stop_field_path(target_path: &str) -> String {
     format!("__stop:{}", target_path)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum OpCode {
     /// Abort the handler with empty mutations when the key register is null
     /// and the event is an account-state update (not IxState / CpiEvent).
@@ -341,6 +342,15 @@ impl MultiEntityBytecode {
     /// Computed-field evaluators are opaque closures, so only their presence is
     /// hashed — their bodies are generated from the same stack source as the
     /// opcode streams, which change alongside them in practice.
+    ///
+    /// Opcode streams are hashed via a canonical serde encoding (externally
+    /// tagged variants, object keys sorted), NOT via `Debug` formatting, so the
+    /// hash survives cosmetic churn that doesn't alter the compiled program:
+    /// rustc `Debug` formatting changes, struct field reordering, and inserting
+    /// new `OpCode` variants. Renaming a variant or field DOES change the hash
+    /// (names are the tags) — treat renames as snapshot-invalidating. Interpreter
+    /// behavior changes that keep the encoding identical are invisible here;
+    /// those must bump `SNAPSHOT_FORMAT_VERSION` instead.
     pub fn fingerprint(&self) -> String {
         use sha2::{Digest, Sha256};
 
@@ -352,6 +362,42 @@ impl MultiEntityBytecode {
                 hasher.update([0u8]);
             }
             hasher.update([1u8]);
+        }
+
+        /// Hash a JSON value in a canonical form: object keys visited in sorted
+        /// order with explicit framing bytes. Deliberately independent of
+        /// `serde_json::Map`'s iteration order, which flips to insertion order
+        /// if any crate in the enclosing workspace enables the `preserve_order`
+        /// feature — the fingerprint must agree across differently-featured
+        /// builds of the same stack.
+        fn update_canonical_json(hasher: &mut Sha256, value: &Value) {
+            match value {
+                Value::Object(map) => {
+                    let mut keys: Vec<&String> = map.keys().collect();
+                    keys.sort();
+                    hasher.update(*b"{");
+                    for key in keys {
+                        hasher.update(key.as_bytes());
+                        hasher.update([0u8]);
+                        update_canonical_json(hasher, &map[key]);
+                    }
+                    hasher.update(*b"}");
+                }
+                Value::Array(items) => {
+                    hasher.update(*b"[");
+                    for item in items {
+                        update_canonical_json(hasher, item);
+                        hasher.update([0u8]);
+                    }
+                    hasher.update(*b"]");
+                }
+                // Scalars: serde_json's rendering (itoa/ryu for numbers, JSON
+                // string escaping) is deterministic across platforms.
+                scalar => {
+                    hasher.update(scalar.to_string().as_bytes());
+                    hasher.update([0u8]);
+                }
+            }
         }
 
         let mut hasher = Sha256::new();
@@ -369,7 +415,11 @@ impl MultiEntityBytecode {
             for event_type in event_types {
                 hasher.update(event_type.as_bytes());
                 hasher.update([0u8]);
-                hasher.update(format!("{:?}", entity.handlers[event_type]).as_bytes());
+                let ops = serde_json::to_value(&entity.handlers[event_type]).expect(
+                    "opcode stream must serialize for fingerprinting; \
+                     a non-serializable OpCode payload breaks snapshot invalidation",
+                );
+                update_canonical_json(&mut hasher, &ops);
                 hasher.update([0u8]);
             }
             hasher.update([1u8]);
@@ -2281,5 +2331,107 @@ mod tests {
         assert_eq!(mutations.len(), 1);
         assert_eq!(mutations[0].key, json!("treasury_pda"));
         assert_eq!(mutations[0].patch["id"]["address"], json!("treasury_pda"));
+    }
+
+    mod fingerprint {
+        use super::super::{EntityBytecode, MultiEntityBytecode, OpCode};
+        use crate::ast::FieldPath;
+        use serde_json::json;
+        use std::collections::{HashMap, HashSet};
+
+        fn sample_handler() -> Vec<OpCode> {
+            vec![
+                OpCode::LoadEventField {
+                    path: FieldPath::new(&["id", "mint"]),
+                    dest: 0,
+                    default: Some(json!({"b": 2, "a": 1})),
+                },
+                OpCode::CreateObject { dest: 1 },
+                OpCode::SetField {
+                    object: 1,
+                    path: "state.volume".to_string(),
+                    value: 0,
+                },
+                OpCode::EmitMutation {
+                    entity_name: "PumpfunToken".to_string(),
+                    key: 0,
+                    state: 1,
+                },
+            ]
+        }
+
+        fn bytecode(handler_insert_order: &[&str]) -> MultiEntityBytecode {
+            let mut handlers = HashMap::new();
+            for event_type in handler_insert_order {
+                handlers.insert(event_type.to_string(), sample_handler());
+            }
+            let mut entities = HashMap::new();
+            entities.insert(
+                "PumpfunToken".to_string(),
+                EntityBytecode {
+                    state_id: 0,
+                    handlers,
+                    entity_name: "PumpfunToken".to_string(),
+                    when_events: HashSet::from(["pump::BuyIxState".to_string()]),
+                    non_emitted_fields: HashSet::new(),
+                    computed_paths: vec!["state.market_cap".to_string()],
+                    computed_fields_evaluator: None,
+                },
+            );
+            let mut event_routing = HashMap::new();
+            event_routing.insert(
+                "pump::TokenState".to_string(),
+                vec!["PumpfunToken".to_string()],
+            );
+            MultiEntityBytecode {
+                entities,
+                event_routing,
+                when_events: HashSet::from(["pump::BuyIxState".to_string()]),
+                proto_router: crate::proto_router::ProtoRouter::new(),
+            }
+        }
+
+        #[test]
+        fn stable_across_recomputation_and_insertion_order() {
+            let a = bytecode(&["pump::TokenState", "pump::BuyIxState"]);
+            let b = bytecode(&["pump::BuyIxState", "pump::TokenState"]);
+            assert_eq!(a.fingerprint(), a.fingerprint());
+            assert_eq!(a.fingerprint(), b.fingerprint());
+            assert_eq!(a.fingerprint().len(), 64);
+        }
+
+        #[test]
+        fn changes_when_an_opcode_operand_changes() {
+            let base = bytecode(&["pump::TokenState"]);
+            let mut modified = bytecode(&["pump::TokenState"]);
+            let entity = modified.entities.get_mut("PumpfunToken").unwrap();
+            match &mut entity.handlers.get_mut("pump::TokenState").unwrap()[2] {
+                OpCode::SetField { path, .. } => *path = "state.volume_usd".to_string(),
+                other => panic!("unexpected opcode: {other:?}"),
+            }
+            assert_ne!(base.fingerprint(), modified.fingerprint());
+        }
+
+        #[test]
+        fn changes_when_routing_changes() {
+            let base = bytecode(&["pump::TokenState"]);
+            let mut modified = bytecode(&["pump::TokenState"]);
+            modified
+                .event_routing
+                .insert("pump::SellIxState".to_string(), vec!["PumpfunToken".to_string()]);
+            assert_ne!(base.fingerprint(), modified.fingerprint());
+        }
+
+        /// Golden hash: this value changing means every deployed snapshot gets
+        /// invalidated (bytecode_hash mismatch -> cold start). That can be a
+        /// legitimate consequence of a semantic change to the sample opcodes or
+        /// to the canonical encoding itself — but it must be a *decision*, not
+        /// an accident. Update the constant only when snapshot invalidation is
+        /// intended.
+        #[test]
+        fn golden_hash_pins_the_canonical_encoding() {
+            let expected = "acf7ea8bf39ca830a9e6c2b2d2fb471da68e57e24bbb4c256964a42a498f75f2";
+            assert_eq!(bytecode(&["pump::TokenState"]).fingerprint(), expected);
+        }
     }
 }
