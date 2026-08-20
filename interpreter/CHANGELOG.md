@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.9.0...arete-interpreter-v0.9.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **interpreter:** canonicalize snapshot bytecode fingerprints ([e68b74d](https://github.com/AreteA4/arete/commit/e68b74d7a467f0e67ec95cd4b1e648bd89140528))
+* **interpreter:** canonicalize snapshot bytecode fingerprints ([5f75b16](https://github.com/AreteA4/arete/commit/5f75b16e65640772721a05a5b5a0b6a0725dfe72))
+* **interpreter:** satisfy byte string lint ([9363332](https://github.com/AreteA4/arete/commit/9363332c9275273aad4488314778ca64b230c0fb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.9.0 to 0.9.1
+
 ## [0.9.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.8.2...arete-interpreter-v0.9.0) (2026-08-18)
 
 
