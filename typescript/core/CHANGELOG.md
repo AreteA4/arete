@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/AreteA4/arete/compare/arete-typescript-v0.9.0...arete-typescript-v0.9.1) (2026-08-20)
+
+
+### Miscellaneous Chores
+
+* **arete-typescript:** Synchronize arete versions
+
 ## [0.9.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.8.2...arete-typescript-v0.9.0) (2026-08-18)
 
 
