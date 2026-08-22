@@ -1240,9 +1240,8 @@ impl StateTable {
             VersionTracker::with_capacity(DEFAULT_MAX_INSTRUCTION_DEDUP_ENTRIES);
         instruction_dedup_cache.load_entries(&snapshot.instruction_dedup_cache);
 
-        let recent_tx_instructions = std::sync::Mutex::new(LruCache::new(
-            NonZeroUsize::new(1000).unwrap(),
-        ));
+        let recent_tx_instructions =
+            std::sync::Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap()));
         {
             let mut cache = recent_tx_instructions.lock().unwrap();
             for (signature, instructions) in snapshot.recent_tx_instructions.iter().rev() {
@@ -1937,9 +1936,7 @@ impl VmContext {
     }
 
     fn reset_registers(&mut self) {
-        for reg in &mut self.registers {
-            *reg = Value::Null;
-        }
+        self.registers.fill(Value::Null);
     }
 
     /// Extract only the dirty fields from state (public for use by instruction hooks)
@@ -6819,7 +6816,9 @@ mod snapshot_tests {
 
         let mut pda = PdaReverseLookup::new(100);
         pda.insert("pda_addr".to_string(), "mint1".to_string());
-        table.pda_reverse_lookups.insert("curve_pda".to_string(), pda);
+        table
+            .pda_reverse_lookups
+            .insert("curve_pda".to_string(), pda);
 
         table.last_account_data.insert(
             "pda_addr".to_string(),
@@ -6908,10 +6907,7 @@ mod snapshot_tests {
                 .lookup("pda_addr"),
             Some("mint1".to_string())
         );
-        assert_eq!(
-            table.last_account_data.get("pda_addr").unwrap().slot,
-            90
-        );
+        assert_eq!(table.last_account_data.get("pda_addr").unwrap().slot, 90);
         assert_eq!(
             table
                 .recent_tx_instructions

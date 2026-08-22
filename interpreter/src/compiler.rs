@@ -2416,9 +2416,10 @@ mod tests {
         fn changes_when_routing_changes() {
             let base = bytecode(&["pump::TokenState"]);
             let mut modified = bytecode(&["pump::TokenState"]);
-            modified
-                .event_routing
-                .insert("pump::SellIxState".to_string(), vec!["PumpfunToken".to_string()]);
+            modified.event_routing.insert(
+                "pump::SellIxState".to_string(),
+                vec!["PumpfunToken".to_string()],
+            );
             assert_ne!(base.fingerprint(), modified.fingerprint());
         }
 

@@ -525,6 +525,7 @@ fn auth_deny_response(deny: &AuthDeny) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
+#[allow(clippy::result_large_err)]
 async fn authorize_http_request(
     remote_addr: SocketAddr,
     req: &Request<hyper::body::Incoming>,
@@ -621,6 +622,7 @@ fn enforce_http_limits(
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 async fn read_json_body<T: for<'de> Deserialize<'de>>(
     req: Request<hyper::body::Incoming>,
 ) -> std::result::Result<T, Response<Full<Bytes>>> {

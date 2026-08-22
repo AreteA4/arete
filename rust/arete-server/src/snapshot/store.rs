@@ -129,7 +129,10 @@ pub fn store_from_url(url: &str) -> Result<std::sync::Arc<dyn SnapshotStore>> {
         return super::object::from_url(trimmed);
         #[cfg(not(feature = "snapshot-object-store"))]
         {
-            let scheme = trimmed.split_once("://").map(|(s, _)| s).unwrap_or_default();
+            let scheme = trimmed
+                .split_once("://")
+                .map(|(s, _)| s)
+                .unwrap_or_default();
             anyhow::bail!(
                 "snapshot URL scheme {scheme:?} requires the `snapshot-object-store` feature, \
                  which is not enabled in this build; use a file:// URL or a local path"
@@ -147,10 +150,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "arete-snapshot-store-{tag}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("arete-snapshot-store-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
