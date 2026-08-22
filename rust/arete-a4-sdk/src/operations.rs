@@ -1051,6 +1051,7 @@ pub(crate) fn classify_wallet_error(
 /// completed so far and a [`TransactionFailureOutcome`] classified from the
 /// [`WalletError`] (chain-failure program errors are re-resolved against the
 /// transaction body's `errors` metadata).
+#[allow(clippy::result_large_err)]
 pub async fn execute_prepared_operation(
     host: &ExecutionHost<'_>,
     operation: &PreparedOperation,

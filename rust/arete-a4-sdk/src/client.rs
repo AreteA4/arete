@@ -370,6 +370,7 @@ impl<S: Stack> Arete<S> {
     /// The client's wallet, signer registry, and transaction transport are
     /// merged into the execution; call options win (an explicit
     /// `options.signer_registry` replaces the client's registry).
+    #[allow(clippy::result_large_err)]
     pub async fn execute(
         &self,
         operation: &PreparedOperation,
