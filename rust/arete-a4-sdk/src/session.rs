@@ -481,6 +481,7 @@ impl Session {
     /// Execute a prepared operation through the execution host (the first
     /// connected member). The session signer registry is merged in unless
     /// the call provides its own (call options win).
+    #[allow(clippy::result_large_err)]
     pub async fn execute(
         &self,
         operation: &PreparedOperation,

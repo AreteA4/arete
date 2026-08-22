@@ -30,6 +30,7 @@
 //!
 //! - `otel` - OpenTelemetry integration for metrics and distributed tracing
 
+pub mod account_policy;
 pub mod bus;
 pub mod cache;
 pub mod compression;

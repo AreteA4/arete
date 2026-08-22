@@ -41,6 +41,16 @@ pub struct SolanaGatewayAuthorization {
     pub plan: Option<String>,
     pub expires_at: u64,
     pub jti: String,
+    /// Raw signed actor identity; use [`SolanaGatewayAuthorization::actor_key`] to resolve.
+    pub actor_key: Option<String>,
+    /// Raw signed account identity; use [`SolanaGatewayAuthorization::account_key`] to resolve.
+    pub account_key: Option<String>,
+    /// Raw signed consumer identity; use [`SolanaGatewayAuthorization::consumer_key`] to resolve.
+    pub consumer_key: Option<String>,
+    /// Monotonic account policy version, absent on legacy tokens.
+    pub policy_version: Option<u32>,
+    /// Aggregate account limits, defaulted when the token carries none.
+    pub account_limits: Limits,
 }
 
 impl SolanaGatewayAuthorization {
@@ -105,7 +115,36 @@ impl SolanaGatewayAuthorization {
             plan: context.plan.clone(),
             expires_at: context.expires_at,
             jti: context.jti.clone(),
+            actor_key: context.actor_key.clone(),
+            account_key: context.account_key.clone(),
+            consumer_key: context.consumer_key.clone(),
+            policy_version: context.policy_version,
+            account_limits: context.account_limits.clone(),
         })
+    }
+
+    /// Resolved actor identity: `actor_key` claim, falling back to `sub`.
+    pub fn actor_key(&self) -> &str {
+        crate::claims::resolve_policy_identity(self.actor_key.as_deref(), &self.subject)
+    }
+
+    /// Resolved consumer identity: `consumer_key` claim, falling back to `sub`.
+    pub fn consumer_key(&self) -> &str {
+        crate::claims::resolve_policy_identity(self.consumer_key.as_deref(), &self.subject)
+    }
+
+    /// Resolved account identity: `account_key` claim, falling back to
+    /// `metering_key`.
+    pub fn account_key(&self) -> &str {
+        crate::claims::resolve_policy_identity(self.account_key.as_deref(), &self.metering_key)
+    }
+
+    /// True when the token predates the v2 policy contract.
+    pub fn is_legacy_policy(&self) -> bool {
+        self.actor_key.is_none()
+            && self.account_key.is_none()
+            && self.consumer_key.is_none()
+            && self.policy_version.is_none()
     }
 }
 
@@ -168,6 +207,46 @@ mod tests {
             assert_eq!(authorization.target_id, TARGET_ID);
             assert_eq!(authorization.metering_key, "api_key:42");
         }
+    }
+
+    #[test]
+    fn v2_policy_fields_propagate_into_authorization() {
+        let account_limits = Limits {
+            max_transaction_send_requests_per_minute: Some(120),
+            max_transaction_concurrency: Some(8),
+            ..Limits::default()
+        };
+        let claims = SessionClaims::solana_gateway_builder("issuer", "user:1", TARGET_ID)
+            .with_metering_key("account:42")
+            .with_actor_key("user:1")
+            .with_account_key("account:42")
+            .with_consumer_key("consumer:abc123")
+            .with_policy_version(4)
+            .with_account_limits(account_limits.clone())
+            .build();
+        let authorization = SolanaGatewayAuthorization::try_from_context(
+            &AuthContext::from_claims(claims),
+            TARGET_ID,
+            SolanaGatewayScope::Read,
+        )
+        .unwrap();
+
+        assert!(!authorization.is_legacy_policy());
+        assert_eq!(authorization.actor_key(), "user:1");
+        assert_eq!(authorization.consumer_key(), "consumer:abc123");
+        assert_eq!(authorization.account_key(), "account:42");
+        assert_eq!(authorization.policy_version, Some(4));
+        assert_eq!(authorization.account_limits, account_limits);
+
+        let legacy = SolanaGatewayAuthorization::try_from_context(
+            &context(SCOPE_READ),
+            TARGET_ID,
+            SolanaGatewayScope::Read,
+        )
+        .unwrap();
+        assert!(legacy.is_legacy_policy());
+        assert_eq!(legacy.consumer_key(), "user:1");
+        assert_eq!(legacy.account_key(), "api_key:42");
     }
 
     #[test]

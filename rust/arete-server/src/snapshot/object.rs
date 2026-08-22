@@ -25,7 +25,11 @@ pub struct ObjectSnapshotStore {
 }
 
 impl ObjectSnapshotStore {
-    pub fn new(store: Arc<dyn ObjectStore>, prefix: ObjectPath, location: impl Into<String>) -> Self {
+    pub fn new(
+        store: Arc<dyn ObjectStore>,
+        prefix: ObjectPath,
+        location: impl Into<String>,
+    ) -> Self {
         Self {
             store,
             prefix,
@@ -108,7 +112,8 @@ impl SnapshotStore for ObjectSnapshotStore {
 /// `gs://bucket/prefix`, or `az://container/prefix`. The URL's host selects
 /// the bucket/container; its path becomes the key prefix.
 pub(crate) fn from_url(url_str: &str) -> Result<Arc<dyn SnapshotStore>> {
-    let url = url::Url::parse(url_str).with_context(|| format!("invalid snapshot URL {url_str:?}"))?;
+    let url =
+        url::Url::parse(url_str).with_context(|| format!("invalid snapshot URL {url_str:?}"))?;
 
     let store: Arc<dyn ObjectStore> = match url.scheme() {
         "s3" | "s3a" => Arc::new(

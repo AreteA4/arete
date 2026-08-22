@@ -282,6 +282,12 @@ impl TokenVerifier {
             }
         }
 
+        // Validate the v2 policy identity set; old tokens with none of the
+        // new fields pass unchanged.
+        claims
+            .validate_policy_claims()
+            .map_err(|error| VerifyError::InvalidPolicyClaims(error.to_string()))?;
+
         Ok(AuthContext::from_claims(claims))
     }
 
@@ -445,6 +451,10 @@ impl HmacVerifier {
         let claims: SessionClaims = serde_json::from_slice(&claims_json)
             .map_err(|e| VerifyError::InvalidFormat(format!("Invalid claims JSON: {}", e)))?;
 
+        claims
+            .validate_policy_claims()
+            .map_err(|error| VerifyError::InvalidPolicyClaims(error.to_string()))?;
+
         Ok(AuthContext::from_claims(claims))
     }
 }
@@ -534,6 +544,43 @@ mod tests {
         assert_eq!(context.subject, "legacy-subject");
         assert_eq!(context.deployment_id.as_deref(), Some("deployment-1"));
         assert_eq!(context.target_kind, None);
+    }
+
+    #[test]
+    fn verifier_rejects_partial_v2_policy_claims_and_accepts_full_sets() {
+        let signing_key = crate::keys::SigningKey::generate();
+        let verifying_key = signing_key.verifying_key();
+        let signer = TokenSigner::new(signing_key, "test-issuer");
+        let verifier = TokenVerifier::new(verifying_key, "test-issuer", "test-audience");
+
+        // A signed token with only a subset of the v2 identity fields fails
+        // verification at the authorization boundary.
+        let partial = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
+            .with_metering_key("account:42")
+            .with_account_key("account:42")
+            .build();
+        let token = signer.sign(partial).unwrap();
+        assert!(matches!(
+            verifier.verify(&token, None, None),
+            Err(VerifyError::InvalidPolicyClaims(_))
+        ));
+
+        // The complete authenticated tuple verifies and resolves.
+        let full = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
+            .with_metering_key("account:42")
+            .with_plan("pro")
+            .with_actor_key("user:1")
+            .with_account_key("account:42")
+            .with_consumer_key("consumer:abc123")
+            .with_policy_version(2)
+            .with_account_limits(Limits::default())
+            .build();
+        let token = signer.sign(full).unwrap();
+        let context = verifier.verify(&token, None, None).unwrap();
+        assert!(!context.is_legacy_policy());
+        assert_eq!(context.account_key(), "account:42");
+        assert_eq!(context.consumer_key(), "consumer:abc123");
+        assert_eq!(context.policy_version, Some(2));
     }
 
     #[test]

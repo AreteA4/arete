@@ -325,6 +325,11 @@ impl WebSocketAuthPlugin for AllowAllAuthPlugin {
             origin: None,
             client_ip: None,
             jti: uuid::Uuid::new_v4().to_string(),
+            actor_key: None,
+            account_key: None,
+            consumer_key: None,
+            policy_version: None,
+            account_limits: Default::default(),
         };
         AuthDecision::Allow(context)
     }
@@ -390,6 +395,11 @@ impl WebSocketAuthPlugin for StaticTokenAuthPlugin {
                 origin: request.origin.clone(),
                 client_ip: None,
                 jti: uuid::Uuid::new_v4().to_string(),
+                actor_key: None,
+                account_key: None,
+                consumer_key: None,
+                policy_version: None,
+                account_limits: Default::default(),
             };
             AuthDecision::Allow(context)
         } else {
@@ -499,6 +509,7 @@ impl SignedSessionAuthPlugin {
     /// This is used when a client wants to refresh their auth without reconnecting.
     /// The origin is NOT validated here - we assume the client has already proven
     /// origin at connection time, and we're just refreshing the session token.
+    #[allow(clippy::result_large_err)]
     pub async fn verify_refresh_token(&self, token: &str) -> Result<AuthContext, AuthDeny> {
         let result = match &self.verifier {
             SignedSessionVerifier::Static(verifier) => verifier.verify(token, None, None),

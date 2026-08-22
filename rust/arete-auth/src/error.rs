@@ -184,6 +184,7 @@ impl From<&VerifyError> for AuthErrorCode {
             VerifyError::KeyNotFound(_) => AuthErrorCode::TokenKeyNotFound,
             VerifyError::InvalidFormat(_) => AuthErrorCode::TokenInvalidFormat,
             VerifyError::Revoked => AuthErrorCode::TokenExpired,
+            VerifyError::InvalidPolicyClaims(_) => AuthErrorCode::TokenInvalidFormat,
         }
     }
 }
@@ -242,4 +243,7 @@ pub enum VerifyError {
 
     #[error("token has been revoked")]
     Revoked,
+
+    #[error("invalid policy claims: {0}")]
+    InvalidPolicyClaims(String),
 }
