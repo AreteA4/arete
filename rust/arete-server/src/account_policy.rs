@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 use arete_auth::Limits;
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 
 /// Default bound on tracked account policy entries per registry.
@@ -88,6 +89,33 @@ impl AccountPolicyRegistry {
         }
     }
 
+    /// Apply the policy-version rules to an entry already held under lock.
+    fn apply(
+        entry: &mut AccountPolicyEntry,
+        version: u32,
+        limits: &Limits,
+    ) -> Result<(), AccountPolicyError> {
+        entry.last_seen = Instant::now();
+        match version.cmp(&entry.version) {
+            std::cmp::Ordering::Greater => {
+                entry.version = version;
+                entry.limits = limits.clone();
+                Ok(())
+            }
+            std::cmp::Ordering::Less => Err(AccountPolicyError::StaleVersion {
+                presented: version,
+                current: entry.version,
+            }),
+            std::cmp::Ordering::Equal => {
+                if &entry.limits == limits {
+                    Ok(())
+                } else {
+                    Err(AccountPolicyError::ConflictingLimits { version })
+                }
+            }
+        }
+    }
+
     /// Observe a signed (account, policy version, account limits) tuple and
     /// apply the policy-version conflict rules.
     pub fn observe(
@@ -96,43 +124,37 @@ impl AccountPolicyRegistry {
         version: u32,
         limits: &Limits,
     ) -> Result<(), AccountPolicyError> {
+        // Fast path: an existing entry is updated under its own lock, and
+        // avoids allocating the owned key the entry API needs.
         if let Some(mut entry) = self.entries.get_mut(account) {
-            entry.last_seen = Instant::now();
-            return match version.cmp(&entry.version) {
-                std::cmp::Ordering::Greater => {
-                    entry.version = version;
-                    entry.limits = limits.clone();
-                    Ok(())
-                }
-                std::cmp::Ordering::Less => Err(AccountPolicyError::StaleVersion {
-                    presented: version,
-                    current: entry.version,
-                }),
-                std::cmp::Ordering::Equal => {
-                    if &entry.limits == limits {
-                        Ok(())
-                    } else {
-                        Err(AccountPolicyError::ConflictingLimits { version })
-                    }
-                }
-            };
+            return Self::apply(&mut entry, version, limits);
         }
 
+        // Make room before taking an entry lock: `evict_idle` retains over
+        // the whole map and must not run while a lock is held.
         if self.entries.len() >= self.max_entries {
             self.evict_idle(|_| false);
             if self.entries.len() >= self.max_entries {
                 return Err(AccountPolicyError::CapacityExhausted);
             }
         }
-        self.entries.insert(
-            account.to_string(),
-            AccountPolicyEntry {
-                version,
-                limits: limits.clone(),
-                last_seen: Instant::now(),
-            },
-        );
-        Ok(())
+
+        // Re-check under the entry lock. Two first admissions for one account
+        // can both miss the fast path; without this the later insert would
+        // clobber a newer version with an older one and leave stale limits
+        // registered. The capacity bound above is a backstop, so overshooting
+        // it by the number of racing threads is acceptable.
+        match self.entries.entry(account.to_string()) {
+            Entry::Occupied(mut occupied) => Self::apply(occupied.get_mut(), version, limits),
+            Entry::Vacant(vacant) => {
+                vacant.insert(AccountPolicyEntry {
+                    version,
+                    limits: limits.clone(),
+                    last_seen: Instant::now(),
+                });
+                Ok(())
+            }
+        }
     }
 
     /// Stored limits for an account, if this runtime has observed one.
@@ -205,6 +227,43 @@ mod tests {
 
         // Other accounts are unaffected.
         registry.observe("account:2", 1, &limits(1)).unwrap();
+    }
+
+    #[test]
+    fn concurrent_first_admissions_never_register_an_older_version() {
+        use std::sync::Arc;
+
+        // Racing first admissions for one account: every thread misses the
+        // fast path, so the insert must not clobber a newer version.
+        for _ in 0..64 {
+            let registry = Arc::new(AccountPolicyRegistry::default());
+            let threads: Vec<_> = (1..=8u32)
+                .map(|version| {
+                    let registry = Arc::clone(&registry);
+                    std::thread::spawn(move || {
+                        // Limits vary with the version so a clobber is visible.
+                        let _ = registry.observe("account:1", version, &limits(version));
+                    })
+                })
+                .collect();
+            for thread in threads {
+                thread.join().expect("observer thread");
+            }
+
+            // The highest version always lands, and nothing may downgrade it.
+            assert_eq!(
+                registry.limits_for("account:1"),
+                Some(limits(8)),
+                "a lower policy version overwrote a newer one"
+            );
+            assert_eq!(
+                registry.observe("account:1", 7, &limits(7)),
+                Err(AccountPolicyError::StaleVersion {
+                    presented: 7,
+                    current: 8
+                })
+            );
+        }
     }
 
     #[test]
