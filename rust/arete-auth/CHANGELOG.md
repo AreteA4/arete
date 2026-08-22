@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.3.0...arete-auth-v0.4.0) (2026-08-22)
+
+
+### Features
+
+* account session policy claims and runtime account limits ([f360a63](https://github.com/AreteA4/arete/commit/f360a63238237531ab521ebdc4a6fc98f3ed4d00))
+* **auth:** add account session policy claims ([134aec7](https://github.com/AreteA4/arete/commit/134aec753e8c4ca5f556eadcba0d2cffbfaed022))
+
 ## [0.3.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.2.0...arete-auth-v0.3.0) (2026-07-31)
 
 
