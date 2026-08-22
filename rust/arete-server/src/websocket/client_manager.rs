@@ -1,3 +1,4 @@
+use crate::account_policy::{redact_identity, AccountPolicyError, AccountPolicyRegistry};
 use crate::compression::CompressedPayload;
 use crate::websocket::auth::{AuthContext, AuthDeny};
 use crate::websocket::rate_limiter::{RateLimitResult, WebSocketRateLimiter};
@@ -6,10 +7,10 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use futures_util::stream::SplitSink;
 use futures_util::SinkExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
@@ -123,6 +124,56 @@ impl EgressTracker {
     fn current_usage(&mut self) -> u64 {
         self.maybe_reset_window();
         self.bytes_this_minute
+    }
+}
+
+/// Aggregate message/egress usage shared by every connection of one account.
+///
+/// This is a per-process tracker, not a globally exact quota; durable
+/// cross-replica metering is a separate system.
+#[derive(Debug)]
+struct AccountUsage {
+    egress: std::sync::Mutex<EgressTracker>,
+    messages: std::sync::Mutex<MessageRateTracker>,
+    last_seen: std::sync::Mutex<Instant>,
+}
+
+impl AccountUsage {
+    fn new() -> Self {
+        Self {
+            egress: std::sync::Mutex::new(EgressTracker::new()),
+            messages: std::sync::Mutex::new(MessageRateTracker::new()),
+            last_seen: std::sync::Mutex::new(Instant::now()),
+        }
+    }
+
+    fn touch(&self) {
+        if let Ok(mut last_seen) = self.last_seen.lock() {
+            *last_seen = Instant::now();
+        }
+    }
+
+    fn record_egress(&self, bytes: usize, limit: u64) -> bool {
+        self.touch();
+        match self.egress.lock() {
+            Ok(mut tracker) => tracker.record_bytes(bytes, limit),
+            Err(_) => true,
+        }
+    }
+
+    fn record_message(&self, limit: u32) -> bool {
+        self.touch();
+        match self.messages.lock() {
+            Ok(mut tracker) => tracker.record_message(limit),
+            Err(_) => true,
+        }
+    }
+
+    fn idle_for(&self) -> Duration {
+        self.last_seen
+            .lock()
+            .map(|last_seen| last_seen.elapsed())
+            .unwrap_or(Duration::MAX)
     }
 }
 
@@ -429,6 +480,13 @@ impl RateLimitConfig {
     }
 }
 
+/// Bound on tracked account usage entries; signed account keys keep the
+/// cardinality legitimate, this is a hard backstop.
+const MAX_TRACKED_ACCOUNT_USAGE: usize = crate::account_policy::DEFAULT_MAX_TRACKED_ACCOUNTS;
+
+/// Idle TTL after which aggregate account usage state is evicted.
+const ACCOUNT_USAGE_IDLE_TTL: Duration = crate::account_policy::DEFAULT_ACCOUNT_IDLE_TTL;
+
 /// Manages all connected WebSocket clients using lock-free DashMap.
 ///
 /// Key design decisions:
@@ -443,6 +501,10 @@ pub struct ClientManager {
     rate_limit_config: RateLimitConfig,
     /// Optional WebSocket rate limiter for granular rate control
     rate_limiter: Option<Arc<WebSocketRateLimiter>>,
+    /// Per-process account policy versions and signed aggregate limits
+    account_policies: Arc<AccountPolicyRegistry>,
+    /// Per-process aggregate message/egress usage per account
+    account_usage: Arc<DashMap<String, AccountUsage>>,
 }
 
 impl ClientManager {
@@ -456,6 +518,8 @@ impl ClientManager {
             clients: Arc::new(DashMap::new()),
             rate_limit_config: config,
             rate_limiter: None,
+            account_policies: Arc::new(AccountPolicyRegistry::default()),
+            account_usage: Arc::new(DashMap::new()),
         }
     }
 
@@ -514,6 +578,92 @@ impl ClientManager {
     /// Get the current rate limit configuration
     pub fn rate_limit_config(&self) -> &RateLimitConfig {
         &self.rate_limit_config
+    }
+
+    /// Account policy state observed by this manager.
+    pub fn account_policies(&self) -> &AccountPolicyRegistry {
+        &self.account_policies
+    }
+
+    /// Record aggregate account egress; true when within the signed limit.
+    fn record_account_egress(&self, ctx: &AuthContext, bytes: usize) -> bool {
+        if ctx.is_legacy_policy() || ctx.account_key.is_none() {
+            return true;
+        }
+        let Some(limit) = ctx.account_limits.max_bytes_per_minute else {
+            return true;
+        };
+        let account = ctx.account_key();
+        if let Some(usage) = self.account_usage.get(account) {
+            return usage.record_egress(bytes, limit);
+        }
+        if self.account_usage.len() >= MAX_TRACKED_ACCOUNT_USAGE {
+            warn!(
+                account = %redact_identity(account),
+                "account usage tracking at capacity; aggregate egress guard skipped"
+            );
+            return true;
+        }
+        self.account_usage
+            .entry(account.to_string())
+            .or_insert_with(AccountUsage::new)
+            .record_egress(bytes, limit)
+    }
+
+    /// Record one aggregate account inbound message; true when within limit.
+    fn record_account_message(&self, ctx: &AuthContext) -> bool {
+        if ctx.is_legacy_policy() || ctx.account_key.is_none() {
+            return true;
+        }
+        let Some(limit) = ctx.account_limits.max_messages_per_minute else {
+            return true;
+        };
+        let account = ctx.account_key();
+        if let Some(usage) = self.account_usage.get(account) {
+            return usage.record_message(limit);
+        }
+        if self.account_usage.len() >= MAX_TRACKED_ACCOUNT_USAGE {
+            warn!(
+                account = %redact_identity(account),
+                "account usage tracking at capacity; aggregate message guard skipped"
+            );
+            return true;
+        }
+        self.account_usage
+            .entry(account.to_string())
+            .or_insert_with(AccountUsage::new)
+            .record_message(limit)
+    }
+
+    /// Enforce the per-connection and aggregate account egress budgets.
+    fn enforce_egress_budgets(&self, client_id: Uuid, bytes: usize) -> Result<(), SendError> {
+        let (connection_ok, account_ok) = {
+            let Some(client) = self.clients.get(&client_id) else {
+                return Err(SendError::ClientNotFound);
+            };
+            let connection_ok = client.record_egress(bytes).is_some();
+            let account_ok = !connection_ok
+                || client
+                    .auth_context
+                    .as_ref()
+                    .map(|ctx| self.record_account_egress(ctx, bytes))
+                    .unwrap_or(true);
+            (connection_ok, account_ok)
+        };
+        if !connection_ok {
+            warn!("Client {} exceeded egress limit, disconnecting", client_id);
+            self.clients.remove(&client_id);
+            return Err(SendError::ClientDisconnected);
+        }
+        if !account_ok {
+            warn!(
+                "Client {} exceeded the account egress limit, disconnecting",
+                client_id
+            );
+            self.clients.remove(&client_id);
+            return Err(SendError::ClientDisconnected);
+        }
+        Ok(())
     }
 
     /// Add a new client connection.
@@ -614,16 +764,8 @@ impl ClientManager {
             return Err(SendError::ClientDisconnected);
         }
 
-        // Check egress limits
-        if let Some(client) = self.clients.get(&client_id) {
-            if client.record_egress(data.len()).is_none() {
-                warn!("Client {} exceeded egress limit, disconnecting", client_id);
-                self.clients.remove(&client_id);
-                return Err(SendError::ClientDisconnected);
-            }
-        } else {
-            return Err(SendError::ClientNotFound);
-        }
+        // Check per-connection and aggregate account egress limits
+        self.enforce_egress_budgets(client_id, data.len())?;
 
         let sender = {
             let client = self
@@ -670,16 +812,8 @@ impl ClientManager {
             return Err(SendError::ClientDisconnected);
         }
 
-        // Check egress limits
-        if let Some(client) = self.clients.get(&client_id) {
-            if client.record_egress(data.len()).is_none() {
-                warn!("Client {} exceeded egress limit, disconnecting", client_id);
-                self.clients.remove(&client_id);
-                return Err(SendError::ClientDisconnected);
-            }
-        } else {
-            return Err(SendError::ClientNotFound);
-        }
+        // Check per-connection and aggregate account egress limits
+        self.enforce_egress_budgets(client_id, data.len())?;
 
         let sender = {
             let client = self
@@ -753,14 +887,8 @@ impl ClientManager {
             (client.sender.clone(), bytes)
         };
 
-        // Check egress limits
-        if let Some(client) = self.clients.get(&client_id) {
-            if client.record_egress(bytes_to_record).is_none() {
-                warn!("Client {} exceeded egress limit, disconnecting", client_id);
-                self.clients.remove(&client_id);
-                return Err(SendError::ClientDisconnected);
-            }
-        }
+        // Check per-connection and aggregate account egress limits
+        self.enforce_egress_budgets(client_id, bytes_to_record)?;
 
         let msg = match payload {
             CompressedPayload::Compressed(bytes) => Message::Binary(bytes),
@@ -789,26 +917,37 @@ impl ClientManager {
             ));
         }
 
-        let Some(client) = self.clients.get(&client_id) else {
-            return Err(AuthDeny::new(
-                crate::websocket::auth::AuthErrorCode::InternalError,
-                "Client not found",
-            ));
+        let (connection_ok, account_ok) = {
+            let Some(client) = self.clients.get(&client_id) else {
+                return Err(AuthDeny::new(
+                    crate::websocket::auth::AuthErrorCode::InternalError,
+                    "Client not found",
+                ));
+            };
+            let connection_ok = client.record_inbound_message().is_some();
+            let account_ok = !connection_ok
+                || client
+                    .auth_context
+                    .as_ref()
+                    .map(|ctx| self.record_account_message(ctx))
+                    .unwrap_or(true);
+            (connection_ok, account_ok)
         };
 
-        if client.record_inbound_message().is_some() {
-            Ok(())
-        } else {
-            self.clients.remove(&client_id);
-            Err(AuthDeny::rate_limited(
-                self.rate_limit_config.message_rate_window,
-                "inbound websocket messages",
-            )
-            .with_context(format!(
-                "client {} exceeded the inbound message budget",
-                client_id
-            )))
+        if connection_ok && account_ok {
+            return Ok(());
         }
+        self.clients.remove(&client_id);
+        let scope = if connection_ok {
+            "inbound account websocket messages"
+        } else {
+            "inbound websocket messages"
+        };
+        Err(
+            AuthDeny::rate_limited(self.rate_limit_config.message_rate_window, scope).with_context(
+                format!("client {} exceeded the inbound message budget", client_id),
+            ),
+        )
     }
 
     /// Check if a client exists.
@@ -863,6 +1002,27 @@ impl ClientManager {
         removed_count
     }
 
+    /// Evict aggregate account usage and policy state for accounts with no
+    /// live connection past the idle TTL.
+    fn cleanup_account_state(&self) {
+        let live_accounts: HashSet<String> = self
+            .clients
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .value()
+                    .auth_context
+                    .as_ref()
+                    .and_then(|ctx| ctx.account_key.clone())
+            })
+            .collect();
+        self.account_usage.retain(|account, usage| {
+            live_accounts.contains(account) || usage.idle_for() < ACCOUNT_USAGE_IDLE_TTL
+        });
+        self.account_policies
+            .evict_idle(|account| live_accounts.contains(account));
+    }
+
     /// Start a background task that periodically cleans up stale clients.
     pub fn start_cleanup_task(&self) {
         let client_manager = self.clone();
@@ -876,6 +1036,7 @@ impl ClientManager {
                 if removed > 0 {
                     info!("Cleaned up {} stale clients", removed);
                 }
+                client_manager.cleanup_account_state();
             }
         });
     }
@@ -887,6 +1048,7 @@ impl ClientManager {
     /// Check if a connection is allowed for the given auth context.
     ///
     /// Returns Ok(()) if the connection is allowed, or an error with a reason if not.
+    #[allow(clippy::result_large_err)]
     pub async fn check_connection_allowed(
         &self,
         remote_addr: SocketAddr,
@@ -906,37 +1068,51 @@ impl ClientManager {
                 }
             }
 
-            // Check connection rate limit for subject
             if let Some(ref ctx) = auth_context {
+                // Connection-attempt rate per resolved consumer. Legacy
+                // tokens resolve to the subject with the configured window,
+                // preserving old behavior exactly.
                 match rate_limiter
-                    .check_connection_for_subject(&ctx.subject)
+                    .check_connection_for_consumer(
+                        ctx.consumer_key(),
+                        ctx.limits.max_connection_attempts_per_minute,
+                    )
                     .await
                 {
                     RateLimitResult::Allowed { .. } => {}
                     RateLimitResult::Denied { retry_after, limit } => {
                         return Err(AuthDeny::rate_limited(retry_after, "websocket connections")
                             .with_context(format!(
-                                "connection rate limit for subject {} of {} per minute exceeded",
-                                ctx.subject, limit
+                                "connection rate limit for consumer {} of {} per minute exceeded",
+                                ctx.consumer_key(),
+                                limit
                             )));
                     }
                 }
 
-                // Check connection rate limit for metering key
-                match rate_limiter
-                    .check_connection_for_metering_key(&ctx.metering_key)
-                    .await
-                {
-                    RateLimitResult::Allowed { .. } => {}
-                    RateLimitResult::Denied { retry_after, limit } => {
-                        return Err(AuthDeny::rate_limited(
-                            retry_after,
-                            "metered websocket connections",
+                // Connection-attempt rate per resolved account. Legacy
+                // tokens resolve to the metering key; anonymous v2 tokens
+                // carry no account and skip the aggregate bucket.
+                if ctx.is_legacy_policy() || ctx.account_key.is_some() {
+                    match rate_limiter
+                        .check_connection_for_account(
+                            ctx.account_key(),
+                            ctx.account_limits.max_connection_attempts_per_minute,
                         )
-                        .with_context(format!(
-                            "connection rate limit for metering key {} of {} per minute exceeded",
-                            ctx.metering_key, limit
-                        )));
+                        .await
+                    {
+                        RateLimitResult::Allowed { .. } => {}
+                        RateLimitResult::Denied { retry_after, limit } => {
+                            return Err(AuthDeny::rate_limited(
+                                retry_after,
+                                "metered websocket connections",
+                            )
+                            .with_context(format!(
+                                "connection rate limit for account {} of {} per minute exceeded",
+                                ctx.account_key(),
+                                limit
+                            )));
+                        }
                     }
                 }
             }
@@ -955,7 +1131,55 @@ impl ClientManager {
         }
 
         if let Some(ctx) = auth_context {
-            // Check max connections per subject (use token limits, fallback to default limits)
+            // Admit the token against previously observed account policy and
+            // count legacy tokens so Plan 030 can end compatibility.
+            if ctx.is_legacy_policy() {
+                let legacy_policy_token = self.account_policies.record_legacy_token();
+                debug!(legacy_policy_token, "legacy policy token admitted");
+            } else if let (Some(account), Some(policy_version)) =
+                (ctx.account_key.as_deref(), ctx.policy_version)
+            {
+                match self
+                    .account_policies
+                    .observe(account, policy_version, &ctx.account_limits)
+                {
+                    Ok(()) => {}
+                    Err(AccountPolicyError::StaleVersion { presented, current }) => {
+                        debug!(
+                            account = %redact_identity(account),
+                            presented,
+                            current,
+                            "stale policy version rejected"
+                        );
+                        return Err(AuthDeny::new(
+                            crate::websocket::auth::AuthErrorCode::TokenExpired,
+                            "session policy version is stale; refresh the session token",
+                        ));
+                    }
+                    Err(AccountPolicyError::ConflictingLimits { version }) => {
+                        warn!(
+                            account = %redact_identity(account),
+                            version,
+                            "signed account limits conflict for one policy version"
+                        );
+                        return Err(AuthDeny::new(
+                            crate::websocket::auth::AuthErrorCode::InternalError,
+                            "signed account limits conflict with previously observed policy",
+                        ));
+                    }
+                    Err(AccountPolicyError::CapacityExhausted) => {
+                        warn!("account policy state at capacity; denying admission");
+                        return Err(AuthDeny::new(
+                            crate::websocket::auth::AuthErrorCode::InternalError,
+                            "account policy state is at capacity; retry shortly",
+                        ));
+                    }
+                }
+            }
+
+            // Check max connections per resolved consumer (token limits,
+            // fallback to default limits). Legacy tokens resolve to the
+            // subject, preserving old behavior.
             let max_connections = ctx.limits.max_connections.or_else(|| {
                 self.rate_limit_config
                     .default_limits
@@ -963,13 +1187,29 @@ impl ClientManager {
                     .and_then(|l| l.max_connections)
             });
             if let Some(max_connections) = max_connections {
-                let current_connections = self.count_connections_for_subject(&ctx.subject);
+                let current_connections = self.count_connections_for_consumer(ctx.consumer_key());
                 if current_connections >= max_connections as usize {
                     return Err(AuthDeny::connection_limit_exceeded(
-                        &format!("subject {}", ctx.subject),
+                        &format!("consumer {}", ctx.consumer_key()),
                         current_connections,
                         max_connections as usize,
                     ));
+                }
+            }
+
+            // Check aggregate concurrent connections per account from the
+            // signed account limits.
+            if !ctx.is_legacy_policy() && ctx.account_key.is_some() {
+                if let Some(max_account_connections) = ctx.account_limits.max_connections {
+                    let current_account_connections =
+                        self.count_connections_for_account(ctx.account_key());
+                    if current_account_connections >= max_account_connections as usize {
+                        return Err(AuthDeny::connection_limit_exceeded(
+                            &format!("account {}", ctx.account_key()),
+                            current_account_connections,
+                            max_account_connections as usize,
+                        ));
+                    }
                 }
             }
 
@@ -1014,8 +1254,8 @@ impl ClientManager {
             .count()
     }
 
-    /// Count connections for a specific subject
-    fn count_connections_for_subject(&self, subject: &str) -> usize {
+    /// Count connections for a resolved consumer identity
+    fn count_connections_for_consumer(&self, consumer: &str) -> usize {
         self.clients
             .iter()
             .filter(|entry| {
@@ -1023,7 +1263,22 @@ impl ClientManager {
                     .value()
                     .auth_context
                     .as_ref()
-                    .map(|ctx| ctx.subject == subject)
+                    .map(|ctx| ctx.consumer_key() == consumer)
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// Count connections for a resolved account identity
+    fn count_connections_for_account(&self, account: &str) -> usize {
+        self.clients
+            .iter()
+            .filter(|entry| {
+                entry
+                    .value()
+                    .auth_context
+                    .as_ref()
+                    .map(|ctx| ctx.account_key() == account)
                     .unwrap_or(false)
             })
             .count()
@@ -1063,8 +1318,12 @@ impl ClientManager {
     /// Check if a subscription is allowed for the given client.
     ///
     /// Returns Ok(()) if the subscription is allowed, or an error with a reason if not.
+    #[allow(clippy::result_large_err)]
     pub async fn check_subscription_allowed(&self, client_id: Uuid) -> Result<(), AuthDeny> {
-        if let Some(client) = self.clients.get(&client_id) {
+        let context = {
+            let Some(client) = self.clients.get(&client_id) else {
+                return Ok(());
+            };
             let current_subs = client.subscription_count().await;
 
             // Check max subscriptions per connection (use token limits, fallback to default limits)
@@ -1087,6 +1346,48 @@ impl ClientManager {
                         .with_suggested_action(
                             "Unsubscribe from an existing view before creating another subscription",
                         ));
+                    }
+                }
+            }
+            client.auth_context.clone()
+        };
+
+        // Signed subscription-create rates, enforced only for v2 tokens that
+        // carry the corresponding optional limit fields.
+        if let (Some(rate_limiter), Some(ctx)) = (self.rate_limiter.as_ref(), context.as_ref()) {
+            if !ctx.is_legacy_policy() {
+                if let RateLimitResult::Denied { retry_after, limit } = rate_limiter
+                    .check_subscription_create_for_consumer(
+                        ctx.consumer_key(),
+                        ctx.limits.max_subscription_creates_per_minute,
+                    )
+                    .await
+                {
+                    return Err(AuthDeny::rate_limited(retry_after, "subscription creates")
+                        .with_context(format!(
+                        "subscription-create rate limit for consumer {} of {} per minute exceeded",
+                        ctx.consumer_key(),
+                        limit
+                    )));
+                }
+
+                if ctx.account_key.is_some() {
+                    if let RateLimitResult::Denied { retry_after, limit } = rate_limiter
+                        .check_subscription_create_for_account(
+                            ctx.account_key(),
+                            ctx.account_limits.max_subscription_creates_per_minute,
+                        )
+                        .await
+                    {
+                        return Err(AuthDeny::rate_limited(
+                            retry_after,
+                            "account subscription creates",
+                        )
+                        .with_context(format!(
+                            "subscription-create rate limit for account {} of {} per minute exceeded",
+                            ctx.account_key(),
+                            limit
+                        )));
                     }
                 }
             }
@@ -1180,7 +1481,62 @@ mod tests {
             origin: None,
             client_ip: None,
             jti: uuid::Uuid::new_v4().to_string(),
+            actor_key: None,
+            account_key: None,
+            consumer_key: None,
+            policy_version: None,
+            account_limits: Limits::default(),
         }
+    }
+
+    fn create_v2_auth_context(
+        consumer: &str,
+        account: &str,
+        policy_version: u32,
+        limits: Limits,
+        account_limits: Limits,
+    ) -> AuthContext {
+        AuthContext {
+            subject: "user:1".to_string(),
+            issuer: "test-issuer".to_string(),
+            audience: "test-audience".to_string(),
+            key_class: KeyClass::Publishable,
+            metering_key: account.to_string(),
+            deployment_id: None,
+            target_kind: None,
+            target_id: None,
+            program_id: None,
+            program_release_hash: None,
+            expires_at: u64::MAX,
+            scope: "read".to_string(),
+            limits,
+            plan: Some("pro".to_string()),
+            origin: None,
+            client_ip: None,
+            jti: uuid::Uuid::new_v4().to_string(),
+            actor_key: Some("user:1".to_string()),
+            account_key: Some(account.to_string()),
+            consumer_key: Some(consumer.to_string()),
+            policy_version: Some(policy_version),
+            account_limits,
+        }
+    }
+
+    fn insert_client(manager: &ClientManager, context: AuthContext) -> Uuid {
+        let (sender, receiver) = mpsc::channel(8);
+        // Keep the receiver alive so the sender stays open.
+        std::mem::forget(receiver);
+        let client_id = Uuid::new_v4();
+        manager.clients.insert(
+            client_id,
+            ClientInfo::new(
+                client_id,
+                sender,
+                Some(context),
+                create_test_socket_addr("127.0.0.1"),
+            ),
+        );
+        client_id
     }
 
     fn create_test_socket_addr(ip: &str) -> SocketAddr {
@@ -1481,6 +1837,236 @@ mod tests {
 
         // Note: Actual snapshot limit checking happens in check_snapshot_allowed
         // which requires a connected client
+    }
+
+    #[tokio::test]
+    async fn two_consumers_share_the_account_connection_cap() {
+        let manager = ClientManager::new();
+        let account_limits = Limits {
+            max_connections: Some(1),
+            ..Limits::default()
+        };
+        let consumer_a = create_v2_auth_context(
+            "consumer:a",
+            "account:42",
+            1,
+            Limits::default(),
+            account_limits.clone(),
+        );
+        insert_client(&manager, consumer_a);
+
+        // A different consumer on the same account is blocked by the
+        // aggregate cap.
+        let consumer_b = create_v2_auth_context(
+            "consumer:b",
+            "account:42",
+            1,
+            Limits::default(),
+            account_limits.clone(),
+        );
+        let addr = create_test_socket_addr("127.0.0.1");
+        assert!(manager
+            .check_connection_allowed(addr, &Some(consumer_b))
+            .await
+            .is_err());
+
+        // A consumer on another account is unaffected.
+        let other_account = create_v2_auth_context(
+            "consumer:c",
+            "account:43",
+            1,
+            Limits::default(),
+            account_limits,
+        );
+        assert!(manager
+            .check_connection_allowed(addr, &Some(other_account))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn one_consumer_is_limited_independently_of_its_account() {
+        let manager = ClientManager::new();
+        let limits = Limits {
+            max_connections: Some(1),
+            ..Limits::default()
+        };
+        let account_limits = Limits {
+            max_connections: Some(10),
+            ..Limits::default()
+        };
+        let consumer_a = create_v2_auth_context(
+            "consumer:a",
+            "account:42",
+            1,
+            limits.clone(),
+            account_limits.clone(),
+        );
+        insert_client(&manager, consumer_a.clone());
+
+        let addr = create_test_socket_addr("127.0.0.1");
+        // The same consumer hits its own cap.
+        assert!(manager
+            .check_connection_allowed(addr, &Some(consumer_a))
+            .await
+            .is_err());
+
+        // A sibling consumer under the same account is still admitted.
+        let consumer_b =
+            create_v2_auth_context("consumer:b", "account:42", 1, limits, account_limits);
+        assert!(manager
+            .check_connection_allowed(addr, &Some(consumer_b))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn policy_version_upgrade_stale_and_conflict_rules_apply() {
+        let manager = ClientManager::new();
+        let addr = create_test_socket_addr("127.0.0.1");
+        let limits_v1 = Limits {
+            max_connections: Some(5),
+            ..Limits::default()
+        };
+        let limits_v2 = Limits {
+            max_connections: Some(2),
+            ..Limits::default()
+        };
+
+        // Version 1 admits and creates state.
+        let v1 = create_v2_auth_context(
+            "consumer:a",
+            "account:42",
+            1,
+            Limits::default(),
+            limits_v1.clone(),
+        );
+        assert!(manager
+            .check_connection_allowed(addr, &Some(v1.clone()))
+            .await
+            .is_ok());
+
+        // Version 2 with new limits replaces the policy.
+        let v2 = create_v2_auth_context(
+            "consumer:a",
+            "account:42",
+            2,
+            Limits::default(),
+            limits_v2.clone(),
+        );
+        assert!(manager
+            .check_connection_allowed(addr, &Some(v2))
+            .await
+            .is_ok());
+
+        // A stale version-1 token is rejected once version 2 was observed.
+        let stale = manager.check_connection_allowed(addr, &Some(v1)).await;
+        assert!(stale.is_err());
+
+        // Version 2 with different limits is a signing/config fault.
+        let conflict =
+            create_v2_auth_context("consumer:a", "account:42", 2, Limits::default(), limits_v1);
+        assert!(manager
+            .check_connection_allowed(addr, &Some(conflict))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn legacy_tokens_keep_old_behavior_and_are_counted() {
+        let manager = ClientManager::new();
+        let addr = create_test_socket_addr("127.0.0.1");
+        let legacy = create_test_auth_context(
+            "user-1",
+            Limits {
+                max_connections: Some(2),
+                ..Limits::default()
+            },
+        );
+        assert!(legacy.is_legacy_policy());
+
+        assert!(manager
+            .check_connection_allowed(addr, &Some(legacy.clone()))
+            .await
+            .is_ok());
+        assert_eq!(manager.account_policies().legacy_token_count(), 1);
+        // Legacy tokens create no account policy state.
+        assert_eq!(manager.account_policies().tracked_accounts(), 0);
+
+        // Legacy connection counting still keys off the subject.
+        insert_client(&manager, legacy.clone());
+        insert_client(&manager, legacy.clone());
+        assert!(manager
+            .check_connection_allowed(addr, &Some(legacy))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn account_message_budget_is_shared_across_consumers() {
+        let manager = ClientManager::new();
+        let account_limits = Limits {
+            max_messages_per_minute: Some(2),
+            ..Limits::default()
+        };
+        let client_a = insert_client(
+            &manager,
+            create_v2_auth_context(
+                "consumer:a",
+                "account:42",
+                1,
+                Limits::default(),
+                account_limits.clone(),
+            ),
+        );
+        let client_b = insert_client(
+            &manager,
+            create_v2_auth_context(
+                "consumer:b",
+                "account:42",
+                1,
+                Limits::default(),
+                account_limits,
+            ),
+        );
+
+        assert!(manager.check_inbound_message_allowed(client_a).is_ok());
+        assert!(manager.check_inbound_message_allowed(client_b).is_ok());
+        // The third message anywhere on the account is rejected.
+        assert!(manager.check_inbound_message_allowed(client_a).is_err());
+    }
+
+    #[tokio::test]
+    async fn account_state_evicts_when_idle_and_unreferenced() {
+        let manager = ClientManager::new();
+        let addr = create_test_socket_addr("127.0.0.1");
+        let context = create_v2_auth_context(
+            "consumer:a",
+            "account:42",
+            1,
+            Limits::default(),
+            Limits::default(),
+        );
+        assert!(manager
+            .check_connection_allowed(addr, &Some(context))
+            .await
+            .is_ok());
+        assert_eq!(manager.account_policies().tracked_accounts(), 1);
+
+        // No live connection references the account; an idle sweep with a
+        // zero TTL registry drops it.
+        manager.account_policies().evict_idle(|_| false);
+        assert_eq!(
+            manager.account_policies().tracked_accounts(),
+            1,
+            "TTL keeps fresh entries"
+        );
+        manager.cleanup_account_state();
+        assert_eq!(
+            manager.account_policies().tracked_accounts(),
+            1,
+            "fresh entries survive sweep"
+        );
     }
 
     // Test WebSocketRateLimiter integration

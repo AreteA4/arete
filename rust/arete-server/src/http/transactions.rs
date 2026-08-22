@@ -3,6 +3,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arete_auth::{AuthContext, SCOPE_TRANSACTION_INSPECT, SCOPE_TRANSACTION_SEND};
+
+use crate::account_policy::{redact_identity, AccountPolicyError, AccountPolicyRegistry};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use dashmap::DashMap;
@@ -29,7 +31,8 @@ pub(crate) struct TransactionState {
     inspect_semaphore: Arc<Semaphore>,
     send_semaphore: Arc<Semaphore>,
     rate_buckets: Arc<DashMap<String, (u64, u32)>>,
-    subject_inflight: Arc<DashMap<String, u32>>,
+    inflight: Arc<DashMap<String, u32>>,
+    account_policies: Arc<AccountPolicyRegistry>,
     usage_tx: Option<tokio::sync::mpsc::Sender<TransactionUsageEvent>>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<crate::metrics::Metrics>>,
@@ -56,17 +59,30 @@ impl TransactionState {
         } else {
             None
         };
-        Ok(Self {
+        let state = Self {
             inspect_semaphore: Arc::new(Semaphore::new(config.inspect_concurrency)),
             send_semaphore: Arc::new(Semaphore::new(config.send_concurrency)),
             config: Arc::new(config),
             client,
             rate_buckets: Arc::new(DashMap::new()),
-            subject_inflight: Arc::new(DashMap::new()),
+            inflight: Arc::new(DashMap::new()),
+            account_policies: Arc::new(AccountPolicyRegistry::default()),
             usage_tx,
             #[cfg(feature = "otel")]
             metrics: None,
-        })
+        };
+        spawn_state_cleanup(
+            state.rate_buckets.clone(),
+            state.inflight.clone(),
+            state.account_policies.clone(),
+        );
+        Ok(state)
+    }
+
+    /// Account policy state observed by the transaction relay.
+    #[cfg(test)]
+    pub(crate) fn account_policies(&self) -> &AccountPolicyRegistry {
+        &self.account_policies
     }
 
     pub(crate) fn client_addr(
@@ -542,18 +558,97 @@ fn spawn_usage_worker(
 
 struct Admission {
     _permit: OwnedSemaphorePermit,
-    subject: Option<String>,
-    subject_inflight: Arc<DashMap<String, u32>>,
+    inflight_keys: Vec<String>,
+    inflight: Arc<DashMap<String, u32>>,
 }
 
 impl Drop for Admission {
     fn drop(&mut self) {
-        if let Some(subject) = &self.subject {
-            if let Some(mut count) = self.subject_inflight.get_mut(subject) {
+        for key in &self.inflight_keys {
+            if let Some(mut count) = self.inflight.get_mut(key) {
                 *count = count.saturating_sub(1);
             }
         }
     }
+}
+
+fn acquire_inflight(state: &TransactionState, key: &str, max: u32) -> Result<(), TxError> {
+    let mut count = state.inflight.entry(key.to_string()).or_insert(0);
+    if *count >= max {
+        #[cfg(feature = "otel")]
+        if let Some(metrics) = &state.metrics {
+            metrics.record_transaction_denial("concurrency");
+        }
+        return Err(limit_error("transaction concurrency limit exceeded"));
+    }
+    *count += 1;
+    Ok(())
+}
+
+fn policy_admission_error(account: &str, error: AccountPolicyError) -> TxError {
+    let (status, code, message) = match &error {
+        AccountPolicyError::StaleVersion { presented, current } => {
+            tracing::debug!(
+                account = %redact_identity(account),
+                presented,
+                current,
+                "stale policy version rejected"
+            );
+            (
+                StatusCode::UNAUTHORIZED,
+                "stale_policy_version",
+                "Session policy version is stale; refresh the session token",
+            )
+        }
+        AccountPolicyError::ConflictingLimits { version } => {
+            tracing::warn!(
+                account = %redact_identity(account),
+                version,
+                "signed account limits conflict for one policy version"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "policy_conflict",
+                "Signed account limits conflict with previously observed policy",
+            )
+        }
+        AccountPolicyError::CapacityExhausted => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "server_busy",
+            "Account policy state is at capacity",
+        ),
+    };
+    TxError {
+        status,
+        code,
+        message: message.into(),
+        retryable: matches!(error, AccountPolicyError::CapacityExhausted),
+        submission_state: Some("not_submitted"),
+        signature: None,
+        details: None,
+        upstream_attempted: false,
+    }
+}
+
+fn spawn_state_cleanup(
+    rate_buckets: Arc<DashMap<String, (u64, u32)>>,
+    inflight: Arc<DashMap<String, u32>>,
+    account_policies: Arc<AccountPolicyRegistry>,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let minute = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                / 60;
+            rate_buckets.retain(|_, (bucket_minute, _)| minute.saturating_sub(*bucket_minute) <= 1);
+            inflight.retain(|_, count| *count > 0);
+            account_policies.evict_idle(|_| false);
+        }
+    });
 }
 
 async fn admit(
@@ -595,34 +690,89 @@ async fn admit(
         }
         limit_error("transaction server is at capacity")
     })?;
+    let mut admission = Admission {
+        _permit: permit,
+        inflight_keys: Vec::new(),
+        inflight: state.inflight.clone(),
+    };
     if let Some(context) = auth {
-        check_bucket(
-            &state.rate_buckets,
-            format!("subject:{}:{class}", context.subject),
-            limit,
-        )?;
-        if let Some(max) = context.limits.max_transaction_concurrency {
-            let mut count = state
-                .subject_inflight
-                .entry(context.subject.clone())
-                .or_insert(0);
-            if *count >= max {
-                #[cfg(feature = "otel")]
-                if let Some(metrics) = &state.metrics {
-                    metrics.record_transaction_denial("concurrency");
-                }
-                return Err(limit_error("transaction concurrency limit exceeded"));
+        if context.is_legacy_policy() {
+            // Legacy tokens keep the old subject-keyed buckets and inflight
+            // accounting exactly; count them so Plan 030 can end compatibility.
+            let legacy_policy_token = state.account_policies.record_legacy_token();
+            tracing::debug!(legacy_policy_token, "legacy policy token admitted");
+            check_bucket(
+                &state.rate_buckets,
+                format!("subject:{}:{class}", context.subject),
+                limit,
+            )?;
+            if let Some(max) = context.limits.max_transaction_concurrency {
+                let key = format!("subject:{}", context.subject);
+                acquire_inflight(state, &key, max)?;
+                admission.inflight_keys.push(key);
             }
-            *count += 1;
+        } else {
+            if let (Some(account), Some(policy_version)) =
+                (context.account_key.as_deref(), context.policy_version)
+            {
+                state
+                    .account_policies
+                    .observe(account, policy_version, &context.account_limits)
+                    .map_err(|error| policy_admission_error(account, error))?;
+            }
+
+            // Per-consumer operation rate from `limits`, hard-capped by the
+            // runtime configuration.
+            check_bucket(
+                &state.rate_buckets,
+                format!("consumer:{}:{class}", context.consumer_key()),
+                limit,
+            )?;
+
+            // Aggregate account operation rate from the signed
+            // `account_limits`, enforced only when present.
+            if context.account_key.is_some() {
+                let account_claim = match operation {
+                    Operation::Send => {
+                        context
+                            .account_limits
+                            .max_transaction_send_requests_per_minute
+                    }
+                    Operation::SignatureStatus => {
+                        context
+                            .account_limits
+                            .max_transaction_status_requests_per_minute
+                    }
+                    _ => {
+                        context
+                            .account_limits
+                            .max_transaction_inspect_requests_per_minute
+                    }
+                };
+                if let Some(account_limit) = account_claim {
+                    check_bucket(
+                        &state.rate_buckets,
+                        format!("account:{}:{class}", context.account_key()),
+                        account_limit.min(server_limit),
+                    )?;
+                }
+            }
+
+            if let Some(max) = context.limits.max_transaction_concurrency {
+                let key = format!("consumer:{}", context.consumer_key());
+                acquire_inflight(state, &key, max)?;
+                admission.inflight_keys.push(key);
+            }
+            if context.account_key.is_some() {
+                if let Some(max) = context.account_limits.max_transaction_concurrency {
+                    let key = format!("account:{}", context.account_key());
+                    acquire_inflight(state, &key, max)?;
+                    admission.inflight_keys.push(key);
+                }
+            }
         }
     }
-    Ok(Admission {
-        _permit: permit,
-        subject: auth
-            .filter(|context| context.limits.max_transaction_concurrency.is_some())
-            .map(|context| context.subject.clone()),
-        subject_inflight: state.subject_inflight.clone(),
-    })
+    Ok(admission)
 }
 
 fn check_bucket(
@@ -919,7 +1069,9 @@ fn transaction_signature(transaction: &[u8]) -> Result<String, TxError> {
     }
     let signatures = &transaction[prefix_len..prefix_len + count * 64];
     if signatures
-        .chunks_exact(64)
+        .as_chunks::<64>()
+        .0
+        .iter()
         .any(|signature| signature.iter().all(|byte| *byte == 0))
     {
         return Err(TxError::request(
@@ -1328,6 +1480,213 @@ mod tests {
         assert_eq!(simulation["contextSlot"], "44");
         assert_eq!(simulation["unitsConsumed"], "12");
         assert_eq!(simulation["logs"], json!(["ok"]));
+    }
+
+    fn v2_context(
+        consumer: &str,
+        account: &str,
+        limits: arete_auth::Limits,
+        account_limits: arete_auth::Limits,
+    ) -> AuthContext {
+        AuthContext::from_claims(
+            arete_auth::SessionClaims::builder("issuer", "user:1", "aud")
+                .with_metering_key(account)
+                .with_plan("pro")
+                .with_actor_key("user:1")
+                .with_account_key(account)
+                .with_consumer_key(consumer)
+                .with_policy_version(1)
+                .with_limits(limits)
+                .with_account_limits(account_limits)
+                .build(),
+        )
+    }
+
+    fn legacy_context(subject: &str, limits: arete_auth::Limits) -> AuthContext {
+        AuthContext::from_claims(
+            arete_auth::SessionClaims::builder("issuer", subject, "aud")
+                .with_metering_key("api_key:1")
+                .with_limits(limits)
+                .build(),
+        )
+    }
+
+    #[tokio::test]
+    async fn account_transaction_concurrency_is_aggregate_across_consumers() {
+        let state = state_for(Value::Null).await;
+        let account_limits = arete_auth::Limits {
+            max_transaction_concurrency: Some(1),
+            ..arete_auth::Limits::default()
+        };
+        let ip: IpAddr = "1.1.1.1".parse().unwrap();
+
+        let consumer_a = v2_context(
+            "consumer:a",
+            "account:42",
+            arete_auth::Limits::default(),
+            account_limits.clone(),
+        );
+        let consumer_b = v2_context(
+            "consumer:b",
+            "account:42",
+            arete_auth::Limits::default(),
+            account_limits.clone(),
+        );
+        let other_account = v2_context(
+            "consumer:c",
+            "account:43",
+            arete_auth::Limits::default(),
+            account_limits,
+        );
+
+        let held = admit(Operation::Simulate, Some(&consumer_a), ip, &state)
+            .await
+            .unwrap();
+
+        // A sibling consumer under the same account is blocked by the
+        // aggregate concurrency cap while another account is unaffected.
+        assert!(admit(Operation::Simulate, Some(&consumer_b), ip, &state)
+            .await
+            .is_err());
+        assert!(admit(
+            Operation::Simulate,
+            Some(&other_account),
+            "2.2.2.2".parse().unwrap(),
+            &state
+        )
+        .await
+        .is_ok());
+
+        // Releasing the first admission frees the account slot.
+        drop(held);
+        assert!(admit(Operation::Simulate, Some(&consumer_b), ip, &state)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn account_rate_budget_is_shared_and_legacy_path_is_unchanged() {
+        let state = state_for(Value::Null).await;
+        let account_limits = arete_auth::Limits {
+            max_transaction_inspect_requests_per_minute: Some(2),
+            ..arete_auth::Limits::default()
+        };
+        let consumer_a = v2_context(
+            "consumer:a",
+            "account:42",
+            arete_auth::Limits::default(),
+            account_limits.clone(),
+        );
+        let consumer_b = v2_context(
+            "consumer:b",
+            "account:42",
+            arete_auth::Limits::default(),
+            account_limits,
+        );
+
+        // Two consumers consume the same account inspect budget.
+        assert!(admit(
+            Operation::Simulate,
+            Some(&consumer_a),
+            "1.1.1.1".parse().unwrap(),
+            &state
+        )
+        .await
+        .is_ok());
+        assert!(admit(
+            Operation::Simulate,
+            Some(&consumer_b),
+            "1.1.1.2".parse().unwrap(),
+            &state
+        )
+        .await
+        .is_ok());
+        assert!(admit(
+            Operation::Simulate,
+            Some(&consumer_a),
+            "1.1.1.3".parse().unwrap(),
+            &state
+        )
+        .await
+        .is_err());
+
+        // Legacy tokens keep the subject-keyed path and are counted.
+        let legacy = legacy_context(
+            "legacy-user",
+            arete_auth::Limits {
+                max_transaction_inspect_requests_per_minute: Some(2),
+                ..arete_auth::Limits::default()
+            },
+        );
+        assert!(legacy.is_legacy_policy());
+        for ip in ["3.3.3.1", "3.3.3.2"] {
+            assert!(admit(
+                Operation::Simulate,
+                Some(&legacy),
+                ip.parse().unwrap(),
+                &state
+            )
+            .await
+            .is_ok());
+        }
+        assert!(admit(
+            Operation::Simulate,
+            Some(&legacy),
+            "3.3.3.3".parse().unwrap(),
+            &state
+        )
+        .await
+        .is_err());
+        assert!(state
+            .rate_buckets
+            .contains_key("subject:legacy-user:inspect"));
+        assert_eq!(state.account_policies().legacy_token_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn stale_policy_versions_are_rejected_for_transactions() {
+        let state = state_for(Value::Null).await;
+        let account_limits = arete_auth::Limits::default();
+
+        let v2 = AuthContext::from_claims(
+            arete_auth::SessionClaims::builder("issuer", "user:1", "aud")
+                .with_metering_key("account:42")
+                .with_plan("pro")
+                .with_actor_key("user:1")
+                .with_account_key("account:42")
+                .with_consumer_key("consumer:a")
+                .with_policy_version(5)
+                .with_account_limits(account_limits.clone())
+                .build(),
+        );
+        assert!(admit(
+            Operation::Simulate,
+            Some(&v2),
+            "1.1.1.1".parse().unwrap(),
+            &state
+        )
+        .await
+        .is_ok());
+
+        let stale = v2_context(
+            "consumer:a",
+            "account:42",
+            arete_auth::Limits::default(),
+            account_limits,
+        );
+        assert_eq!(stale.policy_version, Some(1));
+        let error = match admit(
+            Operation::Simulate,
+            Some(&stale),
+            "1.1.1.2".parse().unwrap(),
+            &state,
+        )
+        .await
+        {
+            Ok(_) => panic!("stale policy version must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "stale_policy_version");
     }
 
     #[test]
