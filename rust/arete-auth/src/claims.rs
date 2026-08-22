@@ -23,7 +23,7 @@ pub enum TargetKind {
 }
 
 /// Resource limits for a session
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Limits {
     /// Maximum concurrent connections for this subject
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,6 +64,12 @@ pub struct Limits {
     /// Maximum concurrent transaction operations for this subject
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_transaction_concurrency: Option<u32>,
+    /// Maximum WebSocket connection attempts per minute
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connection_attempts_per_minute: Option<u32>,
+    /// Maximum subscription creations per minute
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_subscription_creates_per_minute: Option<u32>,
 }
 
 /// Session token claims
@@ -125,6 +131,50 @@ pub struct SessionClaims {
     /// Key class (secret vs publishable)
     #[serde(rename = "key_class")]
     pub key_class: KeyClass,
+    /// Authenticated user/service or anonymous actor identity (v2 policy claim)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_key: Option<String>,
+    /// Billing aggregate identity, e.g. `account:42` (v2 policy claim)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_key: Option<String>,
+    /// Browser/process fairness identity (v2 policy claim)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer_key: Option<String>,
+    /// Monotonic account policy version (v2 policy claim)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u32>,
+    /// Aggregate account limits within a runtime/quota backend (v2 policy claim)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_limits: Option<Limits>,
+}
+
+/// Maximum accepted byte length for a v2 policy identity.
+pub const MAX_POLICY_IDENTITY_BYTES: usize = 512;
+
+/// Reserved plan code carried by anonymous v2 tokens.
+pub const PLAN_ANONYMOUS: &str = "anonymous";
+
+fn valid_policy_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_POLICY_IDENTITY_BYTES
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'@' | b'/')
+        })
+}
+
+pub(crate) fn resolve_policy_identity<'a>(explicit: Option<&'a str>, fallback: &'a str) -> &'a str {
+    explicit.unwrap_or(fallback)
+}
+
+/// Failure to validate the v2 policy identity claim set.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PolicyClaimsError {
+    #[error(
+        "invalid {0} identity: must be 1-{MAX_POLICY_IDENTITY_BYTES} bytes of [A-Za-z0-9._:@/-]"
+    )]
+    InvalidIdentity(&'static str),
+    #[error("incomplete policy claims: {0}")]
+    IncompleteClaims(&'static str),
 }
 
 impl SessionClaims {
@@ -162,6 +212,63 @@ impl SessionClaims {
             .with_solana_gateway_binding(target_id)
     }
 
+    /// Validate the v2 policy identity claim set.
+    ///
+    /// Old tokens with none of the new fields remain valid. A token that
+    /// supplies only a subset that would create ambiguous attribution is
+    /// rejected:
+    /// - account-scoped tokens require `actor_key`, `account_key`,
+    ///   `consumer_key`, `policy_version`, and `account_limits` together;
+    /// - anonymous tokens require `actor_key`, `consumer_key`, and
+    ///   `policy_version` with `plan = "anonymous"` and no account fields.
+    pub fn validate_policy_claims(&self) -> Result<(), PolicyClaimsError> {
+        for (name, value) in [
+            ("actor_key", &self.actor_key),
+            ("account_key", &self.account_key),
+            ("consumer_key", &self.consumer_key),
+        ] {
+            if let Some(value) = value {
+                if !valid_policy_identity(value) {
+                    return Err(PolicyClaimsError::InvalidIdentity(name));
+                }
+            }
+        }
+
+        let has_any = self.actor_key.is_some()
+            || self.account_key.is_some()
+            || self.consumer_key.is_some()
+            || self.policy_version.is_some()
+            || self.account_limits.is_some();
+        if !has_any {
+            return Ok(());
+        }
+
+        let has_core = self.actor_key.is_some()
+            && self.consumer_key.is_some()
+            && self.policy_version.is_some();
+        if self.account_key.is_some() || self.account_limits.is_some() {
+            if !has_core || self.account_key.is_none() || self.account_limits.is_none() {
+                return Err(PolicyClaimsError::IncompleteClaims(
+                    "account-scoped tokens require actor_key, account_key, consumer_key, \
+                     policy_version, and account_limits together",
+                ));
+            }
+            return Ok(());
+        }
+
+        if !has_core {
+            return Err(PolicyClaimsError::IncompleteClaims(
+                "policy claims require actor_key, consumer_key, and policy_version together",
+            ));
+        }
+        if self.plan.as_deref() != Some(PLAN_ANONYMOUS) {
+            return Err(PolicyClaimsError::IncompleteClaims(
+                "tokens without account_key must declare the anonymous plan",
+            ));
+        }
+        Ok(())
+    }
+
     /// Check if the token is expired
     pub fn is_expired(&self, now: u64) -> bool {
         self.exp <= now
@@ -194,6 +301,11 @@ pub struct SessionClaimsBuilder {
     limits: Option<Limits>,
     plan: Option<String>,
     key_class: KeyClass,
+    actor_key: Option<String>,
+    account_key: Option<String>,
+    consumer_key: Option<String>,
+    policy_version: Option<u32>,
+    account_limits: Option<Limits>,
 }
 
 impl SessionClaimsBuilder {
@@ -224,6 +336,11 @@ impl SessionClaimsBuilder {
             limits: None,
             plan: None,
             key_class: KeyClass::Publishable,
+            actor_key: None,
+            account_key: None,
+            consumer_key: None,
+            policy_version: None,
+            account_limits: None,
         }
     }
 
@@ -321,6 +438,36 @@ impl SessionClaimsBuilder {
         self
     }
 
+    /// Set the authenticated actor identity (v2 policy claim).
+    pub fn with_actor_key(mut self, actor_key: impl Into<String>) -> Self {
+        self.actor_key = Some(actor_key.into());
+        self
+    }
+
+    /// Set the billing account identity (v2 policy claim).
+    pub fn with_account_key(mut self, account_key: impl Into<String>) -> Self {
+        self.account_key = Some(account_key.into());
+        self
+    }
+
+    /// Set the consumer fairness identity (v2 policy claim).
+    pub fn with_consumer_key(mut self, consumer_key: impl Into<String>) -> Self {
+        self.consumer_key = Some(consumer_key.into());
+        self
+    }
+
+    /// Set the monotonic account policy version (v2 policy claim).
+    pub fn with_policy_version(mut self, policy_version: u32) -> Self {
+        self.policy_version = Some(policy_version);
+        self
+    }
+
+    /// Set the aggregate account limits (v2 policy claim).
+    pub fn with_account_limits(mut self, account_limits: Limits) -> Self {
+        self.account_limits = Some(account_limits);
+        self
+    }
+
     pub fn build(self) -> SessionClaims {
         SessionClaims {
             iss: self.iss,
@@ -342,6 +489,11 @@ impl SessionClaimsBuilder {
             limits: self.limits,
             plan: self.plan,
             key_class: self.key_class,
+            actor_key: self.actor_key,
+            account_key: self.account_key,
+            consumer_key: self.consumer_key,
+            policy_version: self.policy_version,
+            account_limits: self.account_limits,
         }
     }
 }
@@ -383,12 +535,47 @@ pub struct AuthContext {
     pub client_ip: Option<String>,
     /// JWT ID
     pub jti: String,
+    /// Raw signed actor identity; use [`AuthContext::actor_key`] to resolve
+    pub actor_key: Option<String>,
+    /// Raw signed account identity; use [`AuthContext::account_key`] to resolve
+    pub account_key: Option<String>,
+    /// Raw signed consumer identity; use [`AuthContext::consumer_key`] to resolve
+    pub consumer_key: Option<String>,
+    /// Monotonic account policy version, absent on legacy tokens
+    pub policy_version: Option<u32>,
+    /// Aggregate account limits, defaulted when the token carries none
+    pub account_limits: Limits,
 }
 
 impl AuthContext {
     /// Test an exact whitespace-delimited scope. Scopes never imply one another.
     pub fn has_scope(&self, required: &str) -> bool {
         self.scope.split_whitespace().any(|scope| scope == required)
+    }
+
+    /// Resolved actor identity: `actor_key` claim, falling back to `sub`.
+    pub fn actor_key(&self) -> &str {
+        resolve_policy_identity(self.actor_key.as_deref(), &self.subject)
+    }
+
+    /// Resolved consumer identity: `consumer_key` claim, falling back to `sub`.
+    pub fn consumer_key(&self) -> &str {
+        resolve_policy_identity(self.consumer_key.as_deref(), &self.subject)
+    }
+
+    /// Resolved account identity: `account_key` claim, falling back to
+    /// `metering_key`.
+    pub fn account_key(&self) -> &str {
+        resolve_policy_identity(self.account_key.as_deref(), &self.metering_key)
+    }
+
+    /// True when the token predates the v2 policy contract (all new
+    /// identity/version fields are absent).
+    pub fn is_legacy_policy(&self) -> bool {
+        self.actor_key.is_none()
+            && self.account_key.is_none()
+            && self.consumer_key.is_none()
+            && self.policy_version.is_none()
     }
 
     /// Create AuthContext from verified claims
@@ -411,6 +598,11 @@ impl AuthContext {
             origin: claims.origin,
             client_ip: claims.client_ip,
             jti: claims.jti,
+            actor_key: claims.actor_key,
+            account_key: claims.account_key,
+            consumer_key: claims.consumer_key,
+            policy_version: claims.policy_version,
+            account_limits: claims.account_limits.unwrap_or_default(),
         }
     }
 }
@@ -492,6 +684,193 @@ mod tests {
         assert_eq!(value["targetKind"], "solana-gateway-binding");
         assert_eq!(value["targetId"], "gateway-us-east-1");
         assert_eq!(value["scope"], crate::SCOPE_READ);
+    }
+
+    fn account_limits() -> Limits {
+        Limits {
+            max_connections: Some(50),
+            max_messages_per_minute: Some(50_000),
+            max_connection_attempts_per_minute: Some(600),
+            max_subscription_creates_per_minute: Some(1_200),
+            ..Limits::default()
+        }
+    }
+
+    fn v2_builder() -> SessionClaimsBuilder {
+        SessionClaims::builder("issuer", "user:1", "deployment-1")
+            .with_metering_key("account:42")
+            .with_plan("pro")
+            .with_actor_key("user:1")
+            .with_account_key("account:42")
+            .with_consumer_key("consumer:abc123")
+            .with_policy_version(7)
+            .with_account_limits(account_limits())
+    }
+
+    #[test]
+    fn golden_old_token_json_still_deserializes_and_resolves() {
+        // Wire shape emitted before the v2 policy contract existed.
+        let claims: SessionClaims = serde_json::from_value(serde_json::json!({
+            "iss": "issuer",
+            "sub": "user:1",
+            "aud": "deployment-1",
+            "iat": 1, "nbf": 1, "exp": 2, "jti": "jti-1",
+            "scope": "read",
+            "metering_key": "api_key:42",
+            "limits": { "max_connections": 2 },
+            "plan": "starter",
+            "key_class": "publishable"
+        }))
+        .unwrap();
+
+        claims.validate_policy_claims().unwrap();
+        let context = AuthContext::from_claims(claims);
+
+        assert!(context.is_legacy_policy());
+        assert_eq!(context.actor_key(), "user:1");
+        assert_eq!(context.consumer_key(), "user:1");
+        assert_eq!(context.account_key(), "api_key:42");
+        assert_eq!(context.account_limits, Limits::default());
+        assert_eq!(context.limits.max_connections, Some(2));
+    }
+
+    #[test]
+    fn tokens_built_without_new_methods_serialize_to_the_old_shape() {
+        let claims = SessionClaims::builder("issuer", "user:1", "deployment-1")
+            .with_metering_key("api_key:42")
+            .build();
+        let value = serde_json::to_value(claims).unwrap();
+
+        for absent in [
+            "actor_key",
+            "account_key",
+            "consumer_key",
+            "policy_version",
+            "account_limits",
+        ] {
+            assert!(value.get(absent).is_none(), "{absent} must be absent");
+        }
+    }
+
+    #[test]
+    fn v2_claims_round_trip_with_exact_snake_case_wire_keys() {
+        let claims = v2_builder().build();
+        claims.validate_policy_claims().unwrap();
+        let value = serde_json::to_value(&claims).unwrap();
+
+        assert_eq!(value["actor_key"], "user:1");
+        assert_eq!(value["account_key"], "account:42");
+        assert_eq!(value["consumer_key"], "consumer:abc123");
+        assert_eq!(value["policy_version"], 7);
+        assert_eq!(value["account_limits"]["max_connections"], 50);
+        assert_eq!(
+            value["account_limits"]["max_connection_attempts_per_minute"],
+            600
+        );
+        assert_eq!(
+            value["account_limits"]["max_subscription_creates_per_minute"],
+            1200
+        );
+
+        let decoded: SessionClaims = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.actor_key.as_deref(), Some("user:1"));
+        assert_eq!(decoded.policy_version, Some(7));
+        assert_eq!(decoded.account_limits, Some(account_limits()));
+
+        let context = AuthContext::from_claims(decoded);
+        assert!(!context.is_legacy_policy());
+        assert_eq!(context.actor_key(), "user:1");
+        assert_eq!(context.consumer_key(), "consumer:abc123");
+        assert_eq!(context.account_key(), "account:42");
+        assert_eq!(context.policy_version, Some(7));
+        assert_eq!(context.account_limits, account_limits());
+    }
+
+    #[test]
+    fn anonymous_v2_claims_require_the_anonymous_plan_and_no_account() {
+        let anonymous = SessionClaims::builder("issuer", "anon:ip-1", "deployment-1")
+            .with_metering_key("anon:ip-1")
+            .with_plan(PLAN_ANONYMOUS)
+            .with_actor_key("anon:ip-1")
+            .with_consumer_key("consumer:abc123")
+            .with_policy_version(3)
+            .build();
+        anonymous.validate_policy_claims().unwrap();
+
+        let wrong_plan = SessionClaims::builder("issuer", "anon:ip-1", "deployment-1")
+            .with_plan("pro")
+            .with_actor_key("anon:ip-1")
+            .with_consumer_key("consumer:abc123")
+            .with_policy_version(3)
+            .build();
+        assert!(matches!(
+            wrong_plan.validate_policy_claims(),
+            Err(PolicyClaimsError::IncompleteClaims(_))
+        ));
+    }
+
+    #[test]
+    fn partial_v2_identity_subsets_are_rejected() {
+        // account_key without the rest of the authenticated tuple
+        let missing_consumer = SessionClaims::builder("issuer", "user:1", "deployment-1")
+            .with_actor_key("user:1")
+            .with_account_key("account:42")
+            .with_policy_version(1)
+            .with_account_limits(Limits::default())
+            .build();
+        assert!(matches!(
+            missing_consumer.validate_policy_claims(),
+            Err(PolicyClaimsError::IncompleteClaims(_))
+        ));
+
+        // account_limits alone
+        let limits_only = SessionClaims::builder("issuer", "user:1", "deployment-1")
+            .with_account_limits(Limits::default())
+            .build();
+        assert!(limits_only.validate_policy_claims().is_err());
+
+        // policy_version alone
+        let version_only = SessionClaims::builder("issuer", "user:1", "deployment-1")
+            .with_policy_version(1)
+            .build();
+        assert!(version_only.validate_policy_claims().is_err());
+
+        // account tuple missing account_limits
+        let missing_limits = SessionClaims::builder("issuer", "user:1", "deployment-1")
+            .with_actor_key("user:1")
+            .with_account_key("account:42")
+            .with_consumer_key("consumer:abc123")
+            .with_policy_version(1)
+            .build();
+        assert!(missing_limits.validate_policy_claims().is_err());
+    }
+
+    #[test]
+    fn malformed_or_oversized_identities_are_rejected() {
+        let empty = v2_builder().with_consumer_key("").build();
+        assert_eq!(
+            empty.validate_policy_claims(),
+            Err(PolicyClaimsError::InvalidIdentity("consumer_key"))
+        );
+
+        let oversized = v2_builder()
+            .with_account_key("a".repeat(MAX_POLICY_IDENTITY_BYTES + 1))
+            .build();
+        assert_eq!(
+            oversized.validate_policy_claims(),
+            Err(PolicyClaimsError::InvalidIdentity("account_key"))
+        );
+
+        let bad_charset = v2_builder().with_actor_key("user 1\n").build();
+        assert_eq!(
+            bad_charset.validate_policy_claims(),
+            Err(PolicyClaimsError::InvalidIdentity("actor_key"))
+        );
+
+        let boundary = v2_builder()
+            .with_account_key("a".repeat(MAX_POLICY_IDENTITY_BYTES))
+            .build();
+        assert!(boundary.validate_policy_claims().is_ok());
     }
 
     #[test]

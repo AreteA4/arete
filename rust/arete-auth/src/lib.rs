@@ -19,7 +19,10 @@ pub use audit::{
     auth_failure_event, auth_success_event, rate_limit_event, AuditEvent, AuditSeverity,
     ChannelAuditLogger, NoOpAuditLogger, SecurityAuditEvent, SecurityAuditLogger,
 };
-pub use claims::{AuthContext, KeyClass, Limits, SessionClaims, TargetKind};
+pub use claims::{
+    AuthContext, KeyClass, Limits, PolicyClaimsError, SessionClaims, TargetKind,
+    MAX_POLICY_IDENTITY_BYTES, PLAN_ANONYMOUS,
+};
 pub use error::{AuthError, AuthErrorCode, RetryPolicy, VerifyError};
 pub use keys::{KeyLoader, SigningKey, VerifyingKey};
 pub use metrics::{AuthMetrics, AuthMetricsCollector, AuthMetricsSnapshot};

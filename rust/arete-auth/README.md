@@ -164,6 +164,7 @@ let limits = Limits {
     max_snapshot_rows: Some(1000),
     max_messages_per_minute: Some(1000),
     max_bytes_per_minute: Some(10_000_000),
+    ..Limits::default()
 };
 
 let claims = SessionClaims::builder("issuer", "user-123", "audience")
@@ -172,6 +173,52 @@ let claims = SessionClaims::builder("issuer", "user-123", "audience")
     .with_plan("pro")
     .build();
 ```
+
+### Account Policy Identities (v2)
+
+Signed sessions can carry explicit actor/account/consumer identities plus a
+monotonic policy version and aggregate account limits. All five fields are
+optional on the wire, so old tokens keep verifying unchanged, but partial
+subsets are rejected at verification time:
+
+- an **authenticated** v2 token carries `actor_key`, `account_key`,
+  `consumer_key`, `policy_version`, and `account_limits` together;
+- an **anonymous** v2 token carries `actor_key`, `consumer_key`, and
+  `policy_version` with `plan = "anonymous"` and no account fields;
+- a **legacy** token carries none of the new fields.
+
+`limits` stays consumer/connection-scoped; `account_limits` is the aggregate
+budget shared by every consumer of one billing account. Identities are opaque
+keys of 1-512 bytes drawn from `[A-Za-z0-9._:@/-]`.
+
+```rust
+use arete_auth::{SessionClaims, Limits};
+
+let claims = SessionClaims::builder("issuer", "user:123", "audience")
+    .with_metering_key("account:42")
+    .with_plan("pro")
+    .with_actor_key("user:123")
+    .with_account_key("account:42")
+    .with_consumer_key("consumer:5f2c9a")
+    .with_policy_version(7)
+    .with_limits(Limits { max_connections: Some(4), ..Limits::default() })
+    .with_account_limits(Limits { max_connections: Some(50), ..Limits::default() })
+    .build();
+```
+
+Readers resolve identities once through `AuthContext` (and the propagated
+`ProgramReadAuthorization` / `SolanaGatewayAuthorization`):
+
+```rust,ignore
+let actor = context.actor_key();       // actor_key, falling back to sub
+let consumer = context.consumer_key(); // consumer_key, falling back to sub
+let account = context.account_key();   // account_key, falling back to metering_key
+let legacy = context.is_legacy_policy();
+```
+
+Never repurpose `metering_key` as a consumer limiter for new tokens; it is an
+account attribution key. Keep fallback logic in these helpers rather than
+duplicating it in runtimes.
 
 ### JWKS Key Rotation
 
