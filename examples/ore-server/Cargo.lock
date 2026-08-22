@@ -102,7 +102,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "arete"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "arete-a4-sdk"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "arete-interpreter"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "arete-artifacts",
  "arete-hash",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "arete-macros"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "arete-artifacts",
  "arete-hash",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "arete-server"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "arete-auth",

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.9.1...arete-sdk-v0.10.0) (2026-08-22)
+
+
+### Features
+
+* account session policy claims and runtime account limits ([f360a63](https://github.com/AreteA4/arete/commit/f360a63238237531ab521ebdc4a6fc98f3ed4d00))
+
 ## [0.9.1](https://github.com/AreteA4/arete/compare/arete-sdk-v0.9.0...arete-sdk-v0.9.1) (2026-08-20)
 
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.10.0](https://github.com/AreteA4/arete/compare/arete-server-v0.9.1...arete-server-v0.10.0) (2026-08-22)
+
+
+### Features
+
+* account session policy claims and runtime account limits ([f360a63](https://github.com/AreteA4/arete/commit/f360a63238237531ab521ebdc4a6fc98f3ed4d00))
+* **server:** enforce account runtime limits ([0ae2e22](https://github.com/AreteA4/arete/commit/0ae2e226fbe3bad35d7ae1d0e42b4721f786d897))
+
+
+### Bug Fixes
+
+* **server:** make account policy observation atomic ([26ad610](https://github.com/AreteA4/arete/commit/26ad610dbeec128df2d412a4d7aaf112763480f9))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.9.1 to 0.10.0
+    * arete-auth bumped from 0.3.0 to 0.4.0
+
 ## [0.9.1](https://github.com/AreteA4/arete/compare/arete-server-v0.9.0...arete-server-v0.9.1) (2026-08-20)
 
 
