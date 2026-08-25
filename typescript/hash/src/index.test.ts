@@ -518,6 +518,23 @@ describe("u64 length-prefixed sequences", () => {
     expect(spec.instructions?.[0]?.args?.[0]?.type).toBe("VecU64Len<solana_pubkey::Pubkey>");
   });
 
+  test("an explicit null prefix normalizes like an absent one, as in Rust", () => {
+    const withNull = structuredClone(idl);
+    withNull.instructions[0].args[0].type = { vec: "publicKey", lengthPrefix: null } as never;
+    const absent = structuredClone(idl);
+    absent.instructions[0].args[0].type = { vec: "publicKey" } as never;
+    const hashOf = (doc: unknown) =>
+      buildProgramSpecV1FromBytes(
+        new TextEncoder().encode(JSON.stringify(doc, null, 2)),
+        "AddressLookupTab1e1111111111111111111111111",
+      ).normalizedIdlHash;
+    // Rust deserializes `null` into `None`, so both must produce this hash.
+    expect(hashOf(withNull)).toBe(
+      "arete:h1:idl-normalized:sha256:02de7d959e26988821ad27db8a5341c6751ba56076e0d10b4485a26f33e934b9",
+    );
+    expect(hashOf(withNull)).toBe(hashOf(absent));
+  });
+
   test("an unsupported prefix is rejected, as Rust rejects it", () => {
     const bad = structuredClone(idl);
     bad.instructions[0].args[0].type = { vec: "publicKey", lengthPrefix: "u128" } as never;

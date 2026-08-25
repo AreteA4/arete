@@ -529,10 +529,12 @@ function normalizeIdlType(value: unknown, location: string): JsonValue {
   if (Object.hasOwn(item, "option")) return { option: normalizeIdlType(item.option, `${location}.option`) };
   if (Object.hasOwn(item, "vec")) {
     const vec: JsonValue = { vec: normalizeIdlType(item.vec, `${location}.vec`) };
-    // Omitted when absent so ordinary vecs hash identically to before. Only the widths
-    // Rust's `IdlLengthPrefix` accepts are valid; anything else must be rejected here
-    // too, or the two implementations would disagree on whether the IDL is even legal.
-    if (item.lengthPrefix !== undefined) {
+    // Omitted when absent so ordinary vecs hash identically to before. An explicit
+    // `null` is absent too: Rust deserializes it into `None` and normalizes to the same
+    // hash. Only the widths Rust's `IdlLengthPrefix` accepts are valid; anything else
+    // must be rejected here too, or the two implementations would disagree on whether
+    // the IDL is even legal.
+    if (item.lengthPrefix !== undefined && item.lengthPrefix !== null) {
       const prefix = requiredString(item.lengthPrefix, `${location}.lengthPrefix`);
       if (prefix !== "u32" && prefix !== "u64") {
         return invalidIdl(`${location}.lengthPrefix must be "u32" or "u64"`);
