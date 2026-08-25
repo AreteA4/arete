@@ -518,6 +518,15 @@ describe("u64 length-prefixed sequences", () => {
     expect(spec.instructions?.[0]?.args?.[0]?.type).toBe("VecU64Len<solana_pubkey::Pubkey>");
   });
 
+  test("an unsupported prefix is rejected, as Rust rejects it", () => {
+    const bad = structuredClone(idl);
+    bad.instructions[0].args[0].type = { vec: "publicKey", lengthPrefix: "u128" } as never;
+    const bytes = new TextEncoder().encode(JSON.stringify(bad, null, 2));
+    expect(() =>
+      buildProgramSpecV1FromBytes(bytes, "AddressLookupTab1e1111111111111111111111111"),
+    ).toThrow(/lengthPrefix/);
+  });
+
   test("an ordinary vec is unchanged", () => {
     const plain = structuredClone(idl);
     plain.instructions[0].args[0].type = { vec: "publicKey" } as never;
