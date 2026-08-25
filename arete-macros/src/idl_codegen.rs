@@ -291,6 +291,141 @@ fn array_inner_type(idl_type: &IdlTypeArray) -> Option<IdlType> {
     }
 }
 
+/// Does this type contain a `u64`-length-prefixed sequence? Such types cannot use the
+/// derived Borsh impls. Returns `false` for `defined` types, whose fields are not
+/// resolvable here, so declare such sequences directly rather than inside a named type.
+fn contains_u64_len_vec(idl_type: &IdlType) -> bool {
+    match idl_type {
+        IdlType::Vec(vec_type) => {
+            matches!(vec_type.length_prefix, Some(IdlLengthPrefix::U64))
+                || contains_u64_len_vec(&vec_type.vec)
+        }
+        IdlType::Option(option_type) => contains_u64_len_vec(&option_type.option),
+        IdlType::Array(array_type) => array_inner_type(array_type)
+            .map(|inner| contains_u64_len_vec(&inner))
+            .unwrap_or(false),
+        IdlType::Simple(_) | IdlType::HashMap(_) | IdlType::Defined(_) => false,
+    }
+}
+
+/// Expression reading one `idl_type` from `reader`. Types free of `u64` sequences
+/// delegate to the derived Borsh reader; only the differing nodes are hand-rolled.
+fn borsh_read_expr(
+    idl_type: &IdlType,
+    account_names: &HashSet<String>,
+    in_accounts_module: bool,
+) -> TokenStream {
+    if !contains_u64_len_vec(idl_type) {
+        let ty = type_to_token_stream_in_module(idl_type, account_names, in_accounts_module);
+        return quote! { <#ty as borsh::BorshDeserialize>::deserialize_reader(reader)? };
+    }
+
+    match idl_type {
+        IdlType::Vec(vec_type) => {
+            let inner = borsh_read_expr(&vec_type.vec, account_names, in_accounts_module);
+            let read_len = if matches!(vec_type.length_prefix, Some(IdlLengthPrefix::U64)) {
+                quote! { <u64 as borsh::BorshDeserialize>::deserialize_reader(reader)? }
+            } else {
+                quote! { <u32 as borsh::BorshDeserialize>::deserialize_reader(reader)? as u64 }
+            };
+            quote! {{
+                let __len = #read_len;
+                // Bound the pre-allocation; a truncated buffer surfaces as a read error.
+                let mut __items = Vec::with_capacity((__len as usize).min(1024));
+                for _ in 0..__len {
+                    __items.push(#inner);
+                }
+                __items
+            }}
+        }
+        IdlType::Option(option_type) => {
+            let inner = borsh_read_expr(&option_type.option, account_names, in_accounts_module);
+            quote! {{
+                match <u8 as borsh::BorshDeserialize>::deserialize_reader(reader)? {
+                    0 => None,
+                    1 => Some(#inner),
+                    tag => return Err(borsh::io::Error::new(
+                        borsh::io::ErrorKind::InvalidData,
+                        format!("invalid Option tag {tag}"),
+                    )),
+                }
+            }}
+        }
+        IdlType::Array(array_type) => {
+            let inner_type = array_inner_type(array_type).expect("array inner type");
+            let inner = borsh_read_expr(&inner_type, account_names, in_accounts_module);
+            let len = array_type
+                .array
+                .iter()
+                .find_map(|element| match element {
+                    IdlTypeArrayElement::Size(size) => Some(*size as usize),
+                    _ => None,
+                })
+                .expect("array length");
+            quote! {{
+                let mut __items = Vec::with_capacity(#len);
+                for _ in 0..#len {
+                    __items.push(#inner);
+                }
+                <[_; #len]>::try_from(__items).map_err(|_| borsh::io::Error::new(
+                    borsh::io::ErrorKind::InvalidData,
+                    "fixed array length mismatch",
+                ))?
+            }}
+        }
+        other => {
+            let ty = type_to_token_stream_in_module(other, account_names, in_accounts_module);
+            quote! { <#ty as borsh::BorshDeserialize>::deserialize_reader(reader)? }
+        }
+    }
+}
+
+/// Statement that writes `value_expr` for `idl_type` into `writer`.
+fn borsh_write_stmt(idl_type: &IdlType, value_expr: TokenStream) -> TokenStream {
+    if !contains_u64_len_vec(idl_type) {
+        return quote! { borsh::BorshSerialize::serialize(&#value_expr, writer)?; };
+    }
+
+    match idl_type {
+        IdlType::Vec(vec_type) => {
+            let inner = borsh_write_stmt(&vec_type.vec, quote! { __item });
+            let write_len = if matches!(vec_type.length_prefix, Some(IdlLengthPrefix::U64)) {
+                quote! { borsh::BorshSerialize::serialize(&(#value_expr.len() as u64), writer)?; }
+            } else {
+                quote! { borsh::BorshSerialize::serialize(&(#value_expr.len() as u32), writer)?; }
+            };
+            quote! {
+                #write_len
+                for __item in #value_expr.iter() {
+                    #inner
+                }
+            }
+        }
+        IdlType::Option(option_type) => {
+            let inner = borsh_write_stmt(&option_type.option, quote! { __inner });
+            quote! {
+                match #value_expr.as_ref() {
+                    None => borsh::BorshSerialize::serialize(&0u8, writer)?,
+                    Some(__inner) => {
+                        borsh::BorshSerialize::serialize(&1u8, writer)?;
+                        #inner
+                    }
+                }
+            }
+        }
+        IdlType::Array(array_type) => {
+            let inner_type = array_inner_type(array_type).expect("array inner type");
+            let inner = borsh_write_stmt(&inner_type, quote! { __item });
+            quote! {
+                for __item in #value_expr.iter() {
+                    #inner
+                }
+            }
+        }
+        _ => quote! { borsh::BorshSerialize::serialize(&#value_expr, writer)?; },
+    }
+}
+
 fn generate_json_value_for_type(
     idl_type: &IdlType,
     value_expr: TokenStream,
@@ -620,13 +755,61 @@ fn generate_instruction_type(
     });
 
     let to_json_method = generate_struct_to_json_method(&instruction.args, false);
-    let derives = quote! { #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)] };
+
+    // Derived Borsh always reads a u32 sequence count, so structs carrying a
+    // u64-prefixed sequence need hand-written impls. Everything else keeps the derive.
+    let needs_manual_borsh = instruction
+        .args
+        .iter()
+        .any(|arg| contains_u64_len_vec(&arg.type_));
+
+    let (derives, manual_borsh) = if needs_manual_borsh {
+        let field_reads = instruction.args.iter().map(|arg| {
+            let arg_name = format_ident!("{}", to_snake_case(&arg.name));
+            let read = borsh_read_expr(&arg.type_, account_names, false);
+            quote! { #arg_name: #read }
+        });
+        let field_writes = instruction.args.iter().map(|arg| {
+            let arg_name = format_ident!("{}", to_snake_case(&arg.name));
+            borsh_write_stmt(&arg.type_, quote! { self.#arg_name })
+        });
+        (
+            quote! { #[derive(Debug, Clone)] },
+            quote! {
+                impl borsh::BorshDeserialize for #name {
+                    fn deserialize_reader<R: borsh::io::Read>(
+                        reader: &mut R,
+                    ) -> Result<Self, borsh::io::Error> {
+                        Ok(Self { #(#field_reads),* })
+                    }
+                }
+
+                impl borsh::BorshSerialize for #name {
+                    fn serialize<W: borsh::io::Write>(
+                        &self,
+                        writer: &mut W,
+                    ) -> Result<(), borsh::io::Error> {
+                        #(#field_writes)*
+                        Ok(())
+                    }
+                }
+            },
+        )
+    } else {
+        (
+            quote! { #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)] },
+            quote! {},
+        )
+    };
 
     quote! {
         #derives
         pub struct #name {
             #(#args_fields),*
         }
+
+        #manual_borsh
+
 
         impl #name {
             pub const DISCRIMINATOR: &'static [u8] = &#disc_array;

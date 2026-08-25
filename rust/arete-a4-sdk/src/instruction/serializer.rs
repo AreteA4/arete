@@ -315,6 +315,18 @@ fn serialize_value(
                 serialize_value(item, inner, ctx, out)?;
             }
         }
+        ArgType::VecU64Len(inner) => {
+            let Value::Array(items) = value else {
+                return Err(invalid(
+                    ctx,
+                    format!("expected an array for vec, got {}", json_kind(value)),
+                ));
+            };
+            out.extend_from_slice(&(items.len() as u64).to_le_bytes());
+            for item in items {
+                serialize_value(item, inner, ctx, out)?;
+            }
+        }
         ArgType::Option(inner) => {
             if value.is_null() {
                 out.push(0);
@@ -644,6 +656,48 @@ mod tests {
             ser(&schema, json!({ "v": [1, 258] })),
             vec![2, 0, 0, 0, 1, 0, 2, 1]
         );
+    }
+
+    #[test]
+    fn serializes_vec_u64_len_with_an_eight_byte_prefix() {
+        let schema = [arg("v", ArgType::VecU64Len(Box::new(ArgType::U16)))];
+        assert_eq!(
+            ser(&schema, json!({ "v": [1, 258] })),
+            vec![2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 1],
+            "bincode writes the count as u64 LE, not u32"
+        );
+        // Empty sequences still carry the full 8-byte prefix.
+        assert_eq!(
+            ser(&schema, json!({ "v": [] })),
+            vec![0, 0, 0, 0, 0, 0, 0, 0]
+        );
+    }
+
+    /// The `ExtendLookupTable` payload shape end to end.
+    #[test]
+    fn serializes_an_address_lookup_table_extend_payload() {
+        let schema = [
+            arg(
+                "discriminant_padding",
+                ArgType::Array(Box::new(ArgType::U8), 3),
+            ),
+            arg(
+                "new_addresses",
+                ArgType::VecU64Len(Box::new(ArgType::Pubkey)),
+            ),
+        ];
+        let out = serialize_instruction_data(
+            &[2],
+            json!({ "discriminant_padding": [0, 0, 0], "new_addresses": [SYSTEM_PROGRAM] })
+                .as_object()
+                .unwrap(),
+            &schema,
+        )
+        .unwrap();
+        assert_eq!(&out[..4], &[2, 0, 0, 0], "u32-LE ExtendLookupTable tag");
+        assert_eq!(&out[4..12], &1u64.to_le_bytes(), "u64-LE address count");
+        assert_eq!(&out[12..], &[0u8; 32], "the single pubkey, unprefixed");
+        assert_eq!(out.len(), 4 + 8 + 32);
     }
 
     #[test]

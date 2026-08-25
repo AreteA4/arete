@@ -359,6 +359,14 @@ pub struct IdlOptionTypeSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdlVecTypeSnapshot {
     pub vec: Box<IdlTypeSnapshot>,
+    /// Mirrors `IdlTypeVec::length_prefix`. `skip_serializing_if` keeps the hash of
+    /// existing program-specs unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "lengthPrefix"
+    )]
+    pub length_prefix: Option<crate::types::IdlLengthPrefix>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -652,6 +660,7 @@ fn snapshot_type(idl_type: &crate::types::IdlType) -> IdlTypeSnapshot {
         }),
         crate::types::IdlType::Vec(vec_type) => IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
             vec: Box::new(snapshot_type(&vec_type.vec)),
+            length_prefix: vec_type.length_prefix,
         }),
         crate::types::IdlType::Defined(defined) => {
             IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {

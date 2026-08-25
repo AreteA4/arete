@@ -51,7 +51,11 @@ pub fn idl_type_snapshot_to_rust_string(ty: &IdlTypeSnapshot) -> String {
             format!("Option<{}>", idl_type_snapshot_to_rust_string(&opt.option))
         }
         IdlTypeSnapshot::Vec(vec) => {
-            format!("Vec<{}>", idl_type_snapshot_to_rust_string(&vec.vec))
+            let inner = idl_type_snapshot_to_rust_string(&vec.vec);
+            match vec.length_prefix {
+                Some(arete_idl::types::IdlLengthPrefix::U64) => format!("VecU64Len<{}>", inner),
+                _ => format!("Vec<{}>", inner),
+            }
         }
         IdlTypeSnapshot::HashMap(map) => {
             let key_type = idl_type_snapshot_to_rust_string(&map.hash_map.0);

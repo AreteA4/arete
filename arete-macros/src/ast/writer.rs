@@ -384,6 +384,7 @@ pub fn convert_idl_type(idl_type: &idl_parser::IdlType) -> IdlTypeSnapshot {
         }),
         idl_parser::IdlType::Vec(vec) => IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
             vec: Box::new(convert_idl_type(&vec.vec)),
+            length_prefix: vec.length_prefix,
         }),
         idl_parser::IdlType::Defined(def) => IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
             defined: match &def.defined {
@@ -1032,7 +1033,7 @@ pub fn extract_instructions_from_idl(
                 .iter()
                 .map(|arg| InstructionArgDef {
                     name: arg.name.clone(),
-                    arg_type: crate::parse::idl::to_rust_type_string(&arg.type_),
+                    arg_type: crate::parse::idl::to_spec_arg_type_string(&arg.type_),
                     docs: vec![],
                     amount_hint: arg.amount_hint.as_ref().map(convert_amount_hint),
                 })

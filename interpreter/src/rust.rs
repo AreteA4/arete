@@ -2261,6 +2261,76 @@ mod tests {
         assert!(compile_stack_spec(programs_stack_spec(), Some(entry_not_last)).is_err());
     }
 
+    #[test]
+    fn rust_generator_selects_u64_length_prefixed_vec_schema() {
+        let mut parser = RustDefinedTypes::new(&[]);
+        let vec_of_pubkey = |length_prefix| {
+            IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
+                vec: Box::new(IdlTypeSnapshot::Simple("publicKey".to_string())),
+                length_prefix,
+            })
+        };
+
+        assert_eq!(
+            parser.parse_snapshot_type(&vec_of_pubkey(None)).schema,
+            "ArgType::Vec(Box::new(ArgType::Pubkey))"
+        );
+        assert_eq!(
+            parser
+                .parse_snapshot_type(&vec_of_pubkey(Some(arete_idl::types::IdlLengthPrefix::U32)))
+                .schema,
+            "ArgType::Vec(Box::new(ArgType::Pubkey))"
+        );
+        assert_eq!(
+            parser
+                .parse_snapshot_type(&vec_of_pubkey(Some(arete_idl::types::IdlLengthPrefix::U64)))
+                .schema,
+            "ArgType::VecU64Len(Box::new(ArgType::Pubkey))"
+        );
+    }
+
+    /// Instruction args round-trip through `InstructionArgDef::arg_type` as a string.
+    #[test]
+    fn rust_generator_round_trips_u64_length_prefixed_vec_args() {
+        let vec_of_pubkey = |length_prefix| {
+            IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
+                vec: Box::new(IdlTypeSnapshot::Simple("publicKey".to_string())),
+                length_prefix,
+            })
+        };
+        let borsh = idl_type_snapshot_to_rust_string(&vec_of_pubkey(None));
+        let bincode = idl_type_snapshot_to_rust_string(&vec_of_pubkey(Some(
+            arete_idl::types::IdlLengthPrefix::U64,
+        )));
+        assert_eq!(borsh, "Vec<solana_pubkey::Pubkey>");
+        assert_eq!(bincode, "VecU64Len<solana_pubkey::Pubkey>");
+
+        let mut parser = RustDefinedTypes::new(&[]);
+        let parsed = parser.parse_arg_type(&bincode);
+        assert_eq!(
+            parsed.schema,
+            "ArgType::VecU64Len(Box::new(ArgType::Pubkey))"
+        );
+        assert_eq!(parsed.param_type, "Vec<String>");
+        assert_eq!(
+            parser.parse_arg_type(&borsh).schema,
+            "ArgType::Vec(Box::new(ArgType::Pubkey))"
+        );
+
+        let mut spec = programs_stack_spec();
+        spec.instructions[0]
+            .args
+            .push(instruction_arg("newAddresses", &bincode));
+        let programs = compile_stack_spec(spec, None)
+            .expect("rust stack generation should succeed")
+            .programs_rs
+            .expect("programs.rs should be generated");
+        assert!(
+            programs.contains("ArgType::VecU64Len(Box::new(ArgType::Pubkey))"),
+            "u64-prefixed vec arg should reach the generated schema:\n{programs}"
+        );
+    }
+
     /// Regeneration helper for the checked-in ore example. Run with:
     /// `cargo test -p arete-interpreter regenerate_ore_example -- --ignored`
     ///
@@ -3265,7 +3335,6 @@ impl<'a> RustDefinedTypes<'a> {
     fn parse_arg_type(&mut self, raw: &str) -> RustParsedArg {
         let t = raw.trim().trim_start_matches('&').trim();
 
-        // Generic wrappers: Option<T>, Vec<T>.
         if let Some((name, inner)) = split_generic(t) {
             match name {
                 "Option" => {
@@ -3276,10 +3345,10 @@ impl<'a> RustDefinedTypes<'a> {
                         supported: inner.supported,
                     };
                 }
-                "Vec" => {
+                "Vec" | "VecU64Len" => {
                     let inner = self.parse_arg_type(inner);
                     return RustParsedArg {
-                        schema: format!("ArgType::Vec(Box::new({}))", inner.schema),
+                        schema: format!("ArgType::{}(Box::new({}))", name, inner.schema),
                         param_type: format!("Vec<{}>", inner.param_type),
                         supported: inner.supported,
                     };
@@ -3344,8 +3413,12 @@ impl<'a> RustDefinedTypes<'a> {
             }
             IdlTypeSnapshot::Vec(v) => {
                 let inner = self.parse_snapshot_type(&v.vec);
+                let variant = match v.length_prefix {
+                    Some(arete_idl::types::IdlLengthPrefix::U64) => "VecU64Len",
+                    _ => "Vec",
+                };
                 RustParsedArg {
-                    schema: format!("ArgType::Vec(Box::new({}))", inner.schema),
+                    schema: format!("ArgType::{}(Box::new({}))", variant, inner.schema),
                     param_type: format!("Vec<{}>", inner.param_type),
                     supported: inner.supported,
                 }

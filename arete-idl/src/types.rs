@@ -293,9 +293,25 @@ pub struct IdlTypeOption {
     pub option: Box<IdlType>,
 }
 
+/// Width of the length prefix on a variable-length sequence. Borsh (Anchor, Steel) uses
+/// `u32`; bincode, used by the native Solana programs, uses `u64`. Absent means `U32`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IdlLengthPrefix {
+    U32,
+    U64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IdlTypeVec {
     pub vec: Box<IdlType>,
+    /// `{"vec": T, "lengthPrefix": "u64"}` selects the bincode-style prefix.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "lengthPrefix"
+    )]
+    pub length_prefix: Option<IdlLengthPrefix>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -597,4 +613,32 @@ pub fn to_pascal_case(s: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod length_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn parses_u64_length_prefix_on_a_vec() {
+        let t: IdlType = serde_json::from_str(r#"{"vec":"publicKey","lengthPrefix":"u64"}"#)
+            .expect("parse u64 vec");
+        match t {
+            IdlType::Vec(v) => {
+                assert_eq!(v.length_prefix, Some(IdlLengthPrefix::U64));
+            }
+            other => panic!("expected Vec, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_vec_defaults_to_no_prefix_and_round_trips_unchanged() {
+        let t: IdlType = serde_json::from_str(r#"{"vec":"publicKey"}"#).expect("parse vec");
+        match &t {
+            IdlType::Vec(v) => assert_eq!(v.length_prefix, None),
+            other => panic!("expected Vec, got {other:?}"),
+        }
+        // Hash stability: an ordinary vec must serialize byte-identically to before.
+        assert_eq!(serde_json::to_string(&t).unwrap(), r#"{"vec":"publicKey"}"#);
+    }
 }
