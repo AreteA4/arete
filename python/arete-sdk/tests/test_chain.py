@@ -244,6 +244,13 @@ async def test_accounts_batch_bounds_are_resolved_before_fetching():
 
 
 @pytest.mark.asyncio
+async def test_accounts_batch_rejects_a_cardinality_mismatch():
+    chain, _ = make_chain(lambda r: httpx.Response(200, json={"items": [None]}))
+    with pytest.raises(ChainError, match="expected 2 items, got 1"):
+        await chain.accounts(["addr1", "addr2"])
+
+
+@pytest.mark.asyncio
 async def test_mint_and_token_account_routes():
     chain, requests = make_chain(
         lambda r: httpx.Response(

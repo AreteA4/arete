@@ -280,10 +280,17 @@ class HttpChainClient:
             return []
         path = "/chain/accounts"
         body = await self._request("POST", path, {"addresses": requested})
+        items = body["items"]
+        # A different count would shift every later account onto the wrong address.
+        if len(items) != len(requested):
+            raise ChainError(
+                f"Invalid chain response for '{path}': expected "
+                f"{len(requested)} items, got {len(items)}",
+                path=path,
+            )
         # Items are positionally aligned with the requested addresses.
         return [
-            None if item is None else _parse_raw_account(item, path)
-            for item in body["items"]
+            None if item is None else _parse_raw_account(item, path) for item in items
         ]
 
     async def mint(self, address: str) -> Optional[MintAccountInfo]:

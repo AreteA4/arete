@@ -502,8 +502,7 @@ impl ChainClient for HttpChainClient {
             return Err(ChainError::InvalidResponse {
                 path: path.to_string(),
                 message: format!(
-                    "expected {} items for {} addresses, got {}",
-                    addresses.len(),
+                    "expected {} items, got {}",
                     addresses.len(),
                     wire.items.len()
                 ),

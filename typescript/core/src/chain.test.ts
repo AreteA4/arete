@@ -192,4 +192,15 @@ describe('ChainClient batch accounts', () => {
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('rejects a response whose item count differs from the request', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ items: [null] }), { status: 200 })
+    );
+    const chain = createChainClient('https://example.invalid', fetchMock as typeof fetch);
+
+    await expect(chain.accounts(['addr-1', 'addr-2'])).rejects.toThrow(
+      "Invalid chain response for '/chain/accounts': expected 2 items, got 1"
+    );
+  });
 });

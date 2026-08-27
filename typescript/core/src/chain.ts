@@ -239,6 +239,12 @@ export function createChainClient(httpBaseUrl: string, fetchImpl: FetchLike): Ch
         body: JSON.stringify({ addresses }),
       });
       const body = await parseReadResponse<{ items: (RawAccountBody | null)[] }>(response, path);
+      // A different count would shift every later account onto the wrong address.
+      if (body.items.length !== addresses.length) {
+        throw new TypeError(
+          `Invalid chain response for '${path}': expected ${addresses.length} items, got ${body.items.length}`
+        );
+      }
       // Positionally aligned with `addresses`; absent accounts arrive as null.
       return body.items.map(toRawAccount);
     },
