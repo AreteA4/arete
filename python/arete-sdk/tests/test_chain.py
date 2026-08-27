@@ -1,5 +1,5 @@
 """Tests for arete.chain (port of typescript/core/src/chain.test.ts plus
-route-shape coverage for the nine chain routes)."""
+route-shape coverage for the ten chain routes)."""
 
 from __future__ import annotations
 
@@ -193,6 +193,54 @@ async def test_account_decodes_base64_and_null():
     )
     with pytest.raises(ChainError, match="base64"):
         await chain.account("a")
+
+
+@pytest.mark.asyncio
+async def test_accounts_batch_maps_items_positionally():
+    data = bytes(range(4))
+    encoded = base64.b64encode(data).decode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {"addresses": ["addr", "missing"]}
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "address": "addr",
+                        "ownerProgram": "owner-prog",
+                        "lamports": 7,
+                        "executable": False,
+                        "data": encoded,
+                    },
+                    None,
+                ]
+            },
+        )
+
+    chain, requests = make_chain(handler)
+    assert await chain.accounts(["addr", "missing"]) == [
+        RawAccountInfo(
+            address="addr",
+            owner_program="owner-prog",
+            lamports=7,
+            executable=False,
+            data=data,
+        ),
+        None,
+    ]
+    assert str(requests[0].url) == f"{BASE}/chain/accounts"
+    assert requests[0].method == "POST"
+    assert requests[0].headers["content-type"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_accounts_batch_bounds_are_resolved_before_fetching():
+    chain, requests = make_chain(lambda r: httpx.Response(200, json={"items": []}))
+    assert await chain.accounts([]) == []
+    with pytest.raises(ValueError, match="100-address"):
+        await chain.accounts([f"addr{i}" for i in range(101)])
+    assert requests == []
 
 
 @pytest.mark.asyncio

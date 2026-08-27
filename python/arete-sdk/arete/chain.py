@@ -1,7 +1,7 @@
 """Chain read client (``/chain/*`` HTTP routes).
 
 Port of ``typescript/core/src/chain.ts`` / Rust ``arete_sdk::chain``: the
-:class:`ChainClient` protocol with the nine chain read methods and
+:class:`ChainClient` protocol with the ten chain read methods and
 :class:`HttpChainClient`, the HTTP implementation authenticated through
 :mod:`arete.http` with the ``read`` scope.
 
@@ -21,6 +21,9 @@ from arete.errors import AreteError
 from arete.http import AuthTokenTarget, HttpAuthClient, HttpRequestError
 
 U64_MAX = 18_446_744_073_709_551_615
+
+# Server-side cap on one POST /chain/accounts batch.
+MAX_CHAIN_BATCH_ADDRESSES = 100
 
 # encodeURIComponent-safe characters (JS parity).
 _URI_COMPONENT_SAFE = "-_.!~*'()"
@@ -118,6 +121,10 @@ class ChainClient(Protocol):
 
     async def account(self, address: str) -> Optional[RawAccountInfo]: ...
 
+    async def accounts(
+        self, addresses: list[str]
+    ) -> list[RawAccountInfo | None]: ...
+
     async def mint(self, address: str) -> Optional[MintAccountInfo]: ...
 
     async def token_account(self, address: str) -> Optional[TokenAccountInfo]: ...
@@ -148,6 +155,23 @@ def _parse_decimal_u64(value: Any, name: str, path: str) -> int:
             f"Invalid chain response for '{path}': {name} exceeds u64", path=path
         )
     return parsed
+
+
+def _parse_raw_account(body: Any, path: str) -> RawAccountInfo:
+    try:
+        data = base64.b64decode(body["data"], validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ChainError(
+            f"Invalid chain response for '{path}': account data is not valid base64: {e}",
+            path=path,
+        ) from e
+    return RawAccountInfo(
+        address=body["address"],
+        owner_program=body["ownerProgram"],
+        lamports=body["lamports"],
+        executable=body["executable"],
+        data=data,
+    )
 
 
 def _serialize_context_slot(value: int) -> str:
@@ -241,22 +265,26 @@ class HttpChainClient:
     async def account(self, address: str) -> Optional[RawAccountInfo]:
         path = f"/chain/accounts/{_encode_component(address)}"
         body = await self._request("GET", path)
-        if body is None:
-            return None
-        try:
-            data = base64.b64decode(body["data"], validate=True)
-        except (binascii.Error, ValueError) as e:
-            raise ChainError(
-                f"Invalid chain response for '{path}': account data is not valid base64: {e}",
-                path=path,
-            ) from e
-        return RawAccountInfo(
-            address=body["address"],
-            owner_program=body["ownerProgram"],
-            lamports=body["lamports"],
-            executable=body["executable"],
-            data=data,
-        )
+        return None if body is None else _parse_raw_account(body, path)
+
+    async def accounts(
+        self, addresses: list[str]
+    ) -> list[RawAccountInfo | None]:
+        requested = list(addresses)
+        if len(requested) > MAX_CHAIN_BATCH_ADDRESSES:
+            raise ValueError(
+                f"addresses exceeds the {MAX_CHAIN_BATCH_ADDRESSES}-address "
+                "limit for one batch"
+            )
+        if not requested:
+            return []
+        path = "/chain/accounts"
+        body = await self._request("POST", path, {"addresses": requested})
+        # Items are positionally aligned with the requested addresses.
+        return [
+            None if item is None else _parse_raw_account(item, path)
+            for item in body["items"]
+        ]
 
     async def mint(self, address: str) -> Optional[MintAccountInfo]:
         body = await self._request(

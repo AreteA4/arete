@@ -95,8 +95,10 @@ Execution outcomes follow the shared four-state model
 async def read_chain(a4, address):
     clock = await a4.chain.clock()
     lamports = await a4.chain.lamports(address)
+    # One request per batch, up to 100 addresses; items align with the input.
+    accounts = await a4.chain.accounts([address])
     blockhash = await a4.transactions.get_latest_blockhash()
-    return clock, lamports, blockhash
+    return clock, lamports, accounts, blockhash
 ```
 
 ## Sessions (multi-stack)

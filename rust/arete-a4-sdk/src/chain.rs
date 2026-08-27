@@ -34,6 +34,10 @@ pub enum ChainError {
     #[error("Invalid chain response for '{path}': {message}")]
     InvalidResponse { path: String, message: String },
 
+    /// The call was rejected locally, before any request was made.
+    #[error("Invalid chain request: {0}")]
+    InvalidRequest(String),
+
     /// Transport or authentication failure from the SDK core.
     #[error(transparent)]
     Sdk(#[from] AreteError),
@@ -62,6 +66,9 @@ impl From<ChainError> for AreteError {
             }
             ChainError::InvalidResponse { path, message } => {
                 AreteError::Serialization(format!("Invalid chain response for '{path}': {message}"))
+            }
+            ChainError::InvalidRequest(message) => {
+                AreteError::InvalidConfig(format!("Invalid chain request: {message}"))
             }
             ChainError::Sdk(inner) => inner,
         }
@@ -182,6 +189,13 @@ pub trait ChainClient: Send + Sync {
 
     /// `GET /chain/accounts/<address>` — raw account (base64 data decoded).
     async fn account(&self, address: &str) -> Result<Option<RawAccountInfo>, ChainError>;
+
+    /// `POST /chain/accounts` — up to [`MAX_BATCH_ADDRESSES`] accounts in one call. Results
+    /// are positionally aligned with `addresses`; `None` where the account is absent.
+    async fn accounts(
+        &self,
+        addresses: &[String],
+    ) -> Result<Vec<Option<RawAccountInfo>>, ChainError>;
 
     /// `GET /chain/mints/<address>` — mint account summary.
     async fn mint(&self, address: &str) -> Result<Option<MintAccountInfo>, ChainError>;
@@ -378,6 +392,31 @@ struct RawAccountWire {
 }
 
 #[derive(Debug, Deserialize)]
+struct AccountsWire {
+    items: Vec<Option<RawAccountWire>>,
+}
+
+/// Solana's `getMultipleAccounts` ceiling, mirrored so an oversized batch fails here rather
+/// than as a remote 400.
+pub const MAX_BATCH_ADDRESSES: usize = 100;
+
+fn decode_raw_account(wire: RawAccountWire, path: &str) -> Result<RawAccountInfo, ChainError> {
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(wire.data.as_bytes())
+        .map_err(|error| ChainError::InvalidResponse {
+            path: path.to_string(),
+            message: format!("account data is not valid base64: {error}"),
+        })?;
+    Ok(RawAccountInfo {
+        address: wire.address,
+        owner_program: wire.owner_program,
+        lamports: wire.lamports,
+        executable: wire.executable,
+        data,
+    })
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TokenBalanceWire {
     exists: bool,
@@ -439,22 +478,41 @@ impl ChainClient for HttpChainClient {
     async fn account(&self, address: &str) -> Result<Option<RawAccountInfo>, ChainError> {
         let path = format!("/chain/accounts/{}", encode_uri_component(address));
         let wire: Option<RawAccountWire> = self.get(&path).await?;
-        let Some(wire) = wire else {
-            return Ok(None);
-        };
-        let data = base64::engine::general_purpose::STANDARD
-            .decode(wire.data.as_bytes())
-            .map_err(|error| ChainError::InvalidResponse {
-                path: path.clone(),
-                message: format!("account data is not valid base64: {error}"),
-            })?;
-        Ok(Some(RawAccountInfo {
-            address: wire.address,
-            owner_program: wire.owner_program,
-            lamports: wire.lamports,
-            executable: wire.executable,
-            data,
-        }))
+        wire.map(|wire| decode_raw_account(wire, &path)).transpose()
+    }
+
+    async fn accounts(
+        &self,
+        addresses: &[String],
+    ) -> Result<Vec<Option<RawAccountInfo>>, ChainError> {
+        if addresses.len() > MAX_BATCH_ADDRESSES {
+            return Err(ChainError::InvalidRequest(format!(
+                "addresses exceeds the {MAX_BATCH_ADDRESSES}-address limit for one batch"
+            )));
+        }
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let path = "/chain/accounts";
+        let wire: AccountsWire = self
+            .post(path, serde_json::json!({ "addresses": addresses }))
+            .await?;
+        if wire.items.len() != addresses.len() {
+            return Err(ChainError::InvalidResponse {
+                path: path.to_string(),
+                message: format!(
+                    "expected {} items for {} addresses, got {}",
+                    addresses.len(),
+                    addresses.len(),
+                    wire.items.len()
+                ),
+            });
+        }
+        wire.items
+            .into_iter()
+            .map(|item| item.map(|wire| decode_raw_account(wire, path)).transpose())
+            .collect()
     }
 
     async fn mint(&self, address: &str) -> Result<Option<MintAccountInfo>, ChainError> {
@@ -654,6 +712,112 @@ mod tests {
         assert_eq!(
             bodies.lock().unwrap()[0],
             serde_json::json!({ "address": "addr", "minContextSlot": "42" })
+        );
+    }
+
+    #[tokio::test]
+    async fn accounts_posts_every_address_and_keeps_absent_slots() {
+        let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let bodies_handler = bodies.clone();
+        let router = Router::new().route(
+            "/chain/accounts",
+            post(move |Json(body): Json<Value>| {
+                let bodies = bodies_handler.clone();
+                async move {
+                    bodies.lock().unwrap().push(body);
+                    Json(serde_json::json!({
+                        "items": [
+                            {
+                                "address": "a",
+                                "ownerProgram": "prog",
+                                "lamports": 7u64,
+                                "executable": false,
+                                "data": "AQID",
+                            },
+                            Value::Null,
+                        ]
+                    }))
+                }
+            }),
+        );
+        let base = spawn(router).await;
+        let (chain, _tokens) = client(&base);
+
+        let addresses = vec!["a".to_string(), "b".to_string()];
+        let items = chain.accounts(&addresses).await.unwrap();
+
+        assert_eq!(items.len(), 2);
+        let first = items[0].as_ref().expect("first account present");
+        assert_eq!(first.address, "a");
+        assert_eq!(first.lamports, 7);
+        assert_eq!(first.data, vec![1, 2, 3], "base64 decoded");
+        assert!(items[1].is_none(), "absent account keeps its slot");
+        assert_eq!(
+            bodies.lock().unwrap()[0],
+            serde_json::json!({ "addresses": ["a", "b"] })
+        );
+    }
+
+    /// An over-long batch must fail locally: the server would reject it anyway, and a
+    /// doomed round trip hides a caller bug behind a network error.
+    #[tokio::test]
+    async fn accounts_rejects_an_oversized_batch_without_requesting() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_handler = hits.clone();
+        let router = Router::new().route(
+            "/chain/accounts",
+            post(move || {
+                let hits = hits_handler.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!({ "items": [] }))
+                }
+            }),
+        );
+        let base = spawn(router).await;
+        let (chain, _tokens) = client(&base);
+
+        let addresses: Vec<String> = (0..=MAX_BATCH_ADDRESSES).map(|i| i.to_string()).collect();
+        let error = chain
+            .accounts(&addresses)
+            .await
+            .expect_err("over the limit");
+
+        assert!(
+            matches!(&error, ChainError::InvalidRequest(m) if m.contains("100-address")),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            chain.accounts(&[]).await.unwrap().is_empty(),
+            "empty is free"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "neither call may reach the server"
+        );
+    }
+
+    /// A short `items` array would silently shift every later account onto the wrong
+    /// address, so it must be an error rather than a truncated result.
+    #[tokio::test]
+    async fn accounts_rejects_a_length_mismatch() {
+        let router = Router::new().route(
+            "/chain/accounts",
+            post(|| async { Json(serde_json::json!({ "items": [Value::Null] })) }),
+        );
+        let base = spawn(router).await;
+        let (chain, _tokens) = client(&base);
+
+        let addresses = vec!["a".to_string(), "b".to_string()];
+        let error = chain
+            .accounts(&addresses)
+            .await
+            .expect_err("length mismatch");
+
+        assert!(
+            matches!(&error, ChainError::InvalidResponse { message, .. } if message.contains("got 1")),
+            "unexpected error: {error:?}"
         );
     }
 

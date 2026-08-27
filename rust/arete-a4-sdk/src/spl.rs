@@ -140,6 +140,12 @@ mod tests {
         async fn account(&self, _address: &str) -> Result<Option<RawAccountInfo>, ChainError> {
             unimplemented!()
         }
+        async fn accounts(
+            &self,
+            _addresses: &[String],
+        ) -> Result<Vec<Option<RawAccountInfo>>, ChainError> {
+            unimplemented!()
+        }
         async fn mint(&self, address: &str) -> Result<Option<MintAccountInfo>, ChainError> {
             match &self.0 {
                 MintBehavior::Panic => panic!("unexpected mint read"),

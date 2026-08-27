@@ -466,6 +466,11 @@ struct NativeBalanceBody {
     min_context_slot: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AccountsBody {
+    addresses: Vec<String>,
+}
+
 #[derive(Default)]
 struct HttpLimitState {
     per_subject_per_minute: DashMap<String, (u64, u32)>,
@@ -778,6 +783,39 @@ async fn handle_chain_request(
                 Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
             }
         }
+        ("POST", "/chain/accounts") => match read_json_body::<AccountsBody>(req).await {
+            Ok(body) => {
+                if body.addresses.len() > MAX_CHAIN_BATCH_ADDRESSES {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "addresses exceeds the {MAX_CHAIN_BATCH_ADDRESSES}-address limit for one batch"
+                        ),
+                    );
+                }
+                if body.addresses.is_empty() {
+                    return json_response(StatusCode::OK, json!({ "items": [] }));
+                }
+                match rpc_get_multiple_accounts(&rpc_client, rpc_url, &body.addresses).await {
+                    // A short array would silently misalign items with addresses, so treat a
+                    // length mismatch as an upstream fault rather than padding it.
+                    Ok(values) if values.len() == body.addresses.len() => json_response(
+                        StatusCode::OK,
+                        json!({ "items": batch_accounts_json(&body.addresses, &values) }),
+                    ),
+                    Ok(values) => error_response(
+                        StatusCode::BAD_GATEWAY,
+                        format!(
+                            "getMultipleAccounts returned {} entries for {} addresses",
+                            values.len(),
+                            body.addresses.len()
+                        ),
+                    ),
+                    Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                }
+            }
+            Err(response) => response,
+        },
         ("POST", "/chain/balances") => match read_json_body::<BalanceBody>(req).await {
             Ok(body) => {
                 let min_context_slot =
@@ -1423,6 +1461,25 @@ fn raw_account_json(address: &str, value: &Value) -> Value {
     })
 }
 
+/// Solana's own `getMultipleAccounts` ceiling, so one batch is one upstream call.
+const MAX_CHAIN_BATCH_ADDRESSES: usize = 100;
+
+/// Positionally aligned with `addresses`; `null` where the account is absent, matching
+/// both `getMultipleAccounts` and the single-address route.
+fn batch_accounts_json(addresses: &[String], values: &[Value]) -> Vec<Value> {
+    addresses
+        .iter()
+        .zip(values)
+        .map(|(address, value)| {
+            if value.is_null() {
+                Value::Null
+            } else {
+                raw_account_json(address, value)
+            }
+        })
+        .collect()
+}
+
 fn mint_info_json(address: &str, value: &Value) -> Value {
     let owner_program = value
         .get("owner")
@@ -1489,6 +1546,46 @@ mod tests {
 
         assert_eq!(value["lamports"], "9007199254740993");
         assert_eq!(value["contextSlot"], "9007199254740995");
+    }
+
+    /// A missing account must hold its slot, or every later address is attributed to the
+    /// wrong account — silently, and with real money downstream.
+    #[test]
+    fn batch_accounts_keep_position_when_an_account_is_absent() {
+        let addresses = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let values = vec![
+            json!({ "owner": "prog", "lamports": 7u64, "executable": false, "data": ["AQI=", "base64"] }),
+            Value::Null,
+            json!({ "owner": "prog", "lamports": 9u64, "executable": false, "data": ["AwQ=", "base64"] }),
+        ];
+
+        let items = batch_accounts_json(&addresses, &values);
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["address"], "a");
+        assert_eq!(items[0]["lamports"], 7);
+        assert_eq!(items[0]["data"], "AQI=");
+        assert_eq!(items[1], Value::Null, "absent account keeps its slot");
+        assert_eq!(items[2]["address"], "c");
+        assert_eq!(items[2]["lamports"], 9);
+    }
+
+    #[test]
+    fn batch_accounts_json_is_empty_for_no_addresses() {
+        assert!(batch_accounts_json(&[], &[]).is_empty());
+    }
+
+    /// The batch item shape must stay identical to the single-address route's, or a client
+    /// needs two parsers for one concept.
+    #[test]
+    fn batch_item_matches_the_single_address_shape() {
+        let value = json!({ "owner": "prog", "lamports": 5u64, "executable": true, "data": ["BQY=", "base64"] });
+        let addresses = vec!["solo".to_string()];
+
+        assert_eq!(
+            batch_accounts_json(&addresses, std::slice::from_ref(&value))[0],
+            raw_account_json("solo", &value)
+        );
     }
 
     #[test]

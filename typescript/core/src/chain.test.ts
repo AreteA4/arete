@@ -98,3 +98,98 @@ describe('ChainClient contextual balances', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('ChainClient batch accounts', () => {
+  it('posts every address and decodes each account payload', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({ addresses: ['addr-1', 'addr-2'] });
+      return new Response(
+        JSON.stringify({
+          items: [
+            {
+              address: 'addr-1',
+              ownerProgram: 'owner-program',
+              lamports: 1_461_600,
+              executable: false,
+              data: 'AQID',
+            },
+            {
+              address: 'addr-2',
+              ownerProgram: 'owner-program',
+              lamports: 0,
+              executable: true,
+              data: '',
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    });
+    const chain = createChainClient('https://example.invalid', fetchMock as typeof fetch);
+
+    const items = await chain.accounts(['addr-1', 'addr-2']);
+
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({
+      address: 'addr-1',
+      ownerProgram: 'owner-program',
+      lamports: 1_461_600,
+      executable: false,
+    });
+    expect(Array.from(items[0]!.data)).toEqual([1, 2, 3]);
+    expect(Array.from(items[1]!.data)).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://example.invalid/chain/accounts',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+  });
+
+  it('keeps absent accounts as positional nulls', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          items: [
+            null,
+            {
+              address: 'addr-2',
+              ownerProgram: 'owner-program',
+              lamports: 7,
+              executable: false,
+              data: 'BAU=',
+            },
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+    const chain = createChainClient('https://example.invalid', fetchMock as typeof fetch);
+
+    const items = await chain.accounts(['missing', 'addr-2']);
+
+    expect(items[0]).toBeNull();
+    expect(items[1]).toMatchObject({ address: 'addr-2', lamports: 7 });
+    expect(Array.from(items[1]!.data)).toEqual([4, 5]);
+  });
+
+  it('resolves an empty batch without fetching', async () => {
+    const fetchMock = vi.fn();
+    const chain = createChainClient('https://example.invalid', fetchMock as typeof fetch);
+
+    await expect(chain.accounts([])).resolves.toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects batches over the address limit before fetching', async () => {
+    const fetchMock = vi.fn();
+    const chain = createChainClient('https://example.invalid', fetchMock as typeof fetch);
+    const addresses = Array.from({ length: 101 }, (_value, index) => `addr-${index}`);
+
+    await expect(chain.accounts(addresses)).rejects.toThrow(
+      'addresses exceeds the 100-address limit for one batch'
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

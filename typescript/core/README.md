@@ -348,6 +348,7 @@ Available reads include:
 - `minimumBalanceForRentExemption(space)`
 - `clock()`
 - `account(address)`
+- `accounts(addresses)` - batched `account(address)`, up to 100 per call, results aligned with the input order
 - `mint(address)`
 - `tokenAccount(address)`
 - `balance({ owner, mint, tokenProgram? })`

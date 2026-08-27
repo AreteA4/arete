@@ -65,6 +65,7 @@ export interface ChainClient {
   minimumBalanceForRentExemption(space: number): Promise<number>;
   clock(): Promise<ChainClock>;
   account(address: string): Promise<RawAccountInfo | null>;
+  accounts(addresses: readonly string[]): Promise<(RawAccountInfo | null)[]>;
   mint(address: string): Promise<MintAccountInfo | null>;
   tokenAccount(address: string): Promise<TokenAccountInfo | null>;
   balance(input: TokenBalanceInput, options?: ContextSlotOptions): Promise<TokenBalanceInfo>;
@@ -90,6 +91,29 @@ function decodeBase64(encoded: string): Uint8Array {
     return new Uint8Array(bufferCtor.from(encoded, 'base64'));
   }
   throw new Error('No base64 decoder available in this environment');
+}
+
+const MAX_BATCH_ADDRESSES = 100;
+
+interface RawAccountBody {
+  address: string;
+  ownerProgram: string;
+  lamports: number;
+  executable: boolean;
+  data: string;
+}
+
+function toRawAccount(body: RawAccountBody | null): RawAccountInfo | null {
+  if (!body) {
+    return null;
+  }
+  return {
+    address: body.address,
+    ownerProgram: body.ownerProgram,
+    lamports: body.lamports,
+    executable: body.executable,
+    data: decodeBase64(body.data),
+  };
 }
 
 function decimalU64(value: string, field: string): bigint {
@@ -196,20 +220,27 @@ export function createChainClient(httpBaseUrl: string, fetchImpl: FetchLike): Ch
     async account(address: string): Promise<RawAccountInfo | null> {
       const path = `/chain/accounts/${encodeURIComponent(address)}`;
       const response = await fetchImpl(joinUrl(httpBaseUrl, path));
-      const body = await parseReadResponse<
-        | { address: string; ownerProgram: string; lamports: number; executable: boolean; data: string }
-        | null
-      >(response, path);
-      if (!body) {
-        return null;
+      return toRawAccount(await parseReadResponse<RawAccountBody | null>(response, path));
+    },
+
+    async accounts(addresses: readonly string[]): Promise<(RawAccountInfo | null)[]> {
+      if (addresses.length > MAX_BATCH_ADDRESSES) {
+        throw new RangeError(
+          `addresses exceeds the ${MAX_BATCH_ADDRESSES}-address limit for one batch`
+        );
       }
-      return {
-        address: body.address,
-        ownerProgram: body.ownerProgram,
-        lamports: body.lamports,
-        executable: body.executable,
-        data: decodeBase64(body.data),
-      };
+      if (addresses.length === 0) {
+        return [];
+      }
+      const path = '/chain/accounts';
+      const response = await fetchImpl(joinUrl(httpBaseUrl, path), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ addresses }),
+      });
+      const body = await parseReadResponse<{ items: (RawAccountBody | null)[] }>(response, path);
+      // Positionally aligned with `addresses`; absent accounts arrive as null.
+      return body.items.map(toRawAccount);
     },
 
     async mint(address: string): Promise<MintAccountInfo | null> {
