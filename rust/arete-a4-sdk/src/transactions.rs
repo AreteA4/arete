@@ -192,6 +192,10 @@ pub enum TransactionError {
     #[error(transparent)]
     Transport(Box<TransactionTransportError>),
 
+    /// The request was refused locally, before any network call.
+    #[error("Invalid transaction request: {0}")]
+    InvalidRequest(String),
+
     /// The response body did not match the wire contract.
     #[error("Invalid transaction response: {0}")]
     InvalidResponse(String),
@@ -214,11 +218,22 @@ impl From<TransactionError> for AreteError {
                 "Transaction request failed ({}): {} [{}]",
                 inner.status, inner.message, inner.code
             )),
+            TransactionError::InvalidRequest(message) => {
+                AreteError::InvalidConfig(format!("Invalid transaction request: {message}"))
+            }
             TransactionError::InvalidResponse(message) => AreteError::Serialization(message),
             TransactionError::Sdk(inner) => inner,
         }
     }
 }
+
+/// Solana's `getSignatureStatuses` ceiling, mirrored so an oversized batch fails here rather than
+/// as a remote 400.
+///
+/// A batch this size is roughly 23 KiB of JSON, so the relay's transaction body limit
+/// (`ARETE_TRANSACTION_MAX_BODY_BYTES`) has to admit it. Lowering that setting below ~24 KiB caps
+/// the batch that can actually be sent, and the relay answers `request_too_large`.
+pub const MAX_STATUS_SIGNATURES: usize = 256;
 
 /// Access to the stack's transaction relay (`/transactions/v1/*`).
 #[async_trait]
@@ -258,7 +273,7 @@ pub trait TransactionTransport: Send + Sync {
         options: SignatureStatusOptions,
     ) -> Result<Option<TransactionSignatureStatus>, TransactionError>;
 
-    /// `POST signature-statuses` — up to 256 signatures in one call.
+    /// `POST signature-statuses` — up to [`MAX_STATUS_SIGNATURES`] signatures in one call.
     ///
     /// Results are positionally aligned with `signatures`; `None` means the cluster has not seen
     /// that signature.
@@ -588,6 +603,11 @@ impl TransactionTransport for HttpTransactionTransport {
     ) -> Result<Vec<Option<TransactionSignatureStatus>>, TransactionError> {
         if signatures.is_empty() {
             return Ok(Vec::new());
+        }
+        if signatures.len() > MAX_STATUS_SIGNATURES {
+            return Err(TransactionError::InvalidRequest(format!(
+                "signatures exceeds the {MAX_STATUS_SIGNATURES}-signature limit for one batch"
+            )));
         }
 
         let body = BodyBuilder::new()
@@ -1191,5 +1211,38 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    /// Over the cap must fail here, without consuming a server admission slot. The server refuses
+    /// an oversized batch too, but reaching it costs an authenticated round trip for a request the
+    /// SDK already knows is invalid.
+    #[tokio::test]
+    async fn an_oversized_batch_is_refused_without_requesting() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_handler = hits.clone();
+        let router = Router::new().route(
+            "/transactions/v1/signature-statuses",
+            post(move || {
+                let hits = hits_handler.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!({ "statuses": [] }))
+                }
+            }),
+        );
+        let base = spawn(router).await;
+        let (transport, _tokens) = transport(&base);
+
+        let signatures: Vec<String> = (0..=MAX_STATUS_SIGNATURES).map(|i| i.to_string()).collect();
+        let error = transport
+            .signature_statuses(&signatures, SignatureStatusOptions::default())
+            .await
+            .expect_err("over the limit");
+
+        assert!(
+            matches!(&error, TransactionError::InvalidRequest(m) if m.contains("256-signature")),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "nothing was sent");
     }
 }

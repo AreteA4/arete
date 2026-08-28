@@ -302,6 +302,9 @@ struct SignatureStatusRequest {
 
 /// Solana's `getSignatureStatuses` resolves up to 256 signatures per call, so the batch is capped
 /// there: one request in, one upstream call out.
+///
+/// A batch this size is roughly 23 KiB of JSON, which is why `TransactionConfig::max_body_bytes`
+/// defaults above that. `a_full_batch_fits_the_default_body_limit` holds the two together.
 const MAX_STATUS_BATCH: usize = 256;
 
 #[derive(Debug, Deserialize)]
@@ -1627,6 +1630,23 @@ mod tests {
             error.message.contains("did not match"),
             "unexpected message: {}",
             error.message
+        );
+    }
+
+    /// The advertised batch has to survive the default configuration, or the capacity is a lie:
+    /// `read_bounded_body` rejects the request as `request_too_large` before batch validation runs,
+    /// so a caller sending the documented maximum gets a size error and never learns the batch was
+    /// otherwise fine. 4 KiB admitted roughly 44 signatures.
+    #[test]
+    fn a_full_batch_fits_the_default_body_limit() {
+        let signatures: Vec<String> = (0..MAX_STATUS_BATCH).map(|i| sig(i as u8)).collect();
+        let body = json!({ "signatures": signatures }).to_string();
+        let limit = crate::config::TransactionConfig::default().max_body_bytes;
+
+        assert!(
+            body.len() <= limit,
+            "a {MAX_STATUS_BATCH}-signature batch is {} bytes, over the {limit}-byte default",
+            body.len()
         );
     }
 
