@@ -710,6 +710,15 @@ mod discriminant_width_tests {
         assert_eq!(ix.get_discriminator(), vec![0, 1, 0, 0]);
     }
 
+    /// The high half of a `u64` tag must survive. The TypeScript mirror of this encoding reaches
+    /// for bitwise shifts, where a count of 32 or more wraps and repeats the low bytes; the
+    /// shared `idl-u64-discriminant` vector holds both languages to this result.
+    #[test]
+    fn a_u64_discriminant_keeps_its_high_bytes() {
+        let ix = instruction(r#"{"type":"u64","value":4328719365}"#);
+        assert_eq!(ix.get_discriminator(), vec![5, 4, 3, 2, 1, 0, 0, 0]);
+    }
+
     #[test]
     fn an_unknown_type_falls_back_to_one_byte() {
         let ix = instruction(r#"{"type":"nonsense","value":3}"#);

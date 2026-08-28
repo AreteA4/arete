@@ -921,6 +921,7 @@ impl Generator {
         let crlf = primary.replace('\n', "\r\n");
         let explicit = sample_idl_without_program_id();
         let u32_discriminant = sample_idl_u32_discriminant(PROGRAM_A);
+        let u64_discriminant = sample_idl_u64_discriminant(PROGRAM_A);
 
         let primary_document =
             CanonicalIdlDocument::parse(primary.as_bytes(), None).expect("primary IDL parses");
@@ -969,6 +970,12 @@ impl Generator {
                 u32_discriminant,
                 None,
                 json!({"instructionDiscriminatorSize": 4}),
+            ),
+            (
+                "idl-u64-discriminant",
+                u64_discriminant,
+                None,
+                json!({"instructionDiscriminatorSize": 8}),
             ),
         ] {
             let document = CanonicalIdlDocument::parse(source.as_bytes(), explicit_program_id)
@@ -1983,6 +1990,22 @@ fn sample_idl_u32_discriminant(program_id: &str) -> String {
         "{{\"address\":\"{program_id}\",\"version\":\"1.0.0\",\"name\":\"demo\",\
 \"instructions\":[{{\"name\":\"extend_lookup_table\",\
 \"discriminant\":{{\"type\":\"u32\",\"value\":2}},\"accounts\":[],\"args\":[]}}],\
+\"accounts\":[],\"types\":[],\"events\":[],\"errors\":[]}}"
+    )
+}
+
+/// An IDL declaring a `u64` discriminant whose value exceeds 2^32.
+///
+/// Pins the high half of the little-endian encoding. A TypeScript emitter using bitwise shifts
+/// silently repeats bytes 0-3 into 4-7 here, because JavaScript shift counts are taken mod 32,
+/// while Rust's `to_le_bytes` produces the true high bytes. The `u32` case above cannot catch
+/// that: its shifts all stay under 32. Value kept inside `Number.isSafeInteger`, which is the
+/// largest discriminant the TypeScript parser accepts.
+fn sample_idl_u64_discriminant(program_id: &str) -> String {
+    format!(
+        "{{\"address\":\"{program_id}\",\"version\":\"1.0.0\",\"name\":\"demo\",\
+\"instructions\":[{{\"name\":\"wide_tag\",\
+\"discriminant\":{{\"type\":\"u64\",\"value\":4328719365}},\"accounts\":[],\"args\":[]}}],\
 \"accounts\":[],\"types\":[],\"events\":[],\"errors\":[]}}"
     )
 }

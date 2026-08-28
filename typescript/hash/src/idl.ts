@@ -935,10 +935,18 @@ function instructionDiscriminator(instruction: ParsedInstruction): number[] {
     // Little-endian, truncated to the declared width. Mirrors `SteelDiscriminant::to_bytes` in
     // arete-idl: a bincode `u32` tag is four bytes, and emitting one leaves the payload three
     // bytes short of where the program reads it.
+    //
+    // Divided rather than shifted: JavaScript bitwise operators coerce to 32 bits and take the
+    // shift count mod 32, so `value >>> 32` is `value >>> 0`. At width 8 that repeats bytes 0-3
+    // into 4-7 instead of producing the high bytes, and TypeScript would disagree with Rust on
+    // every `u64` discriminant. `parseDiscriminant` already rejects anything past
+    // `Number.isSafeInteger`, so division stays exact for every accepted value.
     const width = discriminantWidth(instruction.discriminant);
     const bytes: number[] = [];
+    let remaining = instruction.discriminant.value;
     for (let index = 0; index < width; index += 1) {
-      bytes.push((instruction.discriminant.value >>> (index * 8)) & 0xff);
+      bytes.push(remaining % 0x100);
+      remaining = Math.floor(remaining / 0x100);
     }
     return bytes;
   }
