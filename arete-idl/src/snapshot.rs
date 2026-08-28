@@ -483,10 +483,7 @@ pub fn normalize_idl_snapshot(idl: &crate::types::IdlSpec) -> IdlSnapshot {
         }
     }
 
-    let uses_steel_discriminant = idl.instructions.iter().any(|instruction| {
-        instruction.discriminant.is_some() && instruction.discriminator.is_empty()
-    });
-    let discriminant_size = if uses_steel_discriminant { 1 } else { 8 };
+    let discriminant_size = idl.instruction_discriminator_size();
     let program_id = idl.address.clone().or_else(|| {
         idl.metadata
             .as_ref()

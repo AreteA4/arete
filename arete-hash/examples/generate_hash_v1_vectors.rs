@@ -920,6 +920,7 @@ impl Generator {
         let reordered = sample_idl_reordered(PROGRAM_A);
         let crlf = primary.replace('\n', "\r\n");
         let explicit = sample_idl_without_program_id();
+        let u32_discriminant = sample_idl_u32_discriminant(PROGRAM_A);
 
         let primary_document =
             CanonicalIdlDocument::parse(primary.as_bytes(), None).expect("primary IDL parses");
@@ -962,6 +963,12 @@ impl Generator {
                 explicit,
                 Some(PROGRAM_A),
                 json!({"programIdSource": "explicit"}),
+            ),
+            (
+                "idl-u32-discriminant",
+                u32_discriminant,
+                None,
+                json!({"instructionDiscriminatorSize": 4}),
             ),
         ] {
             let document = CanonicalIdlDocument::parse(source.as_bytes(), explicit_program_id)
@@ -1965,6 +1972,19 @@ fn sample_idl_reordered(program_id: &str) -> String {
 
 fn sample_idl_without_program_id() -> String {
     format!("{{{}}}", minimal_idl_fields_body())
+}
+
+/// An IDL whose instruction declares a bincode `u32` enum tag, as the native Address Lookup Table
+/// and System programs do. Pins the derived discriminator width across languages: emitting one
+/// byte here would leave a payload three bytes short of where the program reads it, and the older
+/// `uses_steel ? 1 : 8` heuristic could not express four at all.
+fn sample_idl_u32_discriminant(program_id: &str) -> String {
+    format!(
+        "{{\"address\":\"{program_id}\",\"version\":\"1.0.0\",\"name\":\"demo\",\
+\"instructions\":[{{\"name\":\"extend_lookup_table\",\
+\"discriminant\":{{\"type\":\"u32\",\"value\":2}},\"accounts\":[],\"args\":[]}}],\
+\"accounts\":[],\"types\":[],\"events\":[],\"errors\":[]}}"
+    )
 }
 
 fn minimal_idl_fields(program_id: &str) -> String {

@@ -513,10 +513,7 @@ fn extract_instructions(
     pdas: &BTreeMap<String, PdaDefinitionV1>,
     program_id: &str,
 ) -> Vec<InstructionDefinitionV1> {
-    let uses_steel = idl.instructions.iter().any(|instruction| {
-        instruction.discriminant.is_some() && instruction.discriminator.is_empty()
-    });
-    let discriminator_size = if uses_steel { 1 } else { 8 };
+    let discriminator_size = idl.instruction_discriminator_size();
 
     idl.instructions
         .iter()

@@ -505,10 +505,10 @@ describe("u64 length-prefixed sequences", () => {
     const bytes = new TextEncoder().encode(JSON.stringify(idl, null, 2));
     const spec = buildProgramSpecV1FromBytes(bytes, "AddressLookupTab1e1111111111111111111111111");
     expect(spec.normalizedIdlHash).toBe(
-      "arete:h1:idl-normalized:sha256:7a938b5bc43015d49af90e08b8f42fb6d6e423f395e20c338a7015e15d89dde8",
+      "arete:h1:idl-normalized:sha256:b4104c47d4728d3edce267007ef557a38d1c053765179e18b67d0c7d55fd524e",
     );
     expect(hashProgramSpecV1(spec)).toBe(
-      "arete:h1:program-spec:sha256:27ee42235cb1e0a3850952b1310712c81b245665010f6d328e9d51b441e19ee9",
+      "arete:h1:program-spec:sha256:55a54aaaf78f593a31afd8a418f9e3156d866554d319a45f19331a14be00690d",
     );
   });
 
@@ -530,7 +530,7 @@ describe("u64 length-prefixed sequences", () => {
       ).normalizedIdlHash;
     // Rust deserializes `null` into `None`, so both must produce this hash.
     expect(hashOf(withNull)).toBe(
-      "arete:h1:idl-normalized:sha256:02de7d959e26988821ad27db8a5341c6751ba56076e0d10b4485a26f33e934b9",
+      "arete:h1:idl-normalized:sha256:cef32935162658395ace07c1def43c176312d9f4cdf8cf05b7e2944ed8cb25cd",
     );
     expect(hashOf(withNull)).toBe(hashOf(absent));
   });

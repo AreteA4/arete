@@ -238,14 +238,7 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
         }
     }
 
-    // Determine if this IDL uses Steel-style discriminants (1 byte) or Anchor-style (8 bytes)
-    // Steel IDLs have a `discriminant` field with {"type": "u8", "value": N}
-    // Anchor IDLs have a `discriminator` array with 8 bytes
-    let uses_steel_discriminant = idl
-        .instructions
-        .iter()
-        .any(|ix| ix.discriminant.is_some() && ix.discriminator.is_empty());
-    let discriminant_size: usize = if uses_steel_discriminant { 1 } else { 8 };
+    let discriminant_size = idl.instruction_discriminator_size();
     let program_id = idl
         .address
         .clone()
@@ -1013,11 +1006,7 @@ pub fn extract_instructions_from_idl(
         .clone()
         .or_else(|| idl.metadata.as_ref().and_then(|m| m.address.clone()));
 
-    let uses_steel = idl
-        .instructions
-        .iter()
-        .any(|ix| ix.discriminant.is_some() && ix.discriminator.is_empty());
-    let discriminator_size = if uses_steel { 1 } else { 8 };
+    let discriminator_size = idl.instruction_discriminator_size();
 
     idl.instructions
         .iter()

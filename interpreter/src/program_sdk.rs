@@ -185,10 +185,7 @@ pub fn extract_instructions_from_idl(
             .and_then(|metadata| metadata.address.clone())
     });
 
-    let uses_steel = idl.instructions.iter().any(|instruction| {
-        instruction.discriminant.is_some() && instruction.discriminator.is_empty()
-    });
-    let discriminator_size = if uses_steel { 1 } else { 8 };
+    let discriminator_size = idl.instruction_discriminator_size();
 
     idl.instructions
         .iter()
