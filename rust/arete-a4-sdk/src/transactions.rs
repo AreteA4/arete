@@ -277,11 +277,30 @@ pub trait TransactionTransport: Send + Sync {
     ///
     /// Results are positionally aligned with `signatures`; `None` means the cluster has not seen
     /// that signature.
+    ///
+    /// Defaults to one [`signature_status`](Self::signature_status) call per signature, which is
+    /// what every caller did before the batch route existed. That keeps this addition
+    /// source-compatible for anything implementing this trait outside the crate, and correct — the
+    /// alignment is trivially preserved by construction. It is also the slow path this method
+    /// exists to replace, so a transport that can reach `POST signature-statuses` should override
+    /// it; the one in this crate does.
     async fn signature_statuses(
         &self,
         signatures: &[String],
         options: SignatureStatusOptions,
-    ) -> Result<Vec<Option<TransactionSignatureStatus>>, TransactionError>;
+    ) -> Result<Vec<Option<TransactionSignatureStatus>>, TransactionError> {
+        if signatures.len() > MAX_STATUS_SIGNATURES {
+            return Err(TransactionError::InvalidRequest(format!(
+                "signatures exceeds the {MAX_STATUS_SIGNATURES}-signature limit for one batch"
+            )));
+        }
+
+        let mut statuses = Vec::with_capacity(signatures.len());
+        for signature in signatures {
+            statuses.push(self.signature_status(signature, options).await?);
+        }
+        Ok(statuses)
+    }
 
     /// `POST block-height`.
     async fn block_height(
@@ -1244,5 +1263,98 @@ mod tests {
             "unexpected error: {error:?}"
         );
         assert_eq!(hits.load(Ordering::SeqCst), 0, "nothing was sent");
+    }
+
+    /// A transport written before this method existed must still compile, and must still get
+    /// correct answers. This double implements every method the trait requires and deliberately
+    /// does NOT override `signature_statuses`, so it only builds while the default body stands.
+    struct SingleOnlyTransport;
+
+    #[async_trait]
+    impl TransactionTransport for SingleOnlyTransport {
+        async fn latest_blockhash(
+            &self,
+            _options: TransactionRequestContext,
+        ) -> Result<LatestBlockhashResult, TransactionError> {
+            unimplemented!("not exercised")
+        }
+
+        async fn fee(
+            &self,
+            _message: &str,
+            _options: TransactionRequestContext,
+        ) -> Result<TransactionFeeResult, TransactionError> {
+            unimplemented!("not exercised")
+        }
+
+        async fn simulate(
+            &self,
+            _transaction: &str,
+            _options: TransactionSimulationOptions,
+        ) -> Result<TransactionSimulationResult, TransactionError> {
+            unimplemented!("not exercised")
+        }
+
+        async fn send(
+            &self,
+            _transaction: &str,
+            _options: TransactionSendOptions,
+        ) -> Result<TransactionSendResult, TransactionError> {
+            unimplemented!("not exercised")
+        }
+
+        /// Answers for "b" only, so an absent signature is distinguishable from a present one.
+        async fn signature_status(
+            &self,
+            signature: &str,
+            _options: SignatureStatusOptions,
+        ) -> Result<Option<TransactionSignatureStatus>, TransactionError> {
+            Ok((signature == "b").then(|| TransactionSignatureStatus {
+                signature: signature.to_string(),
+                slot: Some(7),
+                confirmation_status: Some(Commitment::Finalized),
+                err: None,
+            }))
+        }
+
+        async fn block_height(
+            &self,
+            _options: TransactionRequestContext,
+        ) -> Result<u64, TransactionError> {
+            unimplemented!("not exercised")
+        }
+    }
+
+    #[tokio::test]
+    async fn the_default_batch_falls_back_to_single_calls_in_order() {
+        let signatures = ["a", "b", "c"].map(str::to_string).to_vec();
+        let statuses = SingleOnlyTransport
+            .signature_statuses(&signatures, SignatureStatusOptions::default())
+            .await
+            .expect("the default implementation answers");
+
+        assert_eq!(statuses.len(), 3);
+        assert!(statuses[0].is_none(), "a is absent and holds its slot");
+        assert_eq!(
+            statuses[1].as_ref().and_then(|status| status.slot),
+            Some(7),
+            "b resolves in its own position"
+        );
+        assert!(statuses[2].is_none(), "c is absent and holds its slot");
+    }
+
+    /// The cap is the trait's contract, not one implementation's, so the fallback enforces it too.
+    #[tokio::test]
+    async fn the_default_batch_refuses_an_oversized_request() {
+        let signatures: Vec<String> = (0..=MAX_STATUS_SIGNATURES).map(|i| i.to_string()).collect();
+        let error = SingleOnlyTransport
+            .signature_statuses(&signatures, SignatureStatusOptions::default())
+            .await
+            .expect_err("over the limit");
+
+        assert!(
+            matches!(&error, TransactionError::InvalidRequest(m) if m.contains("256-signature")),
+            "unexpected error: {error:?}"
+        );
     }
 }
