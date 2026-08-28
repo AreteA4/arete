@@ -258,6 +258,16 @@ pub trait TransactionTransport: Send + Sync {
         options: SignatureStatusOptions,
     ) -> Result<Option<TransactionSignatureStatus>, TransactionError>;
 
+    /// `POST signature-statuses` — up to 256 signatures in one call.
+    ///
+    /// Results are positionally aligned with `signatures`; `None` means the cluster has not seen
+    /// that signature.
+    async fn signature_statuses(
+        &self,
+        signatures: &[String],
+        options: SignatureStatusOptions,
+    ) -> Result<Vec<Option<TransactionSignatureStatus>>, TransactionError>;
+
     /// `POST block-height`.
     async fn block_height(
         &self,
@@ -267,6 +277,36 @@ pub trait TransactionTransport: Send + Sync {
 
 const SCOPE_INSPECT: &str = "transaction:inspect";
 const SCOPE_SEND: &str = "transaction:send";
+
+/// Parse one wire status entry. `None` means the cluster has not seen the signature — shared so
+/// the single and batch routes cannot interpret a status differently.
+fn parse_signature_status(
+    signature: &str,
+    status: Option<&Value>,
+) -> Result<Option<TransactionSignatureStatus>, TransactionError> {
+    let status = match status {
+        None | Some(Value::Null) => return Ok(None),
+        Some(status) => status,
+    };
+    let slot = match status.get("slot") {
+        None | Some(Value::Null) => None,
+        other => Some(decimal_u64(other, "slot")?),
+    };
+    let confirmation_status = status
+        .get("confirmationStatus")
+        .and_then(Value::as_str)
+        .and_then(Commitment::from_wire);
+    let err = match status.get("err") {
+        None | Some(Value::Null) => None,
+        Some(other) => Some(other.clone()),
+    };
+    Ok(Some(TransactionSignatureStatus {
+        signature: signature.to_string(),
+        slot,
+        confirmation_status,
+        err,
+    }))
+}
 
 fn decimal(value: Option<u64>) -> Option<Value> {
     value.map(|v| Value::String(v.to_string()))
@@ -538,28 +578,53 @@ impl TransactionTransport for HttpTransactionTransport {
         let value = self
             .post("signature-status", body, SCOPE_INSPECT, false)
             .await?;
-        let status = match value.get("status") {
-            None | Some(Value::Null) => return Ok(None),
-            Some(status) => status,
-        };
-        let slot = match status.get("slot") {
-            None | Some(Value::Null) => None,
-            other => Some(decimal_u64(other, "slot")?),
-        };
-        let confirmation_status = status
-            .get("confirmationStatus")
-            .and_then(Value::as_str)
-            .and_then(Commitment::from_wire);
-        let err = match status.get("err") {
-            None | Some(Value::Null) => None,
-            Some(other) => Some(other.clone()),
-        };
-        Ok(Some(TransactionSignatureStatus {
-            signature: signature.to_string(),
-            slot,
-            confirmation_status,
-            err,
-        }))
+        parse_signature_status(signature, value.get("status"))
+    }
+
+    async fn signature_statuses(
+        &self,
+        signatures: &[String],
+        options: SignatureStatusOptions,
+    ) -> Result<Vec<Option<TransactionSignatureStatus>>, TransactionError> {
+        if signatures.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let body = BodyBuilder::new()
+            .set("signatures", signatures)
+            .maybe(
+                "searchTransactionHistory",
+                options.search_transaction_history,
+            )
+            .build();
+        let value = self
+            .post("signature-statuses", body, SCOPE_INSPECT, false)
+            .await?;
+
+        let statuses = value
+            .get("statuses")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                TransactionError::InvalidResponse(
+                    "signature-statuses: statuses must be an array".to_string(),
+                )
+            })?;
+
+        // Callers read these positionally against their own signature list, so a length
+        // mismatch would attribute one transaction's outcome to another.
+        if statuses.len() != signatures.len() {
+            return Err(TransactionError::InvalidResponse(format!(
+                "signature-statuses: expected {} statuses, got {}",
+                signatures.len(),
+                statuses.len()
+            )));
+        }
+
+        signatures
+            .iter()
+            .zip(statuses)
+            .map(|(signature, status)| parse_signature_status(signature, Some(status)))
+            .collect()
     }
 
     async fn block_height(
@@ -1036,5 +1101,95 @@ mod tests {
         assert_eq!(status.slot, Some(100));
         assert_eq!(status.confirmation_status, Some(Commitment::Confirmed));
         assert_eq!(status.err, None);
+    }
+
+    #[tokio::test]
+    async fn signature_statuses_posts_every_signature_and_keeps_absent_slots() {
+        let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let bodies_handler = bodies.clone();
+        let router = Router::new().route(
+            "/transactions/v1/signature-statuses",
+            post(move |Json(body): Json<Value>| {
+                let bodies = bodies_handler.clone();
+                async move {
+                    bodies.lock().unwrap().push(body);
+                    Json(serde_json::json!({
+                        "statuses": [
+                            { "slot": "100", "confirmationStatus": "confirmed", "err": null },
+                            null,
+                            { "slot": "102", "confirmationStatus": "finalized", "err": null }
+                        ]
+                    }))
+                }
+            }),
+        );
+        let base = spawn(router).await;
+        let (transport, _tokens) = transport(&base);
+
+        let signatures = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let statuses = transport
+            .signature_statuses(&signatures, SignatureStatusOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            bodies.lock().unwrap()[0]["signatures"],
+            serde_json::json!(["a", "b", "c"])
+        );
+        assert_eq!(statuses.len(), 3);
+        assert_eq!(statuses[0].as_ref().unwrap().signature, "a");
+        assert_eq!(statuses[0].as_ref().unwrap().slot, Some(100));
+        // The absent middle signature must hold its slot, not shift `c` onto `b`.
+        assert!(statuses[1].is_none());
+        assert_eq!(statuses[2].as_ref().unwrap().signature, "c");
+        assert_eq!(
+            statuses[2].as_ref().unwrap().confirmation_status,
+            Some(Commitment::Finalized)
+        );
+    }
+
+    #[tokio::test]
+    async fn signature_statuses_rejects_a_length_mismatch() {
+        let router = Router::new().route(
+            "/transactions/v1/signature-statuses",
+            post(|| async { Json(serde_json::json!({ "statuses": [null] })) }),
+        );
+        let base = spawn(router).await;
+        let (transport, _tokens) = transport(&base);
+
+        let signatures = vec!["a".to_string(), "b".to_string()];
+        let error = transport
+            .signature_statuses(&signatures, SignatureStatusOptions::default())
+            .await
+            .expect_err("a short array must not be accepted");
+        assert!(
+            matches!(&error, TransactionError::InvalidResponse(m) if m.contains("expected 2")),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_signatures_never_reaches_the_server() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_handler = hits.clone();
+        let router = Router::new().route(
+            "/transactions/v1/signature-statuses",
+            post(move || {
+                let hits = hits_handler.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!({ "statuses": [] }))
+                }
+            }),
+        );
+        let base = spawn(router).await;
+        let (transport, _tokens) = transport(&base);
+
+        assert!(transport
+            .signature_statuses(&[], SignatureStatusOptions::default())
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
     }
 }

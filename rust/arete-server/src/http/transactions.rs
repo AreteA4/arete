@@ -110,6 +110,7 @@ enum Operation {
     Simulate,
     Send,
     SignatureStatus,
+    SignatureStatuses,
     BlockHeight,
 }
 
@@ -141,6 +142,7 @@ impl Operation {
             "/transactions/v1/simulate" => Some(Self::Simulate),
             "/transactions/v1/send" => Some(Self::Send),
             "/transactions/v1/signature-status" => Some(Self::SignatureStatus),
+            "/transactions/v1/signature-statuses" => Some(Self::SignatureStatuses),
             "/transactions/v1/block-height" => Some(Self::BlockHeight),
             _ => None,
         }
@@ -161,6 +163,7 @@ impl Operation {
             Self::Simulate => "simulate",
             Self::Send => "send",
             Self::SignatureStatus => "signature_status",
+            Self::SignatureStatuses => "signature_statuses",
             Self::BlockHeight => "block_height",
         }
     }
@@ -293,6 +296,18 @@ struct SendRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SignatureStatusRequest {
     signature: String,
+    #[serde(default)]
+    search_transaction_history: bool,
+}
+
+/// Solana's `getSignatureStatuses` resolves up to 256 signatures per call, so the batch is capped
+/// there: one request in, one upstream call out.
+const MAX_STATUS_BATCH: usize = 256;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SignatureStatusesRequest {
+    signatures: Vec<String>,
     #[serde(default)]
     search_transaction_history: bool,
 }
@@ -659,18 +674,22 @@ async fn admit(
 ) -> Result<Admission, TxError> {
     let server_limit = match operation {
         Operation::Send => state.config.send_requests_per_minute,
-        Operation::SignatureStatus => state.config.status_requests_per_minute,
+        Operation::SignatureStatus | Operation::SignatureStatuses => {
+            state.config.status_requests_per_minute
+        }
         _ => state.config.inspect_requests_per_minute,
     };
     let claim_limit = auth.and_then(|context| match operation {
         Operation::Send => context.limits.max_transaction_send_requests_per_minute,
-        Operation::SignatureStatus => context.limits.max_transaction_status_requests_per_minute,
+        Operation::SignatureStatus | Operation::SignatureStatuses => {
+            context.limits.max_transaction_status_requests_per_minute
+        }
         _ => context.limits.max_transaction_inspect_requests_per_minute,
     });
     let limit = claim_limit.unwrap_or(server_limit).min(server_limit);
     let class = match operation {
         Operation::Send => "send",
-        Operation::SignatureStatus => "status",
+        Operation::SignatureStatus | Operation::SignatureStatuses => "status",
         _ => "inspect",
     };
     check_bucket(
@@ -738,7 +757,7 @@ async fn admit(
                             .account_limits
                             .max_transaction_send_requests_per_minute
                     }
-                    Operation::SignatureStatus => {
+                    Operation::SignatureStatus | Operation::SignatureStatuses => {
                         context
                             .account_limits
                             .max_transaction_status_requests_per_minute
@@ -995,18 +1014,64 @@ async fn dispatch(
             )
             .await?;
             let status = value.pointer("/value/0").cloned().unwrap_or(Value::Null);
-            if status.is_null() {
-                Ok(json!({ "status": Value::Null }))
-            } else {
-                Ok(json!({
-                    "status": {
-                        "slot": required_u64(&status, "/slot")?.to_string(),
-                        "confirmations": status.get("confirmations").and_then(Value::as_u64).map(|value| value.to_string()),
-                        "confirmationStatus": status.get("confirmationStatus"),
-                        "err": status.get("err")
-                    }
-                }))
+            Ok(json!({ "status": status_json(&status)? }))
+        }
+        Operation::SignatureStatuses => {
+            let request: SignatureStatusesRequest = parse_json(body)?;
+            if request.signatures.is_empty() {
+                return Ok(json!({ "statuses": [] }));
             }
+            if request.signatures.len() > MAX_STATUS_BATCH {
+                return Err(TxError::request(
+                    "batch_limit_exceeded",
+                    format!(
+                        "signatures exceeds the {MAX_STATUS_BATCH}-signature limit for one batch"
+                    ),
+                ));
+            }
+            if let Some(invalid) = request
+                .signatures
+                .iter()
+                .find(|signature| !valid_signature(signature))
+            {
+                return Err(TxError::request(
+                    "invalid_signature",
+                    format!("every signature must be a base58-encoded 64-byte value: {invalid}"),
+                ));
+            }
+
+            let value = rpc_call(
+                state,
+                "getSignatureStatuses",
+                json!([request.signatures, { "searchTransactionHistory": request.search_transaction_history }]),
+                operation,
+                None,
+            )
+            .await?;
+
+            let statuses = value
+                .pointer("/value")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    upstream_malformed("Malformed signature status response", operation, None)
+                })?;
+
+            // Results are read positionally, so a short array would attribute one signature's
+            // outcome to another. Reject rather than truncate.
+            if statuses.len() != request.signatures.len() {
+                return Err(upstream_malformed(
+                    "Signature status response did not match the requested signatures",
+                    operation,
+                    None,
+                ));
+            }
+
+            Ok(json!({
+                "statuses": statuses
+                    .iter()
+                    .map(status_json)
+                    .collect::<Result<Vec<_>, _>>()?
+            }))
         }
         Operation::BlockHeight => {
             let request: CommonRequest = parse_json(body)?;
@@ -1111,6 +1176,23 @@ fn valid_signature(value: &str) -> bool {
         .is_ok_and(|bytes| bytes.len() == 64)
 }
 
+/// One `getSignatureStatuses` entry in the wire shape, or `null` when the cluster has not seen
+/// the signature. Shared so the single and batch routes cannot describe a status differently.
+fn status_json(status: &Value) -> Result<Value, TxError> {
+    if status.is_null() {
+        return Ok(Value::Null);
+    }
+    Ok(json!({
+        "slot": required_u64(status, "/slot")?.to_string(),
+        "confirmations": status
+            .get("confirmations")
+            .and_then(Value::as_u64)
+            .map(|value| value.to_string()),
+        "confirmationStatus": status.get("confirmationStatus"),
+        "err": status.get("err")
+    }))
+}
+
 async fn rpc_call(
     state: &TransactionState,
     method: &'static str,
@@ -1120,7 +1202,7 @@ async fn rpc_call(
 ) -> Result<Value, TxError> {
     let timeout = match operation {
         Operation::Send => state.config.send_timeout,
-        Operation::SignatureStatus => state.config.status_timeout,
+        Operation::SignatureStatus | Operation::SignatureStatuses => state.config.status_timeout,
         _ => state.config.inspect_timeout,
     };
     let url = state
@@ -1404,6 +1486,15 @@ mod tests {
             Some(Operation::Send)
         );
         assert_eq!(Operation::from_path("/transactions/v1/get-anything"), None);
+        assert_eq!(
+            Operation::from_path("/transactions/v1/signature-statuses"),
+            Some(Operation::SignatureStatuses)
+        );
+        // The batch reads chain state, so it must not require the send scope.
+        assert_eq!(
+            Operation::SignatureStatuses.scope(),
+            "transaction:inspect"
+        );
         assert_eq!(Operation::Send.scope(), "transaction:send");
         assert_eq!(Operation::Simulate.scope(), "transaction:inspect");
     }
@@ -1480,6 +1571,109 @@ mod tests {
         assert_eq!(simulation["contextSlot"], "44");
         assert_eq!(simulation["unitsConsumed"], "12");
         assert_eq!(simulation["logs"], json!(["ok"]));
+    }
+
+    /// A valid base58 64-byte signature; the handler rejects anything else before dispatching.
+    fn sig(seed: u8) -> String {
+        bs58::encode(vec![seed; 64]).into_string()
+    }
+
+    #[tokio::test]
+    async fn batch_signature_statuses_keep_absent_signatures_in_place() {
+        let state = state_for(json!({
+            "context": { "slot": 50 },
+            "value": [
+                { "slot": 100, "confirmations": 3, "confirmationStatus": "confirmed", "err": null },
+                null,
+                { "slot": 102, "confirmations": null, "confirmationStatus": "finalized", "err": null }
+            ]
+        }))
+        .await;
+
+        let body = json!({ "signatures": [sig(1), sig(2), sig(3)] }).to_string();
+        let result = dispatch(
+            Operation::SignatureStatuses,
+            body.as_bytes(),
+            None,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let statuses = result["statuses"].as_array().expect("statuses array");
+        assert_eq!(statuses.len(), 3);
+        assert_eq!(statuses[0]["slot"], "100");
+        assert_eq!(statuses[0]["confirmations"], "3");
+        // The middle signature is unseen; it must stay null rather than shifting the third up.
+        assert!(statuses[1].is_null());
+        assert_eq!(statuses[2]["confirmationStatus"], "finalized");
+    }
+
+    #[tokio::test]
+    async fn a_short_status_array_is_rejected_rather_than_misattributed() {
+        let state = state_for(json!({ "context": { "slot": 50 }, "value": [null] })).await;
+
+        let body = json!({ "signatures": [sig(1), sig(2)] }).to_string();
+        let error = dispatch(
+            Operation::SignatureStatuses,
+            body.as_bytes(),
+            None,
+            &state,
+        )
+        .await
+        .expect_err("a short array must not be accepted");
+        assert_eq!(error.code, "upstream_unavailable");
+        assert!(
+            error.message.contains("did not match"),
+            "unexpected message: {}",
+            error.message
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_and_malformed_status_batches_are_refused_locally() {
+        let state = state_for(json!({ "context": { "slot": 50 }, "value": [] })).await;
+
+        let too_many: Vec<String> = (0..=MAX_STATUS_BATCH).map(|i| sig(i as u8)).collect();
+        let body = json!({ "signatures": too_many }).to_string();
+        assert_eq!(
+            dispatch(
+                Operation::SignatureStatuses,
+                body.as_bytes(),
+                None,
+                &state
+            )
+            .await
+            .expect_err("over the cap")
+            .code,
+            "batch_limit_exceeded"
+        );
+
+        let body = json!({ "signatures": ["not-a-signature"] }).to_string();
+        assert_eq!(
+            dispatch(
+                Operation::SignatureStatuses,
+                body.as_bytes(),
+                None,
+                &state
+            )
+            .await
+            .expect_err("bad signature")
+            .code,
+            "invalid_signature"
+        );
+
+        // Empty short-circuits without an upstream call.
+        let body = json!({ "signatures": [] }).to_string();
+        let result = dispatch(
+            Operation::SignatureStatuses,
+            body.as_bytes(),
+            None,
+            &state,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["statuses"], json!([]));
     }
 
     fn v2_context(
