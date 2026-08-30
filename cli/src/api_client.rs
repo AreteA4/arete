@@ -960,6 +960,114 @@ impl ApiClient {
         Self::handle_response(response)
     }
 
+    // ========================================================================
+    // Knowledge endpoints (API key required on every route)
+    // ========================================================================
+    //
+    // Responses come back as raw `serde_json::Value` rather than typed
+    // structs: `--json` must print what the platform sent, and the knowledge
+    // payload shapes are additive over time — parsing into closed structs
+    // here would silently drop new fields. `commands::know` parses leniently
+    // for its readable rendering.
+
+    /// The concept and category vocabularies of the knowledge layer.
+    pub fn knowledge_vocabulary(&self) -> Result<serde_json::Value> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .get(format!("{}/api/registry/knowledge/vocabulary", self.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to send knowledge vocabulary request")?;
+        Self::handle_response(response)
+    }
+
+    /// Intent search across protocols, programs, stacks, and recipes. The
+    /// platform requires at least one of `query`/`concept`/`category`;
+    /// `commands::know` validates that before calling.
+    pub fn knowledge_search(
+        &self,
+        query: Option<&str>,
+        concept: Option<&str>,
+        category: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<serde_json::Value> {
+        let api_key = self.require_api_key()?;
+        let mut params: Vec<(&str, String)> = Vec::new();
+        if let Some(query) = query {
+            params.push(("q", query.to_string()));
+        }
+        if let Some(concept) = concept {
+            params.push(("concept", concept.to_string()));
+        }
+        if let Some(category) = category {
+            params.push(("category", category.to_string()));
+        }
+        if let Some(limit) = limit {
+            params.push(("limit", limit.to_string()));
+        }
+        let response = self
+            .client
+            .get(format!("{}/api/registry/knowledge/search", self.base_url))
+            .query(&params)
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to send knowledge search request")?;
+        Self::handle_response(response)
+    }
+
+    /// Curated knowledge for one protocol by slug.
+    pub fn knowledge_protocol(&self, slug: &str) -> Result<serde_json::Value> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .get(format!(
+                "{}/api/registry/knowledge/protocols/{}",
+                self.base_url, slug
+            ))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to send knowledge protocol request")?;
+        Self::handle_response(response)
+    }
+
+    /// Curated annotations for one program by slug. `section` is validated by
+    /// `commands::know`; `None` means the server default (`summary`).
+    pub fn knowledge_program(
+        &self,
+        slug: &str,
+        section: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let api_key = self.require_api_key()?;
+        let mut request = self.client.get(format!(
+            "{}/api/registry/knowledge/programs/{}",
+            self.base_url, slug
+        ));
+        if let Some(section) = section {
+            request = request.query(&[("section", section)]);
+        }
+        let response = request
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to send knowledge program request")?;
+        Self::handle_response(response)
+    }
+
+    /// One cross-protocol recipe by slug.
+    pub fn knowledge_recipe(&self, slug: &str) -> Result<serde_json::Value> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .get(format!(
+                "{}/api/registry/knowledge/recipes/{}",
+                self.base_url, slug
+            ))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to send knowledge recipe request")?;
+        Self::handle_response(response)
+    }
+
     /// Get a registry stack's info. Auth expands access to global visibility.
     #[allow(dead_code)]
     pub fn get_registry_stack(&self, name: &str) -> Result<RegistryStackItem> {

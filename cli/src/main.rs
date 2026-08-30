@@ -126,6 +126,10 @@ enum Commands {
         entity: Option<String>,
     },
 
+    /// Query the curated knowledge layer: protocols, programs, recipes, concepts
+    #[command(subcommand)]
+    Know(KnowCommands),
+
     /// Push local stacks to remote (alias for 'stack push')
     Push {
         /// Name of specific stack to push (pushes all if not specified)
@@ -332,6 +336,53 @@ struct SdkSyncArgs {
     /// Limit sync to one or more configured stack names
     #[arg(long = "stack", short = 's')]
     stacks: Vec<String>,
+}
+
+#[derive(Subcommand)]
+enum KnowCommands {
+    /// Search protocols, programs, stacks, and recipes by intent
+    Search {
+        /// Free-text intent (e.g. "monitor swaps"); matches concept synonyms first
+        #[arg(short, long)]
+        query: Option<String>,
+
+        /// Filter by concept slug (see `a4 know concepts`)
+        #[arg(long)]
+        concept: Option<String>,
+
+        /// Filter by category slug (see `a4 know concepts`)
+        #[arg(long)]
+        category: Option<String>,
+
+        /// Maximum number of results
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+
+    /// Show curated knowledge for one protocol
+    Protocol {
+        /// Protocol slug (e.g. meteora-damm)
+        slug: String,
+    },
+
+    /// Show curated annotations for one program
+    Program {
+        /// Program slug (e.g. meteora-cp-amm)
+        slug: String,
+
+        /// Section to fetch: summary (default), instructions, accounts, or surface
+        #[arg(long)]
+        section: Option<String>,
+    },
+
+    /// Show one cross-protocol recipe
+    Recipe {
+        /// Recipe slug (e.g. execute-presale-purchase-via-squads)
+        slug: String,
+    },
+
+    /// List the concept and category vocabularies
+    Concepts,
 }
 
 #[derive(Subcommand)]
@@ -639,6 +690,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Up { .. } => "up",
         Commands::Status => "status",
         Commands::Explore { .. } => "explore",
+        Commands::Know(_) => "know",
         Commands::Push { .. } => "push",
         Commands::Install { .. } => "install",
         Commands::Sdk(_) => "sdk",
@@ -710,6 +762,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             _ => Err(anyhow::anyhow!(
                 "Invalid explore arguments. Use `a4 explore`, `a4 explore programs`, `a4 explore stack <ref>`, or `a4 explore program <ref>`."
             )),
+        },
+        Commands::Know(know_cmd) => match know_cmd {
+            KnowCommands::Search {
+                query,
+                concept,
+                category,
+                limit,
+            } => commands::know::search(
+                query.as_deref(),
+                concept.as_deref(),
+                category.as_deref(),
+                limit,
+                cli.json,
+            ),
+            KnowCommands::Protocol { slug } => commands::know::protocol(&slug, cli.json),
+            KnowCommands::Program { slug, section } => {
+                commands::know::program(&slug, section.as_deref(), cli.json)
+            }
+            KnowCommands::Recipe { slug } => commands::know::recipe(&slug, cli.json),
+            KnowCommands::Concepts => commands::know::concepts(cli.json),
         },
         Commands::Push { stack_name } => commands::stack::push(&cli.config, stack_name.as_deref()),
         Commands::Install {
@@ -1012,6 +1084,46 @@ mod tests {
                 }
                 _ => panic!("expected explore command"),
             }
+        }
+    }
+
+    #[test]
+    fn parse_know_search_and_program_section() {
+        let cli = Cli::try_parse_from([
+            "a4", "know", "search", "--query", "monitor swaps", "--limit", "5", "--json",
+        ])
+        .expect("cli should parse");
+        match cli.command {
+            Some(Commands::Know(KnowCommands::Search {
+                query,
+                concept,
+                category,
+                limit,
+            })) => {
+                assert_eq!(query.as_deref(), Some("monitor swaps"));
+                assert!(concept.is_none());
+                assert!(category.is_none());
+                assert_eq!(limit, Some(5));
+                assert!(cli.json);
+            }
+            _ => panic!("expected know search command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "a4",
+            "know",
+            "program",
+            "meteora-cp-amm",
+            "--section",
+            "instructions",
+        ])
+        .expect("cli should parse");
+        match cli.command {
+            Some(Commands::Know(KnowCommands::Program { slug, section })) => {
+                assert_eq!(slug, "meteora-cp-amm");
+                assert_eq!(section.as_deref(), Some("instructions"));
+            }
+            _ => panic!("expected know program command"),
         }
     }
 
