@@ -185,15 +185,27 @@ fn is_hosted_websocket_url(url: &str) -> bool {
 
 /// Parse a credentials.toml body and return a key if either supported schema
 /// matches. Pure function — easy to unit-test without touching the filesystem.
+/// Normalize an API URL for credential lookup with the same rule
+/// `RegistryClient` applies to its request destination (trim whitespace,
+/// drop trailing slashes). Both sides of the `[keys]` match go through this
+/// so `ARETE_API_URL="https://api.arete.run/"` still finds the key stored
+/// under `"https://api.arete.run"` and vice versa.
+fn normalize_api_url(url: &str) -> &str {
+    url.trim().trim_end_matches('/')
+}
+
 fn parse_credentials_content(content: &str, api_url: &str) -> Option<String> {
+    let wanted = normalize_api_url(api_url);
     // Try the new format first.
     if let Ok(parsed) = toml::from_str::<NewFormat>(content) {
         if let Some(keys) = parsed.keys {
-            if let Some(key) = keys.get(api_url) {
-                let k = key.trim();
-                if !k.is_empty() {
-                    return Some(k.to_string());
-                }
+            let matched = keys
+                .iter()
+                .find(|(url, _)| normalize_api_url(url) == wanted)
+                .map(|(_, key)| key.trim())
+                .filter(|k| !k.is_empty());
+            if let Some(k) = matched {
+                return Some(k.to_string());
             }
         }
     }
@@ -283,6 +295,31 @@ mod tests {
         let r = resolve_with(&env, None, "wss://foo.stack.arete.run").unwrap();
         assert_eq!(r.source, KeySource::EnvVar);
         assert_eq!(r.key.as_deref(), Some("a4_sk_from_env"));
+    }
+
+    #[test]
+    fn url_keyed_lookup_normalizes_env_url() {
+        // ARETE_API_URL with trailing slash + whitespace must still find the
+        // key stored under the normalized URL (RegistryClient normalizes the
+        // request destination the same way).
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, " https://api.arete.run/ ")
+            .with_credentials("[keys]\n\"https://api.arete.run\" = \"a4_sk_url\"");
+        let r = resolve_with(&env, None, "").unwrap();
+        assert_eq!(r.source, KeySource::CredentialsFile);
+        assert_eq!(r.key.as_deref(), Some("a4_sk_url"));
+    }
+
+    #[test]
+    fn url_keyed_lookup_normalizes_file_key() {
+        // Symmetric case: the credentials.toml entry carries the trailing
+        // slash instead.
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, "https://api.arete.run")
+            .with_credentials("[keys]\n\"https://api.arete.run/\" = \"a4_sk_url\"");
+        let r = resolve_with(&env, None, "").unwrap();
+        assert_eq!(r.source, KeySource::CredentialsFile);
+        assert_eq!(r.key.as_deref(), Some("a4_sk_url"));
     }
 
     #[test]
