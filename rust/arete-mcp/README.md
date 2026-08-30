@@ -2,9 +2,10 @@
 
 MCP (Model Context Protocol) server that wraps Arete streams for AI agent
 integration. Lets Claude, GPT, and other MCP-compatible agents discover what
-stacks and programs exist, connect to a Arete stack, subscribe to views, and
-query cached entities — using the same primitives a human operator uses through
-`a4 explore` and `a4 stream`.
+stacks and programs exist, query the curated knowledge layer, connect to a
+Arete stack, subscribe to views, and query cached entities — using the same
+primitives a human operator uses through `a4 explore`, `a4 know`, and
+`a4 stream`.
 
 The binary is `a4-mcp` and speaks MCP over stdio.
 
@@ -280,10 +281,20 @@ MCP tools in Continue are only available in **agent mode**, not chat or edit.
 
 ## Tool reference
 
-A typical session starts with discovery — `explore_stacks` to see what exists,
-`explore_stack_schema` to get the view ids — then calls `connect` once, then
-`subscribe`, then queries the cache via `get_entity` / `list_entities` /
+A typical session starts with discovery — `search_knowledge` to find which
+protocols serve an intent (API key required), `explore_stacks` to see what
+exists, `explore_stack_schema` to get the view ids — then calls `connect` once,
+then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 `get_recent` / `query_entities`. Everything from `connect` onward is stateful.
+
+| Group | Tools | Auth |
+|-------|-------|------|
+| Discovery | `explore_stacks`, `explore_stack`, `explore_stack_schema`, `explore_programs`, `explore_program`, `resolve_artifact` | None required; a resolved key widens `explore_stacks` |
+| Knowledge | `search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts` | **API key required** — fails up front without one |
+| Connection | `connect`, `disconnect`, `list_connections` | Key resolved automatically; required for hosted stacks |
+| Subscription | `subscribe`, `unsubscribe`, `list_subscriptions` | Per connection |
+| Cache | `get_entity`, `list_entities`, `get_recent`, `query_entities` | Per subscription |
+| Health | `ping` | None |
 
 ### Discovery
 
@@ -326,6 +337,50 @@ convention.
 
 These tools cover discovery only. SDK generation (`a4 install`) and transaction
 construction live in the CLI and the generated SDKs, not here.
+
+### Knowledge layer
+
+Read-only lookups against `/api/registry/knowledge/*` — the curated,
+human-reviewed layer that maps an intent ("monitor swaps", "execute through a
+multisig") to protocols, programs, stacks, and recipes, and says what the
+platform can do for each: `read` (fetch on-chain account state), `build`
+(construct transactions), `subscribe` (stream live entities from a hosted
+stack).
+
+**Unlike the discovery tools, every knowledge tool requires an API key.** The
+key resolves through the same precedence as `connect` (`ARETE_API_KEY`, then
+`~/.arete/credentials.toml`), and when none resolves the call fails
+immediately with an error pointing at `a4 auth login` — there is no public
+subset. The same HTTPS-origin rule as discovery applies: a key is only sent to
+`https://arete.run`, `https://*.arete.run`, or a loopback address.
+
+- `search_knowledge({ query?, concept?, category?, limit? })` — search by
+  free-text intent (matched against concept names and synonyms first, then
+  protocols/programs/recipes via full-text search) or filter by exact
+  `concept` / `category` slug. At least one of the three is required. Each
+  result carries `coverage: { read, build, subscribe }`.
+- `get_protocol({ protocol })` — one protocol by slug (e.g. `meteora-damm`):
+  description, categories, links, programs with roles
+  (core/periphery/deprecated), related protocols, the public stacks streaming
+  its entities, and per-concept coverage. Follow `programs[].slug` into
+  `get_program_knowledge`.
+- `get_program_knowledge({ program, section? })` — reviewed annotations for one
+  program by slug (e.g. `meteora-cp-amm`). `section` is `summary` (default),
+  `instructions`, `accounts`, or `surface` — the ingested SDK extension surface
+  (callable operations with bindings). Sections keep responses under the
+  512 KiB cap; fetch only what you need.
+- `get_recipe({ recipe })` — one cross-protocol recipe by slug: an ordered
+  sequence of steps, each referencing a real SDK surface entry (resolved in the
+  response), plus a path to example code. The catalog is growing.
+- `list_concepts()` — concept slugs (with synonyms and related concepts) and
+  category slugs. Call first to map a user's phrasing onto a canonical slug or
+  to pick `search_knowledge` filters.
+
+Slugs are bare identifiers, not URLs or paths; the client rejects anything with
+`/`, `\`, `?`, `#`, `%`, `&`, or whitespace before a request is made. The
+`surface` section is how an agent learns which typed SDK operations exist for a
+program — read it instead of reading SDK source for method names. CLI mirror:
+`a4 know search|protocol|program|recipe|concepts [--json]`.
 
 ### Connection management
 
@@ -493,7 +548,7 @@ RUST_LOG=hs_mcp=debug,arete_sdk=info a4-mcp
 
 | Variable        | Purpose                                                                                      |
 | --------------- | -------------------------------------------------------------------------------------------- |
-| `ARETE_API_KEY` | API key for `connect`, and for widening `explore_stacks` to global stacks                     |
+| `ARETE_API_KEY` | API key for `connect` and the knowledge tools (required), and for widening `explore_stacks`   |
 | `ARETE_API_URL` | API base for the discovery tools and credentials lookup. Defaults to `https://api.arete.run`  |
 | `RUST_LOG`      | Log verbosity (stderr only)                                                                   |
 

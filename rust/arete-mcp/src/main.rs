@@ -193,6 +193,55 @@ pub struct ResolveArtifactArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchKnowledgeArgs {
+    /// Free-text intent to search for (e.g. `monitor swaps`). Matched against
+    /// concept names and synonyms first, then protocols/programs/recipes via
+    /// full-text search. At least one of `query`, `concept`, `category` is
+    /// required.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Concept slug to filter by (e.g. `swap`). Discover slugs with
+    /// `list_concepts`.
+    #[serde(default)]
+    pub concept: Option<String>,
+    /// Category slug to filter by (e.g. `dex`). Discover slugs with
+    /// `list_concepts`.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Maximum number of results. Accepts either an integer (`5`) or a
+    /// string-encoded integer (`"5"`) because LLM tool-call arguments
+    /// sometimes stringify numbers.
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetProtocolArgs {
+    /// Bare protocol slug (e.g. `meteora-damm`), as returned by
+    /// `search_knowledge`. Not a URL and not a path.
+    pub protocol: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetProgramKnowledgeArgs {
+    /// Bare program slug (e.g. `meteora-cp-amm`), as listed by
+    /// `search_knowledge` or a protocol's `programs`. Not a URL and not a
+    /// path.
+    pub program: String,
+    /// Which part of the annotations to fetch: `summary` (default),
+    /// `instructions`, `accounts`, or `surface`.
+    #[serde(default)]
+    pub section: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetRecipeArgs {
+    /// Bare recipe slug (e.g. `execute-presale-purchase-via-squads`). Not a
+    /// URL and not a path.
+    pub recipe: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListSubscriptionsArgs {
     /// Optional connection_id filter — only list subscriptions for that connection.
     #[serde(default)]
@@ -374,6 +423,119 @@ impl AreteMcp {
         Parameters(args): Parameters<ResolveArtifactArgs>,
     ) -> Result<CallToolResult, McpError> {
         registry_result(self.registry.artifact(&args.kind, &args.hash).await)
+    }
+
+    #[tool(
+        description = "Search the curated Solana knowledge layer for protocols, programs, \
+                          stacks, and recipes that serve an intent. Start here when you \
+                          need to find which protocols/programs/stacks serve an intent \
+                          like 'monitor swaps' or 'execute through a multisig'.\n\n\
+                          `query` is free text, matched against concept names and \
+                          synonyms first, then protocols/programs/recipes via full-text \
+                          search. `concept` and `category` filter by exact slug — \
+                          discover slugs with `list_concepts`. At least one of the three \
+                          is required.\n\n\
+                          Each result carries coverage flags: `read` (fetch on-chain \
+                          account state), `build` (construct transactions), `subscribe` \
+                          (stream live entities from a hosted stack) — pick the mode you \
+                          need, then drill in with get_protocol, get_program_knowledge, \
+                          or get_recipe.\n\n\
+                          AUTH: unlike the explore_* tools, this requires an Arete API \
+                          key (`ARETE_API_KEY` env var, or the file `a4 auth login` \
+                          writes)."
+    )]
+    async fn search_knowledge(
+        &self,
+        Parameters(args): Parameters<SearchKnowledgeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        registry_result(
+            self.registry
+                .knowledge_search(
+                    args.query.as_deref(),
+                    args.concept.as_deref(),
+                    args.category.as_deref(),
+                    args.limit,
+                )
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Fetch curated knowledge for one protocol by slug (e.g. \
+                          `meteora-damm`): description, categories, links, its on-chain \
+                          programs with roles (core/periphery/deprecated), related \
+                          protocols (composes-with, wraps, graduates-to, ...), the \
+                          public stacks streaming its entities, and per-concept coverage \
+                          (read/build/subscribe).\n\n\
+                          Use after search_knowledge to decide how to integrate a \
+                          protocol; follow `programs[].slug` into get_program_knowledge \
+                          for instruction-level detail.\n\n\
+                          Pass a bare slug, not a URL. Requires an API key \
+                          (`a4 auth login`)."
+    )]
+    async fn get_protocol(
+        &self,
+        Parameters(args): Parameters<GetProtocolArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.knowledge_protocol(&args.protocol).await)
+    }
+
+    #[tool(
+        description = "Fetch curated, human-reviewed annotations for one Solana program \
+                          by slug (e.g. `meteora-cp-amm`). `section` selects what comes \
+                          back:\n\
+                          - `summary` (default) — program header, provenance, and counts\n\
+                          - `instructions` — per-instruction semantics: what each \
+                          instruction does, argument and account meanings, concepts\n\
+                          - `accounts` — account-type semantics and field meanings\n\
+                          - `surface` — the ingested SDK extension surface for this \
+                          program (callable operations with bindings)\n\n\
+                          Sections keep responses under the 512 KiB tool-result cap — \
+                          fetch only the section you need. Pass a bare slug, not a URL. \
+                          Requires an API key (`a4 auth login`)."
+    )]
+    async fn get_program_knowledge(
+        &self,
+        Parameters(args): Parameters<GetProgramKnowledgeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        registry_result(
+            self.registry
+                .knowledge_program(&args.program, args.section.as_deref())
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Fetch one cross-protocol recipe by slug (e.g. \
+                          `execute-presale-purchase-via-squads`): an ordered, curated \
+                          sequence of steps for a multi-protocol pattern (e.g. wrap a \
+                          prepared transaction in a Squads multisig), each step \
+                          referencing a real SDK surface entry (resolved in the \
+                          response), plus a path to working example code.\n\n\
+                          Use when search_knowledge returns a `recipe` result or a \
+                          protocol's `related` edges cite one as evidence.\n\n\
+                          Pass a bare slug, not a URL. Requires an API key \
+                          (`a4 auth login`)."
+    )]
+    async fn get_recipe(
+        &self,
+        Parameters(args): Parameters<GetRecipeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.knowledge_recipe(&args.recipe).await)
+    }
+
+    #[tool(
+        description = "List the controlled vocabularies of the knowledge layer: concept \
+                          slugs (actions/observables like `swap` or `add-liquidity`, \
+                          with synonyms and related concepts) and category slugs \
+                          (protocol classifications like `dex` or `launchpad`).\n\n\
+                          Call this first when you want to filter search_knowledge by \
+                          `concept`/`category`, or to map a user's phrasing onto a \
+                          canonical concept slug.\n\n\
+                          Requires an API key (`a4 auth login`)."
+    )]
+    async fn list_concepts(&self) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.knowledge_vocabulary().await)
     }
 
     #[tool(description = "Open a WebSocket connection to a Arete stack. \
@@ -743,7 +905,9 @@ fn registry_result(result: anyhow::Result<String>) -> Result<CallToolResult, Mcp
             let caller_fixable = message.contains("must not be empty")
                 || message.contains("invalid character")
                 || message.contains("must not be a relative path segment")
-                || message.contains("unknown artifact kind");
+                || message.contains("unknown artifact kind")
+                || message.contains("requires at least one of")
+                || message.contains("must be one of");
             Err(if caller_fixable {
                 McpError::invalid_params(message, None)
             } else {
@@ -945,6 +1109,46 @@ mod registry_result_tests {
         let err = registry_result(rt.block_on(client.artifact("not-a-kind", "abc")))
             .expect_err("unknown kind should be refused");
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    /// The knowledge tools' client-side validations must classify the same
+    /// way: an empty search, a bad section, or a path-shaped slug are all the
+    /// agent's to fix, and each fires before credential resolution or any
+    /// network request, so this test is hermetic.
+    #[test]
+    fn knowledge_argument_rejections_are_invalid_params() {
+        let client = crate::registry::RegistryClient::new();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let cases: Vec<(&str, Result<String, anyhow::Error>)> = vec![
+            (
+                "empty search",
+                rt.block_on(client.knowledge_search(None, None, None, Some(5))),
+            ),
+            (
+                "bad section",
+                rt.block_on(client.knowledge_program("meteora-cp-amm", Some("everything"))),
+            ),
+            (
+                "traversal protocol slug",
+                rt.block_on(client.knowledge_protocol(r"..\..\agents\me")),
+            ),
+            (
+                "traversal recipe slug",
+                rt.block_on(client.knowledge_recipe("a/../b")),
+            ),
+        ];
+        for (label, result) in cases {
+            let err = registry_result(result).expect_err("expected the argument to be refused");
+            assert_eq!(
+                err.code,
+                ErrorCode::INVALID_PARAMS,
+                "{label} should be caller-fixable, got: {}",
+                err.message
+            );
+        }
     }
 
     /// The tool result must be the registry's bytes, unchanged.
