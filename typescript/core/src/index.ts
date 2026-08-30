@@ -74,6 +74,8 @@ export {
   transactionOperation,
   flowOperation,
 } from './program-instructions';
+export { OPERATION_KIND, getOperationKind } from './operation-kind';
+export type { OperationKindBrand } from './operation-kind';
 
 export type {
   Session,
