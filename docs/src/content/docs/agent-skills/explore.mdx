@@ -57,6 +57,54 @@ For a diagnostic view of a stack you own, use `a4 stack show <ref>` instead — 
 
 ---
 
+## Start With Intent: The Knowledge Layer
+
+`a4 explore` answers "what is installable and what shape does it have". It does not answer "which protocol should I use for this". That is what the curated knowledge layer is for, and agent skills run it **before** surveying IDLs or choosing a stack.
+
+```bash
+a4 know search --query "<intent>" [--concept <slug>] [--category <slug>] [--limit <n>]
+a4 know protocol <slug>
+a4 know program <slug> --section summary|instructions|accounts|surface
+a4 know recipe <slug>
+a4 know concepts
+```
+
+All `a4 know` commands accept `--json` and require an API key saved by `a4 auth login`. Without one they fail before sending a request — the `a4 explore` workflow on this page needs no key and remains the fallback.
+
+### Walkthrough: "monitor swaps"
+
+```bash
+# 1. Search by intent. Free text matches concept names and synonyms first,
+#    then protocols/programs/recipes via full-text search.
+a4 know search --query "monitor swaps" --json
+```
+
+Each result carries **coverage flags** that tell you how the platform can serve the concept for that protocol:
+
+| Flag        | Meaning                                                |
+| ----------- | ------------------------------------------------------ |
+| `read`      | Fetch on-chain account state through the generated SDK |
+| `build`     | Construct transactions through the generated SDK       |
+| `subscribe` | Stream live entities from a hosted stack               |
+
+```bash
+# 2. Pick a protocol and read its coverage, programs, and live stacks
+a4 know protocol meteora-damm --json
+
+# 3a. subscribe: the protocol entry names the stack and its entities —
+#     continue with `a4 explore stack <ref>` below to get exact view ids
+# 3b. read / build: list the typed SDK operations (with per-language bindings)
+a4 know program meteora-cp-amm --section surface --json
+
+# 4. Instruction- and account-level semantics, reviewed by humans
+a4 know program meteora-cp-amm --section instructions --json
+a4 know program meteora-cp-amm --section accounts --json
+```
+
+The `surface` section is the authoritative list of callable operations for a program. Agents should read it instead of reading SDK source to find method names. Recipes (`a4 know recipe <slug>`) describe multi-protocol sequences step by step; the catalog is growing, so treat a missing recipe or protocol as "not yet documented", not "unsupported".
+
+---
+
 ## From Exploration to Code
 
 Exploration is step one; the descriptor it prints is the input to `a4 install`.

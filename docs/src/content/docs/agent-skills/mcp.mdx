@@ -7,10 +7,10 @@ description: Connect AI tools to the Arete documentation and stream MCP servers.
 
 Arete ships **two** MCP servers. They serve different purposes and can be run together.
 
-| Server                                 | Transport                           | What it gives your agent                                       |
-| -------------------------------------- | ----------------------------------- | -------------------------------------------------------------- |
-| [Documentation](#documentation-server) | HTTP (`https://docs.arete.run/mcp`) | Search and read these docs without scraping                    |
-| [Stream](#stream-server)               | stdio (`npx -y @usearete/mcp`)      | Registry discovery and live entity data, inside the agent loop |
+| Server                                 | Transport                           | What it gives your agent                                                                     |
+| -------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| [Documentation](#documentation-server) | HTTP (`https://docs.arete.run/mcp`) | Search and read these docs without scraping                                                  |
+| [Stream](#stream-server)               | stdio (`npx -y @usearete/mcp`)      | Registry discovery, the curated knowledge layer, and live entity data, inside the agent loop |
 
 Neither server covers SDK generation (`a4 install`) or transaction construction. Those are CLI and SDK operations.
 
@@ -94,7 +94,7 @@ Discovery metadata is available at:
 
 ## Stream server
 
-The stream MCP server (`a4-mcp`) is a local stdio server that discovers registry resources and opens WebSocket connections to deployed Arete stacks, caching streamed entities in memory. Use it when you want live data **inside the agent loop** — for exploration, debugging, or answering questions about current chain state. For application code, generate an SDK with `a4 install` instead.
+The stream MCP server (`a4-mcp`) is a local stdio server that discovers registry resources, queries the curated knowledge layer, and opens WebSocket connections to deployed Arete stacks, caching streamed entities in memory. Use it when you want live data **inside the agent loop** — for exploration, debugging, or answering questions about current chain state. For application code, generate an SDK with `a4 install` instead.
 
 ### Install
 
@@ -130,6 +130,77 @@ Read the keys you actually receive rather than assuming one convention:
 
 Separately, `a4 explore --json` is camelCase throughout, so CLI field names do not transfer to `explore_stacks` or `explore_stack_schema` field-for-field.
 :::
+
+### Knowledge tools
+
+Read-only lookups against `/api/registry/knowledge/*` — the curated, human-reviewed layer that maps an intent to protocols, programs, stacks, and recipes. Unlike the discovery tools, **every knowledge tool requires an API key** (`ARETE_API_KEY`, or the file `a4 auth login` writes). Without one the call fails up front with an error pointing at `a4 auth login`; there is no public subset. The tool descriptions below are the ones the server publishes.
+
+**`search_knowledge`** `{ query?, concept?, category?, limit? }`
+
+> Search the curated Solana knowledge layer for protocols, programs, stacks, and recipes that serve an intent. Start here when you need to find which protocols/programs/stacks serve an intent like 'monitor swaps' or 'execute through a multisig'.
+>
+> `query` is free text, matched against concept names and synonyms first, then protocols/programs/recipes via full-text search. `concept` and `category` filter by exact slug — discover slugs with `list_concepts`. At least one of the three is required.
+>
+> Each result carries coverage flags: `read` (fetch on-chain account state), `build` (construct transactions), `subscribe` (stream live entities from a hosted stack) — pick the mode you need, then drill in with get_protocol, get_program_knowledge, or get_recipe.
+>
+> AUTH: unlike the `explore_*` tools, this requires an Arete API key (`ARETE_API_KEY` env var, or the file `a4 auth login` writes).
+
+**`get_protocol`** `{ protocol }`
+
+> Fetch curated knowledge for one protocol by slug (e.g. `meteora-damm`): description, categories, links, its on-chain programs with roles (core/periphery/deprecated), related protocols (composes-with, wraps, graduates-to, ...), the public stacks streaming its entities, and per-concept coverage (read/build/subscribe).
+>
+> Use after search_knowledge to decide how to integrate a protocol; follow `programs[].slug` into get_program_knowledge for instruction-level detail.
+>
+> Pass a bare slug, not a URL. Requires an API key (`a4 auth login`).
+
+**`get_program_knowledge`** `{ program, section? }`
+
+> Fetch curated, human-reviewed annotations for one Solana program by slug (e.g. `meteora-cp-amm`). `section` selects what comes back:
+>
+> - `summary` (default) — program header, provenance, and counts
+> - `instructions` — per-instruction semantics: what each instruction does, argument and account meanings, concepts
+> - `accounts` — account-type semantics and field meanings
+> - `surface` — the ingested SDK extension surface for this program (callable operations with bindings)
+>
+> Sections keep responses under the 512 KiB tool-result cap — fetch only the section you need. Pass a bare slug, not a URL. Requires an API key (`a4 auth login`).
+
+**`get_recipe`** `{ recipe }`
+
+> Fetch one cross-protocol recipe by slug (e.g. `execute-presale-purchase-via-squads`): an ordered, curated sequence of steps for a multi-protocol pattern (e.g. wrap a prepared transaction in a Squads multisig), each step referencing a real SDK surface entry (resolved in the response), plus a path to working example code.
+>
+> Use when search_knowledge returns a `recipe` result or a protocol's `related` edges cite one as evidence.
+>
+> Pass a bare slug, not a URL. Requires an API key (`a4 auth login`).
+
+**`list_concepts`** `{}`
+
+> List the controlled vocabularies of the knowledge layer: concept slugs (actions/observables like `swap` or `add-liquidity`, with synonyms and related concepts) and category slugs (protocol classifications like `dex` or `launchpad`).
+>
+> Call this first when you want to filter search_knowledge by `concept`/`category`, or to map a user's phrasing onto a canonical concept slug.
+>
+> Requires an API key (`a4 auth login`).
+
+The `surface` section of `get_program_knowledge` is how an agent learns which typed SDK operations exist for a program, with per-language bindings. Read it instead of reading SDK source for method names. The recipe catalog is growing; a missing recipe or protocol means "not yet documented", not "unsupported".
+
+The CLI mirror is `a4 know search|protocol|program|recipe|concepts [--json]` — see [Explore Stacks](/agent-skills/explore/#start-with-intent-the-knowledge-layer).
+
+#### Walkthrough: "monitor swaps"
+
+```
+search_knowledge({ query: "monitor swaps" })
+  → matched_concepts: ["swap"], results with coverage {read, build, subscribe}
+
+get_protocol({ protocol: "<slug from results>" })
+  → programs[], related[], stacks[{stack, entities}], coverage[]
+
+# subscribe is set → stream it
+explore_stack_schema({ stack })                     → exact view id
+connect({ url }) → subscribe({ connection_id, view }) → query_entities(…)
+
+# read / build only → generate an SDK and call the surface
+get_program_knowledge({ program: "<programs[].slug>", section: "surface" })
+  → callable operations with bindings; then `a4 install …` from the CLI
+```
 
 ### Streaming tools
 
@@ -171,7 +242,7 @@ Do not pass `api_key` in tool calls. The server resolves credentials in this ord
 
 Run `a4 auth login` once and omit the argument.
 
-The discovery tools attach a resolved key **only when `ARETE_API_URL` names an Arete origin over HTTPS** — `https://arete.run` or any `https://*.arete.run` subdomain. Plain HTTP is accepted only for loopback (`localhost`, `127.0.0.1`, `[::1]`), where the request never reaches a network. Everything else, including `http://api.arete.run`, gets an unauthenticated request rather than your key in cleartext or sent to a host it does not belong to — the endpoints these tools touch are public, so you still get the public result set.
+The knowledge tools (`search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts`) require a key from step 2 or 3 and fail with an actionable error when none resolves. The discovery tools attach a resolved key **only when `ARETE_API_URL` names an Arete origin over HTTPS** — `https://arete.run` or any `https://*.arete.run` subdomain. Plain HTTP is accepted only for loopback (`localhost`, `127.0.0.1`, `[::1]`), where the request never reaches a network. Everything else, including `http://api.arete.run`, gets an unauthenticated request rather than your key in cleartext or sent to a host it does not belong to — the endpoints these tools touch are public, so you still get the public result set.
 
 ### Claude Desktop / Claude Code
 
