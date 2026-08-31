@@ -363,8 +363,9 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         let ix_name = &ix.name;
         let account_names: Vec<_> = ix.accounts.iter().map(|acc| &acc.name).collect();
         let declared_count = account_names.len();
-        // Optional accounts may legitimately be absent, so they are not part of the floor.
-        let required_count = ix.accounts.iter().filter(|acc| !acc.optional).count();
+        // Declaration order matters, not just the count: which accounts were omitted decides
+        // whether the positional mapping below still lines up.
+        let optional_flags: Vec<_> = ix.accounts.iter().map(|acc| acc.optional).collect();
 
         quote! {
             #ix_enum_name::#variant_name(data) => {
@@ -374,26 +375,31 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
 
                 if let Some(obj) = value.as_object_mut() {
                     let account_names: Vec<&str> = vec![#(#account_names),*];
+                    let optional_flags: Vec<bool> = vec![#(#optional_flags),*];
                     let declared_count = #declared_count;
-                    let required_count = #required_count;
                     let actual_count = accounts.len();
 
-                    // Only a shortfall below the REQUIRED accounts means the IDL and the program
-                    // genuinely disagree, which makes the named lookups below bind wrong keys.
+                    // Fewer accounts than declared is benign only when every omitted declaration
+                    // is optional — that is, when they form an optional suffix. Counting required
+                    // accounts instead would accept a non-trailing optional being omitted, which
+                    // shifts every later key onto the wrong name: with
+                    // `[authority, payer?, system_program]` and two accounts supplied, the system
+                    // program gets labelled `payer` and nothing says so.
                     //
-                    // The two other directions are normal and must stay silent:
-                    //   - more than declared: Anchor's `remaining_accounts` are never declared in
-                    //     an IDL, so every program using them exceeds the count on every call.
-                    //   - fewer than declared but at least required: trailing optional accounts
-                    //     were omitted, which is what `optional` means.
-                    // Warning on either tells the reader to "update" an IDL that is correct.
-                    if actual_count < required_count {
+                    // More accounts than declared stays silent: Anchor's `remaining_accounts` are
+                    // never declared in an IDL, so programs using them exceed the count on every
+                    // call, and warning would tell the reader to "update" a correct IDL.
+                    let omitted_are_all_optional = optional_flags
+                        .iter()
+                        .skip(actual_count)
+                        .all(|optional| *optional);
+
+                    if actual_count < declared_count && !omitted_are_all_optional {
                         arete::runtime::tracing::warn!(
                             instruction = #ix_name,
-                            required = required_count,
                             declared = declared_count,
                             actual = actual_count,
-                            "Fewer accounts than the IDL requires — the IDL is out of sync with the program, so decoded account names may be wrong"
+                            "Accounts missing where the IDL declares a required one — decoded account names after the gap may be wrong"
                         );
                     }
 

@@ -553,6 +553,43 @@ describe("u64 length-prefixed sequences", () => {
   });
 });
 
+describe("discriminant range", () => {
+  const idlWith = (discriminant: unknown) => ({
+    version: "1.0.0",
+    name: "range_probe",
+    address: "AddressLookupTab1e1111111111111111111111111",
+    metadata: { name: "range_probe", address: "AddressLookupTab1e1111111111111111111111111" },
+    instructions: [{ name: "extend", discriminant, accounts: [], args: [] }],
+    accounts: [],
+    types: [],
+    events: [],
+    errors: [],
+  });
+
+  const specOf = (discriminant: unknown) =>
+    buildProgramSpecV1FromBytes(
+      new TextEncoder().encode(JSON.stringify(idlWith(discriminant), null, 2)),
+      "AddressLookupTab1e1111111111111111111111111",
+    );
+
+  // Truncating instead of rejecting turned 2^32 into [0,0,0,0], colliding with whichever
+  // instruction genuinely declares zero. The Rust deserializer rejects it, so this must too or
+  // the two implementations accept different IDLs.
+  test("a value wider than its declared type is rejected", () => {
+    expect(() => specOf({ type: "u32", value: 4294967296 })).toThrow(/does not fit its declared type/);
+  });
+
+  test("a byte declaration rejects a value above 255", () => {
+    expect(() => specOf({ type: "u8", value: 256 })).toThrow(/does not fit its declared type/);
+  });
+
+  test("the largest value for a declared type still parses", () => {
+    expect(specOf({ type: "u32", value: 4294967295 }).instructions?.[0]?.discriminator).toEqual([
+      255, 255, 255, 255,
+    ]);
+  });
+});
+
 describe("strict JSON values", () => {
   test("object order is never identity", () => {
     expect(hashJcs("idl-content", { b: 1, a: { d: 4, c: 3 } })).toBe(

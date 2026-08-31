@@ -606,7 +606,18 @@ function parseDiscriminant(value: unknown, location: string): { type: string; va
   ) {
     return invalidIdl(`${location}.value must be a non-negative integer`);
   }
-  return { type: requiredString(item.type, `${location}.type`), value: discriminantValue };
+  const type_ = requiredString(item.type, `${location}.type`);
+  // Rejected rather than truncated: `{ type: "u32", value: 4294967296 }` would otherwise encode as
+  // [0, 0, 0, 0] and collide with whichever instruction genuinely declares zero. Mirrors the
+  // `SteelDiscriminant` deserializer in arete-idl, which must agree or the two implementations
+  // accept different IDLs.
+  const max = Math.pow(256, discriminantWidth(type_)) - 1;
+  if (discriminantValue > max) {
+    return invalidIdl(
+      `${location}.value ${discriminantValue} does not fit its declared type ${type_} (max ${max})`
+    );
+  }
+  return { type: type_, value: discriminantValue };
 }
 
 /// Encoded width in bytes of a declared discriminant, taken from its type.
@@ -617,8 +628,8 @@ function parseDiscriminant(value: unknown, location: string): { type: string; va
 ///
 /// Must stay identical to `SteelDiscriminant::width` in arete-idl, or Rust and TypeScript
 /// disagree on `normalizedIdlHash` for the same IDL.
-function discriminantWidth(discriminant: { type: string; value: number }): number {
-  switch (discriminant.type) {
+function discriminantWidth(declaredType: string): number {
+  switch (declaredType) {
     case "u16":
       return 2;
     case "u32":
@@ -639,7 +650,7 @@ function discriminantWidth(discriminant: { type: string; value: number }): numbe
 function instructionDiscriminatorSize(idl: ParsedIdl): number {
   for (const instruction of idl.instructions) {
     if (instruction.discriminator.length !== 0) continue;
-    if (instruction.discriminant !== null) return discriminantWidth(instruction.discriminant);
+    if (instruction.discriminant !== null) return discriminantWidth(instruction.discriminant.type);
   }
   return 8;
 }
@@ -941,7 +952,7 @@ function instructionDiscriminator(instruction: ParsedInstruction): number[] {
     // into 4-7 instead of producing the high bytes, and TypeScript would disagree with Rust on
     // every `u64` discriminant. `parseDiscriminant` already rejects anything past
     // `Number.isSafeInteger`, so division stays exact for every accepted value.
-    const width = discriminantWidth(instruction.discriminant);
+    const width = discriminantWidth(instruction.discriminant.type);
     const bytes: number[] = [];
     let remaining = instruction.discriminant.value;
     for (let index = 0; index < width; index += 1) {

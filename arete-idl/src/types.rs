@@ -52,7 +52,7 @@ pub struct IdlMetadata {
 }
 
 /// Steel-style discriminant format: {"type": "u8", "value": N}
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SteelDiscriminant {
     #[serde(rename = "type")]
     pub type_: String,
@@ -67,7 +67,13 @@ impl SteelDiscriminant {
     /// assumed. An unrecognised type falls back to one byte, which is what every Steel IDL
     /// declares.
     pub fn width(&self) -> usize {
-        match self.type_.as_str() {
+        Self::width_of(&self.type_)
+    }
+
+    /// Width for a declared type name, for callers holding the name rather than the struct: the
+    /// snapshot deserializer infers a width before any `SteelDiscriminant` exists.
+    pub fn width_of(type_: &str) -> usize {
+        match type_ {
             "u16" => 2,
             "u32" => 4,
             "u64" => 8,
@@ -75,9 +81,56 @@ impl SteelDiscriminant {
         }
     }
 
+    /// Largest value the declared type can hold.
+    fn max_for_width(width: usize) -> u64 {
+        // `1u64 << 64` overflows, so u64 is named rather than computed.
+        if width >= 8 {
+            u64::MAX
+        } else {
+            (1u64 << (width * 8)) - 1
+        }
+    }
+
     /// The tag as it appears on the wire: little-endian, truncated to [`width`](Self::width).
+    ///
+    /// Truncation is safe because deserialization rejects a value wider than its declared type.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.value.to_le_bytes()[..self.width()].to_vec()
+    }
+}
+
+/// Rejects a value that does not fit its declared type, rather than truncating it.
+///
+/// `{"type": "u32", "value": 4294967296}` used to be accepted and encoded as `[0, 0, 0, 0]`,
+/// colliding with whichever instruction genuinely declares discriminant zero — two instructions
+/// sharing a tag, decided silently at parse time. Checked here so no caller can skip it, and
+/// mirrored by `parseDiscriminant` in the TypeScript hash implementation.
+impl<'de> Deserialize<'de> for SteelDiscriminant {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            #[serde(rename = "type")]
+            type_: String,
+            value: u64,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let width = Self::width_of(&wire.type_);
+        let max = Self::max_for_width(width);
+        if wire.value > max {
+            return Err(serde::de::Error::custom(format!(
+                "discriminant value {} does not fit its declared type {} (max {})",
+                wire.value, wire.type_, max
+            )));
+        }
+
+        Ok(Self {
+            type_: wire.type_,
+            value: wire.value,
+        })
     }
 }
 
@@ -754,6 +807,48 @@ mod discriminant_width_tests {
             spec(r#"[{"name":"a","discriminator":[1,2,3,4,5,6,7,8],"accounts":[],"args":[]}]"#);
         assert_eq!(idl.instruction_discriminator_size(), 8);
     }
+
+    /// A value wider than its declared type used to be truncated: `u32` with 2^32 became
+    /// `[0, 0, 0, 0]`, silently colliding with whichever instruction declares zero. Rejecting at
+    /// deserialization means no caller can reach the collision.
+    #[test]
+    fn a_value_wider_than_its_declared_type_is_rejected() {
+        let error = serde_json::from_str::<IdlInstruction>(
+            r#"{"name":"a","discriminant":{"type":"u32","value":4294967296},"accounts":[],"args":[]}"#,
+        )
+        .expect_err("2^32 does not fit a u32");
+
+        assert!(
+            error.to_string().contains("does not fit its declared type"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// The boundary itself must still parse, or every legitimate maximum tag is refused.
+    #[test]
+    fn the_largest_value_for_a_declared_type_still_parses() {
+        let ix = instruction(r#"{"type":"u32","value":4294967295}"#);
+        assert_eq!(ix.get_discriminator(), vec![255, 255, 255, 255]);
+
+        let byte = instruction(r#"{"type":"u8","value":255}"#);
+        assert_eq!(byte.get_discriminator(), vec![255]);
+    }
+
+    /// A `u8` declaration with 256 is the same defect one width down.
+    #[test]
+    fn a_byte_declaration_rejects_a_value_above_255() {
+        assert!(serde_json::from_str::<IdlInstruction>(
+            r#"{"name":"a","discriminant":{"type":"u8","value":256},"accounts":[],"args":[]}"#,
+        )
+        .is_err());
+    }
+
+    /// `u64` has no headroom above it, so the check must not overflow while computing a maximum.
+    #[test]
+    fn a_u64_declaration_accepts_the_whole_range() {
+        let ix = instruction(r#"{"type":"u64","value":18446744073709551615}"#);
+        assert_eq!(ix.get_discriminator(), vec![255; 8]);
+    }
 }
 
 #[cfg(test)]
@@ -803,5 +898,57 @@ mod optional_account_tests {
             2,
             "required"
         );
+    }
+
+    /// The generated warning silences a short account count only when every omitted declaration is
+    /// optional. Counting required accounts instead accepted this shape, where the omitted optional
+    /// sits in the middle: two accounts supplied against `[authority, payer?, system_program]`
+    /// meets the required count of two, yet position 1 is the system program being labelled
+    /// `payer`. `meteora_dlmm.json`'s `add_liquidity` has exactly this layout.
+    #[test]
+    fn a_non_trailing_optional_leaves_the_omitted_suffix_required() {
+        let ix: IdlInstruction = serde_json::from_str(
+            r#"{"name":"add_liquidity","accounts":[
+                 {"name":"authority","isMut":false,"isSigner":true},
+                 {"name":"payer","isMut":true,"isSigner":true,"optional":true},
+                 {"name":"system_program","isMut":false,"isSigner":false}
+               ],"args":[]}"#,
+        )
+        .expect("parse instruction");
+
+        let optional: Vec<bool> = ix.accounts.iter().map(|a| a.optional).collect();
+        let actual_count = 2;
+
+        // What the generated code now asks. The omitted suffix is [system_program], required, so
+        // the mismatch must be reported.
+        let omitted_are_all_optional = optional.iter().skip(actual_count).all(|o| *o);
+        assert!(
+            !omitted_are_all_optional,
+            "the omitted declaration is required, so the count must not be silenced"
+        );
+
+        // The old rule counted required accounts and found the floor met.
+        assert_eq!(
+            optional.iter().filter(|o| !**o).count(),
+            actual_count,
+            "the required floor is met, which is why counting it was not enough"
+        );
+    }
+
+    /// A genuinely trailing optional must stay silent, or every correct IDL warns.
+    #[test]
+    fn a_trailing_optional_suffix_stays_silent() {
+        let ix: IdlInstruction = serde_json::from_str(
+            r#"{"name":"extend","accounts":[
+                 {"name":"lookup_table","isMut":true,"isSigner":false},
+                 {"name":"payer","isMut":true,"isSigner":true,"optional":true},
+                 {"name":"system_program","isMut":false,"isSigner":false,"optional":true}
+               ],"args":[]}"#,
+        )
+        .expect("parse instruction");
+
+        let optional: Vec<bool> = ix.accounts.iter().map(|a| a.optional).collect();
+
+        assert!(optional.iter().skip(1).all(|o| *o), "tail is all optional");
     }
 }
