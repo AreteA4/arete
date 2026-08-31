@@ -447,7 +447,15 @@ pub(crate) async fn handle(
     if let Some(metrics) = &state.metrics {
         metrics.record_transaction_inflight(1, operation.name());
     }
-    let result = dispatch(operation, &body, auth.as_ref(), &state).await;
+    let mut upstream_attempted = false;
+    let result = dispatch(
+        operation,
+        &body,
+        auth.as_ref(),
+        &state,
+        &mut upstream_attempted,
+    )
+    .await;
     #[cfg(feature = "otel")]
     if let Some(metrics) = &state.metrics {
         metrics.record_transaction_inflight(-1, operation.name());
@@ -479,7 +487,9 @@ pub(crate) async fn handle(
         );
     }
     match result {
-        Ok(value) => transaction_response(StatusCode::OK, &request_id, true, value),
+        Ok(value) => {
+            transaction_response(StatusCode::OK, &request_id, upstream_attempted, value)
+        }
         Err(error) => error.response(&request_id),
     }
 }
@@ -874,6 +884,7 @@ async fn dispatch(
     body: &[u8],
     auth: Option<&AuthContext>,
     state: &TransactionState,
+    upstream_attempted: &mut bool,
 ) -> Result<Value, TxError> {
     let max_transaction_bytes = auth
         .and_then(|context| context.limits.max_transaction_bytes)
@@ -890,6 +901,7 @@ async fn dispatch(
                 json!([config]),
                 operation,
                 None,
+                upstream_attempted,
             )
             .await?;
             Ok(json!({
@@ -908,6 +920,7 @@ async fn dispatch(
                 json!([request.message, config]),
                 operation,
                 None,
+                upstream_attempted,
             )
             .await?;
             let fee = value
@@ -963,6 +976,7 @@ async fn dispatch(
                 json!([request.transaction, config]),
                 operation,
                 None,
+                upstream_attempted,
             )
             .await?;
             simulation_response(value)
@@ -987,6 +1001,7 @@ async fn dispatch(
                 json!([request.transaction, config]),
                 operation,
                 Some(signature.clone()),
+                upstream_attempted,
             )
             .await?;
             let upstream_signature = value.as_str().ok_or_else(|| {
@@ -1014,6 +1029,7 @@ async fn dispatch(
                 json!([[request.signature], { "searchTransactionHistory": request.search_transaction_history }]),
                 operation,
                 None,
+                upstream_attempted,
             )
             .await?;
             let status = value.pointer("/value/0").cloned().unwrap_or(Value::Null);
@@ -1049,6 +1065,7 @@ async fn dispatch(
                 json!([request.signatures, { "searchTransactionHistory": request.search_transaction_history }]),
                 operation,
                 None,
+                upstream_attempted,
             )
             .await?;
 
@@ -1079,7 +1096,15 @@ async fn dispatch(
         Operation::BlockHeight => {
             let request: CommonRequest = parse_json(body)?;
             let config = common_config(request.commitment, request.min_context_slot);
-            let value = rpc_call(state, "getBlockHeight", json!([config]), operation, None).await?;
+            let value = rpc_call(
+                state,
+                "getBlockHeight",
+                json!([config]),
+                operation,
+                None,
+                upstream_attempted,
+            )
+            .await?;
             let height = value.as_u64().ok_or_else(|| {
                 upstream_malformed("Malformed block height response", operation, None)
             })?;
@@ -1202,7 +1227,12 @@ async fn rpc_call(
     params: Value,
     operation: Operation,
     signature: Option<String>,
+    upstream_attempted: &mut bool,
 ) -> Result<Value, TxError> {
+    // Recorded here rather than assumed by the caller: `X-Arete-Upstream-Attempted` is a claim
+    // about whether the relay reached the cluster, and only this function can know. A dispatch arm
+    // that short-circuits — the empty status batch does — must not report an attempt it never made.
+    *upstream_attempted = true;
     let timeout = match operation {
         Operation::Send => state.config.send_timeout,
         Operation::SignatureStatus | Operation::SignatureStatuses => state.config.status_timeout,
@@ -1545,6 +1575,7 @@ mod tests {
             br#"{"commitment":"confirmed","minContextSlot":"41"}"#,
             None,
             &latest_state,
+            &mut false,
         )
         .await
         .unwrap();
@@ -1552,7 +1583,7 @@ mod tests {
         assert_eq!(latest["lastValidBlockHeight"], "99");
 
         let fee_state = state_for(json!({ "context": { "slot": 43 }, "value": 5000 })).await;
-        let fee = dispatch(Operation::Fee, br#"{"message":"AQ=="}"#, None, &fee_state)
+        let fee = dispatch(Operation::Fee, br#"{"message":"AQ=="}"#, None, &fee_state, &mut false)
             .await
             .unwrap();
         assert_eq!(fee["feeLamports"], "5000");
@@ -1568,6 +1599,7 @@ mod tests {
             br#"{"transaction":"AQ==","innerInstructions":true}"#,
             None,
             &simulation_state,
+            &mut false,
         )
         .await
         .unwrap();
@@ -1579,6 +1611,59 @@ mod tests {
     /// A valid base58 64-byte signature; the handler rejects anything else before dispatching.
     fn sig(seed: u8) -> String {
         bs58::encode(vec![seed; 64]).into_string()
+    }
+
+    /// `X-Arete-Upstream-Attempted` is a claim about whether the relay reached the cluster, so the
+    /// empty batch — which answers without calling upstream — must not assert one. The flag used to
+    /// be hardcoded `true` for every successful dispatch.
+    #[tokio::test]
+    async fn an_empty_batch_reports_no_upstream_attempt() {
+        let state = state_for(json!({ "context": { "slot": 50 }, "value": [] })).await;
+        let body = json!({ "signatures": [] }).to_string();
+        let mut upstream_attempted = false;
+
+        let value = dispatch(
+            Operation::SignatureStatuses,
+            body.as_bytes(),
+            None,
+            &state,
+            &mut upstream_attempted,
+        )
+        .await
+        .expect("an empty batch succeeds");
+
+        assert_eq!(value["statuses"], json!([]));
+        assert!(
+            !upstream_attempted,
+            "no upstream call was made, so none may be reported"
+        );
+    }
+
+    /// The same flag must still be set on the path that does reach upstream, or the header becomes
+    /// uniformly false and equally useless.
+    #[tokio::test]
+    async fn a_non_empty_batch_reports_an_upstream_attempt() {
+        let state = state_for(json!({
+            "context": { "slot": 50 },
+            "value": [
+                { "slot": 100, "confirmations": 3, "confirmationStatus": "confirmed", "err": null }
+            ]
+        }))
+        .await;
+        let body = json!({ "signatures": [sig(1)] }).to_string();
+        let mut upstream_attempted = false;
+
+        dispatch(
+            Operation::SignatureStatuses,
+            body.as_bytes(),
+            None,
+            &state,
+            &mut upstream_attempted,
+        )
+        .await
+        .expect("a one-signature batch succeeds");
+
+        assert!(upstream_attempted, "the relay did call upstream");
     }
 
     #[tokio::test]
@@ -1599,6 +1684,7 @@ mod tests {
             body.as_bytes(),
             None,
             &state,
+            &mut false,
         )
         .await
         .unwrap();
@@ -1622,6 +1708,7 @@ mod tests {
             body.as_bytes(),
             None,
             &state,
+            &mut false,
         )
         .await
         .expect_err("a short array must not be accepted");
@@ -1661,7 +1748,8 @@ mod tests {
                 Operation::SignatureStatuses,
                 body.as_bytes(),
                 None,
-                &state
+                &state,
+                &mut false,
             )
             .await
             .expect_err("over the cap")
@@ -1675,7 +1763,8 @@ mod tests {
                 Operation::SignatureStatuses,
                 body.as_bytes(),
                 None,
-                &state
+                &state,
+                &mut false,
             )
             .await
             .expect_err("bad signature")
@@ -1690,6 +1779,7 @@ mod tests {
             body.as_bytes(),
             None,
             &state,
+            &mut false,
         )
         .await
         .unwrap();

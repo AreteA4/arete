@@ -192,10 +192,6 @@ pub enum TransactionError {
     #[error(transparent)]
     Transport(Box<TransactionTransportError>),
 
-    /// The request was refused locally, before any network call.
-    #[error("Invalid transaction request: {0}")]
-    InvalidRequest(String),
-
     /// The response body did not match the wire contract.
     #[error("Invalid transaction response: {0}")]
     InvalidResponse(String),
@@ -218,9 +214,6 @@ impl From<TransactionError> for AreteError {
                 "Transaction request failed ({}): {} [{}]",
                 inner.status, inner.message, inner.code
             )),
-            TransactionError::InvalidRequest(message) => {
-                AreteError::InvalidConfig(format!("Invalid transaction request: {message}"))
-            }
             TransactionError::InvalidResponse(message) => AreteError::Serialization(message),
             TransactionError::Sdk(inner) => inner,
         }
@@ -290,9 +283,9 @@ pub trait TransactionTransport: Send + Sync {
         options: SignatureStatusOptions,
     ) -> Result<Vec<Option<TransactionSignatureStatus>>, TransactionError> {
         if signatures.len() > MAX_STATUS_SIGNATURES {
-            return Err(TransactionError::InvalidRequest(format!(
-                "signatures exceeds the {MAX_STATUS_SIGNATURES}-signature limit for one batch"
-            )));
+            return Err(TransactionError::Sdk(AreteError::InvalidConfig(format!(
+                "Invalid transaction request: signatures exceeds the {MAX_STATUS_SIGNATURES}-signature limit for one batch"
+            ))));
         }
 
         let mut statuses = Vec::with_capacity(signatures.len());
@@ -624,9 +617,9 @@ impl TransactionTransport for HttpTransactionTransport {
             return Ok(Vec::new());
         }
         if signatures.len() > MAX_STATUS_SIGNATURES {
-            return Err(TransactionError::InvalidRequest(format!(
-                "signatures exceeds the {MAX_STATUS_SIGNATURES}-signature limit for one batch"
-            )));
+            return Err(TransactionError::Sdk(AreteError::InvalidConfig(format!(
+                "Invalid transaction request: signatures exceeds the {MAX_STATUS_SIGNATURES}-signature limit for one batch"
+            ))));
         }
 
         let body = BodyBuilder::new()
@@ -1259,7 +1252,10 @@ mod tests {
             .expect_err("over the limit");
 
         assert!(
-            matches!(&error, TransactionError::InvalidRequest(m) if m.contains("256-signature")),
+            matches!(
+                &error,
+                TransactionError::Sdk(AreteError::InvalidConfig(m)) if m.contains("256-signature")
+            ),
             "unexpected error: {error:?}"
         );
         assert_eq!(hits.load(Ordering::SeqCst), 0, "nothing was sent");
@@ -1353,7 +1349,10 @@ mod tests {
             .expect_err("over the limit");
 
         assert!(
-            matches!(&error, TransactionError::InvalidRequest(m) if m.contains("256-signature")),
+            matches!(
+                &error,
+                TransactionError::Sdk(AreteError::InvalidConfig(m)) if m.contains("256-signature")
+            ),
             "unexpected error: {error:?}"
         );
     }
