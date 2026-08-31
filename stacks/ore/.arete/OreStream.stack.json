@@ -390,7 +390,8 @@
           "docs": [
             "Configures or closes a miner automation account.",
             "Automation PDA seeds: [\"automation\", signer].",
-            "Miner PDA seeds: [\"miner\", signer]."
+            "Miner PDA seeds: [\"miner\", signer].",
+            "The declared args are the legacy `Automate` layout (41 bytes after the tag). The program first tries `AutomateV2::try_from_bytes` and falls back to `Automate`, so payloads may carry an optional 24-byte `conditions` (AutomationConditions) tail at offset 42. That tail is intentionally left unmodelled in the baseline and reported as trailing bytes; model it in the augmented spec."
           ],
           "accounts": [
             {
@@ -599,8 +600,10 @@
           ],
           "discriminant": null,
           "docs": [
-            "Claims a percentage of ORE token rewards from the treasury vault.",
-            "The current instruction encodes bps as u64. Legacy empty payloads are accepted by the program as 10000 bps."
+            "Claims ORE token rewards from the treasury vault.",
+            "The baseline payload is tag-only: upstream `ClaimORE` args are parsed with `if let Ok(args) = ClaimORE::try_from_bytes(data)` and default to DENOMINATOR_BPS (10000) when absent, so the program accepts both a 1-byte payload and a 9-byte payload.",
+            "Optional trailing arg (not modelled in the baseline): `bps: u64` little-endian at offset 1, a discretionary claim percentage in basis points; when omitted the program claims 100% (10000 bps).",
+            "Both shapes are live on mainnet, so the optional bps tail belongs in the augmented spec; declaring it here would hard-fail the tag-only variant."
           ],
           "accounts": [
             {
@@ -692,12 +695,7 @@
               "docs": []
             }
           ],
-          "args": [
-            {
-              "name": "bps",
-              "type": "u64"
-            }
-          ]
+          "args": []
         },
         {
           "name": "close",
@@ -2854,9 +2852,9 @@
     {
       "schema": "arete.program-spec/v1",
       "programId": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
-      "idlContentHash": "arete:h1:idl-content:sha256:98b3cfcdeb2ad1a6a67a6a15d1b42979628da7bbabec1f30adc22958ead2ead6",
-      "portableIdlHash": "arete:h1:idl-portable:sha256:44f552651b3dbb588c86d64f7ba9a884021569772f394b60246f61c2a84ab7c0",
-      "normalizedIdlHash": "arete:h1:idl-normalized:sha256:4ad55eb4df42e150fb8004e52180ad2722f3a893847a828c48cd7da5eeccbc42",
+      "idlContentHash": "arete:h1:idl-content:sha256:47b3625ae54b40c0651153a0d6d337631b4e3428b73f9009a9399af34eb2c764",
+      "portableIdlHash": "arete:h1:idl-portable:sha256:1f1c045c388b9a27ab71c4fc2044733c2c122aba52f93a9f78995c948f3cb91c",
+      "normalizedIdlHash": "arete:h1:idl-normalized:sha256:137b245aa84f8f759a0d2abbc2459605554219ea73465883c7ff6dc36471b9a8",
       "idlSnapshot": {
         "normalizationVersion": 1,
         "name": "ore",
@@ -3245,7 +3243,8 @@
             "docs": [
               "Configures or closes a miner automation account.",
               "Automation PDA seeds: [\"automation\", signer].",
-              "Miner PDA seeds: [\"miner\", signer]."
+              "Miner PDA seeds: [\"miner\", signer].",
+              "The declared args are the legacy `Automate` layout (41 bytes after the tag). The program first tries `AutomateV2::try_from_bytes` and falls back to `Automate`, so payloads may carry an optional 24-byte `conditions` (AutomationConditions) tail at offset 42. That tail is intentionally left unmodelled in the baseline and reported as trailing bytes; model it in the augmented spec."
             ],
             "accounts": [
               {
@@ -3463,8 +3462,10 @@
               "value": 4
             },
             "docs": [
-              "Claims a percentage of ORE token rewards from the treasury vault.",
-              "The current instruction encodes bps as u64. Legacy empty payloads are accepted by the program as 10000 bps."
+              "Claims ORE token rewards from the treasury vault.",
+              "The baseline payload is tag-only: upstream `ClaimORE` args are parsed with `if let Ok(args) = ClaimORE::try_from_bytes(data)` and default to DENOMINATOR_BPS (10000) when absent, so the program accepts both a 1-byte payload and a 9-byte payload.",
+              "Optional trailing arg (not modelled in the baseline): `bps: u64` little-endian at offset 1, a discretionary claim percentage in basis points; when omitted the program claims 100% (10000 bps).",
+              "Both shapes are live on mainnet, so the optional bps tail belongs in the augmented spec; declaring it here would hard-fail the tag-only variant."
             ],
             "accounts": [
               {
@@ -3556,12 +3557,7 @@
                 "docs": []
               }
             ],
-            "args": [
-              {
-                "name": "bps",
-                "type": "u64"
-              }
-            ]
+            "args": []
           },
           {
             "name": "close",
@@ -5416,7 +5412,8 @@
           "docs": [
             "Configures or closes a miner automation account.",
             "Automation PDA seeds: [\"automation\", signer].",
-            "Miner PDA seeds: [\"miner\", signer]."
+            "Miner PDA seeds: [\"miner\", signer].",
+            "The declared args are the legacy `Automate` layout (41 bytes after the tag). The program first tries `AutomateV2::try_from_bytes` and falls back to `Automate`, so payloads may carry an optional 24-byte `conditions` (AutomationConditions) tail at offset 42. That tail is intentionally left unmodelled in the baseline and reported as trailing bytes; model it in the augmented spec."
           ]
         },
         {
@@ -5680,16 +5677,13 @@
               "is_optional": false
             }
           ],
-          "args": [
-            {
-              "name": "bps",
-              "type": "u64"
-            }
-          ],
+          "args": [],
           "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
           "docs": [
-            "Claims a percentage of ORE token rewards from the treasury vault.",
-            "The current instruction encodes bps as u64. Legacy empty payloads are accepted by the program as 10000 bps."
+            "Claims ORE token rewards from the treasury vault.",
+            "The baseline payload is tag-only: upstream `ClaimORE` args are parsed with `if let Ok(args) = ClaimORE::try_from_bytes(data)` and default to DENOMINATOR_BPS (10000) when absent, so the program accepts both a 1-byte payload and a 9-byte payload.",
+            "Optional trailing arg (not modelled in the baseline): `bps: u64` little-endian at offset 1, a discretionary claim percentage in basis points; when omitted the program claims 100% (10000 bps).",
+            "Both shapes are live on mainnet, so the optional bps tail belongs in the augmented spec; declaring it here would hard-fail the tag-only variant."
           ]
         },
         {
@@ -10091,7 +10085,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "cf2a20f838e91274b03c9cd35b0a04b75633d79eb593bb7c9ecc5d905a5efebd",
+      "content_hash": "e0a2d420f1a8ad607df16d2eed74c0b94522538968e5a665e83e1095e2cfa67a",
       "views": [
         {
           "id": "OreRound/latest",
@@ -10544,7 +10538,7 @@
       "resolver_specs": [],
       "computed_fields": [],
       "computed_field_specs": [],
-      "content_hash": "88de7908843f6acc1b7fec86ba64f9a3bc6eb48cfbc1a8bc9102d5c20bd976f5",
+      "content_hash": "f78aa2f219d41d5126a633e187a22466028687e11b2cda1b6738fb0ef6a691b3",
       "views": []
     },
     {
@@ -10996,7 +10990,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "71bf8097a342003753d8b40ad1c34306ee356239890abe289512389fd8f9d38f",
+      "content_hash": "2cd9fa41e66a4654005a6ca52117b206c671d410d5d71200d3347289ba6ae3f1",
       "views": []
     },
     {
@@ -12857,7 +12851,7 @@
           "result_type": "Option < f64 >"
         }
       ],
-      "content_hash": "da17901c6e7f182199546ac4c489ecc4675e69c94f38f14899ef1233094d32c8",
+      "content_hash": "2384a224e3861cc8d2b4f26effa1608e78f51763bad9d39a745074c7461a9cf9",
       "views": []
     }
   ],
@@ -13006,7 +13000,8 @@
       "docs": [
         "Configures or closes a miner automation account.",
         "Automation PDA seeds: [\"automation\", signer].",
-        "Miner PDA seeds: [\"miner\", signer]."
+        "Miner PDA seeds: [\"miner\", signer].",
+        "The declared args are the legacy `Automate` layout (41 bytes after the tag). The program first tries `AutomateV2::try_from_bytes` and falls back to `Automate`, so payloads may carry an optional 24-byte `conditions` (AutomationConditions) tail at offset 42. That tail is intentionally left unmodelled in the baseline and reported as trailing bytes; model it in the augmented spec."
       ]
     },
     {
@@ -13279,16 +13274,13 @@
           "is_optional": false
         }
       ],
-      "args": [
-        {
-          "name": "bps",
-          "type": "u64"
-        }
-      ],
+      "args": [],
       "program_id": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
       "docs": [
-        "Claims a percentage of ORE token rewards from the treasury vault.",
-        "The current instruction encodes bps as u64. Legacy empty payloads are accepted by the program as 10000 bps."
+        "Claims ORE token rewards from the treasury vault.",
+        "The baseline payload is tag-only: upstream `ClaimORE` args are parsed with `if let Ok(args) = ClaimORE::try_from_bytes(data)` and default to DENOMINATOR_BPS (10000) when absent, so the program accepts both a 1-byte payload and a 9-byte payload.",
+        "Optional trailing arg (not modelled in the baseline): `bps: u64` little-endian at offset 1, a discretionary claim percentage in basis points; when omitted the program claims 100% (10000 bps).",
+        "Both shapes are live on mainnet, so the optional bps tail belongs in the augmented spec; declaring it here would hard-fail the tag-only variant."
       ]
     },
     {
@@ -14521,5 +14513,5 @@
       ]
     }
   ],
-  "content_hash": "4c8b41425774b24c443756ad2c843c7ded0e5fd8fafc6400d7b3e732a0d64cdd"
+  "content_hash": "56024e9e1989485b285e69a289438f18d96c1550bda72c3b7fbde64360ebd2c0"
 }
