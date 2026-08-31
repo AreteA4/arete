@@ -1062,6 +1062,25 @@ fn analyze_idl_type_with_resolution(
                 resolved_type,
             )
         }
+        IdlType::Tuple(tuple) => {
+            // Heterogeneous composite: render as "(A, B)" and treat the
+            // value as an object; per-element analysis is not representable
+            // in this flat tuple summary.
+            let element_types = tuple
+                .tuple
+                .iter()
+                .map(|element| analyze_idl_type_with_resolution(element, idl).0)
+                .collect::<Vec<_>>()
+                .join(", ");
+            (
+                format!("({})", element_types),
+                BaseType::Object,
+                None,
+                false,
+                false,
+                None,
+            )
+        }
     }
 }
 

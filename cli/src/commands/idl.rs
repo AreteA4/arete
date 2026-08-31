@@ -84,6 +84,14 @@ fn format_idl_type(ty: &IdlType) -> String {
             format_idl_type(&m.hash_map.0),
             format_idl_type(&m.hash_map.1)
         ),
+        IdlType::Tuple(t) => format!(
+            "({})",
+            t.tuple
+                .iter()
+                .map(format_idl_type)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         IdlType::Defined(d) => match &d.defined {
             IdlTypeDefinedInner::Named { name } => name.clone(),
             IdlTypeDefinedInner::Simple(name) => name.clone(),

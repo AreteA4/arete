@@ -3462,6 +3462,11 @@ impl<'a> RustDefinedTypes<'a> {
                     }
                 }
             }
+            // The ArgType schema runtime has no tuple encoding yet, so tuple
+            // args degrade to the explicit unsupported marker (same as exotic
+            // hashMap keys) instead of emitting a schema the runtime cannot
+            // serialize.
+            IdlTypeSnapshot::Tuple(_) => rust_unsupported(),
             IdlTypeSnapshot::Defined(d) => {
                 let name = match &d.defined {
                     IdlDefinedInnerSnapshot::Named { name } => name.as_str(),

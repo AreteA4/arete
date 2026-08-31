@@ -439,6 +439,12 @@ fn codama_type_to_idl(type_node: &CodamaTypeNode) -> Result<IdlType, String> {
                 ],
             }))
         }
+        CodamaTypeNode::Tuple { items } => Ok(IdlType::Tuple(crate::types::IdlTypeTuple {
+            tuple: items
+                .iter()
+                .map(codama_type_to_idl)
+                .collect::<Result<Vec<_>, _>>()?,
+        })),
         CodamaTypeNode::Unknown => {
             Err("unsupported Codama type node kind (not modelled by arete-idl)".to_string())
         }

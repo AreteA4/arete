@@ -1,8 +1,9 @@
 use crate::ast::{
     idl_type_snapshot_to_rust_string, AccountResolution, AmountDecimalsSource,
     IdlArrayElementSnapshot, IdlArrayTypeSnapshot, IdlDefinedInnerSnapshot, IdlDefinedTypeSnapshot,
-    IdlHashMapTypeSnapshot, IdlOptionTypeSnapshot, IdlSnapshot, IdlTypeSnapshot,
-    IdlVecTypeSnapshot, InstructionAccountDef, InstructionAmountHint, InstructionArgDef,
+    IdlHashMapTypeSnapshot, IdlOptionTypeSnapshot, IdlSnapshot, IdlTupleTypeSnapshot,
+    IdlTypeSnapshot, IdlVecTypeSnapshot, InstructionAccountDef, InstructionAmountHint,
+    InstructionArgDef,
     InstructionDef, PdaDefinition, PdaProgramDef, PdaSeedDef, SerializableStackSpec,
     CURRENT_AST_VERSION,
 };
@@ -266,6 +267,9 @@ pub fn convert_idl_type(idl_type: &idl_parser::IdlType) -> IdlTypeSnapshot {
                 ),
             })
         }
+        idl_parser::IdlType::Tuple(tuple) => IdlTypeSnapshot::Tuple(IdlTupleTypeSnapshot {
+            tuple: tuple.tuple.iter().map(convert_idl_type).collect(),
+        }),
     }
 }
 

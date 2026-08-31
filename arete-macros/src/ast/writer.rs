@@ -395,6 +395,9 @@ pub fn convert_idl_type(idl_type: &idl_parser::IdlType) -> IdlTypeSnapshot {
                 Box::new(convert_idl_type(&hm.hash_map.1)),
             ),
         }),
+        idl_parser::IdlType::Tuple(tuple) => IdlTypeSnapshot::Tuple(IdlTupleTypeSnapshot {
+            tuple: tuple.tuple.iter().map(convert_idl_type).collect(),
+        }),
     }
 }
 

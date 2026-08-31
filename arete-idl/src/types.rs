@@ -373,7 +373,18 @@ pub enum IdlType {
     Option(IdlTypeOption),
     Vec(IdlTypeVec),
     HashMap(IdlTypeHashMap),
+    Tuple(IdlTypeTuple),
     Defined(IdlTypeDefined),
+}
+
+/// Inline tuple type, e.g. `{"tuple": [{"defined": "A"}, "u64"]}`.
+///
+/// Emitted by Codama/Kinobi legacy-Anchor renders (e.g. mpl-core) for
+/// `Vec<(A, B)>`-style fields. Borsh encodes a tuple as its elements in
+/// declaration order, so this is fully representable with no loss.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IdlTypeTuple {
+    pub tuple: Vec<IdlType>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

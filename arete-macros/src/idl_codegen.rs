@@ -630,6 +630,16 @@ fn generate_json_value_for_type(
                 )
             }
         }
+        IdlType::Tuple(tuple_type) => {
+            // Rust tuples serialize to a JSON array of their elements.
+            let elements = tuple_type.tuple.iter().enumerate().map(|(index, element)| {
+                let index = proc_macro2::Literal::usize_unsuffixed(index);
+                generate_json_value_for_type(element, quote! { (#value_expr).#index }, use_bytemuck)
+            });
+            quote! {
+                arete::runtime::serde_json::Value::Array(vec![ #(#elements),* ])
+            }
+        }
     }
 }
 

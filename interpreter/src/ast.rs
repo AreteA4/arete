@@ -62,6 +62,15 @@ pub fn idl_type_snapshot_to_rust_string(ty: &IdlTypeSnapshot) -> String {
             let val_type = idl_type_snapshot_to_rust_string(&map.hash_map.1);
             format!("std::collections::HashMap<{}, {}>", key_type, val_type)
         }
+        IdlTypeSnapshot::Tuple(tuple) => format!(
+            "({})",
+            tuple
+                .tuple
+                .iter()
+                .map(idl_type_snapshot_to_rust_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         IdlTypeSnapshot::Defined(def) => match &def.defined {
             IdlDefinedInnerSnapshot::Named { name } => name.clone(),
             IdlDefinedInnerSnapshot::Simple(s) => s.clone(),

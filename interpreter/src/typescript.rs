@@ -2271,6 +2271,11 @@ fn collect_required_defined_types(
                 output,
             );
         }
+        IdlTypeSnapshot::Tuple(tuple_type) => {
+            for element in &tuple_type.tuple {
+                collect_required_defined_types(element, type_defs, account_names, output);
+            }
+        }
         IdlTypeSnapshot::Defined(defined_type) => {
             let type_name = match &defined_type.defined {
                 IdlDefinedInnerSnapshot::Named { name } => name,
@@ -2511,6 +2516,17 @@ fn idl_snapshot_type_to_typescript(
                 idl_snapshot_type_to_typescript(&hash_map_type.hash_map.1, local_name_map)
             )
         }
+        IdlTypeSnapshot::Tuple(tuple_type) => {
+            format!(
+                "[{}]",
+                tuple_type
+                    .tuple
+                    .iter()
+                    .map(|element| idl_snapshot_type_to_typescript(element, local_name_map))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
         IdlTypeSnapshot::Defined(defined_type) => {
             let type_name = match &defined_type.defined {
                 IdlDefinedInnerSnapshot::Named { name } => name,
@@ -2574,6 +2590,17 @@ fn idl_snapshot_type_to_zod(
             format!(
                 "z.record({})",
                 idl_snapshot_type_to_zod(&hash_map_type.hash_map.1, local_name_map)
+            )
+        }
+        IdlTypeSnapshot::Tuple(tuple_type) => {
+            format!(
+                "z.tuple([{}])",
+                tuple_type
+                    .tuple
+                    .iter()
+                    .map(|element| idl_snapshot_type_to_zod(element, local_name_map))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         }
         IdlTypeSnapshot::Defined(defined_type) => {

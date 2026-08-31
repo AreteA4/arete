@@ -1073,6 +1073,11 @@ impl<'a> DefinedTypes<'a> {
                     }
                 }
             }
+            // The TS instruction-args schema runtime has no tuple encoding
+            // yet, so tuple args degrade to the explicit unsupported marker
+            // (same as exotic hashMap keys) instead of emitting a schema the
+            // runtime cannot serialize.
+            IdlTypeSnapshot::Tuple(_) => unsupported(),
             IdlTypeSnapshot::Defined(d) => {
                 let name = match &d.defined {
                     IdlDefinedInnerSnapshot::Named { name } => name.as_str(),
