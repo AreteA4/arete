@@ -292,19 +292,69 @@ fn array_inner_type(idl_type: &IdlTypeArray) -> Option<IdlType> {
 }
 
 /// Does this type contain a `u64`-length-prefixed sequence? Such types cannot use the
-/// derived Borsh impls. Returns `false` for `defined` types, whose fields are not
-/// resolvable here, so declare such sequences directly rather than inside a named type.
-fn contains_u64_len_vec(idl_type: &IdlType) -> bool {
+/// derived Borsh impls.
+///
+/// `defined` types are resolved against `types`, with `visited` guarding a cycle, the same way
+/// [`type_is_u8`] does. Answering `false` for them without looking compiled an IDL the interpreter
+/// accepts and emitted a four-byte count where the program reads eight: three bytes short, the
+/// first element misread, and no diagnostic.
+fn contains_u64_len_vec(
+    idl_type: &IdlType,
+    types: &[IdlTypeDef],
+    visited: &mut HashSet<String>,
+) -> bool {
     match idl_type {
         IdlType::Vec(vec_type) => {
             matches!(vec_type.length_prefix, Some(IdlLengthPrefix::U64))
-                || contains_u64_len_vec(&vec_type.vec)
+                || contains_u64_len_vec(&vec_type.vec, types, visited)
         }
-        IdlType::Option(option_type) => contains_u64_len_vec(&option_type.option),
+        IdlType::Option(option_type) => {
+            contains_u64_len_vec(&option_type.option, types, visited)
+        }
         IdlType::Array(array_type) => array_inner_type(array_type)
-            .map(|inner| contains_u64_len_vec(&inner))
+            .map(|inner| contains_u64_len_vec(&inner, types, visited))
             .unwrap_or(false),
-        IdlType::Simple(_) | IdlType::HashMap(_) | IdlType::Defined(_) => false,
+        IdlType::HashMap(map_type) => {
+            let (key, value) = &map_type.hash_map;
+            contains_u64_len_vec(key, types, visited)
+                || contains_u64_len_vec(value, types, visited)
+        }
+        IdlType::Defined(def) => {
+            let name = match &def.defined {
+                IdlTypeDefinedInner::Named { name } => name,
+                IdlTypeDefinedInner::Simple(name) => name,
+            };
+
+            if !visited.insert(name.clone()) {
+                return false;
+            }
+
+            let result = types
+                .iter()
+                .find(|type_def| type_def.name == *name)
+                .is_some_and(|type_def| match &type_def.type_def {
+                    IdlTypeDefKind::Struct { fields, .. } => fields
+                        .iter()
+                        .any(|field| contains_u64_len_vec(&field.type_, types, visited)),
+                    IdlTypeDefKind::TupleStruct { fields, .. } => fields
+                        .iter()
+                        .any(|field| contains_u64_len_vec(field, types, visited)),
+                    IdlTypeDefKind::Enum { variants, .. } => variants.iter().any(|variant| {
+                        variant.fields.iter().any(|field| match field {
+                            IdlEnumVariantField::Named(named) => {
+                                contains_u64_len_vec(&named.type_, types, visited)
+                            }
+                            IdlEnumVariantField::Tuple(tuple) => {
+                                contains_u64_len_vec(tuple, types, visited)
+                            }
+                        })
+                    }),
+                });
+
+            visited.remove(name);
+            result
+        }
+        IdlType::Simple(_) => false,
     }
 }
 
@@ -312,17 +362,18 @@ fn contains_u64_len_vec(idl_type: &IdlType) -> bool {
 /// delegate to the derived Borsh reader; only the differing nodes are hand-rolled.
 fn borsh_read_expr(
     idl_type: &IdlType,
+    types: &[IdlTypeDef],
     account_names: &HashSet<String>,
     in_accounts_module: bool,
 ) -> TokenStream {
-    if !contains_u64_len_vec(idl_type) {
+    if !contains_u64_len_vec(idl_type, types, &mut HashSet::new()) {
         let ty = type_to_token_stream_in_module(idl_type, account_names, in_accounts_module);
         return quote! { <#ty as borsh::BorshDeserialize>::deserialize_reader(reader)? };
     }
 
     match idl_type {
         IdlType::Vec(vec_type) => {
-            let inner = borsh_read_expr(&vec_type.vec, account_names, in_accounts_module);
+            let inner = borsh_read_expr(&vec_type.vec, types, account_names, in_accounts_module);
             let read_len = if matches!(vec_type.length_prefix, Some(IdlLengthPrefix::U64)) {
                 quote! { <u64 as borsh::BorshDeserialize>::deserialize_reader(reader)? }
             } else {
@@ -339,7 +390,7 @@ fn borsh_read_expr(
             }}
         }
         IdlType::Option(option_type) => {
-            let inner = borsh_read_expr(&option_type.option, account_names, in_accounts_module);
+            let inner = borsh_read_expr(&option_type.option, types, account_names, in_accounts_module);
             quote! {{
                 match <u8 as borsh::BorshDeserialize>::deserialize_reader(reader)? {
                     0 => None,
@@ -353,7 +404,7 @@ fn borsh_read_expr(
         }
         IdlType::Array(array_type) => {
             let inner_type = array_inner_type(array_type).expect("array inner type");
-            let inner = borsh_read_expr(&inner_type, account_names, in_accounts_module);
+            let inner = borsh_read_expr(&inner_type, types, account_names, in_accounts_module);
             let len = array_type
                 .array
                 .iter()
@@ -381,14 +432,18 @@ fn borsh_read_expr(
 }
 
 /// Statement that writes `value_expr` for `idl_type` into `writer`.
-fn borsh_write_stmt(idl_type: &IdlType, value_expr: TokenStream) -> TokenStream {
-    if !contains_u64_len_vec(idl_type) {
+fn borsh_write_stmt(
+    idl_type: &IdlType,
+    types: &[IdlTypeDef],
+    value_expr: TokenStream,
+) -> TokenStream {
+    if !contains_u64_len_vec(idl_type, types, &mut HashSet::new()) {
         return quote! { borsh::BorshSerialize::serialize(&#value_expr, writer)?; };
     }
 
     match idl_type {
         IdlType::Vec(vec_type) => {
-            let inner = borsh_write_stmt(&vec_type.vec, quote! { __item });
+            let inner = borsh_write_stmt(&vec_type.vec, types, quote! { __item });
             let write_len = if matches!(vec_type.length_prefix, Some(IdlLengthPrefix::U64)) {
                 quote! { borsh::BorshSerialize::serialize(&(#value_expr.len() as u64), writer)?; }
             } else {
@@ -402,7 +457,7 @@ fn borsh_write_stmt(idl_type: &IdlType, value_expr: TokenStream) -> TokenStream 
             }
         }
         IdlType::Option(option_type) => {
-            let inner = borsh_write_stmt(&option_type.option, quote! { __inner });
+            let inner = borsh_write_stmt(&option_type.option, types, quote! { __inner });
             quote! {
                 match #value_expr.as_ref() {
                     None => borsh::BorshSerialize::serialize(&0u8, writer)?,
@@ -415,7 +470,7 @@ fn borsh_write_stmt(idl_type: &IdlType, value_expr: TokenStream) -> TokenStream 
         }
         IdlType::Array(array_type) => {
             let inner_type = array_inner_type(array_type).expect("array inner type");
-            let inner = borsh_write_stmt(&inner_type, quote! { __item });
+            let inner = borsh_write_stmt(&inner_type, types, quote! { __item });
             quote! {
                 for __item in #value_expr.iter() {
                     #inner
@@ -727,12 +782,12 @@ fn generate_account_type(
 
 fn generate_instruction_types(
     instructions: &[IdlInstruction],
-    _types: &[IdlTypeDef],
+    types: &[IdlTypeDef],
     account_names: &HashSet<String>,
 ) -> TokenStream {
     let instruction_structs = instructions
         .iter()
-        .map(|ix| generate_instruction_type(ix, account_names));
+        .map(|ix| generate_instruction_type(ix, types, account_names));
 
     quote! {
         #(#instruction_structs)*
@@ -741,6 +796,7 @@ fn generate_instruction_types(
 
 fn generate_instruction_type(
     instruction: &IdlInstruction,
+    types: &[IdlTypeDef],
     account_names: &HashSet<String>,
 ) -> TokenStream {
     let name = format_ident!("{}", to_pascal_case(&instruction.name));
@@ -761,17 +817,17 @@ fn generate_instruction_type(
     let needs_manual_borsh = instruction
         .args
         .iter()
-        .any(|arg| contains_u64_len_vec(&arg.type_));
+        .any(|arg| contains_u64_len_vec(&arg.type_, types, &mut HashSet::new()));
 
     let (derives, manual_borsh) = if needs_manual_borsh {
         let field_reads = instruction.args.iter().map(|arg| {
             let arg_name = format_ident!("{}", to_snake_case(&arg.name));
-            let read = borsh_read_expr(&arg.type_, account_names, false);
+            let read = borsh_read_expr(&arg.type_, types, account_names, false);
             quote! { #arg_name: #read }
         });
         let field_writes = instruction.args.iter().map(|arg| {
             let arg_name = format_ident!("{}", to_snake_case(&arg.name));
-            borsh_write_stmt(&arg.type_, quote! { self.#arg_name })
+            borsh_write_stmt(&arg.type_, types, quote! { self.#arg_name })
         });
         (
             quote! { #[derive(Debug, Clone)] },
@@ -1587,5 +1643,77 @@ mod tests {
             !is_large_array(&not_array),
             "non-array type should NOT be large"
         );
+    }
+
+    /// An IDL whose instruction argument is a defined type wrapping a `u64`-length-prefixed
+    /// sequence. The interpreter resolves this and emits `VecU64Len`; the macro must agree, or two
+    /// SDKs generated from one IDL disagree on the wire format.
+    fn nested_u64_prefix_idl() -> IdlSpec {
+        let json = r#"{
+            "address": "TestNestedPrefix1111111111111111111111111",
+            "metadata": { "name": "test_nested", "version": "0.1.0", "spec": "0.1.0" },
+            "instructions": [{
+                "name": "extend",
+                "discriminator": [1, 2, 3, 4, 5, 6, 7, 8],
+                "accounts": [],
+                "args": [{ "name": "batch", "type": { "defined": { "name": "AddressBatch" } } }]
+            }],
+            "accounts": [],
+            "types": [{
+                "name": "AddressBatch",
+                "type": {
+                    "kind": "struct",
+                    "fields": [{
+                        "name": "addresses",
+                        "type": { "vec": "pubkey", "lengthPrefix": "u64" }
+                    }]
+                }
+            }],
+            "events": [],
+            "errors": []
+        }"#;
+        serde_json::from_str(json).expect("nested prefix IDL parses")
+    }
+
+    /// Writing four bytes where the program reads eight leaves the payload three bytes short and
+    /// the first element misread. The macro used to answer `false` here because a `defined` type's
+    /// fields were not looked up, so it silently took the derived-Borsh path.
+    #[test]
+    fn a_u64_prefix_inside_a_defined_type_is_detected() {
+        let idl = nested_u64_prefix_idl();
+        let argument = &idl.instructions[0].args[0].type_;
+
+        assert!(
+            contains_u64_len_vec(argument, &idl.types, &mut HashSet::new()),
+            "a u64 prefix nested in a defined type must be detected"
+        );
+    }
+
+    /// A type that refers to itself must terminate rather than recurse forever.
+    #[test]
+    fn a_self_referential_defined_type_terminates() {
+        let json = r#"{
+            "address": "TestCycle11111111111111111111111111111111",
+            "metadata": { "name": "test_cycle", "version": "0.1.0", "spec": "0.1.0" },
+            "instructions": [],
+            "accounts": [],
+            "types": [{
+                "name": "Node",
+                "type": {
+                    "kind": "struct",
+                    "fields": [{ "name": "next", "type": { "defined": { "name": "Node" } } }]
+                }
+            }],
+            "events": [],
+            "errors": []
+        }"#;
+        let idl: IdlSpec = serde_json::from_str(json).expect("cyclic IDL parses");
+        let node = IdlType::Defined(IdlTypeDefined {
+            defined: IdlTypeDefinedInner::Named {
+                name: "Node".to_string(),
+            },
+        });
+
+        assert!(!contains_u64_len_vec(&node, &idl.types, &mut HashSet::new()));
     }
 }
