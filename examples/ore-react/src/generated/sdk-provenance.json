@@ -7,7 +7,7 @@
   "generator": {
     "name": "a4-cli",
     "version": "0.10.0",
-    "compilerHash": "arete:h1:compiler:sha256:295c3e1eb1ddc12527db211f7444e9bef7a2c233312956892121ef0784ed70de"
+    "compilerHash": "arete:h1:compiler:sha256:c458de12dae3a2d46b1dc9543e2016af2318b43143515d1baa0e82a0c074d991"
   },
   "extensions": {
     "legacyProvenanceSha256": "de72cf6756d59cd5bda0488cc4287b47882bd5d216bbe822dea4f24e6565dbf3"

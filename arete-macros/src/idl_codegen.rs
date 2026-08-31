@@ -192,7 +192,78 @@ fn generate_bytemuck_field(field: &IdlField) -> TokenStream {
     quote! { pub #field_name: #field_type }
 }
 
+/// A `u64` length prefix reachable only through a `defined` or `hashMap` type.
+///
+/// Those two are serialized by delegating to the named type's own derived Borsh impl, which writes
+/// a `u32` sequence count. Detecting the prefix does not change that — the generated code compiles
+/// and emits four bytes where the program reads eight, three bytes short with the first element
+/// misread. Supporting it means generating manual Borsh impls for every affected named type, which
+/// no IDL currently needs: the Address Lookup Table declares its prefix on a direct argument.
+///
+/// So it is refused at expansion instead of miscompiled. Declare the sequence directly on the
+/// argument or field.
+fn nested_u64_prefix(idl_type: &IdlType, types: &[IdlTypeDef]) -> bool {
+    contains_u64_len_vec(idl_type, types, &mut HashSet::new())
+        && !contains_u64_len_vec_directly(idl_type)
+}
+
+/// The prefix is on this type or inside a `vec`/`option`/`array` of it — shapes the generator
+/// hand-rolls, so they encode correctly. Deliberately does not resolve `defined` or `hashMap`.
+fn contains_u64_len_vec_directly(idl_type: &IdlType) -> bool {
+    match idl_type {
+        IdlType::Vec(vec_type) => {
+            matches!(vec_type.length_prefix, Some(IdlLengthPrefix::U64))
+                || contains_u64_len_vec_directly(&vec_type.vec)
+        }
+        IdlType::Option(option_type) => contains_u64_len_vec_directly(&option_type.option),
+        IdlType::Array(array_type) => array_inner_type(array_type)
+            .map(|inner| contains_u64_len_vec_directly(&inner))
+            .unwrap_or(false),
+        IdlType::Simple(_) | IdlType::HashMap(_) | IdlType::Defined(_) => false,
+    }
+}
+
+/// Every place a nested prefix could hide, named for the error message.
+fn find_nested_u64_prefix(idl: &IdlSpec) -> Option<String> {
+    for instruction in &idl.instructions {
+        for argument in &instruction.args {
+            if nested_u64_prefix(&argument.type_, &idl.types) {
+                return Some(format!(
+                    "instruction '{}' argument '{}'",
+                    instruction.name, argument.name
+                ));
+            }
+        }
+    }
+
+    for type_def in &idl.types {
+        let fields: Vec<&IdlType> = match &type_def.type_def {
+            IdlTypeDefKind::Struct { fields, .. } => {
+                fields.iter().map(|field| &field.type_).collect()
+            }
+            IdlTypeDefKind::TupleStruct { fields, .. } => fields.iter().collect(),
+            IdlTypeDefKind::Enum { .. } => Vec::new(),
+        };
+        for field in fields {
+            if nested_u64_prefix(field, &idl.types) {
+                return Some(format!("type '{}'", type_def.name));
+            }
+        }
+    }
+
+    None
+}
+
 pub fn generate_sdk_types(idl: &IdlSpec, module_name: &str) -> TokenStream {
+    if let Some(location) = find_nested_u64_prefix(idl) {
+        let message = format!(
+            "{location} reaches a u64-length-prefixed sequence through a `defined` or `hashMap` \
+             type, which the generated Borsh impls would encode with a four-byte count. Declare \
+             the sequence directly on the argument or field instead."
+        );
+        return quote! { compile_error!(#message); };
+    }
+
     let account_names = collect_account_names(&idl.accounts);
     let account_types = generate_account_types(&idl.accounts, &idl.types, &account_names);
     let instruction_types =
@@ -1675,17 +1746,87 @@ mod tests {
         serde_json::from_str(json).expect("nested prefix IDL parses")
     }
 
-    /// Writing four bytes where the program reads eight leaves the payload three bytes short and
-    /// the first element misread. The macro used to answer `false` here because a `defined` type's
-    /// fields were not looked up, so it silently took the derived-Borsh path.
+    /// Detection alone was not a fix: `borsh_read_expr` and `borsh_write_stmt` delegate a `defined`
+    /// type to its own derived Borsh impl, which writes a four-byte sequence count, so the
+    /// generated code compiled and emitted the wrong bytes either way. The generator refuses the
+    /// shape instead, and this asserts the generated output rather than the predicate — the
+    /// previous version of this test passed while the miscompilation was still live.
     #[test]
-    fn a_u64_prefix_inside_a_defined_type_is_detected() {
+    fn a_u64_prefix_inside_a_defined_type_is_refused_at_expansion() {
         let idl = nested_u64_prefix_idl();
-        let argument = &idl.instructions[0].args[0].type_;
+
+        let generated = generate_sdk_types(&idl, "test_nested").to_string();
 
         assert!(
-            contains_u64_len_vec(argument, &idl.types, &mut HashSet::new()),
-            "a u64 prefix nested in a defined type must be detected"
+            generated.contains("compile_error"),
+            "expansion must refuse the shape, got: {generated}"
+        );
+        assert!(
+            generated.contains("instruction 'extend' argument 'batch'"),
+            "the error must name where the prefix is, got: {generated}"
+        );
+        assert!(
+            !generated.contains("BorshDeserialize"),
+            "no types may be emitted for a refused IDL"
+        );
+    }
+
+    /// A prefix declared directly on the argument is the supported shape and must still generate.
+    /// This is what the Address Lookup Table's `extend_lookup_table` declares.
+    #[test]
+    fn a_directly_declared_u64_prefix_still_generates() {
+        let json = r#"{
+            "address": "TestDirectPrefix111111111111111111111111",
+            "metadata": { "name": "test_direct", "version": "0.1.0", "spec": "0.1.0" },
+            "instructions": [{
+                "name": "extend",
+                "discriminator": [1, 2, 3, 4, 5, 6, 7, 8],
+                "accounts": [],
+                "args": [{ "name": "addresses", "type": { "vec": "pubkey", "lengthPrefix": "u64" } }]
+            }],
+            "accounts": [],
+            "types": [],
+            "events": [],
+            "errors": []
+        }"#;
+        let idl: IdlSpec = serde_json::from_str(json).expect("direct prefix IDL parses");
+
+        let generated = generate_sdk_types(&idl, "test_direct").to_string();
+
+        assert!(
+            !generated.contains("compile_error"),
+            "a direct prefix is supported, got: {generated}"
+        );
+        assert!(generated.contains("BorshDeserialize"), "types are emitted");
+    }
+
+    /// A `hashMap` hides the same delegation, so it is refused for the same reason.
+    #[test]
+    fn a_u64_prefix_inside_a_hashmap_is_refused() {
+        let json = r#"{
+            "address": "TestMapPrefix1111111111111111111111111111",
+            "metadata": { "name": "test_map", "version": "0.1.0", "spec": "0.1.0" },
+            "instructions": [{
+                "name": "store",
+                "discriminator": [1, 2, 3, 4, 5, 6, 7, 8],
+                "accounts": [],
+                "args": [{
+                    "name": "batches",
+                    "type": { "hashMap": ["pubkey", { "vec": "pubkey", "lengthPrefix": "u64" }] }
+                }]
+            }],
+            "accounts": [],
+            "types": [],
+            "events": [],
+            "errors": []
+        }"#;
+        let idl: IdlSpec = serde_json::from_str(json).expect("map prefix IDL parses");
+
+        let generated = generate_sdk_types(&idl, "test_map").to_string();
+
+        assert!(
+            generated.contains("compile_error"),
+            "a prefix behind a hashMap must be refused, got: {generated}"
         );
     }
 
