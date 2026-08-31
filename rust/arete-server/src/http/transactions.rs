@@ -110,6 +110,7 @@ enum Operation {
     Simulate,
     Send,
     SignatureStatus,
+    SignatureStatuses,
     BlockHeight,
 }
 
@@ -141,6 +142,7 @@ impl Operation {
             "/transactions/v1/simulate" => Some(Self::Simulate),
             "/transactions/v1/send" => Some(Self::Send),
             "/transactions/v1/signature-status" => Some(Self::SignatureStatus),
+            "/transactions/v1/signature-statuses" => Some(Self::SignatureStatuses),
             "/transactions/v1/block-height" => Some(Self::BlockHeight),
             _ => None,
         }
@@ -161,6 +163,7 @@ impl Operation {
             Self::Simulate => "simulate",
             Self::Send => "send",
             Self::SignatureStatus => "signature_status",
+            Self::SignatureStatuses => "signature_statuses",
             Self::BlockHeight => "block_height",
         }
     }
@@ -297,6 +300,21 @@ struct SignatureStatusRequest {
     search_transaction_history: bool,
 }
 
+/// Solana's `getSignatureStatuses` resolves up to 256 signatures per call, so the batch is capped
+/// there: one request in, one upstream call out.
+///
+/// A batch this size is roughly 23 KiB of JSON, which is why `TransactionConfig::max_body_bytes`
+/// defaults above that. `a_full_batch_fits_the_default_body_limit` holds the two together.
+const MAX_STATUS_BATCH: usize = 256;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SignatureStatusesRequest {
+    signatures: Vec<String>,
+    #[serde(default)]
+    search_transaction_history: bool,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum Commitment {
@@ -429,7 +447,15 @@ pub(crate) async fn handle(
     if let Some(metrics) = &state.metrics {
         metrics.record_transaction_inflight(1, operation.name());
     }
-    let result = dispatch(operation, &body, auth.as_ref(), &state).await;
+    let mut upstream_attempted = false;
+    let result = dispatch(
+        operation,
+        &body,
+        auth.as_ref(),
+        &state,
+        &mut upstream_attempted,
+    )
+    .await;
     #[cfg(feature = "otel")]
     if let Some(metrics) = &state.metrics {
         metrics.record_transaction_inflight(-1, operation.name());
@@ -461,7 +487,9 @@ pub(crate) async fn handle(
         );
     }
     match result {
-        Ok(value) => transaction_response(StatusCode::OK, &request_id, true, value),
+        Ok(value) => {
+            transaction_response(StatusCode::OK, &request_id, upstream_attempted, value)
+        }
         Err(error) => error.response(&request_id),
     }
 }
@@ -659,18 +687,22 @@ async fn admit(
 ) -> Result<Admission, TxError> {
     let server_limit = match operation {
         Operation::Send => state.config.send_requests_per_minute,
-        Operation::SignatureStatus => state.config.status_requests_per_minute,
+        Operation::SignatureStatus | Operation::SignatureStatuses => {
+            state.config.status_requests_per_minute
+        }
         _ => state.config.inspect_requests_per_minute,
     };
     let claim_limit = auth.and_then(|context| match operation {
         Operation::Send => context.limits.max_transaction_send_requests_per_minute,
-        Operation::SignatureStatus => context.limits.max_transaction_status_requests_per_minute,
+        Operation::SignatureStatus | Operation::SignatureStatuses => {
+            context.limits.max_transaction_status_requests_per_minute
+        }
         _ => context.limits.max_transaction_inspect_requests_per_minute,
     });
     let limit = claim_limit.unwrap_or(server_limit).min(server_limit);
     let class = match operation {
         Operation::Send => "send",
-        Operation::SignatureStatus => "status",
+        Operation::SignatureStatus | Operation::SignatureStatuses => "status",
         _ => "inspect",
     };
     check_bucket(
@@ -738,7 +770,7 @@ async fn admit(
                             .account_limits
                             .max_transaction_send_requests_per_minute
                     }
-                    Operation::SignatureStatus => {
+                    Operation::SignatureStatus | Operation::SignatureStatuses => {
                         context
                             .account_limits
                             .max_transaction_status_requests_per_minute
@@ -852,6 +884,7 @@ async fn dispatch(
     body: &[u8],
     auth: Option<&AuthContext>,
     state: &TransactionState,
+    upstream_attempted: &mut bool,
 ) -> Result<Value, TxError> {
     let max_transaction_bytes = auth
         .and_then(|context| context.limits.max_transaction_bytes)
@@ -868,6 +901,7 @@ async fn dispatch(
                 json!([config]),
                 operation,
                 None,
+                upstream_attempted,
             )
             .await?;
             Ok(json!({
@@ -886,6 +920,7 @@ async fn dispatch(
                 json!([request.message, config]),
                 operation,
                 None,
+                upstream_attempted,
             )
             .await?;
             let fee = value
@@ -941,6 +976,7 @@ async fn dispatch(
                 json!([request.transaction, config]),
                 operation,
                 None,
+                upstream_attempted,
             )
             .await?;
             simulation_response(value)
@@ -965,6 +1001,7 @@ async fn dispatch(
                 json!([request.transaction, config]),
                 operation,
                 Some(signature.clone()),
+                upstream_attempted,
             )
             .await?;
             let upstream_signature = value.as_str().ok_or_else(|| {
@@ -992,26 +1029,82 @@ async fn dispatch(
                 json!([[request.signature], { "searchTransactionHistory": request.search_transaction_history }]),
                 operation,
                 None,
+                upstream_attempted,
             )
             .await?;
             let status = value.pointer("/value/0").cloned().unwrap_or(Value::Null);
-            if status.is_null() {
-                Ok(json!({ "status": Value::Null }))
-            } else {
-                Ok(json!({
-                    "status": {
-                        "slot": required_u64(&status, "/slot")?.to_string(),
-                        "confirmations": status.get("confirmations").and_then(Value::as_u64).map(|value| value.to_string()),
-                        "confirmationStatus": status.get("confirmationStatus"),
-                        "err": status.get("err")
-                    }
-                }))
+            Ok(json!({ "status": status_json(&status)? }))
+        }
+        Operation::SignatureStatuses => {
+            let request: SignatureStatusesRequest = parse_json(body)?;
+            if request.signatures.is_empty() {
+                return Ok(json!({ "statuses": [] }));
             }
+            if request.signatures.len() > MAX_STATUS_BATCH {
+                return Err(TxError::request(
+                    "batch_limit_exceeded",
+                    format!(
+                        "signatures exceeds the {MAX_STATUS_BATCH}-signature limit for one batch"
+                    ),
+                ));
+            }
+            if let Some(invalid) = request
+                .signatures
+                .iter()
+                .find(|signature| !valid_signature(signature))
+            {
+                return Err(TxError::request(
+                    "invalid_signature",
+                    format!("every signature must be a base58-encoded 64-byte value: {invalid}"),
+                ));
+            }
+
+            let value = rpc_call(
+                state,
+                "getSignatureStatuses",
+                json!([request.signatures, { "searchTransactionHistory": request.search_transaction_history }]),
+                operation,
+                None,
+                upstream_attempted,
+            )
+            .await?;
+
+            let statuses = value
+                .pointer("/value")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    upstream_malformed("Malformed signature status response", operation, None)
+                })?;
+
+            // Results are read positionally, so a short array would attribute one signature's
+            // outcome to another. Reject rather than truncate.
+            if statuses.len() != request.signatures.len() {
+                return Err(upstream_malformed(
+                    "Signature status response did not match the requested signatures",
+                    operation,
+                    None,
+                ));
+            }
+
+            Ok(json!({
+                "statuses": statuses
+                    .iter()
+                    .map(status_json)
+                    .collect::<Result<Vec<_>, _>>()?
+            }))
         }
         Operation::BlockHeight => {
             let request: CommonRequest = parse_json(body)?;
             let config = common_config(request.commitment, request.min_context_slot);
-            let value = rpc_call(state, "getBlockHeight", json!([config]), operation, None).await?;
+            let value = rpc_call(
+                state,
+                "getBlockHeight",
+                json!([config]),
+                operation,
+                None,
+                upstream_attempted,
+            )
+            .await?;
             let height = value.as_u64().ok_or_else(|| {
                 upstream_malformed("Malformed block height response", operation, None)
             })?;
@@ -1111,16 +1204,38 @@ fn valid_signature(value: &str) -> bool {
         .is_ok_and(|bytes| bytes.len() == 64)
 }
 
+/// One `getSignatureStatuses` entry in the wire shape, or `null` when the cluster has not seen
+/// the signature. Shared so the single and batch routes cannot describe a status differently.
+fn status_json(status: &Value) -> Result<Value, TxError> {
+    if status.is_null() {
+        return Ok(Value::Null);
+    }
+    Ok(json!({
+        "slot": required_u64(status, "/slot")?.to_string(),
+        "confirmations": status
+            .get("confirmations")
+            .and_then(Value::as_u64)
+            .map(|value| value.to_string()),
+        "confirmationStatus": status.get("confirmationStatus"),
+        "err": status.get("err")
+    }))
+}
+
 async fn rpc_call(
     state: &TransactionState,
     method: &'static str,
     params: Value,
     operation: Operation,
     signature: Option<String>,
+    upstream_attempted: &mut bool,
 ) -> Result<Value, TxError> {
+    // Recorded here rather than assumed by the caller: `X-Arete-Upstream-Attempted` is a claim
+    // about whether the relay reached the cluster, and only this function can know. A dispatch arm
+    // that short-circuits — the empty status batch does — must not report an attempt it never made.
+    *upstream_attempted = true;
     let timeout = match operation {
         Operation::Send => state.config.send_timeout,
-        Operation::SignatureStatus => state.config.status_timeout,
+        Operation::SignatureStatus | Operation::SignatureStatuses => state.config.status_timeout,
         _ => state.config.inspect_timeout,
     };
     let url = state
@@ -1404,6 +1519,15 @@ mod tests {
             Some(Operation::Send)
         );
         assert_eq!(Operation::from_path("/transactions/v1/get-anything"), None);
+        assert_eq!(
+            Operation::from_path("/transactions/v1/signature-statuses"),
+            Some(Operation::SignatureStatuses)
+        );
+        // The batch reads chain state, so it must not require the send scope.
+        assert_eq!(
+            Operation::SignatureStatuses.scope(),
+            "transaction:inspect"
+        );
         assert_eq!(Operation::Send.scope(), "transaction:send");
         assert_eq!(Operation::Simulate.scope(), "transaction:inspect");
     }
@@ -1451,6 +1575,7 @@ mod tests {
             br#"{"commitment":"confirmed","minContextSlot":"41"}"#,
             None,
             &latest_state,
+            &mut false,
         )
         .await
         .unwrap();
@@ -1458,7 +1583,7 @@ mod tests {
         assert_eq!(latest["lastValidBlockHeight"], "99");
 
         let fee_state = state_for(json!({ "context": { "slot": 43 }, "value": 5000 })).await;
-        let fee = dispatch(Operation::Fee, br#"{"message":"AQ=="}"#, None, &fee_state)
+        let fee = dispatch(Operation::Fee, br#"{"message":"AQ=="}"#, None, &fee_state, &mut false)
             .await
             .unwrap();
         assert_eq!(fee["feeLamports"], "5000");
@@ -1474,12 +1599,191 @@ mod tests {
             br#"{"transaction":"AQ==","innerInstructions":true}"#,
             None,
             &simulation_state,
+            &mut false,
         )
         .await
         .unwrap();
         assert_eq!(simulation["contextSlot"], "44");
         assert_eq!(simulation["unitsConsumed"], "12");
         assert_eq!(simulation["logs"], json!(["ok"]));
+    }
+
+    /// A valid base58 64-byte signature; the handler rejects anything else before dispatching.
+    fn sig(seed: u8) -> String {
+        bs58::encode(vec![seed; 64]).into_string()
+    }
+
+    /// `X-Arete-Upstream-Attempted` is a claim about whether the relay reached the cluster, so the
+    /// empty batch — which answers without calling upstream — must not assert one. The flag used to
+    /// be hardcoded `true` for every successful dispatch.
+    #[tokio::test]
+    async fn an_empty_batch_reports_no_upstream_attempt() {
+        let state = state_for(json!({ "context": { "slot": 50 }, "value": [] })).await;
+        let body = json!({ "signatures": [] }).to_string();
+        let mut upstream_attempted = false;
+
+        let value = dispatch(
+            Operation::SignatureStatuses,
+            body.as_bytes(),
+            None,
+            &state,
+            &mut upstream_attempted,
+        )
+        .await
+        .expect("an empty batch succeeds");
+
+        assert_eq!(value["statuses"], json!([]));
+        assert!(
+            !upstream_attempted,
+            "no upstream call was made, so none may be reported"
+        );
+    }
+
+    /// The same flag must still be set on the path that does reach upstream, or the header becomes
+    /// uniformly false and equally useless.
+    #[tokio::test]
+    async fn a_non_empty_batch_reports_an_upstream_attempt() {
+        let state = state_for(json!({
+            "context": { "slot": 50 },
+            "value": [
+                { "slot": 100, "confirmations": 3, "confirmationStatus": "confirmed", "err": null }
+            ]
+        }))
+        .await;
+        let body = json!({ "signatures": [sig(1)] }).to_string();
+        let mut upstream_attempted = false;
+
+        dispatch(
+            Operation::SignatureStatuses,
+            body.as_bytes(),
+            None,
+            &state,
+            &mut upstream_attempted,
+        )
+        .await
+        .expect("a one-signature batch succeeds");
+
+        assert!(upstream_attempted, "the relay did call upstream");
+    }
+
+    #[tokio::test]
+    async fn batch_signature_statuses_keep_absent_signatures_in_place() {
+        let state = state_for(json!({
+            "context": { "slot": 50 },
+            "value": [
+                { "slot": 100, "confirmations": 3, "confirmationStatus": "confirmed", "err": null },
+                null,
+                { "slot": 102, "confirmations": null, "confirmationStatus": "finalized", "err": null }
+            ]
+        }))
+        .await;
+
+        let body = json!({ "signatures": [sig(1), sig(2), sig(3)] }).to_string();
+        let result = dispatch(
+            Operation::SignatureStatuses,
+            body.as_bytes(),
+            None,
+            &state,
+            &mut false,
+        )
+        .await
+        .unwrap();
+
+        let statuses = result["statuses"].as_array().expect("statuses array");
+        assert_eq!(statuses.len(), 3);
+        assert_eq!(statuses[0]["slot"], "100");
+        assert_eq!(statuses[0]["confirmations"], "3");
+        // The middle signature is unseen; it must stay null rather than shifting the third up.
+        assert!(statuses[1].is_null());
+        assert_eq!(statuses[2]["confirmationStatus"], "finalized");
+    }
+
+    #[tokio::test]
+    async fn a_short_status_array_is_rejected_rather_than_misattributed() {
+        let state = state_for(json!({ "context": { "slot": 50 }, "value": [null] })).await;
+
+        let body = json!({ "signatures": [sig(1), sig(2)] }).to_string();
+        let error = dispatch(
+            Operation::SignatureStatuses,
+            body.as_bytes(),
+            None,
+            &state,
+            &mut false,
+        )
+        .await
+        .expect_err("a short array must not be accepted");
+        assert_eq!(error.code, "upstream_unavailable");
+        assert!(
+            error.message.contains("did not match"),
+            "unexpected message: {}",
+            error.message
+        );
+    }
+
+    /// The advertised batch has to survive the default configuration, or the capacity is a lie:
+    /// `read_bounded_body` rejects the request as `request_too_large` before batch validation runs,
+    /// so a caller sending the documented maximum gets a size error and never learns the batch was
+    /// otherwise fine. 4 KiB admitted roughly 44 signatures.
+    #[test]
+    fn a_full_batch_fits_the_default_body_limit() {
+        let signatures: Vec<String> = (0..MAX_STATUS_BATCH).map(|i| sig(i as u8)).collect();
+        let body = json!({ "signatures": signatures }).to_string();
+        let limit = crate::config::TransactionConfig::default().max_body_bytes;
+
+        assert!(
+            body.len() <= limit,
+            "a {MAX_STATUS_BATCH}-signature batch is {} bytes, over the {limit}-byte default",
+            body.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_and_malformed_status_batches_are_refused_locally() {
+        let state = state_for(json!({ "context": { "slot": 50 }, "value": [] })).await;
+
+        let too_many: Vec<String> = (0..=MAX_STATUS_BATCH).map(|i| sig(i as u8)).collect();
+        let body = json!({ "signatures": too_many }).to_string();
+        assert_eq!(
+            dispatch(
+                Operation::SignatureStatuses,
+                body.as_bytes(),
+                None,
+                &state,
+                &mut false,
+            )
+            .await
+            .expect_err("over the cap")
+            .code,
+            "batch_limit_exceeded"
+        );
+
+        let body = json!({ "signatures": ["not-a-signature"] }).to_string();
+        assert_eq!(
+            dispatch(
+                Operation::SignatureStatuses,
+                body.as_bytes(),
+                None,
+                &state,
+                &mut false,
+            )
+            .await
+            .expect_err("bad signature")
+            .code,
+            "invalid_signature"
+        );
+
+        // Empty short-circuits without an upstream call.
+        let body = json!({ "signatures": [] }).to_string();
+        let result = dispatch(
+            Operation::SignatureStatuses,
+            body.as_bytes(),
+            None,
+            &state,
+            &mut false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["statuses"], json!([]));
     }
 
     fn v2_context(
