@@ -33,6 +33,7 @@ export type ArgType =
   | 'pubkey'
   | 'bytes'
   | { vec: ArgType }
+  | { vecU64Len: ArgType }
   | { option: ArgType }
   | { array: readonly [ArgType, number] }
   | { hashMap: readonly [ArgType, ArgType] }
@@ -96,6 +97,10 @@ function serializeValue(value: unknown, type: ArgType): Buffer {
   
   if ('vec' in type) {
     return serializeVec(value as unknown[], type.vec);
+  }
+
+  if ('vecU64Len' in type) {
+    return serializeVec(value as unknown[], type.vecU64Len, 8);
   }
   
   if ('option' in type) {
@@ -338,10 +343,15 @@ function serializePrimitive(value: unknown, type: string): Buffer {
   }
 }
 
-function serializeVec(values: unknown[], elementType: ArgType): Buffer {
-  const len = Buffer.alloc(4);
-  len.writeUInt32LE(values.length, 0);
-  
+// `lengthBytes`: 4 for Borsh, 8 for bincode-style sequences.
+function serializeVec(values: unknown[], elementType: ArgType, lengthBytes: 4 | 8 = 4): Buffer {
+  const len = Buffer.alloc(lengthBytes);
+  if (lengthBytes === 8) {
+    len.writeBigUInt64LE(BigInt(values.length), 0);
+  } else {
+    len.writeUInt32LE(values.length, 0);
+  }
+
   const elementBuffers = values.map(v => serializeValue(v, elementType));
   return Buffer.concat([len, ...elementBuffers]);
 }

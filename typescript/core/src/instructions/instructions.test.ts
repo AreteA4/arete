@@ -305,6 +305,19 @@ describe('serializeInstructionData', () => {
     ).toThrow(/length mismatch/);
   });
 
+  it('serializes vecU64Len with a u64 little-endian length prefix', () => {
+    // Pinned to the Rust test `serializes_vec_u64_len_with_an_eight_byte_prefix`.
+    const schema: ArgSchema[] = [{ name: 'v', type: { vecU64Len: 'u16' } }];
+    expect([...serializeInstructionData(new Uint8Array(0), { v: [1, 258] }, schema)]).toEqual([
+      2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 1,
+    ]);
+
+    // Empty vectors still carry the full 8-byte count.
+    expect([...serializeInstructionData(new Uint8Array(0), { v: [] }, schema)]).toEqual([
+      0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+  });
+
   it('serializes string-key maps in deterministic key order', () => {
     const schema: ArgSchema[] = [{ name: 'labels', type: { hashMap: ['string', 'u8'] } }];
     const left = serializeInstructionData(new Uint8Array(0), { labels: { z: 1, a: 2 } }, schema);

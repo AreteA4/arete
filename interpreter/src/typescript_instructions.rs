@@ -14,7 +14,7 @@ use crate::ast::{
     PdaProgramDef, PdaSeedDef,
 };
 use crate::typescript::{to_pascal_case, to_screaming_snake_case};
-use arete_idl::{IdlAmountDecimalsSource, IdlAmountHint};
+use arete_idl::{IdlAmountDecimalsSource, IdlAmountHint, IdlLengthPrefix};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// One entry in the stack definition's `instructions` block.
@@ -957,6 +957,14 @@ impl<'a> DefinedTypes<'a> {
                         supported: inner.supported,
                     };
                 }
+                "VecU64Len" => {
+                    let inner = self.parse_arg_type(inner);
+                    return ParsedArgType {
+                        schema: format!("{{ vecU64Len: {} }}", inner.schema),
+                        ts_type: format!("{}[]", maybe_paren(&inner.ts_type)),
+                        supported: inner.supported,
+                    };
+                }
                 _ => return unsupported(),
             }
         }
@@ -1019,8 +1027,12 @@ impl<'a> DefinedTypes<'a> {
             }
             IdlTypeSnapshot::Vec(v) => {
                 let inner = self.parse_snapshot_type(&v.vec);
+                let key = match v.length_prefix {
+                    Some(IdlLengthPrefix::U64) => "vecU64Len",
+                    _ => "vec",
+                };
                 ParsedArgType {
-                    schema: format!("{{ vec: {} }}", inner.schema),
+                    schema: format!("{{ {}: {} }}", key, inner.schema),
                     ts_type: format!("{}[]", maybe_paren(&inner.ts_type)),
                     supported: inner.supported,
                 }
@@ -2670,6 +2682,11 @@ mod tests {
         assert_eq!(vec.schema, "{ vec: 'u8' }");
         assert_eq!(vec.ts_type, "number[]");
 
+        let vec_u64 = parse_arg_type("VecU64Len<publicKey>");
+        assert_eq!(vec_u64.schema, "{ vecU64Len: 'pubkey' }");
+        assert_eq!(vec_u64.ts_type, "string[]");
+        assert!(vec_u64.supported);
+
         let arr = parse_arg_type("[u8; 32]");
         assert_eq!(arr.schema, "{ array: ['u8', 32] }");
         assert_eq!(arr.ts_type, "number[]");
@@ -2744,6 +2761,14 @@ mod tests {
     fn vec_type(type_: IdlTypeSnapshot) -> IdlTypeSnapshot {
         IdlTypeSnapshot::Vec(crate::ast::IdlVecTypeSnapshot {
             vec: Box::new(type_),
+            length_prefix: None,
+        })
+    }
+
+    fn vec_u64_len_type(type_: IdlTypeSnapshot) -> IdlTypeSnapshot {
+        IdlTypeSnapshot::Vec(crate::ast::IdlVecTypeSnapshot {
+            vec: Box::new(type_),
+            length_prefix: Some(IdlLengthPrefix::U64),
         })
     }
 
@@ -2810,6 +2835,59 @@ mod tests {
         assert_eq!(out.stack_entries.len(), 1, "warnings: {:?}", out.warnings);
         assert!(out.code.contains("amount: bigint;"));
         assert!(out.code.contains("{ name: 'amount', type: 'u64' }"));
+    }
+
+    #[test]
+    fn emits_u64_length_prefixed_vec_schema() {
+        let mut idl = idl("demo", "Prog111", vec![]);
+        idl.instructions = vec![instruction_snapshot(
+            "extendLookupTable",
+            vec![2],
+            vec![
+                field("newAddresses", vec_u64_len_type(simple("publicKey"))),
+                field("borshAddresses", vec_type(simple("publicKey"))),
+            ],
+        )];
+        let idls = vec![idl];
+
+        let instr = InstructionDef {
+            name: "extendLookupTable".to_string(),
+            discriminator: vec![2],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![
+                arg("newAddresses", "Vec<publicKey>"),
+                arg("borshAddresses", "Vec<publicKey>"),
+            ],
+            errors: vec![],
+            program_id: Some("Prog111".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Demo",
+            std::slice::from_ref(&instr),
+            &idls,
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert_eq!(out.stack_entries.len(), 1, "warnings: {:?}", out.warnings);
+        assert!(
+            out.code
+                .contains("{ name: 'newAddresses', type: { vecU64Len: 'pubkey' } }"),
+            "{}",
+            out.code
+        );
+        // An absent length prefix must keep emitting today's Borsh u32 schema.
+        assert!(
+            out.code
+                .contains("{ name: 'borshAddresses', type: { vec: 'pubkey' } }"),
+            "{}",
+            out.code
+        );
+        assert!(out.code.contains("newAddresses: string[];"));
     }
 
     #[test]

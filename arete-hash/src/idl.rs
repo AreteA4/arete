@@ -710,7 +710,18 @@ fn idl_type_to_rust_string(idl_type: &IdlType) -> String {
         }
         IdlType::Array(_) => "Vec<u8>".to_string(),
         IdlType::Option(option) => format!("Option<{}>", idl_type_to_rust_string(&option.option)),
-        IdlType::Vec(vec_type) => format!("Vec<{}>", idl_type_to_rust_string(&vec_type.vec)),
+        // `VecU64Len<T>` signals the bincode-style prefix to the SDK generators.
+        IdlType::Vec(vec_type) => {
+            let inner = idl_type_to_rust_string(&vec_type.vec);
+            if matches!(
+                vec_type.length_prefix,
+                Some(arete_idl::types::IdlLengthPrefix::U64)
+            ) {
+                format!("VecU64Len<{inner}>")
+            } else {
+                format!("Vec<{inner}>")
+            }
+        }
         IdlType::HashMap(hash_map) => format!(
             "std::collections::HashMap<{}, {}>",
             idl_type_to_rust_string(&hash_map.hash_map.0),

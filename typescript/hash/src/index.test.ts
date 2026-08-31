@@ -33,6 +33,7 @@ import {
   hashJcs,
   hashJsonBytes,
   hashOssGeneratedProgramReleaseV1,
+  buildProgramSpecV1FromBytes,
   hashProgramSpecV1,
   hashRawBytes,
   hashSdkDefinitionV1,
@@ -475,6 +476,80 @@ describe("typed SDK identity projections", () => {
     );
     expect(definition).toEqual(definitionVector.projection);
     expect(hashSdkDefinitionV1(definition)).toBe(definitionVector.expectedHash);
+  });
+});
+
+describe("u64 length-prefixed sequences", () => {
+  // Hashes computed by the Rust implementation for the same bytes. Both runtimes must
+  // agree or a program-spec hashed in TypeScript would not match one hashed in Rust.
+  const idl = {
+    version: "1.0.0",
+    name: "parity_probe",
+    address: "AddressLookupTab1e1111111111111111111111111",
+    metadata: { name: "parity_probe", address: "AddressLookupTab1e1111111111111111111111111" },
+    instructions: [
+      {
+        name: "extend",
+        discriminant: { type: "u32", value: 2 },
+        accounts: [{ name: "lookup_table", isMut: true, isSigner: false }],
+        args: [{ name: "new_addresses", type: { vec: "publicKey", lengthPrefix: "u64" } }],
+      },
+    ],
+    accounts: [],
+    types: [],
+    events: [],
+    errors: [],
+  };
+
+  test("hash matches the Rust implementation", () => {
+    const bytes = new TextEncoder().encode(JSON.stringify(idl, null, 2));
+    const spec = buildProgramSpecV1FromBytes(bytes, "AddressLookupTab1e1111111111111111111111111");
+    expect(spec.normalizedIdlHash).toBe(
+      "arete:h1:idl-normalized:sha256:7a938b5bc43015d49af90e08b8f42fb6d6e423f395e20c338a7015e15d89dde8",
+    );
+    expect(hashProgramSpecV1(spec)).toBe(
+      "arete:h1:program-spec:sha256:27ee42235cb1e0a3850952b1310712c81b245665010f6d328e9d51b441e19ee9",
+    );
+  });
+
+  test("the prefix reaches the arg type string", () => {
+    const bytes = new TextEncoder().encode(JSON.stringify(idl, null, 2));
+    const spec = buildProgramSpecV1FromBytes(bytes, "AddressLookupTab1e1111111111111111111111111");
+    expect(spec.instructions?.[0]?.args?.[0]?.type).toBe("VecU64Len<solana_pubkey::Pubkey>");
+  });
+
+  test("an explicit null prefix normalizes like an absent one, as in Rust", () => {
+    const withNull = structuredClone(idl);
+    withNull.instructions[0].args[0].type = { vec: "publicKey", lengthPrefix: null } as never;
+    const absent = structuredClone(idl);
+    absent.instructions[0].args[0].type = { vec: "publicKey" } as never;
+    const hashOf = (doc: unknown) =>
+      buildProgramSpecV1FromBytes(
+        new TextEncoder().encode(JSON.stringify(doc, null, 2)),
+        "AddressLookupTab1e1111111111111111111111111",
+      ).normalizedIdlHash;
+    // Rust deserializes `null` into `None`, so both must produce this hash.
+    expect(hashOf(withNull)).toBe(
+      "arete:h1:idl-normalized:sha256:02de7d959e26988821ad27db8a5341c6751ba56076e0d10b4485a26f33e934b9",
+    );
+    expect(hashOf(withNull)).toBe(hashOf(absent));
+  });
+
+  test("an unsupported prefix is rejected, as Rust rejects it", () => {
+    const bad = structuredClone(idl);
+    bad.instructions[0].args[0].type = { vec: "publicKey", lengthPrefix: "u128" } as never;
+    const bytes = new TextEncoder().encode(JSON.stringify(bad, null, 2));
+    expect(() =>
+      buildProgramSpecV1FromBytes(bytes, "AddressLookupTab1e1111111111111111111111111"),
+    ).toThrow(/lengthPrefix/);
+  });
+
+  test("an ordinary vec is unchanged", () => {
+    const plain = structuredClone(idl);
+    plain.instructions[0].args[0].type = { vec: "publicKey" } as never;
+    const bytes = new TextEncoder().encode(JSON.stringify(plain, null, 2));
+    const spec = buildProgramSpecV1FromBytes(bytes, "AddressLookupTab1e1111111111111111111111111");
+    expect(spec.instructions?.[0]?.args?.[0]?.type).toBe("Vec<solana_pubkey::Pubkey>");
   });
 });
 

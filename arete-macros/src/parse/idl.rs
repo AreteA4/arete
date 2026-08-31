@@ -51,6 +51,36 @@ pub fn to_rust_type_string(idl_type: &IdlType) -> String {
     }
 }
 
+/// Type string for `InstructionArgDef.arg_type`, spelling a `u64`-prefixed sequence as
+/// `VecU64Len<T>`. Not valid Rust, so struct-field codegen and PDA seed validation keep
+/// using [`to_rust_type_string`]. Degrades to `Vec` inside a `defined` type or hash map.
+pub fn to_spec_arg_type_string(idl_type: &IdlType) -> String {
+    match idl_type {
+        IdlType::Vec(vec) => {
+            let inner = to_spec_arg_type_string(&vec.vec);
+            if matches!(vec.length_prefix, Some(IdlLengthPrefix::U64)) {
+                format!("VecU64Len<{}>", inner)
+            } else {
+                format!("Vec<{}>", inner)
+            }
+        }
+        IdlType::Option(opt) => {
+            format!("Option<{}>", to_spec_arg_type_string(&opt.option))
+        }
+        IdlType::Array(arr) => {
+            if arr.array.len() == 2 {
+                if let (IdlTypeArrayElement::Nested(nested), IdlTypeArrayElement::Size(size)) =
+                    (&arr.array[0], &arr.array[1])
+                {
+                    return format!("[{}; {}]", to_spec_arg_type_string(nested), size);
+                }
+            }
+            to_rust_type_string(idl_type)
+        }
+        other => to_rust_type_string(other),
+    }
+}
+
 /// Convert an IDL type to a Rust type string for bytemuck (zero-copy) accounts.
 pub fn to_rust_type_string_bytemuck(idl_type: &IdlType) -> String {
     match idl_type {

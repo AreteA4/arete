@@ -1762,10 +1762,11 @@ impl<'a> PythonDefinedTypes<'a> {
                         supported: inner.supported,
                     };
                 }
-                "Vec" => {
+                "Vec" | "VecU64Len" => {
                     let inner = self.parse_arg_type(inner);
+                    let key = if name == "Vec" { "vec" } else { "vecU64Len" };
                     return PyParsedArg {
-                        schema: format!("{{\"vec\": {}}}", inner.schema),
+                        schema: format!("{{\"{}\": {}}}", key, inner.schema),
                         param_type: format!("Sequence[{}]", inner.param_type),
                         supported: inner.supported,
                     };
@@ -1825,8 +1826,12 @@ impl<'a> PythonDefinedTypes<'a> {
             }
             IdlTypeSnapshot::Vec(v) => {
                 let inner = self.parse_snapshot_type(&v.vec);
+                let key = match v.length_prefix {
+                    Some(arete_idl::types::IdlLengthPrefix::U64) => "vecU64Len",
+                    _ => "vec",
+                };
                 PyParsedArg {
-                    schema: format!("{{\"vec\": {}}}", inner.schema),
+                    schema: format!("{{\"{}\": {}}}", key, inner.schema),
                     param_type: format!("Sequence[{}]", inner.param_type),
                     supported: inner.supported,
                 }
@@ -4415,6 +4420,73 @@ mod tests {
             compile_stack_spec(spec, Some(config)).expect("ore stack should compile to Python");
 
         write_python_module(&output, &out_dir).expect("ore example should write");
+    }
+
+    #[test]
+    fn python_generator_selects_u64_length_prefixed_vec_schema() {
+        let mut parser = PythonDefinedTypes::new(&[]);
+        let vec_of_pubkey = |length_prefix| {
+            IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
+                vec: Box::new(IdlTypeSnapshot::Simple("publicKey".to_string())),
+                length_prefix,
+            })
+        };
+
+        assert_eq!(
+            parser.parse_snapshot_type(&vec_of_pubkey(None)).schema,
+            "{\"vec\": \"pubkey\"}"
+        );
+        assert_eq!(
+            parser
+                .parse_snapshot_type(&vec_of_pubkey(Some(arete_idl::types::IdlLengthPrefix::U32)))
+                .schema,
+            "{\"vec\": \"pubkey\"}"
+        );
+        assert_eq!(
+            parser
+                .parse_snapshot_type(&vec_of_pubkey(Some(arete_idl::types::IdlLengthPrefix::U64)))
+                .schema,
+            "{\"vecU64Len\": \"pubkey\"}"
+        );
+    }
+
+    /// Instruction args round-trip through `InstructionArgDef::arg_type` as a string.
+    #[test]
+    fn python_generator_round_trips_u64_length_prefixed_vec_args() {
+        let vec_of_pubkey = |length_prefix| {
+            IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
+                vec: Box::new(IdlTypeSnapshot::Simple("publicKey".to_string())),
+                length_prefix,
+            })
+        };
+        let borsh = idl_type_snapshot_to_rust_string(&vec_of_pubkey(None));
+        let bincode = idl_type_snapshot_to_rust_string(&vec_of_pubkey(Some(
+            arete_idl::types::IdlLengthPrefix::U64,
+        )));
+        assert_eq!(borsh, "Vec<solana_pubkey::Pubkey>");
+        assert_eq!(bincode, "VecU64Len<solana_pubkey::Pubkey>");
+
+        let mut parser = PythonDefinedTypes::new(&[]);
+        let parsed = parser.parse_arg_type(&bincode);
+        assert_eq!(parsed.schema, "{\"vecU64Len\": \"pubkey\"}");
+        assert_eq!(parsed.param_type, "Sequence[str]");
+        assert_eq!(
+            parser.parse_arg_type(&borsh).schema,
+            "{\"vec\": \"pubkey\"}"
+        );
+
+        let mut spec = programs_stack_spec();
+        spec.instructions[0]
+            .args
+            .push(instruction_arg("newAddresses", &bincode));
+        let programs = compile_stack_spec(spec, None)
+            .expect("python stack generation should succeed")
+            .programs_py
+            .expect("programs.py should be generated");
+        assert!(
+            programs.contains("{\"vecU64Len\": \"pubkey\"}"),
+            "u64-prefixed vec arg should reach the generated schema:\n{programs}"
+        );
     }
 }
 

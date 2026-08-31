@@ -138,6 +138,12 @@ class TestContainers:
         u16s = [ArgSchema("v", {"vec": "u16"})]
         assert list(ser(u16s, {"v": [1, 258]})) == [2, 0, 0, 0, 1, 0, 2, 1]
 
+    def test_serializes_vec_u64_len_with_an_eight_byte_prefix(self):
+        # Pinned to the Rust and TypeScript tests of the same shape.
+        schema = [ArgSchema("v", {"vecU64Len": "u16"})]
+        assert list(ser(schema, {"v": [1, 258]})) == [2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 1]
+        assert list(ser(schema, {"v": []})) == [0, 0, 0, 0, 0, 0, 0, 0]
+
     def test_serializes_fixed_arrays_without_a_prefix_and_checks_length(self):
         schema = [ArgSchema("a", {"array": ("u8", 3)})]
         assert list(ser(schema, {"a": [4, 5, 6]})) == [4, 5, 6]

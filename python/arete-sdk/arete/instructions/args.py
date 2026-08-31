@@ -9,7 +9,8 @@ key's UTF-8 bytes.
 Type schema mirrors the TS ``ArgType`` shape: primitives are strings
 (``"u8"`` ... ``"u128"``, ``"i8"`` ... ``"i128"``, ``"f32"``, ``"f64"``,
 ``"bool"``, ``"string"``, ``"pubkey"``, ``"bytes"``); composites are
-single-key dicts (``{"vec": t}``, ``{"option": t}``, ``{"array": (t, n)}``,
+single-key dicts (``{"vec": t}`` with a u32 count, ``{"vecU64Len": t}`` with a
+u64 count, ``{"option": t}``, ``{"array": (t, n)}``,
 ``{"hashMap": (k, v)}``, ``{"struct": [{"name", "type"}, ...]}``,
 ``{"enum": [variant, ...]}``). Enum variants are bare strings (fieldless) or
 ``{"name": ..., "fields": [...]}`` / ``{"name": ..., "tuple": [...]}``.
@@ -183,6 +184,11 @@ def _serialize_value(value: Any, arg_type: ArgType, ctx: str, out: bytearray) ->
         out += struct.pack("<I", len(items))
         for item in items:
             _serialize_value(item, arg_type["vec"], ctx, out)
+    elif "vecU64Len" in arg_type:
+        items = _sequence_items(value, ctx, "vec")
+        out += struct.pack("<Q", len(items))
+        for item in items:
+            _serialize_value(item, arg_type["vecU64Len"], ctx, out)
     elif "option" in arg_type:
         if value is None:
             out.append(0)

@@ -52,6 +52,8 @@ pub enum ArgType {
     Bytes,
     /// Variable-length sequence: u32 LE count followed by the elements.
     Vec(Box<ArgType>),
+    /// Variable-length sequence: u64 LE count followed by the elements (bincode-style).
+    VecU64Len(Box<ArgType>),
     /// Optional value: 0x00 for None, 0x01 followed by the inner value for Some.
     Option(Box<ArgType>),
     /// Fixed-length array: exactly N elements, no length prefix.

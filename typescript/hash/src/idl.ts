@@ -527,7 +527,22 @@ function normalizeIdlType(value: unknown, location: string): JsonValue {
   if (typeof value === "string") return value;
   const item = requiredObject(value, location);
   if (Object.hasOwn(item, "option")) return { option: normalizeIdlType(item.option, `${location}.option`) };
-  if (Object.hasOwn(item, "vec")) return { vec: normalizeIdlType(item.vec, `${location}.vec`) };
+  if (Object.hasOwn(item, "vec")) {
+    const vec: JsonValue = { vec: normalizeIdlType(item.vec, `${location}.vec`) };
+    // Omitted when absent so ordinary vecs hash identically to before. An explicit
+    // `null` is absent too: Rust deserializes it into `None` and normalizes to the same
+    // hash. Only the widths Rust's `IdlLengthPrefix` accepts are valid; anything else
+    // must be rejected here too, or the two implementations would disagree on whether
+    // the IDL is even legal.
+    if (item.lengthPrefix !== undefined && item.lengthPrefix !== null) {
+      const prefix = requiredString(item.lengthPrefix, `${location}.lengthPrefix`);
+      if (prefix !== "u32" && prefix !== "u64") {
+        return invalidIdl(`${location}.lengthPrefix must be "u32" or "u64"`);
+      }
+      vec.lengthPrefix = prefix;
+    }
+    return vec;
+  }
   const map = item.hashMap ?? item.bTreeMap;
   if (map !== undefined) {
     const values = requiredUnknownArray(map, `${location}.hashMap`);
@@ -911,7 +926,10 @@ function idlTypeToRustString(type: JsonValue): string {
     return "Vec<u8>";
   }
   if (type.option !== undefined) return `Option<${idlTypeToRustString(type.option)}>`;
-  if (type.vec !== undefined) return `Vec<${idlTypeToRustString(type.vec)}>`;
+  if (type.vec !== undefined) {
+    const inner = idlTypeToRustString(type.vec);
+    return type.lengthPrefix === "u64" ? `VecU64Len<${inner}>` : `Vec<${inner}>`;
+  }
   if (Array.isArray(type.hashMap) && type.hashMap.length === 2) {
     return `std::collections::HashMap<${idlTypeToRustString(type.hashMap[0] ?? null)}, ${idlTypeToRustString(type.hashMap[1] ?? null)}>`;
   }
