@@ -124,6 +124,13 @@ impl ChainClient for UnconfiguredChainClient {
         Err(self.error())
     }
 
+    async fn accounts(
+        &self,
+        _addresses: &[String],
+    ) -> Result<Vec<Option<crate::chain::RawAccountInfo>>, ChainError> {
+        Err(self.error())
+    }
+
     async fn mint(
         &self,
         _address: &str,

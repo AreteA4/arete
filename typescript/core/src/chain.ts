@@ -53,7 +53,7 @@ export interface TokenBalanceInput {
 export interface RawAccountInfo {
   address: string;
   ownerProgram: string;
-  lamports: number;
+  lamports: bigint;
   executable: boolean;
   data: Uint8Array;
 }
@@ -65,6 +65,7 @@ export interface ChainClient {
   minimumBalanceForRentExemption(space: number): Promise<number>;
   clock(): Promise<ChainClock>;
   account(address: string): Promise<RawAccountInfo | null>;
+  accounts(addresses: readonly string[]): Promise<(RawAccountInfo | null)[]>;
   mint(address: string): Promise<MintAccountInfo | null>;
   tokenAccount(address: string): Promise<TokenAccountInfo | null>;
   balance(input: TokenBalanceInput, options?: ContextSlotOptions): Promise<TokenBalanceInfo>;
@@ -90,6 +91,30 @@ function decodeBase64(encoded: string): Uint8Array {
     return new Uint8Array(bufferCtor.from(encoded, 'base64'));
   }
   throw new Error('No base64 decoder available in this environment');
+}
+
+const MAX_BATCH_ADDRESSES = 100;
+
+interface RawAccountBody {
+  address: string;
+  ownerProgram: string;
+  /** Decimal string, not a number: a balance above 2^53 would be rounded by `JSON.parse`. */
+  lamports: string;
+  executable: boolean;
+  data: string;
+}
+
+function toRawAccount(body: RawAccountBody | null): RawAccountInfo | null {
+  if (!body) {
+    return null;
+  }
+  return {
+    address: body.address,
+    ownerProgram: body.ownerProgram,
+    lamports: decimalU64(body.lamports, 'lamports'),
+    executable: body.executable,
+    data: decodeBase64(body.data),
+  };
 }
 
 function decimalU64(value: string, field: string): bigint {
@@ -196,20 +221,38 @@ export function createChainClient(httpBaseUrl: string, fetchImpl: FetchLike): Ch
     async account(address: string): Promise<RawAccountInfo | null> {
       const path = `/chain/accounts/${encodeURIComponent(address)}`;
       const response = await fetchImpl(joinUrl(httpBaseUrl, path));
-      const body = await parseReadResponse<
-        | { address: string; ownerProgram: string; lamports: number; executable: boolean; data: string }
-        | null
-      >(response, path);
-      if (!body) {
-        return null;
+      return toRawAccount(await parseReadResponse<RawAccountBody | null>(response, path));
+    },
+
+    async accounts(addresses: readonly string[]): Promise<(RawAccountInfo | null)[]> {
+      // Copied before anything else: `readonly string[]` accepts a mutable array, so a caller can
+      // splice it while the request is in flight and the cardinality check below would then compare
+      // the response against a list that is no longer what was asked for. The Python client copies
+      // for the same reason.
+      const requested = [...addresses];
+      if (requested.length > MAX_BATCH_ADDRESSES) {
+        throw new RangeError(
+          `addresses exceeds the ${MAX_BATCH_ADDRESSES}-address limit for one batch`
+        );
       }
-      return {
-        address: body.address,
-        ownerProgram: body.ownerProgram,
-        lamports: body.lamports,
-        executable: body.executable,
-        data: decodeBase64(body.data),
-      };
+      if (requested.length === 0) {
+        return [];
+      }
+      const path = '/chain/accounts';
+      const response = await fetchImpl(joinUrl(httpBaseUrl, path), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ addresses: requested }),
+      });
+      const body = await parseReadResponse<{ items: (RawAccountBody | null)[] }>(response, path);
+      // A different count would shift every later account onto the wrong address.
+      if (body.items.length !== requested.length) {
+        throw new TypeError(
+          `Invalid chain response for '${path}': expected ${requested.length} items, got ${body.items.length}`
+        );
+      }
+      // Positionally aligned with `requested`; absent accounts arrive as null.
+      return body.items.map(toRawAccount);
     },
 
     async mint(address: string): Promise<MintAccountInfo | null> {

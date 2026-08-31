@@ -262,6 +262,12 @@ mod tests {
         async fn account(&self, _address: &str) -> Result<Option<RawAccountInfo>, ChainError> {
             unimplemented!()
         }
+        async fn accounts(
+            &self,
+            _addresses: &[String],
+        ) -> Result<Vec<Option<RawAccountInfo>>, ChainError> {
+            unimplemented!()
+        }
         async fn mint(&self, address: &str) -> Result<Option<MintAccountInfo>, ChainError> {
             self.mint_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Some(MintAccountInfo {

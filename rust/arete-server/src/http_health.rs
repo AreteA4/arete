@@ -466,6 +466,11 @@ struct NativeBalanceBody {
     min_context_slot: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AccountsBody {
+    addresses: Vec<String>,
+}
+
 #[derive(Default)]
 struct HttpLimitState {
     per_subject_per_minute: DashMap<String, (u64, u32)>,
@@ -640,7 +645,7 @@ async fn handle_chain_request(
     path: &str,
     rpc_url: Arc<Option<String>>,
     rpc_client: Client,
-    _auth_context: Option<crate::websocket::auth::AuthContext>,
+    auth_context: Option<crate::websocket::auth::AuthContext>,
 ) -> Response<Full<Bytes>> {
     let Some(rpc_url) = rpc_url.as_ref() else {
         return error_response(
@@ -778,6 +783,41 @@ async fn handle_chain_request(
                 Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
             }
         }
+        ("POST", "/chain/accounts") => match read_json_body::<AccountsBody>(req).await {
+            Ok(body) => {
+                let configured_limit =
+                    batch_address_limit(auth_context.as_ref(), MAX_CHAIN_BATCH_ADDRESSES);
+                if body.addresses.len() > configured_limit {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "addresses exceeds the {configured_limit}-address limit for one batch"
+                        ),
+                    );
+                }
+                if body.addresses.is_empty() {
+                    return json_response(StatusCode::OK, json!({ "items": [] }));
+                }
+                match rpc_get_multiple_accounts(&rpc_client, rpc_url, &body.addresses).await {
+                    // A short array would silently misalign items with addresses, so treat a
+                    // length mismatch as an upstream fault rather than padding it.
+                    Ok(values) if values.len() == body.addresses.len() => json_response(
+                        StatusCode::OK,
+                        json!({ "items": batch_accounts_json(&body.addresses, &values) }),
+                    ),
+                    Ok(values) => error_response(
+                        StatusCode::BAD_GATEWAY,
+                        format!(
+                            "getMultipleAccounts returned {} entries for {} addresses",
+                            values.len(),
+                            body.addresses.len()
+                        ),
+                    ),
+                    Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                }
+            }
+            Err(response) => response,
+        },
         ("POST", "/chain/balances") => match read_json_body::<BalanceBody>(req).await {
             Ok(body) => {
                 let min_context_slot =
@@ -910,12 +950,8 @@ async fn handle_program_account_request(
                 Ok(body) => body,
                 Err(_) => return program_read_error_response(ProgramReadError::InvalidRequest),
             };
-            let configured_limit = auth_context
-                .as_ref()
-                .and_then(|ctx| ctx.limits.max_http_batch_addresses)
-                .map(|limit| limit as usize)
-                .unwrap_or(MAX_PROGRAM_BATCH_ADDRESSES)
-                .min(MAX_PROGRAM_BATCH_ADDRESSES);
+            let configured_limit =
+                batch_address_limit(auth_context.as_ref(), MAX_PROGRAM_BATCH_ADDRESSES);
             if body.addresses.len() > configured_limit {
                 return with_release_metadata(
                     program_read_error_response(ProgramReadError::BatchLimitExceeded),
@@ -1410,17 +1446,65 @@ fn decode_account_bytes(value: &Value) -> Option<Vec<u8>> {
     BASE64_STANDARD.decode(encoded).ok()
 }
 
+/// `lamports` is a decimal string, not a JSON number.
+///
+/// A `u64` above 2^53 does not survive a JSON number in every client: JavaScript rounds
+/// `9007199254740993` to `...92` during `JSON.parse`, before any SDK can intervene. The
+/// native-balance route already answers with a string for this reason, and the batch route makes it
+/// matter — a custody sweep reading many accounts at once is exactly where a silently rounded
+/// balance would be acted on.
 fn raw_account_json(address: &str, value: &Value) -> Value {
     json!({
         "address": address,
         "ownerProgram": value.get("owner").and_then(Value::as_str).unwrap_or_default(),
-        "lamports": value.get("lamports").and_then(Value::as_u64).unwrap_or(0),
+        "lamports": value
+            .get("lamports")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .to_string(),
         "executable": value.get("executable").and_then(Value::as_bool).unwrap_or(false),
         "data": value
             .pointer("/data/0")
             .and_then(Value::as_str)
             .unwrap_or_default(),
     })
+}
+
+/// How many addresses one batch may carry: the session's own ceiling, bounded by the protocol's.
+///
+/// Shared by every batch route rather than repeated at each one. Rate limiting charges a batch as a
+/// single HTTP request, so a route that consulted only the protocol limit would let a session
+/// capped at ten addresses read a hundred for the same cost. That is exactly what
+/// `POST /chain/accounts` did while the program-account batch computed it correctly, so the two
+/// call sites now derive it from one place and cannot drift apart again.
+fn batch_address_limit(
+    auth_context: Option<&crate::websocket::auth::AuthContext>,
+    protocol_max: usize,
+) -> usize {
+    auth_context
+        .and_then(|ctx| ctx.limits.max_http_batch_addresses)
+        .map(|limit| limit as usize)
+        .unwrap_or(protocol_max)
+        .min(protocol_max)
+}
+
+/// Solana's own `getMultipleAccounts` ceiling, so one batch is one upstream call.
+const MAX_CHAIN_BATCH_ADDRESSES: usize = 100;
+
+/// Positionally aligned with `addresses`; `null` where the account is absent, matching
+/// both `getMultipleAccounts` and the single-address route.
+fn batch_accounts_json(addresses: &[String], values: &[Value]) -> Vec<Value> {
+    addresses
+        .iter()
+        .zip(values)
+        .map(|(address, value)| {
+            if value.is_null() {
+                Value::Null
+            } else {
+                raw_account_json(address, value)
+            }
+        })
+        .collect()
 }
 
 fn mint_info_json(address: &str, value: &Value) -> Value {
@@ -1489,6 +1573,135 @@ mod tests {
 
         assert_eq!(value["lamports"], "9007199254740993");
         assert_eq!(value["contextSlot"], "9007199254740995");
+    }
+
+    /// A missing account must hold its slot, or every later address is attributed to the
+    /// wrong account — silently, and with real money downstream.
+    #[test]
+    fn batch_accounts_keep_position_when_an_account_is_absent() {
+        let addresses = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let values = vec![
+            json!({ "owner": "prog", "lamports": 7u64, "executable": false, "data": ["AQI=", "base64"] }),
+            Value::Null,
+            json!({ "owner": "prog", "lamports": 9u64, "executable": false, "data": ["AwQ=", "base64"] }),
+        ];
+
+        let items = batch_accounts_json(&addresses, &values);
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["address"], "a");
+        assert_eq!(items[0]["lamports"], "7");
+        assert_eq!(items[0]["data"], "AQI=");
+        assert_eq!(items[1], Value::Null, "absent account keeps its slot");
+        assert_eq!(items[2]["address"], "c");
+        assert_eq!(items[2]["lamports"], "9");
+    }
+
+    /// The batch is where a rounded balance would be acted on, so the wire must carry a `u64`
+    /// no JavaScript client can round. 9007199254740993 is the first integer a JSON number
+    /// cannot represent: `JSON.parse` returns ...92.
+    #[test]
+    fn batch_accounts_serialize_lamports_as_decimal_strings() {
+        let addresses = vec!["big".to_string()];
+        let values = vec![json!({
+            "owner": "prog",
+            "lamports": 9_007_199_254_740_993_u64,
+            "executable": false,
+            "data": ["AQI=", "base64"],
+        })];
+
+        let items = batch_accounts_json(&addresses, &values);
+
+        assert_eq!(items[0]["lamports"], "9007199254740993");
+    }
+
+    fn auth_context_allowing(
+        max_batch_addresses: Option<u32>,
+    ) -> crate::websocket::auth::AuthContext {
+        crate::websocket::auth::AuthContext {
+            subject: "test".to_string(),
+            issuer: "test-issuer".to_string(),
+            audience: "test-audience".to_string(),
+            key_class: arete_auth::KeyClass::Publishable,
+            metering_key: "meter-test".to_string(),
+            deployment_id: None,
+            target_kind: None,
+            target_id: None,
+            program_id: None,
+            program_release_hash: None,
+            expires_at: u64::MAX,
+            scope: "read".to_string(),
+            limits: arete_auth::Limits {
+                max_http_batch_addresses: max_batch_addresses,
+                ..Default::default()
+            },
+            plan: None,
+            origin: None,
+            client_ip: None,
+            jti: "test-jti".to_string(),
+            actor_key: None,
+            account_key: None,
+            consumer_key: None,
+            policy_version: None,
+            account_limits: arete_auth::Limits::default(),
+        }
+    }
+
+    /// A batch is charged as one HTTP request, so a session's address ceiling is the only thing
+    /// standing between a ten-address plan and a hundred-address read. `POST /chain/accounts`
+    /// ignored it while the program-account batch honoured it; both now share this computation.
+    #[test]
+    fn a_session_ceiling_bounds_the_batch_below_the_protocol_limit() {
+        let context = auth_context_allowing(Some(10));
+
+        assert_eq!(
+            batch_address_limit(Some(&context), MAX_CHAIN_BATCH_ADDRESSES),
+            10
+        );
+    }
+
+    /// A generous claim must not raise the protocol ceiling: one batch is still one upstream call.
+    #[test]
+    fn a_session_ceiling_cannot_exceed_the_protocol_limit() {
+        let context = auth_context_allowing(Some(1_000));
+
+        assert_eq!(
+            batch_address_limit(Some(&context), MAX_CHAIN_BATCH_ADDRESSES),
+            MAX_CHAIN_BATCH_ADDRESSES
+        );
+    }
+
+    /// No claim, and no auth at all, both fall back to the protocol ceiling.
+    #[test]
+    fn an_absent_ceiling_falls_back_to_the_protocol_limit() {
+        let context = auth_context_allowing(None);
+
+        assert_eq!(
+            batch_address_limit(Some(&context), MAX_CHAIN_BATCH_ADDRESSES),
+            MAX_CHAIN_BATCH_ADDRESSES
+        );
+        assert_eq!(
+            batch_address_limit(None, MAX_PROGRAM_BATCH_ADDRESSES),
+            MAX_PROGRAM_BATCH_ADDRESSES
+        );
+    }
+
+    #[test]
+    fn batch_accounts_json_is_empty_for_no_addresses() {
+        assert!(batch_accounts_json(&[], &[]).is_empty());
+    }
+
+    /// The batch item shape must stay identical to the single-address route's, or a client
+    /// needs two parsers for one concept.
+    #[test]
+    fn batch_item_matches_the_single_address_shape() {
+        let value = json!({ "owner": "prog", "lamports": 5u64, "executable": true, "data": ["BQY=", "base64"] });
+        let addresses = vec!["solo".to_string()];
+
+        assert_eq!(
+            batch_accounts_json(&addresses, std::slice::from_ref(&value))[0],
+            raw_account_json("solo", &value)
+        );
     }
 
     #[test]
