@@ -139,10 +139,16 @@ pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Res
         }
     }
 
-    // 3. Credentials file.
+    // 3. Credentials file. The lookup URL mirrors `RegistryClient::new`
+    // exactly: trim, strip trailing slashes, and fall back to the default
+    // when the env var is effectively empty — otherwise an
+    // `ARETE_API_URL` of whitespace/slashes would send requests to the
+    // default host while looking up credentials under an empty key.
     if let Some(content) = env.credentials_file() {
         let api_url = env
             .var(ENV_VAR_API_URL)
+            .map(|u| normalize_api_url(&u).to_string())
+            .filter(|u| !u.is_empty())
             .unwrap_or_else(|| DEFAULT_API_URL.to_string());
         if let Some(k) = parse_credentials_content(&content, &api_url) {
             return Ok(ResolvedKey {
@@ -317,6 +323,19 @@ mod tests {
         let env = TestEnv::default()
             .with_var(ENV_VAR_API_URL, "https://api.arete.run")
             .with_credentials("[keys]\n\"https://api.arete.run/\" = \"a4_sk_url\"");
+        let r = resolve_with(&env, None, "").unwrap();
+        assert_eq!(r.source, KeySource::CredentialsFile);
+        assert_eq!(r.key.as_deref(), Some("a4_sk_url"));
+    }
+
+    #[test]
+    fn url_keyed_lookup_falls_back_to_default_on_effectively_empty_env_url() {
+        // Whitespace/slashes-only ARETE_API_URL makes RegistryClient target
+        // the default host; the credentials lookup must follow it there
+        // instead of searching under an empty key.
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, "  / ")
+            .with_credentials(&format!("[keys]\n\"{DEFAULT_API_URL}\" = \"a4_sk_url\""));
         let r = resolve_with(&env, None, "").unwrap();
         assert_eq!(r.source, KeySource::CredentialsFile);
         assert_eq!(r.key.as_deref(), Some("a4_sk_url"));
