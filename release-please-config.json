@@ -98,6 +98,10 @@
       "release-type": "node",
       "component": "arete-mcp-npm"
     },
+    "python/arete-sdk": {
+      "release-type": "python",
+      "component": "arete-python"
+    },
     "arete-idl": {
       "release-type": "rust",
       "component": "arete-idl"
