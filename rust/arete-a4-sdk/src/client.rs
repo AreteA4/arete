@@ -210,6 +210,14 @@ impl TransactionTransport for UnconfiguredTransactionTransport {
         Err(self.error())
     }
 
+    async fn signature_statuses(
+        &self,
+        _signatures: &[String],
+        _options: crate::transactions::SignatureStatusOptions,
+    ) -> Result<Vec<Option<crate::transactions::TransactionSignatureStatus>>, TransactionError> {
+        Err(self.error())
+    }
+
     async fn block_height(
         &self,
         _options: crate::transactions::TransactionRequestContext,

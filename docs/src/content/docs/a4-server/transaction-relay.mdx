@@ -54,16 +54,23 @@ Server::builder()
 
 ## Routes and scopes
 
-| Route                                    | Required scope        | Solana RPC method      |
-| ---------------------------------------- | --------------------- | ---------------------- |
-| `POST /transactions/v1/latest-blockhash` | `transaction:inspect` | `getLatestBlockhash`   |
-| `POST /transactions/v1/fee`              | `transaction:inspect` | `getFeeForMessage`     |
-| `POST /transactions/v1/simulate`         | `transaction:inspect` | `simulateTransaction`  |
-| `POST /transactions/v1/signature-status` | `transaction:inspect` | `getSignatureStatuses` |
-| `POST /transactions/v1/block-height`     | `transaction:inspect` | `getBlockHeight`       |
-| `POST /transactions/v1/send`             | `transaction:send`    | `sendTransaction`      |
+| Route                                      | Required scope        | Solana RPC method      |
+| ------------------------------------------ | --------------------- | ---------------------- |
+| `POST /transactions/v1/latest-blockhash`   | `transaction:inspect` | `getLatestBlockhash`   |
+| `POST /transactions/v1/fee`                | `transaction:inspect` | `getFeeForMessage`     |
+| `POST /transactions/v1/simulate`           | `transaction:inspect` | `simulateTransaction`  |
+| `POST /transactions/v1/signature-status`   | `transaction:inspect` | `getSignatureStatuses` |
+| `POST /transactions/v1/signature-statuses` | `transaction:inspect` | `getSignatureStatuses` |
+| `POST /transactions/v1/block-height`       | `transaction:inspect` | `getBlockHeight`       |
+| `POST /transactions/v1/send`               | `transaction:send`    | `sendTransaction`      |
 
 Routes accept validated JSON schemas and reject unknown fields. Solana `u64` values are decimal strings over HTTP.
+
+`signature-statuses` resolves up to 256 signatures in one call. Results are positionally aligned
+with the request: an unknown signature is `null` in its own slot rather than omitted, so a caller
+cannot attribute one signature's status to another. An empty batch answers without contacting the
+cluster, and reports `X-Arete-Upstream-Attempted: false` accordingly. More than 256 signatures is
+refused as `batch_limit_exceeded`, which is Solana's own `getSignatureStatuses` ceiling.
 
 ## Authentication
 
@@ -80,7 +87,7 @@ When running behind a trusted proxy, configure `ARETE_TRUSTED_PROXY_CIDRS`. Forw
 | `ARETE_TRANSACTIONS_ENABLED`                    | `false` | Expose transaction routes                 |
 | `ARETE_TRANSACTION_RPC_URL`                     | unset   | Preferred upstream transaction RPC        |
 | `SOLANA_RPC_URL` / `RPC_URL`                    | unset   | Legacy transaction RPC fallback           |
-| `ARETE_TRANSACTION_MAX_BODY_BYTES`              | `4096`  | Maximum JSON request body                 |
+| `ARETE_TRANSACTION_MAX_BODY_BYTES`              | `32768` | Maximum JSON request body                 |
 | `ARETE_TRANSACTION_MAX_BYTES`                   | `1232`  | Maximum decoded message/transaction bytes |
 | `ARETE_TRANSACTION_INSPECT_TIMEOUT_MS`          | `10000` | Inspection upstream timeout               |
 | `ARETE_TRANSACTION_SEND_TIMEOUT_MS`             | `15000` | Submission upstream timeout               |
