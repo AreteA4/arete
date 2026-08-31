@@ -922,6 +922,10 @@ impl Generator {
         let explicit = sample_idl_without_program_id();
         let u32_discriminant = sample_idl_u32_discriminant(PROGRAM_A);
         let u64_discriminant = sample_idl_u64_discriminant(PROGRAM_A);
+        let optional_account = optional_account_idl();
+        let string_pda_seed = bonkswap_string_seed_idl();
+        let inline_tuple = mpl_core_tuple_idl();
+        let codama_root = subscriptions_codama_idl();
 
         let primary_document =
             CanonicalIdlDocument::parse(primary.as_bytes(), None).expect("primary IDL parses");
@@ -976,6 +980,33 @@ impl Generator {
                 u64_discriminant,
                 None,
                 json!({"instructionDiscriminatorSize": 8}),
+            ),
+            (
+                "idl-anchor-is-optional",
+                optional_account,
+                None,
+                json!({"fixtureSource": "trimmed real Anchor isOptional account"}),
+            ),
+            (
+                "idl-anchor-string-pda-seed",
+                string_pda_seed,
+                None,
+                json!({
+                    "fixtureSource": "trimmed BonkSwap legacy string PDA seed",
+                    "normalization": "UTF-8 bytes without rewriting the source projection",
+                }),
+            ),
+            (
+                "idl-mpl-core-inline-tuple",
+                inline_tuple,
+                None,
+                json!({"fixtureSource": "trimmed MPL Core vec-of-tuple type"}),
+            ),
+            (
+                "idl-subscriptions-codama-root",
+                codama_root,
+                None,
+                json!({"fixtureSource": "trimmed Subscriptions Codama rootNode"}),
             ),
         ] {
             let document = CanonicalIdlDocument::parse(source.as_bytes(), explicit_program_id)
@@ -1948,6 +1979,212 @@ fn sample_idl(program_id: &str) -> String {
   "errors": [{{"code": 6000, "name": "InvalidValue", "msg": "invalid value"}}]
 }}"#
     )
+}
+
+fn optional_account_idl() -> String {
+    r#"{
+  "address": "11111111111111111111111111111111",
+  "version": "0.1.0",
+  "name": "optional_account_fixture",
+  "instructions": [{
+    "name": "invoke",
+    "accounts": [
+      {"name": "payer", "isMut": true, "isSigner": true},
+      {"name": "referrer", "isMut": false, "isSigner": false, "isOptional": true}
+    ],
+    "args": []
+  }],
+  "accounts": [],
+  "types": [],
+  "events": [],
+  "errors": []
+}"#
+    .to_string()
+}
+
+fn bonkswap_string_seed_idl() -> String {
+    r#"{
+  "address": "BSwp6bEBihVLdqJRKGgzjcGLHkcTuzmSo1TQkHepzH8p",
+  "version": "1.0.0",
+  "name": "bonkswap_string_seed_fixture",
+  "instructions": [{
+    "name": "initializePool",
+    "accounts": [{
+      "name": "pool",
+      "isMut": true,
+      "isSigner": false,
+      "pda": {
+        "seeds": [
+          {"kind": "const", "type": "string", "value": "bonkswappoolv1"},
+          {"kind": "account", "path": "tokenMint"}
+        ]
+      }
+    }, {
+      "name": "tokenMint",
+      "isMut": false,
+      "isSigner": false
+    }],
+    "args": []
+  }],
+  "accounts": [],
+  "types": [],
+  "events": [],
+  "errors": []
+}"#
+    .to_string()
+}
+
+fn mpl_core_tuple_idl() -> String {
+    r#"{
+  "version": "0.1.0",
+  "name": "mpl_core_tuple_fixture",
+  "instructions": [{
+    "name": "AddExternalPluginAdapterV1",
+    "accounts": [
+      {"name": "asset", "isMut": true, "isSigner": false},
+      {"name": "payer", "isMut": true, "isSigner": true}
+    ],
+    "args": [{"name": "data", "type": {"defined": "AgentIdentityInitInfo"}}],
+    "discriminant": {"type": "u8", "value": 28}
+  }],
+  "accounts": [],
+  "types": [{
+    "name": "AgentIdentityInitInfo",
+    "type": {
+      "kind": "struct",
+      "fields": [{
+        "name": "lifecycleChecks",
+        "type": {"vec": {"tuple": [
+          {"defined": "HookableLifecycleEvent"},
+          {"defined": "ExternalCheckResult"}
+        ]}}
+      }]
+    }
+  }, {
+    "name": "AgentIdentityUpdateInfo",
+    "type": {
+      "kind": "struct",
+      "fields": [{
+        "name": "lifecycleChecks",
+        "type": {"option": {"vec": {"tuple": ["u8", "u16"]}}}
+      }]
+    }
+  }],
+  "events": [],
+  "errors": [],
+  "metadata": {
+    "origin": "shank",
+    "address": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
+  }
+}"#
+    .to_string()
+}
+
+fn subscriptions_codama_idl() -> String {
+    r#"{
+  "kind": "rootNode",
+  "program": {
+    "kind": "programNode",
+    "name": "subscriptions",
+    "publicKey": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+    "version": "0.1.0",
+    "pdas": [{
+      "kind": "pdaNode",
+      "name": "subscriptionAuthority",
+      "seeds": [
+        {
+          "kind": "constantPdaSeedNode",
+          "type": {"kind": "stringTypeNode", "encoding": "utf8"},
+          "value": {"kind": "stringValueNode", "string": "SubscriptionAuthority"}
+        },
+        {"kind": "variablePdaSeedNode", "name": "user", "type": {"kind": "publicKeyTypeNode"}},
+        {"kind": "variablePdaSeedNode", "name": "tokenMint", "type": {"kind": "publicKeyTypeNode"}}
+      ]
+    }],
+    "accounts": [{
+      "kind": "accountNode",
+      "name": "subscriptionAuthority",
+      "data": {
+        "kind": "structTypeNode",
+        "fields": [
+          {"kind": "structFieldTypeNode", "name": "owner", "type": {"kind": "publicKeyTypeNode"}},
+          {"kind": "structFieldTypeNode", "name": "amount", "type": {"kind": "numberTypeNode", "format": "u64"}}
+        ]
+      }
+    }],
+    "definedTypes": [{
+      "kind": "definedTypeNode",
+      "name": "accountDiscriminator",
+      "type": {
+        "kind": "enumTypeNode",
+        "variants": [{
+          "kind": "enumEmptyVariantTypeNode",
+          "name": "subscriptionAuthority",
+          "discriminator": 0
+        }]
+      }
+    }, {
+      "kind": "definedTypeNode",
+      "name": "transferData",
+      "type": {
+        "kind": "structTypeNode",
+        "fields": [{
+          "kind": "structFieldTypeNode",
+          "name": "amount",
+          "type": {"kind": "numberTypeNode", "format": "u64", "endian": "le"}
+        }]
+      }
+    }],
+    "events": [{
+      "kind": "eventNode",
+      "name": "SubscriptionCreatedEvent",
+      "discriminator": [0],
+      "docs": ["Emitted when a subscription is created."],
+      "data": {"kind": "definedTypeLinkNode", "name": "transferData"}
+    }],
+    "errors": [{"kind": "errorNode", "code": 100, "name": "bad", "message": "Bad"}],
+    "instructions": [{
+      "kind": "instructionNode",
+      "name": "initSubscriptionAuthority",
+      "accounts": [
+        {"kind": "instructionAccountNode", "name": "owner", "isSigner": true, "isWritable": true},
+        {"kind": "instructionAccountNode", "name": "referrer", "isSigner": "either", "isWritable": false, "isOptional": true},
+        {
+          "kind": "instructionAccountNode",
+          "name": "subscriptionAuthority",
+          "isSigner": false,
+          "isWritable": true,
+          "defaultValue": {
+            "kind": "pdaValueNode",
+            "pda": {"kind": "pdaLinkNode", "name": "subscriptionAuthority"},
+            "seeds": [
+              {"kind": "pdaSeedValueNode", "name": "user", "value": {"kind": "accountValueNode", "name": "owner"}},
+              {"kind": "pdaSeedValueNode", "name": "tokenMint", "value": {"kind": "accountValueNode", "name": "tokenMint"}}
+            ]
+          }
+        },
+        {"kind": "instructionAccountNode", "name": "tokenMint", "isSigner": false, "isWritable": false},
+        {
+          "kind": "instructionAccountNode",
+          "name": "systemProgram",
+          "isSigner": false,
+          "isWritable": false,
+          "defaultValue": {"kind": "publicKeyValueNode", "publicKey": "11111111111111111111111111111111"}
+        }
+      ],
+      "arguments": [
+        {
+          "kind": "instructionArgumentNode",
+          "name": "discriminator",
+          "type": {"kind": "numberTypeNode", "format": "u8"},
+          "defaultValue": {"kind": "numberValueNode", "number": 0}
+        },
+        {"kind": "instructionArgumentNode", "name": "amount", "type": {"kind": "numberTypeNode", "format": "u64"}}
+      ]
+    }]
+  }
+}"#
+        .to_string()
 }
 
 fn sample_idl_reordered(program_id: &str) -> String {
