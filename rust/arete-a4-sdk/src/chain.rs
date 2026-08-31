@@ -34,10 +34,6 @@ pub enum ChainError {
     #[error("Invalid chain response for '{path}': {message}")]
     InvalidResponse { path: String, message: String },
 
-    /// The call was rejected locally, before any request was made.
-    #[error("Invalid chain request: {0}")]
-    InvalidRequest(String),
-
     /// Transport or authentication failure from the SDK core.
     #[error(transparent)]
     Sdk(#[from] AreteError),
@@ -66,9 +62,6 @@ impl From<ChainError> for AreteError {
             }
             ChainError::InvalidResponse { path, message } => {
                 AreteError::Serialization(format!("Invalid chain response for '{path}': {message}"))
-            }
-            ChainError::InvalidRequest(message) => {
-                AreteError::InvalidConfig(format!("Invalid chain request: {message}"))
             }
             ChainError::Sdk(inner) => inner,
         }
@@ -494,9 +487,9 @@ impl ChainClient for HttpChainClient {
         addresses: &[String],
     ) -> Result<Vec<Option<RawAccountInfo>>, ChainError> {
         if addresses.len() > MAX_BATCH_ADDRESSES {
-            return Err(ChainError::InvalidRequest(format!(
-                "addresses exceeds the {MAX_BATCH_ADDRESSES}-address limit for one batch"
-            )));
+            return Err(ChainError::Sdk(AreteError::InvalidConfig(format!(
+                "Invalid chain request: addresses exceeds the {MAX_BATCH_ADDRESSES}-address limit for one batch"
+            ))));
         }
         if addresses.is_empty() {
             return Ok(Vec::new());
@@ -791,7 +784,10 @@ mod tests {
             .expect_err("over the limit");
 
         assert!(
-            matches!(&error, ChainError::InvalidRequest(m) if m.contains("100-address")),
+            matches!(
+                &error,
+                ChainError::Sdk(AreteError::InvalidConfig(m)) if m.contains("100-address")
+            ),
             "unexpected error: {error:?}"
         );
         assert!(
