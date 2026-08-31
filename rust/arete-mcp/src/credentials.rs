@@ -202,14 +202,28 @@ fn normalize_api_url(url: &str) -> &str {
 
 fn parse_credentials_content(content: &str, api_url: &str) -> Option<String> {
     let wanted = normalize_api_url(api_url);
-    // Try the new format first.
+    // Try the new format first. An exact spelling match wins outright; only
+    // then are other spellings that normalize to the same destination
+    // considered, in sorted raw-key order — `HashMap` iteration order varies
+    // per process, and the chosen key must not change between launches.
     if let Ok(parsed) = toml::from_str::<NewFormat>(content) {
         if let Some(keys) = parsed.keys {
-            let matched = keys
-                .iter()
-                .find(|(url, _)| normalize_api_url(url) == wanted)
-                .map(|(_, key)| key.trim())
+            let exact = keys
+                .get(api_url)
+                .or_else(|| keys.get(wanted))
+                .map(|key| key.trim())
                 .filter(|k| !k.is_empty());
+            let matched = exact.or_else(|| {
+                let mut candidates: Vec<(&String, &String)> = keys
+                    .iter()
+                    .filter(|(url, _)| normalize_api_url(url) == wanted)
+                    .collect();
+                candidates.sort_by_key(|(url, _)| url.as_str());
+                candidates
+                    .into_iter()
+                    .map(|(_, key)| key.trim())
+                    .find(|k| !k.is_empty())
+            });
             if let Some(k) = matched {
                 return Some(k.to_string());
             }
@@ -326,6 +340,41 @@ mod tests {
         let r = resolve_with(&env, None, "").unwrap();
         assert_eq!(r.source, KeySource::CredentialsFile);
         assert_eq!(r.key.as_deref(), Some("a4_sk_url"));
+    }
+
+    #[test]
+    fn url_keyed_lookup_prefers_normalized_destination_spelling() {
+        // Two spellings of one destination: requests go to the normalized
+        // URL, so the entry stored under exactly that spelling must win
+        // regardless of HashMap iteration order.
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, "https://api.arete.run/")
+            .with_credentials(
+                "[keys]\n\
+                 \"https://api.arete.run\" = \"a4_sk_bare\"\n\
+                 \"https://api.arete.run/\" = \"a4_sk_slash\"",
+            );
+        for _ in 0..8 {
+            let r = resolve_with(&env, None, "").unwrap();
+            assert_eq!(r.key.as_deref(), Some("a4_sk_bare"));
+        }
+    }
+
+    #[test]
+    fn url_keyed_lookup_breaks_normalized_ties_deterministically() {
+        // No exact spelling matches; among normalized-equal entries the
+        // sorted-first raw key is chosen, launch after launch.
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, "https://api.arete.run//")
+            .with_credentials(
+                "[keys]\n\
+                 \"https://api.arete.run/\" = \"a4_sk_slash\"\n\
+                 \"https://api.arete.run\" = \"a4_sk_bare\"",
+            );
+        for _ in 0..8 {
+            let r = resolve_with(&env, None, "").unwrap();
+            assert_eq!(r.key.as_deref(), Some("a4_sk_bare"));
+        }
     }
 
     #[test]
