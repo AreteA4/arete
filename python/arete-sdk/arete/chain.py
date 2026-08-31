@@ -168,7 +168,7 @@ def _parse_raw_account(body: Any, path: str) -> RawAccountInfo:
     return RawAccountInfo(
         address=body["address"],
         owner_program=body["ownerProgram"],
-        lamports=body["lamports"],
+        lamports=_parse_decimal_u64(body.get("lamports"), "lamports", path),
         executable=body["executable"],
         data=data,
     )

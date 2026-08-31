@@ -165,7 +165,7 @@ async def test_account_decodes_base64_and_null():
             json={
                 "address": "addr",
                 "ownerProgram": "owner-prog",
-                "lamports": 5,
+                "lamports": "5",
                 "executable": False,
                 "data": encoded,
             },
@@ -185,7 +185,7 @@ async def test_account_decodes_base64_and_null():
             json={
                 "address": "a",
                 "ownerProgram": "p",
-                "lamports": 0,
+                "lamports": "0",
                 "executable": False,
                 "data": "!!!not-base64!!!",
             },
@@ -209,7 +209,7 @@ async def test_accounts_batch_maps_items_positionally():
                     {
                         "address": "addr",
                         "ownerProgram": "owner-prog",
-                        "lamports": 7,
+                        "lamports": "7",
                         "executable": False,
                         "data": encoded,
                     },

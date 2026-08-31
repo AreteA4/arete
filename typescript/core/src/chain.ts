@@ -53,7 +53,7 @@ export interface TokenBalanceInput {
 export interface RawAccountInfo {
   address: string;
   ownerProgram: string;
-  lamports: number;
+  lamports: bigint;
   executable: boolean;
   data: Uint8Array;
 }
@@ -98,7 +98,8 @@ const MAX_BATCH_ADDRESSES = 100;
 interface RawAccountBody {
   address: string;
   ownerProgram: string;
-  lamports: number;
+  /** Decimal string, not a number: a balance above 2^53 would be rounded by `JSON.parse`. */
+  lamports: string;
   executable: boolean;
   data: string;
 }
@@ -110,7 +111,7 @@ function toRawAccount(body: RawAccountBody | null): RawAccountInfo | null {
   return {
     address: body.address,
     ownerProgram: body.ownerProgram,
-    lamports: body.lamports,
+    lamports: decimalU64(body.lamports, 'lamports'),
     executable: body.executable,
     data: decodeBase64(body.data),
   };
@@ -224,28 +225,33 @@ export function createChainClient(httpBaseUrl: string, fetchImpl: FetchLike): Ch
     },
 
     async accounts(addresses: readonly string[]): Promise<(RawAccountInfo | null)[]> {
-      if (addresses.length > MAX_BATCH_ADDRESSES) {
+      // Copied before anything else: `readonly string[]` accepts a mutable array, so a caller can
+      // splice it while the request is in flight and the cardinality check below would then compare
+      // the response against a list that is no longer what was asked for. The Python client copies
+      // for the same reason.
+      const requested = [...addresses];
+      if (requested.length > MAX_BATCH_ADDRESSES) {
         throw new RangeError(
           `addresses exceeds the ${MAX_BATCH_ADDRESSES}-address limit for one batch`
         );
       }
-      if (addresses.length === 0) {
+      if (requested.length === 0) {
         return [];
       }
       const path = '/chain/accounts';
       const response = await fetchImpl(joinUrl(httpBaseUrl, path), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ addresses }),
+        body: JSON.stringify({ addresses: requested }),
       });
       const body = await parseReadResponse<{ items: (RawAccountBody | null)[] }>(response, path);
       // A different count would shift every later account onto the wrong address.
-      if (body.items.length !== addresses.length) {
+      if (body.items.length !== requested.length) {
         throw new TypeError(
-          `Invalid chain response for '${path}': expected ${addresses.length} items, got ${body.items.length}`
+          `Invalid chain response for '${path}': expected ${requested.length} items, got ${body.items.length}`
         );
       }
-      // Positionally aligned with `addresses`; absent accounts arrive as null.
+      // Positionally aligned with `requested`; absent accounts arrive as null.
       return body.items.map(toRawAccount);
     },
 

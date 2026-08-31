@@ -1107,7 +1107,7 @@ describe('Arete transport: http', () => {
           JSON.stringify({
             address: 'addr-1',
             ownerProgram: 'owner-program',
-            lamports: 5,
+            lamports: '5',
             executable: false,
             data: Buffer.from([1, 2, 3]).toString('base64'),
           }),
@@ -1129,7 +1129,7 @@ describe('Arete transport: http', () => {
     await expect(client.chain.minimumBalanceForRentExemption(82)).resolves.toBe(1461600);
 
     const account = await client.chain.account('addr-1');
-    expect(account).toMatchObject({ address: 'addr-1', ownerProgram: 'owner-program', lamports: 5 });
+    expect(account).toMatchObject({ address: 'addr-1', ownerProgram: 'owner-program', lamports: 5n });
     expect(Array.from(account!.data)).toEqual([1, 2, 3]);
   });
 

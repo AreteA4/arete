@@ -386,7 +386,7 @@ struct NativeBalanceWire {
 struct RawAccountWire {
     address: String,
     owner_program: String,
-    lamports: u64,
+    lamports: String,
     executable: bool,
     data: String,
 }
@@ -407,10 +407,18 @@ fn decode_raw_account(wire: RawAccountWire, path: &str) -> Result<RawAccountInfo
             path: path.to_string(),
             message: format!("account data is not valid base64: {error}"),
         })?;
+    // Decimal string on the wire so a balance above 2^53 survives a JavaScript client.
+    let lamports = wire
+        .lamports
+        .parse::<u64>()
+        .map_err(|error| ChainError::InvalidResponse {
+            path: path.to_string(),
+            message: format!("lamports is not a u64: {error}"),
+        })?;
     Ok(RawAccountInfo {
         address: wire.address,
         owner_program: wire.owner_program,
-        lamports: wire.lamports,
+        lamports,
         executable: wire.executable,
         data,
     })
@@ -729,7 +737,7 @@ mod tests {
                             {
                                 "address": "a",
                                 "ownerProgram": "prog",
-                                "lamports": 7u64,
+                                "lamports": "7",
                                 "executable": false,
                                 "data": "AQID",
                             },
@@ -877,7 +885,7 @@ mod tests {
                     Json(serde_json::json!({
                         "address": "acc",
                         "ownerProgram": "prog",
-                        "lamports": 1000u64,
+                        "lamports": "1000",
                         "executable": false,
                         "data": "aGVsbG8=",
                     }))

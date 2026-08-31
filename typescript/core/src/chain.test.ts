@@ -109,14 +109,14 @@ describe('ChainClient batch accounts', () => {
             {
               address: 'addr-1',
               ownerProgram: 'owner-program',
-              lamports: 1_461_600,
+              lamports: '1461600',
               executable: false,
               data: 'AQID',
             },
             {
               address: 'addr-2',
               ownerProgram: 'owner-program',
-              lamports: 0,
+              lamports: '0',
               executable: true,
               data: '',
             },
@@ -133,7 +133,7 @@ describe('ChainClient batch accounts', () => {
     expect(items[0]).toMatchObject({
       address: 'addr-1',
       ownerProgram: 'owner-program',
-      lamports: 1_461_600,
+      lamports: 1_461_600n,
       executable: false,
     });
     expect(Array.from(items[0]!.data)).toEqual([1, 2, 3]);
@@ -156,7 +156,7 @@ describe('ChainClient batch accounts', () => {
             {
               address: 'addr-2',
               ownerProgram: 'owner-program',
-              lamports: 7,
+              lamports: '7',
               executable: false,
               data: 'BAU=',
             },
@@ -170,7 +170,7 @@ describe('ChainClient batch accounts', () => {
     const items = await chain.accounts(['missing', 'addr-2']);
 
     expect(items[0]).toBeNull();
-    expect(items[1]).toMatchObject({ address: 'addr-2', lamports: 7 });
+    expect(items[1]).toMatchObject({ address: 'addr-2', lamports: 7n });
     expect(Array.from(items[1]!.data)).toEqual([4, 5]);
   });
 
@@ -202,5 +202,60 @@ describe('ChainClient batch accounts', () => {
     await expect(chain.accounts(['addr-1', 'addr-2'])).rejects.toThrow(
       "Invalid chain response for '/chain/accounts': expected 2 items, got 1"
     );
+  });
+
+  // 9007199254740993 is the first integer a JSON number cannot hold: as a number the wire value
+  // would arrive already rounded to ...92, before any decoding here could intervene. The batch is
+  // the custody-sweep path, so a silently rounded balance would be acted on.
+  it('keeps lamports above 2^53 exact', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                address: 'whale',
+                ownerProgram: 'owner-program',
+                lamports: '9007199254740993',
+                executable: false,
+                data: '',
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+    );
+    const chain = createChainClient('https://example.invalid', fetchMock as typeof fetch);
+
+    const items = await chain.accounts(['whale']);
+
+    expect(items[0]!.lamports).toBe(9_007_199_254_740_993n);
+  });
+
+  // `readonly string[]` accepts a mutable array, so a caller can splice it mid-flight. The
+  // response must be validated against what was actually requested, not against the array as it
+  // looks when the promise resolves.
+  it('validates against the addresses as requested, not as later mutated', async () => {
+    const addresses = ['addr-1', 'addr-2'];
+    const fetchMock = vi.fn(async () => {
+      addresses.pop();
+      return new Response(
+        JSON.stringify({
+          items: [
+            { address: 'addr-1', ownerProgram: 'p', lamports: '1', executable: false, data: '' },
+            { address: 'addr-2', ownerProgram: 'p', lamports: '2', executable: false, data: '' },
+          ],
+        }),
+        { status: 200 }
+      );
+    });
+    const chain = createChainClient('https://example.invalid', fetchMock as typeof fetch);
+
+    const items = await chain.accounts(addresses);
+
+    expect(items).toHaveLength(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toEqual({
+      addresses: ['addr-1', 'addr-2'],
+    });
   });
 });
