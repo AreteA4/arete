@@ -355,6 +355,27 @@ fn serialize_value(
                 serialize_value(item, inner, ctx, out)?;
             }
         }
+        ArgType::Tuple(element_types) => {
+            let Value::Array(items) = value else {
+                return Err(invalid(
+                    ctx,
+                    format!("Tuple value must be an array, got {}", json_kind(value)),
+                ));
+            };
+            if items.len() != element_types.len() {
+                return Err(invalid(
+                    ctx,
+                    format!(
+                        "Tuple length mismatch: expected {}, got {}",
+                        element_types.len(),
+                        items.len()
+                    ),
+                ));
+            }
+            for (position, (item, element_type)) in items.iter().zip(element_types).enumerate() {
+                serialize_value(item, element_type, &format!("{ctx}[{position}]"), out)?;
+            }
+        }
         ArgType::HashMap(key_ty, value_ty) => {
             if **key_ty != ArgType::String {
                 return Err(invalid(
@@ -705,6 +726,36 @@ mod tests {
         let schema = [arg("a", ArgType::Array(Box::new(ArgType::U8), 3))];
         assert_eq!(ser(&schema, json!({ "a": [4, 5, 6] })), vec![4, 5, 6]);
         assert!(ser_err(&schema, json!({ "a": [1] })).contains("length mismatch"));
+    }
+
+    #[test]
+    fn serializes_tuples_without_a_prefix_and_checks_shape() {
+        let schema = [arg("pair", ArgType::Tuple(vec![ArgType::U8, ArgType::U16]))];
+        assert_eq!(ser(&schema, json!({ "pair": [5, 258] })), vec![5, 2, 1]);
+        assert!(ser_err(&schema, json!({ "pair": [5] })).contains("Tuple length mismatch"));
+        assert!(ser_err(&schema, json!({ "pair": { "first": 5 } }))
+            .contains("Tuple value must be an array"));
+    }
+
+    #[test]
+    fn serializes_tuples_nested_inside_vectors() {
+        let schema = [arg(
+            "checks",
+            ArgType::Vec(Box::new(ArgType::Tuple(vec![
+                ArgType::U8,
+                ArgType::Struct(vec![ArgField {
+                    name: "flags".to_string(),
+                    ty: ArgType::U32,
+                }]),
+            ]))),
+        )];
+        assert_eq!(
+            ser(
+                &schema,
+                json!({ "checks": [[1, { "flags": 0x0102_0304 }]] })
+            ),
+            vec![1, 0, 0, 0, 1, 4, 3, 2, 1]
+        );
     }
 
     #[test]

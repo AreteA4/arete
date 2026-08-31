@@ -11,7 +11,8 @@ Type schema mirrors the TS ``ArgType`` shape: primitives are strings
 ``"bool"``, ``"string"``, ``"pubkey"``, ``"bytes"``); composites are
 single-key dicts (``{"vec": t}`` with a u32 count, ``{"vecU64Len": t}`` with a
 u64 count, ``{"option": t}``, ``{"array": (t, n)}``,
-``{"hashMap": (k, v)}``, ``{"struct": [{"name", "type"}, ...]}``,
+``{"tuple": (t, ...)}``, ``{"hashMap": (k, v)}``,
+``{"struct": [{"name", "type"}, ...]}``,
 ``{"enum": [variant, ...]}``). Enum variants are bare strings (fieldless) or
 ``{"name": ..., "fields": [...]}`` / ``{"name": ..., "tuple": [...]}``.
 """
@@ -204,6 +205,15 @@ def _serialize_value(value: Any, arg_type: ArgType, ctx: str, out: bytearray) ->
             )
         for item in items:
             _serialize_value(item, element_type, ctx, out)
+    elif "tuple" in arg_type:
+        element_types = arg_type["tuple"]
+        items = _sequence_items(value, ctx, "tuple")
+        if len(items) != len(element_types):
+            raise InstructionError(
+                f"Tuple length mismatch: expected {len(element_types)}, got {len(items)}"
+            )
+        for position, (item, element_type) in enumerate(zip(items, element_types)):
+            _serialize_value(item, element_type, f"{ctx}[{position}]", out)
     elif "hashMap" in arg_type:
         key_type, value_type = arg_type["hashMap"]
         _serialize_hash_map(value, key_type, value_type, ctx, out)

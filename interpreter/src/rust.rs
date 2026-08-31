@@ -1904,6 +1904,121 @@ mod tests {
     }
 
     #[test]
+    fn rust_generator_supports_inline_tuples_from_idl_snapshots() {
+        let mut spec = programs_stack_spec();
+        spec.idls[0].types = vec![
+            IdlTypeDefSnapshot {
+                name: "HookableLifecycleEvent".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Enum {
+                    kind: "enum".to_string(),
+                    variants: vec![
+                        IdlEnumVariantSnapshot {
+                            name: "Create".to_string(),
+                            fields: vec![],
+                        },
+                        IdlEnumVariantSnapshot {
+                            name: "Transfer".to_string(),
+                            fields: vec![],
+                        },
+                    ],
+                },
+            },
+            IdlTypeDefSnapshot {
+                name: "ExternalCheckResult".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![IdlFieldSnapshot {
+                        name: "flags".to_string(),
+                        type_: IdlTypeSnapshot::Simple("u32".to_string()),
+                        amount_hint: None,
+                    }],
+                },
+            },
+            IdlTypeDefSnapshot {
+                name: "AgentIdentityInitInfo".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![IdlFieldSnapshot {
+                        name: "lifecycleChecks".to_string(),
+                        type_: IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
+                            vec: Box::new(IdlTypeSnapshot::Tuple(IdlTupleTypeSnapshot {
+                                tuple: vec![
+                                    IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                                        defined: IdlDefinedInnerSnapshot::Named {
+                                            name: "HookableLifecycleEvent".to_string(),
+                                        },
+                                    }),
+                                    IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                                        defined: IdlDefinedInnerSnapshot::Named {
+                                            name: "ExternalCheckResult".to_string(),
+                                        },
+                                    }),
+                                ],
+                            })),
+                        }),
+                        amount_hint: None,
+                    }],
+                },
+            },
+        ];
+        spec.idls[0].instructions.push(IdlInstructionSnapshot {
+            name: "tupleThing".to_string(),
+            discriminator: vec![7],
+            discriminant: None,
+            docs: vec![],
+            accounts: vec![],
+            args: vec![
+                IdlFieldSnapshot {
+                    name: "payload".to_string(),
+                    type_: IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                        defined: IdlDefinedInnerSnapshot::Named {
+                            name: "AgentIdentityInitInfo".to_string(),
+                        },
+                    }),
+                    amount_hint: None,
+                },
+                IdlFieldSnapshot {
+                    name: "pair".to_string(),
+                    type_: IdlTypeSnapshot::Tuple(IdlTupleTypeSnapshot {
+                        tuple: vec![
+                            IdlTypeSnapshot::Simple("u8".to_string()),
+                            IdlTypeSnapshot::Simple("u16".to_string()),
+                        ],
+                    }),
+                    amount_hint: None,
+                },
+            ],
+        });
+        spec.instructions.push(InstructionDef {
+            name: "tupleThing".to_string(),
+            discriminator: vec![7],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![
+                instruction_arg("payload", "AgentIdentityInitInfo"),
+                instruction_arg("pair", "(u8, u16)"),
+            ],
+            errors: vec![],
+            program_id: Some(TEST_PROGRAM_ID.to_string()),
+            docs: vec![],
+        });
+
+        let output = compile_stack_spec(spec, None).expect("inline tuples should generate");
+        let programs = output.programs_rs.expect("program module");
+        assert!(programs.contains("pub struct TupleThingParams {"));
+        assert!(programs.contains("pub pair: serde_json::Value,"));
+        assert!(programs.contains("ArgType::Tuple(vec![ArgType::U8, ArgType::U16])"));
+        assert!(programs.contains("ArgType::Vec(Box::new(ArgType::Tuple(vec![ArgType::Enum("));
+        assert!(!programs.contains("`tupleThing`: arg 'pair' has unsupported type"));
+    }
+
+    #[test]
     fn rust_generator_aliases_arg_account_collisions_and_pda_refs() {
         let mut spec = programs_stack_spec();
         spec.instructions = vec![InstructionDef {
@@ -3459,6 +3574,29 @@ struct ProgramImports {
     error_metadata: bool,
 }
 
+fn instruction_snapshot_matches(
+    instruction: &InstructionDef,
+    snapshot: &IdlInstructionSnapshot,
+) -> bool {
+    instruction.name == snapshot.name
+        && instruction.discriminator == snapshot.discriminator
+        && instruction.args.len() == snapshot.args.len()
+        && instruction
+            .args
+            .iter()
+            .zip(snapshot.args.iter())
+            .all(|(arg, snapshot_arg)| arg.name == snapshot_arg.name)
+}
+
+fn find_instruction_snapshot<'a>(
+    instruction: &InstructionDef,
+    idl: Option<&'a IdlSnapshot>,
+) -> Option<&'a IdlInstructionSnapshot> {
+    idl?.instructions
+        .iter()
+        .find(|snapshot| instruction_snapshot_matches(instruction, snapshot))
+}
+
 /// A parsed instruction argument type.
 #[derive(Debug, Clone)]
 struct RustParsedArg {
@@ -3672,11 +3810,29 @@ impl<'a> RustDefinedTypes<'a> {
                     }
                 }
             }
-            // The ArgType schema runtime has no tuple encoding yet, so tuple
-            // args degrade to the explicit unsupported marker (same as exotic
-            // hashMap keys) instead of emitting a schema the runtime cannot
-            // serialize.
-            IdlTypeSnapshot::Tuple(_) => rust_unsupported(),
+            IdlTypeSnapshot::Tuple(tuple) => {
+                let elements = tuple
+                    .tuple
+                    .iter()
+                    .map(|element| self.parse_snapshot_type(element))
+                    .collect::<Vec<_>>();
+                if elements.iter().any(|element| !element.supported) {
+                    rust_unsupported()
+                } else {
+                    RustParsedArg {
+                        schema: format!(
+                            "ArgType::Tuple(vec![{}])",
+                            elements
+                                .iter()
+                                .map(|element| element.schema.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        param_type: "serde_json::Value".to_string(),
+                        supported: true,
+                    }
+                }
+            }
             IdlTypeSnapshot::Defined(d) => {
                 let name = match &d.defined {
                     IdlDefinedInnerSnapshot::Named { name } => name.as_str(),
@@ -4107,6 +4263,7 @@ struct RustInstructionBlock {
 
 fn generate_rust_instruction_block(
     instr: &InstructionDef,
+    instruction_snapshot: Option<&IdlInstructionSnapshot>,
     errors: &[IdlErrorSnapshot],
     pda_lookup: &BTreeMap<&str, &PdaDefinition>,
     parser: &mut RustDefinedTypes<'_>,
@@ -4114,8 +4271,11 @@ fn generate_rust_instruction_block(
 ) -> Result<RustInstructionBlock, String> {
     // --- Parse args; skip the whole instruction on unsupported types. ---
     let mut parsed_args: Vec<(&InstructionArgDef, RustParsedArg)> = Vec::new();
-    for arg in &instr.args {
-        let parsed = parser.parse_arg_type(&arg.arg_type);
+    for (index, arg) in instr.args.iter().enumerate() {
+        let parsed = instruction_snapshot
+            .and_then(|snapshot| snapshot.args.get(index))
+            .map(|snapshot_arg| parser.parse_snapshot_type(&snapshot_arg.type_))
+            .unwrap_or_else(|| parser.parse_arg_type(&arg.arg_type));
         if !parsed.supported {
             return Err(format!(
                 "arg '{}' has unsupported type '{}'",
@@ -4625,6 +4785,7 @@ fn generate_stack_programs_rs(
             };
             match generate_rust_instruction_block(
                 instr,
+                find_instruction_snapshot(instr, idl),
                 &errors,
                 &pda_lookup,
                 &mut parser,
