@@ -192,9 +192,9 @@ fn generate_bytemuck_field(field: &IdlField) -> TokenStream {
     quote! { pub #field_name: #field_type }
 }
 
-/// A `u64` length prefix reachable only through a `defined` or `hashMap` type.
+/// A `u64` length prefix reachable only through a `defined`, `hashMap`, or `tuple` type.
 ///
-/// Those two are serialized by delegating to the named type's own derived Borsh impl, which writes
+/// Those three are serialized by delegating to the named type's own derived Borsh impl, which writes
 /// a `u32` sequence count. Detecting the prefix does not change that — the generated code compiles
 /// and emits four bytes where the program reads eight, three bytes short with the first element
 /// misread. Supporting it means generating manual Borsh impls for every affected named type, which
@@ -208,7 +208,9 @@ fn nested_u64_prefix(idl_type: &IdlType, types: &[IdlTypeDef]) -> bool {
 }
 
 /// The prefix is on this type or inside a `vec`/`option`/`array` of it — shapes the generator
-/// hand-rolls, so they encode correctly. Deliberately does not resolve `defined` or `hashMap`.
+/// hand-rolls, so they encode correctly. Deliberately does not resolve `defined` or `hashMap`,
+/// and `tuple` fields serialize through the derived impl for the Rust tuple type, so a prefix
+/// inside one is never direct.
 fn contains_u64_len_vec_directly(idl_type: &IdlType) -> bool {
     match idl_type {
         IdlType::Vec(vec_type) => {
@@ -219,7 +221,7 @@ fn contains_u64_len_vec_directly(idl_type: &IdlType) -> bool {
         IdlType::Array(array_type) => array_inner_type(array_type)
             .map(|inner| contains_u64_len_vec_directly(&inner))
             .unwrap_or(false),
-        IdlType::Simple(_) | IdlType::HashMap(_) | IdlType::Defined(_) => false,
+        IdlType::Simple(_) | IdlType::HashMap(_) | IdlType::Defined(_) | IdlType::Tuple(_) => false,
     }
 }
 
@@ -257,9 +259,9 @@ fn find_nested_u64_prefix(idl: &IdlSpec) -> Option<String> {
 pub fn generate_sdk_types(idl: &IdlSpec, module_name: &str) -> TokenStream {
     if let Some(location) = find_nested_u64_prefix(idl) {
         let message = format!(
-            "{location} reaches a u64-length-prefixed sequence through a `defined` or `hashMap` \
-             type, which the generated Borsh impls would encode with a four-byte count. Declare \
-             the sequence directly on the argument or field instead."
+            "{location} reaches a u64-length-prefixed sequence through a `defined`, `hashMap`, \
+             or `tuple` type, which the generated Borsh impls would encode with a four-byte count. \
+             Declare the sequence directly on the argument or field instead."
         );
         return quote! { compile_error!(#message); };
     }
@@ -390,6 +392,10 @@ fn contains_u64_len_vec(
             contains_u64_len_vec(key, types, visited)
                 || contains_u64_len_vec(value, types, visited)
         }
+        IdlType::Tuple(tuple_type) => tuple_type
+            .tuple
+            .iter()
+            .any(|element| contains_u64_len_vec(element, types, visited)),
         IdlType::Defined(def) => {
             let name = match &def.defined {
                 IdlTypeDefinedInner::Named { name } => name,

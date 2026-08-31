@@ -318,6 +318,49 @@ describe('serializeInstructionData', () => {
     ]);
   });
 
+  it('serializes inline tuples recursively without a length prefix', () => {
+    const schema: ArgSchema[] = [
+      {
+        name: 'checks',
+        type: {
+          vec: {
+            tuple: [
+              { enum: ['Create', 'Transfer'] },
+              { struct: [{ name: 'flags', type: 'u32' }] },
+            ],
+          },
+        },
+      },
+    ];
+    const data = serializeInstructionData(
+      new Uint8Array(0),
+      {
+        checks: [
+          ['Transfer', { flags: 0x01020304 }],
+          ['Create', { flags: 5 }],
+        ],
+      },
+      schema
+    );
+
+    expect([...data]).toEqual([
+      2, 0, 0, 0,
+      1, 4, 3, 2, 1,
+      0, 5, 0, 0, 0,
+    ]);
+  });
+
+  it('rejects non-array and wrong-length inline tuple values', () => {
+    const schema: ArgSchema[] = [{ name: 'pair', type: { tuple: ['u8', 'u16'] } }];
+
+    expect(() =>
+      serializeInstructionData(new Uint8Array(0), { pair: { left: 1, right: 2 } }, schema)
+    ).toThrow(/Tuple value must be an array/);
+    expect(() =>
+      serializeInstructionData(new Uint8Array(0), { pair: [1] }, schema)
+    ).toThrow(/Tuple length mismatch: expected 2, got 1/);
+  });
+
   it('serializes string-key maps in deterministic key order', () => {
     const schema: ArgSchema[] = [{ name: 'labels', type: { hashMap: ['string', 'u8'] } }];
     const left = serializeInstructionData(new Uint8Array(0), { labels: { z: 1, a: 2 } }, schema);

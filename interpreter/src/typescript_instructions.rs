@@ -1093,11 +1093,36 @@ impl<'a> DefinedTypes<'a> {
                     }
                 }
             }
-            // The TS instruction-args schema runtime has no tuple encoding
-            // yet, so tuple args degrade to the explicit unsupported marker
-            // (same as exotic hashMap keys) instead of emitting a schema the
-            // runtime cannot serialize.
-            IdlTypeSnapshot::Tuple(_) => unsupported(),
+            IdlTypeSnapshot::Tuple(tuple) => {
+                let elements = tuple
+                    .tuple
+                    .iter()
+                    .map(|element| self.parse_snapshot_type(element))
+                    .collect::<Vec<_>>();
+                if elements.iter().any(|element| !element.supported) {
+                    unsupported()
+                } else {
+                    ParsedArgType {
+                        schema: format!(
+                            "{{ tuple: [{}] }}",
+                            elements
+                                .iter()
+                                .map(|element| element.schema.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        ts_type: format!(
+                            "[{}]",
+                            elements
+                                .iter()
+                                .map(|element| element.ts_type.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        supported: true,
+                    }
+                }
+            }
             IdlTypeSnapshot::Defined(d) => {
                 let name = match &d.defined {
                     IdlDefinedInnerSnapshot::Named { name } => name.as_str(),
@@ -2875,6 +2900,10 @@ mod tests {
         })
     }
 
+    fn tuple_type(elements: Vec<IdlTypeSnapshot>) -> IdlTypeSnapshot {
+        IdlTypeSnapshot::Tuple(crate::ast::IdlTupleTypeSnapshot { tuple: elements })
+    }
+
     fn instruction_snapshot(
         name: &str,
         discriminator: Vec<u8>,
@@ -3237,6 +3266,92 @@ mod tests {
             .code
             .contains("additionalMetadata: Record<string, string>;"));
         assert!(out.code.contains("{ hashMap: ['string', 'string'] }"));
+    }
+
+    #[test]
+    fn resolves_mpl_core_inline_tuples_inside_vectors() {
+        let mut idl = idl(
+            "mpl_core",
+            "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+            vec![],
+        );
+        idl.types = vec![
+            struct_def(
+                "AgentIdentityInitInfo",
+                vec![(
+                    "lifecycleChecks",
+                    vec_type(tuple_type(vec![
+                        defined("HookableLifecycleEvent"),
+                        defined("ExternalCheckResult"),
+                    ])),
+                )],
+            ),
+            IdlTypeDefSnapshot {
+                name: "HookableLifecycleEvent".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Enum {
+                    kind: "enum".to_string(),
+                    variants: vec![
+                        crate::ast::IdlEnumVariantSnapshot {
+                            name: "Create".to_string(),
+                            fields: vec![],
+                        },
+                        crate::ast::IdlEnumVariantSnapshot {
+                            name: "Transfer".to_string(),
+                            fields: vec![],
+                        },
+                    ],
+                },
+            },
+            struct_def("ExternalCheckResult", vec![("flags", simple("u32"))]),
+        ];
+        idl.instructions = vec![instruction_snapshot(
+            "AddExternalPluginAdapterV1",
+            vec![28],
+            vec![field(
+                "addExternalPluginAdapterV1Args",
+                defined("AgentIdentityInitInfo"),
+            )],
+        )];
+        let idls = vec![idl];
+
+        let instruction = InstructionDef {
+            name: "AddExternalPluginAdapterV1".to_string(),
+            discriminator: vec![28],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![arg(
+                "addExternalPluginAdapterV1Args",
+                "AgentIdentityInitInfo",
+            )],
+            errors: vec![],
+            program_id: Some("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "MplCore",
+            std::slice::from_ref(&instruction),
+            &idls,
+            &BTreeMap::new(),
+            &["CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d".to_string()],
+            &HashSet::new(),
+        );
+
+        assert_eq!(out.stack_entries.len(), 1, "warnings: {:?}", out.warnings);
+        assert!(
+            out.warnings.is_empty(),
+            "MPL Core tuple-backed args should emit cleanly: {:?}",
+            out.warnings
+        );
+        assert!(out
+            .code
+            .contains("lifecycleChecks: [HookableLifecycleEvent, ExternalCheckResult][];"));
+        assert!(out.code.contains(
+            "{ name: 'lifecycleChecks', type: { vec: { tuple: [{ enum: ['Create', 'Transfer'] }, { struct: [{ name: 'flags', type: 'u32' }] }] } } }"
+        ));
+        assert!(!out.code.contains("skipped instruction"));
     }
 
     #[test]
