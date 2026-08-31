@@ -2420,21 +2420,10 @@ fn normalize_idl_fields(
     fields: &[IdlFieldSnapshot],
     local_name_map: &BTreeMap<String, String>,
 ) -> Vec<TypeScriptField> {
-    let mut canonical_names = BTreeMap::new();
+    let canonical_names = canonical_idl_field_names(fields);
     let mut normalized = Vec::with_capacity(fields.len());
 
-    for field in fields {
-        let canonical_name = to_camel_case(&field.name);
-        if let Some(existing_source) =
-            canonical_names.insert(canonical_name.clone(), field.name.clone())
-        {
-            assert_eq!(
-                existing_source, field.name,
-                "IDL field normalization collision: '{}' and '{}' both normalize to '{}'",
-                existing_source, field.name, canonical_name
-            );
-        }
-
+    for (field, canonical_name) in fields.iter().zip(canonical_names) {
         let (normalized_type, nullable) = strip_nullable_idl_type(&field.type_);
 
         normalized.push(TypeScriptField::required_with_schema(
@@ -2447,6 +2436,53 @@ fn normalize_idl_fields(
     }
 
     normalized
+}
+
+/// Produce stable, distinct TypeScript property names for IDL fields.
+///
+/// Most fields use the existing camel-case projection. When distinct wire
+/// names collapse to the same projection, preserve leading underscores first
+/// (`padding_0` -> `padding0`, `_padding_0` -> `_padding0`) and fall back to a
+/// numeric suffix for less structured collisions. This keeps account codegen
+/// total for valid binary layouts instead of panicking during generation.
+fn canonical_idl_field_names(fields: &[IdlFieldSnapshot]) -> Vec<String> {
+    let base_names = fields
+        .iter()
+        .map(|field| to_camel_case(&field.name))
+        .collect::<Vec<_>>();
+    let mut base_counts = BTreeMap::<String, usize>::new();
+    for base_name in &base_names {
+        *base_counts.entry(base_name.clone()).or_default() += 1;
+    }
+
+    let mut used_names = HashSet::new();
+    fields
+        .iter()
+        .zip(base_names)
+        .map(|(field, base_name)| {
+            let leading_underscores = field.name.chars().take_while(|ch| *ch == '_').count();
+            let preferred = if base_counts.get(base_name.as_str()).copied().unwrap_or(0) > 1
+                && leading_underscores > 0
+            {
+                format!("{}{}", "_".repeat(leading_underscores), base_name)
+            } else {
+                base_name
+            };
+
+            if used_names.insert(preferred.clone()) {
+                return preferred;
+            }
+
+            let mut suffix = 2;
+            loop {
+                let candidate = format!("{}{}", preferred, suffix);
+                if used_names.insert(candidate.clone()) {
+                    return candidate;
+                }
+                suffix += 1;
+            }
+        })
+        .collect()
 }
 
 fn idl_field_wire_name(field_name: &str) -> String {
@@ -2924,7 +2960,7 @@ fn unique_resolved_type_name_ts(
 
 /// Convert snake_case to PascalCase
 pub(crate) fn to_pascal_case(s: &str) -> String {
-    s.split(['_', '-', '.'])
+    s.split(['_', '-', '.', ':'])
         .map(|word| {
             let mut chars = word.chars();
             match chars.next() {
@@ -5229,7 +5265,47 @@ mod tests {
     #[test]
     fn test_case_conversions() {
         assert_eq!(to_pascal_case("settlement_game"), "SettlementGame");
+        assert_eq!(
+            to_pascal_case("sb_on_demand::actions::Submission"),
+            "SbOnDemandActionsSubmission"
+        );
         assert_eq!(to_kebab_case("SettlementGame"), "settlement-game");
+    }
+
+    #[test]
+    fn idl_field_normalization_disambiguates_leading_underscore_collisions() {
+        let fields = vec![
+            IdlFieldSnapshot {
+                name: "_padding_0".to_string(),
+                type_: IdlTypeSnapshot::Simple("u8".to_string()),
+                amount_hint: None,
+            },
+            IdlFieldSnapshot {
+                name: "padding_0".to_string(),
+                type_: IdlTypeSnapshot::Simple("u8".to_string()),
+                amount_hint: None,
+            },
+        ];
+
+        let normalized = normalize_idl_fields(&fields, &BTreeMap::new());
+        assert_eq!(
+            normalized
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["_padding0", "padding0"]
+        );
+
+        let interface =
+            generate_interface_from_idl_fields("CollisionLayout", &fields, &BTreeMap::new());
+        assert!(interface.contains("_padding0: number;"));
+        assert!(interface.contains("padding0: number;"));
+
+        let schema = generate_schema_from_idl_fields("CollisionLayout", &fields, &BTreeMap::new());
+        assert!(schema.contains("_padding_0: z.number(),"));
+        assert!(schema.contains("padding_0: z.number(),"));
+        assert!(schema.contains("_padding0: value._padding_0,"));
+        assert!(schema.contains("padding0: value.padding_0,"));
     }
 
     #[test]
