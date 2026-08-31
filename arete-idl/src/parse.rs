@@ -236,16 +236,27 @@ fn codama_instruction_to_idl(
         .iter()
         .find(|argument| argument.name == "discriminator")
         .map(|argument| match &argument.default_value {
-            Some(CodamaValueNode::Number { number }) => Ok(SteelDiscriminant {
-                type_: argument.number_format().unwrap_or("u8").to_string(),
-                value: u64::try_from(*number).map_err(|_| {
+            Some(CodamaValueNode::Number { number }) => {
+                let value = u64::try_from(*number).map_err(|_| {
                     format!(
                         "Codama instruction '{}' has a negative discriminator value {}; \
                          discriminants must be non-negative",
                         instruction.name, number
                     )
-                })?,
-            }),
+                })?;
+                // Through `try_new`, not a struct literal: this path used to accept a u8
+                // discriminant of 256 and encode it as [0], colliding with instruction zero.
+                SteelDiscriminant::try_new(
+                    argument.number_format().unwrap_or("u8"),
+                    value,
+                )
+                .map_err(|error| {
+                    format!(
+                        "Codama instruction '{}': {error}",
+                        instruction.name
+                    )
+                })
+            }
             _ => Err(format!(
                 "Codama instruction '{}' has a 'discriminator' argument without a numeric \
                  default_value; cannot determine its Steel discriminant",
@@ -1673,5 +1684,82 @@ mod tests {
         assert_eq!(idl.accounts[0].get_discriminator(), vec![0]);
         assert_eq!(idl.types.len(), 2);
         assert_eq!(idl.errors.len(), 1);
+    }
+
+    /// The Codama converter built `SteelDiscriminant` with a struct literal, so it bypassed the
+    /// range check and accepted a `u8` discriminant of 256 — encoded as `[0]`, colliding with
+    /// instruction zero. Construction is now sealed behind `try_new`, so this path is closed too.
+    #[test]
+    fn codama_rejects_a_discriminant_wider_than_its_declared_type() {
+        let json = r#"{
+            "kind": "rootNode",
+            "program": {
+                "kind": "programNode",
+                "name": "overflow",
+                "publicKey": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+                "version": "0.1.0",
+                "pdas": [],
+                "accounts": [],
+                "instructions": [
+                    {
+                        "kind": "instructionNode",
+                        "name": "overflowing",
+                        "accounts": [],
+                        "arguments": [
+                            {
+                                "kind": "instructionArgumentNode",
+                                "name": "discriminator",
+                                "type": { "kind": "numberTypeNode", "format": "u8" },
+                                "defaultValue": { "kind": "numberValueNode", "number": 256 }
+                            }
+                        ]
+                    }
+                ],
+                "definedTypes": [],
+                "errors": []
+            }
+        }"#;
+
+        let error = parse_idl_content(json).expect_err("256 does not fit a u8");
+        assert!(
+            error.contains("does not fit its declared type"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// A value that does fit must still convert, or every Codama IDL breaks.
+    #[test]
+    fn codama_accepts_a_discriminant_within_its_declared_type() {
+        let json = r#"{
+            "kind": "rootNode",
+            "program": {
+                "kind": "programNode",
+                "name": "fits",
+                "publicKey": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+                "version": "0.1.0",
+                "pdas": [],
+                "accounts": [],
+                "instructions": [
+                    {
+                        "kind": "instructionNode",
+                        "name": "fitting",
+                        "accounts": [],
+                        "arguments": [
+                            {
+                                "kind": "instructionArgumentNode",
+                                "name": "discriminator",
+                                "type": { "kind": "numberTypeNode", "format": "u32" },
+                                "defaultValue": { "kind": "numberValueNode", "number": 2 }
+                            }
+                        ]
+                    }
+                ],
+                "definedTypes": [],
+                "errors": []
+            }
+        }"#;
+
+        let idl = parse_idl_content(json).expect("a u32 value of 2 fits");
+        assert_eq!(idl.instructions[0].get_discriminator(), vec![2, 0, 0, 0]);
     }
 }

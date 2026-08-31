@@ -52,14 +52,44 @@ pub struct IdlMetadata {
 }
 
 /// Steel-style discriminant format: {"type": "u8", "value": N}
+///
+/// Fields are private so [`try_new`](Self::try_new) is the only way to build one. A struct literal
+/// bypassed the range check when it lived in the deserializer alone, which is how a Codama IDL
+/// reached `{"type": "u8", "value": 256}` and encoded it as `[0]`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SteelDiscriminant {
     #[serde(rename = "type")]
-    pub type_: String,
-    pub value: u64,
+    type_: String,
+    value: u64,
 }
 
 impl SteelDiscriminant {
+    /// The only constructor. Rejects a value that does not fit its declared type rather than
+    /// truncating it: `{"type": "u32", "value": 4294967296}` would encode as `[0, 0, 0, 0]` and
+    /// collide with whichever instruction genuinely declares discriminant zero — two instructions
+    /// sharing a tag, decided silently at parse time.
+    pub fn try_new(type_: impl Into<String>, value: u64) -> Result<Self, String> {
+        let type_ = type_.into();
+        let max = Self::max_for_width(Self::width_of(&type_));
+        if value > max {
+            return Err(format!(
+                "discriminant value {value} does not fit its declared type {type_} (max {max})"
+            ));
+        }
+
+        Ok(Self { type_, value })
+    }
+
+    /// Declared type name, e.g. `"u32"`.
+    pub fn declared_type(&self) -> &str {
+        &self.type_
+    }
+
+    /// The tag's numeric value.
+    pub fn value(&self) -> u64 {
+        self.value
+    }
+
     /// Encoded width in bytes, taken from the declared type.
     ///
     /// Steel writes a single byte. Bincode-encoded native programs (System Program, Address
@@ -93,18 +123,14 @@ impl SteelDiscriminant {
 
     /// The tag as it appears on the wire: little-endian, truncated to [`width`](Self::width).
     ///
-    /// Truncation is safe because deserialization rejects a value wider than its declared type.
+    /// Truncation is safe because construction rejects a value wider than its declared type.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.value.to_le_bytes()[..self.width()].to_vec()
     }
 }
 
-/// Rejects a value that does not fit its declared type, rather than truncating it.
-///
-/// `{"type": "u32", "value": 4294967296}` used to be accepted and encoded as `[0, 0, 0, 0]`,
-/// colliding with whichever instruction genuinely declares discriminant zero — two instructions
-/// sharing a tag, decided silently at parse time. Checked here so no caller can skip it, and
-/// mirrored by `parseDiscriminant` in the TypeScript hash implementation.
+/// Routes through [`SteelDiscriminant::try_new`] so a parsed IDL cannot carry a tag its declared
+/// type could not hold. Mirrored by `parseDiscriminant` in the TypeScript hash implementation.
 impl<'de> Deserialize<'de> for SteelDiscriminant {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -118,19 +144,7 @@ impl<'de> Deserialize<'de> for SteelDiscriminant {
         }
 
         let wire = Wire::deserialize(deserializer)?;
-        let width = Self::width_of(&wire.type_);
-        let max = Self::max_for_width(width);
-        if wire.value > max {
-            return Err(serde::de::Error::custom(format!(
-                "discriminant value {} does not fit its declared type {} (max {})",
-                wire.value, wire.type_, max
-            )));
-        }
-
-        Ok(Self {
-            type_: wire.type_,
-            value: wire.value,
-        })
+        Self::try_new(wire.type_, wire.value).map_err(serde::de::Error::custom)
     }
 }
 
