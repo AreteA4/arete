@@ -147,7 +147,7 @@ pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Res
     if let Some(content) = env.credentials_file() {
         let api_url = env
             .var(ENV_VAR_API_URL)
-            .map(|u| normalize_api_url(&u).to_string())
+            .map(|u| normalize_api_url(&u))
             .filter(|u| !u.is_empty())
             .unwrap_or_else(|| DEFAULT_API_URL.to_string());
         if let Some(k) = parse_credentials_content(&content, &api_url) {
@@ -193,11 +193,33 @@ fn is_hosted_websocket_url(url: &str) -> bool {
 /// matches. Pure function — easy to unit-test without touching the filesystem.
 /// Normalize an API URL for credential lookup with the same rule
 /// `RegistryClient` applies to its request destination (trim whitespace,
-/// drop trailing slashes). Both sides of the `[keys]` match go through this
-/// so `ARETE_API_URL="https://api.arete.run/"` still finds the key stored
+/// drop trailing slashes), plus case-folding of the scheme and host: both
+/// are case-insensitive per RFC 3986, so `ARETE_API_URL` of
+/// `https://API.Arete.Run` must still find the key stored under
+/// `https://api.arete.run`. Userinfo and path are left untouched — they are
+/// case-sensitive. Both sides of the `[keys]` match go through this so
+/// `ARETE_API_URL="https://api.arete.run/"` still finds the key stored
 /// under `"https://api.arete.run"` and vice versa.
-fn normalize_api_url(url: &str) -> &str {
-    url.trim().trim_end_matches('/')
+fn normalize_api_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    let (scheme, rest) = match trimmed.split_once("://") {
+        Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
+        None => (String::new(), trimmed),
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    // Fold from the host onward (port and IPv6 literals are unaffected by
+    // lowercasing); keep any `user:pass@` userinfo verbatim.
+    let host_start = authority.rfind('@').map_or(0, |i| i + 1);
+    let mut out = String::with_capacity(trimmed.len());
+    if !scheme.is_empty() {
+        out.push_str(&scheme);
+        out.push_str("://");
+    }
+    out.push_str(&authority[..host_start]);
+    out.push_str(&authority[host_start..].to_ascii_lowercase());
+    out.push_str(&rest[authority_end..]);
+    out
 }
 
 fn parse_credentials_content(content: &str, api_url: &str) -> Option<String> {
@@ -210,7 +232,7 @@ fn parse_credentials_content(content: &str, api_url: &str) -> Option<String> {
         if let Some(keys) = parsed.keys {
             let exact = keys
                 .get(api_url)
-                .or_else(|| keys.get(wanted))
+                .or_else(|| keys.get(wanted.as_str()))
                 .map(|key| key.trim())
                 .filter(|k| !k.is_empty());
             let matched = exact.or_else(|| {
@@ -328,6 +350,44 @@ mod tests {
         let r = resolve_with(&env, None, "").unwrap();
         assert_eq!(r.source, KeySource::CredentialsFile);
         assert_eq!(r.key.as_deref(), Some("a4_sk_url"));
+    }
+
+    #[test]
+    fn url_keyed_lookup_folds_env_url_host_case() {
+        // DNS hosts and URL schemes are case-insensitive (RFC 3986): a
+        // case-variant ARETE_API_URL must still find the stored key.
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, "HTTPS://API.Arete.Run")
+            .with_credentials("[keys]\n\"https://api.arete.run\" = \"a4_sk_url\"");
+        let r = resolve_with(&env, None, "").unwrap();
+        assert_eq!(r.source, KeySource::CredentialsFile);
+        assert_eq!(r.key.as_deref(), Some("a4_sk_url"));
+    }
+
+    #[test]
+    fn url_keyed_lookup_folds_file_key_host_case() {
+        // Symmetric case: the credentials.toml entry carries the loud casing.
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, "https://api.arete.run")
+            .with_credentials("[keys]\n\"https://API.Arete.Run\" = \"a4_sk_url\"");
+        let r = resolve_with(&env, None, "").unwrap();
+        assert_eq!(r.source, KeySource::CredentialsFile);
+        assert_eq!(r.key.as_deref(), Some("a4_sk_url"));
+    }
+
+    #[test]
+    fn url_keyed_lookup_keeps_path_case_sensitive() {
+        // The host folds, but the path is case-sensitive: `/API` must not
+        // match a key stored under `/api`.
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, "http://LOCALHOST:3000/API")
+            .with_credentials(
+                "[keys]\n\
+                 \"http://localhost:3000/API\" = \"a4_sk_upper\"\n\
+                 \"http://localhost:3000/api\" = \"a4_sk_lower\"",
+            );
+        let r = resolve_with(&env, None, "").unwrap();
+        assert_eq!(r.key.as_deref(), Some("a4_sk_upper"));
     }
 
     #[test]
