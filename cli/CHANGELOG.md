@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Features
+
+* add explicit private program push/list/status/events/archive/promotion commands
+* add exact V2 deployment planning and `a4 up --allow-unverified-programs`
+
 ### Bug Fixes
 
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.

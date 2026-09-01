@@ -87,6 +87,8 @@ struct DeploymentResultRelease {
     program_id: String,
     program_spec_hash: String,
     program_release_hash: String,
+    release_profile: String,
+    operational_status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -197,6 +199,8 @@ impl StackDeploymentResult {
                 program_id: release.program_id.clone(),
                 program_spec_hash: release.program_spec_hash.clone(),
                 program_release_hash: release.program_release_hash.clone(),
+                release_profile: release.release_profile.clone(),
+                operational_status: release.operational_status.clone(),
             })
             .collect::<Vec<_>>();
         releases.sort_by(|left, right| left.program_spec_hash.cmp(&right.program_spec_hash));
@@ -525,6 +529,7 @@ fn aliased_live_specs(stack: &LocalArtifactStack) -> Vec<CreateAliasedLiveSpecAr
 fn deployment_preflight_request(
     stack: &LocalArtifactStack,
     branch: Option<&str>,
+    allow_unverified_programs: bool,
 ) -> StackDeploymentPreflightRequest {
     StackDeploymentPreflightRequest {
         schema: STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA.to_string(),
@@ -532,6 +537,7 @@ fn deployment_preflight_request(
         live_specs: aliased_live_specs(stack),
         stack_manifest: stack.stack_manifest.clone(),
         branch: branch.map(str::to_string),
+        allow_unverified_programs,
     }
 }
 
@@ -539,6 +545,7 @@ fn deployment_plan_request(
     stack: &LocalArtifactStack,
     branch: Option<&str>,
     idempotency_key: String,
+    allow_unverified_programs: bool,
 ) -> StackDeploymentPlanRequest {
     StackDeploymentPlanRequest {
         schema: STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA.to_string(),
@@ -546,8 +553,30 @@ fn deployment_plan_request(
         live_specs: aliased_live_specs(stack),
         stack_manifest: stack.stack_manifest.clone(),
         branch: branch.map(str::to_string),
+        allow_unverified_programs,
         idempotency_key,
     }
+}
+
+fn program_registration_guidance(
+    stack: &LocalArtifactStack,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    if !error.to_string().contains("program-spec-not-registered") {
+        return error;
+    }
+    let mut message = format!(
+        "{error:#}\n\nThe server cannot access one or more exact ProgramSpecs from {}.",
+        stack.manifest_path.display()
+    );
+    for program in &stack.program_specs {
+        message.push_str(&format!(
+            "\n  {} ({})\n    a4 program push <path-to-program-spec.json> --program-id {} --wait",
+            program.artifact_hash, program.payload.program_id, program.payload.program_id
+        ));
+    }
+    message.push_str("\nUploads are explicit; `a4 up` did not upload any local file.");
+    anyhow::anyhow!(message)
 }
 
 struct SelectionEcho<'a> {
@@ -650,6 +679,18 @@ fn validate_selection_echo(
         {
             anyhow::bail!("Deployment selection response has an invalid Program Release hash");
         }
+        let valid_profile_status = matches!(
+            (
+                release.release_profile.as_str(),
+                release.operational_status.as_str()
+            ),
+            ("hosted-managed", "exact")
+                | ("hosted-private", "unverified")
+                | ("hosted-private", "no_deployment")
+        );
+        if !valid_profile_status {
+            anyhow::bail!("Deployment selection response has an invalid release profile/status");
+        }
     }
     Ok(())
 }
@@ -674,6 +715,31 @@ fn validate_preflight_response(
             releases: &response.releases,
         },
     )?;
+    let private_releases = response
+        .releases
+        .iter()
+        .filter(|release| release.release_profile == "hosted-private")
+        .collect::<Vec<_>>();
+    if response.warnings.len() != private_releases.len()
+        || response
+            .warnings
+            .iter()
+            .zip(private_releases)
+            .any(|(warning, release)| {
+                warning.code
+                    != if release.operational_status == "no_deployment" {
+                        "program-not-deployed"
+                    } else {
+                        "unverified-program"
+                    }
+                    || warning.program_id != release.program_id
+                    || warning.program_spec_hash != release.program_spec_hash
+                    || warning.program_release_hash != release.program_release_hash
+                    || warning.operational_status != release.operational_status
+            })
+    {
+        anyhow::bail!("Deployment preflight warnings do not match private release selections");
+    }
     Ok(ValidatedDeploymentSelection {
         deployment_plan_id: None,
         selection_digest: response.selection_digest.clone(),
@@ -723,15 +789,25 @@ fn print_selection(selection: &ValidatedDeploymentSelection, persisted: bool) {
         println!("  Deployment plan: {plan_id}");
     }
     println!("  Selection digest: {}", selection.selection_digest);
-    println!("  Selected public releases:");
+    println!("  Selected hosted releases:");
     if selection.releases.is_empty() {
         println!("    (none)");
     }
     for release in &selection.releases {
         println!(
-            "    {} -> {} ({})",
-            release.program_id, release.program_release_hash, release.program_spec_hash
+            "    {} -> {} ({}, {}, {})",
+            release.program_id,
+            release.program_release_hash,
+            release.program_spec_hash,
+            release.release_profile,
+            release.operational_status
         );
+        if release.release_profile == "hosted-private" {
+            println!(
+                "      warning: this observed private program is {}",
+                release.operational_status
+            );
+        }
     }
 }
 
@@ -777,6 +853,7 @@ fn validate_composition_response(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn up(
     config_path: &str,
     stack_name: Option<&str>,
@@ -784,6 +861,7 @@ pub fn up(
     preview: bool,
     dry_run: bool,
     local_only: bool,
+    allow_unverified_programs: bool,
     json: bool,
 ) -> Result<()> {
     let start = std::time::Instant::now();
@@ -817,6 +895,11 @@ pub fn up(
     let has_legacy_sources = sources
         .iter()
         .any(|source| matches!(source, LocalDeploymentSource::Legacy(_)));
+    if has_legacy_sources && allow_unverified_programs {
+        anyhow::bail!(
+            "--allow-unverified-programs requires a manifest-native deployment; legacy composite .stack.json does not use the exact V2 plan contract"
+        );
+    }
     if has_legacy_sources {
         ui::print_warning(
             "Deploying a composite .stack.json is deprecated and supported only through August 31, 2026. Generate a sibling .stack-manifest.json or pass one explicitly.",
@@ -845,6 +928,7 @@ pub fn up(
                             &stack,
                             branch.as_deref(),
                             deployment_name.as_deref(),
+                            allow_unverified_programs,
                             json,
                         )?;
                         if json {
@@ -883,6 +967,7 @@ pub fn up(
                     stack,
                     branch.as_deref(),
                     deployment_name.as_deref(),
+                    allow_unverified_programs,
                     json,
                 )?)
             }
@@ -954,7 +1039,7 @@ fn dry_run_artifact_stack<A: HostedDeploymentApi + ?Sized>(
     stack: &LocalArtifactStack,
     branch: Option<&str>,
 ) -> Result<StackDeploymentResult> {
-    dry_run_artifact_stack_with_deployment_name(client, stack, branch, None, false)
+    dry_run_artifact_stack_with_deployment_name(client, stack, branch, None, false, false)
 }
 
 fn dry_run_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
@@ -962,12 +1047,18 @@ fn dry_run_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
     stack: &LocalArtifactStack,
     branch: Option<&str>,
     deployment_name: Option<&str>,
+    allow_unverified_programs: bool,
     quiet: bool,
 ) -> Result<StackDeploymentResult> {
     let plan =
         HostedDeploymentPlan::from_stack_with_deployment_name(stack, branch, deployment_name)?;
-    let response =
-        client.preflight_stack_deployment(deployment_preflight_request(stack, branch))?;
+    let response = client
+        .preflight_stack_deployment(deployment_preflight_request(
+            stack,
+            branch,
+            allow_unverified_programs,
+        ))
+        .map_err(|error| program_registration_guidance(stack, error))?;
     let selection = validate_preflight_response(&plan, stack, &response)?;
     let result = StackDeploymentResult::preflight(&plan, &selection)?;
     if !quiet {
@@ -1054,7 +1145,7 @@ fn deploy_artifact_stack<A: HostedDeploymentApi + ?Sized>(
     stack: LocalArtifactStack,
     branch: Option<&str>,
 ) -> Result<StackDeploymentResult> {
-    deploy_artifact_stack_with_deployment_name(client, stack, branch, None, false)
+    deploy_artifact_stack_with_deployment_name(client, stack, branch, None, false, false)
 }
 
 fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
@@ -1062,16 +1153,20 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
     stack: LocalArtifactStack,
     branch: Option<&str>,
     deployment_name: Option<&str>,
+    allow_unverified_programs: bool,
     quiet: bool,
 ) -> Result<StackDeploymentResult> {
     let plan =
         HostedDeploymentPlan::from_stack_with_deployment_name(&stack, branch, deployment_name)?;
     let idempotency_key = uuid::Uuid::new_v4().to_string();
-    let response = client.create_stack_deployment_plan(deployment_plan_request(
-        &stack,
-        branch,
-        idempotency_key,
-    ))?;
+    let response = client
+        .create_stack_deployment_plan(deployment_plan_request(
+            &stack,
+            branch,
+            idempotency_key,
+            allow_unverified_programs,
+        ))
+        .map_err(|error| program_registration_guidance(&stack, error))?;
     let selection = validate_plan_response(&plan, &stack, &response)?;
     let deployment_plan_id = selection
         .deployment_plan_id
@@ -1656,6 +1751,8 @@ mod tests {
                             .map(|byte| format!("{byte:02x}"))
                             .collect::<String>()
                     ),
+                    release_profile: "hosted-managed".into(),
+                    operational_status: "exact".into(),
                 })
                 .collect::<Vec<_>>();
             releases.sort_by(|left, right| left.program_spec_hash.cmp(&right.program_spec_hash));
@@ -1764,6 +1861,7 @@ mod tests {
                 targets: self.targets.clone(),
                 selection_digest: selection_digest(),
                 releases: Self::releases(&req.program_specs),
+                warnings: vec![],
             })
         }
 
@@ -2062,6 +2160,8 @@ mod tests {
                 program_id: "Ore111111111111111111111111111111111111111".into(),
                 program_spec_hash: contract_hash("program-spec", '3'),
                 program_release_hash: contract_hash("program-release", '4'),
+                release_profile: "hosted-managed".into(),
+                operational_status: "exact".into(),
             }],
         }
     }
@@ -2075,7 +2175,7 @@ mod tests {
         assert_eq!(
             serialized,
             format!(
-                "{{\"schema\":\"arete.stack-deployment-result/v1\",\"outcome\":\"preflight\",\"persisted\":false,\"stackManifestHash\":\"{}\",\"branch\":null,\"targets\":[{{\"alias\":\"live\",\"liveSpecHash\":\"{}\"}}],\"selectionDigest\":\"{}\",\"releases\":[{{\"programId\":\"Ore111111111111111111111111111111111111111\",\"programSpecHash\":\"{}\",\"programReleaseHash\":\"{}\"}}]}}",
+                "{{\"schema\":\"arete.stack-deployment-result/v1\",\"outcome\":\"preflight\",\"persisted\":false,\"stackManifestHash\":\"{}\",\"branch\":null,\"targets\":[{{\"alias\":\"live\",\"liveSpecHash\":\"{}\"}}],\"selectionDigest\":\"{}\",\"releases\":[{{\"programId\":\"Ore111111111111111111111111111111111111111\",\"programSpecHash\":\"{}\",\"programReleaseHash\":\"{}\",\"releaseProfile\":\"hosted-managed\",\"operationalStatus\":\"exact\"}}]}}",
                 contract_hash("stack-manifest", '1'),
                 contract_hash("live-spec", '2'),
                 selection_digest(),
@@ -2129,7 +2229,7 @@ mod tests {
         assert_eq!(
             serialized,
             format!(
-                "{{\"schema\":\"arete.stack-deployment-result/v1\",\"outcome\":\"healthy\",\"persisted\":true,\"stackManifestHash\":\"{}\",\"branch\":null,\"targets\":[{{\"alias\":\"live\",\"liveSpecHash\":\"{}\"}}],\"selectionDigest\":\"{}\",\"releases\":[{{\"programId\":\"Ore111111111111111111111111111111111111111\",\"programSpecHash\":\"{}\",\"programReleaseHash\":\"{}\"}}],\"deploymentPlanId\":\"{}\",\"compositionId\":77,\"deployments\":[{{\"alias\":\"live\",\"liveSpecHash\":\"{}\",\"deploymentId\":42}}]}}",
+                "{{\"schema\":\"arete.stack-deployment-result/v1\",\"outcome\":\"healthy\",\"persisted\":true,\"stackManifestHash\":\"{}\",\"branch\":null,\"targets\":[{{\"alias\":\"live\",\"liveSpecHash\":\"{}\"}}],\"selectionDigest\":\"{}\",\"releases\":[{{\"programId\":\"Ore111111111111111111111111111111111111111\",\"programSpecHash\":\"{}\",\"programReleaseHash\":\"{}\",\"releaseProfile\":\"hosted-managed\",\"operationalStatus\":\"exact\"}}],\"deploymentPlanId\":\"{}\",\"compositionId\":77,\"deployments\":[{{\"alias\":\"live\",\"liveSpecHash\":\"{}\",\"deploymentId\":42}}]}}",
                 contract_hash("stack-manifest", '1'),
                 contract_hash("live-spec", '2'),
                 selection_digest(),
@@ -2160,11 +2260,15 @@ mod tests {
                 program_id: "later".into(),
                 program_spec_hash: contract_hash("program-spec", '9'),
                 program_release_hash: contract_hash("program-release", '8'),
+                release_profile: "hosted-managed".into(),
+                operational_status: "exact".into(),
             },
             SelectedProgramRelease {
                 program_id: "earlier".into(),
                 program_spec_hash: contract_hash("program-spec", '3'),
                 program_release_hash: contract_hash("program-release", '4'),
+                release_profile: "hosted-managed".into(),
+                operational_status: "exact".into(),
             },
         ];
 
@@ -2301,7 +2405,8 @@ mod tests {
         let api = FakeHostedApi::new(&stack);
 
         let result =
-            dry_run_artifact_stack_with_deployment_name(&api, &stack, None, None, true).unwrap();
+            dry_run_artifact_stack_with_deployment_name(&api, &stack, None, None, false, true)
+                .unwrap();
 
         assert_eq!(result.schema, STACK_DEPLOYMENT_RESULT_SCHEMA);
         assert_eq!(api.calls.borrow().as_slice(), &[ApiCall::Preflight]);
@@ -2316,7 +2421,8 @@ mod tests {
         let api = FakeHostedApi::new(&stack);
 
         let result =
-            deploy_artifact_stack_with_deployment_name(&api, stack, None, None, true).unwrap();
+            deploy_artifact_stack_with_deployment_name(&api, stack, None, None, false, true)
+                .unwrap();
 
         assert_eq!(result.schema, STACK_DEPLOYMENT_RESULT_SCHEMA);
         let calls = api.calls.borrow();
@@ -2359,7 +2465,8 @@ mod tests {
             Some("Legacy.stack.json"),
             None,
             false,
-            true,
+            false,
+            false,
             false,
             true,
         )
@@ -2373,6 +2480,7 @@ mod tests {
             false,
             true,
             true,
+            false,
             true,
         )
         .unwrap_err();

@@ -42,12 +42,32 @@ The deployment returns operational bindings for the exact StackManifest.
 |---------|-------------|
 | `a4 init` | Initialize project |
 | `a4 program build <idl>` | Build a portable ProgramSpec |
+| `a4 program push <idl-or-program-spec>` | Upload an owner-private hosted ProgramSpec |
+| `a4 program status <upr-id>` | Inspect admission and runtime health |
 | `a4 stack compose` | Compose ProgramSpecs and aliased LiveSpecs |
 | `a4 up <manifest>` | Deploy an exact StackManifest |
 | `a4 status` | Show project overview |
 | `a4 stack list` | List all stacks |
 | `a4 stack show <name>` | Show stack details |
 | `a4 stack rollback <name>` | Rollback to previous version |
+
+## Private Program Uploads
+
+Uploads are explicit and never happen as a side effect of `a4 up`:
+
+```bash
+a4 program push ./idl.json --program-id <PUBKEY> --alias my-program --wait
+a4 program list
+a4 program status upr_... --watch
+a4 program events upr_...
+a4 program archive upr_... --yes
+a4 program promote upr_... --make-idl-public
+```
+
+Every upload begins owner-private. Promotion consent means the baseline IDL may
+be reviewed and committed to a public OSS repository; it does not grant a
+managed or public release automatically. Archival retains immutable content
+while references exist.
 
 ## Daily Workflow
 
@@ -129,7 +149,13 @@ Deploy one exact local StackManifest:
 a4 up .arete/MyStack.stack-manifest.json
 a4 up .arete/MyStack.stack-manifest.json --branch staging
 a4 up .arete/MyStack.stack-manifest.json --preview
+a4 up .arete/MyStack.stack-manifest.json --allow-unverified-programs
 ```
+
+The last flag is explicit consent to persist a V2 deployment plan containing
+owner-private, observed-executable programs. It is never inferred from upload,
+is not supported by legacy `.stack.json` deployments, and does not make a
+program global or public.
 
 Composite `.stack.json` is an input-only compatibility adapter through **August
 31, 2026**. New deployments use the manifest path.
