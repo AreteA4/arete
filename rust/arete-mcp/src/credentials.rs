@@ -193,13 +193,15 @@ fn is_hosted_websocket_url(url: &str) -> bool {
 /// matches. Pure function — easy to unit-test without touching the filesystem.
 /// Normalize an API URL for credential lookup with the same rule
 /// `RegistryClient` applies to its request destination (trim whitespace,
-/// drop trailing slashes), plus case-folding of the scheme and host: both
-/// are case-insensitive per RFC 3986, so `ARETE_API_URL` of
-/// `https://API.Arete.Run` must still find the key stored under
-/// `https://api.arete.run`. Userinfo and path are left untouched — they are
-/// case-sensitive. Both sides of the `[keys]` match go through this so
-/// `ARETE_API_URL="https://api.arete.run/"` still finds the key stored
-/// under `"https://api.arete.run"` and vice versa.
+/// drop trailing slashes), plus the host rules the registry origin check
+/// (`is_arete_origin`) applies: case-fold the scheme and host (both are
+/// case-insensitive per RFC 3986) and drop the host's trailing dot (the
+/// FQDN root label — `api.arete.run.` IS `api.arete.run`). So an
+/// `ARETE_API_URL` of `https://API.Arete.Run.` must still find the key
+/// stored under `https://api.arete.run`. Userinfo and path are left
+/// untouched — they are case-sensitive. Both sides of the `[keys]` match
+/// go through this so `ARETE_API_URL="https://api.arete.run/"` still finds
+/// the key stored under `"https://api.arete.run"` and vice versa.
 fn normalize_api_url(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
     let (scheme, rest) = match trimmed.split_once("://") {
@@ -208,16 +210,31 @@ fn normalize_api_url(url: &str) -> String {
     };
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
-    // Fold from the host onward (port and IPv6 literals are unaffected by
-    // lowercasing); keep any `user:pass@` userinfo verbatim.
+    // Keep any `user:pass@` userinfo verbatim; the host starts after it.
     let host_start = authority.rfind('@').map_or(0, |i| i + 1);
+    let host_port = &authority[host_start..];
+    // Split the port off so the host rules cannot touch it. Bracketed IPv6
+    // literals end at ']'; anything else carries at most one ':'.
+    let (host, port) = if host_port.starts_with('[') {
+        match host_port.find(']') {
+            Some(end) => host_port.split_at(end + 1),
+            None => (host_port, ""),
+        }
+    } else {
+        match host_port.rfind(':') {
+            Some(colon) => host_port.split_at(colon),
+            None => (host_port, ""),
+        }
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
     let mut out = String::with_capacity(trimmed.len());
     if !scheme.is_empty() {
         out.push_str(&scheme);
         out.push_str("://");
     }
     out.push_str(&authority[..host_start]);
-    out.push_str(&authority[host_start..].to_ascii_lowercase());
+    out.push_str(&host);
+    out.push_str(port);
     out.push_str(&rest[authority_end..]);
     out
 }
@@ -388,6 +405,41 @@ mod tests {
             );
         let r = resolve_with(&env, None, "").unwrap();
         assert_eq!(r.key.as_deref(), Some("a4_sk_upper"));
+    }
+
+    #[test]
+    fn url_keyed_lookup_strips_fqdn_trailing_dot() {
+        // `api.arete.run.` is the fully-qualified spelling of
+        // `api.arete.run` (trailing dot = DNS root label). The registry
+        // origin check strips it; the credentials lookup must follow or the
+        // stored key is missed.
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, "https://api.arete.run.")
+            .with_credentials("[keys]\n\"https://api.arete.run\" = \"a4_sk_url\"");
+        let r = resolve_with(&env, None, "").unwrap();
+        assert_eq!(r.source, KeySource::CredentialsFile);
+        assert_eq!(r.key.as_deref(), Some("a4_sk_url"));
+    }
+
+    #[test]
+    fn url_keyed_lookup_strips_fqdn_trailing_dot_in_file_key() {
+        // Symmetric case: the credentials.toml entry carries the trailing dot.
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, "https://api.arete.run")
+            .with_credentials("[keys]\n\"https://api.arete.run.\" = \"a4_sk_url\"");
+        let r = resolve_with(&env, None, "").unwrap();
+        assert_eq!(r.source, KeySource::CredentialsFile);
+        assert_eq!(r.key.as_deref(), Some("a4_sk_url"));
+    }
+
+    #[test]
+    fn url_keyed_lookup_strips_trailing_dot_before_port() {
+        // The dot belongs to the host; an explicit port must survive.
+        let env = TestEnv::default()
+            .with_var(ENV_VAR_API_URL, "http://localhost.:3000")
+            .with_credentials("[keys]\n\"http://localhost:3000\" = \"a4_sk_local\"");
+        let r = resolve_with(&env, None, "").unwrap();
+        assert_eq!(r.key.as_deref(), Some("a4_sk_local"));
     }
 
     #[test]
