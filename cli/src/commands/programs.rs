@@ -45,8 +45,11 @@ pub fn push(
     print_program(&response, json)
 }
 
-pub fn list(json: bool) -> Result<()> {
-    let response = ApiClient::new()?.list_user_programs(DEFAULT_PAGE_LIMIT, None)?;
+pub fn list(cursor: Option<&str>, json: bool) -> Result<()> {
+    if let Some(cursor) = cursor {
+        validate_program_cursor(cursor)?;
+    }
+    let response = ApiClient::new()?.list_user_programs(DEFAULT_PAGE_LIMIT, cursor)?;
     validate_program_list(&response)?;
     print_program_list(&response, json)
 }
@@ -284,12 +287,26 @@ fn validate_program_list(response: &UserProgramListResponse) -> Result<()> {
         || response
             .next_cursor
             .as_ref()
-            .is_some_and(|cursor| !cursor.starts_with("upc_"))
+            .is_some_and(|cursor| validate_program_cursor(cursor).is_err())
     {
         bail!("Server returned an invalid user-program list contract");
     }
     for program in &response.items {
         validate_program_response(program)?;
+    }
+    Ok(())
+}
+
+fn validate_program_cursor(value: &str) -> Result<()> {
+    let valid = value.strip_prefix("upc_").is_some_and(|suffix| {
+        !suffix.is_empty()
+            && suffix.len() <= 128
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    });
+    if !valid {
+        bail!("program list cursor must be an opaque upc_ value returned by the server");
     }
     Ok(())
 }
@@ -397,7 +414,9 @@ fn print_program_list(response: &UserProgramListResponse, json: bool) -> Result<
 fn print_events(response: &UserProgramEventsResponse, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(response)?);
-    } else if response.items.is_empty() {
+        return Ok(());
+    }
+    if response.items.is_empty() {
         println!("No program events");
     } else {
         for event in &response.items {
@@ -408,6 +427,9 @@ fn print_events(response: &UserProgramEventsResponse, json: bool) -> Result<()> 
                 .unwrap_or("");
             println!("{}  {}  {}", event.occurred_at, event.event_type, detail);
         }
+    }
+    if let Some(cursor) = &response.next_cursor {
+        println!("Next cursor: {cursor}");
     }
     Ok(())
 }
@@ -454,6 +476,8 @@ mod tests {
             canonical_idempotency_key(Some("018f8f12-8ac5-7d91-a5df-4b3b65f31a80")).unwrap(),
             "018f8f12-8ac5-7d91-a5df-4b3b65f31a80"
         );
+        validate_program_cursor("upc_next-page_123").unwrap();
+        assert!(validate_program_cursor("uev_wrong-kind").is_err());
     }
 
     #[test]

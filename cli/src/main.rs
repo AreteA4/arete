@@ -604,7 +604,11 @@ enum ProgramCommands {
     },
 
     /// List owner-visible uploaded programs
-    List,
+    List {
+        /// Resume at an opaque cursor returned by the previous page
+        #[arg(long)]
+        cursor: Option<String>,
+    },
 
     /// Show admission, visibility, release, and health state
     Status {
@@ -987,7 +991,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 wait,
                 cli.json,
             ),
-            ProgramCommands::List => commands::programs::list(cli.json),
+            ProgramCommands::List { cursor } => {
+                commands::programs::list(cursor.as_deref(), cli.json)
+            }
             ProgramCommands::Status {
                 user_program_id,
                 watch,
@@ -1221,6 +1227,34 @@ mod tests {
                 assert_eq!(section.as_deref(), Some("instructions"));
             }
             _ => panic!("expected know program command"),
+        }
+    }
+
+    #[test]
+    fn parse_program_pagination_cursors() {
+        let cli = Cli::try_parse_from(["a4", "program", "list", "--cursor", "upc_next-page_123"])
+            .expect("program list cursor should parse");
+        match cli.command {
+            Some(Commands::Program(ProgramCommands::List { cursor })) => {
+                assert_eq!(cursor.as_deref(), Some("upc_next-page_123"));
+            }
+            _ => panic!("expected program list command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "a4",
+            "program",
+            "events",
+            "upr_abcdefghijklmnopqrstuvwxyzABCDEF",
+            "--after",
+            "uev_00000000001",
+        ])
+        .expect("program events cursor should parse");
+        match cli.command {
+            Some(Commands::Program(ProgramCommands::Events { after, .. })) => {
+                assert_eq!(after.as_deref(), Some("uev_00000000001"));
+            }
+            _ => panic!("expected program events command"),
         }
     }
 

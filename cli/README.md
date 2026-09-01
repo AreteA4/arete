@@ -61,8 +61,12 @@ a4 install program my-program --ts
 # The stable ID returned by push is an unambiguous fallback:
 a4 install program upr_... --ts
 a4 program list
+# Continue when the previous page prints "Next cursor":
+a4 program list --cursor upc_...
 a4 program status upr_... --watch
 a4 program events upr_...
+# Continue when the previous page prints "Next cursor":
+a4 program events upr_... --after uev_...
 a4 program archive upr_... --yes
 a4 program promote upr_... --make-idl-public
 ```
