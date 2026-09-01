@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.10.0...arete-typescript-v0.11.0) (2026-09-01)
+
+
+### Features
+
+* brand operations with their kind in TypeScript core ([4214300](https://github.com/AreteA4/arete/commit/4214300f0518bd2d35d65eea4e75652006c5bea3))
+* expose the curated knowledge layer via CLI, MCP, and operation brands ([3a6bc01](https://github.com/AreteA4/arete/commit/3a6bc01a6ce78f66609573656db3344a123b3e44))
+* support u64-length-prefixed sequences in IDL types ([#168](https://github.com/AreteA4/arete/issues/168)) ([a37f07a](https://github.com/AreteA4/arete/commit/a37f07a662f9d6e04afb97aa906174582b5d825c))
+
+
+### Bug Fixes
+
+* **interpreter:** encode inline tuple instruction arguments ([866d1a1](https://github.com/AreteA4/arete/commit/866d1a163ceb8fc95b6bf01539a9ec99a122848b))
+
 ## [0.10.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.9.1...arete-typescript-v0.10.0) (2026-08-22)
 
 

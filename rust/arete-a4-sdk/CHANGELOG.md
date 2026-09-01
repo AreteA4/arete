@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.11.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.10.0...arete-sdk-v0.11.0) (2026-09-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* implementors of the public `TransactionTransport` trait must add `signature_statuses`, and exhaustive matches on `TransactionError` must handle `InvalidRequest`.
+
+### Features
+
+* batch signature statuses on the transaction surface ([#171](https://github.com/AreteA4/arete/issues/171)) ([14ce4e4](https://github.com/AreteA4/arete/commit/14ce4e49ed96245590ad33fa5cb1c48cba191fa3))
+* expose the curated knowledge layer via CLI, MCP, and operation brands ([3a6bc01](https://github.com/AreteA4/arete/commit/3a6bc01a6ce78f66609573656db3344a123b3e44))
+* support u64-length-prefixed sequences in IDL types ([#168](https://github.com/AreteA4/arete/issues/168)) ([a37f07a](https://github.com/AreteA4/arete/commit/a37f07a662f9d6e04afb97aa906174582b5d825c))
+
+
+### Bug Fixes
+
+* **interpreter:** encode tuple arguments across runtimes ([67e273b](https://github.com/AreteA4/arete/commit/67e273bf6e730533c36984f86cbd0afa56e46b6a))
+
 ## [0.10.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.9.1...arete-sdk-v0.10.0) (2026-08-22)
 
 

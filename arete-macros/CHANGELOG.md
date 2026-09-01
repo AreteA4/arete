@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.11.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.10.0...arete-macros-v0.11.0) (2026-09-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* `normalizedIdlHash` changes for any IDL declaring an instruction discriminant whose type is not `u8`. Anchor IDLs and every Steel IDL in the catalog are unaffected.
+
+### Features
+
+* derive the instruction discriminator width from the IDL ([#170](https://github.com/AreteA4/arete/issues/170)) ([9996dd5](https://github.com/AreteA4/arete/commit/9996dd5ee78a081726ce3de829f151c852b6751f))
+* expose the curated knowledge layer via CLI, MCP, and operation brands ([3a6bc01](https://github.com/AreteA4/arete/commit/3a6bc01a6ce78f66609573656db3344a123b3e44))
+* support u64-length-prefixed sequences in IDL types ([#168](https://github.com/AreteA4/arete/issues/168)) ([a37f07a](https://github.com/AreteA4/arete/commit/a37f07a662f9d6e04afb97aa906174582b5d825c))
+
+
+### Bug Fixes
+
+* **idl:** parse inline tuple type nodes in legacy Anchor and Codama IDLs ([b717559](https://github.com/AreteA4/arete/commit/b7175597913aadede18c3ac4c865e07b884cdbaf))
+* **interpreter:** encode inline tuple instruction arguments ([866d1a1](https://github.com/AreteA4/arete/commit/866d1a163ceb8fc95b6bf01539a9ec99a122848b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.3.0 to 0.4.0
+    * arete-hash bumped from 0.2.1 to 0.3.0
+    * arete-artifacts bumped from 0.2.1 to 0.2.2
+
 ## [0.10.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.9.1...arete-macros-v0.10.0) (2026-08-22)
 
 

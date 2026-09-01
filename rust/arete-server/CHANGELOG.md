@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.11.0](https://github.com/AreteA4/arete/compare/arete-server-v0.10.0...arete-server-v0.11.0) (2026-09-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* implementors of the public `TransactionTransport` trait must add `signature_statuses`, and exhaustive matches on `TransactionError` must handle `InvalidRequest`.
+
+### Features
+
+* batch signature statuses on the transaction surface ([#171](https://github.com/AreteA4/arete/issues/171)) ([14ce4e4](https://github.com/AreteA4/arete/commit/14ce4e49ed96245590ad33fa5cb1c48cba191fa3))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.10.0 to 0.11.0
+    * arete-hash bumped from 0.2.1 to 0.3.0
+
 ## [0.10.0](https://github.com/AreteA4/arete/compare/arete-server-v0.9.1...arete-server-v0.10.0) (2026-08-22)
 
 
