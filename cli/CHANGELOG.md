@@ -13,6 +13,39 @@
 * expose continuation cursors for private program and event listings
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.11.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.10.0...a4-cli-v0.11.0) (2026-09-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* `normalizedIdlHash` changes for any IDL declaring an instruction discriminant whose type is not `u8`. Anchor IDLs and every Steel IDL in the catalog are unaffected.
+
+### Features
+
+* add a4 know command for querying the curated knowledge layer ([f52658a](https://github.com/AreteA4/arete/commit/f52658aad793f6811e4d970a9ad9ab8d013cc929))
+* **cli:** support owner-private program uploads ([2351c39](https://github.com/AreteA4/arete/commit/2351c39e8bf67c1cab53f1cd43368c410df88678))
+* **cli:** upload and inspect private programs ([e2912c1](https://github.com/AreteA4/arete/commit/e2912c1acc86a6f14a655982089bc0e50ac0318f))
+* derive the instruction discriminator width from the IDL ([#170](https://github.com/AreteA4/arete/issues/170)) ([9996dd5](https://github.com/AreteA4/arete/commit/9996dd5ee78a081726ce3de829f151c852b6751f))
+* expose the curated knowledge layer via CLI, MCP, and operation brands ([3a6bc01](https://github.com/AreteA4/arete/commit/3a6bc01a6ce78f66609573656db3344a123b3e44))
+
+
+### Bug Fixes
+
+* **cli:** expose private program pagination ([c42a4b1](https://github.com/AreteA4/arete/commit/c42a4b12edea8701a4b44e2e32ed51e9249c3c32))
+* **idl:** parse inline tuple type nodes in legacy Anchor and Codama IDLs ([b717559](https://github.com/AreteA4/arete/commit/b7175597913aadede18c3ac4c865e07b884cdbaf))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.10.0 to 0.11.0
+    * arete-artifacts bumped from 0.2.1 to 0.2.2
+    * arete-idl bumped from 0.3.0 to 0.4.0
+    * arete-hash bumped from 0.2.1 to 0.3.0
+  * build-dependencies
+    * arete-hash bumped from 0.2.1 to 0.3.0
+
 ## [0.10.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.9.1...a4-cli-v0.10.0) (2026-08-22)
 
 

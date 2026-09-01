@@ -1,6 +1,6 @@
 {
   "name": "@usearete/react",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "type": "module",
   "description": "React SDK for the Arete Solana developer platform",
   "main": "dist/index.cjs",
@@ -42,7 +42,7 @@
     "react": "^18.0.0 || ^19.0.0"
   },
   "dependencies": {
-    "@usearete/sdk": "^0.10.0",
+    "@usearete/sdk": "^0.11.0",
     "zustand": "^4.0.0 || ^5.0.0"
   },
   "devDependencies": {
