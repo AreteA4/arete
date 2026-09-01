@@ -12,7 +12,7 @@
   "typescript/adapters/web3js": "0.10.0",
   "packages/arete": "0.10.0",
   "packages/mcp": "0.10.0",
-  "python/arete-sdk": "0.4.0",
+  "python/arete-sdk": "0.10.0",
   "arete-idl": "0.3.0",
   "rust/arete-auth": "0.4.0",
   "rust/arete-mcp": "0.10.0",

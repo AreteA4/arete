@@ -202,7 +202,7 @@ uses GitHub OIDC and does not accept a long-lived PyPI token.
 
 ### Synchronized Versions
 
-All packages (Rust and TypeScript) are kept at the same version number using the `linked-versions` plugin. When any package receives a version bump, all packages are updated to the highest version in the group. This ensures compatibility when using packages individually.
+All core packages (Rust, TypeScript, and Python) are kept at the same version number using the `linked-versions` plugin. When any package receives a version bump, all packages are updated to the highest version in the group. This ensures compatibility when using packages individually.
 
 > **Note:** `arete-idl` is currently versioned independently.
 
