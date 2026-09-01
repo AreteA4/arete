@@ -1961,6 +1961,7 @@ mod tests {
                                     }),
                                 ],
                             })),
+                            length_prefix: None,
                         }),
                         amount_hint: None,
                     }],
