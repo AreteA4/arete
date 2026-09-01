@@ -194,6 +194,10 @@ fn checked_in_failure_vectors_fail_with_stable_codes() {
                 &serde_json::to_vec(&input["projection"]).unwrap(),
             )
             .map(|_| ()),
+            "hosted-program-release-v3" => parse_hosted_private_program_release_v3(
+                &serde_json::to_vec(&input["projection"]).unwrap(),
+            )
+            .map(|_| ()),
             other => panic!("unknown failure operation '{other}'"),
         };
         let error = result.unwrap_err();
@@ -364,6 +368,12 @@ fn checked_in_release_vectors_validate_typed_projections() {
                     .hash()
                     .expect("valid hosted V2 projection")
             }
+            (PROGRAM_RELEASE_SCHEMA_V3, HOSTED_PRIVATE_RELEASE_PROFILE) => {
+                parse_hosted_private_program_release_v3(&serde_json::to_vec(projection).unwrap())
+                    .expect("hosted-private V3 projection")
+                    .hash()
+                    .expect("valid hosted-private V3 projection")
+            }
             (PROGRAM_RELEASE_SCHEMA_V1, HOSTED_MANAGED_RELEASE_PROFILE) => {
                 hash_jcs::<ProgramRelease, _>(projection).expect("historical hosted V1 hashes")
             }
@@ -377,6 +387,37 @@ fn checked_in_release_vectors_validate_typed_projections() {
             &payload,
             hash.into_any(),
         );
+    }
+}
+
+#[test]
+fn hosted_private_release_v3_excludes_access_metadata_and_hashes_every_identity_field() {
+    let corpus = corpus();
+    let vectors = corpus["releaseVectors"].as_array().unwrap();
+    let baseline = vectors
+        .iter()
+        .find(|vector| vector["id"] == "release-hosted-private-v3-observed")
+        .expect("shared hosted-private vector");
+    let projection = baseline["projection"].as_object().unwrap();
+    for forbidden in [
+        "ownerUserId",
+        "visibility",
+        "alias",
+        "admissionId",
+        "executableIdentity",
+        "objectKey",
+    ] {
+        assert!(!projection.contains_key(forbidden));
+    }
+    let baseline_hash = baseline["expected"]["hashId"].as_str().unwrap();
+    for id in [
+        "release-hosted-private-v3-program-id-change",
+        "release-hosted-private-v3-abi-change",
+        "release-hosted-private-v3-engine-change",
+        "release-hosted-private-v3-binding-change",
+    ] {
+        let changed = vectors.iter().find(|vector| vector["id"] == id).unwrap();
+        assert_ne!(changed["expected"]["hashId"], baseline_hash);
     }
 }
 
