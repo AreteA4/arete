@@ -150,6 +150,41 @@ class TestContainers:
         with pytest.raises(InstructionError, match="length mismatch"):
             ser(schema, {"a": [1]})
 
+    def test_serializes_tuples_without_a_prefix_and_checks_shape(self):
+        schema = [ArgSchema("pair", {"tuple": ("u8", "u16")})]
+        assert list(ser(schema, {"pair": [5, 258]})) == [5, 2, 1]
+        assert list(ser(schema, {"pair": (5, 258)})) == [5, 2, 1]
+        with pytest.raises(InstructionError, match="Tuple length mismatch"):
+            ser(schema, {"pair": [5]})
+        with pytest.raises(InstructionError, match="expected an array for tuple"):
+            ser(schema, {"pair": {"first": 5}})
+
+    def test_serializes_tuples_nested_inside_vectors(self):
+        schema = [
+            ArgSchema(
+                "checks",
+                {
+                    "vec": {
+                        "tuple": (
+                            "u8",
+                            {"struct": [{"name": "flags", "type": "u32"}]},
+                        )
+                    }
+                },
+            )
+        ]
+        assert list(ser(schema, {"checks": [[1, {"flags": 0x01020304}]]})) == [
+            1,
+            0,
+            0,
+            0,
+            1,
+            4,
+            3,
+            2,
+            1,
+        ]
+
     def test_serializes_structs_in_field_order_including_nesting(self):
         schema = [
             ArgSchema(

@@ -396,19 +396,32 @@ pub fn generate_instructions_code(
             .iter()
             .map(|a| (a.name.as_str(), a.arg_type.as_str()))
             .collect();
+        let account_name_map = disambiguate_instruction_account_names(instr);
+        for (source_name, emitted_name) in &account_name_map {
+            if source_name != emitted_name {
+                warnings.push(format!(
+                    "instruction '{}': account '{}' collides with an argument; exposed as '{}'",
+                    instr.name, source_name, emitted_name
+                ));
+            }
+        }
 
         let mut account_literals: Vec<String> = Vec::new();
         let mut user_params: Vec<UserParam> = Vec::new();
         let mut resolve_params: BTreeMap<String, String> = BTreeMap::new();
         for acc in &instr.accounts {
+            let mut diagnostics = AccountMappingDiagnostics {
+                warnings: &mut warnings,
+                degradations: &mut pda_degradations,
+            };
             let mapped = map_account(
                 acc,
                 &pda_lookup,
                 &instr_account_names,
                 &instr_arg_types,
+                &account_name_map,
                 &instr.name,
-                &mut warnings,
-                &mut pda_degradations,
+                &mut diagnostics,
             );
             account_literals.push(mapped.literal);
             if let Some(param) = mapped.param {
@@ -479,9 +492,16 @@ pub fn generate_instructions_code(
                     ));
                     return false;
                 };
-                if let Some(param) = user_params.iter().find(|param| param.name == account_name) {
+                let emitted_account_name = account_name_map
+                    .get(&account_name)
+                    .cloned()
+                    .unwrap_or_else(|| account_name.clone());
+                if let Some(param) = user_params
+                    .iter()
+                    .find(|param| param.name == emitted_account_name)
+                {
                     spec.resolution = SemanticAmountResolution::KnownAccount {
-                        account_name,
+                        account_name: emitted_account_name,
                         optional: param.optional,
                     };
                     return true;
@@ -1073,6 +1093,36 @@ impl<'a> DefinedTypes<'a> {
                     }
                 }
             }
+            IdlTypeSnapshot::Tuple(tuple) => {
+                let elements = tuple
+                    .tuple
+                    .iter()
+                    .map(|element| self.parse_snapshot_type(element))
+                    .collect::<Vec<_>>();
+                if elements.iter().any(|element| !element.supported) {
+                    unsupported()
+                } else {
+                    ParsedArgType {
+                        schema: format!(
+                            "{{ tuple: [{}] }}",
+                            elements
+                                .iter()
+                                .map(|element| element.schema.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        ts_type: format!(
+                            "[{}]",
+                            elements
+                                .iter()
+                                .map(|element| element.ts_type.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        supported: true,
+                    }
+                }
+            }
             IdlTypeSnapshot::Defined(d) => {
                 let name = match &d.defined {
                     IdlDefinedInnerSnapshot::Named { name } => name.as_str(),
@@ -1367,18 +1417,74 @@ struct MappedAccount {
     resolve_params: Vec<ResolveParam>,
 }
 
+struct AccountMappingDiagnostics<'a> {
+    warnings: &'a mut Vec<String>,
+    degradations: &'a mut Vec<PdaDegradation>,
+}
+
+/// Allocate the merged-parameter name used for each instruction account.
+///
+/// Instruction arguments and caller-provided accounts share one object at
+/// runtime. Keep every non-conflicting account name unchanged, then suffix an
+/// account that collides with an argument (`metadata` -> `metadataAccount`).
+/// Reserving the unchanged names first prevents the suffix from stealing a
+/// real account's name.
+pub(crate) fn disambiguate_instruction_account_names(
+    instruction: &InstructionDef,
+) -> BTreeMap<String, String> {
+    let argument_names = instruction
+        .args
+        .iter()
+        .map(|arg| arg.name.as_str())
+        .collect::<HashSet<_>>();
+    let mut used_names = argument_names
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<HashSet<_>>();
+    let mut names = BTreeMap::new();
+
+    for account in &instruction.accounts {
+        if !argument_names.contains(account.name.as_str())
+            && used_names.insert(account.name.clone())
+        {
+            names.insert(account.name.clone(), account.name.clone());
+        }
+    }
+
+    for account in &instruction.accounts {
+        if names.contains_key(&account.name) {
+            continue;
+        }
+
+        let base_name = format!("{}Account", account.name);
+        let mut emitted_name = base_name.clone();
+        let mut suffix = 2;
+        while !used_names.insert(emitted_name.clone()) {
+            emitted_name = format!("{}{}", base_name, suffix);
+            suffix += 1;
+        }
+        names.insert(account.name.clone(), emitted_name);
+    }
+
+    names
+}
+
 fn map_account(
     acc: &InstructionAccountDef,
     pda_lookup: &BTreeMap<&str, &PdaDefinition>,
     instr_account_names: &HashSet<&str>,
     instr_arg_types: &BTreeMap<&str, &str>,
+    account_name_map: &BTreeMap<String, String>,
     instr_name: &str,
-    warnings: &mut Vec<String>,
-    degradations: &mut Vec<PdaDegradation>,
+    diagnostics: &mut AccountMappingDiagnostics<'_>,
 ) -> MappedAccount {
+    let emitted_name = account_name_map
+        .get(&acc.name)
+        .map(String::as_str)
+        .unwrap_or(&acc.name);
     let base = format!(
         "name: '{}', isSigner: {}, isWritable: {}",
-        acc.name, acc.is_signer, acc.is_writable
+        emitted_name, acc.is_signer, acc.is_writable
     );
     let optional_suffix = if acc.is_optional {
         ", isOptional: true".to_string()
@@ -1409,7 +1515,7 @@ fn map_account(
                 comment, base, optional_suffix
             ),
             param: Some(UserParam {
-                name: acc.name.clone(),
+                name: emitted_name.to_string(),
                 optional: acc.is_optional,
             }),
             resolve_params: Vec::new(),
@@ -1423,7 +1529,7 @@ fn map_account(
                 base, optional_suffix
             ),
             param: Some(UserParam {
-                name: acc.name.clone(),
+                name: emitted_name.to_string(),
                 optional: acc.is_optional,
             }),
             resolve_params: Vec::new(),
@@ -1436,7 +1542,11 @@ fn map_account(
             param: None,
             resolve_params: Vec::new(),
         },
-        AccountResolution::UserProvided => user_provided(None, warnings, degradations),
+        AccountResolution::UserProvided => user_provided(
+            None,
+            &mut *diagnostics.warnings,
+            &mut *diagnostics.degradations,
+        ),
         AccountResolution::PdaInline {
             seeds,
             program_id,
@@ -1448,10 +1558,11 @@ fn map_account(
                 program.as_ref(),
                 instr_account_names,
                 instr_arg_types,
+                account_name_map,
             ) {
                 Ok((pda_config, seed_warnings, resolve_params)) => {
                     for w in seed_warnings {
-                        warnings.push(format!(
+                        diagnostics.warnings.push(format!(
                             "instruction '{}': account '{}': {}",
                             instr_name, acc.name, w
                         ));
@@ -1462,7 +1573,7 @@ fn map_account(
                             base, pda_config, optional_suffix
                         ),
                         param: Some(UserParam {
-                            name: acc.name.clone(),
+                            name: emitted_name.to_string(),
                             optional: true,
                         }),
                         resolve_params,
@@ -1476,8 +1587,8 @@ fn map_account(
                         source: PdaDegradationSource::Inline,
                         reason,
                     }),
-                    warnings,
-                    degradations,
+                    &mut *diagnostics.warnings,
+                    &mut *diagnostics.degradations,
                 ),
             }
         }
@@ -1488,10 +1599,11 @@ fn map_account(
                 def.program.as_ref(),
                 instr_account_names,
                 instr_arg_types,
+                account_name_map,
             ) {
                 Ok((pda_config, seed_warnings, resolve_params)) => {
                     for w in seed_warnings {
-                        warnings.push(format!(
+                        diagnostics.warnings.push(format!(
                             "instruction '{}': account '{}': {}",
                             instr_name, acc.name, w
                         ));
@@ -1502,7 +1614,7 @@ fn map_account(
                             base, pda_config, optional_suffix
                         ),
                         param: Some(UserParam {
-                            name: acc.name.clone(),
+                            name: emitted_name.to_string(),
                             optional: true,
                         }),
                         resolve_params,
@@ -1516,8 +1628,8 @@ fn map_account(
                         source: PdaDegradationSource::Registry,
                         reason,
                     }),
-                    warnings,
-                    degradations,
+                    &mut *diagnostics.warnings,
+                    &mut *diagnostics.degradations,
                 ),
             },
             None => user_provided(
@@ -1528,8 +1640,8 @@ fn map_account(
                     source: PdaDegradationSource::Registry,
                     reason: format!("references unknown PDA '{}'", pda_name),
                 }),
-                warnings,
-                degradations,
+                &mut *diagnostics.warnings,
+                &mut *diagnostics.degradations,
             ),
         },
     }
@@ -1548,6 +1660,7 @@ fn build_pda_config(
     program: Option<&PdaProgramDef>,
     instr_account_names: &HashSet<&str>,
     instr_arg_types: &BTreeMap<&str, &str>,
+    account_name_map: &BTreeMap<String, String>,
 ) -> Result<(String, Vec<String>, Vec<ResolveParam>), String> {
     let mut seed_literals: Vec<String> = Vec::new();
     let mut soft_warnings: Vec<String> = Vec::new();
@@ -1575,7 +1688,7 @@ fn build_pda_config(
                 }
                 seed_literals.push(format!(
                     "{{ type: 'accountRef', accountName: '{}' }}",
-                    account_name
+                    account_name_map.get(account_name).unwrap_or(account_name)
                 ));
             }
             PdaSeedDef::ArgRef { arg_name, arg_type } => {
@@ -1648,7 +1761,7 @@ fn build_pda_config(
             }
             format!(
                 "program: {{ type: 'accountRef', accountName: '{}' }}, ",
-                account_name
+                account_name_map.get(account_name).unwrap_or(account_name)
             )
         }
         Some(PdaProgramDef::ArgRef { arg_name }) => {
@@ -2787,6 +2900,10 @@ mod tests {
         })
     }
 
+    fn tuple_type(elements: Vec<IdlTypeSnapshot>) -> IdlTypeSnapshot {
+        IdlTypeSnapshot::Tuple(crate::ast::IdlTupleTypeSnapshot { tuple: elements })
+    }
+
     fn instruction_snapshot(
         name: &str,
         discriminator: Vec<u8>,
@@ -2968,6 +3085,49 @@ mod tests {
     }
 
     #[test]
+    fn path_qualified_idl_type_names_emit_valid_typescript_identifiers() {
+        let qualified_name =
+            "sb_on_demand::actions::pull_feed::pull_feed_submit_response_action::Submission";
+        let mut idl = idl("switchboard", "Prog111", vec![]);
+        idl.types = vec![struct_def(qualified_name, vec![("value", simple("u64"))])];
+        idl.instructions = vec![instruction_snapshot(
+            "submit",
+            vec![7],
+            vec![field("submission", defined(qualified_name))],
+        )];
+        let idls = vec![idl];
+
+        let instr = InstructionDef {
+            name: "submit".to_string(),
+            discriminator: vec![7],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![arg("submission", qualified_name)],
+            errors: vec![],
+            program_id: Some("Prog111".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Switchboard",
+            std::slice::from_ref(&instr),
+            &idls,
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert_eq!(out.stack_entries.len(), 1, "warnings: {:?}", out.warnings);
+        assert!(out.code.contains(
+            "export interface SbOnDemandActionsPullFeedPullFeedSubmitResponseActionSubmission"
+        ));
+        assert!(out.code.contains(
+            "submission: SbOnDemandActionsPullFeedPullFeedSubmitResponseActionSubmission;"
+        ));
+        assert!(!out.code.contains("::"), "invalid identifier: {}", out.code);
+    }
+
+    #[test]
     fn resolves_string_key_maps_inside_instruction_arg_types() {
         let mut idl = idl("demo", "Prog111", vec![]);
         idl.types = vec![
@@ -3106,6 +3266,92 @@ mod tests {
             .code
             .contains("additionalMetadata: Record<string, string>;"));
         assert!(out.code.contains("{ hashMap: ['string', 'string'] }"));
+    }
+
+    #[test]
+    fn resolves_mpl_core_inline_tuples_inside_vectors() {
+        let mut idl = idl(
+            "mpl_core",
+            "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+            vec![],
+        );
+        idl.types = vec![
+            struct_def(
+                "AgentIdentityInitInfo",
+                vec![(
+                    "lifecycleChecks",
+                    vec_type(tuple_type(vec![
+                        defined("HookableLifecycleEvent"),
+                        defined("ExternalCheckResult"),
+                    ])),
+                )],
+            ),
+            IdlTypeDefSnapshot {
+                name: "HookableLifecycleEvent".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Enum {
+                    kind: "enum".to_string(),
+                    variants: vec![
+                        crate::ast::IdlEnumVariantSnapshot {
+                            name: "Create".to_string(),
+                            fields: vec![],
+                        },
+                        crate::ast::IdlEnumVariantSnapshot {
+                            name: "Transfer".to_string(),
+                            fields: vec![],
+                        },
+                    ],
+                },
+            },
+            struct_def("ExternalCheckResult", vec![("flags", simple("u32"))]),
+        ];
+        idl.instructions = vec![instruction_snapshot(
+            "AddExternalPluginAdapterV1",
+            vec![28],
+            vec![field(
+                "addExternalPluginAdapterV1Args",
+                defined("AgentIdentityInitInfo"),
+            )],
+        )];
+        let idls = vec![idl];
+
+        let instruction = InstructionDef {
+            name: "AddExternalPluginAdapterV1".to_string(),
+            discriminator: vec![28],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![arg(
+                "addExternalPluginAdapterV1Args",
+                "AgentIdentityInitInfo",
+            )],
+            errors: vec![],
+            program_id: Some("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "MplCore",
+            std::slice::from_ref(&instruction),
+            &idls,
+            &BTreeMap::new(),
+            &["CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d".to_string()],
+            &HashSet::new(),
+        );
+
+        assert_eq!(out.stack_entries.len(), 1, "warnings: {:?}", out.warnings);
+        assert!(
+            out.warnings.is_empty(),
+            "MPL Core tuple-backed args should emit cleanly: {:?}",
+            out.warnings
+        );
+        assert!(out
+            .code
+            .contains("lifecycleChecks: [HookableLifecycleEvent, ExternalCheckResult][];"));
+        assert!(out.code.contains(
+            "{ name: 'lifecycleChecks', type: { vec: { tuple: [{ enum: ['Create', 'Transfer'] }, { struct: [{ name: 'flags', type: 'u32' }] }] } } }"
+        ));
+        assert!(!out.code.contains("skipped instruction"));
     }
 
     #[test]
@@ -3310,6 +3556,57 @@ mod tests {
         ));
         assert!(code.contains("SUBSCRIPTIONS_PROGRAM_ERRORS: ErrorMetadata[]"));
         assert!(code.contains("code: 130, name: 'unauthorized'"));
+    }
+
+    #[test]
+    fn arg_account_name_collisions_suffix_the_account_and_update_pda_refs() {
+        let instr = InstructionDef {
+            name: "decompressV1".to_string(),
+            discriminator: vec![54],
+            discriminator_size: 1,
+            accounts: vec![
+                user_account("metadata"),
+                InstructionAccountDef {
+                    name: "receipt".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::PdaInline {
+                        seeds: vec![PdaSeedDef::AccountRef {
+                            account_name: "metadata".to_string(),
+                        }],
+                        program_id: None,
+                        program: None,
+                    },
+                    is_optional: false,
+                    docs: vec![],
+                },
+            ],
+            args: vec![arg("metadata", "string")],
+            errors: vec![],
+            program_id: Some("Prog111".to_string()),
+            docs: vec![],
+        };
+
+        let out = generate_instructions_code(
+            "Bubblegum",
+            std::slice::from_ref(&instr),
+            &[],
+            &BTreeMap::new(),
+            &["Prog111".to_string()],
+            &HashSet::new(),
+        );
+
+        assert!(out.code.contains("export interface DecompressV1Params {"));
+        assert_eq!(out.code.matches("  metadata: string;").count(), 1);
+        assert!(out.code.contains("  metadataAccount: string;"));
+        assert!(out.code.contains("name: 'metadataAccount'"));
+        assert!(out
+            .code
+            .contains("{ type: 'accountRef', accountName: 'metadataAccount' }"));
+        assert!(out.warnings.iter().any(|warning| {
+            warning.contains("account 'metadata' collides with an argument")
+                && warning.contains("'metadataAccount'")
+        }));
     }
 
     #[test]

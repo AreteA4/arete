@@ -390,7 +390,7 @@ function resolveProgramId(
 
 function parseStandardIdl(value: JsonObject, programId: string): ParsedIdl {
   if (value.kind === "rootNode") {
-    return hashError("invalid-idl", "Codama rootNode ProgramSpec projection is not supported");
+    return parseCodamaRoot(value, programId);
   }
   const instructions = requiredArray(value.instructions, "instructions").map(parseInstruction);
   return {
@@ -405,6 +405,507 @@ function parseStandardIdl(value: JsonObject, programId: string): ParsedIdl {
     pdas: optionalArray(value.pdas, "pdas").map(parseNamedPda),
     metadata: value.metadata == null ? undefined : parseMetadata(value.metadata),
   };
+}
+
+/**
+ * Project a Codama root node through the same intentionally-small adapter used
+ * by `arete-idl`. Keeping this adapter here (instead of first rewriting the
+ * source JSON) preserves the exact source/content/portable projections while
+ * making the normalized snapshot and ProgramSpec language-independent.
+ */
+function parseCodamaRoot(value: JsonObject, programId: string): ParsedIdl {
+  const program = requiredObject(value.program, "program");
+  const name = requiredString(program.name, "program.name");
+  const publicKey = requiredString(program.publicKey, "program.publicKey");
+  const version = optionalString(program.version, "program.version");
+  const definedTypes = optionalUnknownArray(program.definedTypes, "program.definedTypes");
+  const accountDiscriminators = codamaAccountDiscriminators(definedTypes);
+  const pdaNodes = optionalUnknownArray(program.pdas, "program.pdas");
+  const pdaDefinitions = new Map<string, UnknownObject>();
+  for (const [index, value] of pdaNodes.entries()) {
+    const pda = requiredObject(value, `program.pdas[${index}]`);
+    pdaDefinitions.set(requiredString(pda.name, `program.pdas[${index}].name`), pda);
+  }
+
+  return {
+    version,
+    name,
+    address: programId,
+    instructions: optionalUnknownArray(program.instructions, "program.instructions").map(
+      (instruction, index) => codamaInstruction(instruction, index, pdaDefinitions),
+    ),
+    accounts: optionalUnknownArray(program.accounts, "program.accounts").map(
+      (account, index) => codamaAccount(account, index, accountDiscriminators),
+    ),
+    types: definedTypes.map(codamaDefinedType),
+    events: optionalUnknownArray(program.events, "program.events").map(codamaEvent),
+    errors: optionalUnknownArray(program.errors, "program.errors").map(codamaError),
+    pdas: pdaNodes.map(codamaNamedPda),
+    metadata: { name, version, address: publicKey },
+  };
+}
+
+function codamaAccountDiscriminators(definedTypes: unknown[]): Map<string, number> {
+  const discriminatorType = definedTypes.find((value) => {
+    const item = requiredObject(value, "program.definedTypes[]");
+    return item.name === "accountDiscriminator";
+  });
+  if (discriminatorType === undefined) return new Map();
+
+  const item = requiredObject(discriminatorType, "program.definedTypes.accountDiscriminator");
+  const type = requiredObject(item.type, "program.definedTypes.accountDiscriminator.type");
+  if (type.kind !== "enumTypeNode") {
+    return invalidIdl("Codama accountDiscriminator must be an enum");
+  }
+  return new Map(
+    requiredUnknownArray(type.variants, "program.definedTypes.accountDiscriminator.variants").map(
+      (value, index) => {
+        const variant = requiredObject(
+          value,
+          `program.definedTypes.accountDiscriminator.variants[${index}]`,
+        );
+        const discriminator = variant.discriminator;
+        if (
+          typeof discriminator !== "number" ||
+          !Number.isInteger(discriminator) ||
+          discriminator < 0 ||
+          discriminator > 255
+        ) {
+          return invalidIdl(
+            `Codama accountDiscriminator variant '${String(variant.name)}' is missing or has an unsupported discriminator`,
+          );
+        }
+        return [
+          requiredString(variant.name, `accountDiscriminator.variants[${index}].name`),
+          discriminator,
+        ];
+      }),
+  );
+}
+
+function codamaAccount(
+  value: unknown,
+  index: number,
+  discriminators: ReadonlyMap<string, number>,
+): ParsedAccount {
+  const location = `program.accounts[${index}]`;
+  const item = requiredObject(value, location);
+  const name = requiredString(item.name, `${location}.name`);
+  const explicitDiscriminator = discriminators.get(name);
+  if (explicitDiscriminator === undefined && discriminators.size > 0) {
+    return invalidIdl(
+      `Codama account '${name}' has no entry in accountDiscriminator; add a variant or remove the account from the IDL`,
+    );
+  }
+  return {
+    name,
+    discriminator: explicitDiscriminator === undefined ? [] : [explicitDiscriminator],
+    docs: [],
+    typeDef: codamaTypeDefKind(item.data, `${location}.data`),
+  };
+}
+
+function codamaDefinedType(value: unknown, index: number): ParsedTypeDef {
+  const location = `program.definedTypes[${index}]`;
+  const item = requiredObject(value, location);
+  return {
+    name: requiredString(item.name, `${location}.name`),
+    docs: [],
+    typeDef: codamaTypeDefKind(item.type, `${location}.type`),
+  };
+}
+
+function codamaTypeDefKind(value: unknown, location: string): ParsedTypeDefKind {
+  const item = requiredObject(value, location);
+  if (item.kind === "structTypeNode") {
+    return {
+      kind: "struct",
+      fields: requiredUnknownArray(item.fields, `${location}.fields`).map(codamaField),
+      tuple: false,
+    };
+  }
+  if (item.kind !== "enumTypeNode") {
+    return invalidIdl(`Codama type node '${String(item.kind)}' is not a type definition`);
+  }
+
+  const variants = requiredUnknownArray(item.variants, `${location}.variants`).map(
+    (value, index): ParsedEnumVariant => {
+      const variantLocation = `${location}.variants[${index}]`;
+      const variant = requiredObject(value, variantLocation);
+      const discriminator = variant.discriminator;
+      if (
+        discriminator !== undefined &&
+        (typeof discriminator !== "number" ||
+          !Number.isSafeInteger(discriminator) ||
+          discriminator < 0 ||
+          discriminator !== index)
+      ) {
+        return invalidIdl(
+          `Codama enum variant '${String(variant.name)}' has an unsupported discriminator`,
+        );
+      }
+
+      let fields: (ParsedField | JsonValue)[] = [];
+      const flattenedFields = optionalUnknownArray(variant.fields, `${variantLocation}.fields`);
+      if (flattenedFields.length > 0) {
+        fields = flattenedFields.map(codamaField);
+      } else if (variant.struct !== undefined && variant.struct !== null) {
+        const struct = requiredObject(variant.struct, `${variantLocation}.struct`);
+        if (struct.kind !== "structTypeNode") {
+          return invalidIdl(
+            `Codama enum variant '${String(variant.name)}' struct payload is not a structTypeNode`,
+          );
+        }
+        fields = requiredUnknownArray(struct.fields, `${variantLocation}.struct.fields`).map(
+          codamaField,
+        );
+      } else if (variant.tuple !== undefined && variant.tuple !== null) {
+        const tuple = requiredObject(variant.tuple, `${variantLocation}.tuple`);
+        if (tuple.kind !== "tupleTypeNode") {
+          return invalidIdl(
+            `Codama enum variant '${String(variant.name)}' tuple payload is not a tupleTypeNode`,
+          );
+        }
+        fields = requiredUnknownArray(tuple.items, `${variantLocation}.tuple.items`).map(
+          (item, itemIndex) => codamaType(item, `${variantLocation}.tuple.items[${itemIndex}]`),
+        );
+      }
+      return {
+        name: requiredString(variant.name, `${variantLocation}.name`),
+        fields,
+      };
+    },
+  );
+  return { kind: "enum", variants };
+}
+
+function codamaField(value: unknown, index: number): ParsedField {
+  const item = requiredObject(value, `Codama field[${index}]`);
+  return {
+    name: requiredString(item.name, `Codama field[${index}].name`),
+    type: codamaType(item.type, `Codama field[${index}].type`),
+  };
+}
+
+function codamaType(value: unknown, location: string): JsonValue {
+  const item = requiredObject(value, location);
+  switch (item.kind) {
+    case "numberTypeNode":
+      return requiredString(item.format, `${location}.format`);
+    case "publicKeyTypeNode":
+      return "publicKey";
+    case "stringTypeNode":
+      return "string";
+    case "definedTypeLinkNode":
+      return { defined: requiredString(item.name, `${location}.name`) };
+    case "arrayTypeNode": {
+      const count = requiredObject(item.count, `${location}.count`);
+      if (count.kind !== "fixedCountNode") {
+        return invalidIdl("unsupported Codama array count kind (only fixedCountNode is supported)");
+      }
+      const size = count.value;
+      if (typeof size !== "number" || !Number.isInteger(size) || size < 0 || size > 0xffffffff) {
+        return invalidIdl(`${location}.count.value must be a u32`);
+      }
+      return { array: [codamaType(item.item, `${location}.item`), size] };
+    }
+    case "fixedSizeTypeNode": {
+      const size = item.size;
+      if (typeof size !== "number" || !Number.isInteger(size) || size < 0 || size > 0xffffffff) {
+        return invalidIdl(`${location}.size must be a u32`);
+      }
+      const child = requiredObject(item.type, `${location}.type`);
+      return {
+        array: [child.kind === "stringTypeNode" ? "u8" : codamaType(child, `${location}.type`), size],
+      };
+    }
+    case "tupleTypeNode":
+      return {
+        tuple: requiredUnknownArray(item.items, `${location}.items`).map((item, index) =>
+          codamaType(item, `${location}.items[${index}]`),
+        ),
+      };
+    default:
+      return invalidIdl(`unsupported Codama field type '${String(item.kind)}'`);
+  }
+}
+
+function codamaInstruction(
+  value: unknown,
+  index: number,
+  pdaDefinitions: ReadonlyMap<string, UnknownObject>,
+): ParsedInstruction {
+  const location = `program.instructions[${index}]`;
+  const item = requiredObject(value, location);
+  const name = requiredString(item.name, `${location}.name`);
+  const arguments_ = optionalUnknownArray(item.arguments, `${location}.arguments`);
+  const discriminatorArgument = arguments_.find((value) => {
+    const argument = requiredObject(value, `${location}.arguments[]`);
+    return argument.name === "discriminator";
+  });
+  let discriminant: ParsedInstruction["discriminant"] = null;
+  if (discriminatorArgument !== undefined) {
+    const argument = requiredObject(discriminatorArgument, `${location}.arguments.discriminator`);
+    const defaultValue = requiredObject(
+      argument.defaultValue,
+      `${location}.arguments.discriminator.defaultValue`,
+    );
+    const discriminator = defaultValue.number;
+    if (
+      defaultValue.kind !== "numberValueNode" ||
+      typeof discriminator !== "number" ||
+      !Number.isSafeInteger(discriminator) ||
+      discriminator < 0
+    ) {
+      return invalidIdl(
+        `Codama instruction '${name}' has a discriminator argument without a non-negative numeric defaultValue`,
+      );
+    }
+    const argumentType = requiredObject(argument.type, `${location}.arguments.discriminator.type`);
+    discriminant = {
+      type: argumentType.kind === "numberTypeNode"
+        ? requiredString(argumentType.format, `${location}.arguments.discriminator.type.format`)
+        : "u8",
+      value: discriminator,
+    };
+  }
+
+  return {
+    name,
+    discriminator: [],
+    discriminant,
+    docs: [],
+    accounts: optionalUnknownArray(item.accounts, `${location}.accounts`).map((account, accountIndex) =>
+      codamaInstructionAccount(account, accountIndex, pdaDefinitions),
+    ),
+    args: arguments_
+      .filter((value) => requiredObject(value, `${location}.arguments[]`).name !== "discriminator")
+      .map(codamaField),
+  };
+}
+
+function codamaInstructionAccount(
+  value: unknown,
+  index: number,
+  pdaDefinitions: ReadonlyMap<string, UnknownObject>,
+): ParsedInstructionAccount {
+  const location = `Codama instruction account[${index}]`;
+  const item = requiredObject(value, location);
+  const signer = item.isSigner ?? false;
+  if (typeof signer !== "boolean" && typeof signer !== "string") {
+    return invalidIdl(`${location}.isSigner must be a boolean or string`);
+  }
+  const docs = stringArray(item.docs, `${location}.docs`);
+  if (signer === "either") {
+    docs.push("signer: either (may or may not sign; treated as non-signer)");
+  } else if (typeof signer === "string") {
+    docs.push(`signer: "${signer}" (unrecognised isSigner tag; treated as non-signer)`);
+  }
+  const defaultValue = item.defaultValue == null
+    ? undefined
+    : requiredObject(item.defaultValue, `${location}.defaultValue`);
+  return {
+    name: requiredString(item.name, `${location}.name`),
+    isMut: optionalBoolean(item.isWritable, `${location}.isWritable`),
+    isSigner: signer === true,
+    address: defaultValue?.kind === "publicKeyValueNode"
+      ? requiredString(defaultValue.publicKey, `${location}.defaultValue.publicKey`)
+      : undefined,
+    optional: optionalBoolean(item.isOptional, `${location}.isOptional`),
+    docs,
+    pda: codamaAccountPda(defaultValue, pdaDefinitions),
+    accounts: [],
+  };
+}
+
+function codamaEvent(value: unknown, index: number): ParsedEvent {
+  const location = `program.events[${index}]`;
+  const item = requiredObject(value, location);
+  return {
+    name: requiredString(item.name, `${location}.name`),
+    discriminator: byteArray(item.discriminator, `${location}.discriminator`),
+    docs: stringArray(item.docs, `${location}.docs`),
+    fields: [],
+  };
+}
+
+function codamaError(value: unknown, index: number): ParsedError {
+  const location = `program.errors[${index}]`;
+  const item = requiredObject(value, location);
+  const code = item.code;
+  if (typeof code !== "number" || !Number.isInteger(code) || code < 0 || code > 0xffffffff) {
+    return invalidIdl(`${location}.code must be a u32`);
+  }
+  return {
+    code,
+    name: requiredString(item.name, `${location}.name`),
+    msg: requiredString(item.message, `${location}.message`),
+  };
+}
+
+function codamaNamedPda(value: unknown, index: number): ParsedNamedPda {
+  const location = `program.pdas[${index}]`;
+  const item = requiredObject(value, location);
+  const name = requiredString(item.name, `${location}.name`);
+  const seeds = requiredUnknownArray(item.seeds, `${location}.seeds`).map((seed, seedIndex) => {
+    const seedLocation = `${location}.seeds[${seedIndex}]`;
+    const node = requiredObject(seed, seedLocation);
+    if (node.kind === "constantPdaSeedNode") {
+      const bytes = codamaConstantSeedBytes(node.value, node.type);
+      return bytes === undefined
+        ? invalidIdl(`Codama pda '${name}' has a constant seed that could not be encoded`)
+        : { kind: "const" as const, value: bytes };
+    }
+    if (node.kind === "variablePdaSeedNode") {
+      return {
+        kind: "arg" as const,
+        path: requiredString(node.name, `${seedLocation}.name`),
+        argType: codamaSeedTypeName(node.type),
+      };
+    }
+    return invalidIdl(`${seedLocation}.kind '${String(node.kind)}' is unsupported`);
+  });
+  const owningProgram = optionalString(item.programId, `${location}.programId`);
+  return {
+    name,
+    seeds,
+    program: owningProgram === undefined
+      ? undefined
+      : { kind: "programId", value: owningProgram },
+  };
+}
+
+function codamaAccountPda(
+  defaultValue: UnknownObject | undefined,
+  pdaDefinitions: ReadonlyMap<string, UnknownObject>,
+): ParsedPda | undefined {
+  if (defaultValue?.kind !== "pdaValueNode") return undefined;
+  if (!isObjectLike(defaultValue.pda)) return undefined;
+  const source = defaultValue.pda;
+  let definition: UnknownObject;
+  let name: string;
+  if (source.kind === "pdaLinkNode" && typeof source.name === "string") {
+    const linked = pdaDefinitions.get(source.name);
+    if (linked === undefined) return undefined;
+    definition = linked;
+    name = source.name;
+  } else if (source.kind === "pdaNode" && typeof source.name === "string") {
+    definition = source;
+    name = source.name;
+  } else {
+    return undefined;
+  }
+
+  const bindings = new Map<string, UnknownObject>();
+  if (!Array.isArray(defaultValue.seeds)) return undefined;
+  for (const value of defaultValue.seeds) {
+    if (!isObjectLike(value) || typeof value.name !== "string" || !isObjectLike(value.value)) {
+      return undefined;
+    }
+    bindings.set(value.name, value.value);
+  }
+  if (!Array.isArray(definition.seeds)) return undefined;
+
+  const seeds: ParsedPdaSeed[] = [];
+  for (const value of definition.seeds) {
+    if (!isObjectLike(value)) return undefined;
+    if (value.kind === "constantPdaSeedNode") {
+      const bytes = codamaConstantSeedBytes(value.value, value.type);
+      if (bytes === undefined) return undefined;
+      seeds.push({ kind: "const", value: bytes });
+      continue;
+    }
+    if (value.kind !== "variablePdaSeedNode" || typeof value.name !== "string") return undefined;
+    const binding = bindings.get(value.name);
+    if (binding === undefined) return undefined;
+    if (binding.kind === "accountValueNode" && typeof binding.name === "string") {
+      seeds.push({ kind: "account", path: binding.name });
+    } else if (binding.kind === "argumentValueNode" && typeof binding.name === "string") {
+      seeds.push({
+        kind: "arg",
+        path: binding.name,
+        argType: codamaSeedTypeName(value.type),
+      });
+    } else {
+      const bytes = codamaConstantSeedBytes(binding, value.type);
+      if (bytes === undefined) return undefined;
+      seeds.push({ kind: "const", value: bytes });
+    }
+  }
+
+  const owningProgram = typeof definition.programId === "string" ? definition.programId : undefined;
+  return {
+    name,
+    seeds,
+    program: owningProgram === undefined
+      ? undefined
+      : { kind: "programId", value: owningProgram },
+  };
+}
+
+function codamaSeedTypeName(value: unknown): string | undefined {
+  if (!isObjectLike(value)) return undefined;
+  if (value.kind === "numberTypeNode" && typeof value.format === "string") return value.format;
+  if (value.kind === "publicKeyTypeNode") return "publicKey";
+  if (value.kind === "stringTypeNode") return "string";
+  return undefined;
+}
+
+function codamaConstantSeedBytes(value: unknown, seedType: unknown): number[] | undefined {
+  if (!isObjectLike(value)) return undefined;
+  if (value.kind === "stringValueNode" && typeof value.string === "string") {
+    return [...new TextEncoder().encode(value.string)];
+  }
+  if (value.kind === "numberValueNode" && typeof value.number === "number") {
+    if (!Number.isSafeInteger(value.number) || !isObjectLike(seedType) || seedType.kind !== "numberTypeNode") {
+      return undefined;
+    }
+    const format = seedType.format;
+    if (typeof format !== "string") return undefined;
+    const match = /^([ui])(8|16|32|64|128)$/.exec(format);
+    if (!match) return undefined;
+    const signed = match[1] === "i";
+    const bits = Number(match[2]);
+    const width = bits / 8;
+    let number = BigInt(value.number);
+    const minimum = signed ? -(1n << BigInt(bits - 1)) : 0n;
+    const maximum = signed ? (1n << BigInt(bits - 1)) - 1n : (1n << BigInt(bits)) - 1n;
+    if (number < minimum || number > maximum) return undefined;
+    if (number < 0n) number += 1n << BigInt(bits);
+    return Array.from({ length: width }, () => {
+      const byte = Number(number & 0xffn);
+      number >>= 8n;
+      return byte;
+    });
+  }
+  if (value.kind === "publicKeyValueNode" && typeof value.publicKey === "string") {
+    const decoded = decodeBase58(value.publicKey);
+    return decoded?.length === 32 ? decoded : undefined;
+  }
+  if (value.kind === "bytesValueNode" && typeof value.data === "string") {
+    if (value.encoding === undefined || value.encoding === "utf8") {
+      return [...new TextEncoder().encode(value.data)];
+    }
+    if (value.encoding === "base16" || value.encoding === "hex") {
+      if (value.data.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(value.data)) return undefined;
+      return value.data.match(/../g)?.map((byte) => Number.parseInt(byte, 16)) ?? [];
+    }
+  }
+  return undefined;
+}
+
+function decodeBase58(value: string): number[] | undefined {
+  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(value)) return undefined;
+  let number = 0n;
+  for (const character of value) number = number * 58n + BigInt(alphabet.indexOf(character));
+  const suffix: number[] = [];
+  while (number > 0n) {
+    suffix.push(Number(number & 0xffn));
+    number >>= 8n;
+  }
+  suffix.reverse();
+  return [...Array(value.match(/^1*/)?.[0].length ?? 0).fill(0), ...suffix];
 }
 
 function parseInstruction(value: unknown, index: number): ParsedInstruction {
@@ -433,7 +934,10 @@ function parseInstructionAccount(value: unknown, index: number): ParsedInstructi
       `instruction account[${index}].isSigner`,
     ),
     address: optionalString(item.address, `instruction account[${index}].address`),
-    optional: optionalBoolean(item.optional, `instruction account[${index}].optional`),
+    optional: optionalBoolean(
+      item.optional ?? item.isOptional,
+      `instruction account[${index}].optional`,
+    ),
     docs: stringArray(item.docs, `instruction account[${index}].docs`),
     pda: item.pda == null ? undefined : parsePda(item.pda, `instruction account[${index}].pda`),
     accounts: optionalUnknownArray(item.accounts, `instruction account[${index}].accounts`).map(
@@ -543,6 +1047,13 @@ function normalizeIdlType(value: unknown, location: string): JsonValue {
     }
     return vec;
   }
+  if (Object.hasOwn(item, "tuple")) {
+    return {
+      tuple: requiredUnknownArray(item.tuple, `${location}.tuple`).map((child, index) =>
+        normalizeIdlType(child, `${location}.tuple[${index}]`),
+      ),
+    };
+  }
   const map = item.hashMap ?? item.bTreeMap;
   if (map !== undefined) {
     const values = requiredUnknownArray(map, `${location}.hashMap`);
@@ -584,7 +1095,13 @@ function parsePda(value: unknown, location: string): ParsedPda {
 function parsePdaSeed(value: unknown, location: string): ParsedPdaSeed {
   const item = requiredObject(value, location);
   const kind = requiredString(item.kind, `${location}.kind`);
-  if (kind === "const") return { kind, value: byteArray(item.value, `${location}.value`, true) };
+  if (kind === "const") {
+    const seedValue = item.value;
+    if (typeof seedValue === "string") {
+      return { kind, value: [...new TextEncoder().encode(seedValue)] };
+    }
+    return { kind, value: byteArray(seedValue, `${location}.value`, true) };
+  }
   if (kind === "account") return { kind, path: requiredString(item.path, `${location}.path`) };
   if (kind === "arg") {
     return {
@@ -987,6 +1504,9 @@ function idlTypeToRustString(type: JsonValue): string {
   if (type.vec !== undefined) {
     const inner = idlTypeToRustString(type.vec);
     return type.lengthPrefix === "u64" ? `VecU64Len<${inner}>` : `Vec<${inner}>`;
+  }
+  if (Array.isArray(type.tuple)) {
+    return `(${type.tuple.map((element) => idlTypeToRustString(element)).join(", ")})`;
   }
   if (Array.isArray(type.hashMap) && type.hashMap.length === 2) {
     return `std::collections::HashMap<${idlTypeToRustString(type.hashMap[0] ?? null)}, ${idlTypeToRustString(type.hashMap[1] ?? null)}>`;

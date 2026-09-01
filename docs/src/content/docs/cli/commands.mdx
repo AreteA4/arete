@@ -40,6 +40,11 @@ Complete reference for the Arete CLI (`a4`).
 | `a4 explore programs`                 | Discover installable standalone programs       |
 | `a4 explore stack <ref>`              | Inspect an exact stack install descriptor      |
 | `a4 explore program <ref>`            | Inspect an exact program install descriptor    |
+| `a4 know search --query <intent>`     | Search the knowledge layer by intent           |
+| `a4 know protocol <slug>`             | Curated knowledge for one protocol             |
+| `a4 know program <slug>`              | Curated annotations for one program            |
+| `a4 know recipe <slug>`               | One cross-protocol recipe                      |
+| `a4 know concepts`                    | Concept and category vocabularies              |
 
 :::note[npm vs Cargo]
 When installed via npm (`npm install -g @usearete/a4`), the command is `a4`. When installed via Cargo (`cargo install a4-cli`), the command is also `a4`. Both are the same CLI.
@@ -211,6 +216,57 @@ a4 explore ore OreRound --json
 Every JSON response includes `schemaVersion`. Exploration never selects a
 latest AST independently and never falls back when an install descriptor is
 incomplete. For an owned stack diagnostic, use `a4 stack show <ref>`.
+
+### a4 know
+
+Query the curated knowledge layer: which protocols, programs, stacks, and
+recipes serve an intent, and what the platform can do for each (`read` account
+state, `build` transactions, `subscribe` to a hosted stack). Every subcommand
+requires an API key saved by `a4 auth login` and accepts `--json`, which
+prints the API response verbatim.
+
+```bash
+# Search by intent; results carry read / build / subscribe coverage flags
+a4 know search --query "monitor swaps"
+a4 know search --concept swap --category dex --limit 10
+
+# One protocol: programs with roles, related protocols, live stacks, coverage
+a4 know protocol meteora-damm
+
+# One program's annotations, one section at a time
+a4 know program meteora-cp-amm                          # summary (default)
+a4 know program meteora-cp-amm --section instructions
+a4 know program meteora-cp-amm --section accounts
+a4 know program meteora-cp-amm --section surface        # typed SDK operations with bindings
+
+# One cross-protocol recipe
+a4 know recipe execute-presale-purchase-via-squads
+
+# Concept and category slugs for --concept / --category
+a4 know concepts
+```
+
+**`search` options:**
+
+| Flag                 | Description                                                |
+| -------------------- | ---------------------------------------------------------- |
+| `--query, -q <text>` | Free-text intent; matches concept names and synonyms first |
+| `--concept <slug>`   | Filter by concept slug (see `a4 know concepts`)            |
+| `--category <slug>`  | Filter by category slug (see `a4 know concepts`)           |
+| `--limit <n>`        | Maximum number of results                                  |
+
+At least one of `--query`, `--concept`, or `--category` is required.
+
+**`program` options:**
+
+| Flag               | Description                                                   |
+| ------------------ | ------------------------------------------------------------- |
+| `--section <name>` | `summary` (default), `instructions`, `accounts`, or `surface` |
+
+Slugs are bare identifiers (`meteora-damm`), not URLs or paths; unknown slugs
+return a not-found error. The catalog is growing, so a protocol with no entry
+is not evidence that it is unsupported — fall back to `a4 explore` and
+`a4 idl`.
 
 ---
 

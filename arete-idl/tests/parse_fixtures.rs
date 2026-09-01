@@ -108,3 +108,118 @@ fn test_parse_meteora_dlmm_modern() {
         "meteora_dlmm should have 30 constants"
     );
 }
+
+#[test]
+fn test_parse_mpl_core_tuple_types() {
+    // Trimmed from mpl-core (Codama/Kinobi legacy-Anchor render), which uses
+    // inline `{"tuple": [..]}` type nodes inside `vec` and `option<vec>`.
+    // These previously failed deserialization with "data did not match any
+    // variant of untagged enum IdlTypeDefKind".
+    let idl = parse_idl_file(&fixture_path("mpl_core_tuple.json"))
+        .expect("should parse mpl_core_tuple.json");
+
+    assert_eq!(idl.instructions.len(), 1);
+    assert_eq!(idl.types.len(), 4);
+
+    let init_info = idl
+        .types
+        .iter()
+        .find(|t| t.name == "AgentIdentityInitInfo")
+        .expect("AgentIdentityInitInfo typedef");
+    let arete_idl::IdlTypeDefKind::Struct { fields, .. } = &init_info.type_def else {
+        panic!("AgentIdentityInitInfo should be a struct");
+    };
+    let arete_idl::IdlType::Vec(vec_type) = &fields[0].type_ else {
+        panic!("lifecycleChecks should be a vec");
+    };
+    let arete_idl::IdlType::Tuple(tuple) = vec_type.vec.as_ref() else {
+        panic!("vec element should be a tuple");
+    };
+    assert_eq!(tuple.tuple.len(), 2, "tuple should have two elements");
+    for (element, expected) in tuple
+        .tuple
+        .iter()
+        .zip(["HookableLifecycleEvent", "ExternalCheckResult"])
+    {
+        let arete_idl::IdlType::Defined(defined) = element else {
+            panic!("tuple elements should be defined types");
+        };
+        let arete_idl::IdlTypeDefinedInner::Simple(name) = &defined.defined else {
+            panic!("defined should use the legacy string form");
+        };
+        assert_eq!(name, expected);
+    }
+
+    // option<vec<tuple>> also parses.
+    let update_info = idl
+        .types
+        .iter()
+        .find(|t| t.name == "AgentIdentityUpdateInfo")
+        .expect("AgentIdentityUpdateInfo typedef");
+    let arete_idl::IdlTypeDefKind::Struct { fields, .. } = &update_info.type_def else {
+        panic!("AgentIdentityUpdateInfo should be a struct");
+    };
+    let arete_idl::IdlType::Option(option_type) = &fields[1].type_ else {
+        panic!("lifecycleChecks should be an option");
+    };
+    assert!(
+        matches!(
+            option_type.option.as_ref(),
+            arete_idl::IdlType::Vec(inner) if matches!(inner.vec.as_ref(), arete_idl::IdlType::Tuple(_))
+        ),
+        "option should wrap vec<tuple>"
+    );
+}
+
+#[test]
+fn test_mpl_core_tuple_snapshot_roundtrip() {
+    use arete_idl::snapshot::{normalize_idl_snapshot, IdlTypeSnapshot};
+
+    let idl = parse_idl_file(&fixture_path("mpl_core_tuple.json"))
+        .expect("should parse mpl_core_tuple.json");
+    let snapshot = normalize_idl_snapshot(&idl);
+
+    // Steel/shank-style 1-byte discriminant carries through.
+    assert_eq!(snapshot.discriminant_size, 1);
+    assert_eq!(snapshot.instructions[0].discriminator, vec![28]);
+
+    let init_info = snapshot
+        .types
+        .iter()
+        .find(|t| t.name == "AgentIdentityInitInfo")
+        .expect("AgentIdentityInitInfo snapshot");
+    let arete_idl::snapshot::IdlTypeDefKindSnapshot::Struct { fields, .. } = &init_info.type_def
+    else {
+        panic!("AgentIdentityInitInfo snapshot should be a struct");
+    };
+    let IdlTypeSnapshot::Vec(vec_type) = &fields[0].type_ else {
+        panic!("lifecycleChecks snapshot should be a vec");
+    };
+    let IdlTypeSnapshot::Tuple(tuple) = vec_type.vec.as_ref() else {
+        panic!("snapshot vec element should be a tuple");
+    };
+    assert_eq!(tuple.tuple.len(), 2);
+
+    // The snapshot serializes tuples in the same `{"tuple": [..]}` wire shape
+    // and deserializes back to the same variant.
+    let json = serde_json::to_value(&fields[0].type_).expect("serialize");
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "vec": {
+                "tuple": [
+                    {"defined": "HookableLifecycleEvent"},
+                    {"defined": "ExternalCheckResult"}
+                ]
+            }
+        })
+    );
+    let reparsed: IdlTypeSnapshot = serde_json::from_value(json).expect("deserialize");
+    assert!(
+        matches!(
+            &reparsed,
+            IdlTypeSnapshot::Vec(v) if matches!(v.vec.as_ref(), IdlTypeSnapshot::Tuple(t) if t.tuple.len() == 2)
+        ),
+        "tuple snapshot should round-trip through JSON"
+    );
+}

@@ -58,6 +58,8 @@ pub enum ArgType {
     Option(Box<ArgType>),
     /// Fixed-length array: exactly N elements, no length prefix.
     Array(Box<ArgType>, usize),
+    /// Positional elements serialized in declaration order, with no length prefix.
+    Tuple(Vec<ArgType>),
     /// String-keyed map: u32 LE count followed by key/value pairs sorted by the
     /// key's UTF-8 bytes.
     HashMap(Box<ArgType>, Box<ArgType>),

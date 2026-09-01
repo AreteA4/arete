@@ -207,8 +207,15 @@ pub struct IdlNamedPda {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum IdlPdaSeed {
-    /// Constant byte array seed
-    Const { value: Vec<u8> },
+    /// Constant seed normalized to bytes.
+    ///
+    /// Anchor IDLs normally encode this as a byte array, but older generated
+    /// IDLs (including BonkSwap) use `{ "type": "string", "value": "..." }`.
+    /// Accept both wire shapes and normalize strings to their UTF-8 bytes.
+    Const {
+        #[serde(deserialize_with = "deserialize_const_pda_seed_value")]
+        value: Vec<u8>,
+    },
     /// Reference to another account in the instruction
     Account {
         path: String,
@@ -221,6 +228,23 @@ pub enum IdlPdaSeed {
         #[serde(rename = "type", default)]
         arg_type: Option<String>,
     },
+}
+
+fn deserialize_const_pda_seed_value<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ConstPdaSeedValue {
+        Bytes(Vec<u8>),
+        String(String),
+    }
+
+    match ConstPdaSeedValue::deserialize(deserializer)? {
+        ConstPdaSeedValue::Bytes(bytes) => Ok(bytes),
+        ConstPdaSeedValue::String(value) => Ok(value.into_bytes()),
+    }
 }
 
 /// Program reference for cross-program PDAs
@@ -373,7 +397,18 @@ pub enum IdlType {
     Option(IdlTypeOption),
     Vec(IdlTypeVec),
     HashMap(IdlTypeHashMap),
+    Tuple(IdlTypeTuple),
     Defined(IdlTypeDefined),
+}
+
+/// Inline tuple type, e.g. `{"tuple": [{"defined": "A"}, "u64"]}`.
+///
+/// Emitted by Codama/Kinobi legacy-Anchor renders (e.g. mpl-core) for
+/// `Vec<(A, B)>`-style fields. Borsh encodes a tuple as its elements in
+/// declaration order, so this is fully representable with no loss.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IdlTypeTuple {
+    pub tuple: Vec<IdlType>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

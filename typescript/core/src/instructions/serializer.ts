@@ -36,6 +36,7 @@ export type ArgType =
   | { vecU64Len: ArgType }
   | { option: ArgType }
   | { array: readonly [ArgType, number] }
+  | { tuple: readonly ArgType[] }
   | { hashMap: readonly [ArgType, ArgType] }
   | { struct: readonly ArgStructField[] }
   | { enum: readonly EnumVariant[] };
@@ -111,6 +112,10 @@ function serializeValue(value: unknown, type: ArgType): Buffer {
     return serializeArray(value as unknown[], type.array[0], type.array[1]);
   }
 
+  if ('tuple' in type) {
+    return serializeTuple(value, type.tuple);
+  }
+
   if ('hashMap' in type) {
     return serializeHashMap(value, type.hashMap[0], type.hashMap[1]);
   }
@@ -143,6 +148,21 @@ function serializeStruct(value: unknown, fields: readonly ArgStructField[]): Buf
     buffers.push(serializeValue(fieldValue, field.type));
   }
   return Buffer.concat(buffers);
+}
+
+function serializeTuple(value: unknown, elementTypes: readonly ArgType[]): Buffer {
+  if (!Array.isArray(value)) {
+    throw new Error(`Tuple value must be an array, got ${typeof value}`);
+  }
+  if (value.length !== elementTypes.length) {
+    throw new Error(
+      `Tuple length mismatch: expected ${elementTypes.length}, got ${value.length}`
+    );
+  }
+
+  return Buffer.concat(
+    elementTypes.map((elementType, index) => serializeValue(value[index], elementType))
+  );
 }
 
 function serializeHashMap(value: unknown, keyType: ArgType, valueType: ArgType): Buffer {

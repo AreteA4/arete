@@ -1,3 +1,4 @@
+import { brandOperationKind } from './operation-kind';
 import type {
   PreparedFlow,
   PreparedInstruction,
@@ -37,26 +38,26 @@ type MaybePromise<T> = T | Promise<T>;
 export function instructionOperation<TInput, TArtifacts>(
   prepare: (input: TInput) => MaybePromise<PreparedInstruction<TArtifacts>>
 ): InstructionOperation<TInput, TArtifacts> {
-  return {
+  return brandOperationKind({
     kind: 'instruction',
     prepare: async (input) => prepare(input),
-  };
+  }, 'instruction');
 }
 
 export function transactionOperation<TInput, TArtifacts>(
   prepare: (input: TInput) => MaybePromise<PreparedTransaction<TArtifacts>>
 ): TransactionOperation<TInput, TArtifacts> {
-  return {
+  return brandOperationKind({
     kind: 'transaction',
     prepare: async (input) => prepare(input),
-  };
+  }, 'transaction');
 }
 
 export function flowOperation<TInput, TArtifacts>(
   prepare: (input: TInput) => MaybePromise<PreparedFlow<TArtifacts>>
 ): FlowOperation<TInput, TArtifacts> {
-  return {
+  return brandOperationKind({
     kind: 'flow',
     prepare: async (input) => prepare(input),
-  };
+  }, 'flow');
 }

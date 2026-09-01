@@ -1,3 +1,4 @@
+import { brandOperationKind } from './operation-kind';
 import type {
   ProgramAccountReadDefinition,
   ProgramQueryDefinition,
@@ -57,10 +58,10 @@ export function programAccountRead<T>(input: {
   account: string;
   schema?: Schema<T>;
 }): ProgramAccountReadDefinition<T> {
-  return {
+  return brandOperationKind({
     account: input.account,
     schema: input.schema,
-  } as const;
+  } as const, 'account-fetch');
 }
 
 export function programQuery<TParams = unknown, TResult = unknown>(input: {
@@ -69,12 +70,12 @@ export function programQuery<TParams = unknown, TResult = unknown>(input: {
   method?: ReadTransportMethod;
   schema?: Schema<TResult>;
 }): ProgramQueryDefinition<TParams, TResult> {
-  return {
+  return brandOperationKind({
     name: input.name,
     path: input.path,
     method: input.method,
     schema: input.schema,
-  } as const;
+  } as const, 'query');
 }
 
 export function stackQuery<TParams = unknown, TResult = unknown>(input: {
@@ -83,10 +84,10 @@ export function stackQuery<TParams = unknown, TResult = unknown>(input: {
   method?: ReadTransportMethod;
   schema?: Schema<TResult>;
 }): StackQueryDefinition<TParams, TResult> {
-  return {
+  return brandOperationKind({
     name: input.name,
     path: input.path,
     method: input.method,
     schema: input.schema,
-  } as const;
+  } as const, 'query');
 }

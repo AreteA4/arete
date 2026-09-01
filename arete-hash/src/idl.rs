@@ -724,6 +724,15 @@ fn idl_type_to_rust_string(idl_type: &IdlType) -> String {
             idl_type_to_rust_string(&hash_map.hash_map.0),
             idl_type_to_rust_string(&hash_map.hash_map.1)
         ),
+        IdlType::Tuple(tuple) => format!(
+            "({})",
+            tuple
+                .tuple
+                .iter()
+                .map(idl_type_to_rust_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         IdlType::Defined(defined) => match &defined.defined {
             IdlTypeDefinedInner::Named { name } => name.clone(),
             IdlTypeDefinedInner::Simple(simple) => simple.clone(),

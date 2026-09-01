@@ -48,6 +48,15 @@ pub fn to_rust_type_string(idl_type: &IdlType) -> String {
             let val_type = to_rust_type_string(&hm.hash_map.1);
             format!("std::collections::HashMap<{}, {}>", key_type, val_type)
         }
+        IdlType::Tuple(tuple) => format!(
+            "({})",
+            tuple
+                .tuple
+                .iter()
+                .map(to_rust_type_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -118,6 +127,15 @@ pub fn to_rust_type_string_bytemuck(idl_type: &IdlType) -> String {
             let val_type = to_rust_type_string_bytemuck(&hm.hash_map.1);
             format!("std::collections::HashMap<{}, {}>", key_type, val_type)
         }
+        IdlType::Tuple(tuple) => format!(
+            "({})",
+            tuple
+                .tuple
+                .iter()
+                .map(to_rust_type_string_bytemuck)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 

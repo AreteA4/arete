@@ -17,10 +17,10 @@ pub mod ore {
     pub const PROGRAM_ID: &str = "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv";
 
     /// Content hash of the exact program specification captured at generation time.
-    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:fe539d6dbef9a3df17c40c97090ce8bd4608e90ef65bb665f8f72e693aa8fd0e";
+    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:15f2e0292df1188828dc09afa2b8d4d1475411bf8c91815c19ae2d176647c140";
 
     /// Release identity addressing hosted account reads for this program.
-    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:27a3c47c61e0a916eb3e2dba100fbe3cc09679c4ab6e78d5997692c9f818cf49";
+    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:714754ca64a398f5b1614503d393d3179dd95ff072ac68ea6bf5342a9cf3cf7a";
 
     /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
@@ -55,6 +55,7 @@ pub mod ore {
     /// Configures or closes a miner automation account.
     /// Automation PDA seeds: ["automation", signer].
     /// Miner PDA seeds: ["miner", signer].
+    /// The declared args are the legacy `Automate` layout (41 bytes after the tag). The program first tries `AutomateV2::try_from_bytes` and falls back to `Automate`, so payloads may carry an optional 24-byte `conditions` (AutomationConditions) tail at offset 42. That tail is intentionally left unmodelled in the baseline and reported as trailing bytes; model it in the augmented spec.
     ///
     /// Codegen notes:
     /// - account `automation` degraded to user-provided (PDA 'automation': seed references account 'authority' not present in this instruction)
@@ -298,7 +299,6 @@ pub mod ore {
     /// Typed params for `claimOre`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ClaimOreParams {
-        pub bps: u64,
         /// Optional address override for the `signer` signer (defaults to the payer).
         #[serde(skip_serializing_if = "Option::is_none")]
         pub signer: Option<String>,
@@ -311,8 +311,10 @@ pub mod ore {
         pub treasury_tokens: String,
     }
 
-    /// Claims a percentage of ORE token rewards from the treasury vault.
-    /// The current instruction encodes bps as u64. Legacy empty payloads are accepted by the program as 10000 bps.
+    /// Claims ORE token rewards from the treasury vault.
+    /// The baseline payload is tag-only: upstream `ClaimORE` args are parsed with `if let Ok(args) = ClaimORE::try_from_bytes(data)` and default to DENOMINATOR_BPS (10000) when absent, so the program accepts both a 1-byte payload and a 9-byte payload.
+    /// Optional trailing arg (not modelled in the baseline): `bps: u64` little-endian at offset 1, a discretionary claim percentage in basis points; when omitted the program claims 100% (10000 bps).
+    /// Both shapes are live on mainnet, so the optional bps tail belongs in the augmented spec; declaring it here would hard-fail the tag-only variant.
     ///
     /// Codegen notes:
     /// - account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
@@ -409,9 +411,7 @@ pub mod ore {
                     is_optional: false,
                 },
             ],
-            args: vec![
-                ArgSchema { name: "bps".to_string(), ty: ArgType::U64 },
-            ],
+            args: vec![],
             errors: vec![
                 ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
                 ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },

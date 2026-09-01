@@ -1,6 +1,7 @@
 use crate::ast::*;
 use crate::typescript_instructions::{
-    dedupe_errors_by_code, normalize_seed_arg_type, split_generic,
+    dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
+    split_generic,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -661,13 +662,21 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
             let fields: Vec<String> = resolved
                 .fields
                 .iter()
-                .map(|f| {
+                .zip(Self::canonical_resolved_field_names(&resolved.fields))
+                .map(|(f, field_name)| {
                     let rust_type = self.resolved_field_to_rust(f);
-                    let serde_attr = self.serde_attr_for_resolved_field(f);
+                    let mut serde_attrs = vec![self.serde_attr_for_resolved_field(f)];
+                    let wire_name = Self::resolved_field_wire_name(f);
+                    if field_name != wire_name {
+                        serde_attrs.push(format!(
+                            "#[serde(rename = {})]",
+                            rust_string_literal(&wire_name)
+                        ));
+                    }
                     format!(
                         "    {}\n    pub {}: {},",
-                        serde_attr,
-                        to_snake_case(&f.field_name),
+                        serde_attrs.join("\n    "),
+                        field_name,
                         rust_type
                     )
                 })
@@ -679,6 +688,70 @@ pub use arete_sdk::{{ConnectionState, Arete, Stack, Update, Views}};
                 fields.join("\n")
             )
         }
+    }
+
+    /// Produce stable, distinct Rust identifiers for resolved IDL fields.
+    ///
+    /// The general snake-case helper collapses leading punctuation, so
+    /// `padding_0` and `_padding_0` otherwise become the same struct field.
+    /// Preserve leading underscores when they distinguish colliding names and
+    /// use a numeric suffix for any remaining normalization collision.
+    fn canonical_resolved_field_names(fields: &[ResolvedField]) -> Vec<String> {
+        let base_names = fields
+            .iter()
+            .map(|field| to_snake_case(field.raw_field_name()))
+            .collect::<Vec<_>>();
+        let mut base_counts = BTreeMap::<String, usize>::new();
+        for base_name in &base_names {
+            *base_counts.entry(base_name.clone()).or_default() += 1;
+        }
+
+        let mut used_names = HashSet::new();
+        fields
+            .iter()
+            .zip(base_names)
+            .map(|(field, base_name)| {
+                let leading_underscores = field
+                    .raw_field_name()
+                    .chars()
+                    .take_while(|character| *character == '_')
+                    .count();
+                let preferred = if base_counts.get(&base_name).copied().unwrap_or_default() > 1
+                    && leading_underscores > 0
+                {
+                    format!("{}{}", "_".repeat(leading_underscores), base_name)
+                } else {
+                    base_name
+                };
+
+                if used_names.insert(preferred.clone()) {
+                    return preferred;
+                }
+
+                let mut suffix = 2;
+                loop {
+                    let candidate = format!("{preferred}_{suffix}");
+                    if used_names.insert(candidate.clone()) {
+                        return candidate;
+                    }
+                    suffix += 1;
+                }
+            })
+            .collect()
+    }
+
+    /// Wire names remain snake_case but retain meaningful leading underscores.
+    fn resolved_field_wire_name(field: &ResolvedField) -> String {
+        let raw_name = field.raw_field_name();
+        let leading_underscores = raw_name
+            .chars()
+            .take_while(|character| *character == '_')
+            .count();
+        format!(
+            "{}{}",
+            "_".repeat(leading_underscores),
+            to_snake_case(raw_name)
+        )
     }
 
     fn generate_wrapper_types(&self) -> String {
@@ -1781,6 +1854,239 @@ mod tests {
     }
 
     #[test]
+    fn rust_generator_supports_path_qualified_defined_types() {
+        let qualified_name =
+            "sb_on_demand::actions::pull_feed::pull_feed_submit_response_action::Submission";
+        let emitted_name = "SbOnDemandActionsPullFeedPullFeedSubmitResponseActionSubmission";
+        assert_eq!(to_pascal_case(qualified_name), emitted_name);
+
+        let mut spec = programs_stack_spec();
+        spec.idls[0].types.push(IdlTypeDefSnapshot {
+            name: qualified_name.to_string(),
+            docs: vec![],
+            serialization: None,
+            type_def: IdlTypeDefKindSnapshot::Struct {
+                kind: "struct".to_string(),
+                fields: vec![IdlFieldSnapshot {
+                    name: "value".to_string(),
+                    type_: IdlTypeSnapshot::Simple("u64".to_string()),
+                    amount_hint: None,
+                }],
+            },
+        });
+        spec.instructions.push(InstructionDef {
+            name: "submit".to_string(),
+            discriminator: vec![7],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![instruction_arg("submission", qualified_name)],
+            errors: vec![],
+            program_id: Some(TEST_PROGRAM_ID.to_string()),
+            docs: vec![],
+        });
+        spec.entities[0].sections.push(EntitySection {
+            name: "root".to_string(),
+            fields: vec![snapshot_field("submission", qualified_name, false, false)],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+
+        let output = compile_stack_spec(spec, None).expect("qualified types should generate");
+        assert!(output
+            .types_rs
+            .contains(&format!("pub struct {emitted_name} {{")));
+        assert!(!output.types_rs.contains("::Submission"));
+        let programs = output.programs_rs.expect("program module");
+        assert!(programs.contains("pub struct SubmitParams {"));
+        assert!(programs.contains("pub submission: serde_json::Value,"));
+        assert!(programs.contains("ArgField { name: \"value\".to_string(), ty: ArgType::U64 }"));
+        assert!(!programs.contains("`submit`: arg 'submission' has unsupported type"));
+    }
+
+    #[test]
+    fn rust_generator_supports_inline_tuples_from_idl_snapshots() {
+        let mut spec = programs_stack_spec();
+        spec.idls[0].types = vec![
+            IdlTypeDefSnapshot {
+                name: "HookableLifecycleEvent".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Enum {
+                    kind: "enum".to_string(),
+                    variants: vec![
+                        IdlEnumVariantSnapshot {
+                            name: "Create".to_string(),
+                            fields: vec![],
+                        },
+                        IdlEnumVariantSnapshot {
+                            name: "Transfer".to_string(),
+                            fields: vec![],
+                        },
+                    ],
+                },
+            },
+            IdlTypeDefSnapshot {
+                name: "ExternalCheckResult".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![IdlFieldSnapshot {
+                        name: "flags".to_string(),
+                        type_: IdlTypeSnapshot::Simple("u32".to_string()),
+                        amount_hint: None,
+                    }],
+                },
+            },
+            IdlTypeDefSnapshot {
+                name: "AgentIdentityInitInfo".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![IdlFieldSnapshot {
+                        name: "lifecycleChecks".to_string(),
+                        type_: IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
+                            vec: Box::new(IdlTypeSnapshot::Tuple(IdlTupleTypeSnapshot {
+                                tuple: vec![
+                                    IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                                        defined: IdlDefinedInnerSnapshot::Named {
+                                            name: "HookableLifecycleEvent".to_string(),
+                                        },
+                                    }),
+                                    IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                                        defined: IdlDefinedInnerSnapshot::Named {
+                                            name: "ExternalCheckResult".to_string(),
+                                        },
+                                    }),
+                                ],
+                            })),
+                            length_prefix: None,
+                        }),
+                        amount_hint: None,
+                    }],
+                },
+            },
+        ];
+        spec.idls[0].instructions.push(IdlInstructionSnapshot {
+            name: "tupleThing".to_string(),
+            discriminator: vec![7],
+            discriminant: None,
+            docs: vec![],
+            accounts: vec![],
+            args: vec![
+                IdlFieldSnapshot {
+                    name: "payload".to_string(),
+                    type_: IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                        defined: IdlDefinedInnerSnapshot::Named {
+                            name: "AgentIdentityInitInfo".to_string(),
+                        },
+                    }),
+                    amount_hint: None,
+                },
+                IdlFieldSnapshot {
+                    name: "pair".to_string(),
+                    type_: IdlTypeSnapshot::Tuple(IdlTupleTypeSnapshot {
+                        tuple: vec![
+                            IdlTypeSnapshot::Simple("u8".to_string()),
+                            IdlTypeSnapshot::Simple("u16".to_string()),
+                        ],
+                    }),
+                    amount_hint: None,
+                },
+            ],
+        });
+        spec.instructions.push(InstructionDef {
+            name: "tupleThing".to_string(),
+            discriminator: vec![7],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![
+                instruction_arg("payload", "AgentIdentityInitInfo"),
+                instruction_arg("pair", "(u8, u16)"),
+            ],
+            errors: vec![],
+            program_id: Some(TEST_PROGRAM_ID.to_string()),
+            docs: vec![],
+        });
+
+        let output = compile_stack_spec(spec, None).expect("inline tuples should generate");
+        let programs = output.programs_rs.expect("program module");
+        assert!(programs.contains("pub struct TupleThingParams {"));
+        assert!(programs.contains("pub pair: serde_json::Value,"));
+        assert!(programs.contains("ArgType::Tuple(vec![ArgType::U8, ArgType::U16])"));
+        assert!(programs.contains("ArgType::Vec(Box::new(ArgType::Tuple(vec![ArgType::Enum("));
+        assert!(!programs.contains("`tupleThing`: arg 'pair' has unsupported type"));
+    }
+
+    #[test]
+    fn rust_generator_aliases_arg_account_collisions_and_pda_refs() {
+        let mut spec = programs_stack_spec();
+        spec.instructions = vec![InstructionDef {
+            name: "decompressV1".to_string(),
+            discriminator: vec![8],
+            discriminator_size: 1,
+            accounts: vec![
+                instruction_account("metadata", AccountResolution::UserProvided),
+                instruction_account(
+                    "record",
+                    AccountResolution::PdaInline {
+                        seeds: vec![PdaSeedDef::AccountRef {
+                            account_name: "metadata".to_string(),
+                        }],
+                        program_id: None,
+                        program: None,
+                    },
+                ),
+            ],
+            args: vec![instruction_arg("metadata", "u8")],
+            errors: vec![],
+            program_id: Some(TEST_PROGRAM_ID.to_string()),
+            docs: vec![],
+        }];
+
+        let output = compile_stack_spec(spec, None).expect("collision should generate");
+        let programs = output.programs_rs.expect("program module");
+        assert!(programs.contains("pub metadata: u8,"));
+        assert!(programs.contains("#[serde(rename = \"metadataAccount\")]"));
+        assert!(programs.contains("pub metadata_account: String,"));
+        assert!(programs.contains("name: \"metadataAccount\".to_string(),"));
+        assert!(programs.contains("PdaSeed::AccountRef(\"metadataAccount\".to_string())"));
+        assert!(programs.contains(
+            "account `metadata` collides with an instruction arg and is exposed as `metadataAccount`"
+        ));
+        assert!(!programs.contains("has no typed override field"));
+    }
+
+    #[test]
+    fn rust_generator_disambiguates_leading_underscore_fields() {
+        let mut metadata = snapshot_field(
+            "migrationMetadata",
+            "MeteoraDammMigrationMetadata",
+            true,
+            false,
+        );
+        metadata.resolved_type.as_mut().unwrap().fields = vec![
+            resolved_field_of("padding_0", "u8", BaseType::Integer),
+            resolved_field_of("_padding_0", "u8", BaseType::Integer),
+        ];
+        let mut entity = minimal_entity("Migration");
+        entity.sections.push(EntitySection {
+            name: "root".to_string(),
+            fields: vec![metadata],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+
+        let output = compile_stack_spec(stack_of("Migration", entity), None)
+            .expect("padding fields should generate");
+        let types = output.types_rs;
+        assert!(types.contains("pub struct MeteoraDammMigrationMetadata {"));
+        assert_eq!(types.matches("    pub padding_0: Option<u64>,").count(), 1);
+        assert_eq!(types.matches("    pub _padding_0: Option<u64>,").count(), 1);
+    }
+
+    #[test]
     fn rust_generator_emits_program_sdk_module() {
         let output = compile_stack_spec(programs_stack_spec(), None)
             .expect("rust stack generation should succeed");
@@ -1861,8 +2167,25 @@ mod tests {
 
     #[test]
     fn rust_program_compiler_emits_no_view_or_stack_shell() {
+        let mut stack = programs_stack_spec();
+        let mut metadata = snapshot_field(
+            "migrationMetadata",
+            "MeteoraDammMigrationMetadata",
+            true,
+            false,
+        );
+        metadata.resolved_type.as_mut().unwrap().fields = vec![
+            resolved_field_of("padding_0", "u8", BaseType::Integer),
+            resolved_field_of("_padding_0", "u8", BaseType::Integer),
+        ];
+        stack.entities[0].sections.push(EntitySection {
+            name: "root".to_string(),
+            fields: vec![metadata],
+            is_nested_struct: false,
+            parent_field: None,
+        });
         let output = compile_program_modules(
-            programs_stack_spec(),
+            stack,
             Some(RustStackConfig {
                 crate_name: "demo-program".to_string(),
                 sdk_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -3252,6 +3575,29 @@ struct ProgramImports {
     error_metadata: bool,
 }
 
+fn instruction_snapshot_matches(
+    instruction: &InstructionDef,
+    snapshot: &IdlInstructionSnapshot,
+) -> bool {
+    instruction.name == snapshot.name
+        && instruction.discriminator == snapshot.discriminator
+        && instruction.args.len() == snapshot.args.len()
+        && instruction
+            .args
+            .iter()
+            .zip(snapshot.args.iter())
+            .all(|(arg, snapshot_arg)| arg.name == snapshot_arg.name)
+}
+
+fn find_instruction_snapshot<'a>(
+    instruction: &InstructionDef,
+    idl: Option<&'a IdlSnapshot>,
+) -> Option<&'a IdlInstructionSnapshot> {
+    idl?.instructions
+        .iter()
+        .find(|snapshot| instruction_snapshot_matches(instruction, snapshot))
+}
+
 /// A parsed instruction argument type.
 #[derive(Debug, Clone)]
 struct RustParsedArg {
@@ -3395,7 +3741,10 @@ impl<'a> RustDefinedTypes<'a> {
                 rust_prim("ArgType::Pubkey", "String")
             }
             "bytes" => rust_prim("ArgType::Bytes", "Vec<u8>"),
-            _ => self.resolve_defined(last).unwrap_or_else(rust_unsupported),
+            _ => self
+                .resolve_defined(t)
+                .or_else(|| (last != t).then(|| self.resolve_defined(last)).flatten())
+                .unwrap_or_else(rust_unsupported),
         }
     }
 
@@ -3456,6 +3805,29 @@ impl<'a> RustDefinedTypes<'a> {
                         schema: format!(
                             "ArgType::HashMap(Box::new({}), Box::new({}))",
                             key.schema, value.schema
+                        ),
+                        param_type: "serde_json::Value".to_string(),
+                        supported: true,
+                    }
+                }
+            }
+            IdlTypeSnapshot::Tuple(tuple) => {
+                let elements = tuple
+                    .tuple
+                    .iter()
+                    .map(|element| self.parse_snapshot_type(element))
+                    .collect::<Vec<_>>();
+                if elements.iter().any(|element| !element.supported) {
+                    rust_unsupported()
+                } else {
+                    RustParsedArg {
+                        schema: format!(
+                            "ArgType::Tuple(vec![{}])",
+                            elements
+                                .iter()
+                                .map(|element| element.schema.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         ),
                         param_type: "serde_json::Value".to_string(),
                         supported: true,
@@ -3636,6 +4008,7 @@ struct MappedRustAccount {
 
 fn rust_account_meta_literal(
     acc: &InstructionAccountDef,
+    emitted_name: &str,
     resolution: &str,
     comment: Option<&str>,
 ) -> String {
@@ -3645,7 +4018,7 @@ fn rust_account_meta_literal(
     }
     out.push_str(&format!(
         "                AccountMeta {{\n                    name: {name}.to_string(),\n                    is_signer: {is_signer},\n                    is_writable: {is_writable},\n                    resolution: {resolution},\n                    is_optional: {is_optional},\n                }},",
-        name = rust_string_literal(&acc.name),
+        name = rust_string_literal(emitted_name),
         is_signer = acc.is_signer,
         is_writable = acc.is_writable,
         resolution = resolution,
@@ -3659,7 +4032,12 @@ fn map_rust_account(
     pda_lookup: &BTreeMap<&str, &PdaDefinition>,
     account_names: &HashSet<&str>,
     arg_types: &BTreeMap<&str, &str>,
+    account_name_map: &BTreeMap<String, String>,
 ) -> MappedRustAccount {
+    let emitted_name = account_name_map
+        .get(&acc.name)
+        .map(String::as_str)
+        .unwrap_or(&acc.name);
     let user_field_kind = if acc.is_optional {
         RustAccountFieldKind::Optional
     } else {
@@ -3671,8 +4049,13 @@ fn map_rust_account(
             acc.name, reason
         );
         MappedRustAccount {
-            literal: rust_account_meta_literal(acc, "AccountResolution::UserProvided", Some(&note)),
-            field: Some((acc.name.clone(), user_field_kind)),
+            literal: rust_account_meta_literal(
+                acc,
+                emitted_name,
+                "AccountResolution::UserProvided",
+                Some(&note),
+            ),
+            field: Some((emitted_name.to_string(), user_field_kind)),
             notes: vec![note],
             uses_pda: false,
         }
@@ -3680,14 +4063,20 @@ fn map_rust_account(
 
     match &acc.resolution {
         AccountResolution::Signer => MappedRustAccount {
-            literal: rust_account_meta_literal(acc, "AccountResolution::Signer", None),
-            field: Some((acc.name.clone(), RustAccountFieldKind::Signer)),
+            literal: rust_account_meta_literal(
+                acc,
+                emitted_name,
+                "AccountResolution::Signer",
+                None,
+            ),
+            field: Some((emitted_name.to_string(), RustAccountFieldKind::Signer)),
             notes: Vec::new(),
             uses_pda: false,
         },
         AccountResolution::Known { address } => MappedRustAccount {
             literal: rust_account_meta_literal(
                 acc,
+                emitted_name,
                 &format!(
                     "AccountResolution::Known({}.to_string())",
                     rust_string_literal(address)
@@ -3699,8 +4088,13 @@ fn map_rust_account(
             uses_pda: false,
         },
         AccountResolution::UserProvided => MappedRustAccount {
-            literal: rust_account_meta_literal(acc, "AccountResolution::UserProvided", None),
-            field: Some((acc.name.clone(), user_field_kind)),
+            literal: rust_account_meta_literal(
+                acc,
+                emitted_name,
+                "AccountResolution::UserProvided",
+                None,
+            ),
+            field: Some((emitted_name.to_string(), user_field_kind)),
             notes: Vec::new(),
             uses_pda: false,
         },
@@ -3715,9 +4109,15 @@ fn map_rust_account(
                         .to_string(),
                 );
             }
-            match build_rust_pda_config(seeds, program_id.as_deref(), account_names, arg_types) {
+            match build_rust_pda_config(
+                seeds,
+                program_id.as_deref(),
+                account_names,
+                arg_types,
+                account_name_map,
+            ) {
                 Ok((resolution, notes)) => MappedRustAccount {
-                    literal: rust_account_meta_literal(acc, &resolution, None),
+                    literal: rust_account_meta_literal(acc, emitted_name, &resolution, None),
                     field: None,
                     notes,
                     uses_pda: true,
@@ -3738,9 +4138,10 @@ fn map_rust_account(
                     def.program_id.as_deref(),
                     account_names,
                     arg_types,
+                    account_name_map,
                 ) {
                     Ok((resolution, notes)) => MappedRustAccount {
-                        literal: rust_account_meta_literal(acc, &resolution, None),
+                        literal: rust_account_meta_literal(acc, emitted_name, &resolution, None),
                         field: None,
                         notes,
                         uses_pda: true,
@@ -3761,6 +4162,7 @@ fn build_rust_pda_config(
     program_id: Option<&str>,
     account_names: &HashSet<&str>,
     arg_types: &BTreeMap<&str, &str>,
+    account_name_map: &BTreeMap<String, String>,
 ) -> Result<(String, Vec<String>), String> {
     let mut seed_exprs: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
@@ -3791,7 +4193,7 @@ fn build_rust_pda_config(
                 }
                 seed_exprs.push(format!(
                     "PdaSeed::AccountRef({}.to_string())",
-                    rust_string_literal(account_name)
+                    rust_string_literal(account_name_map.get(account_name).unwrap_or(account_name))
                 ));
             }
             PdaSeedDef::ArgRef { arg_name, arg_type } => {
@@ -3862,6 +4264,7 @@ struct RustInstructionBlock {
 
 fn generate_rust_instruction_block(
     instr: &InstructionDef,
+    instruction_snapshot: Option<&IdlInstructionSnapshot>,
     errors: &[IdlErrorSnapshot],
     pda_lookup: &BTreeMap<&str, &PdaDefinition>,
     parser: &mut RustDefinedTypes<'_>,
@@ -3869,8 +4272,11 @@ fn generate_rust_instruction_block(
 ) -> Result<RustInstructionBlock, String> {
     // --- Parse args; skip the whole instruction on unsupported types. ---
     let mut parsed_args: Vec<(&InstructionArgDef, RustParsedArg)> = Vec::new();
-    for arg in &instr.args {
-        let parsed = parser.parse_arg_type(&arg.arg_type);
+    for (index, arg) in instr.args.iter().enumerate() {
+        let parsed = instruction_snapshot
+            .and_then(|snapshot| snapshot.args.get(index))
+            .map(|snapshot_arg| parser.parse_snapshot_type(&snapshot_arg.type_))
+            .unwrap_or_else(|| parser.parse_arg_type(&arg.arg_type));
         if !parsed.supported {
             return Err(format!(
                 "arg '{}' has unsupported type '{}'",
@@ -3891,8 +4297,23 @@ fn generate_rust_instruction_block(
     let mut account_literals: Vec<String> = Vec::new();
     let mut account_fields: Vec<(String, RustAccountFieldKind)> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
+    let account_name_map = disambiguate_instruction_account_names(instr);
+    for (source_name, emitted_name) in &account_name_map {
+        if source_name != emitted_name {
+            notes.push(format!(
+                "account `{}` collides with an instruction arg and is exposed as `{}`",
+                source_name, emitted_name
+            ));
+        }
+    }
     for acc in &instr.accounts {
-        let mapped = map_rust_account(acc, pda_lookup, &account_names, &arg_types);
+        let mapped = map_rust_account(
+            acc,
+            pda_lookup,
+            &account_names,
+            &arg_types,
+            &account_name_map,
+        );
         account_literals.push(mapped.literal);
         if let Some(field) = mapped.field {
             account_fields.push(field);
@@ -3917,9 +4338,9 @@ fn generate_rust_instruction_block(
     let params_name = format!("{}Params", pascal);
 
     // --- Typed params struct: args first, then caller-supplied accounts.
-    // Instruction args win name collisions (mirrors the TS SDK's params
-    // precedence in `splitParams`). ---
-    let arg_name_set: HashSet<&str> = instr.args.iter().map(|a| a.name.as_str()).collect();
+    // Account collisions have already been assigned explicit aliases above;
+    // `used_field_names` remains a defensive check for Rust-normalization
+    // collisions between otherwise-distinct source names. ---
     let mut used_field_names: HashSet<String> = HashSet::new();
     let mut param_fields: Vec<String> = Vec::new();
     let mut uses_defined_types = false;
@@ -3941,13 +4362,6 @@ fn generate_rust_instruction_block(
         param_fields.push(lines.join("\n"));
     }
     for (name, kind) in &account_fields {
-        if arg_name_set.contains(name.as_str()) {
-            notes.push(format!(
-                "account `{}` shares its name with an instruction arg and has no typed override field",
-                name
-            ));
-            continue;
-        }
         let field_name = to_snake_case(name);
         if !used_field_names.insert(field_name.clone()) {
             notes.push(format!(
@@ -4372,6 +4786,7 @@ fn generate_stack_programs_rs(
             };
             match generate_rust_instruction_block(
                 instr,
+                find_instruction_snapshot(instr, idl),
                 &errors,
                 &pda_lookup,
                 &mut parser,
@@ -4566,7 +4981,7 @@ fn to_kebab_case(s: &str) -> String {
 }
 
 fn to_pascal_case(s: &str) -> String {
-    s.split(['_', '-', '.'])
+    s.split(['_', '-', '.', ':'])
         .map(|word| {
             let mut chars = word.chars();
             match chars.next() {

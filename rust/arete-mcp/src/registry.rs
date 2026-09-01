@@ -15,6 +15,11 @@
 //! set to include global stacks for an authenticated caller. Absence of a key
 //! is never an error here — it just means you see the public set.
 //!
+//! The **knowledge** endpoints (`/api/registry/knowledge/*`) are the one
+//! exception: they require API-key auth on every route, so those methods fail
+//! up front with an actionable error (pointing at `a4 auth login`) when no key
+//! resolves, instead of sending a request that can only come back 401.
+//!
 //! Responses are proxied through as raw JSON rather than being reshaped into
 //! local structs. The registry's payloads are the contract the CLI and docs
 //! already describe, and re-modelling them here would add a second place to
@@ -110,6 +115,55 @@ impl RegistryClient {
             .await
     }
 
+    // ── Knowledge endpoints (API key required on every route) ───────────────
+
+    /// The concept and category vocabularies of the knowledge layer.
+    pub async fn knowledge_vocabulary(&self) -> Result<String> {
+        self.get_knowledge("/api/registry/knowledge/vocabulary")
+            .await
+    }
+
+    /// Intent search across protocols, programs, stacks, and recipes. At
+    /// least one of `query`/`concept`/`category` is required; that is
+    /// validated here, before any credential is resolved or request sent.
+    pub async fn knowledge_search(
+        &self,
+        query: Option<&str>,
+        concept: Option<&str>,
+        category: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<String> {
+        let path = knowledge_search_path(query, concept, category, limit)?;
+        self.get_knowledge(&path).await
+    }
+
+    /// Curated knowledge for one protocol by slug.
+    pub async fn knowledge_protocol(&self, protocol: &str) -> Result<String> {
+        let slug = path_segment(protocol, "protocol")?;
+        self.get_knowledge(&format!("/api/registry/knowledge/protocols/{slug}"))
+            .await
+    }
+
+    /// Curated annotations for one program by slug. `section` defaults to
+    /// `summary` server-side; the accepted values are validated here so a
+    /// typo fails with the full list instead of a confusing 400.
+    pub async fn knowledge_program(&self, program: &str, section: Option<&str>) -> Result<String> {
+        let slug = path_segment(program, "program")?;
+        let mut path = format!("/api/registry/knowledge/programs/{slug}");
+        if let Some(section) = validate_knowledge_section(section)? {
+            path.push_str("?section=");
+            path.push_str(section);
+        }
+        self.get_knowledge(&path).await
+    }
+
+    /// One cross-protocol recipe by slug.
+    pub async fn knowledge_recipe(&self, recipe: &str) -> Result<String> {
+        let slug = path_segment(recipe, "recipe")?;
+        self.get_knowledge(&format!("/api/registry/knowledge/recipes/{slug}"))
+            .await
+    }
+
     /// Returns the response body verbatim rather than a parsed [`Value`].
     ///
     /// Two reasons, and both are contract-level. The body is already bounded by
@@ -123,9 +177,6 @@ impl RegistryClient {
     /// usefully, and agents comparing a hash-relevant artifact against the CLI
     /// would see a body the platform never sent.
     async fn get(&self, path: &str) -> Result<String> {
-        let url = format!("{}{path}", self.base_url);
-        let mut request = self.http.get(&url);
-
         // Best-effort auth, but only ever to an Arete origin. `ARETE_API_URL` can
         // point anywhere, and `ARETE_API_KEY` (unlike the credentials file, which
         // is keyed by API URL) is not scoped to a destination — so attaching it
@@ -139,12 +190,36 @@ impl RegistryClient {
         // The empty target passed to `resolve` keeps a missing key non-fatal — it
         // is a hosted *stack* URL that makes absence an error, which is a `connect`
         // concern, not ours.
-        if is_arete_origin(&self.base_url) {
-            if let Ok(resolved) = credentials::resolve(None, "") {
-                if let Some(key) = resolved.key {
-                    request = request.bearer_auth(key);
-                }
-            }
+        let key = if is_arete_origin(&self.base_url) {
+            credentials::resolve(None, "")
+                .ok()
+                .and_then(|resolved| resolved.key)
+        } else {
+            None
+        };
+        self.send(path, key).await
+    }
+
+    /// Like [`RegistryClient::get`], but for the knowledge routes, where auth
+    /// is mandatory: a missing key fails here with an actionable message
+    /// instead of producing a bare 401 from the platform. The same
+    /// [`is_arete_origin`] allowlist applies — a key is never sent to an
+    /// unrecognised host, and for these routes that is a hard error rather
+    /// than a silent downgrade, because unauthenticated requests cannot
+    /// succeed.
+    async fn get_knowledge(&self, path: &str) -> Result<String> {
+        let resolved = credentials::resolve(None, "")
+            .ok()
+            .and_then(|resolved| resolved.key);
+        let key = knowledge_key(&self.base_url, resolved)?;
+        self.send(path, Some(key)).await
+    }
+
+    async fn send(&self, path: &str, key: Option<String>) -> Result<String> {
+        let url = format!("{}{path}", self.base_url);
+        let mut request = self.http.get(&url);
+        if let Some(key) = key {
+            request = request.bearer_auth(key);
         }
 
         let response = request
@@ -259,6 +334,101 @@ fn is_arete_origin(base_url: &str) -> bool {
         "https" => loopback || host == "arete.run" || host.ends_with(".arete.run"),
         _ => false,
     }
+}
+
+/// Sections accepted by the program-knowledge route, mirroring
+/// `GET /api/registry/knowledge/programs/{slug}?section=...`. The server
+/// defaults to `summary`; sections exist to keep responses under the
+/// [`MAX_RESPONSE_BYTES`] cap.
+const KNOWLEDGE_SECTIONS: [&str; 4] = ["summary", "instructions", "accounts", "surface"];
+
+/// Validate the `section` argument for [`RegistryClient::knowledge_program`].
+/// `None` and empty/whitespace strings mean "server default" and pass through
+/// as `None`; anything else must be one of [`KNOWLEDGE_SECTIONS`].
+fn validate_knowledge_section(section: Option<&str>) -> Result<Option<&str>> {
+    match section.map(str::trim) {
+        None => Ok(None),
+        Some("") => Ok(None),
+        Some(section) if KNOWLEDGE_SECTIONS.contains(&section) => Ok(Some(section)),
+        Some(other) => Err(anyhow!(
+            "`section` must be one of: {}. Got `{other}`.",
+            KNOWLEDGE_SECTIONS.join(", ")
+        )),
+    }
+}
+
+/// Build the path-and-query for a knowledge search.
+///
+/// At least one of the three filters is required — the platform rejects a
+/// bare search, and failing client-side produces an error that tells the
+/// agent what to add instead of a 400. Slug filters go through
+/// [`path_segment`]: they land in the query string rather than the path, so
+/// traversal is not the concern, but a "slug" containing `/` or `?` means the
+/// caller confused a slug with a path or URL, and the shared validation says
+/// so. The free-text `query` is percent-encoded, not validated — any text is
+/// legitimate there.
+fn knowledge_search_path(
+    query: Option<&str>,
+    concept: Option<&str>,
+    category: Option<&str>,
+    limit: Option<usize>,
+) -> Result<String> {
+    let query = query.map(str::trim).filter(|s| !s.is_empty());
+    let concept = concept.map(str::trim).filter(|s| !s.is_empty());
+    let category = category.map(str::trim).filter(|s| !s.is_empty());
+    if query.is_none() && concept.is_none() && category.is_none() {
+        return Err(anyhow!(
+            "knowledge search requires at least one of `query`, `concept`, or `category`. \
+             Pass a free-text intent as `query` (e.g. `monitor swaps`), or use \
+             `list_concepts` to discover concept and category slugs."
+        ));
+    }
+    let concept = concept.map(|c| path_segment(c, "concept")).transpose()?;
+    let category = category.map(|c| path_segment(c, "category")).transpose()?;
+
+    // A throwaway URL does the query-string encoding; only its path and query
+    // are kept, so the placeholder host never appears in a request.
+    let mut url = reqwest::Url::parse("https://placeholder.invalid/api/registry/knowledge/search")
+        .expect("static URL parses");
+    {
+        let mut pairs = url.query_pairs_mut();
+        if let Some(q) = query {
+            pairs.append_pair("q", q);
+        }
+        if let Some(c) = &concept {
+            pairs.append_pair("concept", c);
+        }
+        if let Some(c) = &category {
+            pairs.append_pair("category", c);
+        }
+        if let Some(l) = limit {
+            pairs.append_pair("limit", &l.to_string());
+        }
+    }
+    Ok(format!("{}?{}", url.path(), url.query().unwrap_or_default()))
+}
+
+/// Decide the credential for a knowledge request, given the resolved key (if
+/// any). Split from [`RegistryClient::get_knowledge`] so the two failure
+/// modes — foreign origin, and no key anywhere — are unit-testable without
+/// touching process-global credential state.
+fn knowledge_key(base_url: &str, resolved: Option<String>) -> Result<String> {
+    if !is_arete_origin(base_url) {
+        return Err(anyhow!(
+            "the knowledge endpoints require an API key, but `{base_url}` is not a \
+             recognised Arete origin (or is a non-loopback host over plain HTTP), so no \
+             credential will be sent to it. Point `ARETE_API_URL` at https://api.arete.run \
+             or a loopback control plane."
+        ));
+    }
+    resolved.ok_or_else(|| {
+        anyhow!(
+            "no Arete API key found — the knowledge endpoints require authentication. \
+             Run `a4 auth login`, or set `ARETE_API_KEY=a4_sk_...` (or legacy `hsk_...`) \
+             in the MCP server environment (e.g. `claude mcp add -e ARETE_API_KEY=...` \
+             or the `env` block of `.vscode/mcp.json`)."
+        )
+    })
 }
 
 /// Validate a value destined for a URL path segment.
@@ -387,6 +557,147 @@ mod tests {
         let client = RegistryClient::new();
         let err = client.artifact("not-a-kind", "abc").await.unwrap_err();
         assert!(err.to_string().contains("unknown artifact kind"));
+    }
+
+    // ── Knowledge routes ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn knowledge_routes_reject_path_traversal_shapes() {
+        // Same guard, same reasoning as `rejects_path_traversal_shapes`: `\`
+        // is a path separator to the WHATWG parser and `..` normalizes away,
+        // so an unvalidated slug walks out of `/api/registry/knowledge/` —
+        // and these requests always carry a bearer token, which makes the
+        // escape strictly worse than on the public routes. Validation fires
+        // before credential resolution, so no network and no key is needed.
+        let client = RegistryClient::new();
+        for bad in [
+            r"..\..\..\agents\me",
+            "meteora/../../agents",
+            "..",
+            ".",
+            "a slug",
+            "",
+        ] {
+            assert!(
+                client.knowledge_protocol(bad).await.is_err(),
+                "expected protocol slug {bad:?} to be refused"
+            );
+            assert!(
+                client.knowledge_program(bad, None).await.is_err(),
+                "expected program slug {bad:?} to be refused"
+            );
+            assert!(
+                client.knowledge_recipe(bad).await.is_err(),
+                "expected recipe slug {bad:?} to be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn knowledge_section_accepts_the_contract_values_and_defaults() {
+        for section in KNOWLEDGE_SECTIONS {
+            assert_eq!(
+                validate_knowledge_section(Some(section)).unwrap(),
+                Some(section)
+            );
+        }
+        // Absent and blank both mean "server default" (summary).
+        assert_eq!(validate_knowledge_section(None).unwrap(), None);
+        assert_eq!(validate_knowledge_section(Some("")).unwrap(), None);
+        assert_eq!(validate_knowledge_section(Some("  ")).unwrap(), None);
+        assert_eq!(
+            validate_knowledge_section(Some(" surface ")).unwrap(),
+            Some("surface")
+        );
+    }
+
+    #[test]
+    fn knowledge_section_rejects_unknown_values_with_the_full_list() {
+        let err = validate_knowledge_section(Some("idl"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be one of"), "{err}");
+        for section in KNOWLEDGE_SECTIONS {
+            assert!(err.contains(section), "error should list `{section}`: {err}");
+        }
+    }
+
+    #[test]
+    fn knowledge_search_requires_at_least_one_filter() {
+        for (query, concept, category) in [
+            (None, None, None),
+            (Some(""), Some("   "), None),
+            (Some("   "), None, Some("")),
+        ] {
+            let err = knowledge_search_path(query, concept, category, Some(5))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("requires at least one of"), "{err}");
+            assert!(err.contains("list_concepts"), "{err}");
+        }
+    }
+
+    #[test]
+    fn knowledge_search_encodes_free_text_and_keeps_slugs_bare() {
+        let path =
+            knowledge_search_path(Some("monitor swaps"), Some("swap"), Some("dex"), Some(10))
+                .unwrap();
+        assert_eq!(
+            path,
+            "/api/registry/knowledge/search?q=monitor+swaps&concept=swap&category=dex&limit=10"
+        );
+
+        // Single-filter forms stay minimal.
+        assert_eq!(
+            knowledge_search_path(None, Some("swap"), None, None).unwrap(),
+            "/api/registry/knowledge/search?concept=swap"
+        );
+    }
+
+    #[test]
+    fn knowledge_search_free_text_may_contain_anything_but_slugs_may_not() {
+        // `query` is percent-encoded, so URL metacharacters cannot restructure
+        // the request...
+        let path = knowledge_search_path(Some("a&b=c?d#e"), None, None, None).unwrap();
+        assert_eq!(
+            path,
+            "/api/registry/knowledge/search?q=a%26b%3Dc%3Fd%23e"
+        );
+        // ...while slug filters get the shared bare-reference validation.
+        assert!(knowledge_search_path(None, Some("swap/../x"), None, None).is_err());
+        assert!(knowledge_search_path(None, None, Some("dex?x=1"), None).is_err());
+    }
+
+    #[test]
+    fn knowledge_key_absence_is_an_actionable_error() {
+        let err = knowledge_key("https://api.arete.run", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("a4 auth login"), "{err}");
+        assert!(err.contains("ARETE_API_KEY"), "{err}");
+    }
+
+    #[test]
+    fn knowledge_key_refuses_foreign_origins_even_with_a_key() {
+        // A resolved key must not soften the origin allowlist — that is the
+        // exact leak the allowlist exists to prevent.
+        let err = knowledge_key("https://evil.example", Some("a4_sk_x".into()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a"), "{err}");
+        assert!(err.contains("ARETE_API_URL"), "{err}");
+    }
+
+    #[test]
+    fn knowledge_key_passes_through_for_arete_origins() {
+        assert_eq!(
+            knowledge_key("https://api.arete.run", Some("a4_sk_x".into())).unwrap(),
+            "a4_sk_x"
+        );
+        assert_eq!(
+            knowledge_key("http://localhost:3000", Some("a4_sk_x".into())).unwrap(),
+            "a4_sk_x"
+        );
     }
 
     #[test]

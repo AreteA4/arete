@@ -295,7 +295,15 @@ pub enum IdlTypeSnapshot {
     Option(IdlOptionTypeSnapshot),
     Vec(IdlVecTypeSnapshot),
     HashMap(IdlHashMapTypeSnapshot),
+    Tuple(IdlTupleTypeSnapshot),
     Defined(IdlDefinedTypeSnapshot),
+}
+
+/// Inline tuple type snapshot: `{"tuple": [..]}`. Borsh encodes tuples as
+/// their elements in order, so this preserves full decode semantics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdlTupleTypeSnapshot {
+    pub tuple: Vec<IdlTypeSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -663,6 +671,9 @@ fn snapshot_type(idl_type: &crate::types::IdlType) -> IdlTypeSnapshot {
                 ),
             })
         }
+        crate::types::IdlType::Tuple(tuple) => IdlTypeSnapshot::Tuple(IdlTupleTypeSnapshot {
+            tuple: tuple.tuple.iter().map(snapshot_type).collect(),
+        }),
     }
 }
 

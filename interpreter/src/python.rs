@@ -19,7 +19,8 @@
 
 use crate::ast::*;
 use crate::typescript_instructions::{
-    dedupe_errors_by_code, normalize_seed_arg_type, split_generic,
+    dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
+    split_generic,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -872,9 +873,8 @@ fn py_field_for(
     }
 }
 
-fn py_field_for_resolved(field: &ResolvedField) -> PyField {
-    let name = to_snake_case(&field.field_name);
-    let wire = name.clone();
+fn py_field_for_resolved(field: &ResolvedField, name: String) -> PyField {
+    let wire = resolved_field_wire_name(field);
     let (annotation, conversion) = py_scalar_field_shape(
         &field.base_type,
         field.effective_integer_kind(),
@@ -888,6 +888,70 @@ fn py_field_for_resolved(field: &ResolvedField) -> PyField {
         conversion,
         required: !field.is_optional,
     }
+}
+
+/// Produce stable, distinct Python attribute names for resolved IDL fields.
+///
+/// The general snake-case helper intentionally collapses punctuation, which
+/// also makes `padding_0` and `_padding_0` collide. Preserve leading
+/// underscores when they distinguish otherwise-identical names, then use a
+/// numeric suffix as a total fallback for any remaining normalization clash.
+fn canonical_resolved_field_names(fields: &[ResolvedField]) -> Vec<String> {
+    let base_names = fields
+        .iter()
+        .map(|field| to_snake_case(field.raw_field_name()))
+        .collect::<Vec<_>>();
+    let mut base_counts = BTreeMap::<String, usize>::new();
+    for base_name in &base_names {
+        *base_counts.entry(base_name.clone()).or_default() += 1;
+    }
+
+    let mut used_names = HashSet::new();
+    fields
+        .iter()
+        .zip(base_names)
+        .map(|(field, base_name)| {
+            let leading_underscores = field
+                .raw_field_name()
+                .chars()
+                .take_while(|character| *character == '_')
+                .count();
+            let preferred = if base_counts.get(&base_name).copied().unwrap_or_default() > 1
+                && leading_underscores > 0
+            {
+                format!("{}{}", "_".repeat(leading_underscores), base_name)
+            } else {
+                base_name
+            };
+
+            if used_names.insert(preferred.clone()) {
+                return preferred;
+            }
+
+            let mut suffix = 2;
+            loop {
+                let candidate = format!("{preferred}_{suffix}");
+                if used_names.insert(candidate.clone()) {
+                    return candidate;
+                }
+                suffix += 1;
+            }
+        })
+        .collect()
+}
+
+/// Wire names remain snake_case but retain meaningful leading underscores.
+fn resolved_field_wire_name(field: &ResolvedField) -> String {
+    let raw_name = field.raw_field_name();
+    let leading_underscores = raw_name
+        .chars()
+        .take_while(|character| *character == '_')
+        .count();
+    format!(
+        "{}{}",
+        "_".repeat(leading_underscores),
+        to_snake_case(raw_name)
+    )
 }
 
 fn render_dataclass(name: &str, doc: &str, fields: &[PyField]) -> String {
@@ -1255,8 +1319,12 @@ fn generate_stack_models_py(
                     exports.push(emitted_name);
                     continue;
                 }
-                let fields: Vec<PyField> =
-                    resolved.fields.iter().map(py_field_for_resolved).collect();
+                let fields: Vec<PyField> = resolved
+                    .fields
+                    .iter()
+                    .zip(canonical_resolved_field_names(&resolved.fields))
+                    .map(|(field, name)| py_field_for_resolved(field, name))
+                    .collect();
                 let snake = to_snake_case(&emitted_name);
                 let from_wire = format!("{snake}_from_wire");
                 let patch = format!("{snake}_patch_from_wire");
@@ -1689,6 +1757,29 @@ struct PythonProgramImports {
     wire_read_descriptor: bool,
 }
 
+fn instruction_snapshot_matches(
+    instruction: &InstructionDef,
+    snapshot: &IdlInstructionSnapshot,
+) -> bool {
+    instruction.name == snapshot.name
+        && instruction.discriminator == snapshot.discriminator
+        && instruction.args.len() == snapshot.args.len()
+        && instruction
+            .args
+            .iter()
+            .zip(snapshot.args.iter())
+            .all(|(arg, snapshot_arg)| arg.name == snapshot_arg.name)
+}
+
+fn find_instruction_snapshot<'a>(
+    instruction: &InstructionDef,
+    idl: Option<&'a IdlSnapshot>,
+) -> Option<&'a IdlInstructionSnapshot> {
+    idl?.instructions
+        .iter()
+        .find(|snapshot| instruction_snapshot_matches(instruction, snapshot))
+}
+
 /// A parsed instruction argument type.
 #[derive(Debug, Clone)]
 struct PyParsedArg {
@@ -1809,7 +1900,10 @@ impl<'a> PythonDefinedTypes<'a> {
             "String" | "string" | "str" => py_prim("string", "str"),
             "Pubkey" | "pubkey" | "PublicKey" | "publicKey" => py_prim("pubkey", "str"),
             "bytes" => py_prim("bytes", "bytes"),
-            _ => self.resolve_defined(last).unwrap_or_else(py_unsupported),
+            _ => self
+                .resolve_defined(t)
+                .or_else(|| (last != t).then(|| self.resolve_defined(last)).flatten())
+                .unwrap_or_else(py_unsupported),
         }
     }
 
@@ -1867,6 +1961,29 @@ impl<'a> PythonDefinedTypes<'a> {
                 } else {
                     PyParsedArg {
                         schema: format!("{{\"hashMap\": ({}, {})}}", key.schema, value.schema),
+                        param_type: "Any".to_string(),
+                        supported: true,
+                    }
+                }
+            }
+            IdlTypeSnapshot::Tuple(tuple) => {
+                let elements = tuple
+                    .tuple
+                    .iter()
+                    .map(|element| self.parse_snapshot_type(element))
+                    .collect::<Vec<_>>();
+                if elements.iter().any(|element| !element.supported) {
+                    py_unsupported()
+                } else {
+                    PyParsedArg {
+                        schema: format!(
+                            "{{\"tuple\": [{}]}}",
+                            elements
+                                .iter()
+                                .map(|element| element.schema.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
                         param_type: "Any".to_string(),
                         supported: true,
                     }
@@ -2031,6 +2148,7 @@ struct MappedPyAccount {
 
 fn py_account_meta_literal(
     acc: &InstructionAccountDef,
+    emitted_name: &str,
     resolution: &str,
     comment: Option<&str>,
 ) -> String {
@@ -2040,7 +2158,7 @@ fn py_account_meta_literal(
     }
     out.push_str(&format!(
         "            AccountMeta(\n                name={name},\n                is_signer={is_signer},\n                is_writable={is_writable},\n                resolution={resolution},\n                is_optional={is_optional},\n            ),",
-        name = py_string_literal(&acc.name),
+        name = py_string_literal(emitted_name),
         is_signer = py_bool(acc.is_signer),
         is_writable = py_bool(acc.is_writable),
         resolution = resolution,
@@ -2054,7 +2172,12 @@ fn map_py_account(
     pda_lookup: &BTreeMap<&str, &PdaDefinition>,
     account_names: &HashSet<&str>,
     arg_types: &BTreeMap<&str, &str>,
+    account_name_map: &BTreeMap<String, String>,
 ) -> MappedPyAccount {
+    let emitted_name = account_name_map
+        .get(&acc.name)
+        .map(String::as_str)
+        .unwrap_or(&acc.name);
     let user_field_kind = if acc.is_optional {
         PyAccountFieldKind::Optional
     } else {
@@ -2066,8 +2189,8 @@ fn map_py_account(
             acc.name, reason
         );
         MappedPyAccount {
-            literal: py_account_meta_literal(acc, "UserProvided()", Some(&note)),
-            field: Some((acc.name.clone(), user_field_kind)),
+            literal: py_account_meta_literal(acc, emitted_name, "UserProvided()", Some(&note)),
+            field: Some((emitted_name.to_string(), user_field_kind)),
             notes: vec![note],
             uses_pda: false,
         }
@@ -2075,14 +2198,15 @@ fn map_py_account(
 
     match &acc.resolution {
         AccountResolution::Signer => MappedPyAccount {
-            literal: py_account_meta_literal(acc, "Signer()", None),
-            field: Some((acc.name.clone(), PyAccountFieldKind::Signer)),
+            literal: py_account_meta_literal(acc, emitted_name, "Signer()", None),
+            field: Some((emitted_name.to_string(), PyAccountFieldKind::Signer)),
             notes: Vec::new(),
             uses_pda: false,
         },
         AccountResolution::Known { address } => MappedPyAccount {
             literal: py_account_meta_literal(
                 acc,
+                emitted_name,
                 &format!("Known({})", py_string_literal(address)),
                 None,
             ),
@@ -2091,8 +2215,8 @@ fn map_py_account(
             uses_pda: false,
         },
         AccountResolution::UserProvided => MappedPyAccount {
-            literal: py_account_meta_literal(acc, "UserProvided()", None),
-            field: Some((acc.name.clone(), user_field_kind)),
+            literal: py_account_meta_literal(acc, emitted_name, "UserProvided()", None),
+            field: Some((emitted_name.to_string(), user_field_kind)),
             notes: Vec::new(),
             uses_pda: false,
         },
@@ -2107,9 +2231,20 @@ fn map_py_account(
                         .to_string(),
                 );
             }
-            match build_py_pda_config(seeds, program_id.as_deref(), account_names, arg_types) {
+            match build_py_pda_config(
+                seeds,
+                program_id.as_deref(),
+                account_names,
+                arg_types,
+                account_name_map,
+            ) {
                 Ok((config, notes)) => MappedPyAccount {
-                    literal: py_account_meta_literal(acc, &format!("Pda({config})"), None),
+                    literal: py_account_meta_literal(
+                        acc,
+                        emitted_name,
+                        &format!("Pda({config})"),
+                        None,
+                    ),
                     field: None,
                     notes,
                     uses_pda: true,
@@ -2130,9 +2265,15 @@ fn map_py_account(
                     def.program_id.as_deref(),
                     account_names,
                     arg_types,
+                    account_name_map,
                 ) {
                     Ok((config, notes)) => MappedPyAccount {
-                        literal: py_account_meta_literal(acc, &format!("Pda({config})"), None),
+                        literal: py_account_meta_literal(
+                            acc,
+                            emitted_name,
+                            &format!("Pda({config})"),
+                            None,
+                        ),
                         field: None,
                         notes,
                         uses_pda: true,
@@ -2184,6 +2325,7 @@ fn build_py_pda_config(
     program_id: Option<&str>,
     account_names: &HashSet<&str>,
     arg_types: &BTreeMap<&str, &str>,
+    account_name_map: &BTreeMap<String, String>,
 ) -> Result<(String, Vec<String>), String> {
     let mut seed_exprs: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
@@ -2205,7 +2347,10 @@ fn build_py_pda_config(
                         account_name
                     ));
                 }
-                seed_exprs.push(py_seed_expr(seed));
+                seed_exprs.push(format!(
+                    "AccountRefSeed({})",
+                    py_string_literal(account_name_map.get(account_name).unwrap_or(account_name))
+                ));
             }
             PdaSeedDef::ArgRef { arg_name, arg_type } => {
                 let arg_root = arg_name.split('.').next().unwrap_or(arg_name.as_str());
@@ -2272,6 +2417,7 @@ struct PyInstructionBlock {
 #[allow(clippy::too_many_arguments)]
 fn generate_py_instruction_block(
     instr: &InstructionDef,
+    instruction_snapshot: Option<&IdlInstructionSnapshot>,
     errors_expr: &str,
     has_program_errors: bool,
     pda_lookup: &BTreeMap<&str, &PdaDefinition>,
@@ -2282,8 +2428,11 @@ fn generate_py_instruction_block(
 ) -> Result<PyInstructionBlock, String> {
     // --- Parse args; skip the whole instruction on unsupported types. ---
     let mut parsed_args: Vec<(&InstructionArgDef, PyParsedArg)> = Vec::new();
-    for arg in &instr.args {
-        let parsed = parser.parse_arg_type(&arg.arg_type);
+    for (index, arg) in instr.args.iter().enumerate() {
+        let parsed = instruction_snapshot
+            .and_then(|snapshot| snapshot.args.get(index))
+            .map(|snapshot_arg| parser.parse_snapshot_type(&snapshot_arg.type_))
+            .unwrap_or_else(|| parser.parse_arg_type(&arg.arg_type));
         if !parsed.supported {
             return Err(format!(
                 "arg '{}' has unsupported type '{}'",
@@ -2304,8 +2453,23 @@ fn generate_py_instruction_block(
     let mut account_literals: Vec<String> = Vec::new();
     let mut account_fields: Vec<(String, PyAccountFieldKind)> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
+    let account_name_map = disambiguate_instruction_account_names(instr);
+    for (source_name, emitted_name) in &account_name_map {
+        if source_name != emitted_name {
+            notes.push(format!(
+                "account `{}` collides with an instruction arg and is exposed as `{}`",
+                source_name, emitted_name
+            ));
+        }
+    }
     for acc in &instr.accounts {
-        let mapped = map_py_account(acc, pda_lookup, &account_names, &arg_types);
+        let mapped = map_py_account(
+            acc,
+            pda_lookup,
+            &account_names,
+            &arg_types,
+            &account_name_map,
+        );
         account_literals.push(mapped.literal);
         if let Some(field) = mapped.field {
             account_fields.push(field);
@@ -2332,10 +2496,9 @@ fn generate_py_instruction_block(
     let params_name = format!("{}{}Params", pascal_prefix, to_pascal_case(&instr.name));
 
     // --- Typed params TypedDict: args first, then caller-supplied accounts.
-    // Keys are the exact wire names (the runtime's fail-closed
-    // `InstructionHandler.build` matches them verbatim). Instruction args win
-    // name collisions (mirrors TS `splitParams` precedence). ---
-    let arg_name_set: HashSet<&str> = instr.args.iter().map(|a| a.name.as_str()).collect();
+    // Keys are runtime parameter names (normally the IDL wire names; account
+    // collisions have already been assigned explicit aliases above). The
+    // fail-closed `InstructionHandler.build` matches them verbatim. ---
     let mut used_keys: HashSet<String> = HashSet::new();
     let mut param_entries: Vec<String> = Vec::new();
     for (arg, parsed) in &parsed_args {
@@ -2349,13 +2512,6 @@ fn generate_py_instruction_block(
         ));
     }
     for (name, kind) in &account_fields {
-        if arg_name_set.contains(name.as_str()) {
-            notes.push(format!(
-                "account `{}` shares its name with an instruction arg and has no typed override field",
-                name
-            ));
-            continue;
-        }
         if !used_keys.insert(name.clone()) {
             notes.push(format!(
                 "account `{}` collides with another params field and has no typed override field",
@@ -2406,7 +2562,7 @@ fn generate_py_instruction_block(
     }
     doc_lines.push(String::new());
     doc_lines.push(format!(
-        "Pure (no network). Params are IDL wire shape (see `{params_name}`);"
+        "Pure (no network). Params use IDL wire names plus documented account aliases (see `{params_name}`);"
     ));
     doc_lines.push("unknown params fail closed.".to_string());
     doc_lines.push(String::new());
@@ -2689,6 +2845,7 @@ fn generate_stack_programs_py(
             };
             match generate_py_instruction_block(
                 instr,
+                find_instruction_snapshot(instr, idl),
                 &errors_expr,
                 !program_errors.is_empty(),
                 &pda_lookup,
@@ -3126,7 +3283,7 @@ fn to_kebab_case(s: &str) -> String {
 }
 
 fn to_pascal_case(s: &str) -> String {
-    s.split(['_', '-', '.'])
+    s.split(['_', '-', '.', ':'])
         .map(|word| {
             let mut chars = word.chars();
             match chars.next() {
@@ -3348,6 +3505,273 @@ mod tests {
             }],
             content_hash: None,
         }
+    }
+
+    #[test]
+    fn python_generator_supports_path_qualified_defined_types() {
+        let qualified_name =
+            "sb_on_demand::actions::pull_feed::pull_feed_submit_response_action::Submission";
+        let emitted_name = "SbOnDemandActionsPullFeedPullFeedSubmitResponseActionSubmission";
+        assert_eq!(to_pascal_case(qualified_name), emitted_name);
+
+        let mut spec = programs_stack_spec();
+        spec.idls[0].types.push(IdlTypeDefSnapshot {
+            name: qualified_name.to_string(),
+            docs: vec![],
+            serialization: None,
+            type_def: IdlTypeDefKindSnapshot::Struct {
+                kind: "struct".to_string(),
+                fields: vec![IdlFieldSnapshot {
+                    name: "value".to_string(),
+                    type_: IdlTypeSnapshot::Simple("u64".to_string()),
+                    amount_hint: None,
+                }],
+            },
+        });
+        spec.instructions.push(InstructionDef {
+            name: "submit".to_string(),
+            discriminator: vec![7],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![instruction_arg("submission", qualified_name)],
+            errors: vec![],
+            program_id: Some(TEST_PROGRAM_ID.to_string()),
+            docs: vec![],
+        });
+        spec.entities[0].sections.push(EntitySection {
+            name: "root".to_string(),
+            fields: vec![snapshot_field("submission", qualified_name, false, false)],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+
+        let output = compile_stack_spec(spec, None).expect("qualified types should generate");
+        assert!(output.models_py.contains(&format!("class {emitted_name}:")));
+        assert!(!output.models_py.contains("class SbOnDemand::"));
+        let programs = output.programs_py.expect("program module");
+        assert!(programs.contains("DemoSubmitParams = TypedDict("));
+        assert!(programs.contains("\"submission\": Any,"));
+        assert!(programs.contains("{\"name\": \"value\", \"type\": \"u64\"}"));
+        assert!(!programs.contains("`submit`: arg 'submission' has unsupported type"));
+    }
+
+    #[test]
+    fn python_generator_supports_inline_tuples_from_idl_snapshots() {
+        let mut spec = programs_stack_spec();
+        spec.idls[0].types = vec![
+            IdlTypeDefSnapshot {
+                name: "HookableLifecycleEvent".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Enum {
+                    kind: "enum".to_string(),
+                    variants: vec![
+                        IdlEnumVariantSnapshot {
+                            name: "Create".to_string(),
+                            fields: vec![],
+                        },
+                        IdlEnumVariantSnapshot {
+                            name: "Transfer".to_string(),
+                            fields: vec![],
+                        },
+                    ],
+                },
+            },
+            IdlTypeDefSnapshot {
+                name: "ExternalCheckResult".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![IdlFieldSnapshot {
+                        name: "flags".to_string(),
+                        type_: IdlTypeSnapshot::Simple("u32".to_string()),
+                        amount_hint: None,
+                    }],
+                },
+            },
+            IdlTypeDefSnapshot {
+                name: "AgentIdentityInitInfo".to_string(),
+                docs: vec![],
+                serialization: None,
+                type_def: IdlTypeDefKindSnapshot::Struct {
+                    kind: "struct".to_string(),
+                    fields: vec![IdlFieldSnapshot {
+                        name: "lifecycleChecks".to_string(),
+                        type_: IdlTypeSnapshot::Vec(IdlVecTypeSnapshot {
+                            vec: Box::new(IdlTypeSnapshot::Tuple(IdlTupleTypeSnapshot {
+                                tuple: vec![
+                                    IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                                        defined: IdlDefinedInnerSnapshot::Named {
+                                            name: "HookableLifecycleEvent".to_string(),
+                                        },
+                                    }),
+                                    IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                                        defined: IdlDefinedInnerSnapshot::Named {
+                                            name: "ExternalCheckResult".to_string(),
+                                        },
+                                    }),
+                                ],
+                            })),
+                            length_prefix: None,
+                        }),
+                        amount_hint: None,
+                    }],
+                },
+            },
+        ];
+        spec.idls[0].instructions.push(IdlInstructionSnapshot {
+            name: "tupleThing".to_string(),
+            discriminator: vec![7],
+            discriminant: None,
+            docs: vec![],
+            accounts: vec![],
+            args: vec![
+                IdlFieldSnapshot {
+                    name: "payload".to_string(),
+                    type_: IdlTypeSnapshot::Defined(IdlDefinedTypeSnapshot {
+                        defined: IdlDefinedInnerSnapshot::Named {
+                            name: "AgentIdentityInitInfo".to_string(),
+                        },
+                    }),
+                    amount_hint: None,
+                },
+                IdlFieldSnapshot {
+                    name: "pair".to_string(),
+                    type_: IdlTypeSnapshot::Tuple(IdlTupleTypeSnapshot {
+                        tuple: vec![
+                            IdlTypeSnapshot::Simple("u8".to_string()),
+                            IdlTypeSnapshot::Simple("u16".to_string()),
+                        ],
+                    }),
+                    amount_hint: None,
+                },
+            ],
+        });
+        spec.instructions.push(InstructionDef {
+            name: "tupleThing".to_string(),
+            discriminator: vec![7],
+            discriminator_size: 1,
+            accounts: vec![],
+            args: vec![
+                instruction_arg("payload", "AgentIdentityInitInfo"),
+                instruction_arg("pair", "(u8, u16)"),
+            ],
+            errors: vec![],
+            program_id: Some(TEST_PROGRAM_ID.to_string()),
+            docs: vec![],
+        });
+
+        let output = compile_stack_spec(spec, None).expect("inline tuples should generate");
+        let programs = output.programs_py.expect("program module");
+        assert!(programs.contains("DemoTupleThingParams = TypedDict("));
+        assert!(programs.contains("\"pair\": Any,"));
+        assert!(programs.contains("{\"tuple\": [\"u8\", \"u16\"]}"));
+        assert!(programs.contains(
+            "{\"vec\": {\"tuple\": [{\"enum\": [\"Create\", \"Transfer\"]}, {\"struct\":"
+        ));
+        assert!(!programs.contains("`tupleThing`: arg 'pair' has unsupported type"));
+    }
+
+    #[test]
+    fn python_generator_aliases_arg_account_collisions_and_pda_refs() {
+        let mut spec = programs_stack_spec();
+        spec.instructions = vec![InstructionDef {
+            name: "decompressV1".to_string(),
+            discriminator: vec![8],
+            discriminator_size: 1,
+            accounts: vec![
+                instruction_account("metadata", AccountResolution::UserProvided),
+                instruction_account(
+                    "record",
+                    AccountResolution::PdaInline {
+                        seeds: vec![PdaSeedDef::AccountRef {
+                            account_name: "metadata".to_string(),
+                        }],
+                        program_id: None,
+                        program: None,
+                    },
+                ),
+            ],
+            args: vec![instruction_arg("metadata", "u8")],
+            errors: vec![],
+            program_id: Some(TEST_PROGRAM_ID.to_string()),
+            docs: vec![],
+        }];
+
+        let output = compile_stack_spec(spec, None).expect("collision should generate");
+        let programs = output.programs_py.expect("program module");
+        assert!(programs.contains("\"metadata\": int,"));
+        assert!(programs.contains("\"metadataAccount\": str,"));
+        assert!(programs.contains("name=\"metadataAccount\","));
+        assert!(programs.contains("AccountRefSeed(\"metadataAccount\")"));
+        assert!(programs.contains(
+            "account `metadata` collides with an instruction arg and is exposed as `metadataAccount`"
+        ));
+        assert!(!programs.contains("has no typed override field"));
+    }
+
+    #[test]
+    fn python_generator_disambiguates_leading_underscore_fields() {
+        let mut metadata = snapshot_field(
+            "migrationMetadata",
+            "MeteoraDammMigrationMetadata",
+            true,
+            false,
+        );
+        metadata.resolved_type.as_mut().unwrap().fields = vec![
+            resolved_field("padding_0", "u8", BaseType::Integer),
+            resolved_field("_padding_0", "u8", BaseType::Integer),
+        ];
+        let mut entity = minimal_entity("Migration");
+        entity.sections.push(EntitySection {
+            name: "root".to_string(),
+            fields: vec![metadata],
+            is_nested_struct: false,
+            parent_field: None,
+        });
+
+        let output = compile_stack_spec(stack_of("Migration", entity), None)
+            .expect("padding fields should generate");
+        let models = output.models_py;
+        assert!(models.contains("class MeteoraDammMigrationMetadata:"));
+        assert_eq!(
+            models
+                .matches("    padding_0: Optional[int] = None")
+                .count(),
+            1
+        );
+        assert_eq!(
+            models
+                .matches("    _padding_0: Optional[int] = None")
+                .count(),
+            1
+        );
+        assert_eq!(models.matches("        padding_0=").count(), 1);
+        assert_eq!(models.matches("        _padding_0=").count(), 1);
+        assert!(models.contains("_require(data, \"_padding_0\", \"MeteoraDammMigrationMetadata\")"));
+
+        let path = std::env::temp_dir().join(format!(
+            "arete-python-padding-codegen-{}-{:?}.py",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, &models).expect("generated Python model should write");
+        let python = std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into());
+        let compiled = Command::new(python)
+            .args([
+                "-c",
+                "import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_text(), sys.argv[1], 'exec')",
+            ])
+            .arg(&path)
+            .output()
+            .expect("Python must be available for generated syntax checks");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            compiled.status.success(),
+            "generated padding model failed Python syntax validation:\n{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
     }
 
     #[test]

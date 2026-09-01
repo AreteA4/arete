@@ -123,7 +123,35 @@ You should see your slug, display_name, and `status: "active"`.
 
 Read https://docs.arete.run/agent.md and follow its instructions. This installs the `a4` CLI and the three Arete skill files (`arete`, `arete-consume`, `arete-build`) into your project so your downstream code work has the right context.
 
-### 4. Discover what stacks exist
+### 4. Find what serves an intent (knowledge layer)
+
+Before picking a stack or reading a program's IDL, ask the curated knowledge layer.
+It requires your API key (`a4 auth login`) and answers "which protocols, programs,
+stacks, and recipes serve this intent" — including which typed SDK operations already
+exist per program, so you never read SDK source to find method names.
+
+```bash
+a4 know search --query "monitor swaps" --json
+```
+
+Each result carries coverage flags: `read` (fetch on-chain account state), `build`
+(construct transactions), `subscribe` (stream live entities from a hosted stack).
+Pick the mode you need, then drill in:
+
+```bash
+a4 know protocol <slug> --json                          # programs + roles, related protocols, live stacks, per-concept coverage
+a4 know program <slug> --section instructions --json    # per-instruction semantics; also: accounts | surface
+a4 know program <slug> --section surface --json         # callable SDK operations with per-language bindings
+a4 know recipe <slug> --json                            # cross-protocol recipe (catalog is growing)
+a4 know concepts --json                                 # concept/category slugs for --concept / --category filters
+```
+
+`subscribe` coverage means step 5 will find a hosted stack streaming it; `read` or
+`build` coverage means the SDK you install in step 6 already exposes the operation.
+No key, or no entry for your protocol? Fall back to `a4 explore` below — the catalog
+is growing and a missing entry does not mean the protocol is unsupported.
+
+### 5. Discover what stacks exist
 
 ```bash
 a4 explore --json
@@ -158,7 +186,7 @@ view, and Program Release identities that `a4 install` will consume. It never pi
 "latest" AST on its own and never falls back when an install descriptor is incomplete.
 If exploration refuses, the resource is genuinely not installable — do not work around it.
 
-### 5. Install a typed SDK
+### 6. Install a typed SDK
 
 Generate a client from what you just discovered. This is a free-tier action against
 public resources — no owned stack required.
@@ -178,7 +206,7 @@ Generated SDKs cover more than stream reads. They expose PDA derivation, account
 resolution, instruction building, and transaction execution for the programs in scope.
 Read the `arete-consume` skill for the patterns in your language.
 
-### 6. Consume
+### 7. Consume
 
 Connect to an existing public stack (e.g. `ore`, the ORE mining stack) using the patterns in the `arete-consume` skill. Free-tier agents can read the registry and connect to public free-tier endpoints without further setup.
 
@@ -261,6 +289,25 @@ inside. `a4 explore --json` is camelCase throughout. Read the keys you actually 
 | `explore_programs` | List installable standalone programs |
 | `explore_program` | Pinned install descriptor for one program |
 | `resolve_artifact` | Fetch a content-addressed artifact by kind and hash |
+
+Knowledge tools — read-only against `/api/registry/knowledge/*`. Unlike the explore
+tools these **require an API key** (`ARETE_API_KEY`, or the file `a4 auth login`
+writes); without one they fail up front with an actionable error rather than
+returning a public subset.
+
+| Tool | Purpose |
+|------|---------|
+| `search_knowledge` | Search the curated knowledge layer by intent (`query`), or filter by `concept` / `category` slug. Results carry `read` / `build` / `subscribe` coverage flags |
+| `get_protocol` | One protocol: programs with roles, related protocols, public stacks streaming it, per-concept coverage |
+| `get_program_knowledge` | One program's reviewed annotations. `section` is `summary` (default), `instructions`, `accounts`, or `surface` (SDK operations with bindings) |
+| `get_recipe` | One cross-protocol recipe with resolved surface refs and an example path (catalog is growing) |
+| `list_concepts` | Concept and category vocabularies — the slugs `search_knowledge` filters accept |
+
+Typical flow for "monitor swaps": `search_knowledge({ query: "monitor swaps" })` → read
+each result's coverage → `subscribe` set? `get_protocol` names the stack, then
+`explore_stack_schema` + `connect` + `subscribe` below → `read`/`build` only?
+`get_program_knowledge({ program, section: "surface" })` lists the SDK operations to
+call from generated code.
 
 Streaming tools — stateful, `connect` first:
 
@@ -346,6 +393,11 @@ Base URL: `https://api.arete.run`
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/agents/me` | Your profile |
+| GET | `/api/registry/knowledge/vocabulary` | Knowledge layer concept and category vocabularies |
+| GET | `/api/registry/knowledge/search?q=&concept=&category=&limit=` | Search the knowledge layer by intent or slug filter (at least one param) |
+| GET | `/api/registry/knowledge/protocols/:slug` | Curated protocol knowledge with per-concept coverage |
+| GET | `/api/registry/knowledge/programs/:slug?section=` | Program annotations: `summary`, `instructions`, `accounts`, or `surface` |
+| GET | `/api/registry/knowledge/recipes/:slug` | Cross-protocol recipe with resolved surface refs |
 | GET | `/api/agents/me/keys` | List your keys |
 | POST | `/api/agents/me/keys` | Mint rotation key (`a4_ak_*`) |
 | POST | `/api/agents/me/keys/publishable` | Mint publishable key (`a4_pk_*`) — requires `origin_allowlist` |
