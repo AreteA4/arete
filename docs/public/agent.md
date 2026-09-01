@@ -172,6 +172,19 @@ account readers, and program reads. A program SDK packaged on its own is TypeScr
 a4 install program <program-ref> --ts
 ```
 
+For an owner-private program, authenticate first and use the alias or stable ID
+returned by `a4 program push --wait`:
+
+```
+a4 auth login
+a4 install program my-program --ts
+a4 install program upr_... --ts
+```
+
+Private programs are exact owner-scoped lookups and do not appear in
+`a4 explore programs`. If a private alias matches a managed registry name, use
+the stable `upr_...` ID.
+
 Generated SDKs cover more than stream reads. They expose PDA derivation, account
 resolution, instruction building, and transaction execution for the programs in scope.
 

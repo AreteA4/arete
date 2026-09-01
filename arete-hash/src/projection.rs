@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::identifier::DecoderBindingId;
 use crate::{
     hash_framed_tuple, hash_jcs, parse_json_bytes_strict, Compiler, HashError, HashId,
     ProgramRelease, ProgramSpec, SdkDefinition, TupleField,
@@ -12,7 +13,10 @@ pub const SDK_DEFINITION_PROGRAM_SPEC_INPUT_KIND: &str = "program-spec";
 pub const OSS_DECODER_ENGINE_ID: &str = "arete-oss-generated-decoder/v1";
 pub const PROGRAM_RELEASE_SCHEMA_V1: &str = "arete.program-release/v1";
 pub const PROGRAM_RELEASE_SCHEMA_V2: &str = "arete.program-release/v2";
+pub const PROGRAM_RELEASE_SCHEMA_V3: &str = "arete.program-release/v3";
 pub const HOSTED_MANAGED_RELEASE_PROFILE: &str = "hosted-managed";
+pub const HOSTED_PRIVATE_RELEASE_PROFILE: &str = "hosted-private";
+pub const HOSTED_PRIVATE_EXECUTABLE_POLICY: &str = "observed";
 pub const OSS_GENERATED_RELEASE_PROFILE: &str = "oss-generated";
 pub const SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1: &str = "arete.solana-executable-identity/v1";
 pub const SOLANA_BPF_LOADER_V2_PROGRAM_ID: &str = "BPFLoader2111111111111111111111111111111111";
@@ -396,6 +400,95 @@ pub fn validate_hosted_managed_program_release_v2(
     validate_release_identifier(&release.decoder_engine_id, "decoderEngineId", 128)?;
     validate_release_identifier(&release.decoder_binding_id, "decoderBindingId", 128)?;
     validate_solana_executable_identity_v1(&release.executable_identity)
+}
+
+/// Immutable hosted-private release identity.
+///
+/// Ownership, admission, alias, visibility, and observations deliberately do
+/// not participate in this projection. The same exact decoder artifact may be
+/// granted to multiple owners without changing its content identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostedPrivateProgramReleaseV3 {
+    pub schema: String,
+    pub release_profile: String,
+    pub program_id: String,
+    pub program_spec_hash: HashId<ProgramSpec>,
+    pub idl_content_hash: HashId<crate::IdlContent>,
+    pub normalized_idl_hash: HashId<crate::IdlNormalized>,
+    pub decoder_abi_version: String,
+    pub decoder_engine_id: String,
+    pub decoder_binding_id: String,
+    pub executable_policy: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedPrivateProgramReleaseV3Fields {
+    pub program_id: String,
+    pub program_spec_hash: HashId<ProgramSpec>,
+    pub idl_content_hash: HashId<crate::IdlContent>,
+    pub normalized_idl_hash: HashId<crate::IdlNormalized>,
+    pub decoder_abi_version: String,
+    pub decoder_engine_id: String,
+    pub decoder_binding_id: String,
+}
+
+impl HostedPrivateProgramReleaseV3 {
+    pub fn new(fields: HostedPrivateProgramReleaseV3Fields) -> Result<Self, HashError> {
+        let release = Self {
+            schema: PROGRAM_RELEASE_SCHEMA_V3.to_string(),
+            release_profile: HOSTED_PRIVATE_RELEASE_PROFILE.to_string(),
+            program_id: fields.program_id,
+            program_spec_hash: fields.program_spec_hash,
+            idl_content_hash: fields.idl_content_hash,
+            normalized_idl_hash: fields.normalized_idl_hash,
+            decoder_abi_version: fields.decoder_abi_version,
+            decoder_engine_id: fields.decoder_engine_id,
+            decoder_binding_id: fields.decoder_binding_id,
+            executable_policy: HOSTED_PRIVATE_EXECUTABLE_POLICY.to_string(),
+        };
+        validate_hosted_private_program_release_v3(&release)?;
+        Ok(release)
+    }
+
+    pub fn hash(&self) -> Result<HashId<ProgramRelease>, HashError> {
+        validate_hosted_private_program_release_v3(self)?;
+        hash_jcs(self)
+    }
+}
+
+pub fn parse_hosted_private_program_release_v3(
+    bytes: &[u8],
+) -> Result<HostedPrivateProgramReleaseV3, HashError> {
+    let value = parse_json_bytes_strict(bytes)?;
+    let release: HostedPrivateProgramReleaseV3 = serde_json::from_value(value)
+        .map_err(|error| release_projection_error(error.to_string()))?;
+    validate_hosted_private_program_release_v3(&release)?;
+    Ok(release)
+}
+
+pub fn validate_hosted_private_program_release_v3(
+    release: &HostedPrivateProgramReleaseV3,
+) -> Result<(), HashError> {
+    validate_release_projection(
+        (&release.schema, PROGRAM_RELEASE_SCHEMA_V3),
+        (&release.release_profile, HOSTED_PRIVATE_RELEASE_PROFILE),
+        &release.program_id,
+        &release.decoder_engine_id,
+        Some(&release.decoder_abi_version),
+        Some(&release.decoder_binding_id),
+    )?;
+    validate_base58_32(&release.program_id, "programId")?;
+    validate_release_identifier(&release.decoder_abi_version, "decoderAbiVersion", 64)?;
+    validate_release_identifier(&release.decoder_engine_id, "decoderEngineId", 128)?;
+    DecoderBindingId::new(&release.decoder_binding_id)?;
+    if release.executable_policy != HOSTED_PRIVATE_EXECUTABLE_POLICY {
+        return Err(release_projection_error(format!(
+            "executablePolicy must be '{}', not '{}'",
+            HOSTED_PRIVATE_EXECUTABLE_POLICY, release.executable_policy
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

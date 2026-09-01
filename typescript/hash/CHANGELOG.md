@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* add strict hosted-private Program Release V3 identity and shared vectors
+
 ## [0.3.1](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.3.0...arete-hash-npm-v0.3.1) (2026-08-14)
 
 

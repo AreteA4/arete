@@ -161,6 +161,8 @@ pub struct SpecWithVersion {
 #[derive(Debug, Deserialize)]
 struct ErrorResponse {
     error: String,
+    #[serde(default)]
+    code: Option<String>,
 }
 
 // ============================================================================
@@ -307,9 +309,102 @@ pub struct BuildStatusResponse {
 // Deployment DTOs
 // ============================================================================
 
-pub const STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA: &str = "arete.stack-deployment-plan-request/v1";
-pub const STACK_DEPLOYMENT_PREFLIGHT_SCHEMA: &str = "arete.stack-deployment-preflight/v1";
-pub const STACK_DEPLOYMENT_PLAN_SCHEMA: &str = "arete.stack-deployment-plan/v1";
+pub const STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA: &str = "arete.stack-deployment-plan-request/v2";
+pub const STACK_DEPLOYMENT_PREFLIGHT_SCHEMA: &str = "arete.stack-deployment-preflight/v2";
+pub const STACK_DEPLOYMENT_PLAN_SCHEMA: &str = "arete.stack-deployment-plan/v2";
+
+pub const USER_PROGRAM_UPLOAD_SCHEMA: &str = "arete.user-program-upload/v1";
+pub const USER_PROGRAM_SCHEMA: &str = "arete.user-program/v1";
+pub const USER_PROGRAM_LIST_SCHEMA: &str = "arete.user-program-list/v1";
+pub const USER_PROGRAM_EVENTS_SCHEMA: &str = "arete.user-program-events/v1";
+pub const USER_PROGRAM_PROMOTION_SCHEMA: &str = "arete.program-promotion-request/v1";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateUserProgramRequest {
+    pub schema: String,
+    pub idempotency_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    pub program_spec: arete_artifacts::ProgramSpecArtifact,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateProgramPromotionRequest {
+    pub make_idl_public: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserProgramHealth {
+    pub status: String,
+    #[serde(default)]
+    pub assessed_at: Option<String>,
+    #[serde(default)]
+    pub schema_relevant_attempts: u64,
+    #[serde(default)]
+    pub schema_failure_rate_basis_points: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserProgramResponse {
+    pub schema: String,
+    pub user_program_id: String,
+    pub program_id: String,
+    pub program_spec_hash: String,
+    pub alias: Option<String>,
+    pub lifecycle_state: String,
+    pub admission_state: String,
+    pub visibility: String,
+    pub program_release_hash: Option<String>,
+    pub program_read_binding_id: Option<String>,
+    pub operational_status: String,
+    pub health: UserProgramHealth,
+    pub event_cursor: String,
+    #[serde(default)]
+    pub diagnostic_codes: Vec<String>,
+    #[serde(default)]
+    pub idempotent: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserProgramListResponse {
+    pub schema: String,
+    pub items: Vec<UserProgramResponse>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserProgramEvent {
+    pub cursor: String,
+    pub event_type: String,
+    pub occurred_at: String,
+    pub state: Option<String>,
+    pub diagnostic_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserProgramEventsResponse {
+    pub schema: String,
+    pub items: Vec<UserProgramEvent>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserProgramPromotionResponse {
+    pub schema: String,
+    pub promotion_request_id: String,
+    pub user_program_id: String,
+    pub status: String,
+    pub requested_at: String,
+    pub idempotent: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -319,6 +414,7 @@ pub struct StackDeploymentPreflightRequest {
     pub live_specs: Vec<CreateAliasedLiveSpecArtifact>,
     pub stack_manifest: arete_artifacts::StackManifestArtifactV2,
     pub branch: Option<String>,
+    pub allow_unverified_programs: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,6 +425,7 @@ pub struct StackDeploymentPlanRequest {
     pub live_specs: Vec<CreateAliasedLiveSpecArtifact>,
     pub stack_manifest: arete_artifacts::StackManifestArtifactV2,
     pub branch: Option<String>,
+    pub allow_unverified_programs: bool,
     pub idempotency_key: String,
 }
 
@@ -345,6 +442,18 @@ pub struct SelectedProgramRelease {
     pub program_id: String,
     pub program_spec_hash: String,
     pub program_release_hash: String,
+    pub release_profile: String,
+    pub operational_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeploymentPlanWarning {
+    pub code: String,
+    pub program_id: String,
+    pub program_spec_hash: String,
+    pub program_release_hash: String,
+    pub operational_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -357,6 +466,7 @@ pub struct StackDeploymentPreflightResponse {
     pub targets: Vec<StackDeploymentTarget>,
     pub selection_digest: String,
     pub releases: Vec<SelectedProgramRelease>,
+    pub warnings: Vec<DeploymentPlanWarning>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -975,7 +1085,10 @@ impl ApiClient {
         let api_key = self.require_api_key()?;
         let response = self
             .client
-            .get(format!("{}/api/registry/knowledge/vocabulary", self.base_url))
+            .get(format!(
+                "{}/api/registry/knowledge/vocabulary",
+                self.base_url
+            ))
             .bearer_auth(api_key)
             .send()
             .context("Failed to send knowledge vocabulary request")?;
@@ -1398,6 +1511,113 @@ impl ApiClient {
         Self::handle_response(response)
     }
 
+    pub fn create_user_program(
+        &self,
+        request: &CreateUserProgramRequest,
+    ) -> Result<UserProgramResponse> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .post(format!("{}/api/programs", self.base_url))
+            .bearer_auth(api_key)
+            .json(request)
+            .send()
+            .context("Failed to send ProgramSpec upload request")?;
+        Self::handle_response(response)
+    }
+
+    pub fn list_user_programs(
+        &self,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<UserProgramListResponse> {
+        let api_key = self.require_api_key()?;
+        let mut request = self
+            .client
+            .get(format!("{}/api/programs", self.base_url))
+            .query(&[("limit", limit.to_string())]);
+        if let Some(cursor) = cursor {
+            request = request.query(&[("cursor", cursor)]);
+        }
+        let response = request
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to list uploaded programs")?;
+        Self::handle_response(response)
+    }
+
+    pub fn get_user_program(&self, user_program_id: &str) -> Result<UserProgramResponse> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .get(format!(
+                "{}/api/programs/{}",
+                self.base_url, user_program_id
+            ))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to get uploaded program status")?;
+        Self::handle_response(response)
+    }
+
+    pub fn list_user_program_events(
+        &self,
+        user_program_id: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<UserProgramEventsResponse> {
+        let api_key = self.require_api_key()?;
+        let mut request = self
+            .client
+            .get(format!(
+                "{}/api/programs/{}/events",
+                self.base_url, user_program_id
+            ))
+            .query(&[("limit", limit.to_string())]);
+        if let Some(after) = after {
+            request = request.query(&[("after", after)]);
+        }
+        let response = request
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to list uploaded program events")?;
+        Self::handle_response(response)
+    }
+
+    pub fn archive_user_program(&self, user_program_id: &str) -> Result<UserProgramResponse> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .post(format!(
+                "{}/api/programs/{}/archive",
+                self.base_url, user_program_id
+            ))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to archive uploaded program")?;
+        Self::handle_response(response)
+    }
+
+    pub fn request_user_program_promotion(
+        &self,
+        user_program_id: &str,
+    ) -> Result<UserProgramPromotionResponse> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .post(format!(
+                "{}/api/programs/{}/promotion-requests",
+                self.base_url, user_program_id
+            ))
+            .bearer_auth(api_key)
+            .json(&CreateProgramPromotionRequest {
+                make_idl_public: true,
+            })
+            .send()
+            .context("Failed to request uploaded program promotion")?;
+        Self::handle_response(response)
+    }
+
     // Helper methods
 
     fn require_api_key(&self) -> Result<&str> {
@@ -1418,7 +1638,10 @@ impl ApiClient {
             let status = response.status();
             let body = response.text().unwrap_or_default();
             let message = serde_json::from_str::<ErrorResponse>(&body)
-                .map(|error| error.error)
+                .map(|error| match error.code {
+                    Some(code) => format!("{} ({code})", error.error),
+                    None => error.error,
+                })
                 .unwrap_or_else(|_| {
                     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
                     if compact.is_empty() {
@@ -1950,7 +2173,7 @@ mod tests {
 
     fn preflight_response_snapshot() -> serde_json::Value {
         json!({
-            "schema": "arete.stack-deployment-preflight/v1",
+            "schema": "arete.stack-deployment-preflight/v2",
             "persisted": false,
             "stackManifestHash": "arete:h1:stack-manifest:sha256:manifest",
             "branch": null,
@@ -1963,14 +2186,17 @@ mod tests {
                 "programId": "Program111",
                 "programSpecHash": "arete:h1:program-spec:sha256:spec",
                 "programReleaseHash": "arete:h1:program-release:sha256:release",
+                "releaseProfile": "hosted-managed",
+                "operationalStatus": "exact",
             }],
+            "warnings": [],
         })
     }
 
     fn plan_response_snapshot() -> serde_json::Value {
         let preflight = preflight_response_snapshot();
         json!({
-            "schema": "arete.stack-deployment-plan/v1",
+            "schema": "arete.stack-deployment-plan/v2",
             "persisted": true,
             "deploymentPlanId": "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a",
             "stackManifestHash": preflight["stackManifestHash"],
@@ -1993,16 +2219,18 @@ mod tests {
             live_specs: build.live_specs.clone(),
             stack_manifest: build.stack_manifest.clone(),
             branch: None,
+            allow_unverified_programs: false,
         };
         let preflight_value = serde_json::to_value(&preflight).unwrap();
         assert_eq!(
             preflight_value,
             json!({
-                "schema": "arete.stack-deployment-plan-request/v1",
+                "schema": "arete.stack-deployment-plan-request/v2",
                 "programSpecs": build.program_specs,
                 "liveSpecs": build.live_specs,
                 "stackManifest": build.stack_manifest,
                 "branch": null,
+                "allowUnverifiedPrograms": false,
             })
         );
         assert!(preflight_value.get("idempotencyKey").is_none());
@@ -2013,6 +2241,7 @@ mod tests {
             live_specs: preflight.live_specs,
             stack_manifest: preflight.stack_manifest,
             branch: preflight.branch,
+            allow_unverified_programs: preflight.allow_unverified_programs,
             idempotency_key: "8d50e26b-e8b1-4d8f-90bf-b1cb0d025d1a".into(),
         };
         let mut expected = preflight_value;

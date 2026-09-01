@@ -24,3 +24,7 @@ strict parser, validator, and hash function. It also exports strict
 `arete.solana-executable-identity/v1` and hosted managed
 `arete.program-release/v2` contracts. OSS-generated Program Release V1 hashes
 remain byte-compatible and use the same `program-release`/`h1` domain.
+The root also exports strict hosted-private `arete.program-release/v3`
+creation, parsing, validation, and hashing helpers. V3 fixes
+`executablePolicy` to `observed` and deliberately has no ownership or
+visibility fields.

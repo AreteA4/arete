@@ -18,6 +18,12 @@ upgradeable Solana executable identity while retaining the existing
 `program-release` kind and `h1` hash domain. OSS-generated release V1 identities
 remain byte-compatible.
 
+Hosted private `arete.program-release/v3` identities bind the exact
+ProgramSpec, normalized IDL, decoder ABI/engine, and opaque decoder binding.
+Their executable policy is always `observed`. Owner, alias, admission,
+visibility, and runtime observations are intentionally excluded so access
+grants can change without changing immutable decoder identity.
+
 The shared conformance vectors live in `../test-vectors/hash-v1.json` and are
 also consumed by `@usearete/hash`.
 

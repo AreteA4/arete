@@ -2,8 +2,15 @@
 
 ## Unreleased
 
+### Features
+
+* add explicit private program push/list/status/events/archive/promotion commands
+* allow authenticated owners to install ready private programs by alias or `upr_...` ID
+* add exact V2 deployment planning and `a4 up --allow-unverified-programs`
+
 ### Bug Fixes
 
+* expose continuation cursors for private program and event listings
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
 ## [0.10.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.9.1...a4-cli-v0.10.0) (2026-08-22)

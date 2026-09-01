@@ -2057,7 +2057,7 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:3e471aac42e59ac3b69f380033b4f146f952a9848c6fd39bf265f14929b8a7fb',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:823f1275bb0b81baab708b260e02804fb15c997651f2ac09dbfe8be72f7df903',
       programSpecHash: 'arete:h1:program-spec:sha256:15f2e0292df1188828dc09afa2b8d4d1475411bf8c91815c19ae2d176647c140',
       idlContentHash: 'arete:h1:idl-content:sha256:47b3625ae54b40c0651153a0d6d337631b4e3428b73f9009a9399af34eb2c764',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:137b245aa84f8f759a0d2abbc2459605554219ea73465883c7ff6dc36471b9a8',
@@ -2237,7 +2237,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:f2033cd4e303b9b382451e5e142bf66450d4a01edfa71505862138baf8e3ac51',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:45f3fd1224e0dd60bb62c8f6d2dd7f8ad8fa0f08181f6ae2010d7f66d864f698',
       programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
       idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',

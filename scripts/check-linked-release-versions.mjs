@@ -34,6 +34,26 @@ function packageVersion(config, packagePath, root) {
     throw new Error(`${manifestPath} does not declare [package].version`);
   }
 
+  if (config["release-type"] === "python") {
+    const manifestPath = path.join(root, packagePath, "pyproject.toml");
+    const lines = fs.readFileSync(manifestPath, "utf8").split("\n");
+    let inProject = false;
+
+    for (const line of lines) {
+      const section = line.trim().match(/^\[([^[]+)]$/);
+      if (section) {
+        inProject = section[1] === "project";
+        continue;
+      }
+      if (inProject) {
+        const version = line.match(/^\s*version\s*=\s*"([^"]+)"/);
+        if (version) return version[1];
+      }
+    }
+
+    throw new Error(`${manifestPath} does not declare [project].version`);
+  }
+
   return undefined;
 }
 

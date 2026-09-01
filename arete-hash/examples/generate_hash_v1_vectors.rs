@@ -1362,6 +1362,141 @@ impl Generator {
             &[],
         );
 
+        let hosted_private =
+            HostedPrivateProgramReleaseV3::new(HostedPrivateProgramReleaseV3Fields {
+                program_id: baseline.program_id.clone(),
+                program_spec_hash: baseline.program_spec_hash,
+                idl_content_hash: baseline.idl_content_hash,
+                normalized_idl_hash: baseline.normalized_idl_hash,
+                decoder_abi_version: "1".to_string(),
+                decoder_engine_id: "arete-hosted-decoder-engine/v1".to_string(),
+                decoder_binding_id: "dec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
+            })
+            .expect("hosted private release");
+        self.add_release_vector(
+            "release-hosted-private-v3-observed",
+            "Hosted-private V3 binds an exact decoder while executable state remains an observed runtime policy.",
+            &hosted_private,
+            json!({
+                "ownershipInProjection": false,
+                "visibilityInProjection": false,
+                "executablePolicy": "observed"
+            }),
+            None,
+            &[],
+        );
+
+        for (id, changed_field, variant) in [
+            (
+                "release-hosted-private-v3-program-id-change",
+                "programId",
+                HostedPrivateProgramReleaseV3::new(HostedPrivateProgramReleaseV3Fields {
+                    program_id: "11111111111111111111111111111111".to_string(),
+                    program_spec_hash: hosted_private.program_spec_hash,
+                    idl_content_hash: hosted_private.idl_content_hash,
+                    normalized_idl_hash: hosted_private.normalized_idl_hash,
+                    decoder_abi_version: hosted_private.decoder_abi_version.clone(),
+                    decoder_engine_id: hosted_private.decoder_engine_id.clone(),
+                    decoder_binding_id: hosted_private.decoder_binding_id.clone(),
+                })
+                .expect("program ID variant"),
+            ),
+            (
+                "release-hosted-private-v3-abi-change",
+                "decoderAbiVersion",
+                HostedPrivateProgramReleaseV3::new(HostedPrivateProgramReleaseV3Fields {
+                    program_id: hosted_private.program_id.clone(),
+                    program_spec_hash: hosted_private.program_spec_hash,
+                    idl_content_hash: hosted_private.idl_content_hash,
+                    normalized_idl_hash: hosted_private.normalized_idl_hash,
+                    decoder_abi_version: "2".to_string(),
+                    decoder_engine_id: hosted_private.decoder_engine_id.clone(),
+                    decoder_binding_id: hosted_private.decoder_binding_id.clone(),
+                })
+                .expect("ABI variant"),
+            ),
+            (
+                "release-hosted-private-v3-engine-change",
+                "decoderEngineId",
+                HostedPrivateProgramReleaseV3::new(HostedPrivateProgramReleaseV3Fields {
+                    program_id: hosted_private.program_id.clone(),
+                    program_spec_hash: hosted_private.program_spec_hash,
+                    idl_content_hash: hosted_private.idl_content_hash,
+                    normalized_idl_hash: hosted_private.normalized_idl_hash,
+                    decoder_abi_version: hosted_private.decoder_abi_version.clone(),
+                    decoder_engine_id: "arete-hosted-decoder-engine/v2".to_string(),
+                    decoder_binding_id: hosted_private.decoder_binding_id.clone(),
+                })
+                .expect("engine variant"),
+            ),
+            (
+                "release-hosted-private-v3-binding-change",
+                "decoderBindingId",
+                HostedPrivateProgramReleaseV3::new(HostedPrivateProgramReleaseV3Fields {
+                    program_id: hosted_private.program_id.clone(),
+                    program_spec_hash: hosted_private.program_spec_hash,
+                    idl_content_hash: hosted_private.idl_content_hash,
+                    normalized_idl_hash: hosted_private.normalized_idl_hash,
+                    decoder_abi_version: hosted_private.decoder_abi_version.clone(),
+                    decoder_engine_id: hosted_private.decoder_engine_id.clone(),
+                    decoder_binding_id: "dec_ZQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY".to_string(),
+                })
+                .expect("binding variant"),
+            ),
+        ] {
+            self.add_release_vector(
+                id,
+                "Changing one hosted-private identity field changes the Program Release hash.",
+                &variant,
+                json!({"changedField": changed_field}),
+                None,
+                &["release-hosted-private-v3-observed"],
+            );
+        }
+
+        for (id, description, mutation) in [
+            (
+                "hosted-private-release-v3-rejects-unknown-field",
+                "Hosted-private V3 rejects ownership, aliases, visibility, and every other unknown field.",
+                "unknown-field",
+            ),
+            (
+                "hosted-private-release-v3-rejects-managed-profile",
+                "Hosted-private V3 cannot be relabelled as a managed release.",
+                "profile",
+            ),
+            (
+                "hosted-private-release-v3-rejects-pinned-policy",
+                "Hosted-private V3 accepts only the observed executable policy.",
+                "policy",
+            ),
+            (
+                "hosted-private-release-v3-rejects-invalid-binding",
+                "Hosted-private V3 requires the existing opaque decoder binding identity.",
+                "binding",
+            ),
+        ] {
+            let mut value = serde_json::to_value(&hosted_private).expect("release serializes");
+            match mutation {
+                "unknown-field" => value["ownerUserId"] = json!(42),
+                "profile" => value["releaseProfile"] = json!(HOSTED_MANAGED_RELEASE_PROFILE),
+                "policy" => value["executablePolicy"] = json!("pinned"),
+                "binding" => value["decoderBindingId"] = json!("dec_short"),
+                _ => unreachable!(),
+            }
+            let error = parse_hosted_private_program_release_v3(
+                &serde_json::to_vec(&value).expect("release JSON"),
+            )
+            .expect_err("invalid hosted-private release must fail");
+            self.add_failure(
+                id,
+                description,
+                "hosted-program-release-v3",
+                json!({"projection": value}),
+                &error,
+            );
+        }
+
         self.hosted_release_failure_vectors(&hosted_upgradeable, &hosted_legacy);
     }
 

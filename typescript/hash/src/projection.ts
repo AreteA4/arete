@@ -19,7 +19,10 @@ export const SDK_DEFINITION_PROGRAM_SPEC_INPUT_KIND = "program-spec" as const;
 export const OSS_DECODER_ENGINE_ID = "arete-oss-generated-decoder/v1" as const;
 export const PROGRAM_RELEASE_SCHEMA_V1 = "arete.program-release/v1" as const;
 export const PROGRAM_RELEASE_SCHEMA_V2 = "arete.program-release/v2" as const;
+export const PROGRAM_RELEASE_SCHEMA_V3 = "arete.program-release/v3" as const;
 export const HOSTED_MANAGED_RELEASE_PROFILE = "hosted-managed" as const;
+export const HOSTED_PRIVATE_RELEASE_PROFILE = "hosted-private" as const;
+export const HOSTED_PRIVATE_EXECUTABLE_POLICY = "observed" as const;
 export const OSS_GENERATED_RELEASE_PROFILE = "oss-generated" as const;
 export const SOLANA_EXECUTABLE_IDENTITY_SCHEMA_V1 =
   "arete.solana-executable-identity/v1" as const;
@@ -67,6 +70,19 @@ export interface HostedManagedProgramReleaseV2 {
   readonly decoderEngineId: string;
   readonly decoderBindingId: string;
   readonly executableIdentity: SolanaExecutableIdentityV1;
+}
+
+export interface HostedPrivateProgramReleaseV3 {
+  readonly schema: typeof PROGRAM_RELEASE_SCHEMA_V3;
+  readonly releaseProfile: typeof HOSTED_PRIVATE_RELEASE_PROFILE;
+  readonly programId: string;
+  readonly programSpecHash: ProgramSpecHash;
+  readonly idlContentHash: IdlContentHash;
+  readonly normalizedIdlHash: IdlNormalizedHash;
+  readonly decoderAbiVersion: string;
+  readonly decoderEngineId: string;
+  readonly decoderBindingId: string;
+  readonly executablePolicy: typeof HOSTED_PRIVATE_EXECUTABLE_POLICY;
 }
 
 export interface OssGeneratedProgramReleaseV1 {
@@ -314,6 +330,29 @@ export function createHostedManagedProgramReleaseV2(
   });
 }
 
+export function createHostedPrivateProgramReleaseV3(
+  programId: string,
+  programSpecHash: ProgramSpecHash,
+  idlContentHash: IdlContentHash,
+  normalizedIdlHash: IdlNormalizedHash,
+  decoderAbiVersion: string,
+  decoderEngineId: string,
+  decoderBindingId: string,
+): HostedPrivateProgramReleaseV3 {
+  return validateHostedPrivateProgramReleaseV3({
+    schema: PROGRAM_RELEASE_SCHEMA_V3,
+    releaseProfile: HOSTED_PRIVATE_RELEASE_PROFILE,
+    programId,
+    programSpecHash,
+    idlContentHash,
+    normalizedIdlHash,
+    decoderAbiVersion,
+    decoderEngineId,
+    decoderBindingId,
+    executablePolicy: HOSTED_PRIVATE_EXECUTABLE_POLICY,
+  });
+}
+
 export function hashOssGeneratedProgramReleaseV1(
   projection: OssGeneratedProgramReleaseV1,
 ): ProgramReleaseHash {
@@ -412,6 +451,99 @@ export function validateHostedManagedProgramReleaseV2(
     decoderEngineId,
     decoderBindingId,
     executableIdentity,
+  };
+}
+
+export function parseHostedPrivateProgramReleaseV3(
+  bytes: Uint8Array,
+): HostedPrivateProgramReleaseV3 {
+  return validateHostedPrivateProgramReleaseV3(parseJsonBytesStrict(bytes));
+}
+
+export function hashHostedPrivateProgramReleaseV3(
+  projection: unknown,
+): ProgramReleaseHash {
+  const validated = validateHostedPrivateProgramReleaseV3(projection);
+  return hashJcs("program-release", validated as unknown as JsonValue);
+}
+
+export function validateHostedPrivateProgramReleaseV3(
+  value: unknown,
+): HostedPrivateProgramReleaseV3 {
+  const release = expectObject(value, "program release");
+  expectKeys(
+    release,
+    [
+      "schema",
+      "releaseProfile",
+      "programId",
+      "programSpecHash",
+      "idlContentHash",
+      "normalizedIdlHash",
+      "decoderAbiVersion",
+      "decoderEngineId",
+      "decoderBindingId",
+      "executablePolicy",
+    ],
+    "program release",
+  );
+  if (release.schema !== PROGRAM_RELEASE_SCHEMA_V3) {
+    return hashError(
+      "unknown-version",
+      `unknown program release schema '${String(release.schema)}'`,
+    );
+  }
+  if (release.releaseProfile !== HOSTED_PRIVATE_RELEASE_PROFILE) {
+    return invalidProgramRelease(
+      `releaseProfile must be '${HOSTED_PRIVATE_RELEASE_PROFILE}', not '${String(release.releaseProfile)}'`,
+    );
+  }
+  if (release.executablePolicy !== HOSTED_PRIVATE_EXECUTABLE_POLICY) {
+    return invalidProgramRelease(
+      `executablePolicy must be '${HOSTED_PRIVATE_EXECUTABLE_POLICY}', not '${String(release.executablePolicy)}'`,
+    );
+  }
+  const decoderBindingId = expectIdentifier(
+    release.decoderBindingId,
+    "decoderBindingId",
+    128,
+  );
+  if (!/^dec_[A-Za-z0-9_-]{32}$/.test(decoderBindingId)) {
+    return invalidProgramRelease(
+      "decoderBindingId must begin with 'dec_' and contain exactly 32 URL-safe characters",
+    );
+  }
+  return {
+    schema: PROGRAM_RELEASE_SCHEMA_V3,
+    releaseProfile: HOSTED_PRIVATE_RELEASE_PROFILE,
+    programId: expectBase58_32(release.programId, "programId"),
+    programSpecHash: expectTypedHash(
+      release.programSpecHash,
+      "program-spec",
+      "programSpecHash",
+    ) as ProgramSpecHash,
+    idlContentHash: expectTypedHash(
+      release.idlContentHash,
+      "idl-content",
+      "idlContentHash",
+    ) as IdlContentHash,
+    normalizedIdlHash: expectTypedHash(
+      release.normalizedIdlHash,
+      "idl-normalized",
+      "normalizedIdlHash",
+    ) as IdlNormalizedHash,
+    decoderAbiVersion: expectIdentifier(
+      release.decoderAbiVersion,
+      "decoderAbiVersion",
+      64,
+    ),
+    decoderEngineId: expectIdentifier(
+      release.decoderEngineId,
+      "decoderEngineId",
+      128,
+    ),
+    decoderBindingId,
+    executablePolicy: HOSTED_PRIVATE_EXECUTABLE_POLICY,
   };
 }
 

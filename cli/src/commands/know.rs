@@ -363,14 +363,10 @@ struct RecipeResponse {
 // ============================================================================
 
 fn coverage_flags(read: bool, build: bool, subscribe: bool) -> String {
-    let flags: Vec<&str> = [
-        (read, "read"),
-        (build, "build"),
-        (subscribe, "subscribe"),
-    ]
-    .iter()
-    .filter_map(|(on, label)| on.then_some(*label))
-    .collect();
+    let flags: Vec<&str> = [(read, "read"), (build, "build"), (subscribe, "subscribe")]
+        .iter()
+        .filter_map(|(on, label)| on.then_some(*label))
+        .collect();
     if flags.is_empty() {
         "none".into()
     } else {
@@ -598,7 +594,10 @@ fn render_program(value: &Value, section: &str) -> String {
             "\n{}\n{}\n",
             "Surface entries".bold(),
             serde_json::to_string_pretty(
-                value.get("surface").or_else(|| value.get("entries")).unwrap_or(value)
+                value
+                    .get("surface")
+                    .or_else(|| value.get("entries"))
+                    .unwrap_or(value)
             )
             .unwrap_or_else(|_| value.to_string())
         ),
@@ -688,7 +687,10 @@ fn render_annotation_map(value: &Value, key: &str, heading: &str) -> String {
             }
             let _ = writeln!(text, "    {label}:");
             for (path, meaning) in details {
-                let meaning = meaning.as_str().map(str::to_string).unwrap_or_else(|| meaning.to_string());
+                let meaning = meaning
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| meaning.to_string());
                 let _ = writeln!(text, "      {path}: {}", meaning.trim().dimmed());
             }
         }
@@ -886,7 +888,10 @@ mod tests {
         assert!(text.contains("Meteora DAMM v2"), "{text}");
         assert!(text.contains("Categories: dex"), "{text}");
         assert!(text.contains("meteora-cp-amm"), "{text}");
-        assert!(text.contains("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"), "{text}");
+        assert!(
+            text.contains("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"),
+            "{text}"
+        );
         assert!(text.contains("[core]"), "{text}");
         assert!(text.contains("squads-v4"), "{text}");
         assert!(text.contains("composes-with"), "{text}");
@@ -946,8 +951,14 @@ mod tests {
         assert!(text.contains("swap2"), "{text}");
         assert!(text.contains("exact-in or exact-out"), "{text}");
         assert!(text.contains("concepts: swap"), "{text}");
-        assert!(text.contains("params.amount: Amount in base units."), "{text}");
-        assert!(text.contains("pool: The pool being traded against."), "{text}");
+        assert!(
+            text.contains("params.amount: Amount in base units."),
+            "{text}"
+        );
+        assert!(
+            text.contains("pool: The pool being traded against."),
+            "{text}"
+        );
     }
 
     #[test]
@@ -993,7 +1004,10 @@ mod tests {
             "example": "jurassic/recipes/presale.ts"
         }));
         assert!(text.contains("Squads multisig"), "{text}");
-        assert!(text.contains("Protocols: meteora-presale, squads-v4"), "{text}");
+        assert!(
+            text.contains("Protocols: meteora-presale, squads-v4"),
+            "{text}"
+        );
         assert!(text.contains("1. Prepare the purchase"), "{text}");
         assert!(text.contains("sdks/meteora-presale"), "{text}");
         assert!(text.contains("transactions.purchase.create"), "{text}");
@@ -1022,7 +1036,10 @@ mod tests {
                 "expected {bad:?} to be refused"
             );
         }
-        assert_eq!(validate_slug(" meteora-damm ", "slug").unwrap(), "meteora-damm");
+        assert_eq!(
+            validate_slug(" meteora-damm ", "slug").unwrap(),
+            "meteora-damm"
+        );
     }
 
     #[test]
@@ -1034,7 +1051,10 @@ mod tests {
         assert_eq!(validate_section(Some("")).unwrap(), None);
         let err = validate_section(Some("idl")).unwrap_err().to_string();
         assert!(err.contains("must be one of"), "{err}");
-        assert!(err.contains("summary, instructions, accounts, surface"), "{err}");
+        assert!(
+            err.contains("summary, instructions, accounts, surface"),
+            "{err}"
+        );
     }
 
     #[test]

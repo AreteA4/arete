@@ -109,6 +109,10 @@ enum Commands {
         /// Plan only from local artifacts; requires --dry-run and skips server checks
         #[arg(long, requires = "dry_run")]
         local_only: bool,
+
+        /// Permit persisting a plan that contains observed private programs
+        #[arg(long)]
+        allow_unverified_programs: bool,
     },
 
     /// Show overview of stacks, builds, and deployments
@@ -580,6 +584,63 @@ enum ProgramCommands {
         #[arg(long)]
         program_id: Option<String>,
     },
+
+    /// Upload an IDL or ProgramSpec as an owner-private hosted program
+    Push {
+        /// IDL JSON or ProgramSpec artifact input
+        input: String,
+        /// Program ID when an IDL does not declare one
+        #[arg(long)]
+        program_id: Option<String>,
+        /// Optional owner-private label
+        #[arg(long)]
+        alias: Option<String>,
+        /// Canonical UUID used to replay this upload safely
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        /// Wait until admission is ready or failed
+        #[arg(long)]
+        wait: bool,
+    },
+
+    /// List owner-visible uploaded programs
+    List {
+        /// Resume at an opaque cursor returned by the previous page
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+
+    /// Show admission, visibility, release, and health state
+    Status {
+        user_program_id: String,
+        /// Watch until admission is ready or failed
+        #[arg(long)]
+        watch: bool,
+    },
+
+    /// List append-only admission, health, archive, and promotion events
+    Events {
+        user_program_id: String,
+        /// Resume after an opaque event cursor
+        #[arg(long)]
+        after: Option<String>,
+    },
+
+    /// Archive a registration without deleting immutable content
+    Archive {
+        user_program_id: String,
+        /// Confirm archival without an interactive prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Request reviewed promotion of the baseline IDL
+    Promote {
+        user_program_id: String,
+        /// Consent to public OSS distribution of the baseline IDL
+        #[arg(long)]
+        make_idl_public: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -727,6 +788,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             preview,
             dry_run,
             local_only,
+            allow_unverified_programs,
         } => commands::up::up(
             &cli.config,
             stack_name.as_deref(),
@@ -734,6 +796,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             preview,
             dry_run,
             local_only,
+            allow_unverified_programs,
             cli.json,
         ),
         Commands::Status => commands::status::status(cli.json),
@@ -914,6 +977,39 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 output,
                 program_id,
             } => commands::public_artifacts::build_program(&input, &output, program_id.as_deref()),
+            ProgramCommands::Push {
+                input,
+                program_id,
+                alias,
+                idempotency_key,
+                wait,
+            } => commands::programs::push(
+                &input,
+                program_id.as_deref(),
+                alias,
+                idempotency_key,
+                wait,
+                cli.json,
+            ),
+            ProgramCommands::List { cursor } => {
+                commands::programs::list(cursor.as_deref(), cli.json)
+            }
+            ProgramCommands::Status {
+                user_program_id,
+                watch,
+            } => commands::programs::status(&user_program_id, watch, cli.json),
+            ProgramCommands::Events {
+                user_program_id,
+                after,
+            } => commands::programs::events(&user_program_id, after.as_deref(), cli.json),
+            ProgramCommands::Archive {
+                user_program_id,
+                yes,
+            } => commands::programs::archive(&user_program_id, yes, cli.json),
+            ProgramCommands::Promote {
+                user_program_id,
+                make_idl_public,
+            } => commands::programs::promote(&user_program_id, make_idl_public, cli.json),
         },
         Commands::Build(build_cmd) => match build_cmd {
             BuildCommands::Create {
@@ -1090,7 +1186,14 @@ mod tests {
     #[test]
     fn parse_know_search_and_program_section() {
         let cli = Cli::try_parse_from([
-            "a4", "know", "search", "--query", "monitor swaps", "--limit", "5", "--json",
+            "a4",
+            "know",
+            "search",
+            "--query",
+            "monitor swaps",
+            "--limit",
+            "5",
+            "--json",
         ])
         .expect("cli should parse");
         match cli.command {
@@ -1124,6 +1227,34 @@ mod tests {
                 assert_eq!(section.as_deref(), Some("instructions"));
             }
             _ => panic!("expected know program command"),
+        }
+    }
+
+    #[test]
+    fn parse_program_pagination_cursors() {
+        let cli = Cli::try_parse_from(["a4", "program", "list", "--cursor", "upc_next-page_123"])
+            .expect("program list cursor should parse");
+        match cli.command {
+            Some(Commands::Program(ProgramCommands::List { cursor })) => {
+                assert_eq!(cursor.as_deref(), Some("upc_next-page_123"));
+            }
+            _ => panic!("expected program list command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "a4",
+            "program",
+            "events",
+            "upr_abcdefghijklmnopqrstuvwxyzABCDEF",
+            "--after",
+            "uev_00000000001",
+        ])
+        .expect("program events cursor should parse");
+        match cli.command {
+            Some(Commands::Program(ProgramCommands::Events { after, .. })) => {
+                assert_eq!(after.as_deref(), Some("uev_00000000001"));
+            }
+            _ => panic!("expected program events command"),
         }
     }
 

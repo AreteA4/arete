@@ -79,6 +79,7 @@ function assertCurrentContractsOnly(unpackedRoot) {
   const declarations = readFileSync(join(unpackedRoot, "dist/index.d.ts"), "utf8");
   assert(declarations.includes("interface DecoderFixtureSetV2"));
   assert(declarations.includes("interface HostedManagedProgramReleaseV2"));
+  assert(declarations.includes("interface HostedPrivateProgramReleaseV3"));
   assert(declarations.includes("interface SolanaExecutableIdentityV1"));
   const fixtureCase = declarations.match(
     /interface DecoderFixtureCaseV2 \{([\s\S]*?)\n\}/,

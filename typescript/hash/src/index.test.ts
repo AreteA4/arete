@@ -30,6 +30,7 @@ import {
   hashFramedTuple,
   hashCompilerV1,
   hashHostedManagedProgramReleaseV2,
+  hashHostedPrivateProgramReleaseV3,
   hashJcs,
   hashJsonBytes,
   hashOssGeneratedProgramReleaseV1,
@@ -48,7 +49,9 @@ import {
   type ArtifactTreeEntry,
   type AuthenticatedOwnerHashKind,
   validateHostedManagedProgramReleaseV2,
+  validateHostedPrivateProgramReleaseV3,
   type HostedManagedProgramReleaseV2,
+  type HostedPrivateProgramReleaseV3,
   type JsonValue,
   type OssGeneratedProgramReleaseV1,
   type ProgramSpecV1,
@@ -366,6 +369,9 @@ describe("shared hash-v1 vectors", () => {
       if (vector.operation === "hosted-program-release-v2") {
         return validateHostedManagedProgramReleaseV2(vector.input.projection);
       }
+      if (vector.operation === "hosted-program-release-v3") {
+        return validateHostedPrivateProgramReleaseV3(vector.input.projection);
+      }
       throw new Error(`unknown operation ${vector.operation}`);
     };
     expect(operation).toThrowError(
@@ -425,8 +431,38 @@ describe("shared hash-v1 vectors", () => {
         )
       : vector.projection.schema === "arete.program-release/v2"
         ? hashHostedManagedProgramReleaseV2(vector.projection)
+        : vector.projection.schema === "arete.program-release/v3"
+          ? hashHostedPrivateProgramReleaseV3(vector.projection)
         : hashJcs("program-release", vector.projection);
     expectHash(vector.expected, canonicalizeJcs(vector.projection), id);
+  });
+
+  test("hosted-private V3 is strict and access metadata is not representable", () => {
+    const vector = corpus.releaseVectors.find(
+      (item) => item.id === "release-hosted-private-v3-observed",
+    )!;
+    const projection = validateHostedPrivateProgramReleaseV3(vector.projection);
+    expect(hashHostedPrivateProgramReleaseV3(projection)).toBe(
+      vector.expected.hashId,
+    );
+    expect(Object.keys(projection).sort()).toEqual([
+      "decoderAbiVersion",
+      "decoderBindingId",
+      "decoderEngineId",
+      "executablePolicy",
+      "idlContentHash",
+      "normalizedIdlHash",
+      "programId",
+      "programSpecHash",
+      "releaseProfile",
+      "schema",
+    ]);
+    expect(() =>
+      hashHostedPrivateProgramReleaseV3({
+        ...projection,
+        visibility: "private",
+      } as HostedPrivateProgramReleaseV3),
+    ).toThrowError(expect.objectContaining({ code: "invalid-projection" }));
   });
 
   test("hosted Release V2 without upgrade authority matches shared bytes and hash", () => {
