@@ -606,7 +606,53 @@ function parseDiscriminant(value: unknown, location: string): { type: string; va
   ) {
     return invalidIdl(`${location}.value must be a non-negative integer`);
   }
-  return { type: requiredString(item.type, `${location}.type`), value: discriminantValue };
+  const type_ = requiredString(item.type, `${location}.type`);
+  // Rejected rather than truncated: `{ type: "u32", value: 4294967296 }` would otherwise encode as
+  // [0, 0, 0, 0] and collide with whichever instruction genuinely declares zero. Mirrors the
+  // `SteelDiscriminant` deserializer in arete-idl, which must agree or the two implementations
+  // accept different IDLs.
+  const max = Math.pow(256, discriminantWidth(type_)) - 1;
+  if (discriminantValue > max) {
+    return invalidIdl(
+      `${location}.value ${discriminantValue} does not fit its declared type ${type_} (max ${max})`
+    );
+  }
+  return { type: type_, value: discriminantValue };
+}
+
+/// Encoded width in bytes of a declared discriminant, taken from its type.
+///
+/// Steel writes a single byte. Bincode-encoded native programs (System Program, Address Lookup
+/// Table) write a little-endian `u32` enum tag instead, so the width cannot be assumed. An
+/// unrecognised type falls back to one byte, which is what every Steel IDL declares.
+///
+/// Must stay identical to `SteelDiscriminant::width` in arete-idl, or Rust and TypeScript
+/// disagree on `normalizedIdlHash` for the same IDL.
+function discriminantWidth(declaredType: string): number {
+  switch (declaredType) {
+    case "u16":
+      return 2;
+    case "u32":
+      return 4;
+    case "u64":
+      return 8;
+    default:
+      return 1;
+  }
+}
+
+/// Width in bytes of the instruction discriminator this IDL's instructions share.
+///
+/// Anchor IDLs carry an 8-byte `discriminator`. Steel and bincode IDLs declare a `discriminant`
+/// whose type gives the width, so it is read rather than assumed.
+///
+/// Mirrors `IdlSpec::instruction_discriminator_size` in arete-idl.
+function instructionDiscriminatorSize(idl: ParsedIdl): number {
+  for (const instruction of idl.instructions) {
+    if (instruction.discriminator.length !== 0) continue;
+    if (instruction.discriminant !== null) return discriminantWidth(instruction.discriminant.type);
+  }
+  return 8;
 }
 
 function parseMetadata(value: unknown): ParsedIdl["metadata"] {
@@ -628,9 +674,6 @@ function normalizeIdlSnapshotV1(idl: ParsedIdl): IdlSnapshotV1 {
       type: snapshotTypeDefKind(account.typeDef),
     });
   }
-  const usesSteel = idl.instructions.some(
-    (instruction) => instruction.discriminant !== null && instruction.discriminator.length === 0,
-  );
   return {
     normalizationVersion: IDL_NORMALIZATION_VERSION,
     name: idl.name ?? idl.metadata?.name ?? "unknown",
@@ -677,7 +720,7 @@ function normalizeIdlSnapshotV1(idl: ParsedIdl): IdlSnapshotV1 {
       name: error.name,
       ...(error.msg === undefined ? {} : { msg: error.msg }),
     })),
-    discriminant_size: usesSteel ? 1 : 8,
+    discriminant_size: instructionDiscriminatorSize(idl),
   };
 }
 
@@ -752,9 +795,6 @@ function createProgramSpecV1(
       }
     }
   }
-  const usesSteel = idl.instructions.some(
-    (instruction) => instruction.discriminant !== null && instruction.discriminator.length === 0,
-  );
   return {
     schema: PROGRAM_SPEC_SCHEMA_V1,
     programId: idl.address,
@@ -766,7 +806,7 @@ function createProgramSpecV1(
     instructions: idl.instructions.map((instruction) => ({
       name: instruction.name,
       discriminator: instructionDiscriminator(instruction),
-      discriminator_size: usesSteel ? 1 : 8,
+      discriminator_size: instructionDiscriminatorSize(idl),
       accounts: flattenAccounts(instruction.accounts).map((account) => ({
         name: sanitizeIdentifier(account.name),
         is_signer: account.isSigner,
@@ -902,7 +942,25 @@ function cloneParsedAccount(account: ParsedInstructionAccount): ParsedInstructio
 
 function instructionDiscriminator(instruction: ParsedInstruction): number[] {
   if (instruction.discriminator.length > 0) return [...instruction.discriminator];
-  if (instruction.discriminant !== null) return [instruction.discriminant.value & 0xff];
+  if (instruction.discriminant !== null) {
+    // Little-endian, truncated to the declared width. Mirrors `SteelDiscriminant::to_bytes` in
+    // arete-idl: a bincode `u32` tag is four bytes, and emitting one leaves the payload three
+    // bytes short of where the program reads it.
+    //
+    // Divided rather than shifted: JavaScript bitwise operators coerce to 32 bits and take the
+    // shift count mod 32, so `value >>> 32` is `value >>> 0`. At width 8 that repeats bytes 0-3
+    // into 4-7 instead of producing the high bytes, and TypeScript would disagree with Rust on
+    // every `u64` discriminant. `parseDiscriminant` already rejects anything past
+    // `Number.isSafeInteger`, so division stays exact for every accepted value.
+    const width = discriminantWidth(instruction.discriminant.type);
+    const bytes: number[] = [];
+    let remaining = instruction.discriminant.value;
+    for (let index = 0; index < width; index += 1) {
+      bytes.push(remaining % 0x100);
+      remaining = Math.floor(remaining / 0x100);
+    }
+    return bytes;
+  }
   return discriminator([], `global:${toSnakeCase(instruction.name)}`);
 }
 

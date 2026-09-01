@@ -39,19 +39,6 @@ fn format_discriminator(bytes: &[u8]) -> String {
     format!("[{}]", hex)
 }
 
-fn instruction_discriminator(ix: &IdlInstruction) -> Vec<u8> {
-    if !ix.discriminator.is_empty() {
-        return ix.discriminator.clone();
-    }
-
-    if let Some(disc) = &ix.discriminant {
-        let value = disc.value as u8;
-        return vec![value, 0, 0, 0, 0, 0, 0, 0];
-    }
-
-    compute_discriminator("global", &ix.name).to_vec()
-}
-
 fn account_discriminator(account: &IdlAccount) -> Vec<u8> {
     if !account.discriminator.is_empty() {
         return account.discriminator.clone();
@@ -696,7 +683,7 @@ pub fn run(args: IdlArgs) -> Result<()> {
             );
             println!("  {}", "-".repeat(76).dimmed());
             for ix in &idl.instructions {
-                let disc = format_discriminator(&instruction_discriminator(ix));
+                let disc = format_discriminator(&ix.get_discriminator());
                 println!(
                     "  {:<32} {:>8} {:>6}  {}",
                     ix.name.green(),
@@ -729,7 +716,7 @@ pub fn run(args: IdlArgs) -> Result<()> {
             println!(
                 "  {} {}",
                 "Discriminator:".bold(),
-                format_discriminator(&instruction_discriminator(ix)).yellow()
+                format_discriminator(&ix.get_discriminator()).yellow()
             );
             println!();
             println!("{}", "Accounts".bold());
@@ -1117,7 +1104,7 @@ pub fn run(args: IdlArgs) -> Result<()> {
 
             // Check instructions
             if let Some(ix) = find_instruction(&idl, name) {
-                let disc = instruction_discriminator(ix);
+                let disc = ix.get_discriminator();
                 results.push(DiscriminatorResult {
                     name: ix.name.clone(),
                     namespace: "global".to_string(),

@@ -52,11 +52,100 @@ pub struct IdlMetadata {
 }
 
 /// Steel-style discriminant format: {"type": "u8", "value": N}
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// Fields are private so [`try_new`](Self::try_new) is the only way to build one. A struct literal
+/// bypassed the range check when it lived in the deserializer alone, which is how a Codama IDL
+/// reached `{"type": "u8", "value": 256}` and encoded it as `[0]`.
+#[derive(Debug, Clone, Serialize)]
 pub struct SteelDiscriminant {
     #[serde(rename = "type")]
-    pub type_: String,
-    pub value: u64,
+    type_: String,
+    value: u64,
+}
+
+impl SteelDiscriminant {
+    /// The only constructor. Rejects a value that does not fit its declared type rather than
+    /// truncating it: `{"type": "u32", "value": 4294967296}` would encode as `[0, 0, 0, 0]` and
+    /// collide with whichever instruction genuinely declares discriminant zero — two instructions
+    /// sharing a tag, decided silently at parse time.
+    pub fn try_new(type_: impl Into<String>, value: u64) -> Result<Self, String> {
+        let type_ = type_.into();
+        let max = Self::max_for_width(Self::width_of(&type_));
+        if value > max {
+            return Err(format!(
+                "discriminant value {value} does not fit its declared type {type_} (max {max})"
+            ));
+        }
+
+        Ok(Self { type_, value })
+    }
+
+    /// Declared type name, e.g. `"u32"`.
+    pub fn declared_type(&self) -> &str {
+        &self.type_
+    }
+
+    /// The tag's numeric value.
+    pub fn value(&self) -> u64 {
+        self.value
+    }
+
+    /// Encoded width in bytes, taken from the declared type.
+    ///
+    /// Steel writes a single byte. Bincode-encoded native programs (System Program, Address
+    /// Lookup Table) write a little-endian `u32` enum tag instead, so the width cannot be
+    /// assumed. An unrecognised type falls back to one byte, which is what every Steel IDL
+    /// declares.
+    pub fn width(&self) -> usize {
+        Self::width_of(&self.type_)
+    }
+
+    /// Width for a declared type name, for callers holding the name rather than the struct: the
+    /// snapshot deserializer infers a width before any `SteelDiscriminant` exists.
+    pub fn width_of(type_: &str) -> usize {
+        match type_ {
+            "u16" => 2,
+            "u32" => 4,
+            "u64" => 8,
+            _ => 1,
+        }
+    }
+
+    /// Largest value the declared type can hold.
+    fn max_for_width(width: usize) -> u64 {
+        // `1u64 << 64` overflows, so u64 is named rather than computed.
+        if width >= 8 {
+            u64::MAX
+        } else {
+            (1u64 << (width * 8)) - 1
+        }
+    }
+
+    /// The tag as it appears on the wire: little-endian, truncated to [`width`](Self::width).
+    ///
+    /// Truncation is safe because construction rejects a value wider than its declared type.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.value.to_le_bytes()[..self.width()].to_vec()
+    }
+}
+
+/// Routes through [`SteelDiscriminant::try_new`] so a parsed IDL cannot carry a tag its declared
+/// type could not hold. Mirrored by `parseDiscriminant` in the TypeScript hash implementation.
+impl<'de> Deserialize<'de> for SteelDiscriminant {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            #[serde(rename = "type")]
+            type_: String,
+            value: u64,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::try_new(wire.type_, wire.value).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -81,8 +170,7 @@ impl IdlInstruction {
         }
 
         if let Some(disc) = &self.discriminant {
-            let value = disc.value as u8;
-            return vec![value];
+            return disc.to_bytes();
         }
 
         crate::discriminator::anchor_discriminator(&format!("global:{}", to_snake_case(&self.name)))
@@ -487,6 +575,19 @@ impl IdlSpec {
             .unwrap_or("0.1.0")
     }
 
+    /// Width in bytes of the instruction discriminator this IDL's instructions share.
+    ///
+    /// Anchor IDLs carry an 8-byte `discriminator`. Steel and bincode IDLs declare a
+    /// `discriminant` whose type gives the width, so it is read rather than assumed: a native
+    /// program's `u32` enum tag is four bytes, not one.
+    pub fn instruction_discriminator_size(&self) -> usize {
+        self.instructions
+            .iter()
+            .filter(|ix| ix.discriminator.is_empty())
+            .find_map(|ix| ix.discriminant.as_ref())
+            .map_or(8, SteelDiscriminant::width)
+    }
+
     pub fn find_event(&self, event_name: &str) -> Option<&IdlEvent> {
         self.events
             .iter()
@@ -640,5 +741,228 @@ mod length_prefix_tests {
         }
         // Hash stability: an ordinary vec must serialize byte-identically to before.
         assert_eq!(serde_json::to_string(&t).unwrap(), r#"{"vec":"publicKey"}"#);
+    }
+}
+
+#[cfg(test)]
+mod discriminant_width_tests {
+    use super::*;
+
+    fn instruction(discriminant: &str) -> IdlInstruction {
+        serde_json::from_str(&format!(
+            r#"{{"name":"extend_lookup_table","discriminant":{discriminant},"accounts":[],"args":[]}}"#
+        ))
+        .expect("parse instruction")
+    }
+
+    /// Every Steel IDL in the catalog declares `u8`, so this path must stay one byte.
+    #[test]
+    fn a_u8_discriminant_stays_a_single_byte() {
+        let ix = instruction(r#"{"type":"u8","value":7}"#);
+        assert_eq!(ix.get_discriminator(), vec![7]);
+    }
+
+    /// Bincode encodes an enum tag as little-endian `u32`. Emitting one byte would leave the
+    /// payload three bytes short of where the program reads it.
+    #[test]
+    fn a_u32_discriminant_is_four_little_endian_bytes() {
+        let ix = instruction(r#"{"type":"u32","value":2}"#);
+        assert_eq!(ix.get_discriminator(), vec![2, 0, 0, 0]);
+    }
+
+    /// A value past one byte must not wrap into a different instruction's tag.
+    #[test]
+    fn a_wide_value_is_not_truncated_into_a_collision() {
+        let ix = instruction(r#"{"type":"u32","value":256}"#);
+        assert_eq!(ix.get_discriminator(), vec![0, 1, 0, 0]);
+    }
+
+    /// The high half of a `u64` tag must survive. The TypeScript mirror of this encoding reaches
+    /// for bitwise shifts, where a count of 32 or more wraps and repeats the low bytes; the
+    /// shared `idl-u64-discriminant` vector holds both languages to this result.
+    #[test]
+    fn a_u64_discriminant_keeps_its_high_bytes() {
+        let ix = instruction(r#"{"type":"u64","value":4328719365}"#);
+        assert_eq!(ix.get_discriminator(), vec![5, 4, 3, 2, 1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn an_unknown_type_falls_back_to_one_byte() {
+        let ix = instruction(r#"{"type":"nonsense","value":3}"#);
+        assert_eq!(ix.get_discriminator(), vec![3]);
+    }
+
+    #[test]
+    fn an_anchor_discriminator_wins_over_a_declared_discriminant() {
+        let ix: IdlInstruction = serde_json::from_str(
+            r#"{"name":"buy","discriminator":[1,2,3,4,5,6,7,8],
+                "discriminant":{"type":"u32","value":9},"accounts":[],"args":[]}"#,
+        )
+        .expect("parse instruction");
+        assert_eq!(ix.get_discriminator(), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    fn spec(instructions: &str) -> IdlSpec {
+        serde_json::from_str(&format!(r#"{{"name":"p","instructions":{instructions}}}"#))
+            .expect("parse spec")
+    }
+
+    #[test]
+    fn spec_size_follows_the_declared_width() {
+        let idl = spec(
+            r#"[{"name":"a","discriminant":{"type":"u32","value":0},"accounts":[],"args":[]}]"#,
+        );
+        assert_eq!(idl.instruction_discriminator_size(), 4);
+    }
+
+    #[test]
+    fn spec_size_defaults_to_eight_for_anchor() {
+        let idl =
+            spec(r#"[{"name":"a","discriminator":[1,2,3,4,5,6,7,8],"accounts":[],"args":[]}]"#);
+        assert_eq!(idl.instruction_discriminator_size(), 8);
+    }
+
+    /// A value wider than its declared type used to be truncated: `u32` with 2^32 became
+    /// `[0, 0, 0, 0]`, silently colliding with whichever instruction declares zero. Rejecting at
+    /// deserialization means no caller can reach the collision.
+    #[test]
+    fn a_value_wider_than_its_declared_type_is_rejected() {
+        let error = serde_json::from_str::<IdlInstruction>(
+            r#"{"name":"a","discriminant":{"type":"u32","value":4294967296},"accounts":[],"args":[]}"#,
+        )
+        .expect_err("2^32 does not fit a u32");
+
+        assert!(
+            error.to_string().contains("does not fit its declared type"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// The boundary itself must still parse, or every legitimate maximum tag is refused.
+    #[test]
+    fn the_largest_value_for_a_declared_type_still_parses() {
+        let ix = instruction(r#"{"type":"u32","value":4294967295}"#);
+        assert_eq!(ix.get_discriminator(), vec![255, 255, 255, 255]);
+
+        let byte = instruction(r#"{"type":"u8","value":255}"#);
+        assert_eq!(byte.get_discriminator(), vec![255]);
+    }
+
+    /// A `u8` declaration with 256 is the same defect one width down.
+    #[test]
+    fn a_byte_declaration_rejects_a_value_above_255() {
+        assert!(serde_json::from_str::<IdlInstruction>(
+            r#"{"name":"a","discriminant":{"type":"u8","value":256},"accounts":[],"args":[]}"#,
+        )
+        .is_err());
+    }
+
+    /// `u64` has no headroom above it, so the check must not overflow while computing a maximum.
+    #[test]
+    fn a_u64_declaration_accepts_the_whole_range() {
+        let ix = instruction(r#"{"type":"u64","value":18446744073709551615}"#);
+        assert_eq!(ix.get_discriminator(), vec![255; 8]);
+    }
+}
+
+#[cfg(test)]
+mod optional_account_tests {
+    use super::*;
+
+    /// The generated instruction parser warns about IDL drift only when an instruction receives
+    /// fewer accounts than it *requires*, counting `optional` ones as absent-able. If either
+    /// spelling stopped parsing, every optional account would count as required and the parser
+    /// would warn on every legitimate call that omits one.
+    #[test]
+    fn both_spellings_of_optional_parse() {
+        for field in [r#""optional":true"#, r#""isOptional":true"#] {
+            let account: IdlAccountArg = serde_json::from_str(&format!(
+                r#"{{"name":"payer","isMut":true,"isSigner":true,{field}}}"#
+            ))
+            .unwrap_or_else(|e| panic!("parsing {field}: {e}"));
+            assert!(account.optional, "{field} should mark the account optional");
+        }
+    }
+
+    /// Absent means required, so a plain Anchor account is never treated as omittable.
+    #[test]
+    fn an_account_without_the_field_is_required() {
+        let account: IdlAccountArg =
+            serde_json::from_str(r#"{"name":"config","isMut":false,"isSigner":false}"#)
+                .expect("parse account");
+        assert!(!account.optional);
+    }
+
+    /// The count the parser compares against: optional accounts are excluded.
+    #[test]
+    fn required_count_excludes_optional_accounts() {
+        let ix: IdlInstruction = serde_json::from_str(
+            r#"{"name":"extend_lookup_table","accounts":[
+                 {"name":"lookup_table","isMut":true,"isSigner":false},
+                 {"name":"authority","isMut":false,"isSigner":true},
+                 {"name":"payer","isMut":true,"isSigner":true,"optional":true},
+                 {"name":"system_program","isMut":false,"isSigner":false,"optional":true}
+               ],"args":[]}"#,
+        )
+        .expect("parse instruction");
+
+        assert_eq!(ix.accounts.len(), 4, "declared");
+        assert_eq!(
+            ix.accounts.iter().filter(|a| !a.optional).count(),
+            2,
+            "required"
+        );
+    }
+
+    /// The generated warning silences a short account count only when every omitted declaration is
+    /// optional. Counting required accounts instead accepted this shape, where the omitted optional
+    /// sits in the middle: two accounts supplied against `[authority, payer?, system_program]`
+    /// meets the required count of two, yet position 1 is the system program being labelled
+    /// `payer`. `meteora_dlmm.json`'s `add_liquidity` has exactly this layout.
+    #[test]
+    fn a_non_trailing_optional_leaves_the_omitted_suffix_required() {
+        let ix: IdlInstruction = serde_json::from_str(
+            r#"{"name":"add_liquidity","accounts":[
+                 {"name":"authority","isMut":false,"isSigner":true},
+                 {"name":"payer","isMut":true,"isSigner":true,"optional":true},
+                 {"name":"system_program","isMut":false,"isSigner":false}
+               ],"args":[]}"#,
+        )
+        .expect("parse instruction");
+
+        let optional: Vec<bool> = ix.accounts.iter().map(|a| a.optional).collect();
+        let actual_count = 2;
+
+        // What the generated code now asks. The omitted suffix is [system_program], required, so
+        // the mismatch must be reported.
+        let omitted_are_all_optional = optional.iter().skip(actual_count).all(|o| *o);
+        assert!(
+            !omitted_are_all_optional,
+            "the omitted declaration is required, so the count must not be silenced"
+        );
+
+        // The old rule counted required accounts and found the floor met.
+        assert_eq!(
+            optional.iter().filter(|o| !**o).count(),
+            actual_count,
+            "the required floor is met, which is why counting it was not enough"
+        );
+    }
+
+    /// A genuinely trailing optional must stay silent, or every correct IDL warns.
+    #[test]
+    fn a_trailing_optional_suffix_stays_silent() {
+        let ix: IdlInstruction = serde_json::from_str(
+            r#"{"name":"extend","accounts":[
+                 {"name":"lookup_table","isMut":true,"isSigner":false},
+                 {"name":"payer","isMut":true,"isSigner":true,"optional":true},
+                 {"name":"system_program","isMut":false,"isSigner":false,"optional":true}
+               ],"args":[]}"#,
+        )
+        .expect("parse instruction");
+
+        let optional: Vec<bool> = ix.accounts.iter().map(|a| a.optional).collect();
+
+        assert!(optional.iter().skip(1).all(|o| *o), "tail is all optional");
     }
 }

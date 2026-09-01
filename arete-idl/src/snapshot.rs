@@ -85,48 +85,37 @@ impl<'de> Deserialize<'de> for IdlSnapshot {
         // First deserialize to a generic Value to inspect instructions
         let value = serde_json::Value::deserialize(deserializer)?;
 
-        // Check if any instruction has discriminant (Steel-style) vs discriminator (Anchor-style)
+        // Width of the instruction discriminator, when the snapshot does not carry one explicitly.
+        //
+        // Read from the declaration rather than classified as "steel or anchor": that older
+        // question only had answers 1 and 8, so a `u32` discriminant deserialized to width 1 and a
+        // four-byte explicit discriminator to width 8. Both are wrong for the same reason the
+        // generator's heuristic was.
         let discriminant_size = value
             .get("instructions")
             .and_then(|instrs| instrs.as_array())
-            .map(|instrs| {
-                if instrs.is_empty() {
-                    return false;
-                }
-                instrs.iter().all(|ix| {
-                    let discriminator = ix.get("discriminator");
-                    let disc_len = discriminator
+            .and_then(|instrs| {
+                instrs.iter().find_map(|ix| {
+                    // A declared type is the most direct evidence, so it wins.
+                    let declared = ix
+                        .get("discriminant")
+                        .filter(|v| !v.is_null())
+                        .and_then(|d| d.get("type"))
+                        .and_then(|t| t.as_str())
+                        .map(crate::types::SteelDiscriminant::width_of);
+                    if declared.is_some() {
+                        return declared;
+                    }
+
+                    // Otherwise the explicit array's own length is the width: an AST serializer
+                    // that flattened a tag into `discriminator` already encoded it.
+                    ix.get("discriminator")
                         .and_then(|d| d.as_array())
                         .map(|a| a.len())
-                        .unwrap_or(0);
-
-                    // Treat discriminant as present only if the value is non-null.
-                    // ix.get("discriminant").is_some() returns true even for `null`,
-                    // which causes misclassification when the AST serializer writes
-                    // `discriminant: null` explicitly (as the ore AST does).
-                    let has_discriminant = ix
-                        .get("discriminant")
-                        .map(|v| !v.is_null())
-                        .unwrap_or(false);
-                    let has_discriminator = discriminator
-                        .map(|d| {
-                            !d.is_null() && d.as_array().map(|a| !a.is_empty()).unwrap_or(true)
-                        })
-                        .unwrap_or(false);
-
-                    // Steel-style variant 1: explicit discriminant object, no discriminator array
-                    let is_steel_discriminant = has_discriminant && !has_discriminator;
-
-                    // Steel-style variant 2: discriminator is stored as a 1-byte array with no
-                    // discriminant value. This happens when the AST serializer flattens the
-                    // Steel u8 discriminant directly into the discriminator field.
-                    let is_steel_short_discriminator = !has_discriminant && disc_len == 1;
-
-                    is_steel_discriminant || is_steel_short_discriminator
+                        .filter(|len| *len > 0)
                 })
             })
-            .map(|is_steel| if is_steel { 1 } else { 8 })
-            .unwrap_or(8); // Default to 8 if no instructions
+            .unwrap_or(8); // No instructions, or nothing declared: Anchor's width.
 
         // Now deserialize the full struct
         let mut intermediate: IdlSnapshotIntermediate = serde_json::from_value(value)
@@ -248,24 +237,19 @@ pub struct IdlInstructionSnapshot {
 }
 
 impl IdlInstructionSnapshot {
-    /// Get the computed 8-byte discriminator.
-    /// Returns the explicit discriminator if present, otherwise computes from discriminant.
+    /// The discriminator as it appears on the wire.
+    ///
+    /// Explicit bytes win. Otherwise the declared discriminant is encoded at its declared width,
+    /// the same way [`SteelDiscriminant::to_bytes`] does — this used to force a single byte and
+    /// fall back to an Anchor hash for anything above `u8::MAX`, so a `u32` tag in a snapshot
+    /// decoded as a hash of the instruction name and matched nothing on chain.
     pub fn get_discriminator(&self) -> Vec<u8> {
         if !self.discriminator.is_empty() {
             return self.discriminator.clone();
         }
 
         if let Some(disc) = &self.discriminant {
-            match u8::try_from(disc.value) {
-                Ok(value) => return vec![value],
-                Err(_) => {
-                    tracing::warn!(
-                        instruction = %self.name,
-                        value = disc.value,
-                        "Steel discriminant exceeds u8::MAX; falling back to Anchor hash"
-                    );
-                }
-            }
+            return disc.to_bytes();
         }
 
         crate::discriminator::anchor_discriminator(&format!(
@@ -483,10 +467,7 @@ pub fn normalize_idl_snapshot(idl: &crate::types::IdlSpec) -> IdlSnapshot {
         }
     }
 
-    let uses_steel_discriminant = idl.instructions.iter().any(|instruction| {
-        instruction.discriminant.is_some() && instruction.discriminator.is_empty()
-    });
-    let discriminant_size = if uses_steel_discriminant { 1 } else { 8 };
+    let discriminant_size = idl.instruction_discriminator_size();
     let program_id = idl.address.clone().or_else(|| {
         idl.metadata
             .as_ref()
@@ -851,5 +832,93 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unsupported IDL normalization version 2"));
+    }
+
+    /// A snapshot without an explicit `discriminant_size` has its width inferred. That inference
+    /// used to answer only 1 or 8, so a `u32` declaration became a single byte and the snapshot
+    /// decoded a tag the program never writes.
+    #[test]
+    fn an_inferred_width_follows_the_declared_discriminant_type() {
+        let snapshot: IdlSnapshot = serde_json::from_str(
+            r#"{
+                "name": "p",
+                "version": "0.1.0",
+                "program_id": "11111111111111111111111111111111",
+                "instructions": [{
+                    "name": "extend",
+                    "discriminant": { "type": "u32", "value": 2 },
+                    "accounts": [],
+                    "args": []
+                }],
+                "accounts": [],
+                "types": [],
+                "events": [],
+                "errors": []
+            }"#,
+        )
+        .expect("snapshot parses");
+
+        assert_eq!(snapshot.discriminant_size, 4);
+        assert_eq!(snapshot.instructions[0].get_discriminator(), vec![2, 0, 0, 0]);
+    }
+
+    /// An explicit four-byte array carries its own width. Inferring 8 from "not steel" left the
+    /// size and the bytes describing different things.
+    #[test]
+    fn an_inferred_width_follows_an_explicit_discriminator_length() {
+        let snapshot: IdlSnapshot = serde_json::from_str(
+            r#"{
+                "name": "p",
+                "version": "0.1.0",
+                "program_id": "11111111111111111111111111111111",
+                "instructions": [{
+                    "name": "extend",
+                    "discriminator": [2, 0, 0, 0],
+                    "accounts": [],
+                    "args": []
+                }],
+                "accounts": [],
+                "types": [],
+                "events": [],
+                "errors": []
+            }"#,
+        )
+        .expect("snapshot parses");
+
+        assert_eq!(snapshot.discriminant_size, 4);
+        assert_eq!(snapshot.instructions[0].get_discriminator(), vec![2, 0, 0, 0]);
+    }
+
+    /// Steel's single byte and Anchor's eight must both keep their existing answers.
+    #[test]
+    fn inferred_widths_keep_the_steel_and_anchor_defaults() {
+        let steel: IdlSnapshot = serde_json::from_str(
+            r#"{"name":"p","version":"0.1.0","program_id":"11111111111111111111111111111111","instructions":[{"name":"a","discriminant":{"type":"u8","value":3},"accounts":[],"args":[]}],"accounts":[],"types":[],"events":[],"errors":[]}"#,
+        )
+        .expect("steel snapshot parses");
+        assert_eq!(steel.discriminant_size, 1);
+
+        let anchor: IdlSnapshot = serde_json::from_str(
+            r#"{"name":"p","version":"0.1.0","program_id":"11111111111111111111111111111111","instructions":[{"name":"a","discriminator":[1,2,3,4,5,6,7,8],"accounts":[],"args":[]}],"accounts":[],"types":[],"events":[],"errors":[]}"#,
+        )
+        .expect("anchor snapshot parses");
+        assert_eq!(anchor.discriminant_size, 8);
+
+        let empty: IdlSnapshot = serde_json::from_str(
+            r#"{"name":"p","version":"0.1.0","program_id":"11111111111111111111111111111111","instructions":[],"accounts":[],"types":[],"events":[],"errors":[]}"#,
+        )
+        .expect("empty snapshot parses");
+        assert_eq!(empty.discriminant_size, 8);
+    }
+
+    /// An explicit size in the JSON is authoritative and must not be re-inferred.
+    #[test]
+    fn an_explicit_size_is_not_overridden() {
+        let snapshot: IdlSnapshot = serde_json::from_str(
+            r#"{"name":"p","version":"0.1.0","program_id":"11111111111111111111111111111111","discriminant_size":2,"instructions":[{"name":"a","discriminant":{"type":"u32","value":1},"accounts":[],"args":[]}],"accounts":[],"types":[],"events":[],"errors":[]}"#,
+        )
+        .expect("snapshot parses");
+
+        assert_eq!(snapshot.discriminant_size, 2);
     }
 }

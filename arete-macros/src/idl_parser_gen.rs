@@ -209,61 +209,32 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         quote! { #variant_name(events::#event_type) }
     });
 
-    let uses_steel_discriminant = idl
-        .instructions
-        .iter()
-        .any(|ix| ix.discriminant.is_some() && ix.discriminator.is_empty());
-
-    let discriminator_size: usize = if uses_steel_discriminant { 1 } else { 8 };
+    let discriminator_size = idl.instruction_discriminator_size();
 
     let unpack_arms = idl.instructions.iter().map(|ix| {
         let variant_name = format_ident!("{}", to_pascal_case(&ix.name));
-        let discriminator = ix.get_discriminator();
         let disc_size = discriminator_size;
 
-        let has_args = !ix.args.is_empty();
+        // Match the whole tag. A pattern narrower than the discriminator would also match a
+        // different instruction that happens to share the leading byte.
+        let disc_bytes: Vec<u8> = ix
+            .get_discriminator()
+            .into_iter()
+            .chain(std::iter::repeat(0))
+            .take(discriminator_size)
+            .collect();
 
-        if uses_steel_discriminant {
-            let discriminant_value = discriminator.first().copied().unwrap_or(0u8);
-            if has_args {
-                quote! {
-                    [#discriminant_value, ..] => {
-                        let data = instructions::#variant_name::try_from_bytes(&data[#disc_size..])?;
-                        Ok(#ix_enum_name::#variant_name(data))
-                    }
-                }
-            } else {
-                quote! {
-                    [#discriminant_value, ..] => {
-                        Ok(#ix_enum_name::#variant_name(instructions::#variant_name {}))
-                    }
-                }
-            }
+        let body = if ix.args.is_empty() {
+            quote! { Ok(#ix_enum_name::#variant_name(instructions::#variant_name {})) }
         } else {
-            let disc_bytes: Vec<u8> = discriminator.iter().take(8).copied().collect();
-            let d0 = disc_bytes.first().copied().unwrap_or(0);
-            let d1 = disc_bytes.get(1).copied().unwrap_or(0);
-            let d2 = disc_bytes.get(2).copied().unwrap_or(0);
-            let d3 = disc_bytes.get(3).copied().unwrap_or(0);
-            let d4 = disc_bytes.get(4).copied().unwrap_or(0);
-            let d5 = disc_bytes.get(5).copied().unwrap_or(0);
-            let d6 = disc_bytes.get(6).copied().unwrap_or(0);
-            let d7 = disc_bytes.get(7).copied().unwrap_or(0);
-
-            if has_args {
-                quote! {
-                    [#d0, #d1, #d2, #d3, #d4, #d5, #d6, #d7, ..] => {
-                        let data = instructions::#variant_name::try_from_bytes(&data[#disc_size..])?;
-                        Ok(#ix_enum_name::#variant_name(data))
-                    }
-                }
-            } else {
-                quote! {
-                    [#d0, #d1, #d2, #d3, #d4, #d5, #d6, #d7, ..] => {
-                        Ok(#ix_enum_name::#variant_name(instructions::#variant_name {}))
-                    }
-                }
+            quote! {
+                let data = instructions::#variant_name::try_from_bytes(&data[#disc_size..])?;
+                Ok(#ix_enum_name::#variant_name(data))
             }
+        };
+
+        quote! {
+            [#(#disc_bytes),*, ..] => { #body }
         }
     });
 
@@ -391,7 +362,10 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
         let variant_name = format_ident!("{}", to_pascal_case(&ix.name));
         let ix_name = &ix.name;
         let account_names: Vec<_> = ix.accounts.iter().map(|acc| &acc.name).collect();
-        let expected_count = account_names.len();
+        let declared_count = account_names.len();
+        // Declaration order matters, not just the count: which accounts were omitted decides
+        // whether the positional mapping below still lines up.
+        let optional_flags: Vec<_> = ix.accounts.iter().map(|acc| acc.optional).collect();
 
         quote! {
             #ix_enum_name::#variant_name(data) => {
@@ -401,16 +375,31 @@ fn generate_instruction_parser(idl: &IdlSpec, _program_id: &str) -> TokenStream 
 
                 if let Some(obj) = value.as_object_mut() {
                     let account_names: Vec<&str> = vec![#(#account_names),*];
-                    let expected_count = #expected_count;
+                    let optional_flags: Vec<bool> = vec![#(#optional_flags),*];
+                    let declared_count = #declared_count;
                     let actual_count = accounts.len();
 
-                    // Warn if account count doesn't match IDL expectation
-                    if actual_count != expected_count {
+                    // Fewer accounts than declared is benign only when every omitted declaration
+                    // is optional — that is, when they form an optional suffix. Counting required
+                    // accounts instead would accept a non-trailing optional being omitted, which
+                    // shifts every later key onto the wrong name: with
+                    // `[authority, payer?, system_program]` and two accounts supplied, the system
+                    // program gets labelled `payer` and nothing says so.
+                    //
+                    // More accounts than declared stays silent: Anchor's `remaining_accounts` are
+                    // never declared in an IDL, so programs using them exceed the count on every
+                    // call, and warning would tell the reader to "update" a correct IDL.
+                    let omitted_are_all_optional = optional_flags
+                        .iter()
+                        .skip(actual_count)
+                        .all(|optional| *optional);
+
+                    if actual_count < declared_count && !omitted_are_all_optional {
                         arete::runtime::tracing::warn!(
                             instruction = #ix_name,
-                            expected = expected_count,
+                            declared = declared_count,
                             actual = actual_count,
-                            "Account count mismatch - IDL may be out of sync with program. Update your IDL to match the current program version."
+                            "Accounts missing where the IDL declares a required one — decoded account names after the gap may be wrong"
                         );
                     }
 
