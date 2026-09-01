@@ -23,6 +23,11 @@ You are onboarding to **Arete**, a system for programmable real-time data feeds 
 > program without a stack: `a4 explore programs`, `a4 explore program <ref>`,
 > `a4 install program <ref>`.
 >
+> **Ready private programs are installable by their owner.** After
+> `a4 program push --alias <name> --wait`, use `a4 install program <name>` or the
+> returned `upr_...` ID. The lookup uses saved credentials and stays out of public
+> discovery; the stable ID disambiguates any managed-name collision.
+>
 > **SDK generation is a free-tier action, TypeScript and Rust alike.**
 > `a4 install <stack> --ts|--rust` generates a typed client from a public stack in either
 > language, including typed program clients — instruction building, PDA resolution, account
@@ -200,6 +205,10 @@ a4 install <stack-ref> --rust
 
 # Standalone program SDK, packaged alone — TypeScript today
 a4 install program <program-ref> --ts
+
+# Owner-private program after `a4 program push --alias my-program --wait`
+a4 install program my-program --ts
+a4 install program upr_... --ts
 ```
 
 Generated SDKs cover more than stream reads. They expose PDA derivation, account

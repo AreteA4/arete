@@ -57,6 +57,9 @@ Uploads are explicit and never happen as a side effect of `a4 up`:
 
 ```bash
 a4 program push ./idl.json --program-id <PUBKEY> --alias my-program --wait
+a4 install program my-program --ts
+# The stable ID returned by push is an unambiguous fallback:
+a4 install program upr_... --ts
 a4 program list
 a4 program status upr_... --watch
 a4 program events upr_...
@@ -67,7 +70,10 @@ a4 program promote upr_... --make-idl-public
 Every upload begins owner-private. Promotion consent means the baseline IDL may
 be reviewed and committed to a public OSS repository; it does not grant a
 managed or public release automatically. Archival retains immutable content
-while references exist.
+while references exist. Private installs require the credentials saved by
+`a4 auth login` and resolve only the caller's exact alias or `upr_...` ID. They
+do not appear in `a4 explore programs`. Managed registry names take precedence
+over private aliases, so use the stable ID if an alias collides.
 
 ## Daily Workflow
 
@@ -202,6 +208,7 @@ to a different AST.
 a4 install ore-stack-abc123 --ts              # Install a published hosted stack SDK
 a4 install ore-stack-abc123 --rust            # Install a published hosted Rust stack SDK
 a4 install program spl-token --ts             # Install a published hosted program SDK
+a4 install program my-program --ts             # Install your ready owner-private program
 a4 sdk list                                   # List available stacks
 a4 sdk create --manifest .arete/MyStack.stack-manifest.json --ts
 a4 sdk create --manifest .arete/MyStack.stack-manifest.json --rust

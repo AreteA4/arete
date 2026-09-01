@@ -119,11 +119,21 @@ a4 up ./.arete/MyApp.stack-manifest.json
 # Install a hosted SDK pinned to a published Program Release and read binding.
 a4 install program spl-token --ts
 
+# After an owner-private upload reaches ready, install it by alias or stable ID.
+a4 program push ./idl/my_program.json --program-id <PUBKEY> --alias my-program --wait
+a4 install program my-program --ts
+a4 install program upr_... --ts
+
 # Inspect the same deployment-pinned descriptors before installing.
 a4 explore stack ore --json
 a4 explore programs --json
 a4 explore program spl-token --json
 ```
+
+Owner-private install lookups use the credentials saved by `a4 auth login` and
+are intentionally absent from registry discovery. A managed catalog name wins
+an alias collision; the returned `upr_...` ID always identifies the owner's
+registration unambiguously.
 
 A composed client keeps each aliased LiveSpec's live transport and each
 program's Program Read transport independent. Chain reads and transaction

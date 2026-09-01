@@ -5,6 +5,7 @@
 ### Features
 
 * add explicit private program push/list/status/events/archive/promotion commands
+* allow authenticated owners to install ready private programs by alias or `upr_...` ID
 * add exact V2 deployment planning and `a4 up --allow-unverified-programs`
 
 ### Bug Fixes
