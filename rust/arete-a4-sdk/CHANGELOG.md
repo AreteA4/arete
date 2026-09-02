@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.11.0...arete-sdk-v0.12.0) (2026-09-02)
+
+
+### Features
+
+* **cli:** add Arete project manifest dependencies ([729dd97](https://github.com/AreteA4/arete/commit/729dd97284335f4879a65eace78f98e69cc9fd18))
+
 ## [0.11.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.10.0...arete-sdk-v0.11.0) (2026-09-01)
 
 

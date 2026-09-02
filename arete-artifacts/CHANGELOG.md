@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-artifacts-v0.2.2...arete-artifacts-v0.3.0) (2026-09-02)
+
+
+### Features
+
+* **cli:** add Arete project manifest dependencies ([729dd97](https://github.com/AreteA4/arete/commit/729dd97284335f4879a65eace78f98e69cc9fd18))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-hash bumped from 0.3.0 to 0.3.1
+    * arete-idl bumped from 0.4.0 to 0.5.0
+
 ## [0.2.2](https://github.com/AreteA4/arete/compare/arete-artifacts-v0.2.1...arete-artifacts-v0.2.2) (2026-09-01)
 
 

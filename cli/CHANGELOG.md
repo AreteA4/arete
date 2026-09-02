@@ -13,6 +13,31 @@
 * expose continuation cursors for private program and event listings
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.12.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.11.0...a4-cli-v0.12.0) (2026-09-02)
+
+
+### Features
+
+* **cli:** add Arete project manifest dependencies ([729dd97](https://github.com/AreteA4/arete/commit/729dd97284335f4879a65eace78f98e69cc9fd18))
+* **cli:** add project manifest dependency workflows ([e5d1198](https://github.com/AreteA4/arete/commit/e5d11984243c784c69b24f4fe833fe5ea12ea6e6))
+
+
+### Bug Fixes
+
+* **cli:** preserve output ownership across manifest edits ([f7b856d](https://github.com/AreteA4/arete/commit/f7b856d96af9d56a2e635a89eef0ee1ccff76c18))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.11.0 to 0.12.0
+    * arete-artifacts bumped from 0.2.2 to 0.3.0
+    * arete-idl bumped from 0.4.0 to 0.5.0
+    * arete-hash bumped from 0.3.0 to 0.3.1
+  * build-dependencies
+    * arete-hash bumped from 0.3.0 to 0.3.1
+
 ## [0.11.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.10.0...a4-cli-v0.11.0) (2026-09-01)
 
 
