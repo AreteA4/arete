@@ -2,10 +2,10 @@
 //!
 //! This module handles:
 //! 1. Building `SerializableStreamSpec` from parsed macro attributes
-//! 2. Writing AST JSON files during macro expansion for cloud compilation
+//! 2. Projecting that model into exact public artifacts during macro expansion
 //!
 //! The same AST is used for both inline code generation (via `codegen::generate_handlers_from_specs`)
-//! and for the `#[ast_spec]` macro, ensuring identical output.
+//! and internal compiler consumers, ensuring identical output.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -46,7 +46,7 @@ use super::handlers::{find_field_in_instruction, get_join_on_field};
 /// This is the single source of truth for building `SerializableStreamSpec`.
 /// The returned AST is used for:
 /// 1. Code generation via `codegen::generate_handlers_from_specs()`
-/// 2. Writing to disk for `#[ast_spec]` cloud compilation
+/// 2. Projection into ProgramSpec, LiveSpec, and StackManifest artifacts
 ///
 /// # Arguments
 ///

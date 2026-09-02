@@ -5,10 +5,10 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use arete_artifacts::{
     load_live_spec, load_live_spec_v2, load_program_spec, load_stack_manifest,
-    load_stack_manifest_v2, normalize_legacy_stack_v2, normalize_live_spec_v1,
-    normalize_stack_manifest_v1, resolve_stack_composition_v2, selected_views, stack_manifest_v2,
-    LiveSpecArtifact, LiveSpecArtifactV2, ProgramSpecArtifact, SelectedViewV2,
-    StackManifestArtifactV2, DEFAULT_LIVE_ALIAS, STACK_MANIFEST_SCHEMA_V2,
+    load_stack_manifest_v2, normalize_live_spec_v1, normalize_stack_manifest_v1,
+    resolve_stack_composition_v2, selected_views, stack_manifest_v2, LiveSpecArtifact,
+    LiveSpecArtifactV2, ProgramSpecArtifact, SelectedViewV2, StackManifestArtifactV2,
+    DEFAULT_LIVE_ALIAS, STACK_MANIFEST_SCHEMA_V2,
 };
 
 #[derive(Debug, Clone)]
@@ -328,54 +328,6 @@ pub fn build_program(input: &str, output: &str, program_id: Option<&str>) -> Res
     write_json(&output_path, &artifact)?;
     println!("ProgramSpec: {}", output_path.display());
     println!("ProgramSpec hash: {}", artifact.artifact_hash);
-    Ok(())
-}
-
-pub fn build_live(input: &str, output: Option<String>, program_dir: Option<String>) -> Result<()> {
-    let input_path = PathBuf::from(input);
-    let bytes = fs::read(&input_path)
-        .with_context(|| format!("Failed to read legacy stack {}", input_path.display()))?;
-    let artifacts = normalize_legacy_stack_v2(&bytes)
-        .with_context(|| format!("Failed to normalize {}", input_path.display()))?;
-    let parent = input_path.parent().unwrap_or_else(|| Path::new("."));
-    let stem = input_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_suffix(".stack.json"))
-        .unwrap_or("LiveSpec");
-    let output_path = output
-        .map(PathBuf::from)
-        .unwrap_or_else(|| parent.join(format!("{stem}.live-spec.json")));
-    let program_dir = program_dir.map(PathBuf::from).unwrap_or_else(|| {
-        output_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf()
-    });
-    fs::create_dir_all(&program_dir).with_context(|| {
-        format!(
-            "Failed to create ProgramSpec directory {}",
-            program_dir.display()
-        )
-    })?;
-    write_json(&output_path, &artifacts.live_spec)?;
-    for program in &artifacts.legacy.program_specs {
-        let name = &program.payload.idl_snapshot.snapshot.name;
-        if name.is_empty()
-            || !name.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
-            })
-        {
-            bail!("ProgramSpec name '{name}' is not safe for an artifact filename");
-        }
-        write_json(
-            &program_dir.join(format!("{name}.program-spec.json")),
-            program,
-        )?;
-    }
-    println!("LiveSpec: {}", output_path.display());
-    println!("LiveSpec hash: {}", artifacts.live_spec.artifact_hash);
-    println!("ProgramSpecs: {}", artifacts.legacy.program_specs.len());
     Ok(())
 }
 

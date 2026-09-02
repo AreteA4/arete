@@ -487,9 +487,7 @@ pub(crate) async fn handle(
         );
     }
     match result {
-        Ok(value) => {
-            transaction_response(StatusCode::OK, &request_id, upstream_attempted, value)
-        }
+        Ok(value) => transaction_response(StatusCode::OK, &request_id, upstream_attempted, value),
         Err(error) => error.response(&request_id),
     }
 }
@@ -1524,10 +1522,7 @@ mod tests {
             Some(Operation::SignatureStatuses)
         );
         // The batch reads chain state, so it must not require the send scope.
-        assert_eq!(
-            Operation::SignatureStatuses.scope(),
-            "transaction:inspect"
-        );
+        assert_eq!(Operation::SignatureStatuses.scope(), "transaction:inspect");
         assert_eq!(Operation::Send.scope(), "transaction:send");
         assert_eq!(Operation::Simulate.scope(), "transaction:inspect");
     }
@@ -1583,9 +1578,15 @@ mod tests {
         assert_eq!(latest["lastValidBlockHeight"], "99");
 
         let fee_state = state_for(json!({ "context": { "slot": 43 }, "value": 5000 })).await;
-        let fee = dispatch(Operation::Fee, br#"{"message":"AQ=="}"#, None, &fee_state, &mut false)
-            .await
-            .unwrap();
+        let fee = dispatch(
+            Operation::Fee,
+            br#"{"message":"AQ=="}"#,
+            None,
+            &fee_state,
+            &mut false,
+        )
+        .await
+        .unwrap();
         assert_eq!(fee["feeLamports"], "5000");
         assert_eq!(fee["contextSlot"], "43");
 

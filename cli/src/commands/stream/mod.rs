@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use arete_sdk::{Subscription, SubscriptionQuery};
 use clap::Args;
 
-use crate::config::AreteConfig;
+use crate::api_client::ApiClient;
 
 #[derive(Args)]
 pub struct StreamArgs {
@@ -210,78 +210,29 @@ fn validate_ws_url(url: &str) -> Result<()> {
     Ok(())
 }
 
-fn resolve_url(args: &StreamArgs, config_path: &str, view: &str) -> Result<String> {
+fn resolve_url(args: &StreamArgs, _config_path: &str, _view: &str) -> Result<String> {
     // 1. Explicit --url
     if let Some(url) = &args.url {
         validate_ws_url(url)?;
         return Ok(url.clone());
     }
 
-    let config = AreteConfig::load_optional(config_path)?;
-
-    // 2. Explicit --stack name
+    // 2. Explicit hosted stack name
     if let Some(stack_name) = &args.stack {
-        if let Some(config) = &config {
-            if let Some(stack) = config.find_stack(stack_name) {
-                if let Some(url) = &stack.url {
-                    validate_ws_url(url)?;
-                    return Ok(url.clone());
-                }
-                bail!(
-                    "Stack '{}' found in config but has no url set.\n\
-                     Set it in arete.toml or use --url to specify the WebSocket URL.",
-                    stack_name
-                );
-            }
-        }
-        bail!(
-            "Stack '{}' not found in {}.\n\
-             Available stacks: {}",
-            stack_name,
-            config_path,
-            list_stacks(config.as_ref()),
-        );
-    }
-
-    // 3. Auto-match entity name from view
-    let entity_name = view.split('/').next().unwrap_or(view);
-    if let Some(config) = &config {
-        if let Some(stack) = config.find_stack(entity_name) {
-            if let Some(url) = &stack.url {
-                validate_ws_url(url)?;
-                return Ok(url.clone());
-            }
-        }
-        // Only auto-select if there's exactly one stack with a URL (unambiguous)
-        let stacks_with_urls: Vec<_> = config.stacks.iter().filter(|s| s.url.is_some()).collect();
-        if stacks_with_urls.len() == 1 {
-            let stack = stacks_with_urls[0];
-            let name = stack.name.as_deref().unwrap_or(&stack.stack);
-            let url = stack.url.clone().unwrap();
-            validate_ws_url(&url)?;
-            eprintln!("Using stack '{}' (only stack with a URL)", name);
-            return Ok(url);
-        }
+        let install = ApiClient::new()?.get_registry_stack_install(stack_name, None)?;
+        let url = install.websocket_url.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Hosted stack '{stack_name}' has no single WebSocket endpoint; pass --url for the desired live binding"
+            )
+        })?;
+        validate_ws_url(&url)?;
+        return Ok(url);
     }
 
     bail!(
         "Could not determine WebSocket URL.\n\n\
          Specify one of:\n  \
          --url wss://your-stack.stack.arete.run\n  \
-         --stack <name>  (resolves from arete.toml)\n\n\
-         Available stacks: {}",
-        list_stacks(config.as_ref()),
+         --stack <registry-name>  (resolves the hosted endpoint)",
     )
-}
-
-fn list_stacks(config: Option<&AreteConfig>) -> String {
-    match config {
-        Some(config) if !config.stacks.is_empty() => config
-            .stacks
-            .iter()
-            .map(|s| s.name.as_deref().unwrap_or(&s.stack).to_string())
-            .collect::<Vec<_>>()
-            .join(", "),
-        _ => "(none — create arete.toml with [[stacks]] entries)".to_string(),
-    }
 }

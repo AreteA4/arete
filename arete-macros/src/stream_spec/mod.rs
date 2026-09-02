@@ -10,7 +10,7 @@
 //! - `handlers` - Handler generation for events and resolvers (559 LOC)
 //! - `sections` - Nested struct and section processing (464 LOC)
 //! - `computed` - Computed field expression parsing (461 LOC)
-//! - `ast_writer` - AST JSON file generation at compile time (620 LOC)
+//! - `ast_writer` - internal compiler-model construction
 //! - `idl_spec` - IDL-based stream processing (~300 LOC)
 //! - `proto_struct` - Proto-based struct processing (~380 LOC)
 //!
@@ -20,7 +20,7 @@
 //! 2. Parses IDL or proto files based on attribute arguments
 //! 3. Processes each entity struct to extract field mappings
 //! 4. Generates handler functions for each source type
-//! 5. Writes AST JSON file for runtime consumption
+//! 5. Projects exact public artifacts and embeds required compiler data
 //! 6. Returns generated code including state struct and spec function
 //!
 //! ## Example

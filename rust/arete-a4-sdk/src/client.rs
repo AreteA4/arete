@@ -214,7 +214,8 @@ impl TransactionTransport for UnconfiguredTransactionTransport {
         &self,
         _signatures: &[String],
         _options: crate::transactions::SignatureStatusOptions,
-    ) -> Result<Vec<Option<crate::transactions::TransactionSignatureStatus>>, TransactionError> {
+    ) -> Result<Vec<Option<crate::transactions::TransactionSignatureStatus>>, TransactionError>
+    {
         Err(self.error())
     }
 

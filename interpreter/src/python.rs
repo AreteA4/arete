@@ -4771,7 +4771,7 @@ mod tests {
     /// `cargo test -p arete-interpreter regenerate_ore_example_python -- --ignored`
     ///
     /// Rewrites `examples/ore-python/ore_stack/{__init__,models,views,programs}.py`
-    /// from `stacks/ore/.arete/OreStream.stack.json`.
+    /// from the checked-in Ore StackManifest artifact closure.
     ///
     /// Extension wiring reuses the `extensions.json` staged in the output
     /// directory (files sorted, entry last, stems via [`python_module_name`])
@@ -4785,11 +4785,7 @@ mod tests {
             .parent()
             .expect("interpreter crate lives in the repo root")
             .to_path_buf();
-        let spec_json =
-            std::fs::read_to_string(repo_root.join("stacks/ore/.arete/OreStream.stack.json"))
-                .expect("ore stack spec should exist");
-        let spec = crate::versioned::load_stack_spec(&spec_json)
-            .expect("ore stack spec should deserialize");
+        let spec = crate::public_artifacts::ore_stack_spec_from_exact_artifacts();
 
         let out_dir = repo_root.join("examples/ore-python/ore_stack");
         let (extension_modules, extension_entry) =

@@ -381,16 +381,13 @@ fn contains_u64_len_vec(
             matches!(vec_type.length_prefix, Some(IdlLengthPrefix::U64))
                 || contains_u64_len_vec(&vec_type.vec, types, visited)
         }
-        IdlType::Option(option_type) => {
-            contains_u64_len_vec(&option_type.option, types, visited)
-        }
+        IdlType::Option(option_type) => contains_u64_len_vec(&option_type.option, types, visited),
         IdlType::Array(array_type) => array_inner_type(array_type)
             .map(|inner| contains_u64_len_vec(&inner, types, visited))
             .unwrap_or(false),
         IdlType::HashMap(map_type) => {
             let (key, value) = &map_type.hash_map;
-            contains_u64_len_vec(key, types, visited)
-                || contains_u64_len_vec(value, types, visited)
+            contains_u64_len_vec(key, types, visited) || contains_u64_len_vec(value, types, visited)
         }
         IdlType::Tuple(tuple_type) => tuple_type
             .tuple
@@ -467,7 +464,12 @@ fn borsh_read_expr(
             }}
         }
         IdlType::Option(option_type) => {
-            let inner = borsh_read_expr(&option_type.option, types, account_names, in_accounts_module);
+            let inner = borsh_read_expr(
+                &option_type.option,
+                types,
+                account_names,
+                in_accounts_module,
+            );
             quote! {{
                 match <u8 as borsh::BorshDeserialize>::deserialize_reader(reader)? {
                     0 => None,
@@ -1871,6 +1873,10 @@ mod tests {
             },
         });
 
-        assert!(!contains_u64_len_vec(&node, &idl.types, &mut HashSet::new()));
+        assert!(!contains_u64_len_vec(
+            &node,
+            &idl.types,
+            &mut HashSet::new()
+        ));
     }
 }

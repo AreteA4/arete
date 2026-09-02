@@ -505,8 +505,7 @@ impl AreteMcp {
         )
     }
 
-    #[tool(
-        description = "Fetch one cross-protocol recipe by slug (e.g. \
+    #[tool(description = "Fetch one cross-protocol recipe by slug (e.g. \
                           `execute-presale-purchase-via-squads`): an ordered, curated \
                           sequence of steps for a multi-protocol pattern (e.g. wrap a \
                           prepared transaction in a Squads multisig), each step \
@@ -515,8 +514,7 @@ impl AreteMcp {
                           Use when search_knowledge returns a `recipe` result or a \
                           protocol's `related` edges cite one as evidence.\n\n\
                           Pass a bare slug, not a URL. Requires an API key \
-                          (`a4 auth login`)."
-    )]
+                          (`a4 auth login`).")]
     async fn get_recipe(
         &self,
         Parameters(args): Parameters<GetRecipeArgs>,

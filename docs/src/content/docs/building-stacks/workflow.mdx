@@ -108,13 +108,6 @@ The program-only `spec()` is suitable for `Server::builder().spec(spec)` with
 Program Read HTTP routes and does not start projection work unless you enable a
 live runtime.
 
-:::note[Legacy input]
-The compiler may also emit a composite `.stack.json` for compatibility. Treat it
-as an input-only adapter: `a4 live build <legacy.stack.json>` can normalize it
-through **August 31, 2026**. Do not use it as the primary SDK or deployment
-artifact.
-:::
-
 To combine independently built live packages, assign each LiveSpec a stable
 alias and optionally select an exact ordered view allowlist:
 

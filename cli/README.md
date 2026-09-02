@@ -47,9 +47,11 @@ The deployment returns operational bindings for the exact StackManifest.
 | `a4 stack compose` | Compose ProgramSpecs and aliased LiveSpecs |
 | `a4 up <manifest>` | Deploy an exact StackManifest |
 | `a4 status` | Show project overview |
+| `a4 install` | Resolve and install the project dependency graph |
+| `a4 update [kind] [alias]` | Advance selected registry dependencies |
+| `a4 remove <kind> <alias>` | Remove dependency intent, lock, and owned output |
 | `a4 stack list` | List all stacks |
 | `a4 stack show <name>` | Show stack details |
-| `a4 stack rollback <name>` | Rollback to previous version |
 
 ## Private Program Uploads
 
@@ -114,31 +116,12 @@ a4 stack show settlement-game
 
 Shows: entity info, deployment status, version history, recent builds.
 
-### `a4 stack push [name]` (legacy)
-
-Push a legacy configured composite input. This compatibility path is retained
-only through **August 31, 2026**:
-
-```bash
-a4 stack push                  # Push all
-a4 stack push settlement-game  # Push one
-```
-
 ### `a4 stack versions <name>`
 
 Show version history:
 
 ```bash
 a4 stack versions settlement-game --limit 10
-```
-
-### `a4 stack rollback <name>`
-
-Rollback to a previous version:
-
-```bash
-a4 stack rollback settlement-game          # Previous version
-a4 stack rollback settlement-game --to 2   # Specific version
 ```
 
 ### `a4 stack delete <name>`
@@ -163,12 +146,8 @@ a4 up .arete/MyStack.stack-manifest.json --allow-unverified-programs
 ```
 
 The last flag is explicit consent to persist a V2 deployment plan containing
-owner-private, observed-executable programs. It is never inferred from upload,
-is not supported by legacy `.stack.json` deployments, and does not make a
-program global or public.
-
-Composite `.stack.json` is an input-only compatibility adapter through **August
-31, 2026**. New deployments use the manifest path.
+owner-private, observed-executable programs. It is never inferred from upload
+and does not make a program global or public.
 
 ## Authentication
 
@@ -226,26 +205,47 @@ SDK generation writes local source and does not publish a package.
 **File:** `arete.toml`
 
 ```toml
+manifest_version = 1
+
 [project]
 name = "my-project"
+private = true
 
 [sdk]
-output_dir = "./generated"
+targets = ["typescript", "rust"]
 
-# Legacy composite inputs (compatibility only through August 31, 2026)
-[[stacks]]
-name = "my-game"
-stack = ".arete/SettlementGame.stack.json"
+[sdk.typescript]
+output_dir = "./generated/typescript"
+package = "@myorg/my-sdk"
+
+[dependencies.stacks.ore]
+source = { registry = "ore" }
+version = "^1.0.0"
+
+[authoring.stacks.local]
+manifest = "./.arete/SettlementGame.stack-manifest.json"
+artifact_roots = ["./.arete"]
 ```
 
-For most projects, you only need:
+Default outputs are separated by dependency kind. TypeScript installs use
+`<output_dir>/stacks/<alias>` and `<output_dir>/programs/<alias>`; Rust and
+Python use the same kind directories with `<alias>-stack` and
+`<alias>-program` leaf names (including any configured prefix). A stack and a
+program may therefore use the same local alias. Explicit dependency `outputs`
+remain exact path overrides.
 
-```toml
-[project]
-name = "my-project"
+Install every declared dependency and write a deterministic lockfile with:
+
+```bash
+a4 install
+a4 install --locked
+a4 update stack ore
+a4 remove stack ore
 ```
 
-New SDK and deployment workflows pass an explicit StackManifest path.
+`a4 remove` deletes only SDK output carrying matching project provenance and
+refuses directories containing unowned files. Pass `--keep-output` to retain
+the generated directory while removing the manifest and lock entries.
 
 ## Endpoint and DNS Handoff
 
@@ -264,6 +264,7 @@ tenant-local transports.
 | Variable | Description |
 |----------|-------------|
 | `ARETE_API_URL` | Override API endpoint |
+| `ARETE_CREDENTIALS_PATH` | Override the credentials file (useful for isolated local testing) |
 
 ## Troubleshooting
 

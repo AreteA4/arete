@@ -88,17 +88,6 @@ pub struct CreateSpecRequest {
     pub output_path: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UpdateSpecRequest {
-    pub name: Option<String>,
-    pub entity_name: Option<String>,
-    pub crate_name: Option<String>,
-    pub module_path: Option<String>,
-    pub description: Option<String>,
-    pub package_name: Option<String>,
-    pub output_path: Option<String>,
-}
-
 // ============================================================================
 // Spec Version DTOs
 // ============================================================================
@@ -132,22 +121,6 @@ impl SpecVersionWithContent {
             .take(12)
             .collect()
     }
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateSpecVersionRequest {
-    pub ast_payload: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateSpecVersionResponse {
-    pub version: SpecVersionWithContent,
-    /// True if the AST content already existed globally
-    pub content_is_new: bool,
-    /// True if this spec version is new (same spec didn't have this content before)
-    pub version_is_new: bool,
-    #[allow(dead_code)]
-    pub message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,21 +220,6 @@ pub struct BuildEvent {
     pub created_at: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct CreateBuildRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spec_id: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spec_version_id: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ast_payload: Option<serde_json::Value>,
-    /// Branch name for branch deployments (e.g., "preview-abc123")
-    /// Branch deployments get URL: {spec-name}-{branch}.stack.arete.run
-    /// Production deployments (no branch) get: {spec-name}.stack.arete.run
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateArtifactBuildRequest {
@@ -286,7 +244,6 @@ pub struct CreateAliasedLiveSpecArtifact {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateBuildResponse {
     pub build_id: i32,
-    pub status: BuildStatus,
     #[allow(dead_code)]
     pub message: String,
     #[serde(default, alias = "deploymentPlanId")]
@@ -663,20 +620,6 @@ pub struct RegistryProgramItem {
     pub sdk_targets: Vec<String>,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistryAstResponse {
-    pub name: String,
-    pub stack: String,
-    pub websocket_url: String,
-    pub http_url: String,
-    pub websocket_auth: serde_json::Value,
-    pub http_auth: serde_json::Value,
-    pub description: Option<String>,
-    pub visibility: String,
-    pub ast_payload: serde_json::Value,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RegistrySdkExtensionInputKind {
@@ -730,9 +673,6 @@ pub struct RegistryStackInstallResponse {
     pub description: Option<String>,
     pub visibility: String,
     pub spec_version_id: Option<i32>,
-    pub ast_content_hash: String,
-    pub portable_ast_hash: String,
-    pub ast_payload: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_spec_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -908,20 +848,6 @@ impl ApiClient {
         Self::handle_response(response)
     }
 
-    pub fn update_spec(&self, spec_id: i32, req: UpdateSpecRequest) -> Result<Spec> {
-        let api_key = self.require_api_key()?;
-
-        let response = self
-            .client
-            .put(format!("{}/api/specs/{}", self.base_url, spec_id))
-            .bearer_auth(api_key)
-            .json(&req)
-            .send()
-            .context("Failed to send update spec request")?;
-
-        Self::handle_response(response)
-    }
-
     pub fn delete_spec(&self, spec_id: i32) -> Result<()> {
         let api_key = self.require_api_key()?;
 
@@ -941,27 +867,6 @@ impl ApiClient {
     }
 
     // Spec version endpoints
-
-    /// Upload AST to create a new spec version
-    pub fn create_spec_version(
-        &self,
-        spec_id: i32,
-        ast_payload: serde_json::Value,
-    ) -> Result<CreateSpecVersionResponse> {
-        let api_key = self.require_api_key()?;
-
-        let req = CreateSpecVersionRequest { ast_payload };
-
-        let response = self
-            .client
-            .post(format!("{}/api/specs/{}/versions", self.base_url, spec_id))
-            .bearer_auth(api_key)
-            .json(&req)
-            .send()
-            .context("Failed to send create spec version request")?;
-
-        Self::handle_response(response)
-    }
 
     /// Get spec with its latest version info
     pub fn get_spec_with_latest_version(&self, spec_id: i32) -> Result<SpecWithVersion> {
@@ -1195,20 +1100,6 @@ impl ApiClient {
         Self::handle_response(response)
     }
 
-    /// Get raw AST for a deployed registry stack identifier.
-    #[allow(dead_code)]
-    pub fn get_registry_ast_by_stack(&self, stack: &str) -> Result<RegistryAstResponse> {
-        let response = self
-            .with_optional_auth(self.client.get(format!(
-                "{}/api/registry/stacks/{}/ast",
-                self.base_url, stack
-            )))
-            .send()
-            .context("Failed to send registry AST request")?;
-
-        Self::handle_response(response)
-    }
-
     /// Get deployment-pinned install data for a hosted stack.
     ///
     /// `language` selects the hosted devex-extension bundle language. The
@@ -1254,24 +1145,25 @@ impl ApiClient {
         Self::handle_response(response)
     }
 
+    /// Resolve a complete project dependency batch against one exact registry snapshot.
+    pub fn resolve_registry_dependencies(
+        &self,
+        request: &crate::project::resolver::RegistryResolveRequest,
+    ) -> Result<crate::project::resolver::RegistryResolveResponse> {
+        let response = self
+            .with_optional_auth(
+                self.client
+                    .post(format!("{}/api/registry/v1/resolve", self.base_url))
+                    .json(request),
+            )
+            .send()
+            .context("Failed to send registry dependency resolver request")?;
+        Self::handle_response(response)
+    }
+
     // ========================================================================
     // Build endpoints
     // ========================================================================
-
-    /// Create a new build
-    pub fn create_build(&self, req: CreateBuildRequest) -> Result<CreateBuildResponse> {
-        let api_key = self.require_api_key()?;
-
-        let response = self
-            .client
-            .post(format!("{}/api/builds", self.base_url))
-            .bearer_auth(api_key)
-            .json(&req)
-            .send()
-            .context("Failed to send create build request")?;
-
-        Self::handle_response(response)
-    }
 
     /// Create a build from explicit public artifacts.
     pub fn create_artifact_build(
@@ -1657,6 +1549,13 @@ impl ApiClient {
     // Credentials management
 
     fn credentials_path() -> Result<PathBuf> {
+        if let Some(path) = std::env::var_os("ARETE_CREDENTIALS_PATH") {
+            let path = PathBuf::from(path);
+            if path.as_os_str().is_empty() {
+                anyhow::bail!("ARETE_CREDENTIALS_PATH must not be empty");
+            }
+            return Ok(path);
+        }
         let home =
             dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
         Ok(home.join(".arete").join("credentials.toml"))
@@ -2086,9 +1985,6 @@ mod tests {
             "description": null,
             "visibility": "public",
             "specVersionId": 7,
-            "astContentHash": "ast-content",
-            "portableAstHash": "portable-ast",
-            "astPayload": {},
             "liveSpecHash": "live-spec",
             "liveSpec": {"kind": "live-spec"},
             "stackManifestHash": "stack-manifest",
@@ -2098,7 +1994,6 @@ mod tests {
         }))
         .expect("stack install should deserialize");
 
-        assert_eq!(response.portable_ast_hash, "portable-ast");
         assert_eq!(response.programs[0].definition.program_id, "Program222");
         assert_eq!(response.programs[1].definition.program_id, "Program111");
     }
@@ -2385,9 +2280,6 @@ mod tests {
             "description": null,
             "visibility": "public",
             "specVersionId": 5,
-            "astContentHash": "ast-content",
-            "portableAstHash": "portable-ast",
-            "astPayload": {},
             "liveSpecs": live_specs,
             "stackManifestHash": "manifest-hash",
             "stackManifest": {"kind": "stack-manifest"},

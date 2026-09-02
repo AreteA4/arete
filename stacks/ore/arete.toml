@@ -1,9 +1,27 @@
+manifest_version = 1
+
 [project]
 name = "ore"
+private = true
 
-[[stacks]]
-name = "ore"
-stack = "OreStream"
-url = "wss://ore.stack.arete.run"
-rust_output_crate = "../../examples/ore-rust/src/generated/ore"
-rust_module = true
+[install]
+allow_outside_project = true
+
+[sdk]
+targets = ["typescript", "rust"]
+
+[sdk.typescript]
+output_dir = "../../examples/ore-react/src/generated"
+package = "@usearete/react"
+
+[sdk.rust]
+output_dir = "../../examples/ore-rust/src/generated/ore"
+module_mode = true
+
+[authoring.stacks.ore]
+manifest = "./.arete/OreStream.stack-manifest.json"
+artifact_roots = ["./.arete"]
+deployment_name = "ore"
+
+[dependencies.stacks.ore]
+source = { workspace = "ore" }

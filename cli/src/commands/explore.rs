@@ -46,8 +46,6 @@ struct ExploreProgramListOutput {
 #[serde(rename_all = "camelCase")]
 struct StackIdentitySummary {
     stack_manifest_hash: String,
-    ast_content_hash: String,
-    portable_ast_hash: String,
     spec_version_id: Option<i32>,
 }
 
@@ -288,8 +286,6 @@ struct StackDescriptorIdentity {
     stack: String,
     visibility: String,
     spec_version_id: Option<i32>,
-    ast_content_hash: String,
-    portable_ast_hash: String,
     stack_manifest_hash: String,
     live_specs: Vec<(String, String)>,
     programs: Vec<(String, String, String)>,
@@ -568,8 +564,6 @@ fn descriptor_identity(descriptor: &RegistryStackInstallResponse) -> StackDescri
         stack: descriptor.stack.clone(),
         visibility: descriptor.visibility.clone(),
         spec_version_id: descriptor.spec_version_id,
-        ast_content_hash: descriptor.ast_content_hash.clone(),
-        portable_ast_hash: descriptor.portable_ast_hash.clone(),
         stack_manifest_hash: descriptor.stack_manifest_hash.clone(),
         live_specs: descriptor
             .live_specs
@@ -668,8 +662,6 @@ fn build_stack_output(
         visibility: typescript.visibility.clone(),
         identity: StackIdentitySummary {
             stack_manifest_hash: typescript.stack_manifest_hash.clone(),
-            ast_content_hash: typescript.ast_content_hash.clone(),
-            portable_ast_hash: typescript.portable_ast_hash.clone(),
             spec_version_id: typescript.spec_version_id,
         },
         live_specs,
@@ -697,7 +689,7 @@ fn build_stack_output(
         },
         chain,
         transaction,
-        install_command: format!("a4 install {} --ts", typescript.stack),
+        install_command: format!("a4 install stack {} --ts", typescript.stack),
     })
 }
 
@@ -1181,8 +1173,6 @@ fn build_entity_output(
         stack: descriptor.stack.clone(),
         identity: StackIdentitySummary {
             stack_manifest_hash: descriptor.stack_manifest_hash.clone(),
-            ast_content_hash: descriptor.ast_content_hash.clone(),
-            portable_ast_hash: descriptor.portable_ast_hash.clone(),
             spec_version_id: descriptor.spec_version_id,
         },
         live_alias: live_alias.into(),
@@ -1210,10 +1200,8 @@ fn render_stack(output: &StackExploreOutput) -> String {
         text.push_str(&format!("  Description: {description}\n"));
     }
     text.push_str(&format!(
-        "\nIdentities\n  StackManifest: {}\n  AST content: {}\n  Portable AST: {}\n",
-        output.identity.stack_manifest_hash,
-        output.identity.ast_content_hash,
-        output.identity.portable_ast_hash
+        "\nIdentity\n  StackManifest: {}\n",
+        output.identity.stack_manifest_hash
     ));
     text.push_str("\nLiveSpecs\n");
     for live in &output.live_specs {
@@ -1526,9 +1514,6 @@ mod tests {
             "description": "two lives",
             "visibility": "public",
             "specVersionId": 7,
-            "astContentHash": "ast-exact",
-            "portableAstHash": "portable-exact",
-            "astPayload": {},
             "liveSpecs": [
                 {
                     "alias": "primary",
@@ -1617,7 +1602,6 @@ mod tests {
         let output = build_stack_output(&typescript, &rust).unwrap();
         assert_eq!(output.schema_version, 1);
         assert_eq!(output.identity.stack_manifest_hash, "manifest-exact");
-        assert_eq!(output.identity.ast_content_hash, "ast-exact");
         assert_eq!(
             output
                 .live_specs

@@ -580,12 +580,6 @@ pub fn process_idl_spec(
                 )
             })?;
 
-            crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name).map_err(|e| {
-                syn::Error::new(
-                    module.ident.span(),
-                    format!("Failed to write stack AST: {e}"),
-                )
-            })?;
             crate::ast::writer::write_public_artifacts(
                 &stack_name,
                 &all_program_specs,
@@ -669,20 +663,6 @@ pub fn process_idl_spec(
             }
         }
 
-        let all_program_ids = idl_infos
-            .iter()
-            .map(|info| info.program_id.clone())
-            .collect();
-        let all_idl_snapshots = idl_infos
-            .iter()
-            .map(|info| {
-                let mut snapshot = info.identity.program_spec.idl_snapshot.snapshot.clone();
-                for instruction in &mut snapshot.instructions {
-                    instruction.discriminant = None;
-                }
-                snapshot
-            })
-            .collect();
         let all_program_specs: Vec<arete_hash::ProgramSpecV1> = idl_infos
             .iter()
             .map(|info| info.identity.program_spec.clone())
@@ -705,31 +685,6 @@ pub fn process_idl_spec(
             .into_iter()
             .flatten()
             .collect();
-        let stack_spec = SerializableStackSpec {
-            ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
-            stack_name: stack_name.clone(),
-            program_ids: all_program_ids,
-            idls: all_idl_snapshots,
-            program_specs: all_program_specs.clone(),
-            entities: Vec::new(),
-            pdas: all_pdas.clone(),
-            instructions: all_instructions.clone(),
-            content_hash: None,
-        }
-        .try_with_content_hash()
-        .map_err(|error| {
-            internal_codegen_error(
-                module.ident.span(),
-                format!("failed to serialize program-only stack spec for hashing: {error}"),
-            )
-        })?;
-
-        crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name).map_err(|error| {
-            syn::Error::new(
-                module.ident.span(),
-                format!("Failed to write compatibility program stack AST: {error}"),
-            )
-        })?;
         crate::ast::writer::write_public_artifacts(
             &stack_name,
             &all_program_specs,
