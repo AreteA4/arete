@@ -21,7 +21,7 @@ if [[ -n "$CONFIG_PATH" ]]; then
 fi
 
 echo ""
-echo "Building local ORE stack AST"
+echo "Building local ORE public artifact closure"
 cargo clean --quiet --manifest-path "$ROOT_DIR/stacks/ore/Cargo.toml" --package ore-stack
 cargo build --quiet --locked --manifest-path "$ROOT_DIR/stacks/ore/Cargo.toml"
 
