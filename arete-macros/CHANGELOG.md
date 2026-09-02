@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.11.0...arete-macros-v0.12.0) (2026-09-02)
+
+
+### Features
+
+* **cli:** add Arete project manifest dependencies ([729dd97](https://github.com/AreteA4/arete/commit/729dd97284335f4879a65eace78f98e69cc9fd18))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.4.0 to 0.5.0
+    * arete-hash bumped from 0.3.0 to 0.3.1
+    * arete-artifacts bumped from 0.2.2 to 0.3.0
+
 ## [0.11.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.10.0...arete-macros-v0.11.0) (2026-09-01)
 
 

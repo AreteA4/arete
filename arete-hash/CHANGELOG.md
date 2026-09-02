@@ -6,6 +6,15 @@
 
 * add strict hosted-private Program Release V3 identity and shared vectors
 
+## [0.3.1](https://github.com/AreteA4/arete/compare/arete-hash-v0.3.0...arete-hash-v0.3.1) (2026-09-02)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-idl bumped from 0.4.0 to 0.5.0
+
 ## [0.3.0](https://github.com/AreteA4/arete/compare/arete-hash-v0.2.1...arete-hash-v0.3.0) (2026-09-01)
 
 

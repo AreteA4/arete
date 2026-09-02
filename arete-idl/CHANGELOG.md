@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.4.0...arete-idl-v0.5.0) (2026-09-02)
+
+
+### Features
+
+* **cli:** add Arete project manifest dependencies ([729dd97](https://github.com/AreteA4/arete/commit/729dd97284335f4879a65eace78f98e69cc9fd18))
+
 ## [0.4.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.3.0...arete-idl-v0.4.0) (2026-09-01)
 
 
