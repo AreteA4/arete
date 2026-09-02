@@ -269,7 +269,6 @@ pub fn remove_and_install(
                 kind,
                 alias: alias.to_string(),
                 target: output.target,
-                manifest_hash: existing.manifest_hash.clone(),
             })
             .collect()
     };
@@ -678,7 +677,7 @@ enum ResolvedProjectDependency {
         source: String,
         requirement: String,
         targets: Vec<InstallTarget>,
-        resolved: ResolvedRegistryDependency,
+        resolved: Box<ResolvedRegistryDependency>,
     },
 }
 
@@ -804,7 +803,7 @@ fn resolve_dependencies(
                 source: dependency.source.stable_description(),
                 requirement: request.requirement,
                 targets: dependency.selected_targets(&manifest.document.sdk).to_vec(),
-                resolved: response,
+                resolved: Box::new(response),
             });
         }
     }
@@ -1200,7 +1199,6 @@ struct RemovalOutput {
     kind: DependencyKind,
     alias: String,
     target: InstallTarget,
-    manifest_hash: String,
 }
 
 fn generate_all(
@@ -1388,7 +1386,7 @@ fn attach_project_provenance(
     let mut value: serde_json::Value = serde_json::from_str(&contents)
         .with_context(|| format!("Generated invalid provenance {}", path.display()))?;
     let package_release_hash = match dependency {
-        ResolvedProjectDependency::Registry { resolved, .. } => Some(match resolved {
+        ResolvedProjectDependency::Registry { resolved, .. } => Some(match resolved.as_ref() {
             ResolvedRegistryDependency::Stack {
                 package_release_hash,
                 ..
@@ -1547,7 +1545,6 @@ fn validate_project_output_ownership(output: &RemovalOutput) -> Result<()> {
         ("rootAlias", output.alias.as_str()),
         ("dependencyKind", output.kind.as_str()),
         ("target", output.target.as_str()),
-        ("manifestHash", output.manifest_hash.as_str()),
         ("generatorContract", GENERATOR_CONTRACT),
     ];
     for (field, expected) in expected {
@@ -1557,6 +1554,16 @@ fn validate_project_output_ownership(output: &RemovalOutput) -> Result<()> {
                 output.final_path.display()
             );
         }
+    }
+    if !project
+        .get("manifestHash")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|hash| hash.starts_with("arete-manifest-v1:"))
+    {
+        bail!(
+            "Refusing to remove SDK output {}: project provenance has no valid installation manifest identity",
+            output.final_path.display()
+        );
     }
     Ok(())
 }
@@ -1781,6 +1788,33 @@ version = "^1.0.0"
             .unwrap()
             .unwrap();
         assert!(lock.dependencies.is_empty());
+        assert!(!root.join("generated/typescript/programs/demo").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remove_accepts_owned_output_after_unrelated_manifest_change() {
+        let (root, manifest_path) = removal_fixture();
+        let installed_hash = ProjectManifest::load(&manifest_path).unwrap().manifest_hash;
+        let source = fs::read_to_string(&manifest_path).unwrap();
+        let updated = source.replace(
+            "output_dir = \"./generated/typescript\"",
+            "output_dir = \"./generated/typescript\"\npackage = \"@example/changed\"",
+        );
+        fs::write(&manifest_path, updated).unwrap();
+        assert_ne!(
+            ProjectManifest::load(&manifest_path).unwrap().manifest_hash,
+            installed_hash
+        );
+
+        remove_and_install(
+            &manifest_path,
+            DependencyKind::Program,
+            "demo",
+            RemoveDependencyOptions::default(),
+        )
+        .unwrap();
+
         assert!(!root.join("generated/typescript/programs/demo").exists());
         fs::remove_dir_all(root).unwrap();
     }

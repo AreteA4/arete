@@ -55,7 +55,7 @@ pub enum ResolvedRegistryDependency {
         version: String,
         package_release_hash: String,
         generator_contract: String,
-        install: crate::api_client::RegistryProgramInstallResponse,
+        install: Box<crate::api_client::RegistryProgramInstallResponse>,
         sdk_extensions: Vec<ResolvedSdkExtension>,
     },
 }
