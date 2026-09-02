@@ -145,12 +145,6 @@ or crates.io is an explicit operator action. Likewise, deployment produces
 endpoint bindings, not a required DNS provider: operators hand those endpoints
 to their chosen DNS/CDN provider and manage records and certificates there.
 
-> **Legacy compatibility:** Composite `.stack.json` files are input-only
-> compatibility artifacts through **August 31, 2026**. Use
-> `a4 live build <legacy.stack.json>` to normalize one; new authoring, SDK
-> generation, and deployment should use ProgramSpec, LiveSpec, and
-> StackManifest files.
-
 ## Repository Structure
 
 - `arete/`: Main umbrella crate

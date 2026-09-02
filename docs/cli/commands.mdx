@@ -109,9 +109,6 @@ a4 up .arete/MyStack.stack-manifest.json --branch staging
 a4 up .arete/MyStack.stack-manifest.json --preview
 ```
 
-Composite `.stack.json` is an input-only compatibility adapter through **August
-31, 2026**. Do not deploy by name for new workflows.
-
 **Options:**
 
 | Flag | Description |
@@ -140,15 +137,6 @@ a4 program build ./idl/my-program.json \
   --output ./.arete/my-program.program-spec.json
 ```
 
-### a4 live build <legacy.stack.json>
-
-Normalize a supported legacy input into a LiveSpec and ProgramSpecs:
-
-```bash
-a4 live build ./Legacy.stack.json \
-  --output ./.arete/Legacy.live-spec.json \
-  --program-dir ./.arete/programs
-```
 
 ### a4 stack compose
 
@@ -174,18 +162,6 @@ a4 stack list
 a4 stack list --json
 ```
 
-### a4 stack push [stack-name] (legacy)
-
-Push a legacy configured composite input. This compatibility command is retained
-only through **August 31, 2026**.
-
-```bash
-# Push all stacks
-a4 stack push
-
-# Push specific stack
-a4 stack push my-stack
-```
 
 ### a4 stack show <stack-name>
 
@@ -214,34 +190,6 @@ a4 stack delete my-stack
 a4 stack delete my-stack --force  # Skip confirmation
 ```
 
-### a4 stack rollback <stack-name>
-
-Rollback to a previous deployment.
-
-```bash
-# Rollback to previous version
-a4 stack rollback my-stack
-
-# Rollback to specific version
-a4 stack rollback my-stack --to 2
-
-# Rollback to specific build
-a4 stack rollback my-stack --build 123
-
-# Rollback branch deployment
-a4 stack rollback my-stack --branch staging
-```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--to <version>` | Target version |
-| `--build <id>` | Target build ID |
-| `--branch <name>` | Branch to rollback |
-| `--rebuild, -r` | Force full rebuild |
-| `--no-wait, -n` | Don't watch progress |
-
 ### a4 stack stop <stack-name>
 
 Stop a running deployment.
@@ -256,25 +204,6 @@ a4 stack stop my-stack --branch staging
 ## Build Commands (Power User)
 
 These commands are for advanced users who need fine-grained control over the build process.
-
-### a4 build create <stack-name>
-
-Create a new build from a stack.
-
-```bash
-a4 build create my-stack
-a4 build create my-stack --version 2
-a4 build create my-stack --ast-file ./my-stack.ast.json
-a4 build create my-stack --no-wait
-```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--version, -v <n>` | Use specific version (default: latest) |
-| `--ast-file <path>` | Use local AST file directly |
-| `--no-wait, -n` | Don't wait for completion |
 
 ### a4 build list
 
@@ -298,75 +227,67 @@ a4 build status 123 --json
 
 ---
 
-## SDK Generation
-
-### a4 install <stack>
-
-Install a published hosted stack SDK.
+## SDK Dependencies
 
 ```bash
-a4 install ore-stack-abc123 --ts
-a4 install ore-stack-abc123 --rust
+a4 install
+a4 install --locked
+a4 install --dry-run
+a4 install stack ore@^1.4.0 --ts
+a4 install program spl-token@=4.0.2 --rust
+a4 update
+a4 update stack ore
+a4 remove program spl-token
+a4 remove stack ore --keep-output
 ```
 
-### a4 install program <program>
+With no package argument, `a4 install` resolves the complete strict
+`arete.toml` graph and atomically commits generated outputs plus
+`arete.lock`. A package add saves dependency intent before resolving the
+whole project. Use `--no-save` for one-off exact registry generation.
 
-Install a published hosted program SDK.
+`a4 remove <stack|program> <alias>` removes the dependency from the manifest,
+prunes its lock entry, and deletes only generated output whose provenance
+matches that project dependency. It refuses output containing unowned files;
+`--keep-output` removes only the manifest and lock entries.
 
-```bash
-a4 install program spl-token --ts
-a4 install program system-program --ts
-```
-
-### a4 sdk list
-
-List stacks available for SDK generation.
-
-```bash
-a4 sdk list
-```
-
-### a4 sdk create --manifest <path> --ts|--rust
-
-Generate local SDK source from one exact StackManifest.
-
-```bash
-a4 sdk create --manifest .arete/MyStack.stack-manifest.json --ts
-a4 sdk create --manifest .arete/MyStack.stack-manifest.json --rust
-a4 sdk create --program-spec .arete/my-program.program-spec.json \
-  --program-only --ts
-```
-
-Generation does not publish packages; a trusted operator publishes reviewed
-npm/crates.io output manually.
-
----
+`a4 sdk list` reports normalized manifest dependencies and lock status.
+Low-level `a4 sdk create` accepts explicit `--manifest` or
+`--program-spec` artifact inputs and hosted exact descriptors.
 
 ## Configuration File
 
-**File:** `arete.toml`
-
 ```toml
+manifest_version = 1
+
 [project]
 name = "my-project"
+private = true
 
-# SDK generation settings
 [sdk]
-output_dir = "./generated"
-typescript_package = "@myorg/my-sdk"
+targets = ["typescript", "rust"]
 
-# Build preferences
-[build]
-watch_by_default = true
+[sdk.typescript]
+output_dir = "./src/generated"
+package = "@my-org/arete-generated"
 
-# Legacy composite inputs (compatibility only through August 31, 2026)
-[[stacks]]
-name = "my-game"
-stack = ".arete/SettlementGame.stack.json"
-description = "Settlement game tracking"
+[dependencies.stacks.ore]
+source = { registry = "ore" }
+version = "^1.4.0"
+
+[authoring.stacks.local]
+manifest = "./.arete/MyStack.stack-manifest.json"
+artifact_roots = ["./.arete"]
 ```
 
----
+Default output paths are kind-scoped. TypeScript uses
+`<output_dir>/stacks/<alias>` or `<output_dir>/programs/<alias>`. Rust and
+Python use those same kind directories with an `<alias>-stack` or
+`<alias>-program` leaf (plus any configured prefix). Stack and program aliases
+may match; explicit per-dependency `outputs` are used exactly as written.
+
+Run `a4 config validate` for offline strict-schema, local artifact closure,
+output collision, path-policy, and lock-freshness checks.
 
 ## Build Process
 
@@ -434,23 +355,12 @@ a4 stack list
 a4 stack stop my-stack --branch feature-x
 ```
 
-### Rollback
-
-```bash
-# Quick rollback to previous version
-a4 stack rollback my-stack
-
-# Rollback to specific version
-a4 stack rollback my-stack --to 2
-```
-
----
-
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `ARETE_API_URL` | Override API endpoint |
+| `ARETE_CREDENTIALS_PATH` | Override the credentials file (useful for isolated local testing) |
 
 ---
 

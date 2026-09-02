@@ -1,38 +1,33 @@
-# Arete Configuration File
-#
-# This file is OPTIONAL for single-stack projects.
-# The CLI can auto-discover AST files in .arete/ directories.
-#
-# Run `a4 init` to auto-generate this file.
+# Arete project dependency manifest
+manifest_version = 1
 
 [project]
 name = "my-project"
+private = true
 
-# SDK generation settings (optional)
+[install]
+allow_outside_project = false
+
 [sdk]
-output_dir = "./generated"              # Default for both languages
-# typescript_output_dir = "./frontend/src/generated"  # Override for TypeScript
-# rust_output_dir = "./crates/generated"              # Override for Rust
-# typescript_package = "@myorg/my-sdk"
+targets = ["typescript", "rust"]
 
-# Build preferences (optional)
-# [build]
-# watch_by_default = true
+[sdk.typescript]
+output_dir = "./src/generated"
+package = "@myorg/my-sdk"
 
-# Stacks - only needed for multi-stack projects or custom naming
-# The CLI auto-discovers .arete/*.ast.json files if no stacks are defined.
+[sdk.rust]
+output_dir = "./crates/generated"
+module_mode = false
+crate_prefix = "my_project"
 
-# Example stack:
-# [[stacks]]
-# name = "my-game"              # Custom name (optional - defaults to kebab-case of entity)
-# ast = "SettlementGame"        # Entity name from AST OR path to .ast.json file
-# description = "My game stack"  # Optional description
-# typescript_output_file = "./src/generated/my-game/index.ts"  # Override output file path
-# rust_output_crate = "./crates/my-game-stack"                 # Override output crate directory
+[dependencies.stacks.ore]
+source = { registry = "ore" }
+version = "^1.0.0"
 
-# Commands:
-#   a4 init                           # Initialize project (auto-detects ASTs)
-#   a4 up                             # Deploy all stacks
-#   a4 stack list                     # List all stacks
-#   a4 stack show <name>              # Show stack details
-#   a4 sdk create typescript <name>   # Generate TypeScript SDK
+[authoring.stacks.local]
+manifest = "./.arete/MyStack.stack-manifest.json"
+artifact_roots = ["./.arete"]
+
+# Install the authored stack explicitly when its SDK is needed.
+[dependencies.stacks.local]
+source = { workspace = "local" }

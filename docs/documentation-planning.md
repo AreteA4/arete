@@ -68,7 +68,7 @@ After `hs deploy`, what URL do they use in their React app?
 cargo new my-spec && cd my-spec
 # Add hyperstack to Cargo.toml
 # Define spec in src/lib.rs
-cargo build  # Generates .hyperstack/*.ast.json
+cargo build  # Generates ProgramSpec, LiveSpec, and StackManifest artifacts
 hs config init
 hs auth login
 hs up my-spec
@@ -160,7 +160,7 @@ createListView<T>(viewPath: string, options?: { transform?: (data: any) => T })
 - `hs auth whoami` - Verify with server
 
 #### Spec Commands
-- `hs spec push [spec-name]` - Push specs with AST
+- `a4 up <manifest>` - Deploy an exact StackManifest artifact closure
 - `hs spec pull` - Pull remote specs
 - `hs spec list` - List remote specs
 - `hs spec versions <name>` - Show version history
@@ -168,7 +168,6 @@ createListView<T>(viewPath: string, options?: { transform?: (data: any) => T })
 - `hs spec delete <name>` - Delete spec
 
 #### Build Commands
-- `hs build create <spec-name>` - Create build
 - `hs build list` - List builds
 - `hs build status <id>` - Get build status
 - `hs build logs <id>` - View build logs
@@ -177,7 +176,6 @@ createListView<T>(viewPath: string, options?: { transform?: (data: any) => T })
 - `hs deploy info <build-id>` - Show deployment info
 - `hs deploy list` - List deployments
 - `hs deploy stop <id>` - Stop deployment
-- `hs deploy rollback <spec>` - Rollback deployment
 
 #### SDK Commands
 - `hs sdk create typescript <spec>` - Generate TS SDK
