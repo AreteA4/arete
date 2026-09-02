@@ -19,7 +19,7 @@ use crate::api_client::{
 use crate::commands::public_artifacts::{
     load_local_artifact_stack, load_local_artifact_stack_with_roots, LocalArtifactStack,
 };
-use crate::config::{discover_ast_files, find_ast_file, to_kebab_case, AreteConfig, DiscoveredAst};
+use crate::config::to_kebab_case;
 use crate::telemetry;
 
 type AliasedLiveSpecs = Vec<(String, arete_artifacts::LiveSpecArtifactV2)>;
@@ -38,10 +38,10 @@ struct RemoteStackAst {
     sdk_name: String,
     hosted_extensions: Option<ResolvedExtensionsArtifact>,
     programs: Vec<RegistryProgramInstallResponse>,
+    require_managed_gateway: bool,
 }
 
 enum ResolvedStackSource {
-    Local(DiscoveredAst),
     LocalArtifacts(Box<LocalArtifactStack>),
     Remote(Box<RemoteStackAst>),
 }
@@ -246,7 +246,8 @@ struct SdkProvenanceGeneratorV2 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SdkProvenanceExtensionsV2 {
-    legacy_provenance_sha256: String,
+    #[serde(alias = "legacyProvenanceSha256")]
+    content_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sdk_extension_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -257,7 +258,8 @@ struct SdkProvenanceExtensionsV2 {
 #[serde(rename_all = "camelCase")]
 struct SdkProvenanceProgramExtensionV2 {
     input: SdkProvenanceInputV2,
-    legacy_provenance_sha256: String,
+    #[serde(alias = "legacyProvenanceSha256")]
+    content_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sdk_extension_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -312,13 +314,12 @@ impl ResolvedStackSource {
     fn output_extensions_fallback(&self) -> OutputExtensionsFallback {
         match self {
             Self::Remote(_) => OutputExtensionsFallback::Ignore,
-            Self::Local(_) | Self::LocalArtifacts(_) => OutputExtensionsFallback::Reuse,
+            Self::LocalArtifacts(_) => OutputExtensionsFallback::Reuse,
         }
     }
 
     fn stack_id(&self) -> &str {
         match self {
-            Self::Local(ast) => ast.stack_id.as_str(),
             Self::LocalArtifacts(stack) => stack.manifest_hash.as_str(),
             Self::Remote(stack) => stack.stack.as_str(),
         }
@@ -326,7 +327,6 @@ impl ResolvedStackSource {
 
     fn sdk_name(&self) -> &str {
         match self {
-            Self::Local(ast) => ast.stack_name.as_str(),
             Self::LocalArtifacts(stack) => stack.stack_manifest.payload.name.as_str(),
             Self::Remote(stack) => stack.sdk_name.as_str(),
         }
@@ -334,7 +334,6 @@ impl ResolvedStackSource {
 
     fn default_websocket_url(&self) -> Option<String> {
         match self {
-            Self::Local(_) => None,
             Self::LocalArtifacts(_) => None,
             Self::Remote(stack) => (stack.live_bindings.len() == 1)
                 .then(|| stack.live_bindings[0].binding.websocket_endpoint.clone()),
@@ -343,7 +342,6 @@ impl ResolvedStackSource {
 
     fn default_http_url(&self) -> Option<String> {
         match self {
-            Self::Local(_) => None,
             Self::LocalArtifacts(_) => None,
             Self::Remote(stack) => (stack.live_bindings.len() == 1)
                 .then(|| stack.live_bindings[0].binding.query_endpoint.clone()),
@@ -352,18 +350,25 @@ impl ResolvedStackSource {
 
     fn hosted_gateway(&self) -> Result<Option<serde_json::Value>> {
         match self {
-            Self::Local(_) | Self::LocalArtifacts(_) => Ok(None),
-            Self::Remote(stack) => Ok(Some(managed_gateway_descriptor(
+            Self::LocalArtifacts(_) => Ok(None),
+            Self::Remote(stack) if stack.require_managed_gateway => {
+                Ok(Some(managed_gateway_descriptor(
+                    stack.chain_binding.as_ref(),
+                    stack.transaction_binding.as_ref(),
+                    &format!("hosted stack '{}'", stack.stack),
+                )?))
+            }
+            Self::Remote(stack) => optional_gateway_descriptor(
                 stack.chain_binding.as_ref(),
                 stack.transaction_binding.as_ref(),
-                &format!("hosted stack '{}'", stack.stack),
-            )?)),
+                &format!("resolved project stack '{}'", stack.stack),
+            ),
         }
     }
 
     fn rust_program_reads(&self) -> Result<Vec<arete_interpreter::rust::RustProgramReadConfig>> {
         match self {
-            Self::Local(_) | Self::LocalArtifacts(_) => Ok(Vec::new()),
+            Self::LocalArtifacts(_) => Ok(Vec::new()),
             Self::Remote(stack) => stack.programs.iter().map(program_read_override).collect(),
         }
     }
@@ -386,17 +391,6 @@ impl ResolvedStackSource {
 
     fn print_source_details(&self) {
         match self {
-            Self::Local(ast) => {
-                println!("  Path: {}", ast.path.display());
-                println!(
-                    "  {}",
-                    "Composite stack input is deprecated; use --manifest with the generated StackManifest."
-                        .yellow()
-                );
-                if !ast.program_ids.is_empty() {
-                    println!("  Program IDs: {}", ast.program_ids.join(", "));
-                }
-            }
             Self::LocalArtifacts(stack) => {
                 println!("  StackManifest: {}", stack.manifest_path.display());
                 println!("  StackManifest Hash: {}", stack.manifest_hash);
@@ -430,7 +424,6 @@ impl ResolvedStackSource {
         require_entities: bool,
     ) -> Result<arete_interpreter::ast::SerializableStackSpec> {
         match self {
-            Self::Local(ast) => load_stack_spec_from_file(ast, require_entities),
             Self::LocalArtifacts(stack) => {
                 let spec = match stack.live_specs.as_slice() {
                     [(alias, live)] => {
@@ -500,7 +493,7 @@ impl ResolvedStackSource {
 
     fn hosted_extensions(&self) -> Option<&ResolvedExtensionsArtifact> {
         match self {
-            Self::Local(_) | Self::LocalArtifacts(_) => None,
+            Self::LocalArtifacts(_) => None,
             Self::Remote(stack) => stack.hosted_extensions.as_ref(),
         }
     }
@@ -540,7 +533,7 @@ impl ResolvedStackSource {
                     )
                 })
                 .collect(),
-            Self::Local(_) | Self::LocalArtifacts(_) => BTreeMap::new(),
+            Self::LocalArtifacts(_) => BTreeMap::new(),
         }
     }
 
@@ -549,10 +542,8 @@ impl ResolvedStackSource {
         stack_spec: &arete_interpreter::ast::SerializableStackSpec,
     ) -> Result<Option<Vec<arete_interpreter::typescript::TypeScriptProgramConfig>>> {
         let mut programs = match self {
-            Self::Local(_) | Self::LocalArtifacts(_) if stack_spec.program_specs.is_empty() => {
-                return Ok(None)
-            }
-            Self::Local(_) | Self::LocalArtifacts(_) => stack_spec
+            Self::LocalArtifacts(_) if stack_spec.program_specs.is_empty() => return Ok(None),
+            Self::LocalArtifacts(_) => stack_spec
                 .program_specs
                 .iter()
                 .map(|program_spec| {
@@ -579,73 +570,36 @@ impl ResolvedStackSource {
 }
 
 pub fn list(config_path: &str) -> Result<()> {
-    let config = AreteConfig::load_optional(config_path)?;
-
-    let discovered = discover_ast_files(None)?;
-
-    let has_config_stacks = config
-        .as_ref()
-        .map(|c| !c.stacks.is_empty())
-        .unwrap_or(false);
-
-    if !has_config_stacks && discovered.is_empty() {
-        println!("{}", "No stacks found.".yellow());
-        println!();
-        println!("To add stacks:");
-        println!("  1. Build your stack crate to generate .arete/*.stack.json files");
-        println!("  2. Run {} to create a configuration", "a4 init".cyan());
+    let (manifest, plan, lock) = crate::project::installer::validate_project(config_path, false)?;
+    if manifest.dependencies().next().is_none() {
+        println!("{}", "No project dependencies.".yellow());
         return Ok(());
     }
-
-    println!("{} Available stacks:\n", "→".blue().bold());
-
-    if let Some(ref cfg) = config {
-        for stack in &cfg.stacks {
-            let name = stack.name.as_deref().unwrap_or(&stack.stack);
-            println!("  {}", name.green().bold());
-            println!("    Stack: {}", stack.stack);
-
-            if let Some(desc) = &stack.description {
-                println!("    Description: {}", desc);
-            }
-
-            if let Some(url) = &stack.url {
-                println!("    URL: {}", url.cyan());
-            }
-
-            let ts_output = cfg.get_typescript_output_path(name, Some(stack), None);
-            let rust_output = cfg.get_rust_output_path(name, Some(stack), None);
-            let python_output = cfg.get_python_output_path(name, Some(stack), None);
-            println!("    TypeScript: {}", ts_output.display());
-            println!("    Rust: {}", rust_output.display());
-            println!("    Python: {}", python_output.display());
-            println!();
-        }
-    }
-
-    let config_asts: std::collections::HashSet<_> = config
+    let locked = lock
         .as_ref()
-        .map(|c| c.stacks.iter().map(|s| s.stack.clone()).collect())
+        .map(|lock| {
+            lock.dependencies
+                .iter()
+                .map(|dependency| dependency.alias.as_str())
+                .collect::<BTreeSet<_>>()
+        })
         .unwrap_or_default();
-
-    for ast in discovered {
-        if !config_asts.contains(&ast.stack_id) {
-            println!("  {} {}", "•".dimmed(), ast.stack_name.green().bold());
-            println!("    Stack: {}", ast.stack_id);
-            println!("    Path: {}", ast.path.display());
-            if !ast.program_ids.is_empty() {
-                println!("    Program IDs: {}", ast.program_ids.join(", "));
+    for (kind, alias, dependency) in manifest.dependencies() {
+        println!(
+            "{} {} ({}) [{}]",
+            kind,
+            alias,
+            dependency.source.stable_description(),
+            if locked.contains(alias.as_str()) {
+                "locked"
+            } else {
+                "unlocked"
             }
-            println!("    {}", "(auto-discovered, not in config)".dimmed());
-            println!();
+        );
+        for output in plan.for_dependency(kind, alias) {
+            println!("  {} -> {}", output.target, output.path.display());
         }
     }
-
-    println!(
-        "Use {} to generate SDK",
-        "a4 sdk create <stack-name> --ts".cyan()
-    );
-
     Ok(())
 }
 
@@ -656,97 +610,15 @@ pub fn sync(
     python: bool,
     stack_filters: Vec<String>,
 ) -> Result<()> {
-    let config = AreteConfig::load(config_path)?;
-    if config.stacks.is_empty() {
-        anyhow::bail!("No stacks are configured in {}", config_path);
+    if ts || rust || python || !stack_filters.is_empty() {
+        anyhow::bail!(
+            "a4 sdk sync is now a project-install compatibility spelling and no longer accepts target or stack filters"
+        );
     }
-
-    let sync_typescript = ts || (!rust && !python);
-    let sync_rust = rust || (!ts && !python);
-    let sync_python = python || (!ts && !rust);
-    let filter_set: BTreeSet<String> = stack_filters.into_iter().collect();
-    let selected = resolve_sync_stack_names(&config, &filter_set)?;
-
-    println!(
-        "{} Syncing {} configured stack(s)...",
-        "→".blue().bold(),
-        selected.len()
-    );
-
-    for stack_name in selected {
-        if sync_typescript {
-            create_typescript(
-                config_path,
-                Some(&stack_name),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                false,
-            )?;
-        }
-        if sync_rust {
-            create_rust(
-                config_path,
-                Some(&stack_name),
-                None,
-                None,
-                false,
-                None,
-                None,
-                None,
-                Vec::new(),
-            )?;
-        }
-        if sync_python {
-            create_python(
-                config_path,
-                Some(&stack_name),
-                None,
-                None,
-                false,
-                None,
-                None,
-                None,
-                Vec::new(),
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-fn resolve_sync_stack_names(
-    config: &AreteConfig,
-    filter_set: &BTreeSet<String>,
-) -> Result<Vec<String>> {
-    let selected: Vec<String> = config
-        .stacks
-        .iter()
-        .filter_map(|stack| {
-            let name = stack.name.as_deref().unwrap_or(&stack.stack);
-            if filter_set.is_empty()
-                || filter_set.contains(name)
-                || filter_set.contains(&stack.stack)
-            {
-                Some(name.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if selected.is_empty() {
-        anyhow::bail!("No configured stacks matched the requested sync filters");
-    }
-
-    Ok(selected)
+    crate::project::installer::install_project(
+        config_path,
+        crate::project::installer::InstallOptions::default(),
+    )
 }
 
 fn load_local_stack_with_roots(
@@ -904,15 +776,9 @@ pub fn create_typescript(
     program_module_values: Vec<String>,
     program_only: bool,
 ) -> Result<()> {
-    let config = AreteConfig::load_optional(config_path)?;
+    let _ = config_path;
     let live_module_imports = parse_live_module_imports(&live_module_values)?;
     let program_module_imports = parse_program_module_imports(&program_module_values)?;
-
-    // Get the config file's directory for resolving relative paths
-    let config_dir = Path::new(config_path)
-        .parent()
-        .unwrap_or(Path::new("."))
-        .to_path_buf();
 
     if let Some(program_spec_path) = program_spec_override {
         let program_spec_path = PathBuf::from(program_spec_path);
@@ -923,21 +789,8 @@ pub fn create_typescript(
             .with_context(|| format!("Invalid ProgramSpec {}", program_spec_path.display()))?
             .artifact;
         let sdk_name = to_kebab_case(&program_spec.payload.idl_snapshot.snapshot.name);
-        let output_path = resolve_typescript_output_path_for_idl(
-            config.as_ref(),
-            &config_dir,
-            &sdk_name,
-            output_override,
-        );
-        let package_name = package_name_override
-            .or_else(|| {
-                config.as_ref().and_then(|cfg| {
-                    cfg.sdk
-                        .as_ref()
-                        .and_then(|sdk| sdk.typescript_package.clone())
-                })
-            })
-            .unwrap_or_else(|| "@usearete/react".to_string());
+        let output_path = resolve_typescript_output_path_for_idl(&sdk_name, output_override);
+        let package_name = package_name_override.unwrap_or_else(|| "@usearete/react".to_string());
 
         println!(
             "{} Generating program SDK from ProgramSpec '{}'...",
@@ -963,21 +816,8 @@ pub fn create_typescript(
     if let Some(idl_path) = idl_override {
         let idl_path = PathBuf::from(idl_path);
         let sdk_name = idl_sdk_name_from_path(&idl_path)?;
-        let output_path = resolve_typescript_output_path_for_idl(
-            config.as_ref(),
-            &config_dir,
-            &sdk_name,
-            output_override,
-        );
-        let package_name = package_name_override
-            .or_else(|| {
-                config.as_ref().and_then(|cfg| {
-                    cfg.sdk
-                        .as_ref()
-                        .and_then(|sdk| sdk.typescript_package.clone())
-                })
-            })
-            .unwrap_or_else(|| "@usearete/react".to_string());
+        let output_path = resolve_typescript_output_path_for_idl(&sdk_name, output_override);
+        let package_name = package_name_override.unwrap_or_else(|| "@usearete/react".to_string());
 
         println!(
             "{} Generating program SDK from IDL '{}'...",
@@ -1026,74 +866,25 @@ pub fn create_typescript(
         let output = output_override
             .map(PathBuf::from)
             .unwrap_or_else(|| default_typescript_output_dir(source.sdk_name()));
-        let package_name = package_name_override
-            .or_else(|| {
-                config.as_ref().and_then(|cfg| {
-                    cfg.sdk
-                        .as_ref()
-                        .and_then(|sdk| sdk.typescript_package.clone())
-                })
-            })
-            .unwrap_or_else(|| "@usearete/react".to_string());
+        let package_name = package_name_override.unwrap_or_else(|| "@usearete/react".to_string());
         (source, output, package_name, url_override, None)
-    } else if let Some(ref cfg) = config {
-        let stack_name = stack_name.ok_or_else(|| {
-            anyhow::anyhow!(
-                "stack name is required unless using --idl with --program-only or --manifest"
-            )
-        })?;
-        println!(
-            "{} Looking for stack '{}'...",
-            "→".blue().bold(),
-            stack_name
-        );
-        if let Some(stack_config) = cfg.find_stack(stack_name) {
-            let source = resolve_stack_source(&client, &stack_config.stack, None)?;
-
-            let name = stack_config.name.as_deref().unwrap_or(&stack_config.stack);
-            let raw_output =
-                cfg.get_typescript_output_path(name, Some(stack_config), output_override.clone());
-
-            // Resolve relative paths relative to the config file's directory
-            let output = if raw_output.is_relative() {
-                config_dir.join(&raw_output)
-            } else {
-                raw_output
-            };
-
-            let pkg = package_name_override
-                .or_else(|| cfg.sdk.as_ref().and_then(|s| s.typescript_package.clone()))
-                .unwrap_or_else(|| "@usearete/react".to_string());
-
-            let websocket_url = url_override
-                .or_else(|| stack_config.url.clone())
-                .or_else(|| source.default_websocket_url());
-            let http_url = source.default_http_url();
-
-            (source, output, pkg, websocket_url, http_url)
-        } else {
-            let (source, output, pkg) =
-                find_stack_by_name(&client, stack_name, output_override, package_name_override)?;
-            let websocket_url = url_override.or_else(|| source.default_websocket_url());
-            let http_url = source.default_http_url();
-            (source, output, pkg, websocket_url, http_url)
-        }
     } else {
         let stack_name = stack_name.ok_or_else(|| {
-            anyhow::anyhow!(
-                "stack name is required unless using --idl with --program-only or --manifest"
-            )
+            anyhow::anyhow!("stack name is required unless using --program-spec or --manifest")
         })?;
         println!(
-            "{} Looking for stack '{}'...",
+            "{} Looking up hosted stack '{}'...",
             "→".blue().bold(),
             stack_name
         );
-        let (source, output, pkg) =
-            find_stack_by_name(&client, stack_name, output_override, package_name_override)?;
+        let source = resolve_remote_stack_source(&client, stack_name, None)?;
+        let output = output_override
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_typescript_output_dir(source.sdk_name()));
+        let package_name = package_name_override.unwrap_or_else(|| "@usearete/react".to_string());
         let websocket_url = url_override.or_else(|| source.default_websocket_url());
         let http_url = source.default_http_url();
-        (source, output, pkg, websocket_url, http_url)
+        (source, output, package_name, websocket_url, http_url)
     };
 
     println!(
@@ -1157,542 +948,6 @@ pub fn create_typescript(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn install_command(
-    install_target: &str,
-    maybe_install_name: Option<&str>,
-    ts: bool,
-    rust: bool,
-    python: bool,
-    output_override: Option<String>,
-    package_name_override: Option<String>,
-    crate_name_override: Option<String>,
-    module_flag: bool,
-    url_override: Option<String>,
-    extensions_override: Option<String>,
-) -> Result<()> {
-    if let Some(install_name) = maybe_install_name {
-        if install_target != "program" {
-            return Err(anyhow::anyhow!(
-                "Unexpected install subcommand '{}'. Supported subcommand: program",
-                install_target
-            ));
-        }
-
-        return install_program(
-            install_name,
-            ts,
-            rust,
-            python,
-            output_override,
-            package_name_override,
-            crate_name_override,
-            module_flag,
-            extensions_override,
-        );
-    }
-
-    install_stack(
-        install_target,
-        ts,
-        rust,
-        python,
-        output_override,
-        package_name_override,
-        crate_name_override,
-        module_flag,
-        url_override,
-        extensions_override,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn install_stack(
-    stack_name: &str,
-    ts: bool,
-    rust: bool,
-    python: bool,
-    output_override: Option<String>,
-    package_name_override: Option<String>,
-    crate_name_override: Option<String>,
-    module_flag: bool,
-    url_override: Option<String>,
-    extensions_override: Option<String>,
-) -> Result<()> {
-    match select_sdk_target(ts, rust, python, "Install which SDK?")? {
-        SdkTarget::TypeScript => install_typescript(
-            stack_name,
-            output_override,
-            package_name_override,
-            url_override,
-            extensions_override,
-        ),
-        SdkTarget::Rust => install_rust(
-            stack_name,
-            output_override,
-            crate_name_override,
-            module_flag,
-            url_override,
-            extensions_override,
-        ),
-        SdkTarget::Python => install_python(
-            stack_name,
-            output_override,
-            package_name_override,
-            module_flag,
-            url_override,
-            extensions_override,
-        ),
-    }
-}
-
-fn install_typescript(
-    stack_name: &str,
-    output_override: Option<String>,
-    package_name_override: Option<String>,
-    url_override: Option<String>,
-    extensions_override: Option<String>,
-) -> Result<()> {
-    println!(
-        "{} Looking up hosted stack '{}'...",
-        "→".blue().bold(),
-        stack_name
-    );
-
-    let client = ApiClient::new()?;
-    let source = resolve_remote_stack_source(&client, stack_name, None)?;
-    let output_path = output_override
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_typescript_output_dir(source.sdk_name()));
-    let package_name = package_name_override.unwrap_or_else(|| "@usearete/react".to_string());
-    let websocket_url = url_override.or_else(|| source.default_websocket_url());
-    let http_url = source.default_http_url();
-
-    println!(
-        "{} Found hosted stack: {}",
-        "✓".green().bold(),
-        source.stack_id().bold()
-    );
-    source.print_source_details();
-    println!("  Output: {}", output_path.display());
-    if let Some(url) = &websocket_url {
-        println!("  WebSocket URL: {}", url.cyan());
-    } else {
-        println!(
-            "  WebSocket URL: {}",
-            "(not provided by hosted stack - placeholder will be generated)".dimmed()
-        );
-    }
-    if let Some(url) = &http_url {
-        println!("  HTTP URL: {}", url.cyan());
-    } else {
-        println!(
-            "  HTTP URL: {}",
-            "(not provided by hosted stack - placeholder will be generated)".dimmed()
-        );
-    }
-
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create output directory: {}", parent.display()))?;
-    }
-
-    println!("\n{} Generating TypeScript SDK...", "→".blue().bold());
-
-    generate_typescript_sdk_from_source(
-        &source,
-        &output_path,
-        &package_name,
-        websocket_url,
-        http_url,
-        extensions_override.as_deref().map(Path::new),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        false,
-    )?;
-
-    println!(
-        "{} Successfully generated TypeScript SDK!",
-        "✓".green().bold()
-    );
-    println!("  Output: {}", output_path.display().to_string().bold());
-
-    telemetry::record_sdk_generated("typescript");
-
-    Ok(())
-}
-
-fn install_rust(
-    stack_name: &str,
-    output_override: Option<String>,
-    crate_name_override: Option<String>,
-    module_flag: bool,
-    url_override: Option<String>,
-    extensions_override: Option<String>,
-) -> Result<()> {
-    println!(
-        "{} Looking up hosted stack '{}'...",
-        "→".blue().bold(),
-        stack_name
-    );
-
-    let client = ApiClient::new()?;
-    let source = resolve_remote_stack_source(&client, stack_name, Some(EXTENSIONS_LANGUAGE_RUST))?;
-    let crate_name = crate_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
-    let output_dir = output_override
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-stack", source.sdk_name())));
-    let stack_url = url_override.or_else(|| source.default_websocket_url());
-
-    println!(
-        "{} Found hosted stack: {}",
-        "✓".green().bold(),
-        source.stack_id().bold()
-    );
-    source.print_source_details();
-    println!("  Output: {}", output_dir.display());
-    if module_flag {
-        println!("  Mode: module (mod.rs)");
-    }
-    if let Some(url) = &stack_url {
-        println!("  URL: {}", url.cyan());
-    } else {
-        println!(
-            "  URL: {}",
-            "(not provided by hosted stack - placeholder will be generated)".dimmed()
-        );
-    }
-
-    println!("\n{} Generating Rust SDK...", "→".blue().bold());
-
-    if let Some(composition) = source.composition_artifacts() {
-        if stack_url.is_some() {
-            anyhow::bail!(
-                "multi-live Rust install requires per-alias URLs; a shared --url is not allowed"
-            );
-        }
-        if extensions_override.is_some() || source.hosted_extensions().is_some() {
-            anyhow::bail!(
-                "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
-            );
-        }
-        let live_urls = match &source {
-            ResolvedStackSource::Remote(stack) => stack
-                .live_bindings
-                .iter()
-                .map(|live| (live.alias.clone(), live.binding.websocket_endpoint.clone()))
-                .collect(),
-            ResolvedStackSource::Local(_) | ResolvedStackSource::LocalArtifacts(_) => {
-                BTreeMap::new()
-            }
-        };
-        let output = arete_interpreter::rust::compile_composed_public_artifacts_v2(
-            composition.program_specs,
-            composition.live_specs,
-            composition.stack_manifest,
-            Some(arete_interpreter::rust::RustCompositionConfig {
-                stack: arete_interpreter::rust::RustStackConfig {
-                    crate_name: crate_name.clone(),
-                    sdk_version: "0.4".to_string(),
-                    module_mode: module_flag,
-                    url: None,
-                    http_url: None,
-                    extension_modules: Vec::new(),
-                    extension_entry: None,
-                    program_reads: source.rust_program_reads()?,
-                    gateway: source.hosted_gateway()?,
-                },
-                live_urls,
-            }),
-        )
-        .map_err(|error| anyhow::anyhow!("Failed to compile Rust composition: {error}"))?;
-        if module_flag {
-            arete_interpreter::rust::write_rust_composition_module(&output, &output_dir)
-                .with_context(|| {
-                    format!(
-                        "Failed to write Rust composition to {}",
-                        output_dir.display()
-                    )
-                })?;
-        } else {
-            arete_interpreter::rust::write_rust_composition_crate(&output, &output_dir)
-                .with_context(|| {
-                    format!(
-                        "Failed to write Rust composition to {}",
-                        output_dir.display()
-                    )
-                })?;
-        }
-        println!(
-            "{} Generated {} aliased Rust stack modules in {}",
-            "✓".green().bold(),
-            output.live_stacks.len(),
-            output_dir.display()
-        );
-        telemetry::record_sdk_generated("rust");
-        return Ok(());
-    }
-
-    let stack_spec = source.load_stack_spec(true)?;
-
-    println!(
-        "{} {} entities in stack",
-        "→".blue().bold(),
-        stack_spec.entities.len()
-    );
-
-    generate_rust_stack_sdk(
-        &source,
-        stack_spec,
-        &output_dir,
-        &crate_name,
-        module_flag,
-        stack_url,
-        extensions_override.as_deref().map(Path::new),
-    )
-}
-
-fn install_python(
-    stack_name: &str,
-    output_override: Option<String>,
-    package_name_override: Option<String>,
-    module_flag: bool,
-    url_override: Option<String>,
-    extensions_override: Option<String>,
-) -> Result<()> {
-    println!(
-        "{} Looking up hosted stack '{}'...",
-        "→".blue().bold(),
-        stack_name
-    );
-
-    let client = ApiClient::new()?;
-    let source =
-        resolve_remote_stack_source(&client, stack_name, Some(EXTENSIONS_LANGUAGE_PYTHON))?;
-    let package_name =
-        package_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
-    let output_dir = output_override
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-py", source.sdk_name())));
-    let stack_url = url_override.or_else(|| source.default_websocket_url());
-
-    println!(
-        "{} Found hosted stack: {}",
-        "✓".green().bold(),
-        source.stack_id().bold()
-    );
-    source.print_source_details();
-    println!("  Output: {}", output_dir.display());
-    if module_flag {
-        println!("  Mode: module (plain package directory)");
-    }
-    if let Some(url) = &stack_url {
-        println!("  URL: {}", url.cyan());
-    } else {
-        println!(
-            "  URL: {}",
-            "(not provided by hosted stack - placeholder will be generated)".dimmed()
-        );
-    }
-
-    println!("\n{} Generating Python SDK...", "→".blue().bold());
-
-    if let Some(composition) = source.composition_artifacts() {
-        if stack_url.is_some() {
-            anyhow::bail!(
-                "multi-live Python install requires per-alias URLs; a shared --url is not allowed"
-            );
-        }
-        if extensions_override.is_some() || source.hosted_extensions().is_some() {
-            anyhow::bail!(
-                "multi-live extensions require a composition-wrapper extension contract; shared stack extensions are not supported"
-            );
-        }
-        let live_urls = match &source {
-            ResolvedStackSource::Remote(stack) => stack
-                .live_bindings
-                .iter()
-                .map(|live| (live.alias.clone(), live.binding.websocket_endpoint.clone()))
-                .collect(),
-            ResolvedStackSource::Local(_) | ResolvedStackSource::LocalArtifacts(_) => {
-                BTreeMap::new()
-            }
-        };
-        let output = arete_interpreter::python::compile_composed_public_artifacts_v2(
-            composition.program_specs,
-            composition.live_specs,
-            composition.stack_manifest,
-            Some(arete_interpreter::python::PythonCompositionConfig {
-                stack: arete_interpreter::python::PythonStackConfig {
-                    package_name: package_name.clone(),
-                    sdk_version: "0.4".to_string(),
-                    module_mode: module_flag,
-                    url: None,
-                    http_url: None,
-                    extension_modules: Vec::new(),
-                    extension_entry: None,
-                    program_reads: source.python_program_reads()?,
-                    gateway: source.hosted_gateway()?,
-                },
-                live_urls,
-            }),
-        )
-        .map_err(|error| anyhow::anyhow!("Failed to compile Python composition: {error}"))?;
-        if module_flag {
-            arete_interpreter::python::write_python_composition_module(&output, &output_dir)
-                .with_context(|| {
-                    format!(
-                        "Failed to write Python composition to {}",
-                        output_dir.display()
-                    )
-                })?;
-        } else {
-            arete_interpreter::python::write_python_composition_package(&output, &output_dir)
-                .with_context(|| {
-                    format!(
-                        "Failed to write Python composition to {}",
-                        output_dir.display()
-                    )
-                })?;
-        }
-        println!(
-            "{} Generated {} aliased Python stack modules in {}",
-            "✓".green().bold(),
-            output.live_stacks.len(),
-            output_dir.display()
-        );
-        telemetry::record_sdk_generated("python");
-        return Ok(());
-    }
-
-    let stack_spec = source.load_stack_spec(true)?;
-
-    println!(
-        "{} {} entities in stack",
-        "→".blue().bold(),
-        stack_spec.entities.len()
-    );
-
-    generate_python_stack_sdk(
-        &source,
-        stack_spec,
-        &output_dir,
-        &package_name,
-        module_flag,
-        stack_url,
-        extensions_override.as_deref().map(Path::new),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn install_program(
-    program: &str,
-    ts: bool,
-    rust: bool,
-    python: bool,
-    output_override: Option<String>,
-    package_name_override: Option<String>,
-    crate_name_override: Option<String>,
-    module_flag: bool,
-    extensions_override: Option<String>,
-) -> Result<()> {
-    match select_sdk_target(ts, rust, python, "Install which SDK?")? {
-        SdkTarget::TypeScript => install_program_typescript(
-            program,
-            output_override,
-            package_name_override,
-            extensions_override,
-        ),
-        SdkTarget::Rust => install_program_rust(
-            program,
-            output_override,
-            crate_name_override,
-            module_flag,
-            extensions_override,
-        ),
-        SdkTarget::Python => install_program_python(
-            program,
-            output_override,
-            package_name_override,
-            module_flag,
-            extensions_override,
-        ),
-    }
-}
-
-fn install_program_typescript(
-    program: &str,
-    output_override: Option<String>,
-    package_name_override: Option<String>,
-    extensions_override: Option<String>,
-) -> Result<()> {
-    println!(
-        "{} Looking up hosted program '{}'...",
-        "→".blue().bold(),
-        program
-    );
-
-    let client = ApiClient::new()?;
-    let install = client
-        .get_registry_program_install(program, None)
-        .with_context(|| {
-            format!(
-                "No accessible hosted program SDK with identifier '{}' was found.",
-                program
-            )
-        })?;
-
-    let sdk_name = install.install_name.clone();
-    let output_path = output_override
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_typescript_output_dir(&sdk_name));
-    let package_name = package_name_override.unwrap_or_else(|| "@usearete/react".to_string());
-
-    println!(
-        "{} Found hosted program: {}",
-        "✓".green().bold(),
-        install.install_name.as_str().bold()
-    );
-    println!("  Program ID: {}", install.definition.program_id);
-    println!("  Display Name: {}", install.display_name);
-    println!("  Output: {}", output_path.display());
-
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create output directory: {}", parent.display()))?;
-    }
-
-    println!(
-        "\n{} Generating TypeScript program SDK...",
-        "→".blue().bold()
-    );
-
-    let hosted_artifact = install
-        .definition
-        .extensions
-        .as_ref()
-        .map(resolved_extensions_artifact_from_registry)
-        .transpose()?;
-    generate_typescript_program_sdk_from_install(
-        &install,
-        &sdk_name,
-        &output_path,
-        &package_name,
-        extensions_override.as_deref().map(Path::new),
-        hosted_artifact.as_ref(),
-    )?;
-
-    println!(
-        "{} Successfully generated TypeScript SDK!",
-        "✓".green().bold()
-    );
-    println!("  Output: {}", output_path.display().to_string().bold());
-
-    telemetry::record_sdk_generated("typescript");
-
-    Ok(())
-}
-
 fn program_read_override(
     install: &RegistryProgramInstallResponse,
 ) -> Result<arete_interpreter::rust::RustProgramReadConfig> {
@@ -1717,65 +972,387 @@ fn program_read_override(
     })
 }
 
-fn program_read_input_pin(install: &RegistryProgramInstallResponse) -> ResolvedExtensionsInputPin {
-    ResolvedExtensionsInputPin {
-        kind: ExtensionsInputKind::ProgramSpec,
-        hash: install.definition.program_spec_hash.clone(),
+pub(crate) struct ProjectGenerationOptions<'a> {
+    pub alias: &'a str,
+    pub target: crate::project::manifest::InstallTarget,
+    pub output: &'a Path,
+    pub typescript_package: &'a str,
+    pub rust_module: bool,
+    pub python_module: bool,
+}
+
+pub(crate) fn generate_project_local_stack(
+    manifest_path: &Path,
+    artifact_roots: &[PathBuf],
+    options: ProjectGenerationOptions<'_>,
+) -> Result<()> {
+    let stack = load_local_artifact_stack_with_roots(manifest_path, artifact_roots)?;
+    generate_project_stack_source(
+        &ResolvedStackSource::LocalArtifacts(Box::new(stack)),
+        options,
+    )
+}
+
+pub(crate) fn generate_project_local_program(
+    program_spec_path: &Path,
+    options: ProjectGenerationOptions<'_>,
+) -> Result<()> {
+    let bytes = fs::read(program_spec_path)
+        .with_context(|| format!("Failed to read ProgramSpec {}", program_spec_path.display()))?;
+    let program_spec = arete_artifacts::load_program_spec(&bytes)
+        .with_context(|| format!("Invalid ProgramSpec {}", program_spec_path.display()))?
+        .artifact;
+    generate_project_program(&program_spec, None, options)
+}
+
+pub(crate) fn generate_project_registry_dependency(
+    dependency: &crate::project::resolver::ResolvedRegistryDependency,
+    options: ProjectGenerationOptions<'_>,
+) -> Result<()> {
+    use crate::project::resolver::ResolvedRegistryDependency;
+
+    match dependency {
+        ResolvedRegistryDependency::Program {
+            alias,
+            install,
+            sdk_extensions,
+            ..
+        } => {
+            if alias != options.alias {
+                anyhow::bail!(
+                    "Resolved program alias '{}' does not match planned alias '{}'",
+                    alias,
+                    options.alias
+                );
+            }
+            let mut install = install.clone();
+            install.definition.extensions = project_sdk_extension(sdk_extensions, options.target)?;
+            let program_spec = program_spec_artifact_from_registry(&install)?;
+            generate_project_program(&program_spec, Some(&install), options)
+        }
+        ResolvedRegistryDependency::Stack {
+            alias,
+            package,
+            stack_manifest_hash,
+            stack_manifest,
+            live_specs,
+            programs,
+            sdk_extensions,
+            ..
+        } => {
+            if alias != options.alias {
+                anyhow::bail!(
+                    "Resolved stack alias '{}' does not match planned alias '{}'",
+                    alias,
+                    options.alias
+                );
+            }
+            let stack_manifest: arete_artifacts::StackManifestArtifactV2 =
+                serde_json::from_value(stack_manifest.clone())
+                    .context("Registry resolver returned an invalid V2 StackManifest")?;
+            stack_manifest
+                .validate()
+                .context("Registry resolver returned an invalid V2 StackManifest")?;
+            if stack_manifest.artifact_hash.to_string() != *stack_manifest_hash {
+                anyhow::bail!("Resolved StackManifest hash does not match its artifact");
+            }
+            if stack_manifest.payload.live_specs.len() != live_specs.len() {
+                anyhow::bail!("Resolved LiveSpec vector does not cover the StackManifest");
+            }
+            let mut verified_live_specs = Vec::with_capacity(live_specs.len());
+            for (position, (reference, resolved)) in stack_manifest
+                .payload
+                .live_specs
+                .iter()
+                .zip(live_specs)
+                .enumerate()
+            {
+                if reference.alias != resolved.alias
+                    || reference.artifact_hash.to_string() != resolved.artifact_hash
+                {
+                    anyhow::bail!(
+                        "Resolved LiveSpec alias/hash mismatch at position {}",
+                        position
+                    );
+                }
+                let artifact: arete_artifacts::LiveSpecArtifactV2 =
+                    serde_json::from_value(resolved.artifact.clone()).with_context(|| {
+                        format!("Resolved LiveSpec '{}' is invalid", resolved.alias)
+                    })?;
+                artifact.validate().with_context(|| {
+                    format!("Resolved LiveSpec '{}' is invalid", resolved.alias)
+                })?;
+                if artifact.artifact_hash.to_string() != resolved.artifact_hash {
+                    anyhow::bail!(
+                        "Resolved LiveSpec '{}' artifact hash is incorrect",
+                        resolved.alias
+                    );
+                }
+                verified_live_specs.push((resolved.alias.clone(), artifact));
+            }
+            let program_specs = programs
+                .iter()
+                .map(program_spec_artifact_from_registry)
+                .collect::<Result<Vec<_>>>()?;
+            arete_artifacts::resolve_stack_composition_v2(
+                &stack_manifest,
+                &verified_live_specs,
+                &program_specs,
+            )
+            .context("Resolved registry stack has an invalid artifact closure")?;
+            let hosted_extensions = project_sdk_extension(sdk_extensions, options.target)?
+                .as_ref()
+                .map(resolved_extensions_artifact_from_registry)
+                .transpose()?;
+            let source = ResolvedStackSource::Remote(Box::new(RemoteStackAst {
+                name: alias.clone(),
+                stack: package.clone(),
+                manifest_hash: stack_manifest_hash.clone(),
+                program_specs,
+                live_specs: verified_live_specs,
+                // Endpoint descriptors are transport state, not lock identity. The
+                // v1 project resolver deliberately permits placeholder endpoints.
+                live_bindings: Vec::new(),
+                stack_manifest,
+                chain_binding: None,
+                transaction_binding: None,
+                exact_views: true,
+                sdk_name: alias.clone(),
+                hosted_extensions,
+                programs: programs.clone(),
+                require_managed_gateway: false,
+            }));
+            generate_project_stack_source(&source, options)
+        }
     }
 }
 
-fn install_program_rust(
-    program: &str,
-    output_override: Option<String>,
-    crate_name_override: Option<String>,
-    module_flag: bool,
-    extensions_override: Option<String>,
+fn project_sdk_extension(
+    extensions: &[crate::project::resolver::ResolvedSdkExtension],
+    target: crate::project::manifest::InstallTarget,
+) -> Result<Option<RegistrySdkExtensionArtifact>> {
+    let selected = extensions
+        .iter()
+        .filter(|extension| extension.target == target.as_str())
+        .collect::<Vec<_>>();
+    if selected.len() > 1 {
+        anyhow::bail!(
+            "Registry resolver returned more than one {} extension",
+            target
+        );
+    }
+    Ok(selected.first().map(|extension| extension.artifact.clone()))
+}
+
+fn generate_project_stack_source(
+    source: &ResolvedStackSource,
+    options: ProjectGenerationOptions<'_>,
 ) -> Result<()> {
-    println!(
-        "{} Looking up hosted program '{}'...",
-        "→".blue().bold(),
-        program
-    );
+    use crate::project::manifest::InstallTarget;
 
-    let client = ApiClient::new()?;
-    let install = client
-        .get_registry_program_install(program, Some(EXTENSIONS_LANGUAGE_RUST))
-        .with_context(|| {
-            format!(
-                "No accessible hosted program SDK with identifier '{}' was found.",
-                program
-            )
-        })?;
+    match options.target {
+        InstallTarget::TypeScript => {
+            generate_typescript_sdk_from_source(
+                source,
+                options.output,
+                options.typescript_package,
+                source.default_websocket_url(),
+                source.default_http_url(),
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                false,
+            )?;
+            if source.composition_artifacts().is_some() {
+                write_composition_provenance(
+                    options.output,
+                    project_stack_manifest_hash(source)?,
+                    ExtensionsInputKind::StackManifest,
+                )?;
+            }
+            Ok(())
+        }
+        InstallTarget::Rust => {
+            if let Some(composition) = source.composition_artifacts() {
+                if source.hosted_extensions().is_some() {
+                    anyhow::bail!(
+                        "multi-live Rust package extensions require a composition-wrapper contract"
+                    );
+                }
+                let output = arete_interpreter::rust::compile_composed_public_artifacts_v2(
+                    composition.program_specs,
+                    composition.live_specs,
+                    composition.stack_manifest,
+                    Some(arete_interpreter::rust::RustCompositionConfig {
+                        stack: arete_interpreter::rust::RustStackConfig {
+                            crate_name: format!("{}-stack", options.alias),
+                            sdk_version: "0.4".to_string(),
+                            module_mode: options.rust_module,
+                            url: None,
+                            http_url: None,
+                            extension_modules: Vec::new(),
+                            extension_entry: None,
+                            program_reads: source.rust_program_reads()?,
+                            gateway: source.hosted_gateway()?,
+                        },
+                        live_urls: BTreeMap::new(),
+                    }),
+                )
+                .map_err(|error| anyhow::anyhow!("Failed to compile Rust composition: {error}"))?;
+                if options.rust_module {
+                    arete_interpreter::rust::write_rust_composition_module(
+                        &output,
+                        options.output,
+                    )?;
+                } else {
+                    arete_interpreter::rust::write_rust_composition_crate(&output, options.output)?;
+                }
+                write_composition_provenance(
+                    options.output,
+                    project_stack_manifest_hash(source)?,
+                    ExtensionsInputKind::StackManifest,
+                )
+            } else {
+                let stack_spec = source.load_stack_spec(true)?;
+                generate_rust_stack_sdk(
+                    source,
+                    stack_spec,
+                    options.output,
+                    &format!("{}-stack", options.alias),
+                    options.rust_module,
+                    source.default_websocket_url(),
+                    None,
+                )
+            }
+        }
+        InstallTarget::Python => {
+            if let Some(composition) = source.composition_artifacts() {
+                if source.hosted_extensions().is_some() {
+                    anyhow::bail!(
+                        "multi-live Python package extensions require a composition-wrapper contract"
+                    );
+                }
+                let output = arete_interpreter::python::compile_composed_public_artifacts_v2(
+                    composition.program_specs,
+                    composition.live_specs,
+                    composition.stack_manifest,
+                    Some(arete_interpreter::python::PythonCompositionConfig {
+                        stack: arete_interpreter::python::PythonStackConfig {
+                            package_name: format!("{}-stack", options.alias),
+                            sdk_version: "0.4".to_string(),
+                            module_mode: options.python_module,
+                            url: None,
+                            http_url: None,
+                            extension_modules: Vec::new(),
+                            extension_entry: None,
+                            program_reads: source.python_program_reads()?,
+                            gateway: source.hosted_gateway()?,
+                        },
+                        live_urls: BTreeMap::new(),
+                    }),
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to compile Python composition: {error}")
+                })?;
+                if options.python_module {
+                    arete_interpreter::python::write_python_composition_module(
+                        &output,
+                        options.output,
+                    )?;
+                } else {
+                    arete_interpreter::python::write_python_composition_package(
+                        &output,
+                        options.output,
+                    )?;
+                }
+                write_composition_provenance(
+                    options.output,
+                    project_stack_manifest_hash(source)?,
+                    ExtensionsInputKind::StackManifest,
+                )
+            } else {
+                let stack_spec = source.load_stack_spec(true)?;
+                generate_python_stack_sdk(
+                    source,
+                    stack_spec,
+                    options.output,
+                    &format!("{}-stack", options.alias),
+                    options.python_module,
+                    source.default_websocket_url(),
+                    None,
+                )
+            }
+        }
+    }
+}
 
-    let sdk_name = install.install_name.clone();
-    let crate_name = crate_name_override.unwrap_or_else(|| format!("{}-program", sdk_name));
-    let output_dir = output_override
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-program", sdk_name)));
-    let program_spec = program_spec_artifact_from_registry(&install)?;
+fn generate_project_program(
+    program_spec: &arete_artifacts::ProgramSpecArtifact,
+    install: Option<&RegistryProgramInstallResponse>,
+    options: ProjectGenerationOptions<'_>,
+) -> Result<()> {
+    use crate::project::manifest::InstallTarget;
+
+    match options.target {
+        InstallTarget::TypeScript => {
+            if let Some(install) = install {
+                let hosted_artifact = install
+                    .definition
+                    .extensions
+                    .as_ref()
+                    .map(resolved_extensions_artifact_from_registry)
+                    .transpose()?;
+                generate_typescript_program_sdk_from_install(
+                    install,
+                    options.alias,
+                    options.output,
+                    options.typescript_package,
+                    None,
+                    hosted_artifact.as_ref(),
+                )
+            } else {
+                generate_typescript_program_sdk_from_artifact(
+                    program_spec,
+                    options.alias,
+                    options.output,
+                    options.typescript_package,
+                    None,
+                )
+            }
+        }
+        InstallTarget::Rust => generate_project_rust_program(program_spec, install, options),
+        InstallTarget::Python => generate_project_python_program(program_spec, install, options),
+    }
+}
+
+fn generate_project_rust_program(
+    program_spec: &arete_artifacts::ProgramSpecArtifact,
+    install: Option<&RegistryProgramInstallResponse>,
+    options: ProjectGenerationOptions<'_>,
+) -> Result<()> {
     let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
-        &sdk_name,
-        std::slice::from_ref(&program_spec),
+        options.alias,
+        std::slice::from_ref(program_spec),
     )
     .map_err(anyhow::Error::msg)?;
-
-    let input_pin = program_read_input_pin(&install);
+    let input_pin = ResolvedExtensionsInputPin {
+        kind: ExtensionsInputKind::ProgramSpec,
+        hash: program_spec.artifact_hash.to_string(),
+    };
     let hosted_artifact = install
-        .definition
-        .extensions
-        .as_ref()
+        .and_then(|install| install.definition.extensions.as_ref())
         .map(resolved_extensions_artifact_from_registry)
         .transpose()?;
-    let module_dir = if module_flag {
-        output_dir.to_path_buf()
+    let module_dir = if options.rust_module {
+        options.output.to_path_buf()
     } else {
-        output_dir.join("src")
+        options.output.join("src")
     };
     let artifact = resolve_rust_extensions_artifact(
-        extensions_override.as_deref().map(Path::new),
+        None,
         hosted_artifact.as_ref(),
         &module_dir,
-        &sdk_name,
+        options.alias,
         OutputExtensionsFallback::Ignore,
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
@@ -1785,109 +1362,90 @@ fn install_program_rust(
         }
         None => (Vec::new(), None),
     };
-
     let rust_config = arete_interpreter::rust::RustStackConfig {
-        crate_name: crate_name.clone(),
+        crate_name: format!("{}-program", options.alias),
         sdk_version: "0.4".to_string(),
-        module_mode: module_flag,
+        module_mode: options.rust_module,
         url: None,
         http_url: None,
         extension_modules,
         extension_entry,
-        program_reads: vec![program_read_override(&install)?],
-        gateway: Some(managed_gateway_descriptor(
-            install.chain_binding.as_ref(),
-            install.transaction_binding.as_ref(),
-            &format!("hosted program '{}'", install.install_name),
-        )?),
+        program_reads: install
+            .map(program_read_override)
+            .transpose()?
+            .into_iter()
+            .collect(),
+        gateway: install
+            .map(|install| {
+                optional_gateway_descriptor(
+                    install.chain_binding.as_ref(),
+                    install.transaction_binding.as_ref(),
+                    &format!("resolved program '{}'", install.install_name),
+                )
+            })
+            .transpose()?
+            .flatten(),
     };
-
-    println!(
-        "{} Found hosted program: {}",
-        "✓".green().bold(),
-        install.install_name.as_str().bold()
-    );
-    println!("  Program ID: {}", install.definition.program_id);
-    println!("  Output: {}", output_dir.display());
-
-    println!("\n{} Generating Rust program SDK...", "→".blue().bold());
-
     let output = arete_interpreter::rust::compile_program_modules(stack_spec, Some(rust_config))
-        .map_err(|e| anyhow::anyhow!("Failed to compile Rust program SDK: {}", e))?;
-
-    if module_flag {
-        arete_interpreter::rust::write_rust_program_module(&output, &output_dir)
-            .with_context(|| format!("Failed to write Rust module to {}", output_dir.display()))?;
+        .map_err(|error| anyhow::anyhow!("Failed to compile Rust program SDK: {error}"))?;
+    let generated = if options.rust_module {
+        arete_interpreter::rust::write_rust_program_module(&output, options.output)?;
+        BTreeSet::from([
+            "mod.rs".to_string(),
+            "types.rs".to_string(),
+            "programs.rs".to_string(),
+        ])
     } else {
-        arete_interpreter::rust::write_rust_program_crate(&output, &output_dir)
-            .with_context(|| format!("Failed to write Rust crate to {}", output_dir.display()))?;
-    }
-
+        arete_interpreter::rust::write_rust_program_crate(&output, options.output)?;
+        BTreeSet::from([
+            "Cargo.toml".to_string(),
+            "src/lib.rs".to_string(),
+            "src/types.rs".to_string(),
+            "src/programs.rs".to_string(),
+        ])
+    };
     if let Some(artifact) = artifact.as_ref() {
         stage_rust_extensions_artifact(artifact, &module_dir, &input_pin)?;
     }
-
-    println!("{} Successfully generated Rust SDK!", "✓".green().bold());
-    println!("  Output: {}", output_dir.display().to_string().bold());
-
-    telemetry::record_sdk_generated("rust");
-
-    Ok(())
+    write_language_sdk_provenance_manifest(
+        options.output,
+        generated,
+        if options.rust_module { "" } else { "src/" },
+        &input_pin,
+        artifact.as_ref(),
+    )
 }
 
-fn install_program_python(
-    program: &str,
-    output_override: Option<String>,
-    package_name_override: Option<String>,
-    module_flag: bool,
-    extensions_override: Option<String>,
+fn generate_project_python_program(
+    program_spec: &arete_artifacts::ProgramSpecArtifact,
+    install: Option<&RegistryProgramInstallResponse>,
+    options: ProjectGenerationOptions<'_>,
 ) -> Result<()> {
-    println!(
-        "{} Looking up hosted program '{}'...",
-        "→".blue().bold(),
-        program
-    );
-
-    let client = ApiClient::new()?;
-    let install = client
-        .get_registry_program_install(program, Some(EXTENSIONS_LANGUAGE_PYTHON))
-        .with_context(|| {
-            format!(
-                "No accessible hosted program SDK with identifier '{}' was found.",
-                program
-            )
-        })?;
-
-    let sdk_name = install.install_name.clone();
-    let package_name = package_name_override.unwrap_or_else(|| format!("{}-program", sdk_name));
-    let output_dir = output_override
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-py-program", sdk_name)));
-    let program_spec = program_spec_artifact_from_registry(&install)?;
+    let package_name = format!("{}-program", options.alias);
     let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
-        &sdk_name,
-        std::slice::from_ref(&program_spec),
+        options.alias,
+        std::slice::from_ref(program_spec),
     )
     .map_err(anyhow::Error::msg)?;
-
-    let input_pin = program_read_input_pin(&install);
+    let input_pin = ResolvedExtensionsInputPin {
+        kind: ExtensionsInputKind::ProgramSpec,
+        hash: program_spec.artifact_hash.to_string(),
+    };
     let hosted_artifact = install
-        .definition
-        .extensions
-        .as_ref()
+        .and_then(|install| install.definition.extensions.as_ref())
         .map(resolved_extensions_artifact_from_registry)
         .transpose()?;
-    let import_module_name = arete_interpreter::python::python_module_name(&package_name);
-    let module_dir = if module_flag {
-        output_dir.to_path_buf()
+    let import_module = arete_interpreter::python::python_module_name(&package_name);
+    let module_dir = if options.python_module {
+        options.output.to_path_buf()
     } else {
-        output_dir.join(&import_module_name)
+        options.output.join(&import_module)
     };
     let artifact = resolve_python_extensions_artifact(
-        extensions_override.as_deref().map(Path::new),
+        None,
         hosted_artifact.as_ref(),
         &module_dir,
-        &sdk_name,
+        options.alias,
         OutputExtensionsFallback::Ignore,
     )?;
     let (extension_modules, extension_entry) = match artifact.as_ref() {
@@ -1897,63 +1455,120 @@ fn install_program_python(
         }
         None => (Vec::new(), None),
     };
-
-    let rust_override = program_read_override(&install)?;
+    let program_reads = install
+        .map(program_read_override)
+        .transpose()?
+        .into_iter()
+        .map(|read| arete_interpreter::python::PythonProgramReadConfig {
+            program_id: read.program_id,
+            program_spec_hash: read.program_spec_hash,
+            program_release_hash: read.program_release_hash,
+            descriptor: read.descriptor,
+        })
+        .collect();
     let python_config = arete_interpreter::python::PythonStackConfig {
-        package_name: package_name.clone(),
+        package_name,
         sdk_version: "0.4".to_string(),
-        module_mode: module_flag,
+        module_mode: options.python_module,
         url: None,
         http_url: None,
         extension_modules,
         extension_entry,
-        program_reads: vec![arete_interpreter::python::PythonProgramReadConfig {
-            program_id: rust_override.program_id,
-            program_spec_hash: rust_override.program_spec_hash,
-            program_release_hash: rust_override.program_release_hash,
-            descriptor: rust_override.descriptor,
-        }],
-        gateway: Some(managed_gateway_descriptor(
-            install.chain_binding.as_ref(),
-            install.transaction_binding.as_ref(),
-            &format!("hosted program '{}'", install.install_name),
-        )?),
+        program_reads,
+        gateway: install
+            .map(|install| {
+                optional_gateway_descriptor(
+                    install.chain_binding.as_ref(),
+                    install.transaction_binding.as_ref(),
+                    &format!("resolved program '{}'", install.install_name),
+                )
+            })
+            .transpose()?
+            .flatten(),
     };
-
-    println!(
-        "{} Found hosted program: {}",
-        "✓".green().bold(),
-        install.install_name.as_str().bold()
-    );
-    println!("  Program ID: {}", install.definition.program_id);
-    println!("  Output: {}", output_dir.display());
-
-    println!("\n{} Generating Python program SDK...", "→".blue().bold());
-
     let output =
         arete_interpreter::python::compile_program_modules(stack_spec, Some(python_config))
-            .map_err(|e| anyhow::anyhow!("Failed to compile Python program SDK: {}", e))?;
-
-    if module_flag {
-        arete_interpreter::python::write_python_program_module(&output, &output_dir).with_context(
-            || format!("Failed to write Python module to {}", output_dir.display()),
-        )?;
+            .map_err(|error| anyhow::anyhow!("Failed to compile Python program SDK: {error}"))?;
+    let generated = if options.python_module {
+        arete_interpreter::python::write_python_program_module(&output, options.output)?;
+        BTreeSet::from([
+            "__init__.py".to_string(),
+            "models.py".to_string(),
+            "programs.py".to_string(),
+        ])
     } else {
-        arete_interpreter::python::write_python_program_package(&output, &output_dir)
-            .with_context(|| {
-                format!("Failed to write Python package to {}", output_dir.display())
-            })?;
-    }
-
+        arete_interpreter::python::write_python_program_package(&output, options.output)?;
+        BTreeSet::from([
+            "pyproject.toml".to_string(),
+            format!("{}/__init__.py", output.module_name),
+            format!("{}/models.py", output.module_name),
+            format!("{}/programs.py", output.module_name),
+        ])
+    };
     if let Some(artifact) = artifact.as_ref() {
         stage_python_extensions_artifact(artifact, &module_dir, &input_pin)?;
     }
+    write_language_sdk_provenance_manifest(
+        options.output,
+        generated,
+        if options.python_module {
+            "".to_string()
+        } else {
+            format!("{}/", output.module_name)
+        }
+        .as_str(),
+        &input_pin,
+        artifact.as_ref(),
+    )
+}
 
-    println!("{} Successfully generated Python SDK!", "✓".green().bold());
-    println!("  Output: {}", output_dir.display().to_string().bold());
+fn write_composition_provenance(
+    output: &Path,
+    stack_manifest_hash: &str,
+    kind: ExtensionsInputKind,
+) -> Result<()> {
+    let mut generated = BTreeSet::new();
+    collect_relative_files(output, output, &mut generated)?;
+    write_language_sdk_provenance_manifest(
+        output,
+        generated,
+        "",
+        &ResolvedExtensionsInputPin {
+            kind,
+            hash: stack_manifest_hash.to_string(),
+        },
+        None,
+    )
+}
 
-    telemetry::record_sdk_generated("python");
+fn project_stack_manifest_hash(source: &ResolvedStackSource) -> Result<&str> {
+    match source {
+        ResolvedStackSource::LocalArtifacts(stack) => Ok(&stack.manifest_hash),
+        ResolvedStackSource::Remote(stack) => Ok(&stack.manifest_hash),
+    }
+}
 
+fn collect_relative_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut BTreeSet<String>,
+) -> Result<()> {
+    for entry in fs::read_dir(directory)
+        .with_context(|| format!("Failed to inspect generated output {}", directory.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_relative_files(root, &path, files)?;
+        } else if path.file_name().and_then(|name| name.to_str()) != Some(SDK_PROVENANCE_FILE) {
+            files.insert(
+                path.strip_prefix(root)
+                    .context("Generated output escaped its staging root")?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -2042,24 +1657,12 @@ fn to_camel_case(input: &str) -> String {
 }
 
 fn resolve_typescript_output_path_for_idl(
-    config: Option<&AreteConfig>,
-    config_dir: &Path,
     sdk_name: &str,
     output_override: Option<String>,
 ) -> PathBuf {
-    let raw_output = if let Some(path) = output_override {
-        PathBuf::from(path)
-    } else if let Some(cfg) = config {
-        PathBuf::from(cfg.get_typescript_output_dir()).join(sdk_name)
-    } else {
-        default_typescript_output_dir(sdk_name)
-    };
-
-    if raw_output.is_relative() {
-        config_dir.join(raw_output)
-    } else {
-        raw_output
-    }
+    output_override
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_typescript_output_dir(sdk_name))
 }
 
 fn extension_entry_stem(base_name: &str) -> String {
@@ -2827,7 +2430,7 @@ fn build_sdk_provenance_manifest_with_program_extensions(
                         kind: program.input_pin.kind,
                         hash: program.input_pin.hash.clone(),
                     },
-                    legacy_provenance_sha256: extensions_artifact_hash(extension),
+                    content_sha256: extensions_artifact_hash(extension),
                     sdk_extension_hash: extension.sdk_extension_hash.clone(),
                     sdk_output_tree_hash: extension.sdk_output_tree_hash.clone(),
                 },
@@ -2874,7 +2477,7 @@ fn build_sdk_provenance_manifest_from_artifacts(
             compiler_hash: sdk_compiler_hash()?.to_string(),
         },
         extensions: extensions.map(|artifact| SdkProvenanceExtensionsV2 {
-            legacy_provenance_sha256: extensions_artifact_hash(artifact),
+            content_sha256: extensions_artifact_hash(artifact),
             sdk_extension_hash: artifact.sdk_extension_hash.clone(),
             sdk_output_tree_hash: artifact.sdk_output_tree_hash.clone(),
         }),
@@ -3049,19 +2652,9 @@ fn prune_stale_sdk_artifacts(
 
 fn stack_input_pin(
     source: &ResolvedStackSource,
-    stack_spec: &arete_interpreter::ast::SerializableStackSpec,
+    _stack_spec: &arete_interpreter::ast::SerializableStackSpec,
 ) -> Result<ResolvedExtensionsInputPin> {
     Ok(match source {
-        ResolvedStackSource::Local(_) => {
-            let bytes = serde_json::to_vec(stack_spec)
-                .context("Failed to serialize local stack for artifact decomposition")?;
-            let artifacts = arete_artifacts::decompose_legacy_stack(&bytes)
-                .context("Failed to derive StackManifest identity for local stack")?;
-            ResolvedExtensionsInputPin {
-                kind: ExtensionsInputKind::StackManifest,
-                hash: artifacts.stack_manifest.artifact_hash.to_string(),
-            }
-        }
         ResolvedStackSource::LocalArtifacts(stack) => ResolvedExtensionsInputPin {
             kind: ExtensionsInputKind::StackManifest,
             hash: stack.manifest_hash.clone(),
@@ -4152,23 +3745,6 @@ export default {export_name};"#,
     }
 }
 
-fn find_stack_by_name(
-    client: &ApiClient,
-    stack_name: &str,
-    output_override: Option<String>,
-    package_name_override: Option<String>,
-) -> Result<(ResolvedStackSource, PathBuf, String)> {
-    let source = resolve_stack_source(client, stack_name, None)?;
-
-    let output = output_override
-        .map(|p| p.into())
-        .unwrap_or_else(|| default_typescript_output_dir(source.sdk_name()));
-
-    let pkg = package_name_override.unwrap_or_else(|| "@usearete/react".to_string());
-
-    Ok((source, output, pkg))
-}
-
 fn generate_typescript_program_sdk_from_idl(
     idl_path: &Path,
     output_path: &Path,
@@ -4758,35 +4334,6 @@ export function create{manifest_pascal}HostedSession(
     Ok(Some(rendered))
 }
 
-fn load_stack_spec_from_file(
-    ast: &DiscoveredAst,
-    require_entities: bool,
-) -> Result<arete_interpreter::ast::SerializableStackSpec> {
-    let ast_json = fs::read_to_string(&ast.path)
-        .with_context(|| format!("Failed to read stack file: {}", ast.path.display()))?;
-
-    load_stack_spec_from_json(&ast_json, &ast.path.display().to_string(), require_entities)
-}
-
-fn load_stack_spec_from_json(
-    ast_json: &str,
-    source_name: &str,
-    require_entities: bool,
-) -> Result<arete_interpreter::ast::SerializableStackSpec> {
-    // Use versioned loader for automatic version detection and migration
-    let stack_spec = arete_interpreter::versioned::load_stack_spec(ast_json)
-        .with_context(|| format!("Failed to load stack AST from {}", source_name))?;
-
-    if require_entities && stack_spec.entities.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Stack AST contains no entities: {}",
-            source_name
-        ));
-    }
-
-    Ok(stack_spec)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn create_rust(
     config_path: &str,
@@ -4799,24 +4346,9 @@ pub fn create_rust(
     manifest_override: Option<String>,
     artifact_dirs: Vec<String>,
 ) -> Result<()> {
-    let config = AreteConfig::load_optional(config_path)?;
+    let _ = config_path;
     let client = ApiClient::new()?;
-
-    let config_dir = Path::new(config_path)
-        .parent()
-        .unwrap_or(Path::new("."))
-        .to_path_buf();
-
-    let stack_config = stack_name.and_then(|name| config.as_ref().and_then(|c| c.find_stack(name)));
-
-    let as_module = module_flag
-        || stack_config.and_then(|s| s.rust_module).unwrap_or_else(|| {
-            config
-                .as_ref()
-                .and_then(|c| c.sdk.as_ref())
-                .map(|s| s.rust_module_mode)
-                .unwrap_or(false)
-        });
+    let as_module = module_flag;
 
     let (source, raw_output_dir, crate_name) = if let Some(manifest_path) = manifest_override {
         let source = ResolvedStackSource::LocalArtifacts(Box::new(load_local_stack_with_roots(
@@ -4837,24 +4369,18 @@ pub fn create_rust(
             "→".blue().bold(),
             stack_name
         );
-        find_stack_for_rust(
-            &client,
-            stack_name,
-            config.as_ref(),
-            output_override,
-            crate_name_override,
-        )?
+        let source =
+            resolve_remote_stack_source(&client, stack_name, Some(EXTENSIONS_LANGUAGE_RUST))?;
+        let crate_name =
+            crate_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
+        let output = output_override
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-stack", source.sdk_name())));
+        (source, output, crate_name)
     };
 
-    let stack_url = url_override
-        .or_else(|| stack_config.and_then(|s| s.url.clone()))
-        .or_else(|| source.default_websocket_url());
-
-    let output_dir = if raw_output_dir.is_relative() {
-        config_dir.join(&raw_output_dir)
-    } else {
-        raw_output_dir
-    };
+    let stack_url = url_override.or_else(|| source.default_websocket_url());
+    let output_dir = raw_output_dir;
 
     println!(
         "{} Found stack: {}",
@@ -4894,9 +4420,7 @@ pub fn create_rust(
                 .iter()
                 .map(|live| (live.alias.clone(), live.binding.websocket_endpoint.clone()))
                 .collect(),
-            ResolvedStackSource::Local(_) | ResolvedStackSource::LocalArtifacts(_) => {
-                BTreeMap::new()
-            }
+            ResolvedStackSource::LocalArtifacts(_) => BTreeMap::new(),
         };
         let output = arete_interpreter::rust::compile_composed_public_artifacts_v2(
             composition.program_specs,
@@ -5102,40 +4626,6 @@ fn generate_rust_stack_sdk(
     Ok(())
 }
 
-fn find_stack_for_rust(
-    client: &ApiClient,
-    stack_name: &str,
-    config: Option<&AreteConfig>,
-    output_override: Option<String>,
-    crate_name_override: Option<String>,
-) -> Result<(ResolvedStackSource, PathBuf, String)> {
-    let (source, stack_config) = if let Some(cfg) = config {
-        if let Some(stack_config) = cfg.find_stack(stack_name) {
-            let source =
-                resolve_stack_source(client, &stack_config.stack, Some(EXTENSIONS_LANGUAGE_RUST))?;
-            (source, Some(stack_config))
-        } else {
-            let source = resolve_stack_source(client, stack_name, Some(EXTENSIONS_LANGUAGE_RUST))?;
-            (source, None)
-        }
-    } else {
-        let source = resolve_stack_source(client, stack_name, Some(EXTENSIONS_LANGUAGE_RUST))?;
-        (source, None)
-    };
-
-    let crate_name = crate_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
-
-    let crate_dir = if let Some(cfg) = config {
-        cfg.get_rust_output_path(source.sdk_name(), stack_config, output_override)
-    } else {
-        output_override
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-stack", source.sdk_name())))
-    };
-
-    Ok((source, crate_dir, crate_name))
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn create_python(
     config_path: &str,
@@ -5148,26 +4638,9 @@ pub fn create_python(
     manifest_override: Option<String>,
     artifact_dirs: Vec<String>,
 ) -> Result<()> {
-    let config = AreteConfig::load_optional(config_path)?;
+    let _ = config_path;
     let client = ApiClient::new()?;
-
-    let config_dir = Path::new(config_path)
-        .parent()
-        .unwrap_or(Path::new("."))
-        .to_path_buf();
-
-    let stack_config = stack_name.and_then(|name| config.as_ref().and_then(|c| c.find_stack(name)));
-
-    let as_module = module_flag
-        || stack_config
-            .and_then(|s| s.python_module)
-            .unwrap_or_else(|| {
-                config
-                    .as_ref()
-                    .and_then(|c| c.sdk.as_ref())
-                    .map(|s| s.python_module_mode)
-                    .unwrap_or(false)
-            });
+    let as_module = module_flag;
 
     let (source, raw_output_dir, package_name) = if let Some(manifest_path) = manifest_override {
         let source = ResolvedStackSource::LocalArtifacts(Box::new(load_local_stack_with_roots(
@@ -5188,24 +4661,18 @@ pub fn create_python(
             "→".blue().bold(),
             stack_name
         );
-        find_stack_for_python(
-            &client,
-            stack_name,
-            config.as_ref(),
-            output_override,
-            package_name_override,
-        )?
+        let source =
+            resolve_remote_stack_source(&client, stack_name, Some(EXTENSIONS_LANGUAGE_PYTHON))?;
+        let package_name =
+            package_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
+        let output = output_override
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-py", source.sdk_name())));
+        (source, output, package_name)
     };
 
-    let stack_url = url_override
-        .or_else(|| stack_config.and_then(|s| s.url.clone()))
-        .or_else(|| source.default_websocket_url());
-
-    let output_dir = if raw_output_dir.is_relative() {
-        config_dir.join(&raw_output_dir)
-    } else {
-        raw_output_dir
-    };
+    let stack_url = url_override.or_else(|| source.default_websocket_url());
+    let output_dir = raw_output_dir;
 
     println!(
         "{} Found stack: {}",
@@ -5245,9 +4712,7 @@ pub fn create_python(
                 .iter()
                 .map(|live| (live.alias.clone(), live.binding.websocket_endpoint.clone()))
                 .collect(),
-            ResolvedStackSource::Local(_) | ResolvedStackSource::LocalArtifacts(_) => {
-                BTreeMap::new()
-            }
+            ResolvedStackSource::LocalArtifacts(_) => BTreeMap::new(),
         };
         let output = arete_interpreter::python::compile_composed_public_artifacts_v2(
             composition.program_specs,
@@ -5464,74 +4929,6 @@ fn generate_python_stack_sdk(
     Ok(())
 }
 
-fn find_stack_for_python(
-    client: &ApiClient,
-    stack_name: &str,
-    config: Option<&AreteConfig>,
-    output_override: Option<String>,
-    package_name_override: Option<String>,
-) -> Result<(ResolvedStackSource, PathBuf, String)> {
-    let (source, stack_config) = if let Some(cfg) = config {
-        if let Some(stack_config) = cfg.find_stack(stack_name) {
-            let source = resolve_stack_source(
-                client,
-                &stack_config.stack,
-                Some(EXTENSIONS_LANGUAGE_PYTHON),
-            )?;
-            (source, Some(stack_config))
-        } else {
-            let source =
-                resolve_stack_source(client, stack_name, Some(EXTENSIONS_LANGUAGE_PYTHON))?;
-            (source, None)
-        }
-    } else {
-        let source = resolve_stack_source(client, stack_name, Some(EXTENSIONS_LANGUAGE_PYTHON))?;
-        (source, None)
-    };
-
-    let package_name =
-        package_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
-
-    let package_dir = if let Some(cfg) = config {
-        cfg.get_python_output_path(source.sdk_name(), stack_config, output_override)
-    } else {
-        output_override
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-py", source.sdk_name())))
-    };
-
-    Ok((source, package_dir, package_name))
-}
-
-/// Resolve a stack source, preferring a local AST file.
-///
-/// `language` selects the hosted devex-extension bundle: TypeScript
-/// generation passes `None` (the request stays byte-identical to released
-/// CLIs and the registry serves the TypeScript bundle), while the Rust and
-/// Python pipelines pass `Some("rust")` / `Some("python")` so a hosted
-/// bundle of the matching language — and never a TypeScript one — reaches
-/// the corresponding extensions rung.
-fn resolve_stack_source(
-    client: &ApiClient,
-    stack: &str,
-    language: Option<&str>,
-) -> Result<ResolvedStackSource> {
-    if let Some(ast) = find_ast_file(stack, None)? {
-        return Ok(ResolvedStackSource::Local(ast));
-    }
-
-    let remote = client.get_registry_stack_install(stack, language).with_context(|| {
-        format!(
-            "Stack '{}' was not found locally and no accessible hosted stack with that identifier was found.",
-            stack
-        )
-    })?;
-
-    Ok(ResolvedStackSource::Remote(Box::new(remote_stack_install(
-        remote,
-    )?)))
-}
-
 fn resolve_remote_stack_source(
     client: &ApiClient,
     stack: &str,
@@ -5585,6 +4982,7 @@ fn remote_stack_install(remote: RegistryStackInstallResponse) -> Result<RemoteSt
             .map(resolved_extensions_artifact_from_registry)
             .transpose()?,
         programs: remote.programs,
+        require_managed_gateway: true,
     })
 }
 
@@ -5967,15 +5365,7 @@ mod tests {
             .generator
             .compiler_hash
             .starts_with("arete:h1:compiler:sha256:"));
-        assert_eq!(
-            first
-                .extensions
-                .as_ref()
-                .unwrap()
-                .legacy_provenance_sha256
-                .len(),
-            64
-        );
+        assert_eq!(first.extensions.as_ref().unwrap().content_sha256.len(), 64);
         assert_eq!(
             first.artifacts,
             vec!["extensions.json", "index.ts", "ore-core.ts", "ore.ts"]
@@ -6335,9 +5725,6 @@ mod tests {
             description: None,
             visibility: "public".to_string(),
             spec_version_id: Some(1),
-            ast_content_hash: "ast-hash".to_string(),
-            portable_ast_hash: "portable-ast-hash".to_string(),
-            ast_payload: serde_json::json!({"stack_name": "ignored-legacy-name"}),
             live_spec_hash: Some(live_spec.artifact_hash.to_string()),
             live_spec: Some(serde_json::to_value(live_spec).unwrap()),
             live_specs: Vec::new(),
@@ -6790,52 +6177,6 @@ mod tests {
         assert_eq!(
             lines[1],
             "   2x seed references account 'authority' not present in this instruction"
-        );
-    }
-
-    #[test]
-    fn resolve_sync_stack_names_matches_by_alias_and_stack_id() {
-        let config = AreteConfig {
-            project: crate::config::ProjectConfig {
-                name: "demo".to_string(),
-            },
-            stacks: vec![
-                crate::config::StackConfig {
-                    name: Some("ore-main".to_string()),
-                    stack: "OreStream".to_string(),
-                    description: None,
-                    typescript_output_file: None,
-                    rust_output_crate: None,
-                    rust_module: None,
-                    python_output_package: None,
-                    python_module: None,
-                    url: None,
-                },
-                crate::config::StackConfig {
-                    name: None,
-                    stack: "EntropyStream".to_string(),
-                    description: None,
-                    typescript_output_file: None,
-                    rust_output_crate: None,
-                    rust_module: None,
-                    python_output_package: None,
-                    python_module: None,
-                    url: None,
-                },
-            ],
-            sdk: None,
-            build: None,
-        };
-
-        let filtered = resolve_sync_stack_names(
-            &config,
-            &BTreeSet::from(["ore-main".to_string(), "EntropyStream".to_string()]),
-        )
-        .expect("filters should match configured stacks");
-
-        assert_eq!(
-            filtered,
-            vec!["ore-main".to_string(), "EntropyStream".to_string()]
         );
     }
 
@@ -7534,11 +6875,7 @@ mod tests {
         assert_eq!(manifest.schema_version, 2);
         assert_eq!(manifest.input.hash, hash);
         assert_eq!(
-            manifest
-                .extensions
-                .as_ref()
-                .unwrap()
-                .legacy_provenance_sha256,
+            manifest.extensions.as_ref().unwrap().content_sha256,
             extensions_artifact_hash(&artifact)
         );
         assert_eq!(
@@ -8027,11 +7364,7 @@ mod tests {
         assert_eq!(manifest.schema_version, 2);
         assert_eq!(manifest.input.hash, hash);
         assert_eq!(
-            manifest
-                .extensions
-                .as_ref()
-                .unwrap()
-                .legacy_provenance_sha256,
+            manifest.extensions.as_ref().unwrap().content_sha256,
             extensions_artifact_hash(&artifact)
         );
         assert_eq!(
@@ -8632,9 +7965,6 @@ mod tests {
                 description: None,
                 visibility: "public".into(),
                 spec_version_id: Some(1),
-                ast_content_hash: "public-ast".into(),
-                portable_ast_hash: "portable-ast".into(),
-                ast_payload: serde_json::json!({}),
                 live_spec_hash: None,
                 live_spec: None,
                 live_specs: descriptors,

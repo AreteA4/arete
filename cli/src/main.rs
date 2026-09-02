@@ -29,6 +29,7 @@ use std::process;
 mod api_client;
 mod commands;
 mod config;
+mod project;
 mod telemetry;
 mod templates;
 mod ui;
@@ -134,16 +135,10 @@ enum Commands {
     #[command(subcommand)]
     Know(KnowCommands),
 
-    /// Push local stacks to remote (alias for 'stack push')
-    Push {
-        /// Name of specific stack to push (pushes all if not specified)
-        stack_name: Option<String>,
-    },
-
-    /// Generate a TypeScript, Rust, or Python SDK from a hosted stack
+    /// Resolve and install dependencies from arete.toml, or add one package
     Install {
-        /// Hosted stack identifier, or the reserved install target `program`
-        target: String,
+        /// Package kind (`stack` or `program`), or legacy stack shorthand
+        target: Option<String>,
 
         /// Program install identifier when using `a4 install program <program>`
         install_name: Option<String>,
@@ -183,6 +178,60 @@ enum Commands {
         /// Local extensions artifact source (manifest file, entry file, or directory)
         #[arg(long)]
         extensions: Option<String>,
+
+        /// Require an existing fresh arete.lock and never change resolution
+        #[arg(long, conflicts_with = "no_save")]
+        locked: bool,
+
+        /// Validate and print the complete install graph without writing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Consent to outputs outside the project when the manifest also opts in
+        #[arg(long)]
+        allow_outside_project: bool,
+
+        /// Generate one package without changing arete.toml or arete.lock
+        #[arg(long)]
+        no_save: bool,
+
+        /// Local dependency alias to write into arete.toml
+        #[arg(long)]
+        alias: Option<String>,
+
+        /// Save a bare package add as an exact requirement
+        #[arg(long)]
+        exact: bool,
+    },
+
+    /// Advance registry dependencies within their manifest requirements
+    Update {
+        /// Optional dependency kind (stack or program)
+        kind: Option<String>,
+
+        /// Optional dependency alias (requires a kind)
+        alias: Option<String>,
+
+        /// Consent to outputs outside the project when the manifest also opts in
+        #[arg(long)]
+        allow_outside_project: bool,
+    },
+
+    /// Remove one project dependency and its provenance-owned SDK outputs
+    Remove {
+        /// Dependency kind (`stack` or `program`)
+        kind: String,
+
+        /// Local dependency alias from arete.toml
+        alias: String,
+
+        /// Keep generated outputs while removing manifest and lock entries
+        #[arg(long)]
+        keep_output: bool,
+
+        /// Consent to outputs outside the project when the manifest also opts in
+        #[arg(long)]
+        allow_outside_project: bool,
     },
 
     /// SDK generation commands
@@ -200,10 +249,6 @@ enum Commands {
     /// Stack management commands - manage your deployed stacks
     #[command(subcommand)]
     Stack(StackCommands),
-
-    /// Build and validate portable live artifacts
-    #[command(subcommand)]
-    Live(LiveCommands),
 
     /// Build and validate portable program artifacts
     #[command(subcommand)]
@@ -475,12 +520,6 @@ enum StackCommands {
     /// List all stacks with their deployment status
     List,
 
-    /// Push local stacks with their stack file to remote
-    Push {
-        /// Name of specific stack to push (pushes all if not specified)
-        stack_name: Option<String>,
-    },
-
     /// Show detailed stack information including deployment status and versions
     Show {
         /// Name of the stack
@@ -511,32 +550,6 @@ enum StackCommands {
         force: bool,
     },
 
-    /// Rollback to a previous deployment
-    Rollback {
-        /// Name of the stack to rollback
-        stack_name: String,
-
-        /// Rollback to specific version number (uses previous successful if not specified)
-        #[arg(long)]
-        to: Option<i32>,
-
-        /// Rollback to specific build ID
-        #[arg(long)]
-        build: Option<i32>,
-
-        /// Branch deployment to rollback (default: production)
-        #[arg(long, default_value = "production")]
-        branch: String,
-
-        /// Force full rebuild instead of using existing image
-        #[arg(long)]
-        rebuild: bool,
-
-        /// Don't watch the rollback progress
-        #[arg(long)]
-        no_wait: bool,
-    },
-
     /// Stop a deployment
     Stop {
         /// Name of the stack to stop
@@ -549,23 +562,6 @@ enum StackCommands {
         /// Skip confirmation prompt
         #[arg(short, long)]
         force: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum LiveCommands {
-    /// Normalize a supported legacy stack into LiveSpec and ProgramSpec artifacts
-    Build {
-        /// Legacy .stack.json input
-        input: String,
-
-        /// LiveSpec output path
-        #[arg(short, long)]
-        output: Option<String>,
-
-        /// Directory for ProgramSpec outputs
-        #[arg(long)]
-        program_dir: Option<String>,
     },
 }
 
@@ -659,24 +655,6 @@ enum TelemetryCommands {
 /// These are power-user commands; most users should use `a4 up` instead.
 #[derive(Subcommand)]
 enum BuildCommands {
-    /// Create a new build from a stack (watches progress by default)
-    Create {
-        /// Name of the stack to build
-        stack_name: String,
-
-        /// Use specific version (default: latest)
-        #[arg(short, long)]
-        version: Option<i32>,
-
-        /// Use local stack file directly instead of stack version
-        #[arg(long)]
-        ast_file: Option<String>,
-
-        /// Don't wait for build to complete (return immediately)
-        #[arg(long)]
-        no_wait: bool,
-    },
-
     /// List builds
     List {
         /// Maximum number of builds to show
@@ -752,18 +730,28 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Status => "status",
         Commands::Explore { .. } => "explore",
         Commands::Know(_) => "know",
-        Commands::Push { .. } => "push",
         Commands::Install { .. } => "install",
+        Commands::Update { .. } => "update",
+        Commands::Remove { .. } => "remove",
         Commands::Sdk(_) => "sdk",
         Commands::Config(_) => "config",
         Commands::Auth(_) => "auth",
         Commands::Stack(_) => "stack",
-        Commands::Live(_) => "live",
         Commands::Program(_) => "program",
         Commands::Build(_) => "build",
         Commands::Telemetry(_) => "telemetry",
         Commands::Idl(_) => "idl",
         Commands::Stream(_) => "stream",
+    }
+}
+
+fn parse_dependency_kind(value: &str) -> anyhow::Result<project::manifest::DependencyKind> {
+    match value {
+        "stack" => Ok(project::manifest::DependencyKind::Stack),
+        "program" => Ok(project::manifest::DependencyKind::Program),
+        other => Err(anyhow::anyhow!(
+            "Unknown dependency kind '{other}'; expected 'stack' or 'program'"
+        )),
     }
 }
 
@@ -846,7 +834,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             KnowCommands::Recipe { slug } => commands::know::recipe(&slug, cli.json),
             KnowCommands::Concepts => commands::know::concepts(cli.json),
         },
-        Commands::Push { stack_name } => commands::stack::push(&cli.config, stack_name.as_deref()),
         Commands::Install {
             target,
             install_name,
@@ -859,18 +846,164 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             module,
             url,
             extensions,
-        } => commands::sdk::install_command(
-            &target,
-            install_name.as_deref(),
-            ts,
-            rust,
-            python,
-            output,
-            package_name,
-            crate_name,
-            module,
-            url,
-            extensions,
+            locked,
+            dry_run,
+            allow_outside_project,
+            no_save,
+            alias,
+            exact,
+        } => match target.as_deref() {
+            None
+                if install_name.is_some()
+                    || ts
+                    || rust
+                    || python
+                    || output.is_some()
+                    || package_name.is_some()
+                    || crate_name.is_some()
+                    || module
+                    || url.is_some()
+                    || extensions.is_some()
+                    || no_save
+                    || alias.is_some()
+                    || exact =>
+            {
+                Err(anyhow::anyhow!(
+                    "Package and generation flags require a package add; plain a4 install reads arete.toml"
+                ))
+            }
+            None => project::installer::install_project(
+                &cli.config,
+                project::installer::InstallOptions {
+                    locked,
+                    allow_outside_project,
+                    dry_run,
+                    update: None,
+                },
+            ),
+            Some(target) => {
+                if locked || dry_run {
+                    Err(anyhow::anyhow!(
+                        "--locked and --dry-run apply to project-level a4 install"
+                    ))
+                } else {
+                    let (kind, package) = match (target, install_name) {
+                        ("stack", Some(package)) => {
+                            (project::manifest::DependencyKind::Stack, package)
+                        }
+                        ("program", Some(package)) => {
+                            (project::manifest::DependencyKind::Program, package)
+                        }
+                        ("program", None) | ("stack", None) => {
+                            return Err(anyhow::anyhow!(
+                                "Package required. Usage: a4 install <stack|program> <package>[@<requirement>]"
+                            ));
+                        }
+                        (stack, None) => (
+                            project::manifest::DependencyKind::Stack,
+                            stack.to_string(),
+                        ),
+                        (_, Some(_)) => {
+                            return Err(anyhow::anyhow!(
+                                "Package kind must be 'stack' or 'program'"
+                            ));
+                        }
+                    };
+                    let selected_target = match (ts, rust, python) {
+                        (true, false, false) => {
+                            Some(project::manifest::InstallTarget::TypeScript)
+                        }
+                        (false, true, false) => Some(project::manifest::InstallTarget::Rust),
+                        (false, false, true) => Some(project::manifest::InstallTarget::Python),
+                        (false, false, false) => None,
+                        _ => unreachable!("clap rejects conflicting target flags"),
+                    };
+                    if no_save {
+                        if exact || allow_outside_project {
+                            return Err(anyhow::anyhow!(
+                                "--exact and --allow-outside-project require a saved project dependency"
+                            ));
+                        }
+                        if url.is_some() || extensions.is_some() {
+                            return Err(anyhow::anyhow!(
+                                "--no-save uses the exact registry descriptor; --url and --extensions are only supported by low-level a4 sdk create"
+                            ));
+                        }
+                        project::installer::install_without_saving(
+                            kind,
+                            &package,
+                            project::installer::NoSaveDependencyOptions {
+                                alias,
+                                target: selected_target,
+                                output,
+                                typescript_package: package_name,
+                                rust_crate_prefix: crate_name,
+                                module,
+                            },
+                        )
+                    } else {
+                        if url.is_some() || extensions.is_some() || crate_name.is_some() {
+                            return Err(anyhow::anyhow!(
+                                "--url, --extensions, and --crate-name require --no-save"
+                            ));
+                        }
+                        project::installer::add_and_install(
+                            &cli.config,
+                            kind,
+                            &package,
+                            project::installer::AddDependencyOptions {
+                                alias,
+                                exact,
+                                target: selected_target,
+                                output,
+                                typescript_package: package_name,
+                                module,
+                                allow_outside_project,
+                            },
+                        )
+                    }
+                }
+            }
+        },
+        Commands::Update {
+            kind,
+            alias,
+            allow_outside_project,
+        } => {
+            if alias.is_some() && kind.is_none() {
+                return Err(anyhow::anyhow!(
+                    "An update alias requires its dependency kind"
+                ));
+            }
+            let kind = kind
+                .as_deref()
+                .map(parse_dependency_kind)
+                .transpose()?;
+            project::installer::install_project(
+                &cli.config,
+                project::installer::InstallOptions {
+                    allow_outside_project,
+                    update: Some(project::installer::UpdateSelection {
+                        kind,
+                        alias: alias.as_deref(),
+                    }),
+                    ..project::installer::InstallOptions::default()
+                },
+            )
+        },
+        Commands::Remove {
+            kind,
+            alias,
+            keep_output,
+            allow_outside_project,
+        } => project::installer::remove_and_install(
+            &cli.config,
+            parse_dependency_kind(&kind)?,
+            &alias,
+            project::installer::RemoveDependencyOptions {
+                keep_output,
+                allow_outside_project,
+            },
         ),
         Commands::Sdk(sdk_cmd) => match sdk_cmd {
             SdkCommands::Create(create_args) => commands::sdk::create(
@@ -937,9 +1070,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 &output,
             ),
             StackCommands::List => commands::stack::list(cli.json),
-            StackCommands::Push { stack_name } => {
-                commands::stack::push(&cli.config, stack_name.as_deref())
-            }
             StackCommands::Show {
                 stack_name,
                 version,
@@ -950,26 +1080,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             StackCommands::Delete { stack_name, force } => {
                 commands::stack::delete(&stack_name, force)
             }
-            StackCommands::Rollback {
-                stack_name,
-                to,
-                build,
-                branch,
-                rebuild,
-                no_wait,
-            } => commands::stack::rollback(&stack_name, to, build, &branch, rebuild, !no_wait),
             StackCommands::Stop {
                 stack_name,
                 branch,
                 force,
             } => commands::stack::stop(&stack_name, branch.as_deref(), force),
-        },
-        Commands::Live(live_cmd) => match live_cmd {
-            LiveCommands::Build {
-                input,
-                output,
-                program_dir,
-            } => commands::public_artifacts::build_live(&input, output, program_dir),
         },
         Commands::Program(program_cmd) => match program_cmd {
             ProgramCommands::Build {
@@ -1012,18 +1127,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             } => commands::programs::promote(&user_program_id, make_idl_public, cli.json),
         },
         Commands::Build(build_cmd) => match build_cmd {
-            BuildCommands::Create {
-                stack_name,
-                version,
-                ast_file,
-                no_wait,
-            } => commands::build::create(
-                &cli.config,
-                &stack_name,
-                version,
-                ast_file.as_deref(),
-                !no_wait,
-            ),
             BuildCommands::List { limit, status } => {
                 commands::build::list(limit, status.as_deref(), cli.json)
             }
@@ -1105,7 +1208,7 @@ mod tests {
                 install_name,
                 ..
             }) => {
-                assert_eq!(target, "ore");
+                assert_eq!(target.as_deref(), Some("ore"));
                 assert_eq!(install_name, None);
             }
             _ => panic!("expected install command"),
@@ -1124,7 +1227,7 @@ mod tests {
                 ts,
                 ..
             }) => {
-                assert_eq!(target, "program");
+                assert_eq!(target.as_deref(), Some("program"));
                 assert_eq!(install_name.as_deref(), Some("spl-token"));
                 assert!(ts);
             }

@@ -3,39 +3,31 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::api_client::{
     ApiClient, BindStackCompositionRequest, BindStackCompositionResponse, BuildStatus,
     BuildStatusResponse, CreateAliasedLiveSpecArtifact, CreateArtifactBuildRequest,
-    CreateBuildRequest, CreateBuildResponse, CreateSpecRequest, DeploymentPhase,
-    DeploymentResponse, DeploymentStatus, SelectedProgramRelease, Spec, StackDeploymentPlanRequest,
-    StackDeploymentPlanResponse, StackDeploymentPreflightRequest, StackDeploymentPreflightResponse,
-    StackDeploymentTarget, DEFAULT_DOMAIN_SUFFIX, STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA,
-    STACK_DEPLOYMENT_PLAN_SCHEMA, STACK_DEPLOYMENT_PREFLIGHT_SCHEMA,
+    CreateBuildResponse, CreateSpecRequest, DeploymentPhase, DeploymentResponse, DeploymentStatus,
+    SelectedProgramRelease, Spec, StackDeploymentPlanRequest, StackDeploymentPlanResponse,
+    StackDeploymentPreflightRequest, StackDeploymentPreflightResponse, StackDeploymentTarget,
+    STACK_DEPLOYMENT_PLAN_REQUEST_SCHEMA, STACK_DEPLOYMENT_PLAN_SCHEMA,
+    STACK_DEPLOYMENT_PREFLIGHT_SCHEMA,
 };
-use crate::commands::public_artifacts::{load_local_artifact_stack, LocalArtifactStack};
+use crate::commands::public_artifacts::{load_local_artifact_stack_with_roots, LocalArtifactStack};
 use crate::commands::stack::deployment_selection_key;
-use crate::config::{resolve_stacks_to_push, AreteConfig, DiscoveredAst};
+use crate::project::ProjectManifest;
 use crate::telemetry;
 use crate::ui;
 
 const STACK_DEPLOYMENT_RESULT_SCHEMA: &str = "arete.stack-deployment-result/v1";
 
 #[derive(Debug)]
-enum LocalDeploymentSource {
-    Manifest {
-        path: PathBuf,
-        deployment_name: Option<String>,
-    },
-    Legacy(DiscoveredAst),
-}
-
-impl LocalDeploymentSource {
-    fn is_manifest(&self) -> bool {
-        matches!(self, Self::Manifest { .. })
-    }
+struct LocalDeploymentSource {
+    path: PathBuf,
+    artifact_roots: Vec<PathBuf>,
+    deployment_name: Option<String>,
 }
 
 fn generate_short_uuid() -> String {
@@ -872,11 +864,11 @@ pub fn up(
     if json && local_only {
         anyhow::bail!("--json is unavailable with --local-only because the deployment result contract requires a server-validated release selection");
     }
-    if json && stack_name.is_some_and(|target| target.ends_with(".stack.json")) {
-        anyhow::bail!("--json up requires a manifest-native deployment; legacy composite .stack.json deployments do not define this result contract");
+    if stack_name.is_some_and(|target| target.ends_with(".stack.json")) {
+        anyhow::bail!(
+            "Composite .stack.json deployment input was removed; pass an exact .stack-manifest.json or an [authoring.stacks] name"
+        );
     }
-
-    let config = AreteConfig::load_optional(config_path)?;
 
     let branch = if preview {
         Some(format!("preview-{}", generate_short_uuid()))
@@ -884,63 +876,37 @@ pub fn up(
         branch
     };
 
-    let sources = resolve_local_deployment_sources(config.as_ref(), stack_name)?;
+    let sources = resolve_local_deployment_sources(config_path, stack_name)?;
     if sources.is_empty() {
         anyhow::bail!("No stacks found to deploy");
     }
-    if json && (sources.len() != 1 || !sources[0].is_manifest()) {
-        anyhow::bail!("--json up requires exactly one manifest-native deployment; legacy composite .stack.json deployments do not define this result contract");
-    }
-
-    let has_legacy_sources = sources
-        .iter()
-        .any(|source| matches!(source, LocalDeploymentSource::Legacy(_)));
-    if has_legacy_sources && allow_unverified_programs {
-        anyhow::bail!(
-            "--allow-unverified-programs requires a manifest-native deployment; legacy composite .stack.json does not use the exact V2 plan contract"
-        );
-    }
-    if has_legacy_sources {
-        ui::print_warning(
-            "Deploying a composite .stack.json is deprecated and supported only through August 31, 2026. Generate a sibling .stack-manifest.json or pass one explicitly.",
-        );
+    if json && sources.len() != 1 {
+        anyhow::bail!("--json up requires exactly one StackManifest deployment");
     }
 
     if dry_run {
-        let mut legacy = Vec::new();
         for source in &sources {
-            match source {
-                LocalDeploymentSource::Manifest {
-                    path,
-                    deployment_name,
-                } => {
-                    let stack = load_local_artifact_stack(path)?;
-                    if local_only {
-                        show_local_artifact_dry_run_with_deployment_name(
-                            &stack,
-                            branch.as_deref(),
-                            deployment_name.as_deref(),
-                        )?;
-                    } else {
-                        let client = ApiClient::new()?;
-                        let result = dry_run_artifact_stack_with_deployment_name(
-                            &client,
-                            &stack,
-                            branch.as_deref(),
-                            deployment_name.as_deref(),
-                            allow_unverified_programs,
-                            json,
-                        )?;
-                        if json {
-                            println!("{}", serde_json::to_string(&result)?);
-                        }
-                    }
+            let stack = load_local_artifact_stack_with_roots(&source.path, &source.artifact_roots)?;
+            if local_only {
+                show_local_artifact_dry_run_with_deployment_name(
+                    &stack,
+                    branch.as_deref(),
+                    source.deployment_name.as_deref(),
+                )?;
+            } else {
+                let client = ApiClient::new()?;
+                let result = dry_run_artifact_stack_with_deployment_name(
+                    &client,
+                    &stack,
+                    branch.as_deref(),
+                    source.deployment_name.as_deref(),
+                    allow_unverified_programs,
+                    json,
+                )?;
+                if json {
+                    println!("{}", serde_json::to_string(&result)?);
                 }
-                LocalDeploymentSource::Legacy(ast) => legacy.push(ast.clone()),
             }
-        }
-        if !legacy.is_empty() {
-            show_dry_run(&legacy, branch.as_deref(), local_only)?;
         }
         return Ok(());
     }
@@ -956,26 +922,15 @@ pub fn up(
     }
 
     for source in sources {
-        let result = match source {
-            LocalDeploymentSource::Manifest {
-                path,
-                deployment_name,
-            } => {
-                let stack = load_local_artifact_stack(&path)?;
-                Some(deploy_artifact_stack_with_deployment_name(
-                    &client,
-                    stack,
-                    branch.as_deref(),
-                    deployment_name.as_deref(),
-                    allow_unverified_programs,
-                    json,
-                )?)
-            }
-            LocalDeploymentSource::Legacy(ast) => {
-                deploy_single_stack(&client, &ast, branch.as_deref())?;
-                None
-            }
-        };
+        let stack = load_local_artifact_stack_with_roots(&source.path, &source.artifact_roots)?;
+        let result = Some(deploy_artifact_stack_with_deployment_name(
+            &client,
+            stack,
+            branch.as_deref(),
+            source.deployment_name.as_deref(),
+            allow_unverified_programs,
+            json,
+        )?);
         if json {
             if let Some(result) = result {
                 println!("{}", serde_json::to_string(&result)?);
@@ -991,46 +946,66 @@ pub fn up(
 }
 
 fn resolve_local_deployment_sources(
-    config: Option<&AreteConfig>,
+    config_path: &str,
     stack_name: Option<&str>,
 ) -> Result<Vec<LocalDeploymentSource>> {
     if let Some(target) = stack_name.filter(|target| target.ends_with(".stack-manifest.json")) {
-        return Ok(vec![LocalDeploymentSource::Manifest {
-            path: PathBuf::from(target),
+        let path = std::fs::canonicalize(target).map_err(|error| {
+            anyhow::anyhow!("Failed to resolve StackManifest {target}: {error}")
+        })?;
+        let root = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("StackManifest has no parent directory"))?
+            .to_path_buf();
+        return Ok(vec![LocalDeploymentSource {
+            path,
+            artifact_roots: vec![root],
             deployment_name: None,
         }]);
     }
-
-    let force_legacy = stack_name.is_some_and(|target| target.ends_with(".stack.json"));
-    resolve_stacks_to_push(config, stack_name)
-        .map(|stacks| select_local_deployment_sources(stacks, force_legacy))
-}
-
-fn select_local_deployment_sources(
-    stacks: Vec<DiscoveredAst>,
-    force_legacy: bool,
-) -> Vec<LocalDeploymentSource> {
-    stacks
-        .into_iter()
-        .map(|ast| {
-            if !force_legacy {
-                if let Some(path) = generated_manifest_path(&ast.path).filter(|path| path.is_file())
-                {
-                    return LocalDeploymentSource::Manifest {
-                        path,
-                        deployment_name: Some(ast.stack_name),
-                    };
-                }
-            }
-            LocalDeploymentSource::Legacy(ast)
+    let manifest = ProjectManifest::load(config_path)?;
+    let selected = manifest
+        .document
+        .authoring
+        .stacks
+        .iter()
+        .filter(|(name, _)| stack_name.is_none_or(|target| target == name.as_str()))
+        .map(|(name, authored)| {
+            let path =
+                std::fs::canonicalize(manifest.root.join(&authored.manifest)).map_err(|error| {
+                    anyhow::anyhow!("Failed to resolve authored StackManifest '{name}': {error}")
+                })?;
+            let artifact_roots = if authored.artifact_roots.is_empty() {
+                vec![path.parent().unwrap_or(&manifest.root).to_path_buf()]
+            } else {
+                authored
+                    .artifact_roots
+                    .iter()
+                    .map(|root| {
+                        std::fs::canonicalize(manifest.root.join(root)).map_err(|error| {
+                            anyhow::anyhow!("Failed to resolve artifact root '{root}': {error}")
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
+            Ok(LocalDeploymentSource {
+                path,
+                artifact_roots,
+                deployment_name: authored
+                    .deployment_name
+                    .clone()
+                    .or_else(|| Some(name.clone())),
+            })
         })
-        .collect()
-}
-
-fn generated_manifest_path(stack_path: &Path) -> Option<PathBuf> {
-    let file_name = stack_path.file_name()?.to_str()?;
-    let stem = file_name.strip_suffix(".stack.json")?;
-    Some(stack_path.with_file_name(format!("{stem}.stack-manifest.json")))
+        .collect::<Result<Vec<_>>>()?;
+    if selected.is_empty() {
+        if let Some(name) = stack_name {
+            anyhow::bail!(
+                "No authored stack named '{name}'. Add it under `[authoring.stacks]` or pass a .stack-manifest.json path"
+            );
+        }
+    }
+    Ok(selected)
 }
 
 #[cfg(test)]
@@ -1327,184 +1302,6 @@ fn deploy_artifact_stack_with_deployment_name<A: HostedDeploymentApi + ?Sized>(
         }
     }
     Ok(result)
-}
-
-fn show_dry_run(
-    stacks: &[crate::config::DiscoveredAst],
-    branch: Option<&str>,
-    local_only: bool,
-) -> Result<()> {
-    ui::print_section("Dry Run - No changes will be made");
-    println!();
-
-    println!(
-        "{} Would deploy {} stack(s):",
-        ui::symbols::ARROW.blue().bold(),
-        stacks.len()
-    );
-    println!();
-
-    let client = if local_only {
-        None
-    } else {
-        ApiClient::new().ok()
-    };
-
-    for ast in stacks {
-        println!(
-            "  {} {}",
-            ui::symbols::BULLET.dimmed(),
-            ast.stack_name.green().bold()
-        );
-        println!("    Stack: {}", ast.stack_id);
-        println!("    Stack: {}", ast.path.display());
-        if !ast.program_ids.is_empty() {
-            println!("    Program IDs: {}", ast.program_ids.join(", "));
-        }
-
-        let url = get_expected_url(&client, &ast.stack_name, branch);
-        println!("    URL: {}", url.cyan());
-        println!();
-    }
-
-    if let Some(branch_name) = branch {
-        println!("  Branch: {}", branch_name.cyan());
-    }
-
-    if local_only {
-        println!("  local-only: server release/deployability checks were not performed");
-    }
-
-    println!();
-    println!("{}", "Run without --dry-run to deploy.".dimmed());
-
-    Ok(())
-}
-
-fn get_expected_url(client: &Option<ApiClient>, stack_name: &str, branch: Option<&str>) -> String {
-    let existing_slug = client
-        .as_ref()
-        .and_then(|c| c.get_spec_by_name(stack_name).ok())
-        .flatten()
-        .map(|spec| spec.url_slug);
-
-    let name_lower = stack_name.to_lowercase();
-
-    match (existing_slug, branch) {
-        (Some(slug), Some(b)) => {
-            format!(
-                "wss://{}-{}-{}.{}",
-                name_lower, slug, b, DEFAULT_DOMAIN_SUFFIX
-            )
-        }
-        (Some(slug), None) => {
-            format!("wss://{}-{}.{}", name_lower, slug, DEFAULT_DOMAIN_SUFFIX)
-        }
-        (None, Some(b)) => {
-            format!(
-                "wss://{}-<slug>-{}.{} (slug assigned on first deploy)",
-                name_lower, b, DEFAULT_DOMAIN_SUFFIX
-            )
-        }
-        (None, None) => {
-            format!(
-                "wss://{}-<slug>.{} (slug assigned on first deploy)",
-                name_lower, DEFAULT_DOMAIN_SUFFIX
-            )
-        }
-    }
-}
-
-fn deploy_single_stack(
-    client: &ApiClient,
-    ast: &crate::config::DiscoveredAst,
-    branch: Option<&str>,
-) -> Result<()> {
-    ui::print_divider();
-    if let Some(branch_name) = branch {
-        println!(
-            "{} Deploying {} (branch: {})",
-            ui::symbols::ARROW.blue().bold(),
-            ast.stack_name.bold(),
-            branch_name.cyan()
-        );
-    } else {
-        println!(
-            "{} Deploying {}",
-            ui::symbols::ARROW.blue().bold(),
-            ast.stack_name.bold()
-        );
-    }
-    ui::print_divider();
-
-    ui::print_numbered_step(1, "Pushing stack...");
-
-    let remote_spec = client.get_spec_by_name(&ast.stack_name)?;
-
-    let spec_id = if let Some(spec) = remote_spec {
-        println!(
-            "  {} Stack exists (id={})",
-            ui::symbols::SUCCESS.green(),
-            spec.id
-        );
-        spec.id
-    } else {
-        let spinner = ui::create_spinner("Creating stack...");
-        let req = crate::api_client::CreateSpecRequest {
-            name: ast.stack_name.clone(),
-            entity_name: ast.stack_id.clone(),
-            crate_name: String::new(),
-            module_path: String::new(),
-            description: None,
-            package_name: None,
-            output_path: None,
-        };
-        let new_spec = client.create_spec(req)?;
-        spinner.finish_with_message(format!("{} Stack created", ui::symbols::SUCCESS.green()));
-        new_spec.id
-    };
-
-    let spinner = ui::create_spinner("Uploading stack...");
-    let ast_payload = ast.load_ast()?;
-    let version_response = client.create_spec_version(spec_id, ast_payload)?;
-
-    let hash_short = version_response.version.short_hash();
-    if version_response.version_is_new {
-        spinner.finish_with_message(format!(
-            "{} v{} ({})",
-            ui::symbols::SUCCESS.green(),
-            version_response.version.version_number,
-            hash_short
-        ));
-    } else {
-        spinner.finish_with_message(format!(
-            "{} v{} (up to date)",
-            ui::symbols::EQUALS.blue(),
-            version_response.version.version_number
-        ));
-    }
-
-    ui::print_numbered_step(2, "Creating build...");
-
-    let req = CreateBuildRequest {
-        spec_id: Some(spec_id),
-        spec_version_id: Some(version_response.version.id),
-        ast_payload: None,
-        branch: branch.map(|s| s.to_string()),
-    };
-
-    let build_response = client.create_build(req)?;
-    println!("  Build ID: {}", build_response.build_id.to_string().bold());
-    if let Some(branch_name) = branch {
-        println!("  Branch: {}", branch_name.cyan());
-    }
-
-    ui::print_numbered_step(3, "Building & deploying...");
-    println!();
-
-    watch_build_progress(client, build_response.build_id, false)?;
-
-    Ok(())
 }
 
 fn wait_for_healthy_current_deployment<A: HostedDeploymentApi + ?Sized>(
@@ -1918,7 +1715,6 @@ mod tests {
             self.build_requests.borrow_mut().push(req);
             Ok(CreateBuildResponse {
                 build_id,
-                status: BuildStatus::Pending,
                 message: "queued".into(),
                 deployment_plan_id,
                 selection_digest,
@@ -2006,72 +1802,6 @@ mod tests {
             live_specs,
             stack_manifest,
         }
-    }
-
-    #[test]
-    fn implicit_stack_resolution_prefers_generated_sibling_manifest() {
-        let directory = std::env::temp_dir().join(format!(
-            "arete-up-manifest-resolution-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
-        let ast_path = directory.join("OreStream.stack.json");
-        let manifest_path = directory.join("OreStream.stack-manifest.json");
-        std::fs::write(&manifest_path, b"{}").unwrap();
-        let ast = DiscoveredAst {
-            path: ast_path,
-            stack_id: "OreStream".into(),
-            program_ids: Vec::new(),
-            stack_name: "ore".into(),
-        };
-
-        let sources = select_local_deployment_sources(vec![ast], false);
-
-        assert_eq!(sources.len(), 1);
-        match &sources[0] {
-            LocalDeploymentSource::Manifest {
-                path,
-                deployment_name,
-            } => {
-                assert_eq!(path, &manifest_path);
-                assert_eq!(deployment_name.as_deref(), Some("ore"));
-            }
-            LocalDeploymentSource::Legacy(_) => panic!("generated manifest was not preferred"),
-        }
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn explicit_stack_json_keeps_legacy_escape_hatch() {
-        let directory = std::env::temp_dir().join(format!(
-            "arete-up-legacy-resolution-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
-        let ast_path = directory.join("OreStream.stack.json");
-        std::fs::write(directory.join("OreStream.stack-manifest.json"), b"{}").unwrap();
-        let ast = DiscoveredAst {
-            path: ast_path,
-            stack_id: "OreStream".into(),
-            program_ids: Vec::new(),
-            stack_name: "ore".into(),
-        };
-
-        let sources = select_local_deployment_sources(vec![ast], true);
-
-        assert!(matches!(
-            sources.as_slice(),
-            [LocalDeploymentSource::Legacy(_)]
-        ));
-        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2459,8 +2189,8 @@ mod tests {
     }
 
     #[test]
-    fn json_rejects_legacy_and_unvalidated_local_only_deployments() {
-        let legacy = up(
+    fn json_rejects_removed_composite_and_unvalidated_local_only_deployments() {
+        let composite = up(
             "missing-arete.toml",
             Some("Legacy.stack.json"),
             None,
@@ -2471,7 +2201,7 @@ mod tests {
             true,
         )
         .unwrap_err();
-        assert!(legacy.to_string().contains("legacy composite .stack.json"));
+        assert!(composite.to_string().contains("Composite .stack.json"));
 
         let local_only = up(
             "missing-arete.toml",

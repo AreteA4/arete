@@ -463,32 +463,6 @@ pub fn record_sdk_generated(language: &str) {
     spawn_send(event);
 }
 
-pub fn record_stack_rollback(success: bool) {
-    if !should_collect() {
-        return;
-    }
-
-    let mut config = TelemetryConfig::load();
-    let anonymous_id = config.get_or_create_anonymous_id();
-
-    let event = TelemetryEvent {
-        event: "stack_rollback".to_string(),
-        command: "stack rollback".to_string(),
-        cli_version: env!("CARGO_PKG_VERSION").to_string(),
-        os: std::env::consts::OS.to_string(),
-        arch: std::env::consts::ARCH.to_string(),
-        success,
-        error_code: None,
-        duration_ms: 0,
-        template: None,
-        anonymous_id,
-        session_id: get_session_id().to_string(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-    };
-
-    spawn_send(event);
-}
-
 // ============================================================================
 // Network
 // ============================================================================
