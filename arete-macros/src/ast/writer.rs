@@ -1,10 +1,4 @@
-//! AST JSON file serialization and writing.
-//!
-//! This module provides functions to serialize and write AST specifications
-//! to JSON files during macro expansion.
-//!
-//! Note: Some functions in this module are currently unused but are kept for
-//! future use when AST file generation is needed.
+//! Exact public-artifact authoring and AST projection helpers.
 
 #![allow(dead_code)]
 
@@ -16,44 +10,6 @@ use crate::event_type_helpers::{
 };
 use crate::parse;
 use crate::parse::idl as idl_parser;
-
-/// Write a SerializableStreamSpec to a JSON file.
-///
-/// The file is written to `.arete/{entity_name}.ast.json` relative to
-/// `CARGO_MANIFEST_DIR`.
-pub fn write_ast_to_file(spec: &SerializableStreamSpec, entity_name: &str) -> std::io::Result<()> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))?;
-
-    let ast_dir = std::path::Path::new(&manifest_dir).join(".arete");
-    std::fs::create_dir_all(&ast_dir)?;
-
-    let ast_file = ast_dir.join(format!("{}.ast.json", entity_name));
-    let json = serde_json::to_string_pretty(spec)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-
-    std::fs::write(&ast_file, json)?;
-
-    Ok(())
-}
-
-/// Write a SerializableStackSpec to a JSON file.
-/// The file is written to `.arete/{stack_name}.stack.json` relative to CARGO_MANIFEST_DIR.
-pub fn write_stack_to_file(
-    spec: &super::types::SerializableStackSpec,
-    stack_name: &str,
-) -> std::io::Result<()> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))?;
-    let ast_dir = std::path::Path::new(&manifest_dir).join(".arete");
-    std::fs::create_dir_all(&ast_dir)?;
-    let stack_file = ast_dir.join(format!("{}.stack.json", stack_name));
-    let json = serde_json::to_string_pretty(spec)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-    arete_artifacts::atomic_write(&stack_file, json.as_bytes())
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-    Ok(())
-}
 
 /// Author and atomically write the authoritative explicit V2 artifacts from
 /// semantic codegen data. The composite stack AST is deliberately not an input

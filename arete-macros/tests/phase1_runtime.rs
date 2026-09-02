@@ -46,9 +46,7 @@ fn main() {
     let stack_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(".arete/Stream.stack.json");
 
-    if stack_path.exists() {
-        std::fs::remove_file(&stack_path).unwrap();
-    }
+    assert!(!stack_path.exists(), "macros must not emit composite stack files");
 
     let _spec = stream::create_thing_spec();
     let _views = stream::get_view_definitions();

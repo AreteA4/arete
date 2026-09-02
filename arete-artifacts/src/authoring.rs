@@ -9,11 +9,10 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::{
-    ArtifactError, LegacyDecomposition, LiveSpecArtifact, LiveSpecArtifactV2, LiveSpecReferenceV2,
-    LiveSpecV2, PortableEntity, PortableFieldPath, PortableView, PortableViewOutput,
-    PortableViewSource, ProgramAdapterV2, ProgramRequirementV2, ProgramSpecArtifact,
-    ProgramSpecReferenceV2, SelectedViewV2, StackManifestArtifact, StackManifestArtifactV2,
-    StackManifestV2,
+    ArtifactError, LiveSpecArtifact, LiveSpecArtifactV2, LiveSpecReferenceV2, LiveSpecV2,
+    PortableEntity, PortableFieldPath, PortableView, PortableViewOutput, PortableViewSource,
+    ProgramAdapterV2, ProgramRequirementV2, ProgramSpecArtifact, ProgramSpecReferenceV2,
+    SelectedViewV2, StackManifestArtifact, StackManifestArtifactV2, StackManifestV2,
 };
 
 pub const DEFAULT_LIVE_ALIAS: &str = "live";
@@ -49,13 +48,6 @@ impl StackAuthoringV2 {
 pub struct AuthoredStackV2 {
     pub program_specs: Vec<ProgramSpecArtifact>,
     pub live_spec: Option<LiveSpecArtifactV2>,
-    pub stack_manifest: StackManifestArtifactV2,
-}
-
-#[derive(Debug, Clone)]
-pub struct NormalizedLegacyStackV2 {
-    pub legacy: LegacyDecomposition,
-    pub live_spec: LiveSpecArtifactV2,
     pub stack_manifest: StackManifestArtifactV2,
 }
 
@@ -268,25 +260,6 @@ pub fn normalize_live_spec_v1(
     };
     let adapters = derive_program_adapters(programs, &pdas, &instructions)?;
     live_spec_v2(programs, entities, adapters)
-}
-
-pub fn normalize_legacy_stack_v2(bytes: &[u8]) -> Result<NormalizedLegacyStackV2, ArtifactError> {
-    let legacy = crate::decompose_legacy_stack(bytes)?;
-    let live_spec = normalize_live_spec_v1(&legacy.live_spec, &legacy.program_specs)?;
-    let stack_manifest = normalize_stack_manifest_v1(
-        &legacy.stack_manifest,
-        &legacy.program_specs,
-        &[(
-            legacy.live_spec.artifact_hash,
-            DEFAULT_LIVE_ALIAS.to_string(),
-            &live_spec,
-        )],
-    )?;
-    Ok(NormalizedLegacyStackV2 {
-        legacy,
-        live_spec,
-        stack_manifest,
-    })
 }
 
 pub fn normalize_stack_manifest_v1(

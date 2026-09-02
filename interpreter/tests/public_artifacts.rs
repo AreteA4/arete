@@ -1,19 +1,59 @@
 use std::collections::BTreeMap;
 
 use arete_artifacts::{
-    compose_stack_manifest_v2, decompose_legacy_stack, live_spec_v2, normalize_legacy_stack_v2,
-    LiveSpecArtifactV2, PortableEntity, ProgramAdapterV2, ProgramSpecArtifact, SelectedViewV2,
+    compose_stack_manifest_v2, live_spec_v2, load_live_spec_v2, load_program_spec,
+    load_stack_manifest_v2, LiveSpecArtifactV2, PortableEntity, ProgramAdapterV2,
+    ProgramSpecArtifact, SelectedViewV2, StackManifestArtifactV2,
 };
 use arete_hash::{CanonicalIdlDocument, PdaDefinitionV1, PdaSeedV1, ProgramSpecV1};
 use arete_interpreter::public_artifacts::stack_specs_from_artifacts_v2;
 use arete_interpreter::rust::compile_composed_public_artifacts_v2 as compile_rust_composition;
 use arete_interpreter::typescript::{
     compile_composed_public_artifacts_v2 as compile_typescript_composition,
-    compile_public_artifacts, compile_public_artifacts_v2, compile_stack_spec,
+    compile_public_artifacts_v2,
 };
-use arete_interpreter::versioned::load_stack_spec;
 
-const ORE_STACK: &[u8] = include_bytes!("../../stacks/ore/.arete/OreStream.stack.json");
+fn ore_artifacts() -> (
+    Vec<ProgramSpecArtifact>,
+    LiveSpecArtifactV2,
+    StackManifestArtifactV2,
+) {
+    let manifest = load_stack_manifest_v2(include_bytes!(
+        "../../stacks/ore/.arete/OreStream.stack-manifest.json"
+    ))
+    .unwrap()
+    .artifact;
+    let live = load_live_spec_v2(include_bytes!(
+        "../../stacks/ore/.arete/OreStream.live-spec.json"
+    ))
+    .unwrap()
+    .artifact;
+    let candidates = [
+        load_program_spec(include_bytes!(
+            "../../stacks/ore/.arete/ore.program-spec.json"
+        ))
+        .unwrap()
+        .artifact,
+        load_program_spec(include_bytes!(
+            "../../stacks/ore/.arete/entropy.program-spec.json"
+        ))
+        .unwrap()
+        .artifact,
+    ];
+    let programs = manifest
+        .payload
+        .programs
+        .iter()
+        .map(|reference| {
+            candidates
+                .iter()
+                .find(|program| program.artifact_hash == reference.artifact_hash)
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    (programs, live, manifest)
+}
 
 fn program() -> ProgramSpecArtifact {
     let document = CanonicalIdlDocument::parse(
@@ -56,39 +96,22 @@ fn adapted_live(program: &ProgramSpecArtifact, entity: &str, pda_name: &str) -> 
 }
 
 #[test]
-fn ore_legacy_and_explicit_artifacts_generate_the_same_typescript() {
-    let legacy = load_stack_spec(std::str::from_utf8(ORE_STACK).unwrap()).unwrap();
-    let expected = compile_stack_spec(legacy, None).expect("legacy TypeScript");
-    let artifacts = decompose_legacy_stack(ORE_STACK).expect("ORE decomposition");
-    let actual = compile_public_artifacts(
-        &artifacts.program_specs,
-        &artifacts.live_spec,
-        &artifacts.stack_manifest,
-        None,
-    )
-    .expect("artifact TypeScript");
-
-    assert_eq!(actual.full_file(), expected.full_file());
-    assert_eq!(actual.warnings, expected.warnings);
-    assert_eq!(actual.pda_degradations, expected.pda_degradations);
+fn ore_exact_artifact_closure_generates_typescript() {
+    let (programs, live, manifest) = ore_artifacts();
+    let output = compile_public_artifacts_v2(&programs, &live, &manifest, None)
+        .expect("artifact TypeScript");
+    assert!(output.full_file().contains("export const"));
 }
 
 #[test]
-fn ore_decomposition_hashes_are_repeatable_and_public() {
-    let first = decompose_legacy_stack(ORE_STACK).expect("first decomposition");
-    let second = decompose_legacy_stack(ORE_STACK).expect("second decomposition");
-    assert_eq!(
-        first.live_spec.artifact_hash,
-        second.live_spec.artifact_hash
-    );
-    assert_eq!(
-        first.stack_manifest.artifact_hash,
-        second.stack_manifest.artifact_hash
-    );
-
+fn ore_artifacts_are_public_and_repeatable() {
+    let (_, live, manifest) = ore_artifacts();
+    let (_, live_again, manifest_again) = ore_artifacts();
+    assert_eq!(live.artifact_hash, live_again.artifact_hash);
+    assert_eq!(manifest.artifact_hash, manifest_again.artifact_hash);
     let public_bytes = [
-        first.live_spec.canonical_bytes().unwrap(),
-        first.stack_manifest.canonical_bytes().unwrap(),
+        live.canonical_bytes().unwrap(),
+        manifest.canonical_bytes().unwrap(),
     ]
     .concat();
     let public = String::from_utf8(public_bytes).unwrap();
@@ -104,40 +127,24 @@ fn ore_decomposition_hashes_are_repeatable_and_public() {
 }
 
 #[test]
-fn ore_v1_normalization_preserves_generated_behavior_without_legacy_extensions() {
-    let legacy = load_stack_spec(std::str::from_utf8(ORE_STACK).unwrap()).unwrap();
-    let expected = compile_stack_spec(legacy, None).expect("legacy TypeScript");
-    let normalized = normalize_legacy_stack_v2(ORE_STACK).expect("V2 normalization");
-    let actual = compile_public_artifacts_v2(
-        &normalized.legacy.program_specs,
-        &normalized.live_spec,
-        &normalized.stack_manifest,
-        None,
-    )
-    .expect("V2 artifact TypeScript");
-
-    assert_eq!(actual.full_file(), expected.full_file());
-    let bytes = normalized.live_spec.canonical_bytes().unwrap();
+fn ore_v2_artifacts_have_no_legacy_extensions() {
+    let (programs, live, manifest) = ore_artifacts();
+    compile_public_artifacts_v2(&programs, &live, &manifest, None).expect("V2 artifact TypeScript");
+    let bytes = live.canonical_bytes().unwrap();
     let public = String::from_utf8(bytes).unwrap();
     assert!(!public.contains("legacyProgramExtensions"));
     assert!(public.contains("programAdapters"));
 }
 
 #[test]
-fn ore_v2_single_live_rust_generation_preserves_the_legacy_output_shape() {
-    let legacy = load_stack_spec(std::str::from_utf8(ORE_STACK).unwrap()).unwrap();
-    let expected = arete_interpreter::rust::compile_stack_spec(legacy, None).unwrap();
-    let normalized = normalize_legacy_stack_v2(ORE_STACK).unwrap();
-    let actual = arete_interpreter::rust::compile_public_artifacts_v2(
-        &normalized.legacy.program_specs,
-        &normalized.live_spec,
-        &normalized.stack_manifest,
-        None,
-    )
-    .unwrap();
-    assert_eq!(actual.lib_rs, expected.lib_rs);
-    assert_eq!(actual.types_rs, expected.types_rs);
-    assert_eq!(actual.entity_rs, expected.entity_rs);
+fn ore_v2_single_live_rust_generation_uses_exact_artifacts() {
+    let (programs, live, manifest) = ore_artifacts();
+    let output =
+        arete_interpreter::rust::compile_public_artifacts_v2(&programs, &live, &manifest, None)
+            .unwrap();
+    assert!(!output.lib_rs.is_empty());
+    assert!(!output.types_rs.is_empty());
+    assert!(!output.entity_rs.is_empty());
 }
 
 #[test]

@@ -870,7 +870,10 @@ mod tests {
         .expect("snapshot parses");
 
         assert_eq!(snapshot.discriminant_size, 4);
-        assert_eq!(snapshot.instructions[0].get_discriminator(), vec![2, 0, 0, 0]);
+        assert_eq!(
+            snapshot.instructions[0].get_discriminator(),
+            vec![2, 0, 0, 0]
+        );
     }
 
     /// An explicit four-byte array carries its own width. Inferring 8 from "not steel" left the
@@ -897,7 +900,10 @@ mod tests {
         .expect("snapshot parses");
 
         assert_eq!(snapshot.discriminant_size, 4);
-        assert_eq!(snapshot.instructions[0].get_discriminator(), vec![2, 0, 0, 0]);
+        assert_eq!(
+            snapshot.instructions[0].get_discriminator(),
+            vec![2, 0, 0, 0]
+        );
     }
 
     /// Steel's single byte and Anchor's eight must both keep their existing answers.

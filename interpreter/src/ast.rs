@@ -1545,7 +1545,7 @@ pub struct InstructionDef {
 // ============================================================================
 
 /// A unified stack specification containing all entities.
-/// Written to `.arete/{StackName}.stack.json`.
+/// Internal compiled stack representation embedded by generated code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableStackSpec {
     /// AST schema version for backward compatibility

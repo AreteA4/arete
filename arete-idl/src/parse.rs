@@ -246,16 +246,8 @@ fn codama_instruction_to_idl(
                 })?;
                 // Through `try_new`, not a struct literal: this path used to accept a u8
                 // discriminant of 256 and encode it as [0], colliding with instruction zero.
-                SteelDiscriminant::try_new(
-                    argument.number_format().unwrap_or("u8"),
-                    value,
-                )
-                .map_err(|error| {
-                    format!(
-                        "Codama instruction '{}': {error}",
-                        instruction.name
-                    )
-                })
+                SteelDiscriminant::try_new(argument.number_format().unwrap_or("u8"), value)
+                    .map_err(|error| format!("Codama instruction '{}': {error}", instruction.name))
             }
             _ => Err(format!(
                 "Codama instruction '{}' has a 'discriminator' argument without a numeric \

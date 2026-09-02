@@ -1,13 +1,12 @@
-//! Compatibility bridge between explicit public artifacts and the current
-//! interpreter generators. The composite AST is constructed only in memory and
-//! remains a legacy input shape, not a published artifact.
+//! Bridge between explicit public artifacts and the current interpreter
+//! generators. The compiled stack IR is constructed only in memory and is not
+//! a published artifact.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use arete_artifacts::{
-    decompose_legacy_stack, resolve_stack_composition_v2, LegacyDecomposition, LiveSpecArtifact,
-    LiveSpecArtifactV2, ProgramSpecArtifact, ResolvedLiveSpecV2, StackManifestArtifact,
-    StackManifestArtifactV2,
+    resolve_stack_composition_v2, LiveSpecArtifact, LiveSpecArtifactV2, ProgramSpecArtifact,
+    ResolvedLiveSpecV2, StackManifestArtifact, StackManifestArtifactV2,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -25,13 +24,6 @@ pub struct AliasedStackSpecV2 {
 pub struct ComposedStackSpecsV2 {
     pub name: String,
     pub live_specs: Vec<AliasedStackSpecV2>,
-}
-
-pub fn decompose_stack_spec(
-    stack_spec: &SerializableStackSpec,
-) -> Result<LegacyDecomposition, String> {
-    let bytes = serde_json::to_vec(stack_spec).map_err(|error| error.to_string())?;
-    decompose_legacy_stack(&bytes).map_err(|error| error.to_string())
 }
 
 pub fn stack_spec_from_program_artifacts(
@@ -146,6 +138,49 @@ pub fn stack_specs_from_artifacts_v2(
         name: manifest.payload.name.clone(),
         live_specs,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn ore_stack_spec_from_exact_artifacts() -> SerializableStackSpec {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("interpreter crate lives beneath repository root")
+        .join("stacks/ore/.arete");
+    let manifest = arete_artifacts::load_stack_manifest_v2(
+        &std::fs::read(root.join("OreStream.stack-manifest.json")).unwrap(),
+    )
+    .unwrap()
+    .artifact;
+    let live = arete_artifacts::load_live_spec_v2(
+        &std::fs::read(root.join("OreStream.live-spec.json")).unwrap(),
+    )
+    .unwrap()
+    .artifact;
+    let candidates = [
+        arete_artifacts::load_program_spec(
+            &std::fs::read(root.join("ore.program-spec.json")).unwrap(),
+        )
+        .unwrap()
+        .artifact,
+        arete_artifacts::load_program_spec(
+            &std::fs::read(root.join("entropy.program-spec.json")).unwrap(),
+        )
+        .unwrap()
+        .artifact,
+    ];
+    let programs = manifest
+        .payload
+        .programs
+        .iter()
+        .map(|reference| {
+            candidates
+                .iter()
+                .find(|program| program.artifact_hash == reference.artifact_hash)
+                .unwrap()
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    stack_spec_from_artifacts_v2(&programs, &live, &manifest).unwrap()
 }
 
 fn stack_spec_for_live(

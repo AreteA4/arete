@@ -3,9 +3,8 @@ use crate::ast::{
     IdlArrayElementSnapshot, IdlArrayTypeSnapshot, IdlDefinedInnerSnapshot, IdlDefinedTypeSnapshot,
     IdlHashMapTypeSnapshot, IdlOptionTypeSnapshot, IdlSnapshot, IdlTupleTypeSnapshot,
     IdlTypeSnapshot, IdlVecTypeSnapshot, InstructionAccountDef, InstructionAmountHint,
-    InstructionArgDef,
-    InstructionDef, PdaDefinition, PdaProgramDef, PdaSeedDef, SerializableStackSpec,
-    CURRENT_AST_VERSION,
+    InstructionArgDef, InstructionDef, PdaDefinition, PdaProgramDef, PdaSeedDef,
+    SerializableStackSpec, CURRENT_AST_VERSION,
 };
 use arete_idl as idl_parser;
 use std::collections::BTreeMap;

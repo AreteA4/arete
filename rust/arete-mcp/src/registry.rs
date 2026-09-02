@@ -405,7 +405,11 @@ fn knowledge_search_path(
             pairs.append_pair("limit", &l.to_string());
         }
     }
-    Ok(format!("{}?{}", url.path(), url.query().unwrap_or_default()))
+    Ok(format!(
+        "{}?{}",
+        url.path(),
+        url.query().unwrap_or_default()
+    ))
 }
 
 /// Decide the credential for a knowledge request, given the resolved key (if
@@ -618,7 +622,10 @@ mod tests {
             .to_string();
         assert!(err.contains("must be one of"), "{err}");
         for section in KNOWLEDGE_SECTIONS {
-            assert!(err.contains(section), "error should list `{section}`: {err}");
+            assert!(
+                err.contains(section),
+                "error should list `{section}`: {err}"
+            );
         }
     }
 
@@ -659,10 +666,7 @@ mod tests {
         // `query` is percent-encoded, so URL metacharacters cannot restructure
         // the request...
         let path = knowledge_search_path(Some("a&b=c?d#e"), None, None, None).unwrap();
-        assert_eq!(
-            path,
-            "/api/registry/knowledge/search?q=a%26b%3Dc%3Fd%23e"
-        );
+        assert_eq!(path, "/api/registry/knowledge/search?q=a%26b%3Dc%3Fd%23e");
         // ...while slug filters get the shared bare-reference validation.
         assert!(knowledge_search_path(None, Some("swap/../x"), None, None).is_err());
         assert!(knowledge_search_path(None, None, Some("dex?x=1"), None).is_err());

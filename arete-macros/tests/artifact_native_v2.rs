@@ -68,7 +68,7 @@ fn main() {{
     assert!(manifest.payload.selected_views.is_empty());
     assert!(artifact_dir.join("pump.program-spec.json").exists());
     assert!(!artifact_dir.join("PumpProgram.live-spec.json").exists());
-    assert!(artifact_dir.join("PumpProgram.stack.json").exists());
+    assert!(!artifact_dir.join("PumpProgram.stack.json").exists());
 }
 
 #[test]

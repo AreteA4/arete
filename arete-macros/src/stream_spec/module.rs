@@ -177,12 +177,6 @@ pub fn process_module(
                 )
             })?;
 
-            crate::ast::writer::write_stack_to_file(&stack_spec, &stack_name).map_err(|error| {
-                syn::Error::new(
-                    module.ident.span(),
-                    format!("Failed to write compatibility stack AST: {error}"),
-                )
-            })?;
             crate::ast::writer::write_public_artifacts(
                 &stack_name,
                 &[],
