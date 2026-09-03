@@ -74,7 +74,10 @@ command -v node >/dev/null && echo "node $(node --version)" || echo "no node (ex
 step 1 "curl -fsSL $A4_INSTALL_URL | sh"
 t0=$(date +%s%N)
 set +e
-install_out=$(curl -fsSL "$A4_INSTALL_URL" | sh </dev/null)
+# sh must read the script from the pipe; redirecting its stdin to /dev/null
+# makes sh exit immediately and curl fails with (23) writing to the dead pipe.
+# The container's own stdin is already closed by the outer `docker run </dev/null`.
+install_out=$(curl -fsSL "$A4_INSTALL_URL" | sh)
 rc=$?
 set -e
 t1=$(date +%s%N)
