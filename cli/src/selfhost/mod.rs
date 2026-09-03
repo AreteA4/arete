@@ -206,8 +206,18 @@ pub(crate) fn install_binary(src: &Path, target: &Path) -> Result<()> {
                             return Ok(());
                         }
                         // Put the working binary back so a failed swap never
-                        // leaves `a4.exe` missing.
-                        let _ = fs::rename(&aside, target);
+                        // leaves `a4.exe` missing. If even that fails, keep
+                        // both files and tell the user where they are rather
+                        // than deleting the only complete binaries we have.
+                        if let Err(restore_error) = fs::rename(&aside, target) {
+                            return Err(anyhow!(
+                                "Failed to replace {target} ({error}) and could not restore the previous binary ({restore_error}). \
+                                 Previous binary: {aside}. New binary: {tmp}. Move one of them to {target} by hand.",
+                                target = target.display(),
+                                aside = aside.display(),
+                                tmp = tmp.display(),
+                            ));
+                        }
                     }
                 }
             }
