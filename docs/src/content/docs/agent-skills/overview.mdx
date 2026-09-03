@@ -70,13 +70,15 @@ Generated SDKs are not read-only. Alongside stream subscriptions they expose PDA
 
 Agent skills are markdown files that teach your agent how to use Arete correctly. They're installed into your project so your agent picks them up automatically as context.
 
-Three skills are installed:
+Five focused skills are installed together:
 
-| Skill           | What it teaches                                                                                 |
-| --------------- | ----------------------------------------------------------------------------------------------- |
-| `arete`         | Router skill — detects intent and routes the agent to the right sub-skill                       |
-| `arete-consume` | SDK patterns for connecting to streams and building transactions in TypeScript, React, and Rust |
-| `arete-build`   | Rust DSL syntax for building custom stacks from Solana program IDLs                             |
+| Skill                   | What it teaches                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| `arete`                 | Capability discovery, exact descriptors, and project dependency management             |
+| `arete-streams`         | Typed stack views and live subscriptions in TypeScript, React, Rust, and Python        |
+| `arete-programs`        | Account reads, PDAs, instruction building, semantic operations, and transaction safety |
+| `arete-stack-authoring` | App-facing read models, join proof, Rust DSL authoring, and portable artifacts         |
+| `arete-deploy`          | Program publication and permission-aware hosted deployment operations                  |
 
 `a4 init` installs them for every agent it detects (it runs `npx skills add AreteA4/skills` under the hood, so Node.js is required for this step). To install them manually, or for one agent only:
 
@@ -85,7 +87,7 @@ npx skills add AreteA4/skills
 npx skills add AreteA4/skills --agent cursor
 ```
 
-Once installed, your agent knows the correct hook names, view patterns, subscription syntax, and CLI commands. Without the skills, an agent will hallucinate API shapes based on outdated training data.
+The skills are one installation bundle but separate activation units, so an agent loads only the workflow relevant to the current task. Generated code, exact descriptors, and the current CLI remain the source of truth for API shapes.
 
 ---
 

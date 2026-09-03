@@ -167,7 +167,7 @@ a4 init -y --no-skills --no-mcp  # manifest and AGENTS.md only
 | Item               | Path                                                 | Notes                                                                                                                                                  |
 | ------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Manifest           | `arete.toml`                                         | Created if absent; left untouched if present unless `--force`, which rewrites only `[project]`. Name from `--name` or the directory basename           |
-| Agent guidance     | `AGENTS.md`                                          | A managed block between `<!-- BEGIN:arete v1 -->` and `<!-- END:arete -->`; content outside the markers is never touched                               |
+| Agent guidance     | `AGENTS.md`                                          | A managed block between `<!-- BEGIN:arete v2 -->` and `<!-- END:arete -->`; content outside the markers is never touched                               |
 | Claude Code bridge | `CLAUDE.md`                                          | Created as `@AGENTS.md`, or that line is inserted first if the file exists                                                                             |
 | Gemini context     | `.gemini/settings.json`                              | `context.fileName` gains `AGENTS.md` (Gemini CLI only)                                                                                                 |
 | Skills             | per agent, e.g. `.claude/skills/`, `.agents/skills/` | Runs `npx -y skills add AreteA4/skills --skill '*' --agent <ids> -y`. `skipped(npx not found)` without Node; the fix is printed                        |
@@ -256,8 +256,8 @@ a4 doctor --fix      # re-run the init writers for every agents.* warning, then 
 | `tools.rust`            | `cargo` on PATH (authoring only)                                       | `info`; `warn` if `arete.toml` has `[authoring]`     |
 | `agents.detected`       | Detected agents                                                        | `info`                                               |
 | `agents.<id>.mcp`       | Both MCP servers present with the expected shape                       | `warn`: `a4 doctor --fix`                            |
-| `agents.<id>.skills`    | `arete`, `arete-consume`, `arete-build` installed for that agent       | `warn`: `npx skills add AreteA4/skills --agent <id>` |
-| `agents.agents-md`      | `AGENTS.md` block present and current (`v1`)                           | `warn`: `a4 doctor --fix`                            |
+| `agents.<id>.skills`    | All five Arete workflow skills installed for that agent                | `warn`: `npx skills add AreteA4/skills --agent <id>` |
+| `agents.agents-md`      | `AGENTS.md` block present and current (`v2`)                           | `warn`: `a4 doctor --fix`                            |
 | `agents.claude-md`      | `CLAUDE.md` imports `@AGENTS.md` (Claude Code only)                    | `warn`                                               |
 | `agents.gemini-context` | Gemini `context.fileName` includes `AGENTS.md` (Gemini CLI only)       | `warn`                                               |
 | `agents.codex-trust`    | Project trusted in `~/.codex/config.toml` (Codex only)                 | `info`                                               |

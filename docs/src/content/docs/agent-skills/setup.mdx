@@ -43,8 +43,10 @@ Files are created in `.agents/skills/`:
 ```
 .agents/skills/
 ├── arete/SKILL.md
-├── arete-consume/SKILL.md
-└── arete-build/SKILL.md
+├── arete-streams/SKILL.md
+├── arete-programs/SKILL.md
+├── arete-stack-authoring/SKILL.md
+└── arete-deploy/SKILL.md
 ```
 
 :::tip[Allow CLI access]
@@ -63,8 +65,10 @@ Files are created in `.claude/skills/`:
 ```
 .claude/skills/
 ├── arete/SKILL.md
-├── arete-consume/SKILL.md
-└── arete-build/SKILL.md
+├── arete-streams/SKILL.md
+├── arete-programs/SKILL.md
+├── arete-stack-authoring/SKILL.md
+└── arete-deploy/SKILL.md
 ```
 
 You can also set project-level context in `CLAUDE.md` at the project root.
@@ -81,8 +85,10 @@ Files are created in `.windsurf/skills/`:
 ```
 .windsurf/skills/
 ├── arete/SKILL.md
-├── arete-consume/SKILL.md
-└── arete-build/SKILL.md
+├── arete-streams/SKILL.md
+├── arete-programs/SKILL.md
+├── arete-stack-authoring/SKILL.md
+└── arete-deploy/SKILL.md
 ```
 
 </TabItem>
@@ -147,8 +153,9 @@ The agent should run `a4 explore --json`, then `a4 explore ore --json`, and pres
 ## Updating Skills
 
 ```bash
-a4 doctor --fix                   # re-runs the init writers for every warning
-npx skills add AreteA4/skills     # or update the skill files directly
+a4 init -y                         # update and migrate the complete project setup
+a4 doctor --fix                    # re-run any writer reported by doctor
+npx skills add AreteA4/skills      # manual fallback for a fresh skills-only install
 ```
 
-This overwrites existing skill files with the latest versions. The static patterns (SDK syntax, DSL macros) change rarely — dynamic data (entity schemas, field types) always comes from `a4 explore` at runtime, so it's always current regardless of skill version.
+`a4 init -y` also removes legacy `arete-consume` and `arete-build` entries when the skills lockfile proves they came from `AreteA4/skills`; it does not remove unrecorded or differently sourced skills with those names. Dynamic schemas and operations still come from exact `a4 explore` descriptors, `a4 know`, and generated types rather than a copied skill snapshot.

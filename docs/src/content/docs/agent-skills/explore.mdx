@@ -130,7 +130,7 @@ a4 install program spl-token --ts
 
 Rust and TypeScript both generate program clients: `a4 install ore --rust` emits typed program modules alongside the stack — instruction building, PDA resolution, account readers, and program reads. Packaging a program SDK on its own (`a4 install program`) is TypeScript today.
 
-Generated SDKs are not read-only. They expose PDA derivation, account resolution, instruction building, and transaction execution for the programs in scope — see the `arete-consume` skill for the patterns.
+Generated SDKs are not read-only. They expose PDA derivation, account resolution, instruction building, and transaction execution for the programs in scope — see `arete-programs`; use `arete-streams` for stack views and subscriptions.
 
 ---
 

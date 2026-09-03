@@ -454,4 +454,4 @@ predates commit `ff44e714` and is due a regeneration pass.
 Still open (tracked as roadmap, see §5.5): execution layer (wallet/transaction/receipts),
 HTTP program reads + chain client, sessions, stack runtime extensions (`read`/`flows`/
 `math`/`addresses`) in Rust, semantic `prepare()` operations, and refreshing the public
-`docs/src/content/docs/sdks/rust.mdx` + `.claude/skills/arete-consume` references.
+`docs/src/content/docs/sdks/rust.mdx` plus the `arete-streams` and `arete-programs` skill references.

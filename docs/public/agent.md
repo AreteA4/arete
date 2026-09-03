@@ -1,6 +1,6 @@
 # Set up Arete
 
-You are a coding agent setting up Arete (real-time Solana data streams).
+You are a coding agent setting up Arete (typed Solana views and program operations).
 Run these in order. Nothing here needs Rust or an account.
 
 1. Install the CLI (prebuilt, signed binary):
@@ -36,5 +36,6 @@ Need an account (deploying, knowledge layer)? `a4 auth signup` registers you
 as an agent and stores the key. Have a human-issued key? `a4 auth login --key <a4_ak_…>`.
 Update later with `a4 self update`. Never `cargo install a4-cli`.
 
-Everything else (SDK patterns, building stacks) is in the installed skills.
+Everything else is in the five installed workflow skills: discovery, streams,
+programs, stack authoring, and deployment.
 Platform API reference: https://docs.arete.run/skill.md
