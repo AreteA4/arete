@@ -82,7 +82,12 @@ apt-get install -y -qq --no-install-recommends curl ca-certificates git >/dev/nu
 if [[ "$pass" == node ]]; then
   # apt's nodejs on ubuntu:24.04 is v18, but the skills CLI requires
   # Node >= 22.20; install a pinned upstream tarball instead.
-  curl -fsSL https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.gz \
+  case "$(uname -m)" in
+    x86_64|amd64) node_arch=x64 ;;
+    arm64|aarch64) node_arch=arm64 ;;
+    *) fail "unsupported architecture: $(uname -m)" ;;
+  esac
+  curl -fsSL "https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-${node_arch}.tar.gz" \
     | tar -xz -C /usr/local --strip-components=1
 fi
 command -v node >/dev/null && echo "node $(node --version)" || echo "no node (expected for pass=plain)"
