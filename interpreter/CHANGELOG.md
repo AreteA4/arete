@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.13.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.12.0...arete-interpreter-v0.13.0) (2026-09-03)
+
+
+### Bug Fixes
+
+* **hash:** preserve NUL PDA seeds as bytes ([d0798df](https://github.com/AreteA4/arete/commit/d0798df26d0d20a1531ff5d1cde736be4cda1e52))
+* **hash:** preserve NUL PDA seeds as bytes ([5a2fa54](https://github.com/AreteA4/arete/commit/5a2fa54e3a6c80dd77b263fb8df411c72a7eeaa7))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.12.0 to 0.13.0
+    * arete-hash bumped from 0.3.1 to 0.3.2
+    * arete-artifacts bumped from 0.3.0 to 0.3.1
+
 ## [0.12.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.11.0...arete-interpreter-v0.12.0) (2026-09-02)
 
 

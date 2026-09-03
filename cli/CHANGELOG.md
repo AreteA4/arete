@@ -13,6 +13,32 @@
 * expose continuation cursors for private program and event listings
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.13.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.12.0...a4-cli-v0.13.0) (2026-09-03)
+
+
+### Features
+
+* agent-first onboarding (self install/update, init, doctor, mcp, signed installers) ([fb58c5b](https://github.com/AreteA4/arete/commit/fb58c5b023ffa7d52b1188d8a21c392440ed7aa8))
+* **cli:** agent-first onboarding: self install/update, init, doctor, mcp, auth signup ([838a878](https://github.com/AreteA4/arete/commit/838a878e8bbe25fb841ae59bae06b99b763b52a3))
+
+
+### Bug Fixes
+
+* **cli:** address review findings and CI ([7439939](https://github.com/AreteA4/arete/commit/74399393969d3d04c8ef69b8b18889d8d6f7e6ab))
+* **cli:** keep both binaries when a Windows swap and its rollback both fail ([37c2677](https://github.com/AreteA4/arete/commit/37c2677c20808054d2dce6e8b6f75652e25bd895))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.12.0 to 0.13.0
+    * arete-artifacts bumped from 0.3.0 to 0.3.1
+    * arete-hash bumped from 0.3.1 to 0.3.2
+    * arete-mcp bumped from 0.12.0 to 0.13.0
+  * build-dependencies
+    * arete-hash bumped from 0.3.1 to 0.3.2
+
 ## [0.12.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.11.0...a4-cli-v0.12.0) (2026-09-02)
 
 
