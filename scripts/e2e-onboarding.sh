@@ -58,7 +58,19 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 pass="${E2E_PASS:-plain}"
 max_install="${E2E_MAX_INSTALL_SECONDS:-15}"
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() {
+  echo "FAIL: $*" >&2
+  # Dump any captured command JSON so CI logs show why init/doctor failed;
+  # a4 writes skills/MCP detail there while its own stderr stays terse.
+  for f in init.json doctor.json init2.json doctor2.json update.json; do
+    if [[ -f "$f" ]]; then
+      echo "--- $f" >&2
+      head -c 4000 "$f" >&2
+      echo >&2
+    fi
+  done
+  exit 1
+}
 step() { echo; echo "--- step $*"; }
 # Every a4 invocation runs with stdin closed and a timeout: nothing may wait on input.
 a4() { timeout 120 "$A4_BIN" "$@" </dev/null; }
