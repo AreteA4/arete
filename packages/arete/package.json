@@ -6,8 +6,7 @@
     "a4": "bin/a4.js"
   },
   "scripts": {
-    "postinstall": "node scripts/postinstall.js",
-    "test": "node --test bin/*.test.js"
+    "test": "node --test test/a4.test.js"
   },
   "repository": {
     "type": "git",
@@ -33,11 +32,10 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18"
   },
   "files": [
     "bin",
-    "scripts",
     "README.md"
   ]
 }
