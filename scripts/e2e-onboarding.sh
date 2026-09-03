@@ -67,7 +67,12 @@ json_has() { grep -Eq "$1" "$2" || fail "$3 (in $2: $(tr -d '\n' < "$2" | head -
 step 0 "prepare container ($pass)"
 apt-get update -qq >/dev/null
 apt-get install -y -qq --no-install-recommends curl ca-certificates git >/dev/null
-[[ "$pass" == node ]] && apt-get install -y -qq --no-install-recommends nodejs npm >/dev/null
+if [[ "$pass" == node ]]; then
+  # apt's nodejs on ubuntu:24.04 is v18, but the skills CLI requires
+  # Node >= 22.20; install a pinned upstream tarball instead.
+  curl -fsSL https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.gz \
+    | tar -xz -C /usr/local --strip-components=1
+fi
 command -v node >/dev/null && echo "node $(node --version)" || echo "no node (expected for pass=plain)"
 [[ "$PATH" != *".local/bin"* ]] || fail "~/.local/bin already on PATH; the test requires a clean container"
 
