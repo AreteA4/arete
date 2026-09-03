@@ -10,7 +10,14 @@ use std::time::{Duration, Instant};
 use super::{display_path, find_on_path, read_optional, Env, ItemResult, Outcome};
 
 pub const SKILLS_SOURCE: &str = "AreteA4/skills";
-pub const SKILL_NAMES: [&str; 3] = ["arete", "arete-consume", "arete-build"];
+pub const SKILL_NAMES: [&str; 5] = [
+    "arete",
+    "arete-streams",
+    "arete-programs",
+    "arete-stack-authoring",
+    "arete-deploy",
+];
+const LEGACY_SKILL_NAMES: [&str; 2] = ["arete-consume", "arete-build"];
 pub const SKILLS_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCK_FILE: &str = "skills-lock.json";
 
@@ -99,6 +106,98 @@ fn lock_snapshot(env: &Env, global: bool) -> Vec<Option<String>> {
         .iter()
         .map(|path| read_optional(path).ok().flatten())
         .collect()
+}
+
+/// Legacy skill names that the lock records as owned by AreteA4/skills.
+///
+/// The skills CLI does not remove skills that disappear from a source, so a
+/// normal add would otherwise leave both the old and replacement activation
+/// units installed. Never remove an unrecorded or differently sourced skill.
+fn owned_legacy_skills(snapshot: &[Option<String>]) -> Vec<&'static str> {
+    let mut found = BTreeSet::new();
+    for content in snapshot.iter().flatten() {
+        let Ok(lock) = serde_json::from_str::<serde_json::Value>(content) else {
+            continue;
+        };
+        let Some(skills) = lock.get("skills").and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        for name in LEGACY_SKILL_NAMES {
+            let source = skills
+                .get(name)
+                .and_then(|entry| entry.get("source"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if source.contains("aretea4/skills") {
+                found.insert(name);
+            }
+        }
+    }
+    LEGACY_SKILL_NAMES
+        .into_iter()
+        .filter(|name| found.contains(name))
+        .collect()
+}
+
+fn legacy_remove_command(names: &[&str], global: bool) -> String {
+    format!(
+        "npx skills remove {} -y{}",
+        names.join(" "),
+        if global { " -g" } else { "" }
+    )
+}
+
+fn remove_legacy_skills(
+    npx: &std::path::Path,
+    env: &Env,
+    names: &[&str],
+    global: bool,
+    timeout: Duration,
+) -> Result<(), String> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let mut command = Command::new(npx);
+    command
+        .arg("-y")
+        .arg("skills")
+        .arg("remove")
+        .args(names)
+        .arg("-y")
+        .current_dir(&env.root)
+        .env("DO_NOT_TRACK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if global {
+        command.arg("-g");
+    }
+    if let Some(home) = &env.home {
+        command.env("HOME", home);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to run legacy skill cleanup: {error}"))?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(format!("legacy skill cleanup exited with {status}"));
+            }
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "legacy skill cleanup timed out after {} s",
+                    timeout.as_secs()
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(error) => return Err(format!("failed waiting for legacy skill cleanup: {error}")),
+        }
+    }
 }
 
 /// Candidate skill directories for one agent (agent-specific first, then
@@ -233,6 +332,13 @@ pub fn install(env: &Env, options: &SkillsOptions, dry_run: bool) -> ItemResult 
         return ItemResult::new(item, Outcome::skipped("npx not found", Some(fix)), None);
     };
     let before = lock_snapshot(env, options.global);
+    // A global install must never infer ownership from this project's lock:
+    // cleanup runs with `-g`, so only the global lock can authorize it.
+    let legacy = if options.global {
+        owned_legacy_skills(&before[1..])
+    } else {
+        owned_legacy_skills(&before[..1])
+    };
     let lock_display = display_path(env, &lock_paths(env, options.global)[0]);
     if dry_run {
         let complete = options
@@ -356,6 +462,15 @@ pub fn install(env: &Env, options: &SkillsOptions, dry_run: bool) -> ItemResult 
             )
         }
         Ok(_) => {
+            if let Err(reason) =
+                remove_legacy_skills(&npx, env, &legacy, options.global, options.timeout)
+            {
+                return ItemResult::new(
+                    item,
+                    Outcome::error(reason, Some(legacy_remove_command(&legacy, options.global))),
+                    Some(lock_display),
+                );
+            }
             let after = lock_snapshot(env, options.global);
             let outcome = if before == after {
                 Outcome::Unchanged
@@ -414,11 +529,109 @@ mod tests {
     }
 
     #[test]
+    fn legacy_cleanup_requires_arete_owned_lock_entries() {
+        let official = Some(
+            r#"{"skills":{"arete-consume":{"source":"AreteA4/skills"},"arete-build":{"source":"https://github.com/AreteA4/skills/tree/v0.6.0"}}}"#.to_string(),
+        );
+        assert_eq!(
+            owned_legacy_skills(&[official]),
+            vec!["arete-consume", "arete-build"]
+        );
+
+        let other = Some(
+            r#"{"skills":{"arete-consume":{"source":"someone/custom-skills"},"arete-build":{}}}"#
+                .to_string(),
+        );
+        assert!(owned_legacy_skills(&[other]).is_empty());
+        assert!(owned_legacy_skills(&[Some("not json".into())]).is_empty());
+    }
+
+    #[test]
+    fn global_legacy_cleanup_ignores_project_ownership() {
+        let project =
+            Some(r#"{"skills":{"arete-consume":{"source":"AreteA4/skills"}}}"#.to_string());
+        let global =
+            Some(r#"{"skills":{"arete-consume":{"source":"someone/custom-skills"}}}"#.to_string());
+        let snapshot = [project, global];
+        assert!(owned_legacy_skills(&snapshot[1..]).is_empty());
+    }
+
+    #[test]
+    fn legacy_cleanup_command_preserves_scope() {
+        let names = ["arete-consume", "arete-build"];
+        assert_eq!(
+            legacy_remove_command(&names, false),
+            "npx skills remove arete-consume arete-build -y"
+        );
+        assert_eq!(
+            legacy_remove_command(&names, true),
+            "npx skills remove arete-consume arete-build -y -g"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_runs_cleanup_for_lock_owned_legacy_skills() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let root = dir.path().join("proj");
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join(LOCK_FILE),
+            r#"{"skills":{"arete-consume":{"source":"AreteA4/skills"},"arete-build":{"source":"AreteA4/skills"}}}"#,
+        )
+        .unwrap();
+        let npx = bin.join("npx");
+        fs::write(
+            &npx,
+            r#"#!/bin/sh
+if [ "$3" = "remove" ]; then
+  printf '%s\n' "$@" > remove-args.txt
+  printf '{"skills":{"arete":{"source":"AreteA4/skills"}}}\n' > skills-lock.json
+else
+  printf '%s\n' "$@" > add-args.txt
+fi
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&npx, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let env = Env::new(&root, None, &[("PATH", bin.to_str().unwrap())]);
+        let options = SkillsOptions {
+            agent_ids: vec!["codex".into()],
+            skills_ref: None,
+            global: false,
+            timeout: SKILLS_TIMEOUT,
+        };
+        assert_eq!(install(&env, &options, false).outcome, Outcome::Updated);
+        let args = fs::read_to_string(root.join("remove-args.txt")).unwrap();
+        assert_eq!(
+            args.lines().collect::<Vec<_>>(),
+            vec![
+                "-y",
+                "skills",
+                "remove",
+                "arete-consume",
+                "arete-build",
+                "-y"
+            ]
+        );
+    }
+
+    #[test]
     fn missing_skills_accepts_universal_dir() {
         let dir = tempfile::tempdir().unwrap();
         let env = Env::new(dir.path(), None, &[]);
         assert_eq!(missing_skills(&env, "cursor", false), SKILL_NAMES.to_vec());
-        for name in ["arete", "arete-consume"] {
+        for name in [
+            "arete",
+            "arete-streams",
+            "arete-programs",
+            "arete-stack-authoring",
+        ] {
             fs::create_dir_all(dir.path().join(".agents/skills").join(name)).unwrap();
             fs::write(
                 dir.path()
@@ -429,9 +642,9 @@ mod tests {
             )
             .unwrap();
         }
-        assert_eq!(missing_skills(&env, "cursor", false), vec!["arete-build"]);
-        fs::create_dir_all(dir.path().join(".agents/skills/arete-build")).unwrap();
-        fs::write(dir.path().join(".agents/skills/arete-build/SKILL.md"), "x").unwrap();
+        assert_eq!(missing_skills(&env, "cursor", false), vec!["arete-deploy"]);
+        fs::create_dir_all(dir.path().join(".agents/skills/arete-deploy")).unwrap();
+        fs::write(dir.path().join(".agents/skills/arete-deploy/SKILL.md"), "x").unwrap();
         assert!(missing_skills(&env, "cursor", false).is_empty());
     }
 
