@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -77,8 +76,8 @@ pub fn events(user_program_id: &str, after: Option<&str>, json: bool) -> Result<
 pub fn archive(user_program_id: &str, yes: bool, json: bool) -> Result<()> {
     validate_user_program_id(user_program_id)?;
     if !yes {
-        if !io::stdin().is_terminal() {
-            bail!("Archival requires --yes when stdin is not interactive");
+        if !crate::ui::interactive() {
+            bail!("Archival requires -y/--yes when not interactive. Pass: a4 program archive <id> --yes");
         }
         let confirmed = Confirm::new()
             .with_prompt("Archive this program registration? Immutable content is retained")
@@ -99,9 +98,9 @@ pub fn archive(user_program_id: &str, yes: bool, json: bool) -> Result<()> {
 pub fn promote(user_program_id: &str, make_idl_public: bool, json: bool) -> Result<()> {
     validate_user_program_id(user_program_id)?;
     if !make_idl_public {
-        if !io::stdin().is_terminal() {
+        if !crate::ui::interactive() {
             bail!(
-                "Promotion requires --make-idl-public when stdin is not interactive; the baseline IDL may enter a public OSS repository"
+                "Promotion requires --make-idl-public when not interactive; the baseline IDL may enter a public OSS repository. Pass: a4 program promote <id> --make-idl-public"
             );
         }
         let confirmed = Confirm::new()

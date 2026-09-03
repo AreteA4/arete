@@ -23,6 +23,11 @@ pub fn login(api_key: Option<String>) -> Result<()> {
     let api_key = if let Some(key) = api_key {
         key
     } else {
+        if !ui::interactive() {
+            anyhow::bail!(
+                "Missing --key and no terminal to prompt on. Pass: a4 auth login --key <a4_ak_...> (or register as an agent: a4 auth signup)"
+            );
+        }
         println!("{}", "Login to Arete".bold());
         println!();
         println!("Target API: {}", api_url.yellow());
@@ -368,4 +373,216 @@ pub fn create_publishable_key(
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Agent self-registration (WP9)
+// ============================================================================
+
+/// What `a4 auth signup` produced, before any printing.
+#[derive(Debug)]
+struct SignupOutcome {
+    slug: String,
+    display_name: String,
+    api_key: String,
+    credentials_path: std::path::PathBuf,
+    message: Option<String>,
+}
+
+/// Register with `POST /api/agents/signup` and store the issued key for
+/// `api_url`. Refuses to overwrite existing credentials unless `force`.
+fn perform_signup(
+    client: &ApiClient,
+    api_url: &str,
+    name: Option<&str>,
+    force: bool,
+) -> Result<SignupOutcome> {
+    if !force && ApiClient::load_optional_api_key_for_url(api_url)?.is_some() {
+        anyhow::bail!(
+            "Credentials already exist for {api_url}. Run: a4 auth status (or pass --force to replace them)"
+        );
+    }
+
+    let response = client.agent_signup(name)?;
+    ApiClient::save_api_key(&response.api_key, Some(api_url))?;
+    let credentials_path = ApiClient::credentials_file_path()?;
+
+    Ok(SignupOutcome {
+        slug: response.slug,
+        display_name: response.display_name,
+        api_key: response.api_key,
+        credentials_path,
+        message: response.message,
+    })
+}
+
+/// `a4 auth signup`: agent self-registration (WP9).
+///
+/// Human mode never prints the key; `--json` does (the agent may need it for
+/// `ARETE_API_KEY` in a sub-process) and says so on stderr.
+pub fn signup(name: Option<String>, force: bool, json: bool) -> Result<()> {
+    let api_url = config::get_api_url(None);
+    let client = ApiClient::new()?;
+
+    let spinner = (!json).then(|| ui::create_spinner("Registering agent..."));
+    let outcome = perform_signup(&client, &api_url, name.as_deref(), force);
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
+    let outcome = outcome?;
+
+    if json {
+        let payload = serde_json::json!({
+            "schemaVersion": 1,
+            "slug": outcome.slug,
+            "displayName": outcome.display_name,
+            "credentialsPath": outcome.credentials_path.display().to_string(),
+            "apiKey": outcome.api_key,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        eprintln!(
+            "note: apiKey is a secret; it is already stored in {}. Do not paste it into logs or chat.",
+            outcome.credentials_path.display()
+        );
+        return Ok(());
+    }
+
+    ui::print_success(&format!(
+        "Registered agent {} ({})",
+        outcome.slug.bold(),
+        outcome.display_name
+    ));
+    println!("  Target API:  {}", api_url.yellow());
+    println!(
+        "  Credentials: {}",
+        outcome.credentials_path.display().to_string().dimmed()
+    );
+    if let Some(message) = outcome.message.filter(|m| !m.trim().is_empty()) {
+        println!("  {}", message.dimmed());
+    }
+    println!();
+    println!("Next: {}", "a4 explore --json".cyan());
+    Ok(())
+}
+
+#[cfg(test)]
+mod signup_tests {
+    use super::*;
+    use crate::api_client::test_support::MockServer;
+    use crate::api_client::SIGNUP_RATE_LIMIT_MESSAGE;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// `ARETE_CREDENTIALS_PATH` is process-global; serialise the tests that set it.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct CredentialsSandbox {
+        _guard: MutexGuard<'static, ()>,
+        dir: tempfile::TempDir,
+    }
+
+    impl CredentialsSandbox {
+        fn new() -> Self {
+            let guard = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let dir = tempfile::tempdir().expect("tempdir");
+            std::env::set_var(
+                "ARETE_CREDENTIALS_PATH",
+                dir.path().join("creds").join("credentials.toml"),
+            );
+            CredentialsSandbox { _guard: guard, dir }
+        }
+
+        fn credentials_path(&self) -> std::path::PathBuf {
+            self.dir.path().join("creds").join("credentials.toml")
+        }
+    }
+
+    impl Drop for CredentialsSandbox {
+        fn drop(&mut self) {
+            std::env::remove_var("ARETE_CREDENTIALS_PATH");
+        }
+    }
+
+    const OK_BODY: &str =
+        r#"{"slug":"agent-7f3a","display_name":"Robo","api_key":"a4_ak_fresh","message":"hi"}"#;
+
+    #[test]
+    fn signup_stores_key_for_api_url_and_reports_slug() {
+        let sandbox = CredentialsSandbox::new();
+        let server = MockServer::json(200, OK_BODY);
+        let client = ApiClient::with_base_url(server.base_url());
+
+        let outcome = perform_signup(&client, server.base_url(), Some("Robo"), false)
+            .expect("signup succeeds");
+
+        assert_eq!(outcome.slug, "agent-7f3a");
+        assert_eq!(outcome.display_name, "Robo");
+        assert_eq!(outcome.api_key, "a4_ak_fresh");
+        assert_eq!(outcome.message.as_deref(), Some("hi"));
+        assert_eq!(outcome.credentials_path, sandbox.credentials_path());
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_url(server.base_url())
+                .expect("credentials readable")
+                .as_deref(),
+            Some("a4_ak_fresh")
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(&server.request().body).expect("json body");
+        assert_eq!(body, serde_json::json!({"display_name": "Robo"}));
+    }
+
+    #[test]
+    fn signup_refuses_to_replace_existing_credentials_unless_forced() {
+        let _sandbox = CredentialsSandbox::new();
+        let server = MockServer::json(200, OK_BODY);
+        let api_url = server.base_url().to_string();
+        ApiClient::save_api_key("a4_ak_old", Some(&api_url)).expect("seed credentials");
+        let client = ApiClient::with_base_url(&api_url);
+
+        let err = perform_signup(&client, &api_url, None, false).expect_err("must refuse");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Credentials already exist for {api_url}. Run: a4 auth status (or pass --force to replace them)"
+            )
+        );
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_url(&api_url)
+                .unwrap()
+                .as_deref(),
+            Some("a4_ak_old"),
+            "refusal must not touch the stored key"
+        );
+
+        let outcome = perform_signup(&client, &api_url, None, true).expect("--force replaces");
+        assert_eq!(outcome.api_key, "a4_ak_fresh");
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_url(&api_url)
+                .unwrap()
+                .as_deref(),
+            Some("a4_ak_fresh")
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(&server.request().body).expect("json body");
+        assert_eq!(
+            body,
+            serde_json::json!({}),
+            "display_name omitted when None"
+        );
+    }
+
+    #[test]
+    fn signup_surfaces_rate_limit_message_and_stores_nothing() {
+        let _sandbox = CredentialsSandbox::new();
+        let server = MockServer::json(429, r#"{"error":"slow down"}"#);
+        let client = ApiClient::with_base_url(server.base_url());
+
+        let err = perform_signup(&client, server.base_url(), None, false).expect_err("429");
+        assert_eq!(err.to_string(), SIGNUP_RATE_LIMIT_MESSAGE);
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_url(server.base_url()).unwrap(),
+            None
+        );
+    }
 }

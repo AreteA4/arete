@@ -40,7 +40,7 @@ arete-artifacts = { version = "0.3.0", path = "../arete-artifacts" }
 arete-idl = { path = "../arete-idl", version = "0.5.0" }
 arete-hash = { path = "../arete-hash", version = "0.3.1" }
 arete-sdk = { package = "arete-a4-sdk", path = "../rust/arete-a4-sdk", version = "0.12.0" }
-reqwest = { version = "0.11", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 dirs = "5.0"
 rpassword = "7.3"
 dialoguer = "0.11"
@@ -58,8 +58,16 @@ crossterm = { version = "0.28", optional = true }
 url = "2"
 sha2 = "0.10"
 semver = "1.0"
+arete-mcp = { version = "0.12.0", path = "../rust/arete-mcp" }
+minisign-verify = "0.2"
+self-replace = "1.5"
+serde_yaml = "0.9"
+jsonc-parser = { version = "0.33", features = ["cst"] }
 
 [build-dependencies]
 arete-hash = { path = "../arete-hash", version = "0.3.1" }
 serde_json = "1.0"
 toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

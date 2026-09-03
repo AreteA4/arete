@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "arete": {
+      "type": "stdio",
+      "command": "a4",
+      "args": ["mcp"]
+    },
+    "arete-docs": {
+      "type": "http",
+      "url": "https://docs.arete.run/mcp"
+    }
+  }
+}

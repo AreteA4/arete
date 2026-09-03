@@ -1,15 +1,9 @@
-//! `a4-mcp` — MCP server wrapping Arete streams for AI agent integration.
+//! The Arete MCP tool server: `AreteMcp` and its tool definitions.
 //!
-//! See HYP-189 for the design. This binary speaks the Model Context Protocol
+//! See HYP-189 for the design. The server speaks the Model Context Protocol
 //! over stdio and exposes tools for AI agents to connect to Arete stacks,
 //! subscribe to views, and query cached entities. See `connections.rs` for the
-//! per-connection registry.
-
-mod connections;
-mod credentials;
-mod filter;
-mod registry;
-mod subscriptions;
+//! per-connection registry. Entry point: [`crate::serve_stdio`].
 
 /// LLM-friendly deserializers that accept both the typed form and a string
 /// encoding of the typed form. LLMs frequently emit `"5"` instead of `5` when
@@ -111,9 +105,7 @@ use arete_sdk::{Subscription, SubscriptionQuery};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    schemars, tool, tool_handler, tool_router,
-    transport::stdio,
-    ErrorData as McpError, ServerHandler, ServiceExt,
+    schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
 
@@ -121,6 +113,7 @@ use crate::connections::ConnectionRegistry;
 use crate::filter::{Filter, StructuredPredicate};
 use crate::registry::RegistryClient;
 use crate::subscriptions::SubscriptionRegistry;
+use crate::{credentials, filter};
 
 #[derive(Clone)]
 pub struct AreteMcp {
@@ -1003,23 +996,6 @@ impl ServerHandler for AreteMcp {
             ))
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
     }
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Logs go to stderr so they don't pollute the stdio MCP transport on stdout.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
-    tracing::info!("starting a4-mcp stdio server");
-    let service = AreteMcp::new().serve(stdio()).await?;
-    service.waiting().await?;
-    Ok(())
 }
 
 #[cfg(test)]

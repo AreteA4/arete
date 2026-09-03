@@ -220,3 +220,79 @@ pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
 
 /// Polling interval for status checks in seconds.
 pub const STATUS_POLL_INTERVAL_SECS: u64 = 3;
+
+// ============================================================================
+// Interactivity and process exit control
+// ============================================================================
+
+/// Whether prompts may be shown.
+///
+/// False when `--non-interactive` or `-y/--yes` was passed (main() mirrors
+/// them into `A4_NON_INTERACTIVE=1` / `A4_YES=1` so child processes inherit
+/// them), when `A4_NON_INTERACTIVE=1` or `CI` is set in the environment, or
+/// when stdin is not a terminal. Every prompt in the CLI must be guarded by
+/// this; when it is false and a required input is missing, commands return an
+/// error naming the exact flags to pass instead.
+pub fn interactive() -> bool {
+    use std::io::IsTerminal;
+    if env_flag("A4_NON_INTERACTIVE") || env_flag("A4_YES") {
+        return false;
+    }
+    if std::env::var_os("CI").is_some() {
+        return false;
+    }
+    std::io::stdin().is_terminal()
+}
+
+/// Whether `-y/--yes` was passed (mirrored into `A4_YES=1` by main()).
+pub fn assume_yes() -> bool {
+    env_flag("A4_YES")
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            let value = value.trim();
+            value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+        })
+        .unwrap_or(false)
+}
+
+/// Error carrying an explicit process exit code.
+///
+/// Return `Err(ExitCode(n).into())` from a command to make `main()` exit with
+/// `n` without printing the generic `Error:` line (the command has already
+/// reported everything it wants to). Used for `a4 self update --check` (10 =
+/// update available) and `a4 doctor` (1 = a failing check).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitCode(pub i32);
+
+impl std::fmt::Display for ExitCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exit code {}", self.0)
+    }
+}
+
+impl std::error::Error for ExitCode {}
+
+#[cfg(test)]
+mod interactivity_tests {
+    use super::*;
+
+    #[test]
+    fn env_flag_accepts_common_truthy_spellings() {
+        let key = "A4_TEST_ENV_FLAG_UNIQUE";
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("YES", true),
+            ("0", false),
+            ("", false),
+        ] {
+            std::env::set_var(key, value);
+            assert_eq!(env_flag(key), expected, "value {value:?}");
+        }
+        std::env::remove_var(key);
+        assert!(!env_flag(key));
+    }
+}

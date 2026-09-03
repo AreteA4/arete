@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -9,25 +8,11 @@ use colored::Colorize;
 use crate::project::installer;
 use crate::project::manifest::{AuthoringProgramV1, AuthoringStackV1, ManifestV1};
 
-pub fn init(config_path: &str) -> Result<()> {
-    let path = Path::new(config_path);
-    if path.exists() {
-        anyhow::bail!(
-            "Configuration file already exists: {}\nUse a different path or remove the existing file.",
-            path.display()
-        );
-    }
-    let root = path.parent().unwrap_or_else(|| Path::new("."));
-    println!("{} Initializing Arete project...\n", "→".blue().bold());
+/// Build the manifest `a4 init` writes for `root`: `[project]` from `name`
+/// plus every discovered public artifact under `[authoring]`.
+pub(crate) fn build_manifest(root: &Path, name: Option<String>) -> Result<ManifestV1> {
     let discovered = discover_public_artifacts(root)?;
-    println!(
-        "{} Found {} StackManifest(s) and {} ProgramSpec(s)",
-        "→".blue().bold(),
-        discovered.stacks.len(),
-        discovered.programs.len()
-    );
-
-    let project_name = prompt_project_name(root)?;
+    let project_name = name.unwrap_or_else(|| default_project_name(root));
     let mut manifest = ManifestV1::new(project_name);
     manifest.authoring.stacks = discovered
         .stacks
@@ -58,19 +43,34 @@ pub fn init(config_path: &str) -> Result<()> {
         .map(|(alias, program_spec)| (alias, AuthoringProgramV1 { program_spec }))
         .collect();
     manifest.validate()?;
+    Ok(manifest)
+}
 
-    let contents = manifest.to_toml_pretty()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, contents)
-        .with_context(|| format!("Failed to write project manifest {}", path.display()))?;
-    println!("{} Created {}", "✓".green().bold(), path.display());
-    println!(
-        "Run {} to validate local artifact closure and output ownership.",
-        "a4 config validate".cyan()
-    );
-    Ok(())
+/// Content of a fresh `arete.toml` for `root`.
+pub(crate) fn new_manifest_contents(root: &Path, name: Option<String>) -> Result<String> {
+    build_manifest(root, name)?.to_toml_pretty()
+}
+
+/// `--force`: rewrite only the `[project]` table of an existing manifest,
+/// leaving every other table (and comments) as they are.
+pub(crate) fn rewrite_project_table(existing: &str, name: &str) -> Result<String> {
+    let mut doc: toml_edit::DocumentMut = existing
+        .parse()
+        .context("Existing arete.toml is not valid TOML")?;
+    let project = doc
+        .entry("project")
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let table = project
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("`project` in arete.toml is not a table"))?;
+    let private = table
+        .get("private")
+        .and_then(|item| item.as_bool())
+        .unwrap_or(false);
+    table.clear();
+    table.insert("name", toml_edit::value(name));
+    table.insert("private", toml_edit::value(private));
+    Ok(doc.to_string())
 }
 
 pub fn validate(config_path: &str) -> Result<()> {
@@ -93,12 +93,12 @@ pub fn validate(config_path: &str) -> Result<()> {
 }
 
 #[derive(Default)]
-struct DiscoveredArtifacts {
-    stacks: BTreeMap<String, String>,
-    programs: BTreeMap<String, String>,
+pub(crate) struct DiscoveredArtifacts {
+    pub(crate) stacks: BTreeMap<String, String>,
+    pub(crate) programs: BTreeMap<String, String>,
 }
 
-fn discover_public_artifacts(root: &Path) -> Result<DiscoveredArtifacts> {
+pub(crate) fn discover_public_artifacts(root: &Path) -> Result<DiscoveredArtifacts> {
     let root = fs::canonicalize(root)
         .with_context(|| format!("Failed to resolve project directory {}", root.display()))?;
     let mut files = Vec::new();
@@ -199,22 +199,16 @@ fn portable_alias(value: &str) -> String {
     }
 }
 
-fn prompt_project_name(root: &Path) -> Result<String> {
-    let default_name = root
+/// Project name when `--name` is absent: the directory basename, never a prompt.
+pub fn default_project_name(root: &Path) -> String {
+    fs::canonicalize(root)
+        .ok()
+        .as_deref()
+        .unwrap_or(root)
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "my-project".to_string());
-    print!("Project name [{}]: ", default_name.dimmed());
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim();
-    Ok(if input.is_empty() {
-        default_name
-    } else {
-        input.to_string()
-    })
+        .unwrap_or_else(|| "my-project".to_string())
 }
 
 #[cfg(test)]
@@ -231,5 +225,16 @@ mod tests {
         assert_eq!(discovered.stacks.len(), 1);
         assert!(discovered.stacks.contains_key("exact"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn force_rewrites_only_the_project_table() {
+        let existing = "# keep\nmanifest_version = 1\n\n[project]\nname = \"old\"\nprivate = true\nextra = 1\n\n[sdk]\ntargets = [\"typescript\"]\n";
+        let rewritten = rewrite_project_table(existing, "new").unwrap();
+        assert!(rewritten.contains("# keep"));
+        assert!(rewritten.contains("name = \"new\""));
+        assert!(rewritten.contains("private = true"));
+        assert!(!rewritten.contains("extra"));
+        assert!(rewritten.contains("[sdk]\ntargets = [\"typescript\"]"));
     }
 }
