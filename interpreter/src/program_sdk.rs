@@ -307,15 +307,7 @@ fn convert_idl_pda_to_def(
     let seeds = pda_seeds
         .iter()
         .map(|seed| match seed {
-            idl_parser::IdlPdaSeed::Const { value } => {
-                if let Ok(string) = String::from_utf8(value.clone()) {
-                    PdaSeedDef::Literal { value: string }
-                } else {
-                    PdaSeedDef::Bytes {
-                        value: value.clone(),
-                    }
-                }
-            }
+            idl_parser::IdlPdaSeed::Const { value } => convert_const_pda_seed(value),
             idl_parser::IdlPdaSeed::Account { path, .. } => PdaSeedDef::AccountRef {
                 account_name: sanitize_seed_path(path),
             },
@@ -345,6 +337,15 @@ fn convert_idl_pda_to_def(
         seeds,
         program_id,
         program,
+    }
+}
+
+fn convert_const_pda_seed(value: &[u8]) -> PdaSeedDef {
+    match String::from_utf8(value.to_vec()) {
+        Ok(value) if !value.contains('\0') => PdaSeedDef::Literal { value },
+        _ => PdaSeedDef::Bytes {
+            value: value.to_vec(),
+        },
     }
 }
 
@@ -448,6 +449,20 @@ mod tests {
             "solana_pubkey::Pubkey"
         );
         assert!(spec.content_hash.is_some());
+    }
+
+    #[test]
+    fn preserves_nul_const_pda_seeds_as_bytes() {
+        assert_eq!(
+            convert_const_pda_seed(&[0, 0]),
+            PdaSeedDef::Bytes { value: vec![0, 0] }
+        );
+        assert_eq!(
+            convert_const_pda_seed(b"state"),
+            PdaSeedDef::Literal {
+                value: "state".to_string(),
+            }
+        );
     }
 
     #[test]

@@ -262,6 +262,16 @@ impl ProgramSpecV1 {
                 reason: "programId must match idlSnapshot.program_id".to_string(),
             });
         }
+        for pda in self.pdas.values() {
+            validate_pda_seeds(&pda.seeds)?;
+        }
+        for instruction in &self.instructions {
+            for account in &instruction.accounts {
+                if let AccountResolutionV1::PdaInline { seeds, .. } = &account.resolution {
+                    validate_pda_seeds(seeds)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -551,15 +561,7 @@ fn convert_pda(
     let seeds = seeds
         .iter()
         .map(|seed| match seed {
-            arete_idl::IdlPdaSeed::Const { value } => {
-                if let Ok(value) = String::from_utf8(value.clone()) {
-                    PdaSeedV1::Literal { value }
-                } else {
-                    PdaSeedV1::Bytes {
-                        value: value.clone(),
-                    }
-                }
-            }
+            arete_idl::IdlPdaSeed::Const { value } => convert_const_pda_seed(value),
             arete_idl::IdlPdaSeed::Account { path, .. } => PdaSeedV1::AccountRef {
                 account_name: sanitize_seed_path(path),
             },
@@ -588,6 +590,28 @@ fn convert_pda(
         program_id,
         program,
     }
+}
+
+fn convert_const_pda_seed(value: &[u8]) -> PdaSeedV1 {
+    match String::from_utf8(value.to_vec()) {
+        Ok(value) if !value.contains('\0') => PdaSeedV1::Literal { value },
+        _ => PdaSeedV1::Bytes {
+            value: value.to_vec(),
+        },
+    }
+}
+
+fn validate_pda_seeds(seeds: &[PdaSeedV1]) -> Result<(), HashError> {
+    if seeds
+        .iter()
+        .any(|seed| matches!(seed, PdaSeedV1::Literal { value } if value.contains('\0')))
+    {
+        return Err(HashError::InvalidProjection {
+            projection: "program spec",
+            reason: "literal PDA seeds must not contain NUL bytes; use a bytes seed".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn convert_account(
@@ -764,6 +788,57 @@ mod tests {
                 account_name: "metadata_program".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn preserves_nul_const_pda_seeds_as_bytes() {
+        let definition = convert_pda(
+            "binary",
+            &[
+                arete_idl::IdlPdaSeed::Const {
+                    value: b"text".to_vec(),
+                },
+                arete_idl::IdlPdaSeed::Const { value: vec![0, 0] },
+            ],
+            None,
+        );
+
+        assert_eq!(
+            definition.seeds,
+            vec![
+                PdaSeedV1::Literal {
+                    value: "text".to_string(),
+                },
+                PdaSeedV1::Bytes { value: vec![0, 0] },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_nul_in_literal_pda_seeds() {
+        let source = br#"{
+            "address":"11111111111111111111111111111111",
+            "metadata":{"name":"demo","version":"0.1.0","spec":"0.1.0"},
+            "instructions":[
+                {"name":"create","discriminator":[1],"accounts":[
+                    {"name":"state","pda":{"seeds":[{"kind":"const","value":[115,116,97,116,101]}]}}
+                ],"args":[]}
+            ],
+            "accounts":[],"types":[],"events":[],"errors":[]
+        }"#;
+        let document = CanonicalIdlDocument::parse(source, None).unwrap();
+        let mut spec = ProgramSpecV1::from_document(&document);
+        spec.pdas.get_mut("state").unwrap().seeds[0] = PdaSeedV1::Literal {
+            value: "\0".to_string(),
+        };
+
+        assert!(matches!(
+            spec.validate(),
+            Err(HashError::InvalidProjection {
+                projection: "program spec",
+                ..
+            })
+        ));
     }
 
     #[test]
