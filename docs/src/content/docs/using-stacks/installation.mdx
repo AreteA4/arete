@@ -70,21 +70,26 @@ a4-sdk = "{{VERSION}}"
 
 ## CLI
 
-The Arete CLI (`a4`) handles project scaffolding, deployment, and SDK generation.
-
-**Via npm (global):**
+The Arete CLI (`a4`) handles project scaffolding, deployment, and SDK generation. Install the prebuilt binary:
 
 ```bash
-npm install -g @usearete/a4
+curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
+irm https://arete.run/install.ps1 | iex             # Windows PowerShell
+npx @usearete/a4 install                            # if you prefer npm
 ```
 
-Or use without installing:
+The binary lands in `~/.local/bin/a4` (override with `A4_INSTALL_DIR`) and the installer prints `A4_BIN=<absolute path>`. Verify and update with:
 
 ```bash
-npx @usearete/a4 --help
+a4 doctor --json
+a4 self update
 ```
 
-**Via Cargo:**
+Full installer options: [CLI Command Reference → Installation](/cli/commands/#installation).
+
+### Building from source
+
+Only if you need an unreleased build. It requires a Rust toolchain and is not the supported install path:
 
 ```bash
 cargo install a4-cli

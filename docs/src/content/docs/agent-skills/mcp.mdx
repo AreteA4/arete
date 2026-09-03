@@ -10,7 +10,14 @@ Arete ships **two** MCP servers. They serve different purposes and can be run to
 | Server                                 | Transport                           | What it gives your agent                                                                     |
 | -------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
 | [Documentation](#documentation-server) | HTTP (`https://docs.arete.run/mcp`) | Search and read these docs without scraping                                                  |
-| [Stream](#stream-server)               | stdio (`npx -y @usearete/mcp`)      | Registry discovery, the curated knowledge layer, and live entity data, inside the agent loop |
+| [Stream](#stream-server)               | stdio (`a4 mcp`)                    | Registry discovery, the curated knowledge layer, and live entity data, inside the agent loop |
+
+`a4 init` writes both servers, named `arete` (stream) and `arete-docs` (documentation), into the MCP config of every coding agent it detects. Run it once per project (or `a4 init --global` for your user) and skip the manual snippets below; `a4 doctor` reports drift as `agents.<id>.mcp` and `a4 doctor --fix` rewrites them.
+
+```bash
+a4 init -y
+a4 doctor --json
+```
 
 Neither server covers SDK generation (`a4 install`) or transaction construction. Those are CLI and SDK operations.
 
@@ -39,47 +46,13 @@ The legacy alias `https://docs.arete.run/mcp/sse` is still available for older c
 
 The server also exposes the Arete platform skill as a resource at `https://docs.arete.run/skill.md`.
 
-### Claude Code
+### Configure your agent
+
+`a4 init` registers this server as `arete-docs`. To add it by hand, use the shapes under [Configure your agent](#configure-your-agent-1) below, or for Claude Code:
 
 ```bash
-claude mcp add --transport http Arete https://docs.arete.run/mcp
-```
-
-Verify the connection:
-
-```bash
+claude mcp add --transport http arete-docs https://docs.arete.run/mcp
 claude mcp list
-```
-
-### Cursor
-
-Open MCP settings and add:
-
-```json
-{
-  "mcpServers": {
-    "Arete": {
-      "url": "https://docs.arete.run/mcp"
-    }
-  }
-}
-```
-
-Then ask Cursor: "What tools do you have available?" It should list the Arete documentation tools.
-
-### VS Code
-
-Create or update `.vscode/mcp.json`:
-
-```json
-{
-  "servers": {
-    "Arete": {
-      "type": "http",
-      "url": "https://docs.arete.run/mcp"
-    }
-  }
-}
 ```
 
 ### Discovery
@@ -94,15 +67,17 @@ Discovery metadata is available at:
 
 ## Stream server
 
-The stream MCP server (`a4-mcp`) is a local stdio server that discovers registry resources, queries the curated knowledge layer, and opens WebSocket connections to deployed Arete stacks, caching streamed entities in memory. Use it when you want live data **inside the agent loop** — for exploration, debugging, or answering questions about current chain state. For application code, generate an SDK with `a4 install` instead.
+The stream MCP server (`a4 mcp`) is a local stdio server that discovers registry resources, queries the curated knowledge layer, and opens WebSocket connections to deployed Arete stacks, caching streamed entities in memory. Use it when you want live data **inside the agent loop** — for exploration, debugging, or answering questions about current chain state. For application code, generate an SDK with `a4 install` instead.
 
-### Install
+### Run
+
+The server is built into the `a4` binary; there is nothing separate to install:
 
 ```bash
-npx -y @usearete/mcp     # no global install
-npm install -g @usearete/mcp
-cargo install arete-mcp
+a4 mcp
 ```
+
+It speaks MCP over stdio and writes logs to stderr only. Install `a4` with `curl -fsSL https://arete.run/install.sh | sh` (see [Installation](/cli/commands/#installation)). `a4 init` writes the config for every detected agent, using the absolute binary path so GUI hosts that do not inherit your shell PATH still find it. The npm package `@usearete/mcp` is deprecated; replace `npx -y @usearete/mcp` with `a4 mcp` in any existing config.
 
 ### Discovery tools
 
@@ -238,48 +213,83 @@ Do not pass `api_key` in tool calls. The server resolves credentials in this ord
 
 1. Explicit `api_key` argument on `connect` (override — avoid in agent calls)
 2. `ARETE_API_KEY` environment variable
-3. The credentials file written by `a4 auth login`
+3. The credentials file written by `a4 auth signup` or `a4 auth login`
 
-Run `a4 auth login` once and omit the argument.
+Run `a4 auth signup` (or `a4 auth login --key <a4_ak_…>`) once and omit the argument.
 
 The knowledge tools (`search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts`) require a key from step 2 or 3 and fail with an actionable error when none resolves. The discovery tools attach a resolved key **only when `ARETE_API_URL` names an Arete origin over HTTPS** — `https://arete.run` or any `https://*.arete.run` subdomain. Plain HTTP is accepted only for loopback (`localhost`, `127.0.0.1`, `[::1]`), where the request never reaches a network. Everything else, including `http://api.arete.run`, gets an unauthenticated request rather than your key in cleartext or sent to a host it does not belong to — the endpoints these tools touch are public, so you still get the public result set.
 
-### Claude Desktop / Claude Code
+### Configure your agent
+
+These are the files and shapes `a4 init` writes (project scope; `--global` uses the user-level file named in parentheses). Each includes both servers. Replace `"a4"` with the absolute path printed as `A4_BIN=` by the installer if your host does not inherit your shell PATH.
+
+#### Claude Code — `.mcp.json` (`~/.claude.json`)
 
 ```json
 {
   "mcpServers": {
-    "arete": {
-      "command": "npx",
-      "args": ["-y", "@usearete/mcp"]
-    }
+    "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] },
+    "arete-docs": { "type": "http", "url": "https://docs.arete.run/mcp" }
   }
 }
 ```
 
-### Cursor
+#### Cursor — `.cursor/mcp.json` (`~/.cursor/mcp.json`)
 
 ```json
 {
   "mcpServers": {
-    "arete": {
-      "command": "npx",
-      "args": ["-y", "@usearete/mcp"]
-    }
+    "arete": { "command": "a4", "args": ["mcp"] },
+    "arete-docs": { "url": "https://docs.arete.run/mcp" }
   }
 }
 ```
 
-### VS Code
+#### VS Code — `.vscode/mcp.json` (project only)
 
 ```json
 {
   "servers": {
-    "arete": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@usearete/mcp"]
-    }
+    "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] },
+    "arete-docs": { "type": "http", "url": "https://docs.arete.run/mcp" }
   }
 }
 ```
+
+#### Codex — `.codex/config.toml` (`~/.codex/config.toml`)
+
+```toml
+[mcp_servers.arete]
+command = "a4"
+args = ["mcp"]
+
+[mcp_servers.arete-docs]
+url = "https://docs.arete.run/mcp"
+```
+
+Codex only loads the project file for trusted projects; `a4 doctor` reports an untrusted project as `agents.codex-trust`.
+
+#### OpenCode — `opencode.json` (`~/.config/opencode/opencode.json`)
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "arete": { "type": "local", "command": ["a4", "mcp"], "enabled": true },
+    "arete-docs": { "type": "remote", "url": "https://docs.arete.run/mcp", "enabled": true }
+  }
+}
+```
+
+#### Gemini CLI — `.gemini/settings.json` (`~/.gemini/settings.json`)
+
+```json
+{
+  "mcpServers": {
+    "arete": { "command": "a4", "args": ["mcp"] },
+    "arete-docs": { "httpUrl": "https://docs.arete.run/mcp" }
+  }
+}
+```
+
+`a4 init` also supports Copilot CLI, Windsurf, Cline, Zed, Amp, Kiro, Roo, and Goose; run `a4 init --agents <id>` and inspect the reported path, or see the [CLI reference](/cli/commands/#a4-init) for the full table.

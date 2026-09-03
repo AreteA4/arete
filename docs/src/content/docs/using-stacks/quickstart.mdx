@@ -27,50 +27,40 @@ Choose how you want to run the CLI:
 ### Step 1: Install the CLI
 
 <Tabs syncKey="installer">
-<TabItem label="Cargo">
+<TabItem label="Installer">
 
-Install the native binary via Cargo:
-
-```bash
-cargo install a4-cli
-```
-
-Then use the `a4` command:
+Install the prebuilt, signed binary (no Rust toolchain needed):
 
 ```bash
-a4 create my-app
+curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
+irm https://arete.run/install.ps1 | iex             # Windows PowerShell
 ```
 
-This is the same CLI — Cargo installs it as `a4`, and so does npm.
+The binary lands in `~/.local/bin/a4` and the installer prints `A4_BIN=<absolute path>`. If `a4` is not found in an already-open terminal, run `export PATH="$HOME/.local/bin:$PATH"`. Then check it:
+
+```bash
+a4 doctor --json
+```
 
 </TabItem>
 <TabItem label="npx">
 
-No installation needed — just run:
+No separate install step — the npm package downloads the same binary on first use:
 
 ```bash
 npx @usearete/a4 create my-app
 ```
 
-This downloads and runs the CLI without installing it globally.
-
-</TabItem>
-<TabItem label="npm">
-
-Install globally via npm:
+To install it explicitly (equivalent to `npm install -g @usearete/a4`):
 
 ```bash
-npm install -g @usearete/a4
-```
-
-Then use the `a4` command:
-
-```bash
-a4 create my-app
+npx @usearete/a4 install
 ```
 
 </TabItem>
 </Tabs>
+
+Update later with `a4 self update`. Full installer options: [CLI Command Reference → Installation](/cli/commands/#installation).
 
 ---
 
@@ -79,7 +69,7 @@ a4 create my-app
 ### Step 2: Scaffold the project
 
 <Tabs syncKey="installer">
-<TabItem label="Cargo">
+<TabItem label="Installer">
 
 ```bash
 a4 create my-app
@@ -90,13 +80,6 @@ a4 create my-app
 
 ```bash
 npx @usearete/a4 create my-app
-```
-
-</TabItem>
-<TabItem label="npm">
-
-```bash
-a4 create my-app
 ```
 
 </TabItem>
@@ -117,10 +100,10 @@ All templates use the same example: **ORE mining rounds** — a real, live Solan
 ### Step 3: Or specify the template directly
 
 <Tabs syncKey="installer">
-<TabItem label="Cargo">
+<TabItem label="Installer">
 
 ```bash
-a4 create my-app --template rust-ore  # or react-ore, typescript-ore
+a4 create my-app --template react-ore  # or typescript-ore, rust-ore
 ```
 
 </TabItem>
@@ -128,13 +111,6 @@ a4 create my-app --template rust-ore  # or react-ore, typescript-ore
 
 ```bash
 npx @usearete/a4 create my-app --template react-ore  # or typescript-ore, rust-ore
-```
-
-</TabItem>
-<TabItem label="npm">
-
-```bash
-a4 create my-app --template react-ore  # or typescript-ore, rust-ore
 ```
 
 </TabItem>
@@ -315,11 +291,14 @@ async fn main() -> anyhow::Result<()> {
 
 ## Using an AI Coding Agent?
 
-Install Arete agent skills so your AI can write correct code without you looking up docs:
+Install Arete agent skills and MCP config so your AI can write correct code without you looking up docs:
 
 ```bash
-npx skills add AreteA4/skills
+a4 init -y          # skills for every detected agent + MCP servers + AGENTS.md
+a4 doctor --json    # exit 0 = ready
 ```
+
+Skills only, without the rest: `npx skills add AreteA4/skills`.
 
 Now try asking your agent: "Show me the ORE mining round data in a table with live updates."
 
