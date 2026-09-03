@@ -114,6 +114,9 @@ grep -q '"verified": *true' /root/.arete/receipt.json || fail "receipt does not 
 step 2 "a4 init -y --json in an empty git repo"
 mkdir -p /work && cd /work
 git init -q && git config user.email e2e@arete.run && git config user.name e2e
+# The node pass verifies skills/MCP installation, which requires a detected
+# agent; a bare container has none, so seed the claude-code home signal.
+[[ "$pass" == node ]] && mkdir -p "$HOME/.claude"
 a4 init -y --json > init.json || fail "a4 init exited $?"
 for f in arete.toml AGENTS.md CLAUDE.md .mcp.json; do [[ -f $f ]] || fail "init did not create $f"; done
 if [[ "$pass" == node ]]; then
