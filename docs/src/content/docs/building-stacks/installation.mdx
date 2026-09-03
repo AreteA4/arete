@@ -21,21 +21,36 @@ If you're consuming data from a deployed stack, see [Using Stacks → Installati
 
 ## CLI
 
-The Arete CLI (`a4`) handles project initialization, deployment, and SDK generation.
+The Arete CLI (`a4`) handles project initialization, deployment, and SDK generation. Install the prebuilt binary (Rust is needed to build stacks, but not to install the CLI):
 
 ```bash
-cargo install a4-cli
+curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
+irm https://arete.run/install.ps1 | iex             # Windows PowerShell
+npx @usearete/a4 install                            # if you prefer npm
 ```
 
 Verify the installation:
 
 ```bash
 a4 --version
+a4 doctor --json
 ```
 
 :::note[PATH configuration]
-Ensure `~/.cargo/bin` is in your PATH. Most Rust installations configure this automatically.
+The installer puts `a4` in `~/.local/bin` and adds it to your shell profile. If `a4` is not found in an already-open terminal, run `export PATH="$HOME/.local/bin:$PATH"` or use the absolute path the installer printed as `A4_BIN=`.
 :::
+
+Update later with `a4 self update`. Full installer options: [CLI Command Reference → Installation](/cli/commands/#installation).
+
+### Building from source
+
+Only if you need an unreleased build:
+
+```bash
+cargo install a4-cli
+```
+
+A Cargo-built `a4` cannot use `a4 self update`; rebuild with `cargo install a4-cli --force` instead.
 
 ---
 
@@ -112,6 +127,6 @@ a4 config validate
 
 | Issue                   | Solution                                        |
 | ----------------------- | ----------------------------------------------- |
-| `a4: command not found` | Add `~/.cargo/bin` to your PATH                 |
+| `a4: command not found` | Add `~/.local/bin` to your PATH                 |
 | `cargo build` fails     | Ensure `arete = "{{VERSION}}"` is in Cargo.toml |
 | `a4 init` fails         | Check you're in a valid Cargo project           |

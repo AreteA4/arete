@@ -1,6 +1,6 @@
 ---
 name: arete-platform
-version: 1.1.0
+version: 1.2.0
 description: Official skill for the Arete platform. Register and start building on Solana with Arete.
 homepage: https://arete.run
 metadata: {"category":"solana-platform","api_base":"https://api.arete.run","cli":"a4","registry":"https://arete.run/registry"}
@@ -10,6 +10,25 @@ metadata: {"category":"solana-platform","api_base":"https://api.arete.run","cli"
 
 You are onboarding to **Arete**, a system for programmable real-time data feeds on Solana. This file walks you (the agent) through registering, getting an API key, and using the platform.
 
+> ## What's new in 1.2.0 (2026-09-03)
+>
+> **Prebuilt CLI installer; no Rust required.** Install with
+> `curl -fsSL https://arete.run/install.sh | sh` (Windows:
+> `irm https://arete.run/install.ps1 | iex`; npm: `npx @usearete/a4 install`).
+> The binary lands in `~/.local/bin/a4` and prints `A4_BIN=<path>`. Update with
+> `a4 self update`. `cargo install a4-cli` is no longer an onboarding path.
+>
+> **`a4 init -y` and `a4 doctor --json`.** `init` writes `arete.toml`, an Arete
+> block in `AGENTS.md` (plus a `CLAUDE.md` import), installs the skills for every
+> detected coding agent, and writes MCP config for both servers. `doctor` checks
+> all of it and exits 0 when ready; `--fix` re-applies the `init` writers.
+>
+> **`a4 auth signup`.** Registers an agent and stores the key locally; wraps
+> `POST /api/agents/signup`. The raw HTTP call still works as a fallback.
+>
+> **Stream MCP is `a4 mcp`.** The server is built into the `a4` binary. MCP
+> configs use `{"command":"a4","args":["mcp"]}`; `@usearete/mcp` is deprecated.
+>
 > ## What's new in 1.1.0
 >
 > **Descriptor-backed discovery and install.** The registry now serves pinned install
@@ -64,7 +83,8 @@ You are onboarding to **Arete**, a system for programmable real-time data feeds 
 | `arete-build` skill | https://github.com/AreteA4/skills/blob/main/arete-build/SKILL.md | Rust DSL syntax for authoring custom stacks |
 | Registry | https://arete.run/registry | Browseable catalog of public stacks |
 | Docs MCP server | `https://docs.arete.run/mcp` | HTTP MCP — `search_docs`, `fetch_page` over these docs |
-| Stream MCP server | `npx -y @usearete/mcp` | stdio MCP — connect/subscribe/query live stack entities |
+| Stream MCP server | `a4 mcp` | stdio MCP — connect/subscribe/query live stack entities |
+| CLI installer | `https://arete.run/install.sh` / `https://arete.run/install.ps1` | Prebuilt, signed `a4` binary; no Rust needed |
 
 ## Security
 
@@ -79,6 +99,23 @@ Your API key (`a4_ak_*`) is a secret.
 ## Quick start
 
 ### 1. Register
+
+Preferred: install the CLI first (step 3) and let it register you and store the key:
+
+```bash
+a4 auth signup                    # optional: a4 auth signup my-agent
+a4 auth signup --json             # prints {"slug","displayName","credentialsPath","apiKey"}
+```
+
+`a4 auth signup` calls the endpoint below, saves the key to `~/.arete/credentials.toml`,
+and prints your slug and the credentials path. It never prints the key in human mode.
+With `--json` the output includes `apiKey` — a secret; use it only to set
+`ARETE_API_KEY` for a sub-process, never log it. If credentials already exist for
+this API URL it refuses unless you pass `--force` (check with `a4 auth status`).
+Same rate limit as the raw call: on `429` it tells you to retry later or use a
+human-issued key via `a4 auth login --key <a4_ak_…>`.
+
+Fallback without the CLI, the raw HTTP call:
 
 ```bash
 curl -X POST https://api.arete.run/api/agents/signup \
@@ -126,12 +163,39 @@ You should see your slug, display_name, and `status: "active"`.
 
 ### 3. Install the local toolkit
 
-Read https://docs.arete.run/agent.md and follow its instructions. This installs the `a4` CLI and the three Arete skill files (`arete`, `arete-consume`, `arete-build`) into your project so your downstream code work has the right context.
+Install the prebuilt, signed `a4` binary. No Rust, no account:
+
+```bash
+curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
+irm https://arete.run/install.ps1 | iex             # Windows PowerShell
+npx @usearete/a4 install                            # if you prefer npm
+```
+
+The installer prints `A4_BIN=<absolute path>` (default `~/.local/bin/a4`). If `a4`
+is not found afterwards your shell captured PATH before the install: use that
+absolute path, or run `export PATH="$HOME/.local/bin:$PATH"`.
+
+Then, in the project directory:
+
+```bash
+a4 init -y          # arete.toml, AGENTS.md block, CLAUDE.md import, skills, MCP config
+a4 doctor --json    # exit 0 = ready; each check carries a fix
+```
+
+`a4 init -y` installs the three Arete skill files (`arete`, `arete-consume`,
+`arete-build`) for every coding agent it detects and configures both MCP servers
+below. Add `--global` to install for your user instead of the project. It is
+idempotent; re-runs report `unchanged`. `a4 doctor --fix` re-applies its writers.
+
+Update later with `a4 self update` (`a4 self update --check` exits 10 when a newer
+version exists). Never `cargo install a4-cli`.
+
+Full agent walkthrough: https://docs.arete.run/agent.md
 
 ### 4. Find what serves an intent (knowledge layer)
 
 Before picking a stack or reading a program's IDL, ask the curated knowledge layer.
-It requires your API key (`a4 auth login`) and answers "which protocols, programs,
+It requires your API key (`a4 auth signup`, or `a4 auth login --key`) and answers "which protocols, programs,
 stacks, and recipes serve this intent" — including which typed SDK operations already
 exist per program, so you never read SDK source to find method names.
 
@@ -272,16 +336,27 @@ https://docs.arete.run/mcp
 | `search_docs` | Search the docs, returns ranked snippets with page slugs |
 | `fetch_page` | Fetch a documentation page as raw markdown by slug |
 
-Claude Code: `claude mcp add --transport http Arete https://docs.arete.run/mcp`
+`a4 init -y` registers it as `arete-docs` alongside the stream server. Manual: `claude mcp add --transport http arete-docs https://docs.arete.run/mcp`
 
 ### Stream MCP (stdio)
 
 Discover registry resources and read live stack entities from inside your own agent
 loop, without generating an SDK.
 
+The server is built into the `a4` binary:
+
 ```bash
-npx -y @usearete/mcp     # or: cargo install arete-mcp
+a4 mcp
 ```
+
+`a4 init -y` writes this config for every detected agent. Manual shape (Claude Code `.mcp.json`):
+
+```json
+{"mcpServers":{"arete":{"type":"stdio","command":"a4","args":["mcp"]},"arete-docs":{"type":"http","url":"https://docs.arete.run/mcp"}}}
+```
+
+Use the absolute path from `A4_BIN=` as `command` when the host does not inherit your
+shell PATH. `npx -y @usearete/mcp` is deprecated.
 
 Discovery tools — read-only against the public registry, no auth required. Casing is not
 uniform: `explore_stacks` and `explore_stack_schema` return snake_case (`websocket_url`,
@@ -300,8 +375,8 @@ inside. `a4 explore --json` is camelCase throughout. Read the keys you actually 
 | `resolve_artifact` | Fetch a content-addressed artifact by kind and hash |
 
 Knowledge tools — read-only against `/api/registry/knowledge/*`. Unlike the explore
-tools these **require an API key** (`ARETE_API_KEY`, or the file `a4 auth login`
-writes); without one they fail up front with an actionable error rather than
+tools these **require an API key** (`ARETE_API_KEY`, or the file `a4 auth signup` /
+`a4 auth login` writes); without one they fail up front with an actionable error rather than
 returning a public subset.
 
 | Tool | Purpose |
@@ -332,7 +407,7 @@ Streaming tools — stateful, `connect` first:
 | `list_subscriptions` / `list_connections` | Inspect current state |
 
 Auth resolves in this order: explicit `api_key` argument on `connect`, then
-`ARETE_API_KEY`, then the credentials file written by `a4 auth login`. Prefer omitting
+`ARETE_API_KEY`, then the credentials file written by `a4 auth signup` / `a4 auth login`. Prefer omitting
 `api_key` and letting it resolve — do not paste keys into tool calls. The discovery
 tools work without a key; supplying one widens `explore_stacks` to global stacks.
 

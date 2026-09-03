@@ -27,6 +27,28 @@ Real-time streaming data pipelines for Solana - transform on-chain events into t
 
 ## Quick Start
 
+### CLI
+
+Install the prebuilt, signed `a4` binary (no Rust toolchain or account needed):
+
+```bash
+curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
+irm https://arete.run/install.ps1 | iex             # Windows PowerShell
+npx @usearete/a4 install                            # if you prefer npm
+```
+
+Then, in your project:
+
+```bash
+a4 init -y          # arete.toml, AGENTS.md block, agent skills, MCP config
+a4 doctor --json    # exit 0 = ready; each check carries a fix
+a4 explore --json   # live data available, no account needed
+```
+
+Update with `a4 self update`. Coding agents can do all of this from one prompt:
+`Read https://docs.arete.run/agent.md and follow it to set up Arete in this project, then tell me what live data is available.`
+See [cli/README.md](cli/README.md) for the full command surface.
+
 ### Rust
 Add to your `Cargo.toml`:
 ```toml
@@ -221,6 +243,11 @@ cd arete
 
 # Build all Rust packages
 cargo build --workspace
+
+# CLI from source (unreleased builds only; the supported install is the
+# installer above, and a Cargo-built binary cannot `a4 self update`)
+cargo install --path cli
+# or the published crate: cargo install a4-cli
 
 # Build TypeScript SDKs
 cd typescript/core && npm install && npm run build

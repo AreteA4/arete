@@ -8,13 +8,34 @@ Command-line tool for building, deploying, and managing Arete stream stacks.
 
 ## Installation
 
+Prebuilt, signed binary. No Rust toolchain or account required:
+
 ```bash
-cargo install a4-cli
+curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
+irm https://arete.run/install.ps1 | iex             # Windows PowerShell
+npx @usearete/a4 install                            # if you prefer npm
 ```
 
-### From Source
+The binary is installed to `~/.local/bin/a4` (override with `A4_INSTALL_DIR`),
+the installer adds that directory to your shell profile (skip with
+`A4_NO_MODIFY_PATH=1`) and prints `A4_BIN=<absolute path>` as its last-but-one
+line. If `a4` is not found in an already-open shell, use that path or run
+`export PATH="$HOME/.local/bin:$PATH"`.
 
 ```bash
+a4 self update            # update in place (alias: a4 upgrade)
+a4 self update --check    # exit 10 if a newer version exists
+a4 self uninstall         # remove the binary, receipt, and PATH lines
+```
+
+### Building from source
+
+Only for unreleased builds. A Cargo-built binary cannot `a4 self update`;
+rebuild with `cargo install a4-cli --force` instead.
+
+```bash
+cargo install a4-cli
+# or from a checkout:
 git clone https://github.com/AreteA4/arete.git
 cd arete
 cargo install --path cli
@@ -23,11 +44,20 @@ cargo install --path cli
 ## Quick Start
 
 ```bash
-# Initialize project
-a4 init
+# Set up the project: arete.toml, AGENTS.md block, CLAUDE.md import,
+# agent skills, and MCP config for every detected coding agent
+a4 init -y
 
-# Authenticate
-a4 auth login
+# Verify (exit 0 = ready; each check carries a fix)
+a4 doctor --json
+
+# Discover live data (no account needed)
+a4 explore --json
+a4 explore stack ore --json
+
+# Need an account (deploying, knowledge layer)?
+a4 auth signup                      # register as an agent, stores the key
+a4 auth login --key <a4_ak_...>     # or use a human-issued key
 
 # Build explicit artifacts and deploy the exact manifest
 cargo build
@@ -40,7 +70,11 @@ The deployment returns operational bindings for the exact StackManifest.
 
 | Command | Description |
 |---------|-------------|
-| `a4 init` | Initialize project |
+| `a4 init` | Set up the project: manifest, `AGENTS.md`, skills, MCP config |
+| `a4 doctor` | Check the install, project, auth, network, and agent setup |
+| `a4 self install\|update\|uninstall` | Manage the `a4` binary (`a4 upgrade` = `self update`) |
+| `a4 mcp` | Run the stream MCP server over stdio |
+| `a4 auth signup` | Register an agent account and store the key |
 | `a4 program build <idl>` | Build a portable ProgramSpec |
 | `a4 program push <idl-or-program-spec>` | Upload an owner-private hosted ProgramSpec |
 | `a4 program status <upr-id>` | Inspect admission and runtime health |
@@ -152,12 +186,41 @@ and does not make a program global or public.
 ## Authentication
 
 ```bash
-a4 auth login       # Login
-a4 auth logout      # Logout
-a4 auth whoami      # Verify with server
+a4 auth signup [name]           # Register an agent (5 per hour per IP); --force to replace saved credentials
+a4 auth signup --json           # Also prints "apiKey" (a secret) for ARETE_API_KEY in sub-processes
+a4 auth login --key <a4_ak_...> # Use a human-issued key; prompts only in an interactive terminal
+a4 auth logout
+a4 auth status
+a4 auth whoami                  # Verify with server
 ```
 
 Credentials: `~/.arete/credentials.toml`
+
+## Agent Setup
+
+```bash
+a4 init -y                # idempotent; every write reports created | updated | unchanged
+a4 init -y --global       # skills and MCP config for your user instead of the project
+a4 init -y --dry-run --json
+a4 doctor                 # one line per check: ok | warn | fail | info
+a4 doctor --fix           # re-runs the init writers for every agents.* warning
+```
+
+`a4 init` writes `arete.toml`, a managed block in `AGENTS.md`, an `@AGENTS.md`
+import in `CLAUDE.md`, the `arete`, `arete-consume`, and `arete-build` skills
+(via `npx skills add AreteA4/skills`; skipped when `npx` is missing), and the
+`arete` (`a4 mcp`) and `arete-docs` (`https://docs.arete.run/mcp`) MCP servers
+for every detected agent. `a4 doctor` exits 0 for `ok`/`warn`, 1 for `fail`.
+
+## MCP Server
+
+```bash
+a4 mcp
+```
+
+Stream MCP server over stdio (registry discovery, knowledge layer, live entity
+reads). `a4 init` writes the config; the manual shape for Claude Code is
+`{"mcpServers":{"arete":{"type":"stdio","command":"a4","args":["mcp"]},"arete-docs":{"type":"http","url":"https://docs.arete.run/mcp"}}}`.
 
 ## Registry Exploration
 
@@ -264,13 +327,21 @@ tenant-local transports.
 | Variable | Description |
 |----------|-------------|
 | `ARETE_API_URL` | Override API endpoint |
+| `ARETE_API_KEY` | API key; takes precedence over the credentials file |
 | `ARETE_CREDENTIALS_PATH` | Override the credentials file (useful for isolated local testing) |
+| `A4_INSTALL_DIR` | Install directory for `a4 self install` (default `~/.local/bin`) |
+| `A4_NO_MODIFY_PATH=1` | Do not edit shell profiles or the Windows PATH on install |
+| `A4_NO_UPDATE_CHECK=1` | Disable the once-per-day update notice |
+| `A4_NON_INTERACTIVE=1` | Never prompt; missing inputs are errors that name the flag to pass |
+| `DO_NOT_TRACK=1` | Disable telemetry |
 
 ## Troubleshooting
 
 | Error | Solution |
 |-------|----------|
-| `Not authenticated` | Run `a4 auth login` |
+| `Not authenticated` | Run `a4 auth signup` (or `a4 auth login --key <a4_ak_...>`) |
+| `a4: command not found` | Run `export PATH="$HOME/.local/bin:$PATH"` or use the `A4_BIN=` path the installer printed |
+| `a4 was not installed by the Arete installer` | Reinstall with `curl -fsSL https://arete.run/install.sh \| sh` |
 | `Stack not found` | Check `a4 stack list` |
 | `StackManifest not found` | Run `cargo build` and use the generated manifest path |
 | `Build failed` | Check `a4 status` for build details |

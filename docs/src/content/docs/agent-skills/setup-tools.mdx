@@ -66,7 +66,7 @@ Then open the folder in your editor, or start your agent in that directory.
 Paste this prompt into your AI assistant's chat:
 
 <CopyPrompt>
-Read https://docs.arete.run/agent.md and follow the instructions to set up Arete in this project
+Read https://docs.arete.run/agent.md and follow it to set up Arete in this project, then tell me what live data is available.
 </CopyPrompt>
 
 In Cursor, press `Cmd+L` (Mac) or `Ctrl+L` (Windows) to open the AI chat sidebar, paste the prompt, and press Enter. Approve any commands it asks to run.
@@ -77,10 +77,11 @@ For terminal-based agents (Claude Code, OpenCode, etc.), just paste it directly 
 
 Your AI will:
 
-1. **Install the Arete CLI** — the command-line tool for Arete
-2. **Install agent skills** — teaching itself how to use Arete correctly
-3. **Discover available data** — finding out what blockchain data you can access
-4. **Be ready to build** — waiting for your next instruction
+1. **Install the Arete CLI** — a prebuilt binary via `curl -fsSL https://arete.run/install.sh | sh` (or `irm https://arete.run/install.ps1 | iex` on Windows). No Rust, no account.
+2. **Run `a4 init -y`** — installs the agent skills (teaching itself how to use Arete correctly) and configures the Arete MCP servers for your editor
+3. **Run `a4 doctor --json`** — verifies everything is in place
+4. **Discover available data** — `a4 explore --json` lists what blockchain data you can access
+5. **Tell you what it found** — and wait for your next instruction
 
 This takes about 1–2 minutes.
 
@@ -115,7 +116,9 @@ Your AI already knows how to use Arete from Step 3 — it will find the right vi
 
 ## Troubleshooting
 
-**"Command not found" errors** — You may need to install Node.js first. Download the LTS version from [nodejs.org](https://nodejs.org), install it, then restart your AI tool and try again.
+**`a4: command not found`** — The installer put `a4` in `~/.local/bin` and printed `A4_BIN=<path>`; your terminal captured PATH before that. Open a new terminal, or run `export PATH="$HOME/.local/bin:$PATH"`. `a4 doctor` reports this as the `cli.path` check.
+
+**`npx: command not found` or `skills: skipped`** — Skills need Node.js. Download the LTS version from [nodejs.org](https://nodejs.org), install it, then run `a4 doctor --fix` (or re-paste the setup prompt).
 
 **The AI seems confused** — Make sure it completed Step 3. You can re-paste the setup prompt to re-run it.
 

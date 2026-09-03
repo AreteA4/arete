@@ -10,7 +10,18 @@ import CopyPrompt from "../../../components/CopyPrompt.astro";
 
 Reference for installing Arete agent skills manually. For an overview of how skills, the CLI, and agent.md fit together, see [Agent Skills](/agent-skills/overview/).
 
-The universal install command (auto-detects your editor):
+The preferred route is `a4 init`, which installs the skills for every coding agent it detects (and writes `arete.toml`, `AGENTS.md`, and MCP config at the same time):
+
+```bash
+a4 init -y                        # project scope, all detected agents
+a4 init -y --agents cursor        # one agent
+a4 init -y --global               # user scope instead of the project
+a4 init -y --no-skills            # everything except skills
+```
+
+`a4 init` runs `npx skills add AreteA4/skills` under the hood, so it needs Node.js for this step; without `npx` it reports `skills: skipped` and continues. Pin a skills version with `--skills-ref <git ref>`.
+
+Manual fallback, the universal install command (auto-detects your editor):
 
 ```bash
 npx skills add AreteA4/skills
@@ -129,14 +140,15 @@ Ask your agent:
 What stacks are available on Arete? Show me the entities and fields for the ore stack.
 </CopyPrompt>
 
-The agent should run `a4 explore --json`, then `a4 explore ore --json`, and present the entity names, field paths, and types. If it doesn't recognise Arete commands, check that the skill files are in the correct directory for your editor.
+The agent should run `a4 explore --json`, then `a4 explore ore --json`, and present the entity names, field paths, and types. If it doesn't recognise Arete commands, run `a4 doctor` — the `agents.<id>.skills` check names the missing skill directory and the exact install command — or check that the skill files are in the correct directory for your editor.
 
 ---
 
 ## Updating Skills
 
 ```bash
-npx skills add AreteA4/skills
+a4 doctor --fix                   # re-runs the init writers for every warning
+npx skills add AreteA4/skills     # or update the skill files directly
 ```
 
 This overwrites existing skill files with the latest versions. The static patterns (SDK syntax, DSL macros) change rarely — dynamic data (entity schemas, field types) always comes from `a4 explore` at runtime, so it's always current regardless of skill version.

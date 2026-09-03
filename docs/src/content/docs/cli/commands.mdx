@@ -8,16 +8,68 @@ Complete reference for the Arete CLI (`a4`).
 
 ---
 
+## Installation
+
+Prebuilt, signed binary. No Rust toolchain or account required.
+
+```bash
+curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
+irm https://arete.run/install.ps1 | iex             # Windows PowerShell
+npx @usearete/a4 install                            # if you prefer npm (same as npm install -g @usearete/a4)
+```
+
+The bootstrapper downloads the release asset for your platform plus `checksums.txt` and its minisign signature, verifies the SHA-256 (and the signature when `minisign` is available), then hands off to `a4 self install`, which copies the binary to `~/.local/bin/a4` (`%USERPROFILE%\.local\bin\a4.exe` on Windows), writes `~/.arete/receipt.json`, adds the directory to your shell profile, and prints these two lines last on stdout:
+
+```text
+A4_BIN=/Users/x/.local/bin/a4
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Shells that were already open captured PATH before the install. Use the `A4_BIN` path or run the `export` line in that shell. If another `a4` is earlier on PATH (`~/.cargo/bin/a4`, an npm shim), the installer warns and names the file; it never deletes it.
+
+**Installer arguments** (`sh -s -- [VERSION] [--no-modify-path] [--install-dir DIR]`):
+
+| Argument / variable                       | Description                                                             |
+| ----------------------------------------- | ----------------------------------------------------------------------- |
+| `VERSION`, `A4_VERSION`                   | Install a specific version instead of the latest                        |
+| `--install-dir <DIR>`, `A4_INSTALL_DIR`   | Install directory (default `~/.local/bin`; `XDG_BIN_HOME` is honoured)  |
+| `--no-modify-path`, `A4_NO_MODIFY_PATH=1` | Do not edit shell profiles or the Windows user PATH; `CI` also skips it |
+
+Then, in a project:
+
+```bash
+a4 init -y          # arete.toml, AGENTS.md block, CLAUDE.md import, skills, MCP config
+a4 doctor --json    # exit 0 = ready; each check carries a fix
+a4 explore --json   # live data, no account needed
+```
+
+### Building from source
+
+Only for unreleased builds. A Cargo-built binary is not managed by the installer: `a4 self update` refuses it and tells you to run `cargo install a4-cli --force` instead.
+
+```bash
+cargo install a4-cli
+```
+
+---
+
 ## Global Options
 
-| Option                  | Description                                                      |
-| ----------------------- | ---------------------------------------------------------------- |
-| `--config, -c <path>`   | Path to arete.toml (default: `arete.toml`)                       |
-| `--json`                | Output as JSON                                                   |
-| `--verbose`             | Enable verbose output                                            |
-| `--help, -h`            | Show help                                                        |
-| `--version, -V`         | Show version                                                     |
-| `--completions <SHELL>` | Generate shell completions (bash, zsh, fish, powershell, elvish) |
+| Option                  | Description                                                                   |
+| ----------------------- | ----------------------------------------------------------------------------- |
+| `--config, -c <path>`   | Path to arete.toml (default: `arete.toml`)                                    |
+| `--json`                | Output as JSON on stdout; logs go to stderr. Every object has `schemaVersion` |
+| `--yes, -y`             | Accept defaults; never prompt                                                 |
+| `--non-interactive`     | Never prompt; a missing required input is an error naming the flag to pass    |
+| `--verbose`             | Enable verbose output                                                         |
+| `--api-url <url>`       | Override the API endpoint                                                     |
+| `--help, -h`            | Show help                                                                     |
+| `--version, -V`         | Show version                                                                  |
+| `--completions <SHELL>` | Generate shell completions (bash, zsh, fish, powershell, elvish)              |
+
+Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when stdin is not a terminal. No command ever waits on stdin in those cases.
+
+**Exit codes:** `0` success (including warnings), `1` command failure, `2` usage error, `10` update available (`a4 self update --check` only).
 
 ---
 
@@ -26,7 +78,13 @@ Complete reference for the Arete CLI (`a4`).
 | Command                               | Description                                    |
 | ------------------------------------- | ---------------------------------------------- |
 | `a4 create [name]`                    | Scaffold a new app from a template             |
-| `a4 init`                             | Initialize a stack project                     |
+| `a4 init`                             | Set up the project for Arete and coding agents |
+| `a4 doctor`                           | Check install, project, auth, agents           |
+| `a4 self install`                     | Finish installing the `a4` binary              |
+| `a4 self update` / `a4 upgrade`       | Update `a4` in place                           |
+| `a4 self uninstall`                   | Remove `a4`                                    |
+| `a4 mcp`                              | Run the stream MCP server (stdio)              |
+| `a4 auth signup`                      | Register an agent account                      |
 | `a4 program build <idl>`              | Build a portable ProgramSpec                   |
 | `a4 stack compose`                    | Compose ProgramSpecs and aliased LiveSpecs     |
 | `a4 sdk create --manifest ... --ts`   | Generate a TypeScript SDK from a StackManifest |
@@ -45,8 +103,8 @@ Complete reference for the Arete CLI (`a4`).
 | `a4 know recipe <slug>`               | One cross-protocol recipe                      |
 | `a4 know concepts`                    | Concept and category vocabularies              |
 
-:::note[npm vs Cargo]
-When installed via npm (`npm install -g @usearete/a4`), the command is `a4`. When installed via Cargo (`cargo install a4-cli`), the command is also `a4`. Both are the same CLI.
+:::note[One binary]
+Every install route (`install.sh`, `install.ps1`, `npx @usearete/a4 install`) puts the same prebuilt binary at `~/.local/bin/a4`. `npx @usearete/a4 <command>` runs that binary too, installing it first if needed.
 :::
 
 ---
@@ -93,15 +151,208 @@ Templates are downloaded from GitHub releases and cached in `~/.arete/templates/
 
 ### a4 init
 
-Initialize a new Arete project.
+Set up the current directory for Arete and for the coding agents that work in it.
 
 ```bash
-a4 init
+a4 init -y                       # all detected agents, project scope
+a4 init -y --json                # machine-readable report
+a4 init -y --dry-run             # report what would change, write nothing
+a4 init -y --global              # skills and MCP config for your user, not the project
+a4 init -y --agents cursor,codex # explicit agent list (also: all | none)
+a4 init -y --no-skills --no-mcp  # manifest and AGENTS.md only
 ```
 
-Creates `arete.toml` and the `.arete/` directory. If legacy composite files are
-present, the CLI may add compatibility entries for them; new workflows pass a
-StackManifest path directly to `a4 sdk create` and `a4 up`.
+**What it writes** (every item is an upsert and reports `created | updated | unchanged | skipped(reason)`):
+
+| Item               | Path                                                 | Notes                                                                                                                                                  |
+| ------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Manifest           | `arete.toml`                                         | Created if absent; left untouched if present unless `--force`, which rewrites only `[project]`. Name from `--name` or the directory basename           |
+| Agent guidance     | `AGENTS.md`                                          | A managed block between `<!-- BEGIN:arete v1 -->` and `<!-- END:arete -->`; content outside the markers is never touched                               |
+| Claude Code bridge | `CLAUDE.md`                                          | Created as `@AGENTS.md`, or that line is inserted first if the file exists                                                                             |
+| Gemini context     | `.gemini/settings.json`                              | `context.fileName` gains `AGENTS.md` (Gemini CLI only)                                                                                                 |
+| Skills             | per agent, e.g. `.claude/skills/`, `.agents/skills/` | Runs `npx -y skills add AreteA4/skills --skill '*' --agent <ids> -y`. `skipped(npx not found)` without Node; the fix is printed                        |
+| MCP config         | per agent (table below)                              | Two servers: `arete` (stdio, `a4 mcp`) and `arete-docs` (`https://docs.arete.run/mcp`). Only these two keys are set; the rest of the file is preserved |
+
+**Options:**
+
+| Flag                                                         | Description                                                            |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `-y`, `--non-interactive`                                    | Never prompt                                                           |
+| `--json`                                                     | JSON report (below)                                                    |
+| `--dry-run`                                                  | Same report with `dryRun: true` and `would-*` statuses; writes nothing |
+| `--force`                                                    | Rewrite the `[project]` block of an existing `arete.toml`              |
+| `--name <project>`                                           | Project name (default: directory basename)                             |
+| `--agents <list\|all\|none>`                                 | Agents to configure (default: detected)                                |
+| `--global`                                                   | Install skills and MCP config for your user instead of the project     |
+| `--no-manifest`, `--no-agents-md`, `--no-skills`, `--no-mcp` | Skip a writer                                                          |
+| `--skills-ref <git ref>`                                     | Skills version to install (default `main`)                             |
+
+**Agent detection.** Project signals win over home-directory signals. If nothing is detected and `--agents` is absent, `init` still writes the agent-independent set (`arete.toml`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.mcp.json`) and adds a warning; it does not fail.
+
+| Agent         | Project signal                                       | MCP file (project / `--global`)                         |
+| ------------- | ---------------------------------------------------- | ------------------------------------------------------- |
+| `claude-code` | `.claude/`, `CLAUDE.md`, `.mcp.json`, `CLAUDECODE=1` | `.mcp.json` / `~/.claude.json`                          |
+| `cursor`      | `.cursor/`                                           | `.cursor/mcp.json` / `~/.cursor/mcp.json`               |
+| `vscode`      | `.vscode/`                                           | `.vscode/mcp.json` / —                                  |
+| `copilot-cli` | `.github/copilot-instructions.md`                    | `.mcp.json` / `~/.copilot/mcp-config.json`              |
+| `codex`       | `.codex/`                                            | `.codex/config.toml` / `~/.codex/config.toml`           |
+| `opencode`    | `opencode.json`, `opencode.jsonc`, `.opencode/`      | `opencode.json` / `~/.config/opencode/opencode.json`    |
+| `gemini-cli`  | `.gemini/`                                           | `.gemini/settings.json` / `~/.gemini/settings.json`     |
+| `windsurf`    | `.windsurf/`                                         | — / `~/.codeium/windsurf/mcp_config.json`               |
+| `cline`       | `.clinerules/`                                       | — / `~/.cline/mcp.json`                                 |
+| `zed`         | `.zed/`                                              | `.zed/settings.json` / `~/.config/zed/settings.json`    |
+| `amp`         | `.amp/`                                              | `.amp/settings.json` / `~/.config/amp/settings.json`    |
+| `kiro`        | `.kiro/`                                             | `.kiro/settings/mcp.json` / `~/.kiro/settings/mcp.json` |
+| `roo`         | `.roo/`                                              | `.roo/mcp.json` / —                                     |
+| `goose`       | `.goose/`                                            | `.goose/config.yaml` / `~/.config/goose/config.yaml`    |
+
+Per-host MCP shapes are listed on the [MCP Server](/agent-skills/mcp/#configure-your-agent-1) page. The `command` is the absolute path from the install receipt when one exists, so GUI hosts that do not inherit your shell PATH still find it.
+
+**`--json` output:**
+
+```json
+{
+  "schemaVersion": 1,
+  "dryRun": false,
+  "detectedAgents": [{ "id": "claude-code", "how": "env" }, { "id": "cursor", "how": "home" }],
+  "selectedAgents": ["claude-code", "cursor"],
+  "results": [
+    { "item": "arete.toml", "status": "created", "path": "arete.toml" },
+    { "item": "agents-md", "status": "updated", "path": "AGENTS.md" },
+    { "item": "claude-md", "status": "unchanged", "path": "CLAUDE.md" },
+    { "item": "skills", "status": "skipped", "reason": "npx not found", "fix": "npx skills add AreteA4/skills" },
+    { "item": "mcp:claude-code", "status": "created", "path": ".mcp.json" },
+    { "item": "mcp:cursor", "status": "created", "path": ".cursor/mcp.json" }
+  ],
+  "warnings": [],
+  "next": ["a4 doctor --json", "a4 explore --json"]
+}
+```
+
+`init` is idempotent: running it again changes no file and reports every item as `unchanged`. Exit 1 only if a writer errored (`"status": "error"`).
+
+### a4 doctor
+
+Read-only check of everything `init` writes plus the environment.
+
+```bash
+a4 doctor
+a4 doctor --json
+a4 doctor --fix      # re-run the init writers for every agents.* warning, then re-check
+```
+
+| Check id                | What it verifies                                                       | On failure                                           |
+| ----------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------- |
+| `cli.version`           | Install receipt present; current version vs latest (2 s timeout)       | `warn`: `a4 self update` (`info` when offline)       |
+| `cli.install`           | Receipt binary is the running executable; no `a4` shadowing it on PATH | `warn` with the shadowing path                       |
+| `cli.path`              | Install directory is on PATH                                           | `warn`: prints the `export PATH=…` line              |
+| `project.manifest`      | `arete.toml` parses                                                    | `fail`: `a4 init` / `a4 config validate`             |
+| `project.lock`          | `arete.lock` is fresh                                                  | `warn`: `a4 install`                                 |
+| `auth.credentials`      | Key present for the active API URL                                     | `info`: `a4 auth signup` (not needed to explore)     |
+| `auth.whoami`           | Credentials are accepted by the server                                 | `fail`: `a4 auth login --key …`                      |
+| `net.api`               | `https://api.arete.run` reachable                                      | `fail`                                               |
+| `net.docs-mcp`          | `https://docs.arete.run/mcp` reachable                                 | `warn`                                               |
+| `tools.node`            | `npx` on PATH (skills only)                                            | `info`                                               |
+| `tools.rust`            | `cargo` on PATH (authoring only)                                       | `info`; `warn` if `arete.toml` has `[authoring]`     |
+| `agents.detected`       | Detected agents                                                        | `info`                                               |
+| `agents.<id>.mcp`       | Both MCP servers present with the expected shape                       | `warn`: `a4 doctor --fix`                            |
+| `agents.<id>.skills`    | `arete`, `arete-consume`, `arete-build` installed for that agent       | `warn`: `npx skills add AreteA4/skills --agent <id>` |
+| `agents.agents-md`      | `AGENTS.md` block present and current (`v1`)                           | `warn`: `a4 doctor --fix`                            |
+| `agents.claude-md`      | `CLAUDE.md` imports `@AGENTS.md` (Claude Code only)                    | `warn`                                               |
+| `agents.gemini-context` | Gemini `context.fileName` includes `AGENTS.md` (Gemini CLI only)       | `warn`                                               |
+| `agents.codex-trust`    | Project trusted in `~/.codex/config.toml` (Codex only)                 | `info`                                               |
+
+**`--json` output:**
+
+```json
+{
+  "schemaVersion": 1,
+  "status": "ok",
+  "checks": [{ "id": "cli.version", "status": "ok", "detail": "0.13.0 (latest)", "fix": null }]
+}
+```
+
+`status` is `ok`, `warn`, or `fail`; each check is `ok | warn | fail | info`. Exit 0 for `ok` and `warn`, 1 for `fail`. `--fix` never touches auth, network, or tool checks. Human output is one line per check followed by the list of fixes.
+
+### a4 config validate
+
+Validate your configuration.
+
+```bash
+a4 config validate
+```
+
+---
+
+## Managing the Binary
+
+### a4 self install
+
+Finish installing the binary that is currently running. The bootstrappers (`install.sh`, `install.ps1`, `npx @usearete/a4 install`) call this for you; run it yourself only for a manually downloaded release asset.
+
+```bash
+a4 self install [--install-dir <DIR>] [--no-modify-path] [--source <sh|ps1|npm|manual>]
+                [--checksums <FILE> --signature <FILE>] [--force] [--json]
+```
+
+| Flag                                    | Description                                                                                                                                                     |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--install-dir <DIR>`                   | Target directory (else `A4_INSTALL_DIR`, `XDG_BIN_HOME`, `~/.local/bin`)                                                                                        |
+| `--no-modify-path`                      | Skip shell-profile / Windows PATH edits (also `A4_NO_MODIFY_PATH=1` or `CI`)                                                                                    |
+| `--checksums <FILE> --signature <FILE>` | Verify the minisign signature over `checksums.txt` and the binary's SHA-256 before installing; omitted for manual installs (`"verified": false` in the receipt) |
+| `--source <name>`                       | Recorded in the receipt                                                                                                                                         |
+| `--force`                               | Copy even when the target is already this binary (a re-run normally skips the copy)                                                                             |
+
+Writes `~/.arete/receipt.json` (`version`, `binary`, `installDir`, `platform`, `source`, `verified`, `modifyPath`, `installedAt`), adds `~/.local/bin` to `~/.profile` and your shell's rc file (or `HKCU\Environment\Path` on Windows, and `$GITHUB_PATH` in Actions) when it is not already there, and always ends stdout with the `A4_BIN=` and `export PATH=` lines. With `--json` the receipt plus `pathModified` and `shadowedBy` precede them.
+
+### a4 self update
+
+Replace the installed binary with a newer (or an explicitly chosen) release. `a4 upgrade` is an alias with identical arguments.
+
+```bash
+a4 self update                    # latest
+a4 self update 0.14.0             # specific version (downgrades allowed when explicit)
+a4 self update --check            # exit 10 if an update is available, 0 if current
+a4 self update --check --json     # {"current","latest","updateAvailable"}
+a4 self update --dry-run          # download and verify, print the plan, change nothing
+```
+
+The download is verified (SHA-256 and the minisign signature; mandatory here) before the binary at the receipt path is swapped in place and the receipt updated. Requires the install receipt: a Cargo-built `a4` gets `a4 was not installed by the Arete installer` and must be rebuilt with `cargo install a4-cli --force`.
+
+Once a day, when stderr is a terminal, `a4` prints `a4 0.14.0 is available (you have 0.13.0). Run: a4 self update` after a command. Set `A4_NO_UPDATE_CHECK=1` to disable this notice; it is never shown under `CI`, with `--json`, or for `self`, `upgrade`, `mcp`, and `stream`. There is no background auto-update.
+
+### a4 self uninstall
+
+```bash
+a4 self uninstall [--json]
+```
+
+Removes the binary, the receipt, and the PATH lines `self install` added. Leaves `~/.arete/credentials.toml` and prints what it left behind.
+
+---
+
+## MCP Server
+
+### a4 mcp
+
+Run the Arete stream MCP server over stdio (registry discovery, knowledge layer, live entity reads). Nothing but MCP frames is written to stdout; logs go to stderr.
+
+```bash
+a4 mcp
+```
+
+`a4 init` writes the config for every detected agent. The Claude Code shape (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] },
+    "arete-docs": { "type": "http", "url": "https://docs.arete.run/mcp" }
+  }
+}
+```
+
+Credentials resolve from `ARETE_API_KEY`, then `~/.arete/credentials.toml`. The npm package `@usearete/mcp` is deprecated in favour of this command. Tools and per-host shapes: [MCP Server](/agent-skills/mcp/).
 
 ### a4 config validate
 
@@ -115,25 +366,55 @@ a4 config validate
 
 ## Authentication
 
-Arete is currently in closed beta. Contact us to receive an API key.
+Exploring and installing public SDKs needs no account. Deploying and the knowledge layer do. Agents register themselves with `a4 auth signup`; humans get keys from [arete.run/keys](https://arete.run/keys) and use `a4 auth login --key`.
+
+### a4 auth signup
+
+Register a new agent account and store its key.
+
+```bash
+a4 auth signup                 # server picks a display name
+a4 auth signup my-agent        # explicit display name
+a4 auth signup --json
+a4 auth signup --force         # replace credentials that already exist for this API URL
+```
+
+Calls `POST /api/agents/signup`, saves the key to `~/.arete/credentials.toml`, and prints the agent slug and the credentials path. The key itself is never printed in human mode.
+
+**Options:**
+
+| Flag      | Description                                                                                                   |
+| --------- | ------------------------------------------------------------------------------------------------------------- |
+| `[name]`  | Display name (optional)                                                                                       |
+| `--force` | Overwrite existing credentials for this API URL; otherwise the command refuses and points at `a4 auth status` |
+
+**`--json` output:**
+
+```json
+{ "schemaVersion": 1, "slug": "agt_7k2m9q1r", "displayName": "my-agent", "credentialsPath": "/home/x/.arete/credentials.toml", "apiKey": "a4_ak_…" }
+```
+
+`apiKey` is a secret. It is included so an agent can pass it as `ARETE_API_KEY` to a sub-process; do not log it or commit it.
+
+Rate limit: 5 signups per hour per IP. On `429` the command prints `Signup limit reached (5 per hour per IP). Retry later, or use a key from https://arete.run/keys: a4 auth login --key <a4_ak_…>`.
 
 ### a4 auth login
 
-Save your API key to authenticate.
+Save a human-issued API key.
 
 ```bash
-# Interactive — prompts for API key
+# Prompts for the key only in an interactive terminal
 a4 auth login
 
-# Or pass directly
-a4 auth login --key <your-api-key>
+# Pass directly (required when non-interactive)
+a4 auth login --key <a4_ak_...>
 ```
 
 **Options:**
 
-| Flag        | Description                       |
-| ----------- | --------------------------------- |
-| `--key, -k` | API key (prompts if not provided) |
+| Flag        | Description                                                                                   |
+| ----------- | --------------------------------------------------------------------------------------------- |
+| `--key, -k` | API key. When omitted in a non-interactive run the error lists this flag and `a4 auth signup` |
 
 ### a4 auth logout
 
@@ -539,14 +820,21 @@ pending → uploading → queued → building → pushing → deploying → comp
 ### First-Time Setup
 
 ```bash
-# Initialize project
-a4 init
+# Install the CLI (macOS / Linux; Windows: irm https://arete.run/install.ps1 | iex)
+curl -fsSL https://arete.run/install.sh | sh
 
-# Login with your API key
-a4 auth login
+# Set up the project: manifest, AGENTS.md, skills, MCP config
+a4 init -y
 
-# Validate configuration
-a4 config validate
+# Verify
+a4 doctor --json
+
+# Discover live data (no account needed)
+a4 explore --json
+
+# Only when deploying or using the knowledge layer
+a4 auth signup                     # agent
+a4 auth login --key <a4_ak_...>    # human-issued key
 ```
 
 ### Development Cycle
@@ -607,24 +895,33 @@ a4 telemetry disable
 
 ## Environment Variables
 
-| Variable                     | Description                        |
-| ---------------------------- | ---------------------------------- |
-| `ARETE_API_URL`              | Override API endpoint              |
-| `ARETE_CREDENTIALS_PATH`     | Override the credentials file      |
-| `DO_NOT_TRACK=1`             | Disable telemetry (standard)       |
-| `ARETE_TELEMETRY_DISABLED=1` | Disable telemetry (Arete-specific) |
+| Variable                     | Description                                                                  |
+| ---------------------------- | ---------------------------------------------------------------------------- |
+| `ARETE_API_URL`              | Override API endpoint                                                        |
+| `ARETE_API_KEY`              | API key; takes precedence over the credentials file                          |
+| `ARETE_CREDENTIALS_PATH`     | Override the credentials file                                                |
+| `A4_INSTALL_DIR`             | Install directory for `a4 self install` and the bootstrappers                |
+| `A4_NO_MODIFY_PATH=1`        | Do not edit shell profiles or the Windows PATH on install                    |
+| `A4_NO_UPDATE_CHECK=1`       | Disable the once-per-day "update available" notice                           |
+| `A4_NON_INTERACTIVE=1`       | Never prompt (same as `--non-interactive`)                                   |
+| `A4_VERSION`                 | Version for `install.sh` / `install.ps1` to install                          |
+| `CI`                         | When set: never prompt, no PATH edits, no update notice, no telemetry banner |
+| `DO_NOT_TRACK=1`             | Disable telemetry (standard)                                                 |
+| `ARETE_TELEMETRY_DISABLED=1` | Disable telemetry (Arete-specific)                                           |
 
 ---
 
 ## Error Reference
 
-| Error                  | Solution                                   |
-| ---------------------- | ------------------------------------------ |
-| `Not authenticated`    | Run `a4 auth login`                        |
-| `Stack not found`      | Check `a4 stack list` for available stacks |
-| `Stack file not found` | Run `cargo build` to generate stack spec   |
-| `Build failed`         | Try again                                  |
-| `Config invalid`       | Run `a4 config validate`                   |
+| Error                                         | Solution                                                                                                                           |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `Not authenticated`                           | Run `a4 auth signup` (or `a4 auth login --key <a4_ak_…>`)                                                                          |
+| `a4: command not found`                       | Run `export PATH="$HOME/.local/bin:$PATH"` or use the `A4_BIN=` path the installer printed; `a4 doctor` reports this as `cli.path` |
+| `a4 was not installed by the Arete installer` | Reinstall with `curl -fsSL https://arete.run/install.sh \| sh`; Cargo builds must use `cargo install a4-cli --force`               |
+| `Stack not found`                             | Check `a4 stack list` for available stacks                                                                                         |
+| `Stack file not found`                        | Run `cargo build` to generate stack spec                                                                                           |
+| `Build failed`                                | Try again                                                                                                                          |
+| `Config invalid`                              | Run `a4 config validate`                                                                                                           |
 
 ---
 
