@@ -58,7 +58,19 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 pass="${E2E_PASS:-plain}"
 max_install="${E2E_MAX_INSTALL_SECONDS:-15}"
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() {
+  echo "FAIL: $*" >&2
+  # Dump any captured command JSON so CI logs show why init/doctor failed;
+  # a4 writes skills/MCP detail there while its own stderr stays terse.
+  for f in init.json doctor.json init2.json doctor2.json update.json; do
+    if [[ -f "$f" ]]; then
+      echo "--- $f" >&2
+      head -c 4000 "$f" >&2
+      echo >&2
+    fi
+  done
+  exit 1
+}
 step() { echo; echo "--- step $*"; }
 # Every a4 invocation runs with stdin closed and a timeout: nothing may wait on input.
 a4() { timeout 120 "$A4_BIN" "$@" </dev/null; }
@@ -67,14 +79,27 @@ json_has() { grep -Eq "$1" "$2" || fail "$3 (in $2: $(tr -d '\n' < "$2" | head -
 step 0 "prepare container ($pass)"
 apt-get update -qq >/dev/null
 apt-get install -y -qq --no-install-recommends curl ca-certificates git >/dev/null
-[[ "$pass" == node ]] && apt-get install -y -qq --no-install-recommends nodejs npm >/dev/null
+if [[ "$pass" == node ]]; then
+  # apt's nodejs on ubuntu:24.04 is v18, but the skills CLI requires
+  # Node >= 22.20; install a pinned upstream tarball instead.
+  case "$(uname -m)" in
+    x86_64|amd64) node_arch=x64 ;;
+    arm64|aarch64) node_arch=arm64 ;;
+    *) fail "unsupported architecture: $(uname -m)" ;;
+  esac
+  curl -fsSL "https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-${node_arch}.tar.gz" \
+    | tar -xz -C /usr/local --strip-components=1
+fi
 command -v node >/dev/null && echo "node $(node --version)" || echo "no node (expected for pass=plain)"
 [[ "$PATH" != *".local/bin"* ]] || fail "~/.local/bin already on PATH; the test requires a clean container"
 
 step 1 "curl -fsSL $A4_INSTALL_URL | sh"
 t0=$(date +%s%N)
 set +e
-install_out=$(curl -fsSL "$A4_INSTALL_URL" | sh </dev/null)
+# sh must read the script from the pipe; redirecting its stdin to /dev/null
+# makes sh exit immediately and curl fails with (23) writing to the dead pipe.
+# The container's own stdin is already closed by the outer `docker run </dev/null`.
+install_out=$(curl -fsSL "$A4_INSTALL_URL" | sh)
 rc=$?
 set -e
 t1=$(date +%s%N)
@@ -94,11 +119,18 @@ grep -q '"verified": *true' /root/.arete/receipt.json || fail "receipt does not 
 step 2 "a4 init -y --json in an empty git repo"
 mkdir -p /work && cd /work
 git init -q && git config user.email e2e@arete.run && git config user.name e2e
+# The node pass verifies skills/MCP installation, which requires a detected
+# agent; a bare container has none, so seed the claude-code home signal.
+[[ "$pass" == node ]] && mkdir -p "$HOME/.claude"
 a4 init -y --json > init.json || fail "a4 init exited $?"
 for f in arete.toml AGENTS.md CLAUDE.md .mcp.json; do [[ -f $f ]] || fail "init did not create $f"; done
 if [[ "$pass" == node ]]; then
-  [[ -d .agents/skills ]] || fail "init did not create .agents/skills with Node present"
-  [[ -d .claude/skills ]] || fail "init did not create .claude/skills with Node present"
+  # a4 init installs skills per detected agent (npx skills add --agent ...),
+  # which targets the agent's own directory; the universal .agents/skills
+  # fallback is only populated by an agent-less install.
+  for skill in arete arete-streams arete-programs arete-stack-authoring arete-deploy; do
+    [[ -d ".claude/skills/$skill" ]] || fail "init did not install the $skill skill for claude-code"
+  done
 else
   json_has '"skills"' init.json "init JSON has no skills entry"
   json_has 'skipped' init.json "skills were not reported as skipped"
