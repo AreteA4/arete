@@ -127,9 +127,8 @@ fn owned_legacy_skills(snapshot: &[Option<String>]) -> Vec<&'static str> {
                 .get(name)
                 .and_then(|entry| entry.get("source"))
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if source.contains("aretea4/skills") {
+                .unwrap_or_default();
+            if is_official_skills_source(source) {
                 found.insert(name);
             }
         }
@@ -138,6 +137,17 @@ fn owned_legacy_skills(snapshot: &[Option<String>]) -> Vec<&'static str> {
         .into_iter()
         .filter(|name| found.contains(name))
         .collect()
+}
+
+/// Whether a lockfile `source` is exactly the official AreteA4/skills
+/// repository, in any form `source_for_ref` can produce. A substring test
+/// would misclassify lookalikes such as `notaretea4/skills` or
+/// `AreteA4/skills-fork` as officially owned and delete a user-managed skill.
+fn is_official_skills_source(source: &str) -> bool {
+    let source = source.trim().to_ascii_lowercase();
+    source == "aretea4/skills"
+        || source.starts_with("aretea4/skills#")
+        || source.starts_with("https://github.com/aretea4/skills/tree/")
 }
 
 fn legacy_remove_command(names: &[&str], global: bool) -> String {
@@ -525,6 +535,38 @@ mod tests {
         assert_eq!(
             fix_command(&["cursor".into()]),
             "npx skills add AreteA4/skills --agent cursor"
+        );
+    }
+
+    #[test]
+    fn official_skills_source_matching_is_exact() {
+        assert!(is_official_skills_source("AreteA4/skills"));
+        assert!(is_official_skills_source("aretea4/skills"));
+        assert!(is_official_skills_source("AreteA4/skills#v0.6.0"));
+        assert!(is_official_skills_source(
+            "https://github.com/AreteA4/skills/tree/v0.6.0"
+        ));
+        assert!(!is_official_skills_source("notaretea4/skills"));
+        assert!(!is_official_skills_source("AreteA4/skills-fork"));
+        assert!(!is_official_skills_source("github.com/AreteA4/skills"));
+        assert!(!is_official_skills_source("usehyperstack/skills"));
+        assert!(!is_official_skills_source(""));
+    }
+
+    #[test]
+    fn legacy_cleanup_only_takes_lockfile_owned_skills() {
+        let lock = serde_json::json!({
+            "version": 1,
+            "skills": {
+                "arete-consume": { "source": "AreteA4/skills" },
+                "arete-build": { "source": "notaretea4/skills" }
+            }
+        })
+        .to_string();
+        assert_eq!(
+            owned_legacy_skills(&[Some(lock)]),
+            vec!["arete-consume"],
+            "only the officially sourced legacy skill is eligible for removal"
         );
     }
 
