@@ -481,7 +481,6 @@ enum AuthCommands {
     /// Register this machine as an agent and store the issued API key
     Signup {
         /// Display name for the agent account (optional)
-        #[arg(short, long)]
         name: Option<String>,
 
         /// Replace credentials that already exist for the active API URL
@@ -1490,12 +1489,15 @@ mod tests {
             .expect("archive with global --yes should parse");
         assert!(cli.yes);
 
-        let cli = Cli::try_parse_from(["a4", "auth", "signup", "--name", "bot", "--json"])
+        let cli = Cli::try_parse_from(["a4", "auth", "signup", "bot", "--json"])
             .expect("signup should parse");
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Auth(AuthCommands::Signup { force: false, .. }))
-        ));
+        match cli.command {
+            Some(Commands::Auth(AuthCommands::Signup { name, force })) => {
+                assert_eq!(name.as_deref(), Some("bot"));
+                assert!(!force);
+            }
+            _ => panic!("expected auth signup"),
+        }
 
         let cli = Cli::try_parse_from(["a4", "mcp", "--stdio"]).expect("mcp should parse");
         assert!(matches!(cli.command, Some(Commands::Mcp(_))));

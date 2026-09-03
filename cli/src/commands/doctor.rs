@@ -653,6 +653,11 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
                 "AGENTS.md lacks the Arete block",
                 Some("a4 doctor --fix".to_string()),
             ),
+            Some(BlockState::Malformed(reason)) => Check::warn(
+                "agents.agents-md",
+                format!("AGENTS.md Arete block is malformed ({reason})"),
+                Some(agents_md::MALFORMED_FIX.to_string()),
+            ),
             None => Check::warn(
                 "agents.agents-md",
                 "AGENTS.md missing",

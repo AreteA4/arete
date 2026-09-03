@@ -197,12 +197,17 @@ pub(crate) fn install_binary(src: &Path, target: &Path) -> Result<()> {
             {
                 if target.exists() {
                     let aside = dir.join(format!("a4.old-{pid}.exe"));
-                    if fs::rename(target, &aside).is_ok() && fs::rename(&tmp, target).is_ok() {
-                        if fs::remove_file(&aside).is_err() {
-                            // Still running: let self-replace schedule the delete.
-                            let _ = self_replace::self_delete_at(&aside);
+                    if fs::rename(target, &aside).is_ok() {
+                        if fs::rename(&tmp, target).is_ok() {
+                            if fs::remove_file(&aside).is_err() {
+                                // Still running: let self-replace schedule the delete.
+                                let _ = self_replace::self_delete_at(&aside);
+                            }
+                            return Ok(());
                         }
-                        return Ok(());
+                        // Put the working binary back so a failed swap never
+                        // leaves `a4.exe` missing.
+                        let _ = fs::rename(&aside, target);
                     }
                 }
             }

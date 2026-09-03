@@ -63,13 +63,12 @@ pub(crate) fn rewrite_project_table(existing: &str, name: &str) -> Result<String
     let table = project
         .as_table_mut()
         .ok_or_else(|| anyhow::anyhow!("`project` in arete.toml is not a table"))?;
-    let private = table
-        .get("private")
-        .and_then(|item| item.as_bool())
-        .unwrap_or(false);
-    table.clear();
+    // Only `name` is rewritten; every other [project] field (and any table
+    // decoration) survives a --force run.
     table.insert("name", toml_edit::value(name));
-    table.insert("private", toml_edit::value(private));
+    if !table.contains_key("private") {
+        table.insert("private", toml_edit::value(false));
+    }
     Ok(doc.to_string())
 }
 
@@ -234,7 +233,8 @@ mod tests {
         assert!(rewritten.contains("# keep"));
         assert!(rewritten.contains("name = \"new\""));
         assert!(rewritten.contains("private = true"));
-        assert!(!rewritten.contains("extra"));
+        // Other [project] fields survive --force.
+        assert!(rewritten.contains("extra = 1"));
         assert!(rewritten.contains("[sdk]\ntargets = [\"typescript\"]"));
     }
 }

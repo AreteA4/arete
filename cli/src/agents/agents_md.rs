@@ -22,32 +22,56 @@ pub enum BlockState {
     /// Present with a different (or no) version token.
     Stale(String),
     Current,
+    /// A begin marker without a matching end marker (or vice versa); never
+    /// rewritten automatically because the block boundary is unknown.
+    Malformed(String),
+}
+
+pub const MALFORMED_FIX: &str =
+    "fix the <!-- BEGIN:arete v1 --> / <!-- END:arete --> markers in AGENTS.md by hand, then rerun";
+
+enum Span {
+    Missing,
+    Found(usize, usize, String),
+    Malformed(String),
 }
 
 /// Line span (inclusive begin, inclusive end) of the managed block.
-fn block_span(lines: &[&str]) -> Option<(usize, usize, String)> {
+fn block_span(lines: &[&str]) -> Span {
     let begin = lines
         .iter()
-        .position(|line| line.trim_start().starts_with(BEGIN_PREFIX))?;
-    let end = lines[begin..]
-        .iter()
-        .position(|line| line.trim() == END_MARKER)
-        .map(|offset| begin + offset)?;
+        .position(|line| line.trim_start().starts_with(BEGIN_PREFIX));
+    let end_from = |from: usize| {
+        lines[from..]
+            .iter()
+            .position(|line| line.trim() == END_MARKER)
+            .map(|offset| from + offset)
+    };
+    let Some(begin) = begin else {
+        return match end_from(0) {
+            Some(_) => Span::Malformed("end marker without a begin marker".to_string()),
+            None => Span::Missing,
+        };
+    };
+    let Some(end) = end_from(begin) else {
+        return Span::Malformed("begin marker without an end marker".to_string());
+    };
     let token = lines[begin]
         .trim()
         .trim_start_matches(BEGIN_PREFIX)
         .trim_end_matches("-->")
         .trim()
         .to_string();
-    Some((begin, end, token))
+    Span::Found(begin, end, token)
 }
 
 /// Inspect `content` for the managed block.
 pub fn block_state(content: &str) -> BlockState {
     let lines: Vec<&str> = content.lines().collect();
     match block_span(&lines) {
-        None => BlockState::Missing,
-        Some((begin, end, token)) => {
+        Span::Missing => BlockState::Missing,
+        Span::Malformed(reason) => BlockState::Malformed(reason),
+        Span::Found(begin, end, token) => {
             let current: Vec<&str> = lines[begin..=end].to_vec();
             if token == BLOCK_VERSION && current.join("\n") == BLOCK.trim_end_matches('\n') {
                 BlockState::Current
@@ -60,30 +84,34 @@ pub fn block_state(content: &str) -> BlockState {
 
 /// New `AGENTS.md` content: append the block (after a blank line) when the
 /// markers are missing, otherwise replace between the markers. Everything
-/// outside the markers is untouched.
-pub fn upsert_block(existing: Option<&str>) -> String {
+/// outside the markers is untouched. Errors when only one marker is present:
+/// appending a second block would leave conflicting instructions.
+pub fn upsert_block(existing: Option<&str>) -> anyhow::Result<String> {
     let block = BLOCK.trim_end_matches('\n');
     let Some(existing) = existing else {
-        return format!("{block}\n");
+        return Ok(format!("{block}\n"));
     };
     let lines: Vec<&str> = existing.lines().collect();
     match block_span(&lines) {
-        Some((begin, end, _)) => {
+        Span::Found(begin, end, _) => {
             let mut out: Vec<&str> = Vec::with_capacity(lines.len());
             out.extend_from_slice(&lines[..begin]);
             out.extend(block.lines());
             out.extend_from_slice(&lines[end + 1..]);
             let mut text = out.join("\n");
             text.push('\n');
-            text
+            Ok(text)
         }
-        None => {
+        Span::Missing => {
             let body = existing.trim_end_matches(['\n', '\r']);
             if body.trim().is_empty() {
-                format!("{block}\n")
+                Ok(format!("{block}\n"))
             } else {
-                format!("{body}\n\n{block}\n")
+                Ok(format!("{body}\n\n{block}\n"))
             }
+        }
+        Span::Malformed(reason) => {
+            anyhow::bail!("AGENTS.md has a malformed Arete block ({reason}); {MALFORMED_FIX}")
         }
     }
 }
@@ -188,7 +216,7 @@ fn write_with(
 /// Writer: `AGENTS.md` managed block (`agents-md`).
 pub fn write_agents_md(env: &Env, dry_run: bool) -> ItemResult {
     write_with(env, "agents-md", agents_md_path(env), dry_run, |existing| {
-        Ok(Some(upsert_block(existing)))
+        upsert_block(existing).map(Some)
     })
 }
 
@@ -223,29 +251,29 @@ mod tests {
 
     #[test]
     fn missing_block_is_appended_after_a_blank_line() {
-        assert_eq!(upsert_block(None), BLOCK);
-        assert_eq!(upsert_block(Some("")), BLOCK);
+        assert_eq!(upsert_block(None).unwrap(), BLOCK);
+        assert_eq!(upsert_block(Some("")).unwrap(), BLOCK);
         let user = "# My project\n\nSome notes.\n";
-        let updated = upsert_block(Some(user));
+        let updated = upsert_block(Some(user)).unwrap();
         assert_eq!(updated, format!("# My project\n\nSome notes.\n\n{BLOCK}"));
         assert_eq!(block_state(&updated), BlockState::Current);
         // Idempotent.
-        assert_eq!(upsert_block(Some(&updated)), updated);
+        assert_eq!(upsert_block(Some(&updated)).unwrap(), updated);
         // Missing trailing newline is normalised to exactly one blank line.
-        assert_eq!(upsert_block(Some("x")), format!("x\n\n{BLOCK}"));
+        assert_eq!(upsert_block(Some("x")).unwrap(), format!("x\n\n{BLOCK}"));
     }
 
     #[test]
     fn stale_block_is_replaced_and_surroundings_kept() {
         let stale = "above\n\n<!-- BEGIN:arete v0 -->\nold stuff\n<!-- END:arete -->\n\nbelow\n";
         assert_eq!(block_state(stale), BlockState::Stale("v0".into()));
-        let updated = upsert_block(Some(stale));
+        let updated = upsert_block(Some(stale)).unwrap();
         assert_eq!(updated, format!("above\n\n{BLOCK}\nbelow\n"));
         assert_eq!(block_state(&updated), BlockState::Current);
         // Same token but edited body counts as stale and is restored.
         let edited = BLOCK.replace("## Arete", "## Arete (edited)");
         assert!(matches!(block_state(&edited), BlockState::Stale(_)));
-        assert_eq!(upsert_block(Some(&edited)), BLOCK);
+        assert_eq!(upsert_block(Some(&edited)).unwrap(), BLOCK);
     }
 
     #[test]
@@ -284,5 +312,18 @@ mod tests {
         let single = r#"{"context": {"fileName": "GEMINI.md"}}"#;
         let updated = upsert_gemini_context(Some(single)).unwrap().unwrap();
         assert!(gemini_context_ok(&updated));
+    }
+
+    #[test]
+    fn unterminated_block_is_reported_not_duplicated() {
+        let partial = "# Mine\n\n<!-- BEGIN:arete v1 -->\n## Arete\nhalf a block\n";
+        assert!(matches!(block_state(partial), BlockState::Malformed(_)));
+        let error = upsert_block(Some(partial)).unwrap_err().to_string();
+        assert!(error.contains("malformed"), "{error}");
+        assert!(error.contains("by hand"), "{error}");
+
+        let orphan_end = "text\n<!-- END:arete -->\n";
+        assert!(matches!(block_state(orphan_end), BlockState::Malformed(_)));
+        assert!(upsert_block(Some(orphan_end)).is_err());
     }
 }
