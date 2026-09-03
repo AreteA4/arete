@@ -120,8 +120,12 @@ git init -q && git config user.email e2e@arete.run && git config user.name e2e
 a4 init -y --json > init.json || fail "a4 init exited $?"
 for f in arete.toml AGENTS.md CLAUDE.md .mcp.json; do [[ -f $f ]] || fail "init did not create $f"; done
 if [[ "$pass" == node ]]; then
-  [[ -d .agents/skills ]] || fail "init did not create .agents/skills with Node present"
-  [[ -d .claude/skills ]] || fail "init did not create .claude/skills with Node present"
+  # a4 init installs skills per detected agent (npx skills add --agent ...),
+  # which targets the agent's own directory; the universal .agents/skills
+  # fallback is only populated by an agent-less install.
+  for skill in arete arete-streams arete-programs arete-stack-authoring arete-deploy; do
+    [[ -d ".claude/skills/$skill" ]] || fail "init did not install the $skill skill for claude-code"
+  done
 else
   json_has '"skills"' init.json "init JSON has no skills entry"
   json_has 'skipped' init.json "skills were not reported as skipped"
