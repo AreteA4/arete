@@ -320,6 +320,23 @@ export function validateProgramSpecV1(programSpec: ProgramSpecV1): void {
       "invalid program spec projection: programId must match idlSnapshot.program_id",
     );
   }
+  for (const pda of Object.values(programSpec.pdas)) validatePdaSeedsV1(pda.seeds);
+  for (const instruction of programSpec.instructions) {
+    for (const account of instruction.accounts) {
+      if (account.resolution.category === "pdaInline") {
+        validatePdaSeedsV1(account.resolution.seeds);
+      }
+    }
+  }
+}
+
+function validatePdaSeedsV1(seeds: readonly PdaSeedV1[]): void {
+  if (seeds.some((seed) => seed.type === "literal" && seed.value.includes("\0"))) {
+    hashError(
+      "invalid-projection",
+      "invalid program spec projection: literal PDA seeds must not contain NUL bytes; use a bytes seed",
+    );
+  }
 }
 
 function collectProgramIds(source: JsonObject): [string, string][] {
@@ -1389,9 +1406,13 @@ function convertPda(name: string, pda: ParsedPda): PdaDefinitionV1 {
         };
       }
       try {
+        const value = new TextDecoder("utf-8", { fatal: true }).decode(
+          Uint8Array.from(seed.value),
+        );
+        if (value.includes("\0")) return { type: "bytes", value: [...seed.value] };
         return {
           type: "literal",
-          value: new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(seed.value)),
+          value,
         };
       } catch {
         return { type: "bytes", value: [...seed.value] };

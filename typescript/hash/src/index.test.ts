@@ -110,6 +110,46 @@ test("projects conflicting instruction-local PDAs inline", () => {
   expect(spec.instructions[1]?.accounts[0]?.resolution.category).toBe("pdaInline");
 });
 
+test("preserves NUL const PDA seeds as bytes", () => {
+  const source = {
+    address: "11111111111111111111111111111111",
+    metadata: { name: "binary_pda", version: "0.1.0" },
+    instructions: [
+      {
+        name: "initialize",
+        discriminator: [1],
+        accounts: [
+          {
+            name: "state",
+            pda: {
+              seeds: [
+                { kind: "const", value: [115, 116, 97, 116, 101] },
+                { kind: "const", value: [0, 0] },
+              ],
+            },
+          },
+        ],
+        args: [],
+      },
+    ],
+  };
+
+  const bytes = new TextEncoder().encode(JSON.stringify(source));
+  const { programId } = projectIdlV1(bytes);
+  const spec = parseIdlV1(bytes, programId).programSpec;
+
+  expect(spec.pdas.state?.seeds).toEqual([
+    { type: "literal", value: "state" },
+    { type: "bytes", value: [0, 0] },
+  ]);
+
+  const invalid = structuredClone(spec);
+  invalid.pdas.state!.seeds[1] = { type: "literal", value: "\0\0" };
+  expect(() => hashProgramSpecV1(invalid)).toThrowError(
+    expect.objectContaining({ code: "invalid-projection" }),
+  );
+});
+
 test("reports a known but unexpected hash kind consistently", () => {
   const value = `arete:h1:program-spec:sha256:${"ab".repeat(32)}`;
   expect(() => parseHashId(value, "idl-content")).toThrowError(
