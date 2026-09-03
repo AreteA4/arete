@@ -188,13 +188,15 @@ jobs:
         if: needs.release-please.outputs.arete_release_created == 'true'
         run: ./scripts/publish-crate.sh arete
 
-      - name: Publish a4-cli
-        if: needs.release-please.outputs.cli_release_created == 'true'
-        run: ./scripts/publish-crate.sh cli
-
       - name: Publish arete-mcp
         if: needs.release-please.outputs.mcp_release_created == 'true'
         run: ./scripts/publish-crate.sh rust/arete-mcp
+
+      # a4-cli depends on arete-mcp, so it must publish after it; a failed
+      # step also skips every later step in this job.
+      - name: Publish a4-cli
+        if: needs.release-please.outputs.cli_release_created == 'true'
+        run: ./scripts/publish-crate.sh cli
 
   publish-npm:
     name: Publish to npm
@@ -492,7 +494,9 @@ jobs:
           merge-multiple: true
 
       - name: Combine checksums
-        run: sort checksums/*.sha256 > checksums.txt
+        # Strip CR: the Windows checksum is written with PowerShell Out-File
+        # (CRLF), which otherwise breaks manifest asset-name matching.
+        run: cat checksums/*.sha256 | tr -d '\r' | LC_ALL=C sort > checksums.txt
 
       - name: Write release manifest
         run: |
