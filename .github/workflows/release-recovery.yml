@@ -271,8 +271,8 @@ jobs:
           ./scripts/publish-crate.sh rust/arete-server --allow-existing
           ./scripts/publish-crate.sh rust/arete-a4-sdk --allow-existing
           ./scripts/publish-crate.sh arete --allow-existing
-          ./scripts/publish-crate.sh cli --allow-existing
           ./scripts/publish-crate.sh rust/arete-mcp --allow-existing
+          ./scripts/publish-crate.sh cli --allow-existing
 
   build-binaries:
     name: Build ${{ matrix.binary_name }}
