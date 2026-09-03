@@ -85,9 +85,9 @@ All paths relative to this repo unless stated.
 | release-please | `release-please-config.json` | Component `cli` already bumps JSON files via `extra-files` (`sdk-provenance.json`); reuse that for the latest-version pointer |
 | Docs site | `docs/` (Astro Starlight) | Static files in `docs/public/` are served at `https://docs.arete.run/<name>` (`agent.md`, `skill.md`, `ore.json` today). `[...slug].md.ts` serves every page as markdown. **Verify the deploy trigger** (no workflow in this repo; likely Vercel git integration on `docs/`) |
 | Landing site | `../hyper-stack-platform/landing/` (Astro on Vercel) | `vercel.json` already permanently redirects `/agent.md` and `/skill.md` to `docs.arete.run`. Add the same redirects for `/install.sh` and `/install.ps1` |
-| Hosted agent docs | `docs/public/agent.md` (310 lines), `docs/public/skill.md` (503 lines) | Both currently recommend `cargo install a4-cli` |
-| Skills | GitHub `AreteA4/skills` (`arete`, `arete-consume`, `arete-build`); local copies in `.claude/skills/` | Installed with `npx skills add AreteA4/skills`. Skills text says "Prefer `a4` (Cargo)" |
-| Agent self-signup API | `POST https://api.arete.run/api/agents/signup` body `{"display_name": "..."}` → `{"slug","display_name","api_key","message"}`; 5/hour/IP → `429 rate-limit-exceeded`; `GET /api/agents/me` with Bearer key | Documented in `docs/public/skill.md`; no CLI wrapper exists |
+| Hosted agent docs | `docs/public/agent.md`, `docs/public/skill.md` | `agent.md` is the concise installer-first bootstrap; `skill.md` is the hosted identity/key/MCP/API reference |
+| Skills | GitHub `AreteA4/skills` (`arete`, `arete-streams`, `arete-programs`, `arete-stack-authoring`, `arete-deploy`) | Installed together with `npx skills add AreteA4/skills`; each skill is a separate workflow activation unit |
+| Agent self-signup API | `POST https://api.arete.run/api/agents/signup` body `{"display_name": "..."}` → `{"slug","display_name","api_key","message"}`; 5/hour/IP → `429 rate-limit-exceeded`; `GET /api/agents/me` with Bearer key | Documented in `docs/public/skill.md`; wrapped by `a4 auth signup` and `a4 auth whoami` |
 | Measured | 2026-09-02, macOS arm64, npm 11.17 | cold `npx @usearete/a4 --version` 3.9 s, warm 0.55 s; release binaries 18–29 MB |
 
 ---
@@ -498,29 +498,35 @@ agent-independent set (manifest, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
    `cli/src/agents/templates/agents-block.md`, `include_str!`):
 
    ```markdown
-   <!-- BEGIN:arete v1 -->
+   <!-- BEGIN:arete v2 -->
    ## Arete
 
-   This project uses Arete (real-time Solana data streams). The `a4` CLI is
-   the interface; the `arete`, `arete-consume` and `arete-build` skills hold
-   the detailed patterns.
+   This project uses Arete for typed Solana views and program operations. The
+   `a4` CLI is the interface; the installed `arete`, `arete-streams`,
+   `arete-programs`, `arete-stack-authoring`, and `arete-deploy` skills hold the
+   detailed workflows.
 
    - Health check first: `a4 doctor --json` (exit 0 = ready). If `a4` is
      missing: `curl -fsSL https://arete.run/install.sh | sh`
-   - Never guess schemas. Before writing Arete code run
-     `a4 explore --json`, then `a4 explore stack <ref> --json` or
-     `a4 explore <stack> <Entity> --json`.
-   - Generate clients, don't hand-write them: `a4 install <ref> --ts|--rust`.
+   - Start from intent with `a4 know search --query "..." --json`, then inspect
+     exact descriptors with `a4 explore stack <ref> --json` or
+     `a4 explore program <ref> --json`.
+   - Never guess schemas or SDK methods. Generate clients from the explored
+     descriptor with `a4 install stack <ref> --ts` or
+     `a4 install program <ref> --ts`; use `--rust` or `--python` only when the
+     descriptor advertises that target.
    - Account: `a4 auth signup` (agent) or `a4 auth login --key <a4_ak_…>`.
    - Live data in your loop: the `arete` MCP server (`a4 mcp`) is configured;
      use it for exploration, use generated SDKs for shipped code.
+   - Building or preparing does not authorize transaction submission or hosted
+     deployment. Keep external mutations within the user's request.
    - Never `cargo install a4-cli`; update with `a4 self update`.
 
    Docs: https://docs.arete.run (agent entry: https://docs.arete.run/agent.md)
    <!-- END:arete -->
    ```
    Upsert: if `AGENTS.md` lacks the markers, append the block (with a blank
-   line before). If present, replace between markers; if the `v1` token
+   line before). If present, replace between markers; if the `v2` token
    differs, that is an `updated`. Content outside the markers is untouched.
 3. `CLAUDE.md` — if missing, create with exactly `@AGENTS.md\n`. If present
    and no line equals `@AGENTS.md`, insert it as the first line. Claude Code
@@ -619,8 +625,8 @@ Checks (id → what → fix text), each `ok | warn | fail | info`:
 | `tools.rust` | `cargo` on PATH | `info`; `warn` only if `arete.toml` has `[authoring]` stacks |
 | `agents.detected` | list | `info` |
 | `agents.<id>.mcp` | both servers present and equal to the desired shape | `warn`: `a4 doctor --fix` |
-| `agents.<id>.skills` | skill dirs for that agent contain `arete`, `arete-consume`, `arete-build` | `warn`: `npx skills add AreteA4/skills --agent <id>` |
-| `agents.agents-md` | block present and `v1` | `warn`: `a4 doctor --fix` |
+| `agents.<id>.skills` | skill dirs for that agent contain all five workflow skills | `warn`: `npx skills add AreteA4/skills --agent <id>` |
+| `agents.agents-md` | block present and `v2` | `warn`: `a4 doctor --fix` |
 | `agents.claude-md` | `CLAUDE.md` contains `@AGENTS.md` (only if claude-code selected) | `warn` |
 | `agents.gemini-context` | Gemini `context.fileName` includes `AGENTS.md` (only if gemini-cli) | `warn` |
 | `agents.codex-trust` | `.codex/config.toml` exists but project not trusted in `~/.codex/config.toml` | `info` |
@@ -719,11 +725,10 @@ Other text changes:
 - `README.md` (root), `cli/README.md`, `cli/src/main.rs` doc comment,
   `packages/arete/README.md`: installer first; crates.io mentioned only
   under "Building from source".
-- `AreteA4/skills` (separate repo): in all three `SKILL.md`, replace the
-  prerequisite block (`cargo install a4-cli`, `arete-cli` fallback) with
-  `a4 doctor --json` and the installer line; `arete-build` keeps its rustup
-  step (building stacks genuinely needs Rust). Tag a release so
-  `--skills-ref` can pin.
+- `AreteA4/skills` (separate repo): install the five workflow skills together:
+  discovery/project dependencies, views/streams, program operations, stack
+  authoring, and permission-aware deployment. Only stack authoring requires a
+  Rust toolchain. Tag a release so `--skills-ref` can pin.
 - Landing (`../hyper-stack-platform/landing/vercel.json`): add permanent
   redirects `/install.sh` → `https://docs.arete.run/install.sh` and
   `/install.ps1` → `https://docs.arete.run/install.ps1`.

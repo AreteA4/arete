@@ -10,7 +10,7 @@ use super::{display_path, read_optional, upsert_file, Env, ItemResult, Outcome};
 
 /// Exact managed block (spec WP7 §2).
 pub const BLOCK: &str = include_str!("templates/agents-block.md");
-pub const BLOCK_VERSION: &str = "v1";
+pub const BLOCK_VERSION: &str = "v2";
 const BEGIN_PREFIX: &str = "<!-- BEGIN:arete";
 const END_MARKER: &str = "<!-- END:arete -->";
 pub const CLAUDE_IMPORT: &str = "@AGENTS.md";
@@ -28,7 +28,7 @@ pub enum BlockState {
 }
 
 pub const MALFORMED_FIX: &str =
-    "fix the <!-- BEGIN:arete v1 --> / <!-- END:arete --> markers in AGENTS.md by hand, then rerun";
+    "fix the <!-- BEGIN:arete v2 --> / <!-- END:arete --> markers in AGENTS.md by hand, then rerun";
 
 enum Span {
     Missing,
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn template_has_markers_and_version() {
-        assert!(BLOCK.starts_with("<!-- BEGIN:arete v1 -->\n"));
+        assert!(BLOCK.starts_with("<!-- BEGIN:arete v2 -->\n"));
         assert!(BLOCK.ends_with("<!-- END:arete -->\n"));
         assert_eq!(block_state(BLOCK), BlockState::Current);
     }
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn unterminated_block_is_reported_not_duplicated() {
-        let partial = "# Mine\n\n<!-- BEGIN:arete v1 -->\n## Arete\nhalf a block\n";
+        let partial = "# Mine\n\n<!-- BEGIN:arete v2 -->\n## Arete\nhalf a block\n";
         assert!(matches!(block_state(partial), BlockState::Malformed(_)));
         let error = upsert_block(Some(partial)).unwrap_err().to_string();
         assert!(error.contains("malformed"), "{error}");

@@ -616,7 +616,10 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
             let missing = skills::missing_skills(env, id, false);
             let missing_global = skills::missing_skills(env, id, true);
             checks.push(if missing.is_empty() || missing_global.is_empty() {
-                Check::ok(&check_id, "arete, arete-consume, arete-build installed")
+                Check::ok(
+                    &check_id,
+                    format!("{} installed", skills::SKILL_NAMES.join(", ")),
+                )
             } else {
                 Check::warn(
                     &check_id,
@@ -634,7 +637,7 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
     checks.push(
         match agents_md_content.as_deref().map(agents_md::block_state) {
             Some(BlockState::Current) => {
-                Check::ok("agents.agents-md", "AGENTS.md has the v1 Arete block")
+                Check::ok("agents.agents-md", "AGENTS.md has the v2 Arete block")
             }
             Some(BlockState::Stale(token)) => Check::warn(
                 "agents.agents-md",

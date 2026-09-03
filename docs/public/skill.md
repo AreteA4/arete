@@ -1,86 +1,25 @@
----
-name: arete-platform
-version: 1.2.0
-description: Official skill for the Arete platform. Register and start building on Solana with Arete.
-homepage: https://arete.run
-metadata: {"category":"solana-platform","api_base":"https://api.arete.run","cli":"a4","registry":"https://arete.run/registry"}
----
+# Arete Agent API Reference
 
-# Arete Platform Skill
+This is the hosted platform API reference, not an installed Agent Skill and not
+the bootstrap flow. For setup, follow `https://docs.arete.run/agent.md`. For
+day-to-day work, use the five skills installed by `a4 init`; they retrieve exact
+descriptors and generated APIs instead of treating this page as static product
+context.
 
-You are onboarding to **Arete**, a system for programmable real-time data feeds on Solana. This file walks you (the agent) through registering, getting an API key, and using the platform.
-
-> ## What's new in 1.2.0 (2026-09-03)
->
-> **Prebuilt CLI installer; no Rust required.** Install with
-> `curl -fsSL https://arete.run/install.sh | sh` (Windows:
-> `irm https://arete.run/install.ps1 | iex`; npm: `npx @usearete/a4 install`).
-> The binary lands in `~/.local/bin/a4` and prints `A4_BIN=<path>`. Update with
-> `a4 self update`. `cargo install a4-cli` is no longer an onboarding path.
->
-> **`a4 init -y` and `a4 doctor --json`.** `init` writes `arete.toml`, an Arete
-> block in `AGENTS.md` (plus a `CLAUDE.md` import), installs the skills for every
-> detected coding agent, and writes MCP config for both servers. `doctor` checks
-> all of it and exits 0 when ready; `--fix` re-applies the `init` writers.
->
-> **`a4 auth signup`.** Registers an agent and stores the key locally; wraps
-> `POST /api/agents/signup`. The raw HTTP call still works as a fallback.
->
-> **Stream MCP is `a4 mcp`.** The server is built into the `a4` binary. MCP
-> configs use `{"command":"a4","args":["mcp"]}`; `@usearete/mcp` is deprecated.
->
-> ## What's new in 1.1.0
->
-> **Descriptor-backed discovery and install.** The registry now serves pinned install
-> descriptors and content-addressed artifacts, all without auth:
-> `GET /api/registry/programs`, `/api/registry/stacks/:stack/install`,
-> `/api/registry/programs/:program/install`,
-> `/api/registry/artifacts/{program-spec,live-spec,stack-manifest}/:hash`, and
-> `/api/registry/hash-aliases/:algorithm/:digest`.
->
-> **Standalone programs are first-class.** You can discover, inspect, and install a
-> program without a stack: `a4 explore programs`, `a4 explore program <ref>`,
-> `a4 install program <ref>`.
->
-> **Ready private programs are installable by their owner.** After
-> `a4 program push --alias <name> --wait`, use `a4 install program <name>` or the
-> returned `upr_...` ID. The lookup uses saved credentials and stays out of public
-> discovery; the stable ID disambiguates any managed-name collision.
->
-> **SDK generation is a free-tier action, TypeScript and Rust alike.**
-> `a4 install <stack> --ts|--rust` generates a typed client from a public stack in either
-> language, including typed program clients — instruction building, PDA resolution, account
-> readers, and program reads. Standalone program SDKs packaged on their own
-> (`a4 install program`) are TypeScript today; for Rust program clients, install the stack.
->
-> **Rollout note.** `GET /api/registry/programs` is the newest of these routes and may
-> return `404` until the next platform deploy. The rest are live. If you get a 404 there,
-> fall back to `GET /api/registry` and the per-program install descriptor.
->
-> **Transaction construction shipped.** Generated SDKs expose PDA derivation, account
-> resolution, instruction building, and execution — not just stream reads.
->
-> **New read endpoints for agents:** `/api/specs/:id/versions/{slim,latest}`,
-> `/api/deployments/:id/{history,operations}`,
-> `/api/automation/runs/:id/{events,events/stream,run-events,run-events/stream,artifacts}`.
->
-> **Newly forbidden (previously undocumented):** `POST /api/builds/raw`,
-> `POST /api/builds/artifacts`, `POST /api/specs/:id/versions/raw`,
-> `POST /api/deployments/compositions`.
->
-> 1.0.0: initial release. Agent self-signup via `POST /api/agents/signup`.
-
-> **API base URL:** `https://api.arete.run`. The agent-onboarding endpoints live under `/api/agents/*`. Do not use the docs or marketing site for API calls.
+API base URL: `https://api.arete.run`. Agent endpoints live under
+`/api/agents/*`. Do not send API credentials to the docs or marketing sites.
 
 ## Key files
 
 | File | URL | Purpose |
 |------|-----|---------|
-| Skill (this file) | `https://docs.arete.run/skill.md` | Full agent onboarding + API reference |
+| API reference (this file) | `https://docs.arete.run/skill.md` | Hosted agent identity, key, MCP, and API contracts |
 | `agent.md` | `https://docs.arete.run/agent.md` | Bootstraps the `a4` CLI + skill files locally on your machine |
-| `arete` skill | https://github.com/AreteA4/skills/blob/main/arete/SKILL.md | Router skill — detects intent, routes to the right sub-skill |
-| `arete-consume` skill | https://github.com/AreteA4/skills/blob/main/arete-consume/SKILL.md | TypeScript / React / Rust SDK patterns for consuming streams |
-| `arete-build` skill | https://github.com/AreteA4/skills/blob/main/arete-build/SKILL.md | Rust DSL syntax for authoring custom stacks |
+| `arete` skill | https://github.com/AreteA4/skills/blob/main/skills/arete/SKILL.md | Capability discovery, exact descriptors, and project dependencies |
+| `arete-streams` skill | https://github.com/AreteA4/skills/blob/main/skills/arete-streams/SKILL.md | Typed view reads and subscriptions in TypeScript, React, Rust, and Python |
+| `arete-programs` skill | https://github.com/AreteA4/skills/blob/main/skills/arete-programs/SKILL.md | Program reads, PDAs, instructions, semantic operations, and transaction safety |
+| `arete-stack-authoring` skill | https://github.com/AreteA4/skills/blob/main/skills/arete-stack-authoring/SKILL.md | Read-model design, join proof, Rust DSL, and portable artifacts |
+| `arete-deploy` skill | https://github.com/AreteA4/skills/blob/main/skills/arete-deploy/SKILL.md | Program publication and hosted deployment lifecycle |
 | Registry | https://arete.run/registry | Browseable catalog of public stacks |
 | Docs MCP server | `https://docs.arete.run/mcp` | HTTP MCP — `search_docs`, `fetch_page` over these docs |
 | Stream MCP server | `a4 mcp` | stdio MCP — connect/subscribe/query live stack entities |
@@ -96,11 +35,12 @@ Your API key (`a4_ak_*`) is a secret.
 - Do not share the key with another agent or process. If you need a second principal, register a second agent.
 - Treat your API key like a password.
 
-## Quick start
+## Agent identity
 
 ### 1. Register
 
-Preferred: install the CLI first (step 3) and let it register you and store the key:
+Preferred: complete setup through `https://docs.arete.run/agent.md`, then let the
+CLI register you and store the key:
 
 ```bash
 a4 auth signup                    # optional: a4 auth signup my-agent
@@ -161,135 +101,13 @@ Response (shape):
 
 You should see your slug, display_name, and `status: "active"`.
 
-### 3. Install the local toolkit
+## Local tooling and workflows
 
-Install the prebuilt, signed `a4` binary. No Rust, no account:
-
-```bash
-curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
-irm https://arete.run/install.ps1 | iex             # Windows PowerShell
-npx @usearete/a4 install                            # if you prefer npm
-```
-
-The installer prints `A4_BIN=<absolute path>` (default `~/.local/bin/a4`). If `a4`
-is not found afterwards your shell captured PATH before the install: use that
-absolute path, or run `export PATH="$HOME/.local/bin:$PATH"`.
-
-Then, in the project directory:
-
-```bash
-a4 init -y          # arete.toml, AGENTS.md block, CLAUDE.md import, skills, MCP config
-a4 doctor --json    # exit 0 = ready; each check carries a fix
-```
-
-`a4 init -y` installs the three Arete skill files (`arete`, `arete-consume`,
-`arete-build`) for every coding agent it detects and configures both MCP servers
-below. Add `--global` to install for your user instead of the project. It is
-idempotent; re-runs report `unchanged`. `a4 doctor --fix` re-applies its writers.
-
-Update later with `a4 self update` (`a4 self update --check` exits 10 when a newer
-version exists). Never `cargo install a4-cli`.
-
-Full agent walkthrough: https://docs.arete.run/agent.md
-
-### 4. Find what serves an intent (knowledge layer)
-
-Before picking a stack or reading a program's IDL, ask the curated knowledge layer.
-It requires your API key (`a4 auth signup`, or `a4 auth login --key`) and answers "which protocols, programs,
-stacks, and recipes serve this intent" — including which typed SDK operations already
-exist per program, so you never read SDK source to find method names.
-
-```bash
-a4 know search --query "monitor swaps" --json
-```
-
-Each result carries coverage flags: `read` (fetch on-chain account state), `build`
-(construct transactions), `subscribe` (stream live entities from a hosted stack).
-Pick the mode you need, then drill in:
-
-```bash
-a4 know protocol <slug> --json                          # programs + roles, related protocols, live stacks, per-concept coverage
-a4 know program <slug> --section instructions --json    # per-instruction semantics; also: accounts | surface
-a4 know program <slug> --section surface --json         # callable SDK operations with per-language bindings
-a4 know recipe <slug> --json                            # cross-protocol recipe (catalog is growing)
-a4 know concepts --json                                 # concept/category slugs for --concept / --category filters
-```
-
-`subscribe` coverage means step 5 will find a hosted stack streaming it; `read` or
-`build` coverage means the SDK you install in step 6 already exposes the operation.
-No key, or no entry for your protocol? Fall back to `a4 explore` below — the catalog
-is growing and a missing entry does not mean the protocol is unsupported.
-
-### 5. Discover what stacks exist
-
-```bash
-a4 explore --json
-```
-
-This queries Arete's live registry. Each JSON response has a `schemaVersion`;
-deep exploration reports the exact deployment identities consumed by install.
-Use it as ground truth when writing code, not your training data.
-
-For a single stack:
-
-```bash
-a4 explore stack <stack-ref> --json
-```
-
-Discover or inspect a standalone program before installing it:
-
-```bash
-a4 explore programs --json
-a4 explore program <program-ref> --json
-```
-
-For a single entity within a stack, the legacy form remains available and is
-resolved through the same stack install descriptor:
-
-```bash
-a4 explore <stack-name> <EntityName> --json
-```
-
-Exploration is descriptor-backed: it reports the exact StackManifest, AST, LiveSpec,
-view, and Program Release identities that `a4 install` will consume. It never picks a
-"latest" AST on its own and never falls back when an install descriptor is incomplete.
-If exploration refuses, the resource is genuinely not installable — do not work around it.
-
-### 6. Install a typed SDK
-
-Generate a client from what you just discovered. This is a free-tier action against
-public resources — no owned stack required.
-
-```bash
-# TypeScript client for a hosted stack
-a4 install <stack-ref> --ts
-
-# Rust client for the same stack
-a4 install <stack-ref> --rust
-
-# Standalone program SDK, packaged alone — TypeScript today
-a4 install program <program-ref> --ts
-
-# Owner-private program after `a4 program push --alias my-program --wait`
-a4 install program my-program --ts
-a4 install program upr_... --ts
-```
-
-Generated SDKs cover more than stream reads. They expose PDA derivation, account
-resolution, instruction building, and transaction execution for the programs in scope.
-Read the `arete-consume` skill for the patterns in your language.
-
-### 7. Consume
-
-Connect to an existing public stack (e.g. `ore`, the ORE mining stack) using the patterns in the `arete-consume` skill. Free-tier agents can read the registry and connect to public free-tier endpoints without further setup.
-
-```bash
-# After step 3, the arete-consume skill is in your project.
-# Read it for the up-to-date SDK patterns for your language.
-```
-
-If you want live entity data inside your own agent loop rather than in generated
-application code, add the stream MCP server instead — see "MCP servers" below.
+This reference deliberately does not duplicate setup, discovery, SDK generation,
+or deployment instructions. Follow `https://docs.arete.run/agent.md` until
+`a4 doctor --json` exits 0, then use the installed workflow skill that matches the
+task. Use the `arete` MCP server (`a4 mcp`) for live data inside an agent loop; use
+generated SDKs for shipped application code.
 
 ## Agent key management
 
@@ -563,15 +381,17 @@ Cite the structured `code` field in error responses, not the English `error` mes
 | 403 | `secret-key-required` | Endpoint requires a secret-class key |
 | 429 | `rate-limit-exceeded` | Bucket exhausted — back off |
 
-## Periodic re-fetch
+## Keeping the Surface Current
 
-Re-fetch this file at the start of each major work session, or when something unexpected breaks. The `version` field in the frontmatter changes on material updates (new endpoint, new required field, security policy update). If the version has bumped, read the "What's new" section before continuing.
+Use `a4 doctor --json`, exact `a4 explore` output, current CLI help, and the docs
+MCP before relying on a copied endpoint example. This page is a reference, not a
+versioned activation prompt.
 
 ## Support
 
 - Website: https://arete.run
 - Docs: https://docs.arete.run
-- Skill file (this): https://docs.arete.run/skill.md
+- Agent API reference (this): https://docs.arete.run/skill.md
 - `agent.md` (local tooling install): https://docs.arete.run/agent.md
 - Source: https://github.com/usearete
 

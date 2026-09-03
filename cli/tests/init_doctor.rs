@@ -59,7 +59,7 @@ fn install_fake_npx(bin: &Path) {
 # (PATH holds only this directory, so use absolute tool paths)
 printf '%s\n' "$@" > npx-args.txt
 for agent in .agents .claude; do
-  for skill in arete arete-consume arete-build; do
+  for skill in arete arete-streams arete-programs arete-stack-authoring arete-deploy; do
     /bin/mkdir -p "$agent/skills/$skill"
     printf '# %s\n' "$skill" > "$agent/skills/$skill/SKILL.md"
   done
@@ -215,7 +215,7 @@ fn init_in_empty_dir_without_node_then_doctor_warns_on_skills() {
         serde_json::json!(["a4 doctor --json", "a4 explore --json"])
     );
     assert_eq!(read(&sb, "CLAUDE.md"), "@AGENTS.md\n");
-    assert!(read(&sb, "AGENTS.md").starts_with("<!-- BEGIN:arete v1 -->\n## Arete\n"));
+    assert!(read(&sb, "AGENTS.md").starts_with("<!-- BEGIN:arete v2 -->\n## Arete\n"));
     assert!(read(&sb, "arete.toml").contains("name = \"proj\""));
     let mcp: Value = serde_json::from_str(&read(&sb, ".mcp.json")).unwrap();
     assert_eq!(mcp["mcpServers"]["arete"]["command"], "a4");
@@ -394,7 +394,7 @@ fn agents_md_keeps_user_content_and_replaces_stale_blocks() {
     let (report, _) = a4_json(&sb, &["init", "-y", "--json", "--no-mcp", "--no-skills"]);
     assert_eq!(results(&report)["agents-md"]["status"], "updated");
     let content = read(&sb, "AGENTS.md");
-    assert!(content.starts_with("# My project\n\nNotes the team wrote by hand. Keep me.\n\n<!-- BEGIN:arete v1 -->\n## Arete\n"));
+    assert!(content.starts_with("# My project\n\nNotes the team wrote by hand. Keep me.\n\n<!-- BEGIN:arete v2 -->\n## Arete\n"));
     assert!(content.ends_with("<!-- END:arete -->\n\n## Below the block\n\nAlso kept.\n"));
     assert!(!content.contains("out of date"));
     let (report, _) = a4_json(&sb, &["init", "-y", "--json", "--no-mcp", "--no-skills"]);
@@ -404,7 +404,7 @@ fn agents_md_keeps_user_content_and_replaces_stale_blocks() {
     let (report, _) = a4_json(&sb, &["init", "-y", "--json", "--no-mcp", "--no-skills"]);
     assert_eq!(results(&report)["agents-md"]["status"], "updated");
     let content = read(&sb, "AGENTS.md");
-    assert!(content.starts_with("# Stale\n\n<!-- BEGIN:arete v1 -->\n"));
+    assert!(content.starts_with("# Stale\n\n<!-- BEGIN:arete v2 -->\n"));
     assert!(!content.contains("v0") && !content.contains("old instructions"));
     assert_eq!(content.matches("BEGIN:arete").count(), 1);
 }
@@ -571,7 +571,7 @@ fn doctor_fix_restores_a_removed_agents_md_block() {
     assert_eq!(c["agents.agents-md"]["status"], "ok");
     assert_eq!(c["agents.claude-code.mcp"]["status"], "ok");
     let content = read(&sb, "AGENTS.md");
-    assert!(content.starts_with("# mine\n\n<!-- BEGIN:arete v1 -->"));
+    assert!(content.starts_with("# mine\n\n<!-- BEGIN:arete v2 -->"));
     assert!(sb.root.join(".mcp.json").exists());
     assert!(sb.root.join("arete.toml").exists());
 }
