@@ -206,6 +206,13 @@ pub fn flush() {
 /// Show the consent banner if it hasn't been shown yet.
 /// This is non-blocking and prints to stderr to avoid breaking pipes.
 pub fn show_consent_banner_if_needed() {
+    use std::io::IsTerminal;
+
+    // Agents and pipes never see the banner; it is only for humans at a TTY.
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+
     let mut config = TelemetryConfig::load();
 
     if config.consent_shown {

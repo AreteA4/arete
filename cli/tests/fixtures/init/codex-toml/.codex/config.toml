@@ -1,0 +1,13 @@
+# Codex project config
+model = "gpt-5-codex"
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+network_access = false
+
+[mcp_servers.other]
+command = "other-mcp"
+args = ["--stdio"]
+
+[profiles.fast]
+model = "gpt-5-mini"

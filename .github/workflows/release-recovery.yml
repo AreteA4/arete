@@ -317,42 +317,6 @@ jobs:
             binary_name: a4-win32-x64.exe
             release: a4-cli
             artifact_prefix: cli
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            package: arete-mcp
-            source_name: a4-mcp
-            binary_name: a4-mcp-darwin-arm64
-            release: arete-mcp
-            artifact_prefix: mcp
-          - os: macos-15-large
-            target: x86_64-apple-darwin
-            package: arete-mcp
-            source_name: a4-mcp
-            binary_name: a4-mcp-darwin-x64
-            release: arete-mcp
-            artifact_prefix: mcp
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            package: arete-mcp
-            source_name: a4-mcp
-            binary_name: a4-mcp-linux-x64
-            release: arete-mcp
-            artifact_prefix: mcp
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            package: arete-mcp
-            source_name: a4-mcp
-            binary_name: a4-mcp-linux-arm64
-            release: arete-mcp
-            artifact_prefix: mcp
-            cross: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            package: arete-mcp
-            source_name: a4-mcp.exe
-            binary_name: a4-mcp-win32-x64.exe
-            release: arete-mcp
-            artifact_prefix: mcp
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -476,13 +440,6 @@ jobs:
           path: cli-checksums
           merge-multiple: true
 
-      - name: Download MCP checksums
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          pattern: mcp-sha256-*
-          path: mcp-checksums
-          merge-multiple: true
-
       - name: Combine and publish checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -518,7 +475,41 @@ jobs:
           }
 
           publish_checksums "a4-cli-v${VERSION}" cli-checksums
-          publish_checksums "arete-mcp-v${VERSION}" mcp-checksums
+        shell: bash
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      # A recovered release must be installable like a normal one: installers
+      # and `a4 self update` need checksums.txt.minisig and manifest.json.
+      - name: Sign checksums and write manifest
+        env:
+          A4_MINISIGN_SECRET_KEY: ${{ secrets.A4_MINISIGN_SECRET_KEY }}
+          A4_MINISIGN_PASSWORD: ${{ secrets.A4_MINISIGN_PASSWORD }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          ./scripts/sign-release-checksums.sh "$VERSION" cli-checksums/checksums.txt
+          ./scripts/write-release-manifest.sh "$VERSION" cli-checksums/checksums.txt > cli-checksums/manifest.json
+        shell: bash
+
+      - name: Publish signature and manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          RELEASE_TAG="a4-cli-v${VERSION}"
+          # Ed25519 signatures are deterministic, so an identical .minisig is
+          # simply skipped by the upload helper. manifest.json carries a
+          # timestamp; reuse an existing upload rather than replacing it.
+          ./scripts/upload-release-asset.sh "$RELEASE_TAG" cli-checksums/checksums.txt.minisig
+          release="$(gh release view "$RELEASE_TAG" --json assets)"
+          if jq -e 'any(.assets[]; .name == "manifest.json" and .state == "uploaded" and .size > 0)' <<<"$release" >/dev/null; then
+            echo "Reusing manifest.json from $RELEASE_TAG"
+          else
+            ./scripts/upload-release-asset.sh "$RELEASE_TAG" cli-checksums/manifest.json
+          fi
         shell: bash
 
   bundle-templates:

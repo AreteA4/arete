@@ -1,0 +1,41 @@
+#!/bin/sh
+# Fake `a4` release asset for packages/arete tests (served as every a4-<platform> name).
+# Mimics the parts of the real binary the bootstrappers depend on:
+#   a4 self install [--source S] [--checksums F] [--signature F] [--install-dir D] [--no-modify-path] [--json]
+#     copies itself to <install dir>/a4, writes $ARETE_HOME/receipt.json, prints A4_BIN= + export PATH= last.
+#   a4 --version         prints "a4 0.0.0-test"
+#   anything else        prints {"schemaVersion":1,"fake":true,"argv":[...]} on stdout
+# Set FAKE_A4_ARGS_FILE to record the raw argv of every invocation (one line per call).
+set -eu
+if [ -n "${FAKE_A4_ARGS_FILE:-}" ]; then printf '%s\n' "$*" >> "$FAKE_A4_ARGS_FILE"; fi
+if [ "${1:-}" = "self" ] && [ "${2:-}" = "install" ]; then
+  shift 2
+  source=manual; json=0; modify_path=true; install_dir="${A4_INSTALL_DIR:-$HOME/.local/bin}"; verified=false
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --source) source=$2; shift ;;
+      --checksums) [ -f "$2" ] || { echo "fake a4: missing checksums $2" >&2; exit 1; }; verified=true; shift ;;
+      --signature) [ -f "$2" ] || { echo "fake a4: missing signature $2" >&2; exit 1; }; shift ;;
+      --install-dir) install_dir=$2; shift ;;
+      --no-modify-path) modify_path=false ;;
+      --json) json=1 ;;
+      --force) ;;
+      *) echo "fake a4: unknown flag $1" >&2; exit 2 ;;
+    esac
+    shift
+  done
+  [ "${A4_NO_MODIFY_PATH:-}" != "1" ] || modify_path=false
+  home="${ARETE_HOME:-$HOME/.arete}"
+  mkdir -p "$install_dir" "$home"
+  cp "$0" "$install_dir/a4" && chmod 755 "$install_dir/a4"
+  receipt="{\"schemaVersion\":1,\"version\":\"0.0.0-test\",\"binary\":\"$install_dir/a4\",\"installDir\":\"$install_dir\",\"platform\":\"test\",\"source\":\"$source\",\"verified\":$verified,\"modifyPath\":$modify_path,\"installedAt\":\"2026-01-01T00:00:00Z\"}"
+  printf '%s\n' "$receipt" > "$home/receipt.json"
+  if [ "$json" = 1 ]; then printf '%s\n' "$receipt"; else echo "Installed a4 0.0.0-test to $install_dir/a4"; fi
+  echo "A4_BIN=$install_dir/a4"
+  echo 'export PATH="$HOME/.local/bin:$PATH"'
+  exit 0
+fi
+if [ "${1:-}" = "--version" ]; then echo "a4 0.0.0-test"; exit 0; fi
+printf '{"schemaVersion":1,"fake":true,"argv":['
+sep=""; for a in "$@"; do printf '%s"%s"' "$sep" "$a"; sep=","; done
+printf ']}\n'

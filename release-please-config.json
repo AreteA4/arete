@@ -50,6 +50,11 @@
           "type": "json",
           "path": "/examples/ore-rust/src/generated/ore/sdk-provenance.json",
           "jsonpath": "$.generator.version"
+        },
+        {
+          "type": "json",
+          "path": "/docs/public/a4/latest.json",
+          "jsonpath": "$.version"
         }
       ]
     },

@@ -1,0 +1,108 @@
+name: Onboarding E2E
+
+# Runs the acceptance test from docs/internal/agent-first-onboarding.md (section 0)
+# against a published a4-cli-v<version> release, using the install scripts from
+# this checkout (so script changes can be validated before they are deployed).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "CLI version to test (release a4-cli-v<version>)"
+        required: true
+        type: string
+
+jobs:
+  linux:
+    name: Linux (docker, with and without Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Serve install.sh from this checkout
+        run: |
+          (cd docs/public && python3 -m http.server 8765 --bind 0.0.0.0 >/tmp/serve.log 2>&1 &)
+          sleep 1
+          curl -fsS http://127.0.0.1:8765/install.sh | head -n 1
+
+      - name: Run acceptance test
+        env:
+          A4_INSTALL_URL: http://127.0.0.1:8765/install.sh
+          E2E_DOCKER_ARGS: --network=host
+        run: |
+          printf '## Linux onboarding e2e\n\n| pass | version | result | step 1 (install) |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/e2e-onboarding.sh "${{ inputs.version }}"
+
+  windows:
+    name: Windows (install.ps1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install via install.ps1
+        shell: pwsh
+        env:
+          A4_VERSION: ${{ inputs.version }}
+        run: |
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $out = & ([scriptblock]::Create((Get-Content -Raw docs/public/install.ps1))) 2>&1 | Tee-Object -Variable lines
+          $sw.Stop()
+          $seconds = [math]::Round($sw.Elapsed.TotalSeconds, 2)
+          $stdout = @($lines | Where-Object { $_ -is [string] })
+          $binLine = $stdout | Where-Object { $_ -like 'A4_BIN=*' } | Select-Object -Last 1
+          if (-not $binLine) { throw "install.ps1 did not print an A4_BIN= line" }
+          $bin = $binLine.Substring(7)
+          if (-not (Test-Path $bin)) { throw "A4_BIN $bin does not exist" }
+          "A4_BIN=$bin" >> $env:GITHUB_ENV
+          $v = & $bin --version
+          if ($v -notlike "*${env:A4_VERSION}*") { throw "a4 --version printed '$v'" }
+          "## Windows onboarding e2e`n`n| step 1 (install.ps1) | version |`n|---|---|`n| ${seconds}s | $v |" >> $env:GITHUB_STEP_SUMMARY
+          if ($seconds -gt 15) { Write-Warning "install took ${seconds}s (> 15s)" }
+
+      - name: a4 init / doctor / explore / self update --check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\work" | Out-Null
+          Set-Location "$env:RUNNER_TEMP\work"
+          git init -q
+          & $env:A4_BIN init -y --json | Out-File init.json -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw "a4 init exited $LASTEXITCODE" }
+          $doctor = & $env:A4_BIN doctor --json | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "a4 doctor exited $LASTEXITCODE" }
+          if ($doctor -notmatch '"status":\s*"(ok|warn)"') { throw "doctor status not ok/warn: $doctor" }
+          $explore = & $env:A4_BIN explore --json | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "a4 explore exited $LASTEXITCODE" }
+          if ($explore -notmatch '"ore"') { throw "explore does not list the ore stack" }
+          $update = & $env:A4_BIN self update --check --json | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "a4 self update --check exited $LASTEXITCODE" }
+          if ($update -notmatch '"update(_a|A)vailable":\s*false') { throw "unexpected update check: $update" }
+
+  macos:
+    name: macOS (install.sh)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install via install.sh
+        env:
+          A4_VERSION: ${{ inputs.version }}
+        run: |
+          start=$(date +%s)
+          out=$(sh docs/public/install.sh </dev/null)
+          seconds=$(( $(date +%s) - start ))
+          printf '%s\n' "$out"
+          bin=$(printf '%s\n' "$out" | sed -n 's/^A4_BIN=//p' | tail -n 1)
+          [ -x "$bin" ] || { echo "no A4_BIN line / binary missing"; exit 1; }
+          echo "A4_BIN=$bin" >> "$GITHUB_ENV"
+          "$bin" --version | grep -F "$A4_VERSION"
+          printf '## macOS onboarding e2e\n\n| step 1 (install.sh) | version |\n|---|---|\n| %ss | %s |\n' "$seconds" "$("$bin" --version)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: a4 init / doctor / explore / self update --check
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/work" && cd "$RUNNER_TEMP/work" && git init -q
+          "$A4_BIN" init -y --json </dev/null > init.json
+          "$A4_BIN" doctor --json </dev/null | tee doctor.json | grep -Eq '"status": *"(ok|warn)"'
+          "$A4_BIN" explore --json </dev/null | tee explore.json | grep -q '"ore"'
+          "$A4_BIN" self update --check --json </dev/null | tee update.json | grep -Eq '"update(_a|A)vailable": *false'

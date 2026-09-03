@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "zeta": {
+      "type": "stdio",
+      "command": "zeta-mcp",
+      "args": ["--stdio"],
+      "env": { "ZETA_TOKEN": "x" }
+    },
+    "alpha": {
+      "type": "http",
+      "url": "https://alpha.example/mcp"
+    }
+  }
+}

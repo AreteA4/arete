@@ -1,46 +1,81 @@
-# Arete CLI
+# @usearete/a4
 
-Programmable data feeds for Solana. Arete CLI lets you deploy feeds for any Solana data to our cloud.
+The Arete CLI (`a4`) as an npm package. Programmable, real-time Solana data
+feeds: deploy stacks, explore live data, wire up your agent.
 
-## Quick Start
-
-```bash
-npx @usearete/a4 create my-app
-cd my-app
-npm run dev
-```
-
-## Installation
-
-### npm (recommended for JS/TS developers)
+## Install
 
 ```bash
-npm install -g @usearete/a4
+npx @usearete/a4 install
 ```
 
-### Cargo (for Rust developers)
+This downloads the `a4` release binary for your platform (the version is
+locked to the package version), verifies its SHA-256 and minisign signature,
+copies it to `~/.local/bin/a4` (`%USERPROFILE%\.local\bin\a4.exe` on
+Windows), adds that directory to your shell PATH and writes
+`~/.arete/receipt.json`. The last two stdout lines are always:
+
+```text
+A4_BIN=/home/you/.local/bin/a4
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Agents: your shell snapshotted PATH when the session started, so either
+`eval` the `export` line or call the `A4_BIN` path directly.
+
+Equivalent:
+
+```bash
+npm install -g @usearete/a4 && a4 install   # global shim, same download path
+pnpm dlx @usearete/a4 install
+bunx @usearete/a4 install
+```
+
+Or without Node at all:
+
+```bash
+curl -fsSL https://arete.run/install.sh | sh          # macOS, Linux
+irm https://arete.run/install.ps1 | iex                # Windows PowerShell
+```
+
+Flags and environment:
+
+| Flag / env | Effect |
+|---|---|
+| `--install-dir DIR` / `A4_INSTALL_DIR` | Install somewhere other than `~/.local/bin` |
+| `--no-modify-path` / `A4_NO_MODIFY_PATH=1` | Do not edit shell rc files / the Windows user PATH |
+| `--json` | Print the install receipt as JSON (the `A4_BIN=` line still follows) |
+| `A4_MANIFEST_BASE_URL`, `A4_LATEST_URL` | Test overrides for the release download base and latest pointer |
+
+The package has no `postinstall` script and no dependencies; nothing touches
+the network at `npm install` time.
+
+## Run
+
+Once installed, `a4` is on PATH in new shells. `npx @usearete/a4 <args>` also
+works in the same session: it runs the binary recorded in
+`~/.arete/receipt.json`, installing it silently first if needed, so
+`npx @usearete/a4 explore --json` prints only the command's JSON.
+
+```bash
+a4 init -y          # arete.toml, AGENTS.md, CLAUDE.md, MCP config, skills
+a4 doctor --json    # check the setup
+a4 explore --json   # what live data is available
+a4 self update      # upgrade in place (alias: a4 upgrade)
+```
+
+Full reference: <https://docs.arete.run/cli/commands/>. Agent setup guide:
+<https://docs.arete.run/agent.md>.
+
+## Building from source
+
+Only needed for unsupported platforms (anything other than
+darwin-arm64/x64, linux-x64/arm64, win32-x64):
 
 ```bash
 cargo install a4-cli
+a4 self install --source manual
 ```
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `a4 create [name]` | Scaffold a new app from a template |
-| `a4 init` | Initialize a stack project |
-| `a4 up <path.stack-manifest.json>` | Deploy one exact StackManifest |
-| `a4 status` | Show project overview |
-| `a4 auth login` | Authenticate with Arete |
-
-The npm package `@usearete/a4` and the Cargo crate `a4-cli` both install the same `a4` command.
-
-## Documentation
-
-- [Getting Started](https://docs.arete.run)
-- [CLI Reference](https://docs.arete.run/cli/commands/)
-- [Stack Development](https://docs.arete.run/building-stacks/workflow/)
 
 ## License
 
