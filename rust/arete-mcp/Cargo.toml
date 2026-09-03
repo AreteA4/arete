@@ -5,12 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "MCP (Model Context Protocol) server wrapping Arete streams for AI agent integration"
+description = "MCP (Model Context Protocol) server wrapping Arete streams for AI agent integration; runs as `a4 mcp` inside the a4 CLI"
 readme = "README.md"
-
-[[bin]]
-name = "a4-mcp"
-path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"

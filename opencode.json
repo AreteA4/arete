@@ -3,7 +3,12 @@
   "mcp": {
     "arete": {
       "type": "local",
-      "command": ["npx", "-y", "@usearete/mcp"],
+      "command": ["a4", "mcp"],
+      "enabled": true
+    },
+    "arete-docs": {
+      "type": "remote",
+      "url": "https://docs.arete.run/mcp",
       "enabled": true
     }
   }

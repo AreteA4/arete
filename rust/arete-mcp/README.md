@@ -7,277 +7,122 @@ Arete stack, subscribe to views, and query cached entities — using the same
 primitives a human operator uses through `a4 explore`, `a4 know`, and
 `a4 stream`.
 
-The binary is `a4-mcp` and speaks MCP over stdio.
+**The server ships inside the `a4` CLI as `a4 mcp`.** It speaks MCP over
+stdio; stdout carries MCP frames only and logs go to stderr. This crate is a
+library (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not
+install it separately.
+
+> **Removed:** the standalone `a4-mcp` binary no longer exists as of this
+> version, and the `@usearete/mcp` npm package is deprecated. Update any MCP
+> config that runs `a4-mcp` or `npx -y @usearete/mcp` to run `a4 mcp` instead
+> (or `npx -y @usearete/a4 mcp` when `a4` is not on PATH); `a4 init` does this
+> for you.
 
 ## Install
 
-### npm wrapper
-
-Run once without a global install:
+Install `a4`:
 
 ```bash
-npx @usearete/mcp
+curl -fsSL https://arete.run/install.sh | sh    # or: npx @usearete/a4 install
 ```
 
-Or install it globally to get the same `a4-mcp` command on your PATH:
+Then check the server answers:
 
 ```bash
-npm install -g @usearete/mcp
+a4 mcp --help
 ```
 
-### Cargo
+## Configure your agent
 
-From a checkout of the workspace:
+`a4 init` writes the MCP config for the agents it detects in the project
+(Claude Code, Cursor, Codex, OpenCode, Gemini CLI, Copilot CLI, ...), plus
+`arete.toml`, `AGENTS.md` and skills. It is idempotent; `--global` targets
+the per-user config instead of the project:
 
 ```bash
-cargo install --path rust/arete-mcp
+a4 init -y            # project scope
+a4 init -y --global   # user scope
+a4 doctor             # verify what init wrote
 ```
 
-This installs an `a4-mcp` binary into `~/.cargo/bin`.
+If you prefer to edit the config by hand, the shapes are below. Every client
+resolves `command` against the PATH its process inherited at launch; GUI apps
+started from a desktop launcher may need a full restart after installing
+`a4`, or an absolute path such as `/home/you/.local/bin/a4`.
 
-If you want to configure an MCP client without a global install, point it at `npx` with `@usearete/mcp` as the argument list instead of hard-coding `a4-mcp`.
-
-## Use with an MCP client
-
-`a4-mcp` is an stdio server — any client that speaks MCP over stdio can drive
-it. Snippets for the major ones are below. In all cases, to talk to a private
-stack the agent passes the stack URL and your publishable API key on the
-`connect` call — no environment variables required on the server process.
-
-> **PATH gotcha.** Every client below resolves `command` against the PATH its
-> process inherited at launch. GUI apps started from a desktop launcher on
-> macOS/Linux usually don't inherit shell PATH changes from `.zshrc` /
-> `.bashrc`, so if `a4-mcp` was installed after the app was last started,
-> either **fully restart** the app (not just reload the window) or hard-code
-> an absolute path like `/home/you/.cargo/bin/a4-mcp` in the snippet.
-
-> **Claude Desktop vs Claude Code.** These are two different Anthropic
-> products and they configure MCP differently. **Claude Desktop** is the
-> Mac/Windows app from claude.ai — configured via a JSON file (below).
-> **Claude Code** is the `claude` command-line tool — configured via a
-> `claude mcp add` subcommand (further down). If you use both, you need to
-> register `a4-mcp` in each one separately.
-
-### Claude Desktop
-
-Add to `claude_desktop_config.json`, then restart the app.
+### Claude Code / Copilot CLI (`.mcp.json`)
 
 ```json
 {
   "mcpServers": {
-    "arete": {
-      "command": "a4-mcp"
-    }
+    "arete": { "type": "stdio", "command": "a4", "args": ["mcp"] },
+    "arete-docs": { "type": "http", "url": "https://docs.arete.run/mcp" }
   }
 }
 ```
 
-Without a global install, use the npm wrapper instead:
+Or via the CLI: `claude mcp add --transport stdio arete --scope project -- a4 mcp`.
+
+### OpenCode (`opencode.json`)
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "arete": { "type": "local", "command": ["a4", "mcp"], "enabled": true },
+    "arete-docs": { "type": "remote", "url": "https://docs.arete.run/mcp", "enabled": true }
+  }
+}
+```
+
+### Cursor (`.cursor/mcp.json`), Claude Desktop, Windsurf
 
 ```json
 {
   "mcpServers": {
-    "arete": {
-      "command": "npx",
-      "args": ["-y", "@usearete/mcp"]
-    }
+    "arete": { "command": "a4", "args": ["mcp"] }
   }
 }
 ```
 
-### Cursor
-
-Global config at `~/.cursor/mcp.json` or workspace-scoped at
-`.cursor/mcp.json` in the project root (commit-friendly). Restart Cursor or
-toggle the server in **Settings → MCP** after edits. The first tool call
-prompts for trust. Cursor does **not** interpolate `${env:VAR}` from the host
-shell — any `env` values must be literal.
-
-```json
-{
-  "mcpServers": {
-    "arete": {
-      "command": "a4-mcp",
-      "args": []
-    }
-  }
-}
-```
-
-Without a global install:
-
-```json
-{
-  "mcpServers": {
-    "arete": {
-      "command": "npx",
-      "args": ["-y", "@usearete/mcp"]
-    }
-  }
-}
-```
-
-### VS Code
-
-Native MCP support. Workspace-scoped config at `.vscode/mcp.json`, or open
-the user-level file via the command palette: **MCP: Open User Configuration**.
-Note the top-level key is `servers` (singular), not `mcpServers`. VS Code
-hot-reloads the file — no restart needed — and prompts for trust before first
-start. Tools surface in Copilot Chat's agent mode.
+### VS Code (`.vscode/mcp.json`)
 
 ```json
 {
   "servers": {
-    "arete": {
-      "command": "a4-mcp",
-      "args": []
-    }
+    "arete": { "command": "a4", "args": ["mcp"] }
   }
 }
 ```
 
-Without a global install:
-
-```json
-{
-  "servers": {
-    "arete": {
-      "command": "npx",
-      "args": ["-y", "@usearete/mcp"]
-    }
-  }
-}
-```
-
-### Claude Code (Anthropic CLI)
-
-Use the `claude mcp add` subcommand. The `--` separator is required so Claude
-doesn't try to parse `a4-mcp`'s own flags. Scope is one of `local` (default,
-current project, private), `project` (writes `.mcp.json` at repo root,
-shared), or `user` (all projects on your machine):
-
-```bash
-claude mcp add --transport stdio arete --scope user -- a4-mcp
-```
-
-Without a global install:
-
-```bash
-claude mcp add --transport stdio arete --scope user -- npx -y @usearete/mcp
-```
-
-### Zed
-
-Zed calls them "context servers". Add to `settings.json` via
-`zed: open settings`. Zed reloads on save; no restart required. Status is
-visible in the Agent Panel (green dot = active).
+### Zed (`settings.json`)
 
 ```json
 {
   "context_servers": {
-    "arete": {
-      "command": "a4-mcp",
-      "args": [],
-      "env": {}
-    }
+    "arete": { "command": "a4", "args": ["mcp"], "env": {} }
   }
 }
 ```
 
-Without a global install:
-
-```json
-{
-  "context_servers": {
-    "arete": {
-      "command": "npx",
-      "args": ["-y", "@usearete/mcp"],
-      "env": {}
-    }
-  }
-}
-```
-
-### Windsurf (Codeium)
-
-Config file: `~/.codeium/windsurf/mcp_config.json`. Same shape as Claude
-Desktop. **Restart Windsurf after editing** — config is not hot-reloaded.
-Cascade has a hard cap of 100 total tools across all enabled MCP servers, so
-budget accordingly.
-
-```json
-{
-  "mcpServers": {
-    "arete": {
-      "command": "a4-mcp",
-      "args": []
-    }
-  }
-}
-```
-
-Without a global install:
-
-```json
-{
-  "mcpServers": {
-    "arete": {
-      "command": "npx",
-      "args": ["-y", "@usearete/mcp"]
-    }
-  }
-}
-```
-
-### Continue.dev
-
-Continue uses YAML. Either inline in `config.yaml`:
+### Continue.dev (`config.yaml`)
 
 ```yaml
 mcpServers:
   - name: arete
     type: stdio
-    command: a4-mcp
-    args: []
+    command: a4
+    args: ["mcp"]
 ```
 
-Without a global install:
+## Authentication
 
-```yaml
-mcpServers:
-  - name: arete
-    type: stdio
-    command: npx
-    args: ["-y", "@usearete/mcp"]
-```
-
-…or as a standalone file at `.continue/mcpServers/arete.yaml`:
-
-```yaml
-name: arete
-version: 0.0.1
-schema: v1
-mcpServers:
-  - name: arete
-    type: stdio
-    command: a4-mcp
-    args: []
-```
-
-Without a global install:
-
-```yaml
-name: arete
-version: 0.0.1
-schema: v1
-mcpServers:
-  - name: arete
-    type: stdio
-    command: npx
-    args: ["-y", "@usearete/mcp"]
-```
-
-MCP tools in Continue are only available in **agent mode**, not chat or edit.
+Run `a4 auth signup` once (agent self-registration) or `a4 auth login --key
+<a4_ak_...>` with a key from https://arete.run/keys; the server reads
+`~/.arete/credentials.toml`. For headless/CI use set `ARETE_API_KEY` in the
+server's environment instead. Never pass the key as a tool-call argument. See
+[Authentication](#authentication-1) under the tool reference for the exact
+precedence.
 
 ## Tool reference
 
@@ -398,14 +243,14 @@ program — read it instead of reading SDK source for method names. CLI mirror:
 An agent should **never** pass a Arete API key as a tool-call argument
 in normal operation: the key would end up in the model's context window,
 chat transcript, and the JSON-RPC stdio traffic between the client and
-`a4-mcp`. Instead, `a4-mcp` resolves the key itself using this precedence:
+`a4 mcp`. Instead, `a4 mcp` resolves the key itself using this precedence:
 
 1. **Explicit `api_key` argument** on the `connect` call (override, useful
    for testing or multi-stack setups)
 2. **`ARETE_API_KEY` env var** set in the MCP server's process
    environment — the recommended pattern for headless/CI use. Set it in
    `.vscode/mcp.json`'s `env` block, or via
-   `claude mcp add -e ARETE_API_KEY=a4_sk_... arete -- a4-mcp` (legacy `hsk_...` keys still work).
+   `claude mcp add -e ARETE_API_KEY=a4_sk_... arete -- a4 mcp` (legacy `hsk_...` keys still work).
 3. **`~/.arete/credentials.toml`** — the file managed by the CLI's
    `a4 auth login` command. Both schemas the CLI writes are supported:
 
@@ -541,7 +386,7 @@ Logs are written to **stderr** so they never interfere with the stdio MCP
 transport on stdout. Set the standard `RUST_LOG` env var to control verbosity:
 
 ```bash
-RUST_LOG=hs_mcp=debug,arete_sdk=info a4-mcp
+RUST_LOG=hs_mcp=debug,arete_sdk=info a4 mcp
 ```
 
 ## Environment

@@ -1778,6 +1778,281 @@ fn registry_install_url(base_url: &str, path: &str, language: Option<&str>) -> S
     }
 }
 
+// ============================================================================
+// Agent self-registration (WP9: `a4 auth signup`, `a4 doctor`)
+// ============================================================================
+
+/// Error message for HTTP 429 from `/api/agents/signup`.
+pub const SIGNUP_RATE_LIMIT_MESSAGE: &str = "Signup limit reached (5 per hour per IP). Retry later, or use a key from https://arete.run/keys: a4 auth login --key <a4_ak_...>";
+
+/// Response from `POST /api/agents/signup`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSignupResponse {
+    pub slug: String,
+    pub display_name: String,
+    pub api_key: String,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AgentSignupRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<&'a str>,
+}
+
+impl ApiClient {
+    /// Build a client against an explicit base URL with no stored key.
+    /// Test-only: production code goes through [`ApiClient::new`].
+    #[cfg(test)]
+    pub(crate) fn with_base_url(base_url: &str) -> Self {
+        ApiClient {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key: None,
+            client: reqwest::blocking::Client::new(),
+        }
+    }
+
+    /// Path of the credentials file that `save_api_key` writes
+    /// (`ARETE_CREDENTIALS_PATH` or `~/.arete/credentials.toml`).
+    pub fn credentials_file_path() -> Result<PathBuf> {
+        Self::credentials_path()
+    }
+
+    /// Register this machine as an agent (unauthenticated). On HTTP 429 the
+    /// error message is exactly [`SIGNUP_RATE_LIMIT_MESSAGE`].
+    pub fn agent_signup(&self, display_name: Option<&str>) -> Result<AgentSignupResponse> {
+        let response = self
+            .client
+            .post(format!("{}/api/agents/signup", self.base_url))
+            .json(&AgentSignupRequest { display_name })
+            .send()
+            .context("Failed to reach the signup endpoint")?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            anyhow::bail!("{}", SIGNUP_RATE_LIMIT_MESSAGE);
+        }
+        Self::handle_response(response)
+    }
+
+    /// `GET /api/agents/me` with the stored key; the raw JSON is returned so
+    /// callers (`a4 doctor`) can report whatever the server includes.
+    pub fn agent_me(&self) -> Result<serde_json::Value> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .get(format!("{}/api/agents/me", self.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to fetch agent identity")?;
+        Self::handle_response(response)
+    }
+}
+
+/// Minimal canned-response HTTP server for unit tests of `ApiClient` and the
+/// commands built on it. One request per `MockServer`.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    /// The request the mock server received.
+    #[derive(Debug, Clone)]
+    pub(crate) struct ReceivedRequest {
+        pub(crate) request_line: String,
+        pub(crate) headers: Vec<(String, String)>,
+        pub(crate) body: String,
+    }
+
+    impl ReceivedRequest {
+        pub(crate) fn header(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        }
+    }
+
+    pub(crate) struct MockServer {
+        base_url: String,
+        received: mpsc::Receiver<ReceivedRequest>,
+    }
+
+    impl MockServer {
+        /// Serve exactly one request with `status` and a JSON `body`.
+        pub(crate) fn json(status: u16, body: &str) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+            let addr = listener.local_addr().expect("mock server addr");
+            let body = body.to_string();
+            let (tx, rx) = mpsc::channel();
+            thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .expect("read timeout");
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                let (head_len, content_length) = loop {
+                    let n = stream.read(&mut buf).expect("read request");
+                    if n == 0 {
+                        break (raw.len(), 0);
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&raw[..pos]).to_string();
+                        let content_length = head
+                            .lines()
+                            .find_map(|line| {
+                                let (k, v) = line.split_once(':')?;
+                                k.trim()
+                                    .eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        break (pos + 4, content_length);
+                    }
+                };
+                while raw.len() < head_len + content_length {
+                    let n = stream.read(&mut buf).expect("read body");
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                }
+                let head = String::from_utf8_lossy(&raw[..head_len]).to_string();
+                let mut lines = head.lines();
+                let request_line = lines.next().unwrap_or_default().to_string();
+                let headers = lines
+                    .filter_map(|line| {
+                        let (k, v) = line.split_once(':')?;
+                        Some((k.trim().to_string(), v.trim().to_string()))
+                    })
+                    .collect();
+                let body_bytes = &raw[head_len..(head_len + content_length).min(raw.len())];
+                let _ = tx.send(ReceivedRequest {
+                    request_line,
+                    headers,
+                    body: String::from_utf8_lossy(body_bytes).to_string(),
+                });
+                let reason = match status {
+                    200 => "OK",
+                    201 => "Created",
+                    429 => "Too Many Requests",
+                    500 => "Internal Server Error",
+                    _ => "Status",
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write response");
+                let _ = stream.flush();
+            });
+            MockServer {
+                base_url: format!("http://{addr}"),
+                received: rx,
+            }
+        }
+
+        pub(crate) fn base_url(&self) -> &str {
+            &self.base_url
+        }
+
+        /// The request the server handled (waits up to 10 s).
+        pub(crate) fn request(&self) -> ReceivedRequest {
+            self.received
+                .recv_timeout(Duration::from_secs(10))
+                .expect("mock server received a request")
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::test_support::MockServer;
+    use super::*;
+
+    #[test]
+    fn agent_signup_posts_display_name_without_auth_and_parses_response() {
+        let server = MockServer::json(
+            200,
+            r#"{"slug":"agent-7f3a","display_name":"Robo","api_key":"a4_ak_test","message":"welcome"}"#,
+        );
+        let client = ApiClient::with_base_url(server.base_url());
+        let resp = client.agent_signup(Some("Robo")).expect("signup succeeds");
+        assert_eq!(resp.slug, "agent-7f3a");
+        assert_eq!(resp.display_name, "Robo");
+        assert_eq!(resp.api_key, "a4_ak_test");
+        assert_eq!(resp.message.as_deref(), Some("welcome"));
+
+        let req = server.request();
+        assert_eq!(req.request_line, "POST /api/agents/signup HTTP/1.1");
+        assert!(
+            req.header("authorization").is_none(),
+            "signup is unauthenticated"
+        );
+        let body: serde_json::Value = serde_json::from_str(&req.body).expect("json body");
+        assert_eq!(body, serde_json::json!({"display_name": "Robo"}));
+    }
+
+    #[test]
+    fn agent_signup_omits_display_name_and_tolerates_missing_message() {
+        let server = MockServer::json(
+            201,
+            r#"{"slug":"agent-1","display_name":"agent-1","api_key":"a4_ak_x"}"#,
+        );
+        let client = ApiClient::with_base_url(server.base_url());
+        let resp = client.agent_signup(None).expect("signup succeeds");
+        assert_eq!(resp.message, None);
+        let req = server.request();
+        let body: serde_json::Value = serde_json::from_str(&req.body).expect("json body");
+        assert_eq!(body, serde_json::json!({}));
+    }
+
+    #[test]
+    fn agent_signup_maps_429_to_rate_limit_message() {
+        let server = MockServer::json(429, r#"{"error":"rate limited"}"#);
+        let client = ApiClient::with_base_url(server.base_url());
+        let err = client.agent_signup(None).expect_err("429 is an error");
+        assert_eq!(err.to_string(), SIGNUP_RATE_LIMIT_MESSAGE);
+    }
+
+    #[test]
+    fn agent_signup_other_errors_use_api_error_format() {
+        let server = MockServer::json(500, r#"{"error":"boom"}"#);
+        let client = ApiClient::with_base_url(server.base_url());
+        let err = client.agent_signup(None).expect_err("500 is an error");
+        assert_eq!(
+            err.to_string(),
+            "API error (500 Internal Server Error): boom"
+        );
+    }
+
+    #[test]
+    fn agent_me_sends_bearer_and_returns_raw_json() {
+        let server = MockServer::json(200, r#"{"slug":"agent-1","plan":"free"}"#);
+        let client =
+            ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".to_string());
+        let me = client.agent_me().expect("me succeeds");
+        assert_eq!(me["slug"], "agent-1");
+        let req = server.request();
+        assert_eq!(req.request_line, "GET /api/agents/me HTTP/1.1");
+        assert_eq!(req.header("authorization"), Some("Bearer a4_ak_me"));
+    }
+
+    #[test]
+    fn agent_me_requires_a_key() {
+        let client = ApiClient::with_base_url("http://127.0.0.1:1");
+        let err = client.agent_me().expect_err("no key");
+        assert!(err.to_string().contains("Not authenticated"));
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::ensure_no_dangling_symlink;

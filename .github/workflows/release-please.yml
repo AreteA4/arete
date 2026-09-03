@@ -404,8 +404,17 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary_name: a4-win32-x64.exe
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
+      # Build scripts and dependencies run in this job; do not leave a
+      # write-capable git credential on disk for them. The release upload
+      # step uses GH_TOKEN explicitly.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -449,6 +458,14 @@ jobs:
           name: cli-sha256-${{ matrix.binary_name }}
           path: ${{ matrix.binary_name }}.sha256
 
+      # Build provenance for humans/agents with `gh`:
+      #   gh attestation verify <file> -R AreteA4/arete
+      # Installers do not depend on it; they verify the minisign signature.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: ${{ matrix.binary_name }}
+
       - name: Upload binary to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -477,122 +494,34 @@ jobs:
       - name: Combine checksums
         run: sort checksums/*.sha256 > checksums.txt
 
-      - name: Upload checksums to release
+      - name: Write release manifest
+        run: |
+          VERSION="${{ needs.release-please.outputs.cli_version }}"
+          ./scripts/write-release-manifest.sh "$VERSION" checksums.txt > manifest.json
+          cat manifest.json
+        shell: bash
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          minisign -v
+
+      - name: Sign checksums with minisign
+        env:
+          A4_MINISIGN_SECRET_KEY: ${{ secrets.A4_MINISIGN_SECRET_KEY }}
+          A4_MINISIGN_PASSWORD: ${{ secrets.A4_MINISIGN_PASSWORD }}
+        run: ./scripts/sign-release-checksums.sh "${{ needs.release-please.outputs.cli_version }}" checksums.txt
+        shell: bash
+
+      - name: Upload checksums, signature and manifest to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release-please.outputs.cli_version }}"
-          ./scripts/upload-release-asset.sh \
-            "a4-cli-v${VERSION}" \
-            "checksums.txt"
-        shell: bash
-
-  build-mcp-binaries:
-    name: Build MCP Binaries
-    needs: release-please
-    if: needs.release-please.outputs.mcp_release_created == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary_name: a4-mcp-darwin-arm64
-          - os: macos-15-large
-            target: x86_64-apple-darwin
-            binary_name: a4-mcp-darwin-x64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary_name: a4-mcp-linux-x64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            binary_name: a4-mcp-linux-arm64
-            cross: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary_name: a4-mcp-win32-x64.exe
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          toolchain: ${{ inputs.rust_toolchain }}
-          targets: ${{ matrix.target }}
-
-      - name: Install cargo-zigbuild
-        if: matrix.cross
-        run: |
-          pip3 install ziglang==0.16.0
-          cargo install cargo-zigbuild --version 0.23.0 --locked
-
-      - name: Build binary
-        run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cargo zigbuild --locked --release --target ${{ matrix.target }} --package arete-mcp
-          else
-            cargo build --locked --release --target ${{ matrix.target }} --package arete-mcp
-          fi
-        shell: bash
-
-      - name: Rename binary
-        run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/${{ matrix.target }}/release/a4-mcp.exe ${{ matrix.binary_name }}
-          else
-            cp target/${{ matrix.target }}/release/a4-mcp ${{ matrix.binary_name }}
-          fi
-        shell: bash
-
-      - name: Write checksum
-        shell: pwsh
-        run: |
-          $hash = (Get-FileHash "${{ matrix.binary_name }}" -Algorithm SHA256).Hash.ToLower()
-          "$hash  ${{ matrix.binary_name }}" | Out-File -FilePath "${{ matrix.binary_name }}.sha256" -Encoding ascii
-
-      - name: Upload checksum artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: mcp-sha256-${{ matrix.binary_name }}
-          path: ${{ matrix.binary_name }}.sha256
-
-      - name: Upload binary to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ needs.release-please.outputs.mcp_version }}"
-          ./scripts/upload-release-asset.sh \
-            "arete-mcp-v${VERSION}" \
-            "${{ matrix.binary_name }}"
-        shell: bash
-
-  publish-mcp-checksums:
-    name: Publish MCP Checksums
-    needs: [release-please, build-mcp-binaries]
-    runs-on: ubuntu-latest
-    if: needs.release-please.outputs.mcp_release_created == 'true'
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - name: Download checksum artifacts
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          pattern: mcp-sha256-*
-          path: checksums
-          merge-multiple: true
-
-      - name: Combine checksums
-        run: sort checksums/*.sha256 > checksums.txt
-
-      - name: Upload checksums to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ needs.release-please.outputs.mcp_version }}"
-          ./scripts/upload-release-asset.sh \
-            "arete-mcp-v${VERSION}" \
-            "checksums.txt"
+          for asset in checksums.txt checksums.txt.minisig manifest.json; do
+            ./scripts/upload-release-asset.sh "a4-cli-v${VERSION}" "$asset"
+          done
         shell: bash
 
   publish-npm-cli:
@@ -626,9 +555,11 @@ jobs:
         run: ../../scripts/publish-npm-package.sh .
         working-directory: packages/arete
 
+  # The MCP server now ships inside `a4` (`a4 mcp`); @usearete/mcp publishes
+  # one final deprecated version and no longer depends on MCP binaries.
   publish-npm-mcp:
     name: Publish MCP to npm
-    needs: [release-please, build-mcp-binaries, publish-mcp-checksums]
+    needs: [release-please]
     runs-on: ubuntu-latest
     permissions:
       contents: read

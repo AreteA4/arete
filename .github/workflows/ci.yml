@@ -91,6 +91,29 @@ jobs:
       - name: Check linked release versions
         run: node ./scripts/check-linked-release-versions.mjs
 
+      - name: Check minisign public key is identical in all four embeddings
+        run: bash ./scripts/check-minisign-pubkey.sh
+
+      - name: Syntax-check install.sh (POSIX sh)
+        run: sh -n docs/public/install.sh
+
+  npm-cli-wrapper:
+    name: npm CLI Wrapper
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/arete
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+
+      - name: Test
+        run: npm test
+
   npm-publish-auth:
     name: npm Publishing Authentication
     runs-on: ubuntu-latest

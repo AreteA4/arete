@@ -6,12 +6,18 @@
 //! ## Installation
 //!
 //! ```bash
-//! cargo install a4-cli
+//! curl -fsSL https://arete.run/install.sh | sh      # macOS / Linux
+//! irm https://arete.run/install.ps1 | iex           # Windows PowerShell
+//! npx @usearete/a4 install                          # via npm
 //! ```
+//!
+//! Update with `a4 self update`. Building from source: `cargo install a4-cli`.
 //!
 //! ## Commands
 //!
-//! - `a4 init` - Initialize configuration
+//! - `a4 init` - Set up a project for Arete and every detected coding agent
+//! - `a4 doctor` - Check the install, project and agent configuration
+//! - `a4 mcp` - Run the Arete MCP server over stdio
 //! - `a4 up [stack]` - Deploy a stack (push + build + deploy)
 //! - `a4 stack list` - List all stacks
 //! - `a4 stack show` - Show stack details
@@ -26,10 +32,12 @@ use colored::Colorize;
 use std::io;
 use std::process;
 
+mod agents;
 mod api_client;
 mod commands;
 mod config;
 mod project;
+mod selfhost;
 mod telemetry;
 mod templates;
 mod ui;
@@ -57,6 +65,14 @@ struct Cli {
     /// API URL to use (overrides ARETE_API_URL env var)
     #[arg(long, global = true, env = "ARETE_API_URL")]
     api_url: Option<String>,
+
+    /// Assume "yes" for every prompt and never wait on stdin
+    #[arg(short = 'y', long, global = true)]
+    yes: bool,
+
+    /// Never prompt; fail with the flags to pass instead (also: A4_NON_INTERACTIVE=1, CI)
+    #[arg(long, global = true)]
+    non_interactive: bool,
 
     /// Generate shell completions
     #[arg(long, value_name = "SHELL")]
@@ -87,8 +103,21 @@ enum Commands {
         skip_install: bool,
     },
 
-    /// Initialize a new Arete project (auto-detects stack files)
-    Init,
+    /// Set up this project for Arete and every detected coding agent
+    Init(commands::init::InitArgs),
+
+    /// Check the a4 install, project, auth and coding-agent configuration
+    Doctor(commands::doctor::DoctorArgs),
+
+    /// Manage this a4 installation (install, update, uninstall)
+    #[command(subcommand, name = "self")]
+    SelfCmd(selfhost::SelfCommands),
+
+    /// Update a4 to the latest release (alias for `a4 self update`)
+    Upgrade(selfhost::UpdateArgs),
+
+    /// Run the Arete stream MCP server over stdio
+    Mcp(commands::mcp::McpArgs),
 
     /// Deploy a stack: push, build, and watch until completion
     Up {
@@ -444,9 +473,19 @@ enum ConfigCommands {
 enum AuthCommands {
     /// Login with your API key
     Login {
-        /// API key (prompts if not provided)
+        /// API key (prompts if not provided; required when not interactive)
         #[arg(short, long)]
         key: Option<String>,
+    },
+
+    /// Register this machine as an agent and store the issued API key
+    Signup {
+        /// Display name for the agent account (optional)
+        name: Option<String>,
+
+        /// Replace credentials that already exist for the active API URL
+        #[arg(long)]
+        force: bool,
     },
 
     /// Logout (remove stored credentials for current environment)
@@ -622,13 +661,8 @@ enum ProgramCommands {
         after: Option<String>,
     },
 
-    /// Archive a registration without deleting immutable content
-    Archive {
-        user_program_id: String,
-        /// Confirm archival without an interactive prompt
-        #[arg(long)]
-        yes: bool,
-    },
+    /// Archive a registration without deleting immutable content (confirm with -y)
+    Archive { user_program_id: String },
 
     /// Request reviewed promotion of the baseline IDL
     Promote {
@@ -690,15 +724,29 @@ fn main() {
         std::env::set_var("ARETE_API_URL", api_url);
     }
 
+    // Mirror the interactivity flags into the environment so ui::interactive()
+    // and child processes (npx skills, package managers) see them.
+    if cli.yes {
+        std::env::set_var("A4_YES", "1");
+    }
+    if cli.yes || cli.non_interactive {
+        std::env::set_var("A4_NON_INTERACTIVE", "1");
+    }
+
     if let Some(shell) = cli.completions {
         let mut cmd = Cli::command();
         generate(shell, &mut cmd, "a4", &mut io::stdout());
         return;
     }
 
-    telemetry::show_consent_banner_if_needed();
-
     let cmd_name = cli.command.as_ref().map(command_name).unwrap_or("help");
+    let json = cli.json;
+
+    // `a4 mcp` owns stdout for MCP frames and must stay silent otherwise.
+    if cmd_name != "mcp" {
+        telemetry::show_consent_banner_if_needed();
+    }
+
     let start = std::time::Instant::now();
     let result = run(cli);
 
@@ -714,9 +762,14 @@ fn main() {
         None,
     );
 
+    selfhost::maybe_nudge(cmd_name, json);
+
     telemetry::flush();
 
     if let Err(e) = result {
+        if let Some(ui::ExitCode(code)) = e.downcast_ref::<ui::ExitCode>() {
+            process::exit(*code);
+        }
         eprintln!("{} {}", "Error:".red().bold(), e);
         process::exit(1);
     }
@@ -725,7 +778,11 @@ fn main() {
 fn command_name(cmd: &Commands) -> &'static str {
     match cmd {
         Commands::Create { .. } => "create",
-        Commands::Init => "init",
+        Commands::Init(_) => "init",
+        Commands::Doctor(_) => "doctor",
+        Commands::SelfCmd(_) => "self",
+        Commands::Upgrade(_) => "upgrade",
+        Commands::Mcp(_) => "mcp",
         Commands::Up { .. } => "up",
         Commands::Status => "status",
         Commands::Explore { .. } => "explore",
@@ -768,8 +825,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             offline,
             force_refresh,
             skip_install,
-        } => commands::create::create(name, template, offline, force_refresh, skip_install),
-        Commands::Init => commands::config::init(&cli.config),
+        } => commands::create::create(
+            name,
+            template,
+            offline,
+            force_refresh,
+            skip_install,
+            cli.json,
+        ),
+        Commands::Init(args) => commands::init::run(args, &cli.config, cli.json),
+        Commands::Doctor(args) => commands::doctor::run(args, &cli.config, cli.json),
+        Commands::SelfCmd(self_cmd) => selfhost::run(self_cmd, cli.json),
+        Commands::Upgrade(args) => selfhost::run(selfhost::SelfCommands::Update(args), cli.json),
+        Commands::Mcp(args) => commands::mcp::run(args),
         Commands::Up {
             stack_name,
             branch,
@@ -1040,6 +1108,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         },
         Commands::Auth(auth_cmd) => match auth_cmd {
             AuthCommands::Login { key } => commands::auth::login(key),
+            AuthCommands::Signup { name, force } => commands::auth::signup(name, force, cli.json),
             AuthCommands::Logout => commands::auth::logout(),
             AuthCommands::LogoutAll => commands::auth::logout_all(),
             AuthCommands::Status => commands::auth::status(),
@@ -1117,10 +1186,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 user_program_id,
                 after,
             } => commands::programs::events(&user_program_id, after.as_deref(), cli.json),
-            ProgramCommands::Archive {
-                user_program_id,
-                yes,
-            } => commands::programs::archive(&user_program_id, yes, cli.json),
+            ProgramCommands::Archive { user_program_id } => {
+                commands::programs::archive(&user_program_id, cli.yes, cli.json)
+            }
             ProgramCommands::Promote {
                 user_program_id,
                 make_idl_public,
@@ -1359,6 +1427,85 @@ mod tests {
             }
             _ => panic!("expected program events command"),
         }
+    }
+
+    #[test]
+    fn parse_self_and_upgrade_commands() {
+        let cli = Cli::try_parse_from(["a4", "self", "update", "--check", "--json"])
+            .expect("self update should parse");
+        assert!(cli.json);
+        match cli.command {
+            Some(Commands::SelfCmd(selfhost::SelfCommands::Update(args))) => {
+                assert!(args.check);
+                assert!(args.version.is_none());
+            }
+            _ => panic!("expected self update"),
+        }
+
+        let cli = Cli::try_parse_from(["a4", "upgrade", "0.14.0", "--dry-run"])
+            .expect("upgrade should parse");
+        match cli.command {
+            Some(Commands::Upgrade(args)) => {
+                assert_eq!(args.version.as_deref(), Some("0.14.0"));
+                assert!(args.dry_run);
+            }
+            _ => panic!("expected upgrade"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "a4",
+            "self",
+            "install",
+            "--source",
+            "sh",
+            "--checksums",
+            "c.txt",
+            "--signature",
+            "c.txt.minisig",
+        ])
+        .expect("self install should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::SelfCmd(selfhost::SelfCommands::Install(_)))
+        ));
+        assert!(Cli::try_parse_from(["a4", "self", "install", "--checksums", "c.txt"]).is_err());
+    }
+
+    #[test]
+    fn global_yes_and_non_interactive_flags_parse_everywhere() {
+        let cli = Cli::try_parse_from(["a4", "init", "-y"]).expect("init -y should parse");
+        assert!(cli.yes);
+        assert!(matches!(cli.command, Some(Commands::Init(_))));
+
+        let cli = Cli::try_parse_from(["a4", "--non-interactive", "doctor", "--fix"])
+            .expect("doctor should parse");
+        assert!(cli.non_interactive);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Doctor(commands::doctor::DoctorArgs { fix: true }))
+        ));
+
+        let cli = Cli::try_parse_from(["a4", "program", "archive", "upr_x", "--yes"])
+            .expect("archive with global --yes should parse");
+        assert!(cli.yes);
+
+        let cli = Cli::try_parse_from(["a4", "auth", "signup", "bot", "--json"])
+            .expect("signup should parse");
+        match cli.command {
+            Some(Commands::Auth(AuthCommands::Signup { name, force })) => {
+                assert_eq!(name.as_deref(), Some("bot"));
+                assert!(!force);
+            }
+            _ => panic!("expected auth signup"),
+        }
+
+        let cli = Cli::try_parse_from(["a4", "mcp", "--stdio"]).expect("mcp should parse");
+        assert!(matches!(cli.command, Some(Commands::Mcp(_))));
+    }
+
+    #[test]
+    fn clap_definition_is_consistent() {
+        Cli::command().debug_assert();
     }
 
     #[test]

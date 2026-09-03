@@ -1,0 +1,12 @@
+{
+  // OpenCode config with comments and trailing commas.
+  "$schema": "https://opencode.ai/config.json",
+  "theme": "opencode", // keep this comment
+  "mcp": {
+    "mine": {
+      "type": "local",
+      "command": ["my-mcp"],
+      "enabled": true,
+    },
+  },
+}
