@@ -6,6 +6,14 @@
 
 * add strict hosted-private Program Release V3 identity and shared vectors
 
+## [0.4.1](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.4.0...arete-hash-npm-v0.4.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **hash:** preserve NUL PDA seeds as bytes ([d0798df](https://github.com/AreteA4/arete/commit/d0798df26d0d20a1531ff5d1cde736be4cda1e52))
+* **hash:** preserve NUL PDA seeds as bytes ([5a2fa54](https://github.com/AreteA4/arete/commit/5a2fa54e3a6c80dd77b263fb8df411c72a7eeaa7))
+
 ## [0.4.0](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.3.1...arete-hash-npm-v0.4.0) (2026-09-01)
 
 

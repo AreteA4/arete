@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/AreteA4/arete/compare/a4-npm-v0.12.0...a4-npm-v0.13.0) (2026-09-03)
+
+
+### Features
+
+* agent-first onboarding (self install/update, init, doctor, mcp, signed installers) ([fb58c5b](https://github.com/AreteA4/arete/commit/fb58c5b023ffa7d52b1188d8a21c392440ed7aa8))
+* **release:** signed release artifacts, installers and scriptless npm bootstrapper ([0200f9d](https://github.com/AreteA4/arete/commit/0200f9d7810ce1a05916a95eaf20ec6e8273dca1))
+
+
+### Bug Fixes
+
+* **cli:** address review findings and CI ([7439939](https://github.com/AreteA4/arete/commit/74399393969d3d04c8ef69b8b18889d8d6f7e6ab))
+
 ## [0.12.0](https://github.com/AreteA4/arete/compare/a4-npm-v0.11.0...a4-npm-v0.12.0) (2026-09-02)
 
 

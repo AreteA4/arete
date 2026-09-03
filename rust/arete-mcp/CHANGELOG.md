@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.12.0...arete-mcp-v0.13.0) (2026-09-03)
+
+
+### Features
+
+* agent-first onboarding (self install/update, init, doctor, mcp, signed installers) ([fb58c5b](https://github.com/AreteA4/arete/commit/fb58c5b023ffa7d52b1188d8a21c392440ed7aa8))
+* **cli:** agent-first onboarding: self install/update, init, doctor, mcp, auth signup ([838a878](https://github.com/AreteA4/arete/commit/838a878e8bbe25fb841ae59bae06b99b763b52a3))
+
 ## [0.12.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.11.0...arete-mcp-v0.12.0) (2026-09-02)
 
 
