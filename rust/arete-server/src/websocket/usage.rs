@@ -67,6 +67,8 @@ pub enum WebSocketUsageEvent {
 pub struct WebSocketUsageEnvelope {
     pub event_id: String,
     pub occurred_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
     pub event: WebSocketUsageEvent,
 }
 
@@ -102,6 +104,10 @@ pub struct HttpUsageEmitter {
     sender: mpsc::UnboundedSender<WebSocketUsageEvent>,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("WebSocket usage build ID must be a positive integer")]
+pub struct InvalidUsageBuildId;
+
 #[derive(Debug, Clone)]
 struct RetryState {
     batch: WebSocketUsageBatch,
@@ -112,6 +118,22 @@ struct RetryState {
 impl HttpUsageEmitter {
     pub fn new(endpoint: String, auth_token: Option<String>) -> Self {
         Self::with_config(endpoint, auth_token, 50, Duration::from_secs(2))
+    }
+
+    pub fn new_attributed(
+        endpoint: String,
+        auth_token: Option<String>,
+        build_id: impl Into<String>,
+    ) -> Result<Self, InvalidUsageBuildId> {
+        let build_id = validate_build_id(build_id.into())?;
+        Ok(Self::with_full_config(
+            endpoint,
+            auth_token,
+            50,
+            Duration::from_secs(2),
+            None,
+            Some(build_id),
+        ))
     }
 
     pub fn with_spool_dir(
@@ -125,7 +147,25 @@ impl HttpUsageEmitter {
             50,
             Duration::from_secs(2),
             Some(spool_dir.into()),
+            None,
         )
+    }
+
+    pub fn with_attributed_spool_dir(
+        endpoint: String,
+        auth_token: Option<String>,
+        spool_dir: impl Into<PathBuf>,
+        build_id: impl Into<String>,
+    ) -> Result<Self, InvalidUsageBuildId> {
+        let build_id = validate_build_id(build_id.into())?;
+        Ok(Self::with_full_config(
+            endpoint,
+            auth_token,
+            50,
+            Duration::from_secs(2),
+            Some(spool_dir.into()),
+            Some(build_id),
+        ))
     }
 
     pub fn with_config(
@@ -134,7 +174,7 @@ impl HttpUsageEmitter {
         batch_size: usize,
         flush_interval: Duration,
     ) -> Self {
-        Self::with_full_config(endpoint, auth_token, batch_size, flush_interval, None)
+        Self::with_full_config(endpoint, auth_token, batch_size, flush_interval, None, None)
     }
 
     fn with_full_config(
@@ -143,6 +183,7 @@ impl HttpUsageEmitter {
         batch_size: usize,
         flush_interval: Duration,
         spool_dir: Option<PathBuf>,
+        build_id: Option<String>,
     ) -> Self {
         let (sender, mut receiver) = mpsc::unbounded_channel::<WebSocketUsageEvent>();
         let client = reqwest::Client::new();
@@ -167,6 +208,7 @@ impl HttpUsageEmitter {
                                 pending.push(WebSocketUsageEnvelope {
                                     event_id: Uuid::new_v4().to_string(),
                                     occurred_at_ms: current_time_ms(),
+                                    build_id: build_id.clone(),
                                     event,
                                 });
 
@@ -292,6 +334,13 @@ impl HttpUsageEmitter {
 
         Self { sender }
     }
+}
+
+fn validate_build_id(value: String) -> Result<String, InvalidUsageBuildId> {
+    if value.trim() != value || value.parse::<i32>().ok().is_none_or(|value| value <= 0) {
+        return Err(InvalidUsageBuildId);
+    }
+    Ok(value)
 }
 
 #[async_trait]
@@ -501,6 +550,7 @@ mod tests {
             events: vec![WebSocketUsageEnvelope {
                 event_id: "evt_1".to_string(),
                 occurred_at_ms: 123,
+                build_id: Some("7".to_string()),
                 event: WebSocketUsageEvent::UpdateSent {
                     client_id: "client-1".to_string(),
                     deployment_id: Some("1".to_string()),
@@ -516,8 +566,45 @@ mod tests {
         let path = spool_batch(&dir, &batch).expect("batch should spool");
         let loaded = load_batch_from_file(&path).expect("batch should load");
         assert_eq!(loaded.events.len(), 1);
+        assert_eq!(loaded.events[0].build_id.as_deref(), Some("7"));
 
         fs::remove_dir_all(dir).expect("temp dir should be removed");
+    }
+
+    #[test]
+    fn legacy_and_attributed_envelopes_are_compatible() {
+        let legacy = serde_json::json!({
+            "event_id": "legacy",
+            "occurred_at_ms": 123,
+            "event": {
+                "type": "update_sent",
+                "client_id": "client",
+                "deployment_id": "1",
+                "metering_key": null,
+                "subject": null,
+                "view_id": "view",
+                "messages": 1,
+                "bytes": 2
+            }
+        });
+        let decoded: WebSocketUsageEnvelope = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.build_id, None);
+
+        let mut attributed = serde_json::to_value(decoded).unwrap();
+        assert!(attributed.get("build_id").is_none());
+        attributed["build_id"] = serde_json::json!("42");
+        let decoded: WebSocketUsageEnvelope = serde_json::from_value(attributed).unwrap();
+        assert_eq!(decoded.build_id.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn attributed_constructor_validates_build_identity() {
+        assert!(
+            HttpUsageEmitter::new_attributed("http://localhost".to_string(), None, "0").is_err()
+        );
+        assert!(
+            HttpUsageEmitter::new_attributed("http://localhost".to_string(), None, " 7").is_err()
+        );
     }
 
     #[test]
