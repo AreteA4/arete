@@ -11,6 +11,7 @@
 ### Bug Fixes
 
 * expose continuation cursors for private program and event listings
+* make `a4 stack delete` wait for a validated durable destroy result while retaining deployment tombstones and immutable history
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
 ## [0.13.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.12.0...a4-cli-v0.13.0) (2026-09-03)

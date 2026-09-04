@@ -579,7 +579,7 @@ enum StackCommands {
         limit: i64,
     },
 
-    /// Delete a stack from remote
+    /// Durably destroy a stack and its owned runtime resources
     Delete {
         /// Name of the stack to delete
         stack_name: String,

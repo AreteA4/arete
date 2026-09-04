@@ -7,8 +7,13 @@ use std::time::{Duration, Instant};
 
 use crate::api_client::{
     ApiClient, BuildStatus, DeploymentPhase, DeploymentResponse, DeploymentStatus,
-    DEFAULT_DOMAIN_SUFFIX,
+    StackDestroyResponse, StackDestroyStatus, DEFAULT_DOMAIN_SUFFIX,
 };
+
+const STACK_DESTROY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const STACK_DESTROY_INITIAL_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const STACK_DESTROY_MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const STACK_DESTROY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub fn list(json: bool) -> Result<()> {
     let client = ApiClient::new()?;
 
@@ -346,8 +351,8 @@ pub fn delete(stack_name: &str, force: bool) -> Result<()> {
             "!".yellow().bold(),
             stack_name
         );
-        println!("  This will delete the stack and ALL its versions.");
-        println!("  This action cannot be undone.");
+        println!("  This removes its stack-owned runtime resources and mutable stack metadata.");
+        println!("  Retired deployment identity and immutable build, composition, and usage history are retained.");
         println!();
 
         print!("Type the stack name to confirm: ");
@@ -358,16 +363,26 @@ pub fn delete(stack_name: &str, force: bool) -> Result<()> {
         io::stdin().read_line(&mut confirmation)?;
         let confirmation = confirmation.trim();
 
-        if confirmation != stack_name {
+        if !delete_confirmation_matches(stack_name, confirmation) {
             println!();
             println!("{} Deletion cancelled.", "!".yellow().bold());
             return Ok(());
         }
     }
 
-    println!("{} Deleting stack '{}'...", "→".blue().bold(), stack_name);
+    println!(
+        "{} Destroying stack-owned runtime resources for '{}'...",
+        "→".blue().bold(),
+        stack_name
+    );
 
-    client.delete_spec(spec.id)?;
+    destroy_stack_with_options(
+        &client,
+        spec.id,
+        stack_name,
+        STACK_DESTROY_TIMEOUT,
+        STACK_DESTROY_INITIAL_POLL_INTERVAL,
+    )?;
 
     println!(
         "{} Stack '{}' deleted successfully.",
@@ -376,6 +391,96 @@ pub fn delete(stack_name: &str, force: bool) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn delete_confirmation_matches(stack_name: &str, confirmation: &str) -> bool {
+    confirmation == stack_name
+}
+
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'_' | b'@' | b'%' | b'+' | b'=' | b':' | b',' | b'.' | b'/' | b'-'
+                )
+        })
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+}
+
+fn retry_stack_delete_command(stack_name: &str) -> String {
+    format!("a4 stack delete --force -- {}", shell_quote(stack_name))
+}
+
+fn destroy_stack_with_options(
+    client: &ApiClient,
+    spec_id: i32,
+    stack_name: &str,
+    timeout: Duration,
+    initial_poll_interval: Duration,
+) -> Result<StackDestroyResponse> {
+    let started = Instant::now();
+    let mut poll_interval = initial_poll_interval;
+    let mut operation = client.request_stack_destroy(spec_id)?;
+    let retry_command = retry_stack_delete_command(stack_name);
+    println!("  Durable operation: {}", operation.operation_id.cyan());
+
+    loop {
+        match operation.status {
+            StackDestroyStatus::Succeeded => return Ok(operation),
+            StackDestroyStatus::Failed => {
+                let code = operation
+                    .error_code
+                    .as_deref()
+                    .unwrap_or("stack-destroy-failed");
+                let message = operation
+                    .error_message
+                    .as_deref()
+                    .unwrap_or("Stack-owned runtime resources could not be confirmed absent");
+                bail!(
+                    "Stack destroy operation {} failed ({code}): {message}. Safe retry: {retry_command}",
+                    operation.operation_id,
+                );
+            }
+            StackDestroyStatus::Pending | StackDestroyStatus::Running => {}
+        }
+
+        if started.elapsed() >= timeout {
+            bail!(
+                "Timed out waiting for stack destroy operation {}. The durable server operation continues; inspect or safely retry with: {retry_command}",
+                operation.operation_id,
+            );
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        thread::sleep(poll_interval.min(remaining));
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            bail!(
+                "Timed out waiting for stack destroy operation {}. The durable server operation continues; inspect or safely retry with: {retry_command}",
+                operation.operation_id,
+            );
+        }
+        operation = match client.get_stack_destroy_with_timeout(
+            spec_id,
+            &operation.operation_id,
+            remaining.min(STACK_DESTROY_REQUEST_TIMEOUT),
+        ) {
+            Ok(operation) => operation,
+            Err(error) => bail!(
+                "Failed to inspect stack destroy operation {}: {error:#}. The durable server operation continues; inspect or safely retry with: {retry_command}",
+                operation.operation_id,
+            ),
+        };
+        poll_interval = poll_interval
+            .checked_mul(2)
+            .unwrap_or(STACK_DESTROY_MAX_POLL_INTERVAL)
+            .min(STACK_DESTROY_MAX_POLL_INTERVAL);
+    }
 }
 
 pub fn stop(stack_name: &str, branch: Option<&str>, force: bool) -> Result<()> {
@@ -567,7 +672,50 @@ fn format_build_status(status: BuildStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api_client::DeploymentLiveStatus;
+    use crate::api_client::{test_support::MockServer, DeploymentLiveStatus};
+
+    const OPERATION_ID: &str = "11111111-1111-4111-8111-111111111111";
+
+    fn destroy_response(status: &str) -> String {
+        let (pending, running, succeeded, failed, completed_at, error_code, error_message) =
+            match status {
+                "pending" => (1, 0, 0, 0, None, None, None),
+                "running" => (0, 1, 0, 0, None, None, None),
+                "succeeded" => (0, 0, 1, 0, Some("2026-09-04T12:00:02Z"), None, None),
+                "failed" => (
+                    0,
+                    0,
+                    1,
+                    1,
+                    Some("2026-09-04T12:00:02Z"),
+                    Some("kubernetes-destroy-failed"),
+                    Some("one or more targets failed"),
+                ),
+                other => panic!("unsupported test status {other}"),
+            };
+        let target_count = pending + running + succeeded + failed;
+        serde_json::json!({
+            "schema": "arete.stack-destroy/v1",
+            "operationId": OPERATION_ID,
+            "specId": 42,
+            "status": status,
+            "targetCount": target_count,
+            "pendingTargets": pending,
+            "runningTargets": running,
+            "succeededTargets": succeeded,
+            "failedTargets": failed,
+            "errorCode": error_code,
+            "errorMessage": error_message,
+            "createdAt": "2026-09-04T12:00:00Z",
+            "startedAt": if status == "pending" { None } else { Some("2026-09-04T12:00:01Z") },
+            "completedAt": completed_at,
+        })
+        .to_string()
+    }
+
+    fn destroy_client(server: &MockServer) -> ApiClient {
+        ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_test".to_string())
+    }
 
     fn deployment(id: i32, spec_id: i32, branch: Option<&str>) -> DeploymentResponse {
         DeploymentResponse {
@@ -650,5 +798,135 @@ mod tests {
             find_deployment(&[production, preview], 29, None).map(|item| item.id),
             Some(19)
         );
+    }
+
+    #[test]
+    fn delete_confirmation_requires_the_exact_stack_name() {
+        assert!(delete_confirmation_matches(
+            "settlement-game",
+            "settlement-game"
+        ));
+        assert!(!delete_confirmation_matches(
+            "settlement-game",
+            "Settlement-Game"
+        ));
+        assert!(!delete_confirmation_matches("settlement-game", "yes"));
+    }
+
+    #[test]
+    fn retry_command_shell_quotes_untrusted_stack_names() {
+        assert_eq!(
+            retry_stack_delete_command("settlement game; echo 'oops'"),
+            "a4 stack delete --force -- 'settlement game; echo '\"'\"'oops'\"'\"''"
+        );
+        assert_eq!(
+            retry_stack_delete_command("settlement-game"),
+            "a4 stack delete --force -- settlement-game"
+        );
+    }
+
+    #[test]
+    fn destroy_returns_only_after_immediate_terminal_success() {
+        let server = MockServer::json(200, &destroy_response("succeeded"));
+        let response = destroy_stack_with_options(
+            &destroy_client(&server),
+            42,
+            "settlement-game",
+            Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .expect("destroy succeeds");
+
+        assert_eq!(response.status, StackDestroyStatus::Succeeded);
+        assert_eq!(
+            server.request().request_line,
+            "POST /api/specs/42/destroy HTTP/1.1"
+        );
+    }
+
+    #[test]
+    fn destroy_reuses_the_durable_operation_while_polling() {
+        let server = MockServer::json_sequence(vec![
+            (202, destroy_response("pending")),
+            (200, destroy_response("running")),
+            (200, destroy_response("succeeded")),
+        ]);
+        let response = destroy_stack_with_options(
+            &destroy_client(&server),
+            42,
+            "settlement-game",
+            Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .expect("destroy succeeds after polling");
+
+        assert_eq!(response.operation_id, OPERATION_ID);
+        assert_eq!(
+            server.request().request_line,
+            "POST /api/specs/42/destroy HTTP/1.1"
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                server.request().request_line,
+                format!("GET /api/specs/42/destroy/{OPERATION_ID} HTTP/1.1")
+            );
+        }
+    }
+
+    #[test]
+    fn destroy_surfaces_terminal_failure_with_safe_retry() {
+        let server = MockServer::json(200, &destroy_response("failed"));
+        let error = destroy_stack_with_options(
+            &destroy_client(&server),
+            42,
+            "settlement-game",
+            Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .expect_err("destroy fails");
+
+        let message = error.to_string();
+        assert!(message.contains(OPERATION_ID));
+        assert!(message.contains("kubernetes-destroy-failed"));
+        assert!(message.contains("a4 stack delete --force -- settlement-game"));
+    }
+
+    #[test]
+    fn destroy_poll_errors_preserve_operation_identity_and_retry_guidance() {
+        let server = MockServer::json_sequence(vec![
+            (202, destroy_response("pending")),
+            (500, r#"{"error":"server exploded"}"#.to_string()),
+        ]);
+        let error = destroy_stack_with_options(
+            &destroy_client(&server),
+            42,
+            "settlement game",
+            Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .expect_err("poll failure is surfaced");
+
+        let message = format!("{error:#}");
+        assert!(message.contains(OPERATION_ID));
+        assert!(message.contains("server exploded"));
+        assert!(message.contains("a4 stack delete --force -- 'settlement game'"));
+    }
+
+    #[test]
+    fn destroy_timeout_explains_that_the_operation_continues() {
+        let server = MockServer::json(202, &destroy_response("pending"));
+        let error = destroy_stack_with_options(
+            &destroy_client(&server),
+            42,
+            "settlement-game",
+            Duration::ZERO,
+            Duration::ZERO,
+        )
+        .expect_err("destroy times out");
+
+        let message = error.to_string();
+        assert!(message.contains(OPERATION_ID));
+        assert!(message.contains("durable server operation continues"));
+        assert!(message.contains("a4 stack delete --force -- settlement-game"));
     }
 }

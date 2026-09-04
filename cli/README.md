@@ -160,11 +160,18 @@ a4 stack versions settlement-game --limit 10
 
 ### `a4 stack delete <name>`
 
-Delete a stack:
+Durably destroy a stack:
 
 ```bash
 a4 stack delete settlement-game
 ```
+
+The command submits one server-side destroy operation and waits for its terminal
+result. It removes stack-owned Kubernetes runtime resources and mutable stack
+metadata. Deployment tombstones and immutable build, composition, operation,
+event, and usage history remain available for audit. If the CLI times out, the
+server operation continues; rerunning with `--force` safely reuses or retries
+the durable operation and only skips the local name confirmation.
 
 ## Deployment
 
