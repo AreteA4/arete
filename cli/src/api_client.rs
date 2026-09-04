@@ -138,6 +138,118 @@ struct ErrorResponse {
     code: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StackDestroyStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+impl std::fmt::Display for StackDestroyStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Running => write!(f, "running"),
+            Self::Succeeded => write!(f, "succeeded"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StackDestroyResponse {
+    pub schema: String,
+    pub operation_id: String,
+    pub spec_id: i32,
+    pub status: StackDestroyStatus,
+    pub target_count: i64,
+    pub pending_targets: i64,
+    pub running_targets: i64,
+    pub succeeded_targets: i64,
+    pub failed_targets: i64,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+impl StackDestroyResponse {
+    fn validate(&self, spec_id: i32, operation_id: Option<&str>) -> Result<()> {
+        if self.schema != "arete.stack-destroy/v1" {
+            anyhow::bail!("API returned an unsupported stack destroy schema");
+        }
+        if self.spec_id != spec_id {
+            anyhow::bail!("API returned a mismatched stack destroy spec identifier");
+        }
+        let parsed_operation_id = uuid::Uuid::parse_str(&self.operation_id)
+            .context("API returned an invalid stack destroy operation identifier")?;
+        if let Some(expected) = operation_id {
+            let expected = uuid::Uuid::parse_str(expected)
+                .context("Invalid stack destroy operation identifier")?;
+            if parsed_operation_id != expected {
+                anyhow::bail!("API returned a mismatched stack destroy operation identifier");
+            }
+        }
+        let counts = [
+            self.target_count,
+            self.pending_targets,
+            self.running_targets,
+            self.succeeded_targets,
+            self.failed_targets,
+        ];
+        if counts.iter().any(|count| *count < 0)
+            || self.pending_targets
+                + self.running_targets
+                + self.succeeded_targets
+                + self.failed_targets
+                != self.target_count
+        {
+            anyhow::bail!("API returned inconsistent stack destroy target counts");
+        }
+        match self.status {
+            StackDestroyStatus::Pending | StackDestroyStatus::Running => {
+                if self.completed_at.is_some()
+                    || self.error_code.is_some()
+                    || self.error_message.is_some()
+                {
+                    anyhow::bail!("API returned an inconsistent active stack destroy");
+                }
+                if self.status == StackDestroyStatus::Pending && self.started_at.is_some() {
+                    anyhow::bail!("API returned a started time for a pending stack destroy");
+                }
+                if self.status == StackDestroyStatus::Running && self.started_at.is_none() {
+                    anyhow::bail!("API omitted the started time for a running stack destroy");
+                }
+            }
+            StackDestroyStatus::Succeeded => {
+                if self.completed_at.is_none()
+                    || self.pending_targets != 0
+                    || self.running_targets != 0
+                    || self.failed_targets != 0
+                    || self.succeeded_targets != self.target_count
+                    || self.error_code.is_some()
+                    || self.error_message.is_some()
+                {
+                    anyhow::bail!("API returned an inconsistent successful stack destroy");
+                }
+            }
+            StackDestroyStatus::Failed => {
+                if self.completed_at.is_none()
+                    || self.error_code.is_none()
+                    || self.failed_targets == 0
+                {
+                    anyhow::bail!("API returned an incomplete failed stack destroy");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 // ============================================================================
 // Build DTOs
 // ============================================================================
@@ -848,22 +960,40 @@ impl ApiClient {
         Self::handle_response(response)
     }
 
-    pub fn delete_spec(&self, spec_id: i32) -> Result<()> {
+    pub fn request_stack_destroy(&self, spec_id: i32) -> Result<StackDestroyResponse> {
         let api_key = self.require_api_key()?;
 
         let response = self
             .client
-            .delete(format!("{}/api/specs/{}", self.base_url, spec_id))
+            .post(format!("{}/api/specs/{}/destroy", self.base_url, spec_id))
             .bearer_auth(api_key)
             .send()
-            .context("Failed to send delete spec request")?;
+            .context("Failed to request stack destruction")?;
+        let response: StackDestroyResponse = Self::handle_response(response)?;
+        response.validate(spec_id, None)?;
+        Ok(response)
+    }
 
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            let error: ErrorResponse = response.json()?;
-            anyhow::bail!("API error: {}", error.error);
-        }
+    pub fn get_stack_destroy(
+        &self,
+        spec_id: i32,
+        operation_id: &str,
+    ) -> Result<StackDestroyResponse> {
+        let api_key = self.require_api_key()?;
+        uuid::Uuid::parse_str(operation_id)
+            .context("Invalid stack destroy operation identifier")?;
+        let response = self
+            .client
+            .get(format!(
+                "{}/api/specs/{}/destroy/{}",
+                self.base_url, spec_id, operation_id
+            ))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to inspect stack destruction")?;
+        let response: StackDestroyResponse = Self::handle_response(response)?;
+        response.validate(spec_id, Some(operation_id))?;
+        Ok(response)
     }
 
     // Spec version endpoints
@@ -1849,7 +1979,7 @@ impl ApiClient {
 }
 
 /// Minimal canned-response HTTP server for unit tests of `ApiClient` and the
-/// commands built on it. One request per `MockServer`.
+/// commands built on it.
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::io::{Read, Write};
@@ -1883,75 +2013,87 @@ pub(crate) mod test_support {
     impl MockServer {
         /// Serve exactly one request with `status` and a JSON `body`.
         pub(crate) fn json(status: u16, body: &str) -> Self {
+            Self::json_sequence(vec![(status, body.to_string())])
+        }
+
+        /// Serve one request for each response, in order.
+        pub(crate) fn json_sequence(responses: Vec<(u16, String)>) -> Self {
+            assert!(!responses.is_empty(), "mock server needs a response");
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
             let addr = listener.local_addr().expect("mock server addr");
-            let body = body.to_string();
             let (tx, rx) = mpsc::channel();
             thread::spawn(move || {
-                let (mut stream, _) = listener.accept().expect("accept");
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
-                    .expect("read timeout");
-                let mut raw = Vec::new();
-                let mut buf = [0u8; 4096];
-                let (head_len, content_length) = loop {
-                    let n = stream.read(&mut buf).expect("read request");
-                    if n == 0 {
-                        break (raw.len(), 0);
+                for (status, body) in responses {
+                    let (mut stream, _) = listener.accept().expect("accept");
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(10)))
+                        .expect("read timeout");
+                    let mut raw = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    let (head_len, content_length) = loop {
+                        let n = stream.read(&mut buf).expect("read request");
+                        if n == 0 {
+                            break (raw.len(), 0);
+                        }
+                        raw.extend_from_slice(&buf[..n]);
+                        if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&raw[..pos]).to_string();
+                            let content_length = head
+                                .lines()
+                                .find_map(|line| {
+                                    let (k, v) = line.split_once(':')?;
+                                    k.trim()
+                                        .eq_ignore_ascii_case("content-length")
+                                        .then(|| v.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                            break (pos + 4, content_length);
+                        }
+                    };
+                    while raw.len() < head_len + content_length {
+                        let n = stream.read(&mut buf).expect("read body");
+                        if n == 0 {
+                            break;
+                        }
+                        raw.extend_from_slice(&buf[..n]);
                     }
-                    raw.extend_from_slice(&buf[..n]);
-                    if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-                        let head = String::from_utf8_lossy(&raw[..pos]).to_string();
-                        let content_length = head
-                            .lines()
-                            .find_map(|line| {
-                                let (k, v) = line.split_once(':')?;
-                                k.trim()
-                                    .eq_ignore_ascii_case("content-length")
-                                    .then(|| v.trim().parse::<usize>().ok())
-                                    .flatten()
-                            })
-                            .unwrap_or(0);
-                        break (pos + 4, content_length);
-                    }
-                };
-                while raw.len() < head_len + content_length {
-                    let n = stream.read(&mut buf).expect("read body");
-                    if n == 0 {
-                        break;
-                    }
-                    raw.extend_from_slice(&buf[..n]);
+                    let head = String::from_utf8_lossy(&raw[..head_len]).to_string();
+                    let mut lines = head.lines();
+                    let request_line = lines.next().unwrap_or_default().to_string();
+                    let headers = lines
+                        .filter_map(|line| {
+                            let (k, v) = line.split_once(':')?;
+                            Some((k.trim().to_string(), v.trim().to_string()))
+                        })
+                        .collect();
+                    let body_bytes = &raw[head_len..(head_len + content_length).min(raw.len())];
+                    let _ = tx.send(ReceivedRequest {
+                        request_line,
+                        headers,
+                        body: String::from_utf8_lossy(body_bytes).to_string(),
+                    });
+                    let reason = match status {
+                        200 => "OK",
+                        201 => "Created",
+                        202 => "Accepted",
+                        400 => "Bad Request",
+                        401 => "Unauthorized",
+                        404 => "Not Found",
+                        409 => "Conflict",
+                        429 => "Too Many Requests",
+                        500 => "Internal Server Error",
+                        _ => "Status",
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write response");
+                    let _ = stream.flush();
                 }
-                let head = String::from_utf8_lossy(&raw[..head_len]).to_string();
-                let mut lines = head.lines();
-                let request_line = lines.next().unwrap_or_default().to_string();
-                let headers = lines
-                    .filter_map(|line| {
-                        let (k, v) = line.split_once(':')?;
-                        Some((k.trim().to_string(), v.trim().to_string()))
-                    })
-                    .collect();
-                let body_bytes = &raw[head_len..(head_len + content_length).min(raw.len())];
-                let _ = tx.send(ReceivedRequest {
-                    request_line,
-                    headers,
-                    body: String::from_utf8_lossy(body_bytes).to_string(),
-                });
-                let reason = match status {
-                    200 => "OK",
-                    201 => "Created",
-                    429 => "Too Many Requests",
-                    500 => "Internal Server Error",
-                    _ => "Status",
-                };
-                let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("write response");
-                let _ = stream.flush();
             });
             MockServer {
                 base_url: format!("http://{addr}"),
@@ -2050,6 +2192,148 @@ mod agent_tests {
         let client = ApiClient::with_base_url("http://127.0.0.1:1");
         let err = client.agent_me().expect_err("no key");
         assert!(err.to_string().contains("Not authenticated"));
+    }
+}
+
+#[cfg(test)]
+mod stack_destroy_tests {
+    use super::test_support::MockServer;
+    use super::*;
+
+    const OPERATION_ID: &str = "11111111-1111-4111-8111-111111111111";
+
+    fn response_json(spec_id: i32, operation_id: &str, status: &str) -> String {
+        let (pending, running, succeeded, failed, completed_at, error_code, error_message) =
+            match status {
+                "pending" => (1, 0, 0, 0, None, None, None),
+                "running" => (0, 1, 0, 0, None, None, None),
+                "succeeded" => (0, 0, 1, 0, Some("2026-09-04T12:00:02Z"), None, None),
+                "failed" => (
+                    0,
+                    0,
+                    0,
+                    1,
+                    Some("2026-09-04T12:00:02Z"),
+                    Some("kubernetes-destroy-failed"),
+                    Some("one or more targets failed"),
+                ),
+                other => panic!("unsupported test status {other}"),
+            };
+        serde_json::json!({
+            "schema": "arete.stack-destroy/v1",
+            "operationId": operation_id,
+            "specId": spec_id,
+            "status": status,
+            "targetCount": 1,
+            "pendingTargets": pending,
+            "runningTargets": running,
+            "succeededTargets": succeeded,
+            "failedTargets": failed,
+            "errorCode": error_code,
+            "errorMessage": error_message,
+            "createdAt": "2026-09-04T12:00:00Z",
+            "startedAt": if status == "pending" { None } else { Some("2026-09-04T12:00:01Z") },
+            "completedAt": completed_at,
+        })
+        .to_string()
+    }
+
+    fn client(server: &MockServer) -> ApiClient {
+        ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_test".to_string())
+    }
+
+    #[test]
+    fn request_stack_destroy_posts_once_and_accepts_terminal_success() {
+        let server = MockServer::json(200, &response_json(42, OPERATION_ID, "succeeded"));
+        let response = client(&server)
+            .request_stack_destroy(42)
+            .expect("valid response");
+
+        assert_eq!(response.operation_id, OPERATION_ID);
+        assert_eq!(response.status, StackDestroyStatus::Succeeded);
+        let request = server.request();
+        assert_eq!(request.request_line, "POST /api/specs/42/destroy HTTP/1.1");
+        assert_eq!(request.header("authorization"), Some("Bearer a4_ak_test"));
+    }
+
+    #[test]
+    fn get_stack_destroy_uses_spec_and_operation_path() {
+        let server = MockServer::json(200, &response_json(42, OPERATION_ID, "running"));
+        let response = client(&server)
+            .get_stack_destroy(42, OPERATION_ID)
+            .expect("valid response");
+
+        assert_eq!(response.status, StackDestroyStatus::Running);
+        assert_eq!(
+            server.request().request_line,
+            format!("GET /api/specs/42/destroy/{OPERATION_ID} HTTP/1.1")
+        );
+    }
+
+    #[test]
+    fn stack_destroy_rejects_schema_and_identity_mismatches() {
+        let mut wrong_schema: serde_json::Value =
+            serde_json::from_str(&response_json(42, OPERATION_ID, "pending")).unwrap();
+        wrong_schema["schema"] = serde_json::json!("arete.stack-destroy/v2");
+        let server = MockServer::json(200, &wrong_schema.to_string());
+        let error = client(&server)
+            .request_stack_destroy(42)
+            .expect_err("schema mismatch");
+        assert!(error
+            .to_string()
+            .contains("unsupported stack destroy schema"));
+
+        let server = MockServer::json(200, &response_json(7, OPERATION_ID, "pending"));
+        let error = client(&server)
+            .request_stack_destroy(42)
+            .expect_err("spec mismatch");
+        assert!(error.to_string().contains("mismatched stack destroy spec"));
+
+        let server = MockServer::json(
+            200,
+            &response_json(42, "22222222-2222-4222-8222-222222222222", "running"),
+        );
+        let error = client(&server)
+            .get_stack_destroy(42, OPERATION_ID)
+            .expect_err("operation mismatch");
+        assert!(error
+            .to_string()
+            .contains("mismatched stack destroy operation"));
+    }
+
+    #[test]
+    fn stack_destroy_rejects_malformed_counts_and_unknown_fields() {
+        let mut malformed: serde_json::Value =
+            serde_json::from_str(&response_json(42, OPERATION_ID, "pending")).unwrap();
+        malformed["targetCount"] = serde_json::json!(2);
+        let server = MockServer::json(200, &malformed.to_string());
+        let error = client(&server)
+            .request_stack_destroy(42)
+            .expect_err("count mismatch");
+        assert!(error
+            .to_string()
+            .contains("inconsistent stack destroy target counts"));
+
+        let mut unknown: serde_json::Value =
+            serde_json::from_str(&response_json(42, OPERATION_ID, "pending")).unwrap();
+        unknown["unversionedField"] = serde_json::json!(true);
+        let server = MockServer::json(200, &unknown.to_string());
+        let error = client(&server)
+            .request_stack_destroy(42)
+            .expect_err("unknown response field");
+        assert!(error.to_string().contains("Failed to parse response JSON"));
+    }
+
+    #[test]
+    fn stack_destroy_preserves_machine_error_codes() {
+        for (status, code) in [(401, "unauthorized"), (404, "spec-not-found")] {
+            let body = serde_json::json!({"error": "request rejected", "code": code}).to_string();
+            let server = MockServer::json(status, &body);
+            let error = client(&server)
+                .request_stack_destroy(42)
+                .expect_err("request should fail");
+            assert!(error.to_string().contains(code));
+        }
     }
 }
 
