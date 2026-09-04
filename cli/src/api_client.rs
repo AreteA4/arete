@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 fn ensure_no_dangling_symlink(path: &Path) -> Result<()> {
     for candidate in path.ancestors() {
@@ -974,10 +975,11 @@ impl ApiClient {
         Ok(response)
     }
 
-    pub fn get_stack_destroy(
+    pub fn get_stack_destroy_with_timeout(
         &self,
         spec_id: i32,
         operation_id: &str,
+        request_timeout: Duration,
     ) -> Result<StackDestroyResponse> {
         let api_key = self.require_api_key()?;
         uuid::Uuid::parse_str(operation_id)
@@ -989,6 +991,7 @@ impl ApiClient {
                 self.base_url, spec_id, operation_id
             ))
             .bearer_auth(api_key)
+            .timeout(request_timeout)
             .send()
             .context("Failed to inspect stack destruction")?;
         let response: StackDestroyResponse = Self::handle_response(response)?;
@@ -2016,14 +2019,27 @@ pub(crate) mod test_support {
             Self::json_sequence(vec![(status, body.to_string())])
         }
 
+        pub(crate) fn json_delayed(status: u16, body: &str, delay: Duration) -> Self {
+            Self::json_sequence_with_delays(vec![(status, body.to_string(), delay)])
+        }
+
         /// Serve one request for each response, in order.
         pub(crate) fn json_sequence(responses: Vec<(u16, String)>) -> Self {
+            Self::json_sequence_with_delays(
+                responses
+                    .into_iter()
+                    .map(|(status, body)| (status, body, Duration::ZERO))
+                    .collect(),
+            )
+        }
+
+        fn json_sequence_with_delays(responses: Vec<(u16, String, Duration)>) -> Self {
             assert!(!responses.is_empty(), "mock server needs a response");
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
             let addr = listener.local_addr().expect("mock server addr");
             let (tx, rx) = mpsc::channel();
             thread::spawn(move || {
-                for (status, body) in responses {
+                for (status, body, delay) in responses {
                     let (mut stream, _) = listener.accept().expect("accept");
                     stream
                         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -2089,9 +2105,8 @@ pub(crate) mod test_support {
                         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     );
-                    stream
-                        .write_all(response.as_bytes())
-                        .expect("write response");
+                    thread::sleep(delay);
+                    let _ = stream.write_all(response.as_bytes());
                     let _ = stream.flush();
                 }
             });
@@ -2260,10 +2275,32 @@ mod stack_destroy_tests {
     fn get_stack_destroy_uses_spec_and_operation_path() {
         let server = MockServer::json(200, &response_json(42, OPERATION_ID, "running"));
         let response = client(&server)
-            .get_stack_destroy(42, OPERATION_ID)
+            .get_stack_destroy_with_timeout(42, OPERATION_ID, Duration::from_secs(1))
             .expect("valid response");
 
         assert_eq!(response.status, StackDestroyStatus::Running);
+        assert_eq!(
+            server.request().request_line,
+            format!("GET /api/specs/42/destroy/{OPERATION_ID} HTTP/1.1")
+        );
+    }
+
+    #[test]
+    fn get_stack_destroy_honors_per_request_timeout() {
+        let server = MockServer::json_delayed(
+            200,
+            &response_json(42, OPERATION_ID, "running"),
+            Duration::from_secs(1),
+        );
+        let started = std::time::Instant::now();
+        let error = client(&server)
+            .get_stack_destroy_with_timeout(42, OPERATION_ID, Duration::from_millis(20))
+            .expect_err("request times out");
+
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(error
+            .to_string()
+            .contains("Failed to inspect stack destruction"));
         assert_eq!(
             server.request().request_line,
             format!("GET /api/specs/42/destroy/{OPERATION_ID} HTTP/1.1")
@@ -2294,7 +2331,7 @@ mod stack_destroy_tests {
             &response_json(42, "22222222-2222-4222-8222-222222222222", "running"),
         );
         let error = client(&server)
-            .get_stack_destroy(42, OPERATION_ID)
+            .get_stack_destroy_with_timeout(42, OPERATION_ID, Duration::from_secs(1))
             .expect_err("operation mismatch");
         assert!(error
             .to_string()

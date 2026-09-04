@@ -13,6 +13,7 @@ use crate::api_client::{
 const STACK_DESTROY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const STACK_DESTROY_INITIAL_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const STACK_DESTROY_MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const STACK_DESTROY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub fn list(json: bool) -> Result<()> {
     let client = ApiClient::new()?;
 
@@ -396,6 +397,26 @@ fn delete_confirmation_matches(stack_name: &str, confirmation: &str) -> bool {
     confirmation == stack_name
 }
 
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'_' | b'@' | b'%' | b'+' | b'=' | b':' | b',' | b'.' | b'/' | b'-'
+                )
+        })
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+}
+
+fn retry_stack_delete_command(stack_name: &str) -> String {
+    format!("a4 stack delete --force -- {}", shell_quote(stack_name))
+}
+
 fn destroy_stack_with_options(
     client: &ApiClient,
     spec_id: i32,
@@ -406,6 +427,7 @@ fn destroy_stack_with_options(
     let started = Instant::now();
     let mut poll_interval = initial_poll_interval;
     let mut operation = client.request_stack_destroy(spec_id)?;
+    let retry_command = retry_stack_delete_command(stack_name);
     println!("  Durable operation: {}", operation.operation_id.cyan());
 
     loop {
@@ -421,9 +443,8 @@ fn destroy_stack_with_options(
                     .as_deref()
                     .unwrap_or("Stack-owned runtime resources could not be confirmed absent");
                 bail!(
-                    "Stack destroy operation {} failed ({code}): {message}. Safe retry: a4 stack delete {} --force",
+                    "Stack destroy operation {} failed ({code}): {message}. Safe retry: {retry_command}",
                     operation.operation_id,
-                    stack_name
                 );
             }
             StackDestroyStatus::Pending | StackDestroyStatus::Running => {}
@@ -431,14 +452,30 @@ fn destroy_stack_with_options(
 
         if started.elapsed() >= timeout {
             bail!(
-                "Timed out waiting for stack destroy operation {}. The durable server operation continues; inspect or safely retry with: a4 stack delete {} --force",
+                "Timed out waiting for stack destroy operation {}. The durable server operation continues; inspect or safely retry with: {retry_command}",
                 operation.operation_id,
-                stack_name
             );
         }
         let remaining = timeout.saturating_sub(started.elapsed());
         thread::sleep(poll_interval.min(remaining));
-        operation = client.get_stack_destroy(spec_id, &operation.operation_id)?;
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            bail!(
+                "Timed out waiting for stack destroy operation {}. The durable server operation continues; inspect or safely retry with: {retry_command}",
+                operation.operation_id,
+            );
+        }
+        operation = match client.get_stack_destroy_with_timeout(
+            spec_id,
+            &operation.operation_id,
+            remaining.min(STACK_DESTROY_REQUEST_TIMEOUT),
+        ) {
+            Ok(operation) => operation,
+            Err(error) => bail!(
+                "Failed to inspect stack destroy operation {}: {error:#}. The durable server operation continues; inspect or safely retry with: {retry_command}",
+                operation.operation_id,
+            ),
+        };
         poll_interval = poll_interval
             .checked_mul(2)
             .unwrap_or(STACK_DESTROY_MAX_POLL_INTERVAL)
@@ -777,6 +814,18 @@ mod tests {
     }
 
     #[test]
+    fn retry_command_shell_quotes_untrusted_stack_names() {
+        assert_eq!(
+            retry_stack_delete_command("settlement game; echo 'oops'"),
+            "a4 stack delete --force -- 'settlement game; echo '\"'\"'oops'\"'\"''"
+        );
+        assert_eq!(
+            retry_stack_delete_command("settlement-game"),
+            "a4 stack delete --force -- settlement-game"
+        );
+    }
+
+    #[test]
     fn destroy_returns_only_after_immediate_terminal_success() {
         let server = MockServer::json(200, &destroy_response("succeeded"));
         let response = destroy_stack_with_options(
@@ -839,7 +888,28 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains(OPERATION_ID));
         assert!(message.contains("kubernetes-destroy-failed"));
-        assert!(message.contains("a4 stack delete settlement-game --force"));
+        assert!(message.contains("a4 stack delete --force -- settlement-game"));
+    }
+
+    #[test]
+    fn destroy_poll_errors_preserve_operation_identity_and_retry_guidance() {
+        let server = MockServer::json_sequence(vec![
+            (202, destroy_response("pending")),
+            (500, r#"{"error":"server exploded"}"#.to_string()),
+        ]);
+        let error = destroy_stack_with_options(
+            &destroy_client(&server),
+            42,
+            "settlement game",
+            Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .expect_err("poll failure is surfaced");
+
+        let message = format!("{error:#}");
+        assert!(message.contains(OPERATION_ID));
+        assert!(message.contains("server exploded"));
+        assert!(message.contains("a4 stack delete --force -- 'settlement game'"));
     }
 
     #[test]
@@ -857,6 +927,6 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains(OPERATION_ID));
         assert!(message.contains("durable server operation continues"));
-        assert!(message.contains("a4 stack delete settlement-game --force"));
+        assert!(message.contains("a4 stack delete --force -- settlement-game"));
     }
 }
