@@ -1,49 +1,11 @@
 use crate::ast::{
-    idl_type_snapshot_to_rust_string, AccountResolution, AmountDecimalsSource,
     IdlArrayElementSnapshot, IdlArrayTypeSnapshot, IdlDefinedInnerSnapshot, IdlDefinedTypeSnapshot,
     IdlHashMapTypeSnapshot, IdlOptionTypeSnapshot, IdlSnapshot, IdlTupleTypeSnapshot,
-    IdlTypeSnapshot, IdlVecTypeSnapshot, InstructionAccountDef, InstructionAmountHint,
-    InstructionArgDef, InstructionDef, PdaDefinition, PdaProgramDef, PdaSeedDef,
-    SerializableStackSpec, CURRENT_AST_VERSION,
+    IdlTypeSnapshot, IdlVecTypeSnapshot, InstructionDef, PdaDefinition, SerializableStackSpec,
+    CURRENT_AST_VERSION,
 };
 use arete_idl as idl_parser;
 use std::collections::BTreeMap;
-
-fn sanitize_identifier_segment(name: &str) -> String {
-    let mut sanitized = String::new();
-
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            sanitized.push(ch);
-        } else if !sanitized.ends_with('_') {
-            sanitized.push('_');
-        }
-    }
-
-    let sanitized = sanitized.trim_matches('_').to_string();
-    if sanitized.is_empty() {
-        return "value".to_string();
-    }
-    if sanitized
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_digit())
-    {
-        return format!("_{}", sanitized);
-    }
-    sanitized
-}
-
-fn sanitize_identifier(name: &str) -> String {
-    sanitize_identifier_segment(name)
-}
-
-fn sanitize_seed_path(path: &str) -> String {
-    path.split('.')
-        .map(sanitize_identifier_segment)
-        .collect::<Vec<_>>()
-        .join(".")
-}
 
 pub fn build_program_only_stack_spec_from_idl(
     idl: &idl_parser::IdlSpec,
@@ -151,76 +113,6 @@ pub fn convert_idl_to_snapshot(idl: &idl_parser::IdlSpec) -> IdlSnapshot {
     arete_idl::normalize_idl_snapshot(idl)
 }
 
-pub fn extract_pdas_from_idl(idl: &idl_parser::IdlSpec) -> BTreeMap<String, PdaDefinition> {
-    let mut pdas = BTreeMap::new();
-
-    for pda in &idl.pdas {
-        let pda_name = sanitize_identifier(&pda.name);
-        let pda_def = convert_idl_pda_to_def(&pda_name, &pda.seeds, pda.program.as_ref());
-        pdas.insert(pda_name, pda_def);
-    }
-
-    for instruction in &idl.instructions {
-        for account in instruction.flattened_accounts() {
-            if let Some(pda_info) = &account.pda {
-                let pda_name =
-                    sanitize_identifier(pda_info.name.as_deref().unwrap_or(&account.name));
-                let pda_def =
-                    convert_idl_pda_to_def(&pda_name, &pda_info.seeds, pda_info.program.as_ref());
-                pdas.entry(pda_name).or_insert(pda_def);
-            }
-        }
-    }
-
-    pdas
-}
-
-pub fn extract_instructions_from_idl(
-    idl: &idl_parser::IdlSpec,
-    pdas: &BTreeMap<String, PdaDefinition>,
-) -> Vec<InstructionDef> {
-    let program_id = idl.address.clone().or_else(|| {
-        idl.metadata
-            .as_ref()
-            .and_then(|metadata| metadata.address.clone())
-    });
-
-    let discriminator_size = idl.instruction_discriminator_size();
-
-    idl.instructions
-        .iter()
-        .map(|instruction| {
-            let accounts = instruction
-                .flattened_accounts()
-                .iter()
-                .map(|account| convert_account_to_def(account, pdas))
-                .collect();
-
-            let args = instruction
-                .args
-                .iter()
-                .map(|arg| InstructionArgDef {
-                    name: arg.name.clone(),
-                    arg_type: idl_type_snapshot_to_rust_string(&convert_idl_type(&arg.type_)),
-                    docs: vec![],
-                    amount_hint: arg.amount_hint.as_ref().map(convert_amount_hint),
-                })
-                .collect();
-
-            InstructionDef {
-                name: instruction.name.clone(),
-                discriminator: instruction.get_discriminator(),
-                discriminator_size,
-                accounts,
-                args,
-                errors: Vec::new(),
-                program_id: program_id.clone(),
-                docs: instruction.docs.clone(),
-            }
-        })
-        .collect()
-}
-
 pub fn convert_idl_type(idl_type: &idl_parser::IdlType) -> IdlTypeSnapshot {
     match idl_type {
         idl_parser::IdlType::Simple(simple) => IdlTypeSnapshot::Simple(simple.clone()),
@@ -272,137 +164,10 @@ pub fn convert_idl_type(idl_type: &idl_parser::IdlType) -> IdlTypeSnapshot {
     }
 }
 
-fn convert_amount_hint(hint: &idl_parser::IdlAmountHint) -> InstructionAmountHint {
-    InstructionAmountHint {
-        decimals_source: match &hint.decimals_source {
-            idl_parser::IdlAmountDecimalsSource::ArgMint { arg_name } => {
-                AmountDecimalsSource::ArgMint {
-                    arg_name: arg_name.clone(),
-                }
-            }
-            idl_parser::IdlAmountDecimalsSource::ArgDecimals { arg_name } => {
-                AmountDecimalsSource::ArgDecimals {
-                    arg_name: arg_name.clone(),
-                }
-            }
-            idl_parser::IdlAmountDecimalsSource::KnownAccount { account_name } => {
-                AmountDecimalsSource::KnownAccount {
-                    account_name: account_name.clone(),
-                }
-            }
-            idl_parser::IdlAmountDecimalsSource::Constant { decimals } => {
-                AmountDecimalsSource::Constant {
-                    decimals: *decimals,
-                }
-            }
-        },
-    }
-}
-
-fn convert_idl_pda_to_def(
-    name: &str,
-    pda_seeds: &[idl_parser::IdlPdaSeed],
-    pda_program: Option<&idl_parser::IdlPdaProgram>,
-) -> PdaDefinition {
-    let seeds = pda_seeds
-        .iter()
-        .map(|seed| match seed {
-            idl_parser::IdlPdaSeed::Const { value } => convert_const_pda_seed(value),
-            idl_parser::IdlPdaSeed::Account { path, .. } => PdaSeedDef::AccountRef {
-                account_name: sanitize_seed_path(path),
-            },
-            idl_parser::IdlPdaSeed::Arg { path, arg_type } => PdaSeedDef::ArgRef {
-                arg_name: sanitize_seed_path(path),
-                arg_type: arg_type.clone(),
-            },
-        })
-        .collect();
-
-    let (program_id, program) = match pda_program {
-        Some(idl_parser::IdlPdaProgram::Literal { value, .. }) => (Some(value.clone()), None),
-        Some(idl_parser::IdlPdaProgram::Const { value, .. }) => {
-            (Some(bs58::encode(value).into_string()), None)
-        }
-        Some(idl_parser::IdlPdaProgram::Account { path, .. }) => (
-            None,
-            Some(PdaProgramDef::AccountRef {
-                account_name: sanitize_seed_path(path),
-            }),
-        ),
-        None => (None, None),
-    };
-
-    PdaDefinition {
-        name: name.to_string(),
-        seeds,
-        program_id,
-        program,
-    }
-}
-
-fn convert_const_pda_seed(value: &[u8]) -> PdaSeedDef {
-    match String::from_utf8(value.to_vec()) {
-        Ok(value) if !value.contains('\0') => PdaSeedDef::Literal { value },
-        _ => PdaSeedDef::Bytes {
-            value: value.to_vec(),
-        },
-    }
-}
-
-fn convert_account_to_def(
-    account: &idl_parser::IdlAccountArg,
-    pdas: &BTreeMap<String, PdaDefinition>,
-) -> InstructionAccountDef {
-    let resolution = if account.is_signer && account.address.is_none() && account.pda.is_none() {
-        AccountResolution::Signer
-    } else if let Some(address) = &account.address {
-        AccountResolution::Known {
-            address: address.clone(),
-        }
-    } else if account.pda.is_some() {
-        let pda_name = sanitize_identifier(
-            account
-                .pda
-                .as_ref()
-                .and_then(|pda| pda.name.as_deref())
-                .unwrap_or(&account.name),
-        );
-        if pdas.contains_key(&pda_name) {
-            AccountResolution::PdaRef {
-                pda_name: pda_name.to_string(),
-            }
-        } else if let Some(pda_info) = &account.pda {
-            let pda_def =
-                convert_idl_pda_to_def(&pda_name, &pda_info.seeds, pda_info.program.as_ref());
-            AccountResolution::PdaInline {
-                seeds: pda_def.seeds,
-                program_id: pda_def.program_id,
-                program: pda_def.program,
-            }
-        } else {
-            AccountResolution::UserProvided
-        }
-    } else if pdas.contains_key(&sanitize_identifier(&account.name)) {
-        AccountResolution::PdaRef {
-            pda_name: sanitize_identifier(&account.name),
-        }
-    } else {
-        AccountResolution::UserProvided
-    };
-
-    InstructionAccountDef {
-        name: sanitize_identifier(&account.name),
-        is_signer: account.is_signer,
-        is_writable: account.is_mut,
-        resolution,
-        is_optional: account.optional,
-        docs: account.docs.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{AmountDecimalsSource, InstructionAmountHint, PdaSeedDef};
 
     #[test]
     fn builds_program_only_stack_spec_from_raw_idl() {
@@ -452,19 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn preserves_nul_const_pda_seeds_as_bytes() {
-        assert_eq!(
-            convert_const_pda_seed(&[0, 0]),
-            PdaSeedDef::Bytes { value: vec![0, 0] }
-        );
-        assert_eq!(
-            convert_const_pda_seed(b"state"),
-            PdaSeedDef::Literal {
-                value: "state".to_string(),
-            }
-        );
-    }
-
     #[test]
     fn preserves_nested_seed_paths_when_building_program_only_specs() {
         let idl = arete_idl::parse::parse_idl_content(

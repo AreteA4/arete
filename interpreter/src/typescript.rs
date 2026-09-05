@@ -5589,6 +5589,61 @@ mod tests {
             .contains("Rebuild the ProgramSpec and StackManifest artifact closure"));
     }
 
+    /// Address Lookup Table: `lookup_table` is derived on create only; every
+    /// other instruction takes it from the caller, and `extend_lookup_table`
+    /// keeps its bincode `u64` vector length prefix.
+    #[test]
+    fn address_lookup_table_program_sdk_derives_lookup_table_on_create_only() {
+        let spec = crate::program_sdk::build_program_only_stack_spec_from_idl_bytes(
+            include_bytes!("../../arete-idl/tests/fixtures/address-lookup-table.json"),
+            None,
+            "AddressLookupTable",
+        )
+        .expect("ALT program-only stack spec should build");
+        let output =
+            compile_program_modules(spec, None).expect("typescript program SDK generation");
+        // Instruction handlers (discriminators, account metas, arg schemas) are
+        // emitted with the interfaces; the stack definition only wires them up.
+        let code = output.interfaces;
+
+        for tag in 0u8..5 {
+            assert!(
+                code.contains(&format!("discriminator: [{tag}, 0, 0, 0],")),
+                "instruction tag {tag} must be a u32-LE bincode discriminator:\n{code}"
+            );
+        }
+        assert!(
+            code.contains("vecU64Len"),
+            "extend_lookup_table must keep its u64 vector length prefix:\n{code}"
+        );
+        assert!(
+            output.pda_degradations.is_empty(),
+            "no PDA should degrade: {:?}",
+            output.warnings
+        );
+
+        let lookup_table_accounts: Vec<&str> = code
+            .lines()
+            .filter(|line| {
+                line.contains("category: '")
+                    && line
+                        .to_ascii_lowercase()
+                        .replace('_', "")
+                        .contains("name: 'lookuptable'")
+            })
+            .collect();
+        assert_eq!(lookup_table_accounts.len(), 5, "{code}");
+        let derived = lookup_table_accounts
+            .iter()
+            .filter(|line| line.contains("category: 'pda', pdaConfig:"))
+            .count();
+        let caller_provided = lookup_table_accounts
+            .iter()
+            .filter(|line| line.contains("category: 'userProvided'"))
+            .count();
+        assert_eq!((derived, caller_provided), (1, 4), "{code}");
+    }
+
     #[test]
     fn program_account_codegen_is_semantic_and_release_lives_in_program_reads() {
         let identity = crate::program_sdk::build_oss_program_identity_v1_from_idl_bytes(

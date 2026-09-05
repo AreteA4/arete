@@ -1,0 +1,298 @@
+{
+  "version": "1.0.0",
+  "name": "address_lookup_table",
+  "address": "AddressLookupTab1e1111111111111111111111111",
+  "metadata": {
+    "address": "AddressLookupTab1e1111111111111111111111111",
+    "name": "address_lookup_table",
+    "version": "1.0.0",
+    "spec": "0.1.0",
+    "origin": "native"
+  },
+  "docs": [
+    "Solana Address Lookup Table. Hand-authored; source of truth:",
+    "https://github.com/anza-xyz/solana-sdk/tree/master/address-lookup-table-interface",
+    "",
+    "This program serializes with bincode, not Borsh. Two consequences:",
+    "",
+    "1. Instruction tags are u32 little-endian. Each instruction declares",
+    "   `discriminant: {\"type\": \"u32\"}` and the compiler emits all four bytes.",
+    "",
+    "2. bincode prefixes sequences with a u64 length; Borsh uses u32. `new_addresses`",
+    "   declares `lengthPrefix: \"u64\"`. Omitting it means Borsh's u32.",
+    "",
+    "The account is `ProgramState::LookupTable(LookupTableMeta)`, so its discriminator",
+    "is the u32-LE tag [1,0,0,0]. Borsh and bincode agree byte-for-byte on the 56-byte",
+    "meta header. The packed address array after offset 56 has no length prefix and",
+    "cannot be decoded."
+  ],
+  "instructions": [
+    {
+      "name": "create_lookup_table",
+      "discriminator": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discriminant": {
+        "type": "u32",
+        "value": 0
+      },
+      "docs": [
+        "Create an address lookup table.",
+        "Table address is a PDA of [authority, recent_slot.to_le_bytes()]."
+      ],
+      "accounts": [
+        {
+          "name": "lookup_table",
+          "isMut": true,
+          "isSigner": false,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "authority"
+              },
+              {
+                "kind": "arg",
+                "path": "recent_slot",
+                "type": "u64"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "isMut": false,
+          "isSigner": true
+        },
+        {
+          "name": "payer",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "system_program",
+          "isMut": false,
+          "isSigner": false,
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "recent_slot",
+          "type": "u64"
+        },
+        {
+          "name": "bump_seed",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "freeze_lookup_table",
+      "discriminator": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "discriminant": {
+        "type": "u32",
+        "value": 1
+      },
+      "docs": [
+        "Permanently freeze a lookup table, clearing its authority."
+      ],
+      "accounts": [
+        {
+          "name": "lookup_table",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "authority",
+          "isMut": false,
+          "isSigner": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "extend_lookup_table",
+      "discriminator": [
+        2,
+        0,
+        0,
+        0
+      ],
+      "discriminant": {
+        "type": "u32",
+        "value": 2
+      },
+      "docs": [
+        "Append new addresses to a lookup table.",
+        "The bincode wire format prefixes `new_addresses` with a u64 length."
+      ],
+      "accounts": [
+        {
+          "name": "lookup_table",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "authority",
+          "isMut": false,
+          "isSigner": true
+        },
+        {
+          "name": "payer",
+          "isMut": true,
+          "isSigner": true,
+          "optional": true
+        },
+        {
+          "name": "system_program",
+          "isMut": false,
+          "isSigner": false,
+          "optional": true,
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_addresses",
+          "docs": [
+            "Addresses appended by this instruction."
+          ],
+          "type": {
+            "vec": "publicKey",
+            "lengthPrefix": "u64"
+          }
+        }
+      ]
+    },
+    {
+      "name": "deactivate_lookup_table",
+      "discriminator": [
+        3,
+        0,
+        0,
+        0
+      ],
+      "discriminant": {
+        "type": "u32",
+        "value": 3
+      },
+      "docs": [
+        "Deactivate a lookup table, starting its close cool-down."
+      ],
+      "accounts": [
+        {
+          "name": "lookup_table",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "authority",
+          "isMut": false,
+          "isSigner": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "close_lookup_table",
+      "discriminator": [
+        4,
+        0,
+        0,
+        0
+      ],
+      "discriminant": {
+        "type": "u32",
+        "value": 4
+      },
+      "docs": [
+        "Close a deactivated lookup table and drain its lamports."
+      ],
+      "accounts": [
+        {
+          "name": "lookup_table",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "authority",
+          "isMut": false,
+          "isSigner": true
+        },
+        {
+          "name": "recipient",
+          "isMut": true,
+          "isSigner": false
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "LookupTable",
+      "discriminator": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "docs": [
+        "`ProgramState::LookupTable(LookupTableMeta)` \u2014 the 56-byte meta header.",
+        "A packed array of 32-byte addresses follows at offset 56 with no length",
+        "prefix; it is not representable in this IDL."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "deactivation_slot",
+            "docs": [
+              "u64::MAX while the table is active."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "last_extended_slot",
+            "type": "u64"
+          },
+          {
+            "name": "last_extended_slot_start_index",
+            "docs": [
+              "Address count immediately before the last extend."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "authority",
+            "docs": [
+              "None once the table is frozen."
+            ],
+            "type": {
+              "option": "publicKey"
+            }
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Keeps the address array 8-byte aligned."
+            ],
+            "type": "u16"
+          }
+        ]
+      }
+    }
+  ],
+  "types": [],
+  "events": [],
+  "errors": []
+}

@@ -4153,6 +4153,58 @@ mod tests {
         assert_eq!(output.module_name, "generated_stack");
     }
 
+    /// Address Lookup Table: `lookup_table` is derived on create only; every
+    /// other instruction takes it from the caller, and `extend_lookup_table`
+    /// keeps its bincode `u64` vector length prefix.
+    #[test]
+    fn address_lookup_table_program_sdk_derives_lookup_table_on_create_only() {
+        let spec = crate::program_sdk::build_program_only_stack_spec_from_idl_bytes(
+            include_bytes!("../../arete-idl/tests/fixtures/address-lookup-table.json"),
+            None,
+            "AddressLookupTable",
+        )
+        .expect("ALT program-only stack spec should build");
+        let output = compile_program_modules(spec, None).expect("python program SDK generation");
+        let programs = output.programs_py;
+
+        for tag in 0u8..5 {
+            assert!(
+                programs.contains(&format!("discriminator=bytes([{tag}, 0, 0, 0])")),
+                "instruction tag {tag} must be a u32-LE bincode discriminator:\n{programs}"
+            );
+        }
+        assert!(
+            programs.contains("\"vecU64Len\""),
+            "extend_lookup_table must keep its u64 vector length prefix:\n{programs}"
+        );
+
+        let lookup_table_metas: Vec<&str> = programs
+            .split("AccountMeta(")
+            .skip(1)
+            .filter(|block| {
+                block
+                    .split("resolution")
+                    .next()
+                    .map(|head| {
+                        head.to_ascii_lowercase()
+                            .replace('_', "")
+                            .contains("lookuptable")
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(lookup_table_metas.len(), 5, "{programs}");
+        let derived = lookup_table_metas
+            .iter()
+            .filter(|block| block.contains("resolution=Pda("))
+            .count();
+        let caller_provided = lookup_table_metas
+            .iter()
+            .filter(|block| block.contains("resolution=UserProvided()"))
+            .count();
+        assert_eq!((derived, caller_provided), (1, 4), "{programs}");
+    }
+
     #[test]
     fn python_generator_emits_program_sdk_module() {
         let output = compile_stack_spec(programs_stack_spec(), None)

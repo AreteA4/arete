@@ -223,9 +223,10 @@ pub struct ProgramSpecV1 {
 
 impl ProgramSpecV1 {
     pub fn from_document(document: &CanonicalIdlDocument) -> Self {
-        let pdas = extract_pdas(document.parsed_idl());
+        let extracted = extract_pdas(document.parsed_idl());
         let instructions =
-            extract_instructions(document.parsed_idl(), &pdas, document.program_id());
+            extract_instructions(document.parsed_idl(), &extracted, document.program_id());
+        let pdas = extracted.published();
         Self {
             schema: PROGRAM_SPEC_SCHEMA_V1.to_string(),
             program_id: document.program_id.clone(),
@@ -479,13 +480,57 @@ pub struct InstructionDefinitionV1 {
     pub docs: Vec<String>,
 }
 
-fn extract_pdas(idl: &IdlSpec) -> BTreeMap<String, PdaDefinitionV1> {
-    let mut pdas = BTreeMap::new();
-    let mut named_pdas = BTreeSet::new();
+/// PDA definitions extracted from an IDL, kept apart by provenance.
+///
+/// Provenance, not account name, decides how an instruction account resolves:
+///
+/// - `explicit` definitions come from the top-level `idl.pdas` array. They are
+///   program-level, reusable declarations, so an account that declares no PDA
+///   of its own but shares an explicit definition's name resolves to it.
+/// - `discovered` definitions are instruction-account PDAs that have exactly
+///   one consistent definition across the program. They are published as
+///   named derivations for SDK consumers, but they never resolve a same-named
+///   account that declares no PDA: such a discovery is instruction-local, not
+///   a program-wide declaration.
+///
+/// Names that carry conflicting account-level definitions are omitted from
+/// both maps; each instruction keeps its own definition inline.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct ExtractedPdas {
+    explicit: BTreeMap<String, PdaDefinitionV1>,
+    discovered: BTreeMap<String, PdaDefinitionV1>,
+}
+
+impl ExtractedPdas {
+    /// The published `ProgramSpec.pdas` map: explicit definitions first, then
+    /// the consistent discovered ones under names no explicit definition uses.
+    fn published(&self) -> BTreeMap<String, PdaDefinitionV1> {
+        let mut published = self.discovered.clone();
+        for (name, pda) in &self.explicit {
+            published.insert(name.clone(), pda.clone());
+        }
+        published
+    }
+
+    /// Whether `name` is an explicit, reusable program-level PDA declaration.
+    fn is_explicit(&self, name: &str) -> bool {
+        self.explicit.contains_key(name)
+    }
+
+    /// The definition a local PDA named `name` may reference instead of
+    /// inlining, if one is published under that name.
+    fn referenceable(&self, name: &str) -> Option<&PdaDefinitionV1> {
+        self.explicit
+            .get(name)
+            .or_else(|| self.discovered.get(name))
+    }
+}
+
+fn extract_pdas(idl: &IdlSpec) -> ExtractedPdas {
+    let mut extracted = ExtractedPdas::default();
     for pda in &idl.pdas {
         let name = sanitize_identifier(&pda.name);
-        named_pdas.insert(name.clone());
-        pdas.insert(
+        extracted.explicit.insert(
             name.clone(),
             convert_pda(&name, &pda.seeds, pda.program.as_ref()),
         );
@@ -495,32 +540,32 @@ fn extract_pdas(idl: &IdlSpec) -> BTreeMap<String, PdaDefinitionV1> {
         for account in instruction.flattened_accounts() {
             if let Some(pda) = &account.pda {
                 let name = sanitize_identifier(pda.name.as_deref().unwrap_or(&account.name));
-                if named_pdas.contains(&name) || conflicting_account_pdas.contains(&name) {
+                if extracted.is_explicit(&name) || conflicting_account_pdas.contains(&name) {
                     continue;
                 }
                 let candidate = convert_pda(&name, &pda.seeds, pda.program.as_ref());
-                match pdas.get(&name) {
+                match extracted.discovered.get(&name) {
                     None => {
-                        pdas.insert(name, candidate);
+                        extracted.discovered.insert(name, candidate);
                     }
                     Some(existing) if existing == &candidate => {}
                     Some(_) => {
                         // Account-level PDAs are instruction-local. Publishing one
                         // arbitrary definition under a shared name makes other
                         // instructions derive a plausible but incorrect address.
-                        pdas.remove(&name);
+                        extracted.discovered.remove(&name);
                         conflicting_account_pdas.insert(name);
                     }
                 }
             }
         }
     }
-    pdas
+    extracted
 }
 
 fn extract_instructions(
     idl: &IdlSpec,
-    pdas: &BTreeMap<String, PdaDefinitionV1>,
+    pdas: &ExtractedPdas,
     program_id: &str,
 ) -> Vec<InstructionDefinitionV1> {
     let discriminator_size = idl.instruction_discriminator_size();
@@ -616,7 +661,7 @@ fn validate_pda_seeds(seeds: &[PdaSeedV1]) -> Result<(), HashError> {
 
 fn convert_account(
     account: &arete_idl::IdlAccountArg,
-    pdas: &BTreeMap<String, PdaDefinitionV1>,
+    pdas: &ExtractedPdas,
 ) -> InstructionAccountV1 {
     let resolution = if account.is_signer && account.address.is_none() && account.pda.is_none() {
         AccountResolutionV1::Signer
@@ -625,9 +670,11 @@ fn convert_account(
             address: address.clone(),
         }
     } else if let Some(pda) = &account.pda {
+        // The account declares its own derivation. Reference the published
+        // definition only when it is identical; otherwise keep it inline.
         let name = sanitize_identifier(pda.name.as_deref().unwrap_or(&account.name));
         let converted = convert_pda(&name, &pda.seeds, pda.program.as_ref());
-        if pdas.get(&name) == Some(&converted) {
+        if pdas.referenceable(&name) == Some(&converted) {
             AccountResolutionV1::PdaRef { pda_name: name }
         } else {
             AccountResolutionV1::PdaInline {
@@ -637,8 +684,11 @@ fn convert_account(
             }
         }
     } else {
+        // The account declares no derivation. Only an explicit top-level IDL
+        // PDA may claim it by name; a PDA discovered on another instruction's
+        // same-named account is instruction-local and must not leak here.
         let name = sanitize_identifier(&account.name);
-        if pdas.contains_key(&name) {
+        if pdas.is_explicit(&name) {
             AccountResolutionV1::PdaRef { pda_name: name }
         } else {
             AccountResolutionV1::UserProvided
@@ -866,5 +916,246 @@ mod tests {
                 AccountResolutionV1::PdaInline { .. }
             ));
         }
+    }
+
+    fn demo_idl(instructions: &str, pdas: &str) -> Vec<u8> {
+        format!(
+            r#"{{
+            "address":"11111111111111111111111111111111",
+            "metadata":{{"name":"demo","version":"0.1.0","spec":"0.1.0"}},
+            "instructions":[{instructions}],
+            {pdas}
+            "accounts":[],"types":[],"events":[],"errors":[]
+        }}"#
+        )
+        .into_bytes()
+    }
+
+    fn resolution<'a>(
+        spec: &'a ProgramSpecV1,
+        instruction: &str,
+        account: &str,
+    ) -> &'a AccountResolutionV1 {
+        &spec
+            .instructions
+            .iter()
+            .find(|candidate| candidate.name == instruction)
+            .unwrap_or_else(|| panic!("instruction {instruction} missing"))
+            .accounts
+            .iter()
+            .find(|candidate| candidate.name == account)
+            .unwrap_or_else(|| panic!("account {instruction}.{account} missing"))
+            .resolution
+    }
+
+    const LOCAL_STATE_PDA: &str =
+        r#"{"name":"state","pda":{"seeds":[{"kind":"const","value":[115,116,97,116,101]}]}}"#;
+    const PLAIN_STATE: &str = r#"{"name":"state"}"#;
+    const EXPLICIT_STATE_PDA: &str =
+        r#""pdas":[{"name":"state","seeds":[{"kind":"const","value":[115,116,97,116,101]}]}],"#;
+
+    /// Matrix row: local PDA in one instruction, same-named plain account in
+    /// another. The plain account must stay user-provided; the discovered
+    /// definition is instruction-local, not a program-wide declaration.
+    #[test]
+    fn local_pda_does_not_leak_to_same_named_plain_accounts() {
+        let source = demo_idl(
+            &format!(
+                r#"{{"name":"create","discriminator":[1],"accounts":[{LOCAL_STATE_PDA}],"args":[]}},
+                   {{"name":"update","discriminator":[2],"accounts":[{PLAIN_STATE}],"args":[]}},
+                   {{"name":"close","discriminator":[3],"accounts":[{PLAIN_STATE}],"args":[]}}"#
+            ),
+            "",
+        );
+        let document = CanonicalIdlDocument::parse(&source, None).unwrap();
+        let spec = ProgramSpecV1::from_document(&document);
+
+        // The consistent discovered derivation stays published as a named helper...
+        assert!(spec.pdas.contains_key("state"));
+        assert!(matches!(
+            resolution(&spec, "create", "state"),
+            AccountResolutionV1::PdaRef { pda_name } if pda_name == "state"
+        ));
+        // ...but never claims an account that declares no PDA of its own.
+        assert_eq!(
+            resolution(&spec, "update", "state"),
+            &AccountResolutionV1::UserProvided
+        );
+        assert_eq!(
+            resolution(&spec, "close", "state"),
+            &AccountResolutionV1::UserProvided
+        );
+    }
+
+    /// Matrix row: an explicit top-level PDA is reusable by name from every
+    /// instruction, including accounts that declare no PDA.
+    #[test]
+    fn explicit_top_level_pda_is_referenced_by_every_same_named_account() {
+        let source = demo_idl(
+            &format!(
+                r#"{{"name":"create","discriminator":[1],"accounts":[{LOCAL_STATE_PDA}],"args":[]}},
+                   {{"name":"update","discriminator":[2],"accounts":[{PLAIN_STATE}],"args":[]}}"#
+            ),
+            EXPLICIT_STATE_PDA,
+        );
+        let document = CanonicalIdlDocument::parse(&source, None).unwrap();
+        let spec = ProgramSpecV1::from_document(&document);
+
+        assert_eq!(spec.pdas.len(), 1);
+        for instruction in ["create", "update"] {
+            assert!(
+                matches!(
+                    resolution(&spec, instruction, "state"),
+                    AccountResolutionV1::PdaRef { pda_name } if pda_name == "state"
+                ),
+                "{instruction}.state should reference the explicit PDA"
+            );
+        }
+    }
+
+    /// Matrix row: a local PDA that differs from the same-named explicit PDA
+    /// stays inline; the explicit definition is what the name means.
+    #[test]
+    fn local_pda_differing_from_explicit_pda_stays_inline() {
+        let different_local =
+            r#"{"name":"state","pda":{"seeds":[{"kind":"const","value":[111,116,104,101,114]}]}}"#;
+        let source = demo_idl(
+            &format!(
+                r#"{{"name":"create","discriminator":[1],"accounts":[{different_local}],"args":[]}},
+                   {{"name":"update","discriminator":[2],"accounts":[{PLAIN_STATE}],"args":[]}}"#
+            ),
+            EXPLICIT_STATE_PDA,
+        );
+        let document = CanonicalIdlDocument::parse(&source, None).unwrap();
+        let spec = ProgramSpecV1::from_document(&document);
+
+        assert_eq!(
+            spec.pdas["state"].seeds,
+            vec![PdaSeedV1::Literal {
+                value: "state".to_string()
+            }],
+            "the explicit definition owns the name"
+        );
+        assert!(matches!(
+            resolution(&spec, "create", "state"),
+            AccountResolutionV1::PdaInline { seeds, .. }
+                if seeds == &[PdaSeedV1::Literal { value: "other".to_string() }]
+        ));
+        assert!(matches!(
+            resolution(&spec, "update", "state"),
+            AccountResolutionV1::PdaRef { pda_name } if pda_name == "state"
+        ));
+    }
+
+    /// Matrix row: no local PDA and no explicit PDA is user-provided, even
+    /// when a nested/composite account elsewhere carries the same name.
+    #[test]
+    fn nested_local_pda_does_not_leak_to_same_named_plain_accounts() {
+        // Composite accounts flatten to `<group><Child>`; the nested PDA is
+        // published under that flattened name.
+        let nested = r#"{"name":"group","accounts":[{"name":"state","pda":{"seeds":[{"kind":"const","value":[115,116,97,116,101]}]}}]}"#;
+        let plain_flattened = r#"{"name":"groupState"}"#;
+        let source = demo_idl(
+            &format!(
+                r#"{{"name":"create","discriminator":[1],"accounts":[{nested}],"args":[]}},
+                   {{"name":"update","discriminator":[2],"accounts":[{plain_flattened}],"args":[]}}"#
+            ),
+            "",
+        );
+        let document = CanonicalIdlDocument::parse(&source, None).unwrap();
+        let spec = ProgramSpecV1::from_document(&document);
+
+        assert!(spec.pdas.contains_key("groupState"));
+        assert!(matches!(
+            resolution(&spec, "create", "groupState"),
+            AccountResolutionV1::PdaRef { pda_name } if pda_name == "groupState"
+        ));
+        assert_eq!(
+            resolution(&spec, "update", "groupState"),
+            &AccountResolutionV1::UserProvided
+        );
+    }
+
+    /// Address Lookup Table declares `lookup_table` as a PDA on create only.
+    #[test]
+    fn address_lookup_table_derives_lookup_table_on_create_only() {
+        let document = CanonicalIdlDocument::parse(
+            include_bytes!("../../arete-idl/tests/fixtures/address-lookup-table.json"),
+            None,
+        )
+        .unwrap();
+        let spec = ProgramSpecV1::from_document(&document);
+
+        assert_eq!(
+            spec.program_id,
+            "AddressLookupTab1e1111111111111111111111111"
+        );
+        assert_eq!(spec.pdas.keys().collect::<Vec<_>>(), vec!["lookup_table"]);
+        assert_eq!(
+            spec.pdas["lookup_table"].seeds,
+            vec![
+                PdaSeedV1::AccountRef {
+                    account_name: "authority".to_string(),
+                },
+                PdaSeedV1::ArgRef {
+                    arg_name: "recent_slot".to_string(),
+                    arg_type: Some("u64".to_string()),
+                },
+            ]
+        );
+        assert!(matches!(
+            resolution(&spec, "create_lookup_table", "lookup_table"),
+            AccountResolutionV1::PdaRef { pda_name } if pda_name == "lookup_table"
+        ));
+        for instruction in [
+            "freeze_lookup_table",
+            "extend_lookup_table",
+            "deactivate_lookup_table",
+            "close_lookup_table",
+        ] {
+            assert_eq!(
+                resolution(&spec, instruction, "lookup_table"),
+                &AccountResolutionV1::UserProvided,
+                "{instruction}.lookup_table must be caller-provided"
+            );
+        }
+
+        let extend = spec
+            .instructions
+            .iter()
+            .find(|instruction| instruction.name == "extend_lookup_table")
+            .unwrap();
+        assert_eq!(extend.discriminator, vec![2, 0, 0, 0], "u32-LE bincode tag");
+        assert_eq!(extend.args[0].name, "new_addresses");
+        assert_eq!(extend.args[0].arg_type, "VecU64Len<solana_pubkey::Pubkey>");
+        let account = |name: &str| {
+            extend
+                .accounts
+                .iter()
+                .find(|account| account.name == name)
+                .unwrap()
+        };
+        assert!(account("lookup_table").is_writable && !account("lookup_table").is_signer);
+        assert!(account("authority").is_signer && !account("authority").is_writable);
+        assert!(
+            account("payer").is_signer
+                && account("payer").is_writable
+                && account("payer").is_optional
+        );
+        assert!(account("system_program").is_optional);
+        assert!(matches!(
+            &account("system_program").resolution,
+            AccountResolutionV1::Known { address } if address == "11111111111111111111111111111111"
+        ));
+        let create = spec
+            .instructions
+            .iter()
+            .find(|instruction| instruction.name == "create_lookup_table")
+            .unwrap();
+        assert_eq!(create.discriminator, vec![0, 0, 0, 0]);
+        assert!(create.accounts.iter().any(|account| account.name == "payer"
+            && account.is_signer
+            && account.is_writable
+            && !account.is_optional));
     }
 }

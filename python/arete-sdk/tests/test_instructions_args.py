@@ -144,6 +144,16 @@ class TestContainers:
         assert list(ser(schema, {"v": [1, 258]})) == [2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 1]
         assert list(ser(schema, {"v": []})) == [0, 0, 0, 0, 0, 0, 0, 0]
 
+    def test_serializes_an_address_lookup_table_extend_payload(self):
+        # Pinned to the Rust and TypeScript tests of the same name: u32-LE tag,
+        # u64-LE address count, raw 32-byte keys with no per-key prefix.
+        schema = [ArgSchema("new_addresses", {"vecU64Len": "pubkey"})]
+        out = serialize_args(bytes([2, 0, 0, 0]), {"new_addresses": [SYSTEM_PROGRAM]}, schema)
+        assert out[:4] == bytes([2, 0, 0, 0])
+        assert out[4:12] == (1).to_bytes(8, "little")
+        assert out[12:] == bytes(32)
+        assert len(out) == 4 + 8 + 32
+
     def test_serializes_fixed_arrays_without_a_prefix_and_checks_length(self):
         schema = [ArgSchema("a", {"array": ("u8", 3)})]
         assert list(ser(schema, {"a": [4, 5, 6]})) == [4, 5, 6]
