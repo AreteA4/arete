@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use arete_sdk::{Subscription, SubscriptionQuery};
 use clap::Args;
 
-use crate::api_client::ApiClient;
+use crate::api_client::{ApiClient, DEFAULT_DOMAIN_SUFFIX};
 
 #[derive(Args)]
 pub struct StreamArgs {
@@ -26,7 +26,7 @@ pub struct StreamArgs {
     #[arg(long)]
     pub url: Option<String>,
 
-    /// Stack name (resolves URL from arete.toml)
+    /// Owned deployment or registry stack name
     #[arg(short, long)]
     pub stack: Option<String>,
 
@@ -217,22 +217,74 @@ fn resolve_url(args: &StreamArgs, _config_path: &str, _view: &str) -> Result<Str
         return Ok(url.clone());
     }
 
-    // 2. Explicit hosted stack name
+    // 2. Explicit owned deployment or hosted registry stack name
     if let Some(stack_name) = &args.stack {
-        let install = ApiClient::new()?.get_registry_stack_install(stack_name, None)?;
-        let url = install.websocket_url.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Hosted stack '{stack_name}' has no single WebSocket endpoint; pass --url for the desired live binding"
-            )
-        })?;
-        validate_ws_url(&url)?;
-        return Ok(url);
+        return resolve_stack_url(&ApiClient::new()?, stack_name);
     }
 
     bail!(
         "Could not determine WebSocket URL.\n\n\
          Specify one of:\n  \
          --url wss://your-stack.stack.arete.run\n  \
-         --stack <registry-name>  (resolves the hosted endpoint)",
+         --stack <name>  (resolves an owned deployment or hosted registry endpoint)",
     )
+}
+
+fn resolve_stack_url(client: &ApiClient, stack_name: &str) -> Result<String> {
+    if client.has_api_key() {
+        if let Some(spec) = client.get_spec_by_name(stack_name)? {
+            let url = spec.websocket_url(DEFAULT_DOMAIN_SUFFIX);
+            validate_ws_url(&url)?;
+            return Ok(url);
+        }
+    }
+
+    let install = client.get_registry_stack_install(stack_name, None)?;
+    let url = install.websocket_url.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Hosted stack '{stack_name}' has no single WebSocket endpoint; pass --url for the desired live binding"
+        )
+    })?;
+    validate_ws_url(&url)?;
+    Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api_client::test_support::MockServer;
+
+    #[test]
+    fn stack_name_prefers_the_authenticated_owners_deployment() {
+        let server = MockServer::json(
+            200,
+            r#"[{"id":38,"user_id":16,"name":"ore","entity_name":"OreStream","crate_name":"ore_stream","module_path":"ore_stream","description":null,"package_name":null,"output_path":null,"url_slug":"m4jgyh","created_at":"2026-09-05T00:00:00Z","updated_at":"2026-09-05T00:00:00Z"}]"#,
+        );
+        let client =
+            ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_test".to_string());
+
+        let url = resolve_stack_url(&client, "ore").expect("owned deployment resolves");
+
+        assert_eq!(url, "wss://ore-m4jgyh.stack.arete.run");
+        let request = server.request();
+        assert_eq!(request.request_line, "GET /api/specs HTTP/1.1");
+        assert_eq!(request.header("authorization"), Some("Bearer a4_ak_test"));
+    }
+
+    #[test]
+    fn unauthenticated_stack_name_resolves_the_registry_endpoint() {
+        let server = MockServer::json(
+            200,
+            r#"{"name":"ore","stack":"arete:h1:stack-manifest:sha256:test","websocketUrl":"wss://managed-ore.stack.arete.run","httpUrl":null,"websocketAuth":null,"httpAuth":null,"description":null,"visibility":"public","specVersionId":null,"liveSpecHash":null,"liveSpec":null,"liveSpecs":[],"stackManifestHash":"arete:h1:stack-manifest:sha256:test","stackManifest":{},"chainBinding":null,"transactionBinding":null,"extensions":null,"programs":[]}"#,
+        );
+        let client = ApiClient::with_base_url(server.base_url());
+
+        let url = resolve_stack_url(&client, "ore").expect("registry stack resolves");
+
+        assert_eq!(url, "wss://managed-ore.stack.arete.run");
+        assert_eq!(
+            server.request().request_line,
+            "GET /api/registry/stacks/ore/install?capabilities=managed-solana-gateway-v1 HTTP/1.1"
+        );
+    }
 }

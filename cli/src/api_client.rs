@@ -918,6 +918,10 @@ impl ApiClient {
         self
     }
 
+    pub(crate) fn has_api_key(&self) -> bool {
+        self.api_key.is_some()
+    }
+
     // Spec endpoints
 
     pub fn list_specs(&self) -> Result<Vec<Spec>> {
