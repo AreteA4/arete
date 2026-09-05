@@ -508,6 +508,12 @@ fn registry_is_complete_and_domain_separated() {
         "stack-manifest",
         "deployment-release",
         "decoder-fixture-set",
+        "knowledge-document",
+        "knowledge-snapshot",
+        "extension-surface",
+        "sdk-install-target",
+        "catalog-bundle",
+        "catalog-publication-set",
     ];
     let actual: Vec<_> = IDENTITY_REGISTRY
         .iter()

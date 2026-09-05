@@ -5,6 +5,10 @@
 ### Features
 
 * add strict hosted-private Program Release V3 identity and shared vectors
+* register the catalog bundle publication identities (`knowledge-document`,
+  `knowledge-snapshot`, `extension-surface`, `sdk-install-target`,
+  `catalog-bundle`, `catalog-publication-set`) with shared Rust/TypeScript
+  vectors; no existing identity changes
 
 ## [0.3.2](https://github.com/AreteA4/arete/compare/arete-hash-v0.3.1...arete-hash-v0.3.2) (2026-09-03)
 

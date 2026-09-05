@@ -56,6 +56,12 @@ export const IDENTITY_REGISTRY = [
   { kind: "stack-manifest", profile: "arete-jcs-v1", visibility: "public", identityClass: "composite", apiField: "stackManifestHash", rustType: "HashId<StackManifest>", typescriptType: "StackManifestHash", projection: "arete.artifact-envelope/stack-manifest-v1", allowedDtoAudiences: ["public", "authenticated-owner", "internal-only"], databaseMappings: ["stack_manifest_artifacts.stack_manifest_hash"], legacyAliases: [] },
   { kind: "deployment-release", profile: "arete-jcs-v1", visibility: "authenticated-owner", identityClass: "composite", apiField: "deploymentReleaseHash", rustType: "HashId<DeploymentRelease>", typescriptType: "DeploymentReleaseHash", projection: "arete.deployment-release/v1", allowedDtoAudiences: ["authenticated-owner", "internal-only"], databaseMappings: ["deployment_releases.deployment_release_hash", "builds.deployment_release_hash", "deployments.deployment_release_hash"], legacyAliases: [] },
   { kind: "decoder-fixture-set", profile: "arete-jcs-v1", visibility: "internal-only", identityClass: "composite", apiField: "decoderFixtureSetHash", rustType: "HashId<DecoderFixtureSet>", typescriptType: "DecoderFixtureSetHash", projection: "arete.decoder-fixtures/v2", allowedDtoAudiences: ["internal-only"], databaseMappings: ["decoder_fixture_sets.fixture_set_hash"], legacyAliases: [] },
+  { kind: "knowledge-document", profile: "arete-jcs-v1", visibility: "public", identityClass: "canonical-content", apiField: "documentHash", rustType: "HashId<KnowledgeDocument>", typescriptType: "KnowledgeDocumentHash", projection: "arete.knowledge-document/v1", allowedDtoAudiences: ["public", "authenticated-owner", "internal-only"], databaseMappings: ["knowledge_document_artifacts.document_hash", "knowledge_snapshot_documents.document_hash", "catalog_bundle_documents.document_hash"], legacyAliases: [] },
+  { kind: "knowledge-snapshot", profile: "arete-jcs-v1", visibility: "public", identityClass: "composite", apiField: "knowledgeSnapshotHash", rustType: "HashId<KnowledgeSnapshot>", typescriptType: "KnowledgeSnapshotHash", projection: "arete.knowledge-snapshot/v1", allowedDtoAudiences: ["public", "authenticated-owner", "internal-only"], databaseMappings: ["knowledge_snapshot_artifacts.snapshot_hash", "catalog_publication_sets.knowledge_snapshot_hash"], legacyAliases: [] },
+  { kind: "extension-surface", profile: "arete-jcs-v1", visibility: "public", identityClass: "composite", apiField: "surfaceHash", rustType: "HashId<ExtensionSurface>", typescriptType: "ExtensionSurfaceHash", projection: "arete.extension-surface/v2", allowedDtoAudiences: ["public", "authenticated-owner", "internal-only"], databaseMappings: ["extension_surface_artifacts_v2.surface_hash", "sdk_install_target_artifacts.surface_hash", "catalog_bundle_surfaces.surface_hash"], legacyAliases: [] },
+  { kind: "sdk-install-target", profile: "arete-jcs-v1", visibility: "public", identityClass: "composite", apiField: "sdkInstallTargetHash", rustType: "HashId<SdkInstallTarget>", typescriptType: "SdkInstallTargetHash", projection: "arete.sdk-install-target/v1", allowedDtoAudiences: ["public", "authenticated-owner", "internal-only"], databaseMappings: ["sdk_install_target_artifacts.sdk_install_target_hash", "registry_package_sdk_targets.sdk_install_target_hash", "catalog_bundle_sdk_targets.sdk_install_target_hash"], legacyAliases: [] },
+  { kind: "catalog-bundle", profile: "arete-jcs-v1", visibility: "public", identityClass: "composite", apiField: "bundleHash", rustType: "HashId<CatalogBundle>", typescriptType: "CatalogBundleHash", projection: "arete.catalog-bundle/v1", allowedDtoAudiences: ["public", "authenticated-owner", "internal-only"], databaseMappings: ["catalog_bundles.bundle_hash", "catalog_publication_set_entries.bundle_hash"], legacyAliases: [] },
+  { kind: "catalog-publication-set", profile: "arete-jcs-v1", visibility: "public", identityClass: "composite", apiField: "setHash", rustType: "HashId<CatalogPublicationSet>", typescriptType: "CatalogPublicationSetHash", projection: "arete.catalog-publication-set/v1", allowedDtoAudiences: ["public", "authenticated-owner", "internal-only"], databaseMappings: ["catalog_publication_sets.set_hash", "catalog_active_sets.set_hash", "catalog_publication_events.set_hash"], legacyAliases: [] },
 ] as const satisfies readonly IdentityMetadata<string>[];
 
 export interface NonHashIdentityMetadata {
@@ -116,6 +122,12 @@ export type LiveSpecHash = HashId<"live-spec">;
 export type StackManifestHash = HashId<"stack-manifest">;
 export type DeploymentReleaseHash = HashId<"deployment-release">;
 export type DecoderFixtureSetHash = HashId<"decoder-fixture-set">;
+export type KnowledgeDocumentHash = HashId<"knowledge-document">;
+export type KnowledgeSnapshotHash = HashId<"knowledge-snapshot">;
+export type ExtensionSurfaceHash = HashId<"extension-surface">;
+export type SdkInstallTargetHash = HashId<"sdk-install-target">;
+export type CatalogBundleHash = HashId<"catalog-bundle">;
+export type CatalogPublicationSetHash = HashId<"catalog-publication-set">;
 
 export interface ParsedHashId<K extends HashKind = HashKind> {
   readonly id: HashId<K>;
