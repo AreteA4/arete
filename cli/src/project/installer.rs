@@ -74,9 +74,7 @@ pub fn install_without_saving(
     options: NoSaveDependencyOptions,
 ) -> Result<()> {
     let (package, requirement) = split_package_requirement(package_spec)?;
-    let alias = options
-        .alias
-        .unwrap_or_else(|| package.rsplit('/').next().unwrap_or(&package).to_string());
+    let alias = select_local_alias(kind, &package, options.alias.as_deref())?;
     let target = options.target.unwrap_or(InstallTarget::TypeScript);
     let invocation_root = fs::canonicalize(std::env::current_dir()?)?;
     let output = options.output.map(PathBuf::from).unwrap_or_else(|| {
@@ -159,9 +157,74 @@ pub fn add_and_install(
         .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
     let mut manifest = ProjectManifest::load(manifest_path)?.document;
     let (package, supplied_requirement) = split_package_requirement(package_spec)?;
-    let alias = options
-        .alias
-        .unwrap_or_else(|| package.rsplit('/').next().unwrap_or(&package).to_string());
+    // The remote lookup (`package`) is sent to the registry unchanged; the
+    // local alias is a deterministic cross-language identifier derived from it
+    // unless the user chose one explicitly. Both are validated before any
+    // file, manifest, or lock is written.
+    // One package occupies exactly one local alias. Look the package up first,
+    // always, including when --alias was supplied: keying only on the alias
+    // lets the same package be installed twice under two names, which produces
+    // duplicate manifest entries, duplicate lock entries, and two generated
+    // outputs for one dependency.
+    //
+    // The derived default alias also changed (it now lower-cases and separates
+    // on non-alphanumeric runs, so `My-Program` yields `my-program` and
+    // `@scope/name` yields `scope-name`, where the old default took the last
+    // path segment), so a project written by an older CLI stores a key the new
+    // default would not reproduce.
+    let declared_alias = {
+        let entries: Box<dyn Iterator<Item = (&String, &DependencyV1)>> = match kind {
+            DependencyKind::Stack => Box::new(manifest.dependencies.stacks.iter()),
+            DependencyKind::Program => Box::new(manifest.dependencies.programs.iter()),
+        };
+        entries
+            .filter(|(_, entry)| match &entry.source {
+                DependencySourceV1::Registry(RegistrySourceV1 { registry }) => {
+                    registry.eq_ignore_ascii_case(&package)
+                }
+                _ => false,
+            })
+            .map(|(alias, _)| alias.clone())
+            .next()
+    };
+    let alias = match (declared_alias, options.alias.as_deref()) {
+        // Already declared, and the caller asked for a different local name.
+        // Renaming would orphan the existing lock entry and generated output,
+        // so say what is already there instead of adding a second dependency.
+        (Some(declared), Some(requested)) if declared != requested => bail!(
+            "arete.toml already declares {kind} '{package}' under the local alias '{declared}'; \
+             remove that entry first if you want to install it as '{requested}', or re-run \
+             without --alias to keep '{declared}'"
+        ),
+        // Already declared: keep the stored alias. It is pre-existing project
+        // state, but it still has to be a legal identifier in every generated
+        // language, and a project written before aliases were validated can
+        // hold one that is not.
+        (Some(declared), _) => {
+            super::alias::validate_local_alias(&declared, kind).map_err(|error| {
+                anyhow::anyhow!(
+                    "arete.toml already declares {kind} '{package}' under the local alias \
+                     '{declared}', which is not a portable identifier ({error}). Rename that \
+                     entry to a portable alias and reinstall."
+                )
+            })?;
+            declared
+        }
+        (None, explicit) => select_local_alias(kind, &package, explicit)?,
+    };
+    let existing = match kind {
+        DependencyKind::Stack => manifest.dependencies.stacks.get(&alias),
+        DependencyKind::Program => manifest.dependencies.programs.get(&alias),
+    };
+    if let Some(existing) = existing {
+        match &existing.source {
+            DependencySourceV1::Registry(RegistrySourceV1 { registry })
+                if registry.eq_ignore_ascii_case(&package) => {}
+            _ => bail!(
+                "{kind} alias '{alias}' already names a different dependency in arete.toml; pass --alias <name> to choose another local alias for '{package}'"
+            ),
+        }
+    }
     let requirement = match supplied_requirement {
         Some(requirement) => {
             semver::VersionReq::parse(&requirement)
@@ -497,7 +560,9 @@ fn resolve_saved_requirement(
         targets: vec![InstallTarget::TypeScript],
         generator_contract: GENERATOR_CONTRACT.into(),
     };
-    let response = ApiClient::new()?.resolve_registry_dependencies(&request)?;
+    let response = ApiClient::new()?
+        .resolve_registry_dependencies(&request)
+        .map_err(|error| describe_resolver_error(error, kind, package, false))?;
     if response.resolver_contract != RESOLVER_CONTRACT || response.dependencies.len() != 1 {
         bail!("Registry returned an invalid single-package resolver response");
     }
@@ -507,6 +572,7 @@ fn resolve_saved_requirement(
     }
     verify_resolved_kind_and_contract(kind, resolved)?;
     verify_resolved_extensions(resolved, &[InstallTarget::TypeScript])?;
+    verify_resolved_release_identity(resolved)?;
     let version = match resolved {
         ResolvedRegistryDependency::Stack { version, .. }
         | ResolvedRegistryDependency::Program { version, .. } => version,
@@ -766,7 +832,26 @@ fn resolve_dependencies(
             targets: manifest.document.sdk.targets.clone(),
             generator_contract: GENERATOR_CONTRACT.into(),
         };
-        let response = ApiClient::new()?.resolve_registry_dependencies(&request)?;
+        // A batch failure names one package only when the batch *is* one
+        // package. Attributing a multi-dependency failure to the first entry
+        // reported the wrong package and, with a batch-wide `locked` flag,
+        // could tell the user to `a4 update` a dependency that is not locked.
+        let single = match registry_requests.as_slice() {
+            [only] => Some((
+                only.kind,
+                only.package.clone(),
+                only.locked_package_release_hash.is_some(),
+            )),
+            _ => None,
+        };
+        let response = ApiClient::new()?
+            .resolve_registry_dependencies(&request)
+            .map_err(|error| match &single {
+                Some((kind, package, locked)) => {
+                    describe_resolver_error(error, *kind, package, *locked)
+                }
+                None => describe_resolver_batch_error(error, &registry_requests),
+            })?;
         if response.resolver_contract != RESOLVER_CONTRACT {
             bail!(
                 "Registry returned resolver contract '{}'; expected '{}'",
@@ -795,6 +880,19 @@ fn resolve_dependencies(
             }
             verify_resolved_kind_and_contract(request.kind, &response)?;
             verify_resolved_extensions(&response, &manifest.document.sdk.targets)?;
+            verify_resolved_release_identity(&response)?;
+            if let Some(locked) = &request.locked_package_release_hash {
+                if response.package_release_hash() != locked {
+                    bail!(
+                        "Registry resolved '{}' to release {} but arete.lock pins {}; run `a4 update {} {}` to advance intentionally",
+                        request.alias,
+                        response.package_release_hash(),
+                        locked,
+                        request.kind,
+                        request.alias
+                    );
+                }
+            }
             let dependency = manifest
                 .dependency(request.kind, &request.alias)
                 .expect("request came from manifest");
@@ -971,6 +1069,167 @@ fn verify_resolved_extensions(
         }
     }
     Ok(())
+}
+
+/// Choose the local alias for a registry dependency: the explicit `--alias`
+/// when given (validated for every generated language), otherwise the
+/// deterministic alias derived from the unchanged remote lookup.
+fn select_local_alias(
+    kind: DependencyKind,
+    package: &str,
+    explicit: Option<&str>,
+) -> Result<String> {
+    match explicit {
+        Some(alias) => {
+            super::alias::validate_local_alias(alias, kind)?;
+            Ok(alias.to_string())
+        }
+        None => Ok(super::alias::derive_local_alias(package)),
+    }
+}
+
+/// Every resolved package must carry an immutable release identity, and a
+/// stack must pin every constituent program by exact release. Floating or
+/// incomplete responses are rejected before anything is generated.
+fn verify_resolved_release_identity(resolved: &ResolvedRegistryDependency) -> Result<()> {
+    let release = resolved.package_release_hash();
+    if !is_package_release_hash(release) {
+        bail!(
+            "Registry returned an invalid immutable release identity '{release}' for '{}'",
+            resolved.package()
+        );
+    }
+    if let ResolvedRegistryDependency::Program {
+        package, install, ..
+    } = resolved
+    {
+        // A direct program install pins the same hosted program identity a
+        // stack member does, so it gets the same check: without this only the
+        // package-level hash was validated and an empty or inconsistent
+        // program release could reach the generated SDK and arete.lock.
+        if install.release.program_release_hash.trim().is_empty()
+            || install.release.program_spec_hash != install.definition.program_spec_hash
+        {
+            bail!("Registry returned program '{package}' without an exact release identity");
+        }
+    }
+    if let ResolvedRegistryDependency::Stack {
+        package,
+        stack_manifest,
+        programs,
+        ..
+    } = resolved
+    {
+        let declared = stack_manifest
+            .pointer("/payload/programs")
+            .and_then(|programs| programs.as_array())
+            .map(|programs| programs.len())
+            .unwrap_or(0);
+        if declared != programs.len() {
+            bail!(
+                "Registry returned {} exact program releases for stack '{package}' but its StackManifest declares {declared}; refusing an incomplete stack package",
+                programs.len()
+            );
+        }
+        for program in programs {
+            if program.release.program_release_hash.trim().is_empty()
+                || program.release.program_spec_hash != program.definition.program_spec_hash
+            {
+                bail!(
+                    "Registry returned program '{}' for stack '{package}' without an exact release identity",
+                    program.definition.program_id
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_package_release_hash(value: &str) -> bool {
+    [
+        "arete:registry-package-release:v1:sha256:",
+        "arete:registry-package-release:v2:sha256:",
+    ]
+    .iter()
+    .any(|prefix| {
+        value.strip_prefix(prefix).is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+    })
+}
+
+/// Describe a failure for a multi-dependency resolve. The transport reports
+/// one status for the whole batch, so no single dependency can be blamed and
+/// the remedy is stated over the set that was actually requested.
+fn describe_resolver_batch_error(
+    error: anyhow::Error,
+    requests: &[RegistryDependencyRequest],
+) -> anyhow::Error {
+    let names = requests
+        .iter()
+        .map(|request| format!("{} '{}'", request.kind, request.package))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let locked = requests
+        .iter()
+        .filter(|request| request.locked_package_release_hash.is_some())
+        .map(|request| format!("{} '{}'", request.kind, request.package))
+        .collect::<Vec<_>>();
+    let Some(http) = error.downcast_ref::<crate::api_client::ApiHttpError>() else {
+        return error.context(format!("Failed to resolve {names} through the registry"));
+    };
+    match http.status {
+        401 => {
+            anyhow::anyhow!("Resolving {names} requires a login; run `a4 auth login` and try again")
+        }
+        403 => anyhow::anyhow!("This account is not entitled to resolve one or more of {names}"),
+        404 => anyhow::anyhow!("One or more of {names} is unavailable to this account or unknown"),
+        409 if !locked.is_empty() => anyhow::anyhow!(
+            "The registry could not honor the exact lock for one or more of {}; this is an \
+             integrity failure, so nothing was installed. Run `a4 update` for the affected \
+             dependency once you have confirmed the intended release.",
+            locked.join(", ")
+        ),
+        _ => error.context(format!("Failed to resolve {names} through the registry")),
+    }
+}
+
+/// Translate a resolver transport failure into an actionable message without
+/// creating an existence oracle: unknown names and packages owned by another
+/// account produce the same text, and no lookup ever falls back to a
+/// differently scoped endpoint.
+fn describe_resolver_error(
+    error: anyhow::Error,
+    kind: DependencyKind,
+    package: &str,
+    locked: bool,
+) -> anyhow::Error {
+    let Some(http) = error.downcast_ref::<crate::api_client::ApiHttpError>() else {
+        return error.context(format!(
+            "Failed to resolve {kind} '{package}' through the registry"
+        ));
+    };
+    match http.status {
+        401 => anyhow::anyhow!(
+            "Registry resolution for {kind} '{package}' requires a login: run `a4 auth login`, then retry ({http})"
+        ),
+        403 => anyhow::anyhow!(
+            "This account is not entitled to install {kind} '{package}' ({http})"
+        ),
+        404 => anyhow::anyhow!(
+            "{kind} '{package}' is unavailable to this account or unknown; check the name, or log in as the owner if it is private ({http})"
+        ),
+        409 if locked => anyhow::anyhow!(
+            "arete.lock integrity failure for {kind} '{package}': the locked release is no longer resolvable. Nothing was changed; run `a4 update {kind} <alias>` only if you intend to advance ({http})"
+        ),
+        409 => anyhow::anyhow!(
+            "Registry could not satisfy {kind} '{package}' ({http})"
+        ),
+        _ => anyhow::Error::from(http.clone()),
+    }
 }
 
 fn build_lock(
@@ -1893,5 +2152,835 @@ version = "^1.0.0"
         let parsed: ManifestV1 = toml::from_str(&rendered).unwrap();
         parsed.validate().unwrap();
         assert!(parsed.dependencies.programs.contains_key("demo"));
+    }
+}
+
+#[cfg(test)]
+mod private_install_tests {
+    //! Owner-private registry installs through the manifest resolver: one
+    //! endpoint for saved and `--no-save` flows, portable local aliases, exact
+    //! immutable locks, deterministic reinstall, explicit update, actionable
+    //! errors without an existence oracle, and atomic project updates.
+
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::MutexGuard;
+
+    use serde_json::{json, Value};
+
+    use super::*;
+    use crate::api_client::test_support::{MockServer, ENV_LOCK};
+
+    const RESOLVE_PATH: &str = "/api/registry/v1/resolve";
+    const OWNER_KEY: &str = "a4_sk_private_install_owner";
+
+    /// Serialises the process-global API URL and credentials for one test.
+    struct RegistrySandbox {
+        _guard: MutexGuard<'static, ()>,
+        dir: tempfile::TempDir,
+        server: MockServer,
+    }
+
+    impl RegistrySandbox {
+        fn new(responses: Vec<(u16, String)>, authenticated: bool) -> Self {
+            let guard = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let dir = tempfile::tempdir().expect("tempdir");
+            let server = MockServer::json_sequence(responses);
+            std::env::set_var("ARETE_API_URL", server.base_url());
+            let credentials = dir.path().join("credentials.toml");
+            if authenticated {
+                fs::write(
+                    &credentials,
+                    format!("[keys]\n\"{}\" = \"{OWNER_KEY}\"\n", server.base_url()),
+                )
+                .unwrap();
+            } else {
+                fs::write(&credentials, "[keys]\n").unwrap();
+            }
+            std::env::set_var("ARETE_CREDENTIALS_PATH", &credentials);
+            std::env::set_var("ARETE_TELEMETRY_DISABLED", "1");
+            RegistrySandbox {
+                _guard: guard,
+                dir,
+                server,
+            }
+        }
+
+        fn project(&self) -> PathBuf {
+            let root = self.dir.path().join("project");
+            fs::create_dir_all(&root).unwrap();
+            let manifest = root.join("arete.toml");
+            fs::write(
+                &manifest,
+                r#"manifest_version = 1
+
+[project]
+name = "private-install"
+private = true
+
+[sdk]
+targets = ["typescript"]
+
+[sdk.typescript]
+output_dir = "./generated/typescript"
+"#,
+            )
+            .unwrap();
+            manifest
+        }
+
+        fn request(&self) -> crate::api_client::test_support::ReceivedRequest {
+            self.server.request()
+        }
+    }
+
+    impl Drop for RegistrySandbox {
+        fn drop(&mut self) {
+            std::env::remove_var("ARETE_API_URL");
+            std::env::remove_var("ARETE_CREDENTIALS_PATH");
+        }
+    }
+
+    fn program_spec_json(program_id: &str, name: &str) -> (Value, String) {
+        let idl = format!(
+            r#"{{"address":"{program_id}","metadata":{{"name":"{name}","version":"1.0.0","spec":"0.1.0"}},"instructions":[{{"name":"ping","discriminator":[1,2,3,4,5,6,7,8],"accounts":[{{"name":"payer","isMut":true,"isSigner":true}}],"args":[]}}],"accounts":[],"types":[],"events":[],"errors":[]}}"#
+        );
+        let document = arete_hash::CanonicalIdlDocument::parse(idl.as_bytes(), None).unwrap();
+        let artifact = arete_artifacts::ProgramSpecArtifact::new(
+            arete_hash::ProgramSpecV1::from_document(&document),
+        )
+        .unwrap();
+        let hash = artifact.artifact_hash.to_string();
+        (serde_json::to_value(&artifact).unwrap(), hash)
+    }
+
+    fn release_hash(marker: char) -> String {
+        format!(
+            "arete:registry-package-release:v2:sha256:{}",
+            marker.to_string().repeat(64)
+        )
+    }
+
+    fn program_install(program_id: &str, name: &str, release: &str) -> Value {
+        let (program_spec, spec_hash) = program_spec_json(program_id, name);
+        let idl_payload = program_spec["payload"]["idlSnapshot"].clone();
+        json!({
+            "installName": name,
+            "displayName": name,
+            "definition": {
+                "programId": program_id,
+                "programSpecHash": spec_hash,
+                "idlContentHash": program_spec["payload"]["idlContentHash"],
+                "normalizedIdlHash": program_spec["payload"]["normalizedIdlHash"],
+                "idlPayload": idl_payload,
+                "programSpec": program_spec,
+                "extensions": null
+            },
+            "release": {
+                "programReleaseHash": release,
+                "programSpecHash": spec_hash
+            },
+            "transport": {
+                "kind": "hosted-binding",
+                "binding": {
+                    "endpoint": "https://reads.example.test/private/",
+                    "programReadBindingId": "prb_00000000000000000000000000000077",
+                    "auth": {
+                        "required": true,
+                        "mode": "signed_session",
+                        "sessionEndpoint": "https://api.example.test/ws/sessions",
+                        "targetKind": "program-read-binding",
+                        "targetId": "prb_00000000000000000000000000000077",
+                        "acceptedKeyClasses": ["publishable", "secret"]
+                    }
+                }
+            },
+            "chainBinding": gateway_binding(vec!["read"], vec!["anonymous", "publishable", "secret"], false),
+            "transactionBinding": gateway_binding(vec!["transaction:inspect", "transaction:send"], vec!["publishable", "secret"], true)
+        })
+    }
+
+    /// Managed Solana gateway capability binding: hosted installs must carry
+    /// both the chain-read and transaction descriptors.
+    fn gateway_binding(
+        scopes: Vec<&str>,
+        accepted_key_classes: Vec<&str>,
+        entitlement: bool,
+    ) -> Value {
+        json!({
+            "endpoint": "https://solana.example.test/gateway/",
+            "authPolicy": "signed_session",
+            "solanaGatewayBindingId": "sgb_00000000000000000000000000000001",
+            "cluster": "mainnet-beta",
+            "region": "us-west-1",
+            "auth": {
+                "required": true,
+                "mode": "signed_session",
+                "sessionEndpoint": "https://api.example.test/ws/sessions",
+                "jwksUrl": "https://api.example.test/.well-known/jwks.json",
+                "tokenTransport": "bearer",
+                "audience": "arete:solana-gateway",
+                "targetKind": "solana-gateway-binding",
+                "targetId": "sgb_00000000000000000000000000000001",
+                "scopes": scopes,
+                "acceptedKeyClasses": accepted_key_classes,
+                "transactionEntitlementRequired": entitlement,
+            }
+        })
+    }
+
+    fn program_resolution(alias: &str, package: &str, version: &str, marker: char) -> String {
+        json!({
+            "resolverContract": RESOLVER_CONTRACT,
+            "dependencies": [{
+                "kind": "program",
+                "alias": alias,
+                "package": package,
+                "version": version,
+                "packageReleaseHash": release_hash(marker),
+                "generatorContract": GENERATOR_CONTRACT,
+                "install": program_install("Vote111111111111111111111111111111111111111", "vote_program", &format!("arete:h1:program-release:sha256:{}", marker.to_string().repeat(64))),
+                "sdkExtensions": []
+            }]
+        })
+        .to_string()
+    }
+
+    fn not_found(alias: &str, package: &str) -> String {
+        json!({
+            "error": format!("Dependency '{alias}' cannot access program package '{package}'")
+        })
+        .to_string()
+    }
+
+    fn request_dependency(request: &crate::api_client::test_support::ReceivedRequest) -> Value {
+        let body: Value = serde_json::from_str(&request.body).expect("json body");
+        body["dependencies"][0].clone()
+    }
+
+    fn lock_of(manifest: &Path) -> ProjectLock {
+        ProjectLock::load_optional(manifest.with_file_name("arete.lock"))
+            .unwrap()
+            .expect("lock written")
+    }
+
+    #[test]
+    fn saved_install_by_owner_alias_uses_the_resolver_with_a_portable_alias_and_exact_lock() {
+        // Two resolver calls: version selection (`*`), then the saved `^0.1.0` install.
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (
+                    200,
+                    program_resolution("my-private-program", "My-Private_Program", "0.1.0", 'a'),
+                ),
+                (
+                    200,
+                    program_resolution("my-private-program", "My-Private_Program", "0.1.0", 'a'),
+                ),
+            ],
+            true,
+        );
+        let manifest = sandbox.project();
+        add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            "My-Private_Program",
+            AddDependencyOptions::default(),
+        )
+        .expect("owner-private install should succeed");
+
+        let first = sandbox.request();
+        assert!(
+            first
+                .request_line
+                .starts_with(&format!("POST {RESOLVE_PATH} ")),
+            "{}",
+            first.request_line
+        );
+        assert_eq!(
+            first.header("authorization"),
+            Some(format!("Bearer {OWNER_KEY}").as_str())
+        );
+        let dependency = request_dependency(&first);
+        assert_eq!(
+            dependency["package"], "My-Private_Program",
+            "remote lookup is sent unchanged"
+        );
+        assert_eq!(
+            dependency["alias"], "my-private-program",
+            "local alias is normalized"
+        );
+        assert_eq!(dependency["requirement"], "*");
+        let second = sandbox.request();
+        let dependency = request_dependency(&second);
+        assert_eq!(dependency["requirement"], "^0.1.0");
+        assert!(
+            dependency.get("lockedPackageReleaseHash").is_none()
+                || dependency["lockedPackageReleaseHash"].is_null()
+        );
+
+        let toml = fs::read_to_string(&manifest).unwrap();
+        assert!(
+            toml.contains("[dependencies.programs.my-private-program]"),
+            "{toml}"
+        );
+        assert!(toml.contains("registry = \"My-Private_Program\""), "{toml}");
+        let lock = lock_of(&manifest);
+        assert_eq!(lock.dependencies.len(), 1);
+        assert_eq!(lock.dependencies[0].alias, "my-private-program");
+        assert_eq!(
+            lock.dependencies[0].package_release_hash.as_deref(),
+            Some(release_hash('a').as_str())
+        );
+        assert_eq!(lock.dependencies[0].version.as_deref(), Some("0.1.0"));
+        assert!(manifest
+            .with_file_name("generated/typescript/programs/my-private-program")
+            .is_dir());
+    }
+
+    #[test]
+    fn stable_reference_and_stack_name_lookups_derive_valid_aliases() {
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (
+                    200,
+                    program_resolution(
+                        "upr-abcdefghijklmnopqrstuvwxyz012345",
+                        "upr_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+                        "0.1.0",
+                        'b',
+                    ),
+                ),
+                (
+                    200,
+                    program_resolution(
+                        "upr-abcdefghijklmnopqrstuvwxyz012345",
+                        "upr_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+                        "0.1.0",
+                        'b',
+                    ),
+                ),
+            ],
+            true,
+        );
+        let manifest = sandbox.project();
+        add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            "upr_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+            AddDependencyOptions::default(),
+        )
+        .expect("install by stable reference should succeed");
+        let dependency = request_dependency(&sandbox.request());
+        assert_eq!(
+            dependency["package"],
+            "upr_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+        );
+        assert_eq!(dependency["alias"], "upr-abcdefghijklmnopqrstuvwxyz012345");
+        let toml = fs::read_to_string(&manifest).unwrap();
+        assert!(
+            toml.contains("[dependencies.programs.upr-abcdefghijklmnopqrstuvwxyz012345]"),
+            "{toml}"
+        );
+    }
+
+    #[test]
+    fn no_save_install_uses_the_same_resolver_endpoint() {
+        let sandbox = RegistrySandbox::new(
+            vec![(
+                200,
+                program_resolution("plan004-shared", "Plan004-Shared", "0.1.0", 'c'),
+            )],
+            true,
+        );
+        let output = sandbox.dir.path().join("no-save-output");
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(sandbox.dir.path()).unwrap();
+        let result = install_without_saving(
+            DependencyKind::Program,
+            "Plan004-Shared",
+            NoSaveDependencyOptions {
+                alias: None,
+                target: Some(InstallTarget::TypeScript),
+                output: Some(output.to_string_lossy().into_owned()),
+                typescript_package: None,
+                rust_crate_prefix: None,
+                module: false,
+            },
+        );
+        std::env::set_current_dir(cwd).unwrap();
+        result.expect("--no-save install should succeed");
+        let request = sandbox.request();
+        assert!(request
+            .request_line
+            .starts_with(&format!("POST {RESOLVE_PATH} ")));
+        let dependency = request_dependency(&request);
+        assert_eq!(dependency["package"], "Plan004-Shared");
+        assert_eq!(dependency["alias"], "plan004-shared");
+        assert!(output.is_dir());
+        assert!(
+            !sandbox.dir.path().join("arete.toml").exists(),
+            "--no-save writes no manifest"
+        );
+    }
+
+    #[test]
+    fn reinstall_honors_the_exact_lock_and_update_advances_it() {
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (
+                    200,
+                    program_resolution("plan004-shared", "plan004-shared", "0.1.0", 'd'),
+                ),
+                (
+                    200,
+                    program_resolution("plan004-shared", "plan004-shared", "0.1.0", 'd'),
+                ),
+                // Reinstall: the server honors the lock even though 0.1.1 exists.
+                (
+                    200,
+                    program_resolution("plan004-shared", "plan004-shared", "0.1.0", 'd'),
+                ),
+                // Explicit update: unlocked request selects the newer revision.
+                (
+                    200,
+                    program_resolution("plan004-shared", "plan004-shared", "0.1.1", 'e'),
+                ),
+            ],
+            true,
+        );
+        let manifest = sandbox.project();
+        add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            "plan004-shared",
+            AddDependencyOptions::default(),
+        )
+        .unwrap();
+        sandbox.request();
+        sandbox.request();
+        let locked_before = lock_of(&manifest);
+
+        install_project(&manifest, InstallOptions::default()).expect("reinstall");
+        let reinstall = request_dependency(&sandbox.request());
+        assert_eq!(
+            reinstall["lockedPackageReleaseHash"],
+            release_hash('d'),
+            "reinstall sends the exact lock"
+        );
+        assert_eq!(lock_of(&manifest), locked_before, "reinstall never floats");
+
+        install_project(
+            &manifest,
+            InstallOptions {
+                update: Some(UpdateSelection {
+                    kind: Some(DependencyKind::Program),
+                    alias: Some("plan004-shared"),
+                }),
+                ..InstallOptions::default()
+            },
+        )
+        .expect("explicit update");
+        let update = request_dependency(&sandbox.request());
+        assert!(
+            update.get("lockedPackageReleaseHash").is_none()
+                || update["lockedPackageReleaseHash"].is_null(),
+            "update drops the lock: {update}"
+        );
+        let updated = lock_of(&manifest);
+        assert_eq!(updated.dependencies[0].version.as_deref(), Some("0.1.1"));
+        assert_eq!(
+            updated.dependencies[0].package_release_hash.as_deref(),
+            Some(release_hash('e').as_str())
+        );
+    }
+
+    #[test]
+    fn a_direct_program_install_requires_an_exact_program_release_identity() {
+        // The stack path already rejected a program without an exact release.
+        // A direct program install pins the same hosted identity into the
+        // generated SDK and arete.lock, so it must reject the same shapes.
+        let package = "Plan004-Program";
+        let alias = super::super::alias::derive_local_alias(package);
+        for (label, mutate) in [
+            (
+                "empty program release hash",
+                Box::new(|value: &mut Value| {
+                    value["dependencies"][0]["install"]["release"]["programReleaseHash"] =
+                        json!("   ");
+                }) as Box<dyn Fn(&mut Value)>,
+            ),
+            (
+                "release spec hash disagreeing with the definition",
+                Box::new(|value: &mut Value| {
+                    value["dependencies"][0]["install"]["release"]["programSpecHash"] =
+                        json!("arete:h1:program-spec:sha256:{}".replace("{}", &"f".repeat(64),));
+                }) as Box<dyn Fn(&mut Value)>,
+            ),
+        ] {
+            let mut body: Value =
+                serde_json::from_str(&program_resolution(&alias, package, "0.1.0", 'a')).unwrap();
+            mutate(&mut body);
+            let sandbox = RegistrySandbox::new(vec![(200, body.to_string())], true);
+            let manifest = sandbox.project();
+            let original = fs::read(&manifest).unwrap();
+            let error = add_and_install(
+                &manifest,
+                DependencyKind::Program,
+                package,
+                AddDependencyOptions::default(),
+            )
+            .expect_err("an inexact program release must be rejected");
+            let text = format!("{error:#}");
+            assert!(
+                text.contains("without an exact release identity"),
+                "{label}: {text}"
+            );
+            assert_eq!(
+                fs::read(&manifest).unwrap(),
+                original,
+                "{label}: manifest untouched"
+            );
+            assert!(
+                !manifest.with_file_name("arete.lock").exists(),
+                "{label}: no lock written"
+            );
+        }
+    }
+
+    #[test]
+    fn reinstalling_a_dependency_reuses_its_existing_alias_instead_of_duplicating() {
+        // The derived default alias changed: it now lower-cases and separates
+        // on non-alphanumeric runs, where the old default took the last path
+        // segment. A project written before that change stores the old key,
+        // and reinstalling must find it rather than adding a second entry.
+        let package = "owner/vote-program";
+        let legacy_alias = "vote-program"; // what the previous default produced
+        let derived = super::super::alias::derive_local_alias(package);
+        assert_ne!(
+            legacy_alias, derived,
+            "fixture is only meaningful if the derived alias changed"
+        );
+
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (200, program_resolution(legacy_alias, package, "0.1.0", 'a')),
+                (200, program_resolution(legacy_alias, package, "0.1.0", 'a')),
+            ],
+            true,
+        );
+        let manifest = sandbox.project();
+        let mut document: toml_edit::DocumentMut =
+            fs::read_to_string(&manifest).unwrap().parse().unwrap();
+        document["dependencies"]["programs"][legacy_alias]["source"]["registry"] =
+            toml_edit::value(package);
+        document["dependencies"]["programs"][legacy_alias]["version"] = toml_edit::value("^0.1.0");
+        fs::write(&manifest, document.to_string()).unwrap();
+
+        add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            package,
+            AddDependencyOptions::default(),
+        )
+        .expect("reinstall of an existing dependency succeeds");
+
+        let after: toml_edit::DocumentMut = fs::read_to_string(&manifest).unwrap().parse().unwrap();
+        let programs = after["dependencies"]["programs"]
+            .as_table_like()
+            .expect("programs table");
+        assert!(
+            programs.contains_key(legacy_alias),
+            "the existing alias is kept"
+        );
+        assert!(
+            !programs.contains_key(derived.as_str()),
+            "reinstall must not add a second entry under the newly derived alias"
+        );
+        assert_eq!(programs.len(), 1, "exactly one dependency entry");
+    }
+
+    #[test]
+    fn an_explicit_alias_cannot_install_an_already_declared_package_twice() {
+        // Duplicate detection is keyed on the package, not the alias, so
+        // --alias cannot smuggle a second copy of a dependency into the
+        // project under a different local name.
+        let package = "Plan004-Shared";
+        let declared_alias = super::super::alias::derive_local_alias(package);
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (
+                    200,
+                    program_resolution(&declared_alias, package, "0.1.0", 'a'),
+                ),
+                (
+                    200,
+                    program_resolution(&declared_alias, package, "0.1.0", 'a'),
+                ),
+            ],
+            true,
+        );
+        let manifest = sandbox.project();
+        add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            package,
+            AddDependencyOptions::default(),
+        )
+        .expect("first install succeeds");
+        let after_first = fs::read(&manifest).unwrap();
+
+        let error = add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            package,
+            AddDependencyOptions {
+                alias: Some("something-else".into()),
+                ..AddDependencyOptions::default()
+            },
+        )
+        .expect_err("a second alias for the same package must be refused");
+        let text = format!("{error:#}");
+        assert!(text.contains("already declares"), "{text}");
+        assert!(text.contains(&declared_alias), "{text}");
+        assert_eq!(
+            fs::read(&manifest).unwrap(),
+            after_first,
+            "the refused install leaves the manifest untouched"
+        );
+
+        let document: toml_edit::DocumentMut =
+            fs::read_to_string(&manifest).unwrap().parse().unwrap();
+        let programs = document["dependencies"]["programs"]
+            .as_table_like()
+            .expect("programs table");
+        assert_eq!(programs.len(), 1, "exactly one dependency entry");
+    }
+
+    #[test]
+    fn a_legacy_non_portable_alias_never_produces_a_duplicate_dependency() {
+        // Aliases were not validated before, so a project can hold one that is
+        // not a legal identifier in every generated language. Whatever the
+        // outcome, reinstalling must never leave the project with two entries
+        // for the same package.
+        let package = "Plan004-Shared";
+        let legacy_alias = "Plan004-Shared";
+        let derived = super::super::alias::derive_local_alias(package);
+        assert!(
+            super::super::alias::validate_local_alias(legacy_alias, DependencyKind::Program)
+                .is_err()
+        );
+
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (200, program_resolution(legacy_alias, package, "0.1.0", 'a')),
+                (200, program_resolution(legacy_alias, package, "0.1.0", 'a')),
+            ],
+            true,
+        );
+        let manifest = sandbox.project();
+        let mut document: toml_edit::DocumentMut =
+            fs::read_to_string(&manifest).unwrap().parse().unwrap();
+        document["dependencies"]["programs"][legacy_alias]["source"]["registry"] =
+            toml_edit::value(package);
+        document["dependencies"]["programs"][legacy_alias]["version"] = toml_edit::value("^0.1.0");
+        fs::write(&manifest, document.to_string()).unwrap();
+
+        let _ = add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            package,
+            AddDependencyOptions::default(),
+        );
+
+        let after: toml_edit::DocumentMut = fs::read_to_string(&manifest).unwrap().parse().unwrap();
+        let programs = after["dependencies"]["programs"]
+            .as_table_like()
+            .expect("programs table");
+        assert!(
+            !(programs.contains_key(legacy_alias) && programs.contains_key(derived.as_str())),
+            "a legacy alias must never end up alongside a newly derived duplicate"
+        );
+    }
+
+    #[test]
+    fn unknown_and_cross_owner_not_found_are_identical_and_never_fall_back() {
+        let messages = ["Plan004-Shared", "Does-Not_Exist"].map(|package| {
+            let alias = super::super::alias::derive_local_alias(package);
+            let sandbox = RegistrySandbox::new(vec![(404, not_found(&alias, package))], true);
+            let manifest = sandbox.project();
+            let original = fs::read(&manifest).unwrap();
+            let error = add_and_install(
+                &manifest,
+                DependencyKind::Program,
+                package,
+                AddDependencyOptions::default(),
+            )
+            .expect_err("404 must fail");
+            // Exactly one resolver request and no direct/public endpoint fallback.
+            let request = sandbox.request();
+            assert!(request
+                .request_line
+                .starts_with(&format!("POST {RESOLVE_PATH} ")));
+            assert_eq!(fs::read(&manifest).unwrap(), original, "manifest untouched");
+            assert!(
+                !manifest.with_file_name("arete.lock").exists(),
+                "no lock written"
+            );
+            let text = format!("{error:#}");
+            assert!(
+                text.contains("unavailable to this account or unknown"),
+                "{text}"
+            );
+            assert!(
+                !text.contains("registry-package-release") && !text.contains("0.1."),
+                "no package metadata leaks: {text}"
+            );
+            text.replace(&alias, "<alias>")
+                .replace(package, "<package>")
+        });
+        assert_eq!(
+            messages[0], messages[1],
+            "unknown and cross-owner errors are indistinguishable"
+        );
+    }
+
+    #[test]
+    fn unauthenticated_lookup_of_a_private_package_asks_for_login() {
+        let sandbox = RegistrySandbox::new(
+            vec![(401, json!({"error": "Authentication required"}).to_string())],
+            false,
+        );
+        let manifest = sandbox.project();
+        let error = add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            "Plan004-Shared",
+            AddDependencyOptions::default(),
+        )
+        .expect_err("401 must fail");
+        let request = sandbox.request();
+        assert!(request.header("authorization").is_none());
+        let text = format!("{error:#}");
+        assert!(text.contains("a4 auth login"), "{text}");
+        assert!(!text.contains(OWNER_KEY));
+    }
+
+    #[test]
+    fn lock_integrity_failures_do_not_float_to_latest() {
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (200, program_resolution("plan004-shared", "plan004-shared", "0.1.0", 'f')),
+                (200, program_resolution("plan004-shared", "plan004-shared", "0.1.0", 'f')),
+                (409, json!({"error": "Dependency 'plan004-shared': locked package release hash does not exist for this package"}).to_string()),
+            ],
+            true,
+        );
+        let manifest = sandbox.project();
+        add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            "plan004-shared",
+            AddDependencyOptions::default(),
+        )
+        .unwrap();
+        sandbox.request();
+        sandbox.request();
+        let lock_before = fs::read(manifest.with_file_name("arete.lock")).unwrap();
+        let error =
+            install_project(&manifest, InstallOptions::default()).expect_err("integrity failure");
+        sandbox.request();
+        let text = format!("{error:#}");
+        assert!(text.contains("integrity failure"), "{text}");
+        assert!(text.contains("a4 update"), "{text}");
+        assert_eq!(
+            fs::read(manifest.with_file_name("arete.lock")).unwrap(),
+            lock_before,
+            "lock unchanged"
+        );
+    }
+
+    #[test]
+    fn incomplete_stack_responses_are_rejected_and_leave_the_project_intact() {
+        let stack_manifest = json!({
+            "kind": "stack-manifest",
+            "artifactVersion": "2",
+            "artifactHash": format!("arete:h1:stack-manifest:sha256:{}", "9".repeat(64)),
+            "payload": {
+                "schema": "arete.stack-manifest/v2",
+                "name": "Demo",
+                "programs": [
+                    {"programId": "Vote111111111111111111111111111111111111111", "artifactHash": "arete:h1:program-spec:sha256:one"},
+                    {"programId": "Stake11111111111111111111111111111111111111", "artifactHash": "arete:h1:program-spec:sha256:two"}
+                ],
+                "liveSpecs": [],
+                "selectedViews": []
+            }
+        });
+        let incomplete = json!({
+            "resolverContract": RESOLVER_CONTRACT,
+            "dependencies": [{
+                "kind": "stack",
+                "alias": "demo-stack-a1b2",
+                "package": "Demo-Stack-a1b2",
+                "version": "0.1.0",
+                "packageReleaseHash": release_hash('9'),
+                "generatorContract": GENERATOR_CONTRACT,
+                "stackManifestHash": stack_manifest["artifactHash"],
+                "stackManifest": stack_manifest,
+                "liveSpecs": [],
+                // Only one of the two declared programs is pinned: floating.
+                "programs": [program_install("Vote111111111111111111111111111111111111111", "vote_program", &format!("arete:h1:program-release:sha256:{}", "9".repeat(64)))],
+                "sdkExtensions": []
+            }]
+        })
+        .to_string();
+        let sandbox = RegistrySandbox::new(vec![(200, incomplete)], true);
+        let manifest = sandbox.project();
+        let original = fs::read(&manifest).unwrap();
+        let error = add_and_install(
+            &manifest,
+            DependencyKind::Stack,
+            "Demo-Stack-a1b2",
+            AddDependencyOptions::default(),
+        )
+        .expect_err("incomplete stack must be rejected");
+        sandbox.request();
+        let text = format!("{error:#}");
+        assert!(text.contains("incomplete stack package"), "{text}");
+        assert_eq!(
+            fs::read(&manifest).unwrap(),
+            original,
+            "manifest restored byte-for-byte"
+        );
+        assert!(!manifest.with_file_name("arete.lock").exists());
+        assert!(!manifest.with_file_name("generated").exists());
+    }
+
+    #[test]
+    fn explicit_alias_must_be_portable_before_anything_is_written() {
+        // The canned response must never be consumed: alias validation fails first.
+        let sandbox = RegistrySandbox::new(
+            vec![(500, json!({"error": "must not be called"}).to_string())],
+            true,
+        );
+        let manifest = sandbox.project();
+        let original = fs::read(&manifest).unwrap();
+        for alias in ["Default", "class", "1abc", "bad--alias"] {
+            let error = add_and_install(
+                &manifest,
+                DependencyKind::Program,
+                "plan004-shared",
+                AddDependencyOptions {
+                    alias: Some(alias.into()),
+                    ..AddDependencyOptions::default()
+                },
+            )
+            .expect_err("invalid alias must fail before resolution");
+            assert!(format!("{error:#}").contains("alias"), "{error:#}");
+        }
+        assert_eq!(fs::read(&manifest).unwrap(), original);
     }
 }

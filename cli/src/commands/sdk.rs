@@ -8359,7 +8359,7 @@ mod tests {
         let stack_dir = directory.path().join("ore-stack");
         generate_project_local_stack(
             &fixtures.join("OreStream.stack-manifest.json"),
-            &[fixtures.clone()],
+            std::slice::from_ref(&fixtures),
             ProjectGenerationOptions {
                 alias: "ore",
                 target: crate::project::manifest::InstallTarget::Rust,

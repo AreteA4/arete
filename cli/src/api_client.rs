@@ -132,6 +132,37 @@ pub struct SpecWithVersion {
     pub latest_version: Option<SpecVersionWithContent>,
 }
 
+/// A non-success API response with its status, message, and stable error
+/// code. Displays exactly like the historical `API error (...)` string so
+/// existing callers and tests keep their messages; callers that need the
+/// status downcast with `error.downcast_ref::<ApiHttpError>()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiHttpError {
+    pub status: u16,
+    pub status_text: String,
+    pub message: String,
+    pub code: Option<String>,
+}
+
+impl std::fmt::Display for ApiHttpError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.code {
+            Some(code) => write!(
+                formatter,
+                "API error ({}): {} ({code})",
+                self.status_text, self.message
+            ),
+            None => write!(
+                formatter,
+                "API error ({}): {}",
+                self.status_text, self.message
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ApiHttpError {}
+
 #[derive(Debug, Deserialize)]
 struct ErrorResponse {
     error: String,
@@ -1736,20 +1767,24 @@ impl ApiClient {
         } else {
             let status = response.status();
             let body = response.text().unwrap_or_default();
-            let message = serde_json::from_str::<ErrorResponse>(&body)
-                .map(|error| match error.code {
-                    Some(code) => format!("{} ({code})", error.error),
-                    None => error.error,
-                })
+            let (message, code) = serde_json::from_str::<ErrorResponse>(&body)
+                .map(|error| (error.error, error.code))
                 .unwrap_or_else(|_| {
                     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if compact.is_empty() {
+                    let compact: String = if compact.is_empty() {
                         "Empty error response".to_string()
                     } else {
                         compact.chars().take(1024).collect()
-                    }
+                    };
+                    (compact, None)
                 });
-            anyhow::bail!("API error ({}): {}", status, message);
+            Err(ApiHttpError {
+                status: status.as_u16(),
+                status_text: status.to_string(),
+                message,
+                code,
+            }
+            .into())
         }
     }
 
@@ -2062,6 +2097,11 @@ pub(crate) mod test_support {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
+    use std::sync::Mutex;
+
+    /// `ARETE_API_URL` and `ARETE_CREDENTIALS_PATH` are process-global;
+    /// every test that sets them serialises on this lock.
+    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
     use std::thread;
     use std::time::Duration;
 

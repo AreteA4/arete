@@ -470,10 +470,10 @@ mod signup_tests {
     use super::*;
     use crate::api_client::test_support::MockServer;
     use crate::api_client::SIGNUP_RATE_LIMIT_MESSAGE;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
 
     /// `ARETE_CREDENTIALS_PATH` is process-global; serialise the tests that set it.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::api_client::test_support::ENV_LOCK;
 
     struct CredentialsSandbox {
         _guard: MutexGuard<'static, ()>,
