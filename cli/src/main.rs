@@ -187,6 +187,10 @@ enum Commands {
         #[arg(long)]
         limit: Option<usize>,
 
+        /// Catalog search: continue from the `nextCursor` of a previous page
+        #[arg(long)]
+        cursor: Option<String>,
+
         /// Print the catalog concept and category vocabularies
         #[arg(long)]
         vocabulary: bool,
@@ -899,8 +903,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             mode,
             sdk_target,
             limit,
+            cursor,
             vocabulary,
-        } => match (target.as_deref(), reference.as_deref(), entity.as_deref()) {
+        } => {
+            let search_options = query.is_some()
+                || concept.is_some()
+                || category.is_some()
+                || kind.is_some()
+                || mode.is_some()
+                || sdk_target.is_some()
+                || limit.is_some()
+                || cursor.is_some();
+            let is_catalog_root = target.as_deref() == Some("catalog") && reference.is_none();
+            if (search_options || vocabulary) && !is_catalog_root {
+                return Err(anyhow::anyhow!(
+                    "Catalog options (--query, --concept, --category, --kind, --mode, --target, --limit, --cursor, --vocabulary) apply only to `a4 explore catalog`"
+                ));
+            }
+            if search_options && vocabulary {
+                return Err(anyhow::anyhow!(
+                    "--vocabulary cannot be combined with catalog search options"
+                ));
+            }
+            match (target.as_deref(), reference.as_deref(), entity.as_deref()) {
             (Some("catalog"), None, None) if vocabulary => {
                 commands::explore::catalog_vocabulary(cli.json)
             }
@@ -913,6 +938,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     mode: mode.as_deref(),
                     target: sdk_target.as_deref(),
                     limit,
+                    cursor: cursor.as_deref(),
                 },
                 cli.json,
             ),
@@ -942,7 +968,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             _ => Err(anyhow::anyhow!(
                 "Invalid explore arguments. Use `a4 explore`, `a4 explore catalog --query <intent>`, `a4 explore catalog <kind> <slug>`, `a4 explore programs`, `a4 explore stack <ref>`, or `a4 explore program <ref>`."
             )),
-        },
+            }
+        }
         Commands::Know(know_cmd) => match know_cmd {
             KnowCommands::Search {
                 query,

@@ -1128,6 +1128,7 @@ impl ApiClient {
         mode: Option<&str>,
         target: Option<&str>,
         limit: Option<usize>,
+        cursor: Option<&str>,
     ) -> Result<serde_json::Value> {
         let mut params: Vec<(&str, String)> = Vec::new();
         for (name, value) in [
@@ -1137,6 +1138,7 @@ impl ApiClient {
             ("kind", kind),
             ("mode", mode),
             ("target", target),
+            ("cursor", cursor),
         ] {
             if let Some(value) = value {
                 params.push((name, value.to_string()));

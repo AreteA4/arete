@@ -130,8 +130,10 @@ impl RegistryClient {
         mode: Option<&str>,
         target: Option<&str>,
         limit: Option<usize>,
+        cursor: Option<&str>,
     ) -> Result<String> {
-        let path = catalog_search_path(query, concept, category, kind, mode, target, limit)?;
+        let path =
+            catalog_search_path(query, concept, category, kind, mode, target, limit, cursor)?;
         self.get(&path).await
     }
 
@@ -468,7 +470,10 @@ fn catalog_kind(value: &str) -> Result<&str> {
 }
 
 /// Build the path-and-query for a catalog search. At least one filter is
-/// required; enumerated filters fail closed with the allowed values.
+/// required; enumerated filters fail closed with the allowed values. A
+/// `cursor` from a previous page continues the same search; the server
+/// rejects cursors issued against a different active catalog.
+#[allow(clippy::too_many_arguments)]
 fn catalog_search_path(
     query: Option<&str>,
     concept: Option<&str>,
@@ -477,6 +482,7 @@ fn catalog_search_path(
     mode: Option<&str>,
     target: Option<&str>,
     limit: Option<usize>,
+    cursor: Option<&str>,
 ) -> Result<String> {
     fn non_empty(value: Option<&str>) -> Option<&str> {
         value.map(str::trim).filter(|value| !value.is_empty())
@@ -487,6 +493,7 @@ fn catalog_search_path(
     let kind = non_empty(kind);
     let mode = non_empty(mode);
     let target = non_empty(target);
+    let cursor = non_empty(cursor);
     if query.is_none()
         && concept.is_none()
         && category.is_none()
@@ -531,6 +538,9 @@ fn catalog_search_path(
         }
         if let Some(l) = limit {
             pairs.append_pair("limit", &l.to_string());
+        }
+        if let Some(c) = cursor {
+            pairs.append_pair("cursor", c);
         }
     }
     Ok(format!(
@@ -622,8 +632,17 @@ mod tests {
     #[test]
     fn catalog_search_paths_are_bounded_and_encoded() {
         assert_eq!(
-            catalog_search_path(Some("monitor swaps"), None, None, None, None, None, Some(5))
-                .unwrap(),
+            catalog_search_path(
+                Some("monitor swaps"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(5),
+                None
+            )
+            .unwrap(),
             "/api/registry/v1/catalog/search?q=monitor+swaps&limit=5"
         );
         assert_eq!(
@@ -634,16 +653,23 @@ mod tests {
                 Some("stack"),
                 Some("subscribe"),
                 Some("rust"),
-                None
+                None,
+                Some("eyJ2IjoxfQ")
             )
             .unwrap(),
-            "/api/registry/v1/catalog/search?concept=swap&kind=stack&mode=subscribe&target=rust"
+            "/api/registry/v1/catalog/search?concept=swap&kind=stack&mode=subscribe&target=rust&cursor=eyJ2IjoxfQ"
         );
-        assert!(catalog_search_path(None, None, None, None, None, None, None).is_err());
-        assert!(catalog_search_path(None, None, None, Some("recipe"), None, None, None).is_err());
-        assert!(catalog_search_path(None, None, None, None, Some("execute"), None, None).is_err());
-        assert!(catalog_search_path(None, None, None, None, None, Some("go"), None).is_err());
-        assert!(catalog_search_path(None, Some("swap/x"), None, None, None, None, None).is_err());
+        assert!(catalog_search_path(None, None, None, None, None, None, None, None).is_err());
+        assert!(
+            catalog_search_path(None, None, None, Some("recipe"), None, None, None, None).is_err()
+        );
+        assert!(
+            catalog_search_path(None, None, None, None, Some("execute"), None, None, None).is_err()
+        );
+        assert!(catalog_search_path(None, None, None, None, None, Some("go"), None, None).is_err());
+        assert!(
+            catalog_search_path(None, Some("swap/x"), None, None, None, None, None, None).is_err()
+        );
         assert!(catalog_kind("program").is_ok());
         assert!(catalog_kind("bundle").is_err());
     }

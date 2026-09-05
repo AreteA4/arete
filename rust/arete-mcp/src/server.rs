@@ -234,6 +234,11 @@ pub struct SearchCatalogArgs {
     /// Maximum number of results (integer or string-encoded integer).
     #[serde(default, deserialize_with = "lenient::opt_usize")]
     pub limit: Option<usize>,
+    /// `nextCursor` from a previous `search_catalog` page. Repeat the same
+    /// filters to fetch the next page; the server rejects a cursor once the
+    /// active catalog changes.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -465,7 +470,9 @@ impl AreteMcp {
                           `query` is free text; `concept`/`category` filter by slug \
                           (see `list_catalog_vocabulary`); `kind`, `mode`, and `target` \
                           narrow to what you can actually use. At least one filter is \
-                          required. Drill in with `get_catalog_entry`.\n\n\
+                          required. When a page returns `nextCursor`, pass it back as \
+                          `cursor` with the same filters to continue. Drill in with \
+                          `get_catalog_entry`.\n\n\
                           No credential is required; an API key widens results to \
                           global-visibility entries."
     )]
@@ -483,6 +490,7 @@ impl AreteMcp {
                     args.mode.as_deref(),
                     args.target.as_deref(),
                     args.limit,
+                    args.cursor.as_deref(),
                 )
                 .await,
         )
@@ -495,7 +503,9 @@ impl AreteMcp {
                           capabilities keyed by stable language-neutral `operationId` \
                           values (e.g. `program/<programId>/raw-instruction/deploy`), and \
                           sanitized delivery state. Use after `search_catalog`; install \
-                          with `a4 install <kind> <slug>`."
+                          the exact version shown with \
+                          `a4 install <kind> <slug>@=<version>` and confirm the lockfile \
+                          records the same `packageReleaseHash`."
     )]
     async fn get_catalog_entry(
         &self,

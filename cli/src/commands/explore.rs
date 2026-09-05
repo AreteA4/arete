@@ -1471,6 +1471,7 @@ pub struct CatalogSearchArgs<'a> {
     pub mode: Option<&'a str>,
     pub target: Option<&'a str>,
     pub limit: Option<usize>,
+    pub cursor: Option<&'a str>,
 }
 
 const CATALOG_KINDS: [&str; 2] = ["program", "stack"];
@@ -1492,6 +1493,31 @@ fn catalog_choice<'a>(
     }
 }
 
+/// A catalog slug is one bare URL path segment. It is interpolated into an
+/// authenticated request path, so anything a URL parser could treat as a
+/// separator, escape, or relative component is rejected before the request
+/// is built (mirroring the MCP client's `path_segment`).
+fn catalog_slug(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("slug must not be empty");
+    }
+    if let Some(bad) = trimmed
+        .chars()
+        .find(|c| c.is_whitespace() || c.is_control() || "/\\?#%&".contains(*c))
+    {
+        anyhow::bail!(
+            "slug contains an invalid character {bad:?}; pass a bare package slug (e.g. `ore`), not a path or URL"
+        );
+    }
+    if trimmed.chars().all(|c| c == '.') {
+        anyhow::bail!(
+            "slug must not be a relative path segment; pass a bare package slug (e.g. `ore`)"
+        );
+    }
+    Ok(trimmed.to_string())
+}
+
 pub fn catalog_search(args: CatalogSearchArgs<'_>, json: bool) -> Result<()> {
     let non_empty = |value: Option<&str>| {
         value
@@ -1505,6 +1531,7 @@ pub fn catalog_search(args: CatalogSearchArgs<'_>, json: bool) -> Result<()> {
     let kind = catalog_choice(args.kind, "--kind", &CATALOG_KINDS)?;
     let mode = catalog_choice(args.mode, "--mode", &CATALOG_MODES)?;
     let target = catalog_choice(args.target, "--target", &CATALOG_TARGETS)?;
+    let cursor = non_empty(args.cursor);
     if query.is_none()
         && concept.is_none()
         && category.is_none()
@@ -1525,6 +1552,7 @@ pub fn catalog_search(args: CatalogSearchArgs<'_>, json: bool) -> Result<()> {
         mode,
         target,
         args.limit,
+        cursor.as_deref(),
     )?;
     if json {
         println!("{}", serde_json::to_string_pretty(&value)?);
@@ -1537,11 +1565,8 @@ pub fn catalog_search(args: CatalogSearchArgs<'_>, json: bool) -> Result<()> {
 pub fn catalog_entry(kind: &str, slug: &str, json: bool) -> Result<()> {
     let kind = catalog_choice(Some(kind), "kind", &CATALOG_KINDS)?
         .ok_or_else(|| anyhow::anyhow!("kind must be program or stack"))?;
-    let slug = slug.trim();
-    if slug.is_empty() || slug.contains(['/', '?', '#']) || slug.chars().any(char::is_whitespace) {
-        anyhow::bail!("slug must be a bare package slug, not a path or URL");
-    }
-    let value = ApiClient::new()?.catalog_entry(kind, slug).with_context(|| {
+    let slug = catalog_slug(slug)?;
+    let value = ApiClient::new()?.catalog_entry(kind, &slug).with_context(|| {
         format!("{kind} '{slug}' is not in the active catalog; search with `a4 explore catalog --query <intent>`")
     })?;
     if json {
@@ -1593,6 +1618,19 @@ fn string_list(value: &Value, key: &str) -> String {
     }
 }
 
+/// The install command for one catalog entry, pinned to the exact version the
+/// catalog showed (`=<version>`), so a later activation cannot silently swap
+/// the release under the user. The lockfile then records the
+/// `packageReleaseHash` printed beside it.
+fn pinned_install_command(entry: &Value) -> String {
+    let kind = entry["kind"].as_str().unwrap_or("-");
+    let slug = entry["slug"].as_str().unwrap_or("-");
+    match entry["version"].as_str() {
+        Some(version) => format!("a4 install {kind} {slug}@={version}"),
+        None => format!("a4 install {kind} {slug}"),
+    }
+}
+
 fn render_catalog_search(value: &Value) -> String {
     let results = value_array(value, "results");
     let mut text = String::new();
@@ -1627,12 +1665,15 @@ fn render_catalog_search(value: &Value) -> String {
             string_list(result, "sdkTargets")
         ));
         text.push_str(&format!(
-            "    install: a4 install {kind} {slug}  ({})\n",
+            "    install: {}  ({})\n",
+            pinned_install_command(result),
             result["packageReleaseHash"].as_str().unwrap_or("-")
         ));
     }
     if let Some(cursor) = value["nextCursor"].as_str() {
-        text.push_str(&format!("\nMore results: cursor {cursor}\n"));
+        text.push_str(&format!(
+            "\nMore results: repeat the same search with --cursor {cursor}\n"
+        ));
     }
     text
 }
@@ -1641,10 +1682,11 @@ fn render_catalog_entry(value: &Value) -> String {
     let kind = value["kind"].as_str().unwrap_or("-");
     let slug = value["slug"].as_str().unwrap_or("-");
     let mut text = format!(
-        "\n{} {}@{}\n  Install: a4 install {kind} {slug}\n  Package release: {}\n  Bundle: {}\n  Set: {}\n",
+        "\n{} {}@{}\n  Install: {}\n  Package release: {}\n  Bundle: {}\n  Set: {}\n",
         kind,
         slug,
         value["version"].as_str().unwrap_or("-"),
+        pinned_install_command(value),
         value["packageReleaseHash"].as_str().unwrap_or("-"),
         value["bundleHash"].as_str().unwrap_or("-"),
         value["setHash"].as_str().unwrap_or("-")
@@ -1727,7 +1769,7 @@ mod tests {
             "unexpectedFutureField": true
         });
         let rendered = render_catalog_entry(&entry);
-        assert!(rendered.contains("a4 install program ore"));
+        assert!(rendered.contains("Install: a4 install program ore@=1.0.0"));
         assert!(rendered.contains("SDK targets: typescript"));
         assert!(rendered.contains("build mining  program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/raw-instruction/deploy"));
         assert!(rendered.contains("Delivery: program-read ready"));
@@ -1735,12 +1777,15 @@ mod tests {
         let page = json!({
             "matchedConcepts": ["mining"],
             "results": [{"kind": "program", "slug": "ore", "version": "1.0.0", "name": "ore", "summary": "ORE mining.", "modes": ["build", "read"], "sdkTargets": ["typescript"], "packageReleaseHash": "arete:registry-package-release:v2:sha256:aa", "delivery": {"health": "degraded"}}],
-            "sets": ["arete:h1:catalog-publication-set:sha256:cc"]
+            "sets": ["arete:h1:catalog-publication-set:sha256:cc"],
+            "nextCursor": "eyJ2IjoxfQ"
         });
         let rendered = render_catalog_search(&page);
         assert!(rendered.contains("Matched concepts: mining"));
         assert!(rendered.contains("program ore@1.0.0"));
+        assert!(rendered.contains("install: a4 install program ore@=1.0.0"));
         assert!(rendered.contains("delivery: degraded"));
+        assert!(rendered.contains("--cursor eyJ2IjoxfQ"));
         assert!(render_catalog_search(&json!({"results": []})).contains("No catalog entries match"));
     }
 
@@ -1756,6 +1801,27 @@ mod tests {
             None
         );
         assert!(catalog_choice(Some("go"), "--target", &CATALOG_TARGETS).is_err());
+    }
+
+    #[test]
+    fn catalog_slugs_are_single_path_segments() {
+        assert_eq!(catalog_slug(" ore ").unwrap(), "ore");
+        assert_eq!(catalog_slug("spl-token").unwrap(), "spl-token");
+        for bad in [
+            "",
+            "..",
+            ".",
+            "ore/x",
+            "..\\..\\admin",
+            "ore%2F..",
+            "ore?x=1",
+            "ore#frag",
+            "ore&x",
+            "or e",
+            "ore\u{0}",
+        ] {
+            assert!(catalog_slug(bad).is_err(), "{bad:?} should be rejected");
+        }
     }
 
     fn deployment(
