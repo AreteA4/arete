@@ -1113,6 +1113,74 @@ impl ApiClient {
     }
 
     // ========================================================================
+    // Catalog endpoints (public active set; auth widens to global entries)
+    // ========================================================================
+
+    /// Search the active catalog. Raw JSON is returned so `--json` prints
+    /// exactly what the platform sent; rendering parses leniently.
+    #[allow(clippy::too_many_arguments)]
+    pub fn catalog_search(
+        &self,
+        query: Option<&str>,
+        concept: Option<&str>,
+        category: Option<&str>,
+        kind: Option<&str>,
+        mode: Option<&str>,
+        target: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<serde_json::Value> {
+        let mut params: Vec<(&str, String)> = Vec::new();
+        for (name, value) in [
+            ("q", query),
+            ("concept", concept),
+            ("category", category),
+            ("kind", kind),
+            ("mode", mode),
+            ("target", target),
+        ] {
+            if let Some(value) = value {
+                params.push((name, value.to_string()));
+            }
+        }
+        if let Some(limit) = limit {
+            params.push(("limit", limit.to_string()));
+        }
+        let response = self
+            .with_optional_auth(
+                self.client
+                    .get(format!("{}/api/registry/v1/catalog/search", self.base_url))
+                    .query(&params),
+            )
+            .send()
+            .context("Failed to send catalog search request")?;
+        Self::handle_response(response)
+    }
+
+    /// One active catalog entry by kind and slug.
+    pub fn catalog_entry(&self, kind: &str, slug: &str) -> Result<serde_json::Value> {
+        let response = self
+            .with_optional_auth(self.client.get(format!(
+                "{}/api/registry/v1/catalog/entries/{}/{}",
+                self.base_url, kind, slug
+            )))
+            .send()
+            .context("Failed to send catalog entry request")?;
+        Self::handle_response(response)
+    }
+
+    /// Concept and category vocabularies of the active catalog snapshot.
+    pub fn catalog_vocabulary(&self) -> Result<serde_json::Value> {
+        let response = self
+            .with_optional_auth(self.client.get(format!(
+                "{}/api/registry/v1/catalog/vocabulary",
+                self.base_url
+            )))
+            .send()
+            .context("Failed to send catalog vocabulary request")?;
+        Self::handle_response(response)
+    }
+
+    // ========================================================================
     // Knowledge endpoints (API key required on every route)
     // ========================================================================
     //

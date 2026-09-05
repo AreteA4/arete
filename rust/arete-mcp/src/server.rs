@@ -209,6 +209,43 @@ pub struct SearchKnowledgeArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchCatalogArgs {
+    /// Free-text intent (e.g. `monitor swaps`). Matched against concept
+    /// names and synonyms first, then reviewed knowledge via full-text
+    /// search. At least one filter is required.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Concept slug to require (e.g. `swap`). Discover slugs with
+    /// `list_catalog_vocabulary`.
+    #[serde(default)]
+    pub concept: Option<String>,
+    /// Category slug to filter by (e.g. `dex`).
+    #[serde(default)]
+    pub category: Option<String>,
+    /// `program` or `stack`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Required access mode: `build`, `read`, or `subscribe`.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Required verified SDK target: `typescript`, `rust`, or `python`.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Maximum number of results (integer or string-encoded integer).
+    #[serde(default, deserialize_with = "lenient::opt_usize")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetCatalogEntryArgs {
+    /// `program` or `stack`.
+    pub kind: String,
+    /// Bare package slug as returned by `search_catalog` (e.g. `ore`). Not a
+    /// URL and not a path.
+    pub slug: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetProtocolArgs {
     /// Bare protocol slug (e.g. `meteora-damm`), as returned by
     /// `search_knowledge`. Not a URL and not a path.
@@ -416,6 +453,64 @@ impl AreteMcp {
         Parameters(args): Parameters<ResolveArtifactArgs>,
     ) -> Result<CallToolResult, McpError> {
         registry_result(self.registry.artifact(&args.kind, &args.hash).await)
+    }
+
+    #[tool(
+        description = "Search the active public Arete catalog for installable programs \
+                          and stacks by intent. Start here: every result is a catalog \
+                          entry with a verified SDK target, reviewed knowledge, and \
+                          evidenced capabilities (`modes`: build/read/subscribe), plus \
+                          the exact `packageReleaseHash` that `a4 install` will pin and a \
+                          sanitized `delivery.health` (`ready` or `degraded`).\n\n\
+                          `query` is free text; `concept`/`category` filter by slug \
+                          (see `list_catalog_vocabulary`); `kind`, `mode`, and `target` \
+                          narrow to what you can actually use. At least one filter is \
+                          required. Drill in with `get_catalog_entry`.\n\n\
+                          No credential is required; an API key widens results to \
+                          global-visibility entries."
+    )]
+    async fn search_catalog(
+        &self,
+        Parameters(args): Parameters<SearchCatalogArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        registry_result(
+            self.registry
+                .catalog_search(
+                    args.query.as_deref(),
+                    args.concept.as_deref(),
+                    args.category.as_deref(),
+                    args.kind.as_deref(),
+                    args.mode.as_deref(),
+                    args.target.as_deref(),
+                    args.limit,
+                )
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Fetch one active catalog entry by kind and slug: exact package \
+                          version and `packageReleaseHash`, bundle and set identities, \
+                          the reviewed knowledge summary, verified SDK targets, \
+                          capabilities keyed by stable language-neutral `operationId` \
+                          values (e.g. `program/<programId>/raw-instruction/deploy`), and \
+                          sanitized delivery state. Use after `search_catalog`; install \
+                          with `a4 install <kind> <slug>`."
+    )]
+    async fn get_catalog_entry(
+        &self,
+        Parameters(args): Parameters<GetCatalogEntryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.catalog_entry(&args.kind, &args.slug).await)
+    }
+
+    #[tool(
+        description = "List the concept and category vocabularies of the active \
+                          catalog snapshot. Use it to map a user's phrasing onto \
+                          `search_catalog` concept/category slugs. No credential required."
+    )]
+    async fn list_catalog_vocabulary(&self) -> Result<CallToolResult, McpError> {
+        registry_result(self.registry.catalog_vocabulary().await)
     }
 
     #[tool(
