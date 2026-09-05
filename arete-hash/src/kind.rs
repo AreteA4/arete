@@ -65,6 +65,12 @@ pub enum HashKindName {
     StackManifest,
     DeploymentRelease,
     DecoderFixtureSet,
+    KnowledgeDocument,
+    KnowledgeSnapshot,
+    ExtensionSurface,
+    SdkInstallTarget,
+    CatalogBundle,
+    CatalogPublicationSet,
 }
 
 impl HashKindName {
@@ -88,6 +94,12 @@ impl HashKindName {
             Self::StackManifest => "stack-manifest",
             Self::DeploymentRelease => "deployment-release",
             Self::DecoderFixtureSet => "decoder-fixture-set",
+            Self::KnowledgeDocument => "knowledge-document",
+            Self::KnowledgeSnapshot => "knowledge-snapshot",
+            Self::ExtensionSurface => "extension-surface",
+            Self::SdkInstallTarget => "sdk-install-target",
+            Self::CatalogBundle => "catalog-bundle",
+            Self::CatalogPublicationSet => "catalog-publication-set",
         }
     }
 }
@@ -121,6 +133,12 @@ impl FromStr for HashKindName {
             "stack-manifest" => Ok(Self::StackManifest),
             "deployment-release" => Ok(Self::DeploymentRelease),
             "decoder-fixture-set" => Ok(Self::DecoderFixtureSet),
+            "knowledge-document" => Ok(Self::KnowledgeDocument),
+            "knowledge-snapshot" => Ok(Self::KnowledgeSnapshot),
+            "extension-surface" => Ok(Self::ExtensionSurface),
+            "sdk-install-target" => Ok(Self::SdkInstallTarget),
+            "catalog-bundle" => Ok(Self::CatalogBundle),
+            "catalog-publication-set" => Ok(Self::CatalogPublicationSet),
             _ => Err(HashError::UnknownKind(value.to_string())),
         }
     }
@@ -211,6 +229,12 @@ const fn api_field(kind: HashKindName) -> &'static str {
         HashKindName::StackManifest => "stackManifestHash",
         HashKindName::DeploymentRelease => "deploymentReleaseHash",
         HashKindName::DecoderFixtureSet => "decoderFixtureSetHash",
+        HashKindName::KnowledgeDocument => "documentHash",
+        HashKindName::KnowledgeSnapshot => "knowledgeSnapshotHash",
+        HashKindName::ExtensionSurface => "surfaceHash",
+        HashKindName::SdkInstallTarget => "sdkInstallTargetHash",
+        HashKindName::CatalogBundle => "bundleHash",
+        HashKindName::CatalogPublicationSet => "setHash",
     }
 }
 
@@ -234,6 +258,12 @@ const fn rust_type(kind: HashKindName) -> &'static str {
         HashKindName::StackManifest => "HashId<StackManifest>",
         HashKindName::DeploymentRelease => "HashId<DeploymentRelease>",
         HashKindName::DecoderFixtureSet => "HashId<DecoderFixtureSet>",
+        HashKindName::KnowledgeDocument => "HashId<KnowledgeDocument>",
+        HashKindName::KnowledgeSnapshot => "HashId<KnowledgeSnapshot>",
+        HashKindName::ExtensionSurface => "HashId<ExtensionSurface>",
+        HashKindName::SdkInstallTarget => "HashId<SdkInstallTarget>",
+        HashKindName::CatalogBundle => "HashId<CatalogBundle>",
+        HashKindName::CatalogPublicationSet => "HashId<CatalogPublicationSet>",
     }
 }
 
@@ -257,6 +287,12 @@ const fn typescript_type(kind: HashKindName) -> &'static str {
         HashKindName::StackManifest => "StackManifestHash",
         HashKindName::DeploymentRelease => "DeploymentReleaseHash",
         HashKindName::DecoderFixtureSet => "DecoderFixtureSetHash",
+        HashKindName::KnowledgeDocument => "KnowledgeDocumentHash",
+        HashKindName::KnowledgeSnapshot => "KnowledgeSnapshotHash",
+        HashKindName::ExtensionSurface => "ExtensionSurfaceHash",
+        HashKindName::SdkInstallTarget => "SdkInstallTargetHash",
+        HashKindName::CatalogBundle => "CatalogBundleHash",
+        HashKindName::CatalogPublicationSet => "CatalogPublicationSetHash",
     }
 }
 
@@ -280,6 +316,12 @@ const fn projection(kind: HashKindName) -> &'static str {
         HashKindName::StackManifest => "arete.artifact-envelope/stack-manifest-v1",
         HashKindName::DeploymentRelease => "arete.deployment-release/v1",
         HashKindName::DecoderFixtureSet => "arete.decoder-fixtures/v2",
+        HashKindName::KnowledgeDocument => "arete.knowledge-document/v1",
+        HashKindName::KnowledgeSnapshot => "arete.knowledge-snapshot/v1",
+        HashKindName::ExtensionSurface => "arete.extension-surface/v2",
+        HashKindName::SdkInstallTarget => "arete.sdk-install-target/v1",
+        HashKindName::CatalogBundle => "arete.catalog-bundle/v1",
+        HashKindName::CatalogPublicationSet => "arete.catalog-publication-set/v1",
     }
 }
 
@@ -327,6 +369,34 @@ const fn database_mappings(kind: HashKindName) -> &'static [&'static str] {
             "deployments.deployment_release_hash",
         ],
         HashKindName::DecoderFixtureSet => &["decoder_fixture_sets.fixture_set_hash"],
+        HashKindName::KnowledgeDocument => &[
+            "knowledge_document_artifacts.document_hash",
+            "knowledge_snapshot_documents.document_hash",
+            "catalog_bundle_documents.document_hash",
+        ],
+        HashKindName::KnowledgeSnapshot => &[
+            "knowledge_snapshot_artifacts.snapshot_hash",
+            "catalog_publication_sets.knowledge_snapshot_hash",
+        ],
+        HashKindName::ExtensionSurface => &[
+            "extension_surface_artifacts_v2.surface_hash",
+            "sdk_install_target_artifacts.surface_hash",
+            "catalog_bundle_surfaces.surface_hash",
+        ],
+        HashKindName::SdkInstallTarget => &[
+            "sdk_install_target_artifacts.sdk_install_target_hash",
+            "registry_package_sdk_targets.sdk_install_target_hash",
+            "catalog_bundle_sdk_targets.sdk_install_target_hash",
+        ],
+        HashKindName::CatalogBundle => &[
+            "catalog_bundles.bundle_hash",
+            "catalog_publication_set_entries.bundle_hash",
+        ],
+        HashKindName::CatalogPublicationSet => &[
+            "catalog_publication_sets.set_hash",
+            "catalog_active_sets.set_hash",
+            "catalog_publication_events.set_hash",
+        ],
     }
 }
 
@@ -465,6 +535,42 @@ define_kinds!(
         DecoderFixtureSet,
         AreteJcsV1,
         InternalOnly,
+        Composite
+    ),
+    (
+        KnowledgeDocument,
+        KnowledgeDocument,
+        AreteJcsV1,
+        Public,
+        CanonicalContent
+    ),
+    (
+        KnowledgeSnapshot,
+        KnowledgeSnapshot,
+        AreteJcsV1,
+        Public,
+        Composite
+    ),
+    (
+        ExtensionSurface,
+        ExtensionSurface,
+        AreteJcsV1,
+        Public,
+        Composite
+    ),
+    (
+        SdkInstallTarget,
+        SdkInstallTarget,
+        AreteJcsV1,
+        Public,
+        Composite
+    ),
+    (CatalogBundle, CatalogBundle, AreteJcsV1, Public, Composite),
+    (
+        CatalogPublicationSet,
+        CatalogPublicationSet,
+        AreteJcsV1,
+        Public,
         Composite
     ),
 );

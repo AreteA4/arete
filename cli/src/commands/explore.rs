@@ -1457,11 +1457,372 @@ fn render_sdk_targets(targets: &[SdkTargetSummary]) -> String {
         .join(", ")
 }
 
+// ============================================================================
+// Catalog: the public discovery and installation boundary
+// ============================================================================
+
+/// Search filters for `a4 explore catalog`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CatalogSearchArgs<'a> {
+    pub query: Option<&'a str>,
+    pub concept: Option<&'a str>,
+    pub category: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub mode: Option<&'a str>,
+    pub target: Option<&'a str>,
+    pub limit: Option<usize>,
+    pub cursor: Option<&'a str>,
+}
+
+const CATALOG_KINDS: [&str; 2] = ["program", "stack"];
+const CATALOG_MODES: [&str; 3] = ["build", "read", "subscribe"];
+const CATALOG_TARGETS: [&str; 3] = ["typescript", "rust", "python"];
+
+fn catalog_choice<'a>(
+    value: Option<&'a str>,
+    flag: &str,
+    allowed: &[&str],
+) -> Result<Option<&'a str>> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(value) if allowed.contains(&value) => Ok(Some(value)),
+        Some(value) => Err(anyhow::anyhow!(
+            "{flag} must be one of {}; got '{value}'",
+            allowed.join(", ")
+        )),
+    }
+}
+
+/// A catalog slug is one bare URL path segment. It is interpolated into an
+/// authenticated request path, so anything a URL parser could treat as a
+/// separator, escape, or relative component is rejected before the request
+/// is built (mirroring the MCP client's `path_segment`).
+fn catalog_slug(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("slug must not be empty");
+    }
+    if let Some(bad) = trimmed
+        .chars()
+        .find(|c| c.is_whitespace() || c.is_control() || "/\\?#%&".contains(*c))
+    {
+        anyhow::bail!(
+            "slug contains an invalid character {bad:?}; pass a bare package slug (e.g. `ore`), not a path or URL"
+        );
+    }
+    if trimmed.chars().all(|c| c == '.') {
+        anyhow::bail!(
+            "slug must not be a relative path segment; pass a bare package slug (e.g. `ore`)"
+        );
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn catalog_search(args: CatalogSearchArgs<'_>, json: bool) -> Result<()> {
+    let non_empty = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let query = non_empty(args.query);
+    let concept = non_empty(args.concept);
+    let category = non_empty(args.category);
+    let kind = catalog_choice(args.kind, "--kind", &CATALOG_KINDS)?;
+    let mode = catalog_choice(args.mode, "--mode", &CATALOG_MODES)?;
+    let target = catalog_choice(args.target, "--target", &CATALOG_TARGETS)?;
+    let cursor = non_empty(args.cursor);
+    if query.is_none()
+        && concept.is_none()
+        && category.is_none()
+        && kind.is_none()
+        && mode.is_none()
+        && target.is_none()
+    {
+        anyhow::bail!(
+            "Provide at least one of --query, --concept, --category, --kind, --mode, or --target. \
+             Run `a4 explore catalog --vocabulary` to list concept and category slugs."
+        );
+    }
+    let value = ApiClient::new()?.catalog_search(
+        query.as_deref(),
+        concept.as_deref(),
+        category.as_deref(),
+        kind,
+        mode,
+        target,
+        args.limit,
+        cursor.as_deref(),
+    )?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+    print!("{}", render_catalog_search(&value));
+    Ok(())
+}
+
+pub fn catalog_entry(kind: &str, slug: &str, json: bool) -> Result<()> {
+    let kind = catalog_choice(Some(kind), "kind", &CATALOG_KINDS)?
+        .ok_or_else(|| anyhow::anyhow!("kind must be program or stack"))?;
+    let slug = catalog_slug(slug)?;
+    let value = ApiClient::new()?.catalog_entry(kind, &slug).with_context(|| {
+        format!("{kind} '{slug}' is not in the active catalog; search with `a4 explore catalog --query <intent>`")
+    })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+    print!("{}", render_catalog_entry(&value));
+    Ok(())
+}
+
+pub fn catalog_vocabulary(json: bool) -> Result<()> {
+    let value = ApiClient::new()?.catalog_vocabulary()?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+    let mut text = String::from("\nConcepts\n");
+    for concept in value_array(&value, "concepts") {
+        text.push_str(&format!(
+            "  {}  {}\n",
+            concept["slug"].as_str().unwrap_or("-"),
+            concept["description"].as_str().unwrap_or("")
+        ));
+    }
+    text.push_str("\nCategories\n");
+    for category in value_array(&value, "categories") {
+        text.push_str(&format!(
+            "  {}  {}\n",
+            category["slug"].as_str().unwrap_or("-"),
+            category["description"].as_str().unwrap_or("")
+        ));
+    }
+    print!("{text}");
+    Ok(())
+}
+
+fn string_list(value: &Value, key: &str) -> String {
+    let items = value_array(value, key)
+        .iter()
+        .filter_map(|item| {
+            item.as_str()
+                .or_else(|| item.get("target").and_then(Value::as_str))
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        "none".into()
+    } else {
+        items.join(", ")
+    }
+}
+
+/// The install command for one catalog entry, pinned to the exact version the
+/// catalog showed (`=<version>`), so a later activation cannot silently swap
+/// the release under the user. The lockfile then records the
+/// `packageReleaseHash` printed beside it.
+fn pinned_install_command(entry: &Value) -> String {
+    let kind = entry["kind"].as_str().unwrap_or("-");
+    let slug = entry["slug"].as_str().unwrap_or("-");
+    match entry["version"].as_str() {
+        Some(version) => format!("a4 install {kind} {slug}@={version}"),
+        None => format!("a4 install {kind} {slug}"),
+    }
+}
+
+fn render_catalog_search(value: &Value) -> String {
+    let results = value_array(value, "results");
+    let mut text = String::new();
+    let matched = string_list(value, "matchedConcepts");
+    if matched != "none" {
+        text.push_str(&format!("\nMatched concepts: {matched}\n"));
+    }
+    if results.is_empty() {
+        text.push_str("\nNo catalog entries match. Broaden the query or run `a4 explore catalog --vocabulary`.\n");
+        return text;
+    }
+    text.push_str("\nCatalog entries\n");
+    for result in results {
+        let kind = result["kind"].as_str().unwrap_or("-");
+        let slug = result["slug"].as_str().unwrap_or("-");
+        let health = result
+            .pointer("/delivery/health")
+            .and_then(Value::as_str)
+            .unwrap_or("n/a");
+        text.push_str(&format!(
+            "  {kind} {slug}@{}  {}\n",
+            result["version"].as_str().unwrap_or("-"),
+            result["name"].as_str().unwrap_or("")
+        ));
+        let summary = result["summary"].as_str().unwrap_or("");
+        if !summary.is_empty() {
+            text.push_str(&format!("    {summary}\n"));
+        }
+        text.push_str(&format!(
+            "    modes: {}  targets: {}  delivery: {health}\n",
+            string_list(result, "modes"),
+            string_list(result, "sdkTargets")
+        ));
+        text.push_str(&format!(
+            "    install: {}  ({})\n",
+            pinned_install_command(result),
+            result["packageReleaseHash"].as_str().unwrap_or("-")
+        ));
+    }
+    if let Some(cursor) = value["nextCursor"].as_str() {
+        text.push_str(&format!(
+            "\nMore results: repeat the same search with --cursor {cursor}\n"
+        ));
+    }
+    text
+}
+
+fn render_catalog_entry(value: &Value) -> String {
+    let kind = value["kind"].as_str().unwrap_or("-");
+    let slug = value["slug"].as_str().unwrap_or("-");
+    let mut text = format!(
+        "\n{} {}@{}\n  Install: {}\n  Package release: {}\n  Bundle: {}\n  Set: {}\n",
+        kind,
+        slug,
+        value["version"].as_str().unwrap_or("-"),
+        pinned_install_command(value),
+        value["packageReleaseHash"].as_str().unwrap_or("-"),
+        value["bundleHash"].as_str().unwrap_or("-"),
+        value["setHash"].as_str().unwrap_or("-")
+    );
+    if let Some(program_id) = value["programId"].as_str() {
+        text.push_str(&format!("  Program ID: {program_id}\n"));
+    }
+    if let Some(release) = value["programReleaseHash"].as_str() {
+        text.push_str(&format!("  Program Release: {release}\n"));
+    }
+    if let Some(manifest) = value["stackManifestHash"].as_str() {
+        text.push_str(&format!("  StackManifest: {manifest}\n"));
+    }
+    text.push_str(&format!(
+        "  SDK targets: {}\n",
+        string_list(value, "sdkTargets")
+    ));
+    if let Some(knowledge) = value
+        .get("knowledge")
+        .filter(|knowledge| knowledge.is_object())
+    {
+        text.push_str(&format!(
+            "\nKnowledge: {}\n  {}\n",
+            knowledge["name"].as_str().unwrap_or(slug),
+            knowledge["summary"].as_str().unwrap_or("")
+        ));
+        if let Some(protocol) = knowledge["protocol"].as_str() {
+            text.push_str(&format!("  Protocol: {protocol}\n"));
+        }
+    }
+    text.push_str("\nCapabilities\n");
+    let capabilities = value_array(value, "capabilities");
+    if capabilities.is_empty() {
+        text.push_str("  none\n");
+    }
+    for claim in capabilities {
+        text.push_str(&format!(
+            "  {} {}  {}\n",
+            claim["mode"].as_str().unwrap_or("-"),
+            claim["concept"].as_str().unwrap_or("-"),
+            claim["operationId"].as_str().unwrap_or("-")
+        ));
+    }
+    match value
+        .get("delivery")
+        .filter(|delivery| delivery.is_object())
+    {
+        Some(delivery) => text.push_str(&format!(
+            "\nDelivery: {} {} ({})\n",
+            delivery["kind"].as_str().unwrap_or("-"),
+            delivery["health"].as_str().unwrap_or("-"),
+            delivery["identity"].as_str().unwrap_or("-")
+        )),
+        None => text.push_str("\nDelivery: none advertised\n"),
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api_client::{DeploymentLiveStatus, DeploymentPhase, DeploymentStatus};
     use serde_json::json;
+
+    #[test]
+    fn catalog_rendering_shows_install_ref_targets_capabilities_and_delivery() {
+        let entry = json!({
+            "kind": "program",
+            "slug": "ore",
+            "version": "1.0.0",
+            "packageReleaseHash": "arete:registry-package-release:v2:sha256:aa",
+            "bundleHash": "arete:h1:catalog-bundle:sha256:bb",
+            "setHash": "arete:h1:catalog-publication-set:sha256:cc",
+            "programId": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
+            "programReleaseHash": "arete:h1:program-release:sha256:dd",
+            "knowledge": {"name": "ore", "summary": "ORE mining.", "protocol": "ore"},
+            "capabilities": [{"concept": "mining", "mode": "build", "operationId": "program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/raw-instruction/deploy"}],
+            "sdkTargets": [{"target": "typescript", "sdkInstallTargetHash": "arete:h1:sdk-install-target:sha256:ee"}],
+            "delivery": {"kind": "program-read", "identity": "relation", "status": "active", "health": "ready"},
+            "unexpectedFutureField": true
+        });
+        let rendered = render_catalog_entry(&entry);
+        assert!(rendered.contains("Install: a4 install program ore@=1.0.0"));
+        assert!(rendered.contains("SDK targets: typescript"));
+        assert!(rendered.contains("build mining  program/oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv/raw-instruction/deploy"));
+        assert!(rendered.contains("Delivery: program-read ready"));
+
+        let page = json!({
+            "matchedConcepts": ["mining"],
+            "results": [{"kind": "program", "slug": "ore", "version": "1.0.0", "name": "ore", "summary": "ORE mining.", "modes": ["build", "read"], "sdkTargets": ["typescript"], "packageReleaseHash": "arete:registry-package-release:v2:sha256:aa", "delivery": {"health": "degraded"}}],
+            "sets": ["arete:h1:catalog-publication-set:sha256:cc"],
+            "nextCursor": "eyJ2IjoxfQ"
+        });
+        let rendered = render_catalog_search(&page);
+        assert!(rendered.contains("Matched concepts: mining"));
+        assert!(rendered.contains("program ore@1.0.0"));
+        assert!(rendered.contains("install: a4 install program ore@=1.0.0"));
+        assert!(rendered.contains("delivery: degraded"));
+        assert!(rendered.contains("--cursor eyJ2IjoxfQ"));
+        assert!(render_catalog_search(&json!({"results": []})).contains("No catalog entries match"));
+    }
+
+    #[test]
+    fn catalog_filters_fail_closed() {
+        assert!(catalog_choice(Some("bundle"), "--kind", &CATALOG_KINDS).is_err());
+        assert_eq!(
+            catalog_choice(Some(" stack "), "--kind", &CATALOG_KINDS).unwrap(),
+            Some("stack")
+        );
+        assert_eq!(
+            catalog_choice(None, "--mode", &CATALOG_MODES).unwrap(),
+            None
+        );
+        assert!(catalog_choice(Some("go"), "--target", &CATALOG_TARGETS).is_err());
+    }
+
+    #[test]
+    fn catalog_slugs_are_single_path_segments() {
+        assert_eq!(catalog_slug(" ore ").unwrap(), "ore");
+        assert_eq!(catalog_slug("spl-token").unwrap(), "spl-token");
+        for bad in [
+            "",
+            "..",
+            ".",
+            "ore/x",
+            "..\\..\\admin",
+            "ore%2F..",
+            "ore?x=1",
+            "ore#frag",
+            "ore&x",
+            "or e",
+            "ore\u{0}",
+        ] {
+            assert!(catalog_slug(bad).is_err(), "{bad:?} should be rejected");
+        }
+    }
 
     fn deployment(
         id: i32,

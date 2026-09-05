@@ -115,6 +115,43 @@ impl RegistryClient {
             .await
     }
 
+    // ── Catalog endpoints (public active set; no credential required) ───────
+
+    /// Search the active public catalog. Every result is an installable
+    /// program or stack with a verified SDK target, reviewed knowledge, and
+    /// evidenced capabilities; readiness is decided server-side.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn catalog_search(
+        &self,
+        query: Option<&str>,
+        concept: Option<&str>,
+        category: Option<&str>,
+        kind: Option<&str>,
+        mode: Option<&str>,
+        target: Option<&str>,
+        limit: Option<usize>,
+        cursor: Option<&str>,
+    ) -> Result<String> {
+        let path =
+            catalog_search_path(query, concept, category, kind, mode, target, limit, cursor)?;
+        self.get(&path).await
+    }
+
+    /// One active catalog entry: exact package/version/bundle/set identities,
+    /// knowledge summary, capabilities with stable operation ids, verified
+    /// SDK targets, and sanitized delivery state.
+    pub async fn catalog_entry(&self, kind: &str, slug: &str) -> Result<String> {
+        let kind = catalog_kind(kind)?;
+        let slug = path_segment(slug, "slug")?;
+        self.get(&format!("/api/registry/v1/catalog/entries/{kind}/{slug}"))
+            .await
+    }
+
+    /// Concept and category vocabularies of the active catalog snapshot.
+    pub async fn catalog_vocabulary(&self) -> Result<String> {
+        self.get("/api/registry/v1/catalog/vocabulary").await
+    }
+
     // ── Knowledge endpoints (API key required on every route) ───────────────
 
     /// The concept and category vocabularies of the knowledge layer.
@@ -412,6 +449,107 @@ fn knowledge_search_path(
     ))
 }
 
+const CATALOG_KINDS: [&str; 2] = ["program", "stack"];
+const CATALOG_MODES: [&str; 3] = ["build", "read", "subscribe"];
+const CATALOG_TARGETS: [&str; 3] = ["typescript", "rust", "python"];
+
+fn catalog_choice<'a>(value: &'a str, field: &str, allowed: &[&str]) -> Result<&'a str> {
+    let value = value.trim();
+    if allowed.contains(&value) {
+        Ok(value)
+    } else {
+        Err(anyhow!(
+            "`{field}` must be one of: {}. Got `{value}`.",
+            allowed.join(", ")
+        ))
+    }
+}
+
+fn catalog_kind(value: &str) -> Result<&str> {
+    catalog_choice(value, "kind", &CATALOG_KINDS)
+}
+
+/// Build the path-and-query for a catalog search. At least one filter is
+/// required; enumerated filters fail closed with the allowed values. A
+/// `cursor` from a previous page continues the same search; the server
+/// rejects cursors issued against a different active catalog.
+#[allow(clippy::too_many_arguments)]
+fn catalog_search_path(
+    query: Option<&str>,
+    concept: Option<&str>,
+    category: Option<&str>,
+    kind: Option<&str>,
+    mode: Option<&str>,
+    target: Option<&str>,
+    limit: Option<usize>,
+    cursor: Option<&str>,
+) -> Result<String> {
+    fn non_empty(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
+    let query = non_empty(query);
+    let concept = non_empty(concept);
+    let category = non_empty(category);
+    let kind = non_empty(kind);
+    let mode = non_empty(mode);
+    let target = non_empty(target);
+    let cursor = non_empty(cursor);
+    if query.is_none()
+        && concept.is_none()
+        && category.is_none()
+        && kind.is_none()
+        && mode.is_none()
+        && target.is_none()
+    {
+        return Err(anyhow!(
+            "catalog search requires at least one of `query`, `concept`, `category`,              `kind`, `mode`, or `target`. Pass a free-text intent as `query`, or use              `list_catalog_vocabulary` to discover concept and category slugs."
+        ));
+    }
+    let concept = concept.map(|c| path_segment(c, "concept")).transpose()?;
+    let category = category.map(|c| path_segment(c, "category")).transpose()?;
+    let kind = kind.map(catalog_kind).transpose()?;
+    let mode = mode
+        .map(|value| catalog_choice(value, "mode", &CATALOG_MODES))
+        .transpose()?;
+    let target = target
+        .map(|value| catalog_choice(value, "target", &CATALOG_TARGETS))
+        .transpose()?;
+    let mut url = reqwest::Url::parse("https://placeholder.invalid/api/registry/v1/catalog/search")
+        .expect("static URL parses");
+    {
+        let mut pairs = url.query_pairs_mut();
+        if let Some(q) = query {
+            pairs.append_pair("q", q);
+        }
+        if let Some(c) = &concept {
+            pairs.append_pair("concept", c);
+        }
+        if let Some(c) = &category {
+            pairs.append_pair("category", c);
+        }
+        if let Some(k) = kind {
+            pairs.append_pair("kind", k);
+        }
+        if let Some(m) = mode {
+            pairs.append_pair("mode", m);
+        }
+        if let Some(t) = target {
+            pairs.append_pair("target", t);
+        }
+        if let Some(l) = limit {
+            pairs.append_pair("limit", &l.to_string());
+        }
+        if let Some(c) = cursor {
+            pairs.append_pair("cursor", c);
+        }
+    }
+    Ok(format!(
+        "{}?{}",
+        url.path(),
+        url.query().unwrap_or_default()
+    ))
+}
+
 /// Decide the credential for a knowledge request, given the resolved key (if
 /// any). Split from [`RegistryClient::get_knowledge`] so the two failure
 /// modes — foreign origin, and no key anywhere — are unit-testable without
@@ -490,6 +628,51 @@ fn truncate_for_error(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_search_paths_are_bounded_and_encoded() {
+        assert_eq!(
+            catalog_search_path(
+                Some("monitor swaps"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(5),
+                None
+            )
+            .unwrap(),
+            "/api/registry/v1/catalog/search?q=monitor+swaps&limit=5"
+        );
+        assert_eq!(
+            catalog_search_path(
+                None,
+                Some("swap"),
+                None,
+                Some("stack"),
+                Some("subscribe"),
+                Some("rust"),
+                None,
+                Some("eyJ2IjoxfQ")
+            )
+            .unwrap(),
+            "/api/registry/v1/catalog/search?concept=swap&kind=stack&mode=subscribe&target=rust&cursor=eyJ2IjoxfQ"
+        );
+        assert!(catalog_search_path(None, None, None, None, None, None, None, None).is_err());
+        assert!(
+            catalog_search_path(None, None, None, Some("recipe"), None, None, None, None).is_err()
+        );
+        assert!(
+            catalog_search_path(None, None, None, None, Some("execute"), None, None, None).is_err()
+        );
+        assert!(catalog_search_path(None, None, None, None, None, Some("go"), None, None).is_err());
+        assert!(
+            catalog_search_path(None, Some("swap/x"), None, None, None, None, None, None).is_err()
+        );
+        assert!(catalog_kind("program").is_ok());
+        assert!(catalog_kind("bundle").is_err());
+    }
 
     #[test]
     fn accepts_plain_references() {

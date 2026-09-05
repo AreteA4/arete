@@ -148,16 +148,52 @@ enum Commands {
     /// Show overview of stacks, builds, and deployments
     Status,
 
-    /// Discover installable stacks and programs through pinned descriptors
+    /// Discover installable stacks and programs through the catalog and pinned descriptors
     Explore {
-        /// `stack`, `program`, `programs`, or a legacy stack reference
+        /// `catalog`, `stack`, `program`, `programs`, or a legacy stack reference
         target: Option<String>,
 
-        /// Resource reference, or an entity for legacy `explore <stack> <entity>`
+        /// Resource reference, `catalog <kind>`, or an entity for legacy `explore <stack> <entity>`
         reference: Option<String>,
 
-        /// Entity for explicit `explore stack <ref> <entity>` drill-down
+        /// Entity for `explore stack <ref> <entity>`, or the slug for `explore catalog <kind> <slug>`
         entity: Option<String>,
+
+        /// Catalog search: free-text intent (`a4 explore catalog --query "monitor swaps"`)
+        #[arg(long)]
+        query: Option<String>,
+
+        /// Catalog search: require a concept slug (see `a4 explore catalog --vocabulary`)
+        #[arg(long)]
+        concept: Option<String>,
+
+        /// Catalog search: filter by category slug
+        #[arg(long)]
+        category: Option<String>,
+
+        /// Catalog search: `program` or `stack`
+        #[arg(long)]
+        kind: Option<String>,
+
+        /// Catalog search: require `build`, `read`, or `subscribe`
+        #[arg(long)]
+        mode: Option<String>,
+
+        /// Catalog search: require a verified SDK target (`typescript`, `rust`, `python`)
+        #[arg(long = "target")]
+        sdk_target: Option<String>,
+
+        /// Catalog search: maximum number of results
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Catalog search: continue from the `nextCursor` of a previous page
+        #[arg(long)]
+        cursor: Option<String>,
+
+        /// Print the catalog concept and category vocabularies
+        #[arg(long)]
+        vocabulary: bool,
     },
 
     /// Query the curated knowledge layer: protocols, programs, recipes, concepts
@@ -860,7 +896,58 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             target,
             reference,
             entity,
-        } => match (target.as_deref(), reference.as_deref(), entity.as_deref()) {
+            query,
+            concept,
+            category,
+            kind,
+            mode,
+            sdk_target,
+            limit,
+            cursor,
+            vocabulary,
+        } => {
+            let search_options = query.is_some()
+                || concept.is_some()
+                || category.is_some()
+                || kind.is_some()
+                || mode.is_some()
+                || sdk_target.is_some()
+                || limit.is_some()
+                || cursor.is_some();
+            let is_catalog_root = target.as_deref() == Some("catalog") && reference.is_none();
+            if (search_options || vocabulary) && !is_catalog_root {
+                return Err(anyhow::anyhow!(
+                    "Catalog options (--query, --concept, --category, --kind, --mode, --target, --limit, --cursor, --vocabulary) apply only to `a4 explore catalog`"
+                ));
+            }
+            if search_options && vocabulary {
+                return Err(anyhow::anyhow!(
+                    "--vocabulary cannot be combined with catalog search options"
+                ));
+            }
+            match (target.as_deref(), reference.as_deref(), entity.as_deref()) {
+            (Some("catalog"), None, None) if vocabulary => {
+                commands::explore::catalog_vocabulary(cli.json)
+            }
+            (Some("catalog"), None, None) => commands::explore::catalog_search(
+                commands::explore::CatalogSearchArgs {
+                    query: query.as_deref(),
+                    concept: concept.as_deref(),
+                    category: category.as_deref(),
+                    kind: kind.as_deref(),
+                    mode: mode.as_deref(),
+                    target: sdk_target.as_deref(),
+                    limit,
+                    cursor: cursor.as_deref(),
+                },
+                cli.json,
+            ),
+            (Some("catalog"), Some(kind), Some(slug)) => {
+                commands::explore::catalog_entry(kind, slug, cli.json)
+            }
+            (Some("catalog"), Some(_), None) => Err(anyhow::anyhow!(
+                "Usage: a4 explore catalog <program|stack> <slug>"
+            )),
             (None, None, None) => commands::explore::list(cli.json),
             (Some("programs"), None, None) => commands::explore::list_programs(cli.json),
             (Some("program"), Some(reference), None) => {
@@ -879,9 +966,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 commands::explore::show_stack(stack, entity, cli.json)
             }
             _ => Err(anyhow::anyhow!(
-                "Invalid explore arguments. Use `a4 explore`, `a4 explore programs`, `a4 explore stack <ref>`, or `a4 explore program <ref>`."
+                "Invalid explore arguments. Use `a4 explore`, `a4 explore catalog --query <intent>`, `a4 explore catalog <kind> <slug>`, `a4 explore programs`, `a4 explore stack <ref>`, or `a4 explore program <ref>`."
             )),
-        },
+            }
+        }
         Commands::Know(know_cmd) => match know_cmd {
             KnowCommands::Search {
                 query,
@@ -1312,6 +1400,7 @@ mod tests {
                 target,
                 reference,
                 entity,
+                ..
             }) => {
                 assert_eq!(target.as_deref(), Some("stack"));
                 assert_eq!(reference.as_deref(), Some("ore"));
@@ -1337,6 +1426,7 @@ mod tests {
                     target,
                     reference,
                     entity,
+                    ..
                 }) => {
                     assert_eq!(
                         target.as_deref(),
@@ -1517,6 +1607,7 @@ mod tests {
                 target,
                 reference,
                 entity,
+                ..
             }) => {
                 assert_eq!(target.as_deref(), Some("ore"));
                 assert_eq!(reference.as_deref(), Some("Position"));
