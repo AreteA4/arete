@@ -12,6 +12,7 @@ use arete_sdk::{Subscription, SubscriptionQuery};
 use clap::Args;
 
 use crate::api_client::{ApiClient, DeploymentPhase, DeploymentResponse, DeploymentStatus};
+use crate::commands::stack::deployment_selection_key;
 
 #[derive(Args)]
 pub struct StreamArgs {
@@ -268,12 +269,12 @@ fn find_serving_owned_deployment(
                     DeploymentPhase::Running | DeploymentPhase::Updating
                 )
             );
-            if deployment.spec_name == stack_name
+            if deployment.spec_name.eq_ignore_ascii_case(stack_name)
                 && deployment.branch.is_none()
                 && serving
-                && selected
-                    .as_ref()
-                    .is_none_or(|current| deployment.id > current.id)
+                && selected.as_ref().is_none_or(|current| {
+                    deployment_selection_key(&deployment) > deployment_selection_key(current)
+                })
             {
                 selected = Some(deployment);
             }
@@ -291,11 +292,18 @@ mod tests {
     use super::*;
     use crate::api_client::test_support::MockServer;
 
-    fn deployments_response(status: &str, phase: &str, websocket_url: &str) -> String {
-        serde_json::json!([{
-            "id": 29,
+    fn deployment_response(
+        id: i32,
+        spec_name: &str,
+        status: &str,
+        phase: &str,
+        websocket_url: &str,
+        last_deployed_at: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
             "spec_id": 38,
-            "spec_name": "ore",
+            "spec_name": spec_name,
             "atom_name": "ore-m4jgyh",
             "branch": null,
             "current_build_id": 191,
@@ -313,7 +321,7 @@ mod tests {
             "status": status,
             "status_message": null,
             "first_deployed_at": "2026-09-05T00:00:00Z",
-            "last_deployed_at": "2026-09-05T00:01:00Z",
+            "last_deployed_at": last_deployed_at,
             "live_status": {
                 "phase": phase,
                 "desired_replicas": 1,
@@ -325,8 +333,11 @@ mod tests {
                 "error_category": null
             },
             "latest_operation": null
-        }])
-        .to_string()
+        })
+    }
+
+    fn deployments_response(deployments: Vec<serde_json::Value>) -> String {
+        serde_json::Value::Array(deployments).to_string()
     }
 
     fn registry_response() -> String {
@@ -337,7 +348,14 @@ mod tests {
     fn stack_name_prefers_the_authenticated_owners_serving_deployment() {
         let server = MockServer::json(
             200,
-            &deployments_response("active", "running", "wss://ore-m4jgyh.custom.example"),
+            &deployments_response(vec![deployment_response(
+                29,
+                "Ore",
+                "active",
+                "running",
+                "wss://ore-m4jgyh.custom.example",
+                "2026-09-05T00:01:00Z",
+            )]),
         );
         let client =
             ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_test".to_string());
@@ -358,7 +376,14 @@ mod tests {
         let server = MockServer::json_sequence(vec![
             (
                 200,
-                deployments_response("stopped", "scaled_down", "wss://stopped.example.test"),
+                deployments_response(vec![deployment_response(
+                    29,
+                    "ore",
+                    "stopped",
+                    "scaled_down",
+                    "wss://stopped.example.test",
+                    "2026-09-05T00:01:00Z",
+                )]),
             ),
             (200, registry_response()),
         ]);
@@ -376,6 +401,37 @@ mod tests {
             server.request().request_line,
             "GET /api/registry/stacks/ore/install?capabilities=managed-solana-gateway-v1 HTTP/1.1"
         );
+    }
+
+    #[test]
+    fn owned_stack_uses_established_deployment_precedence() {
+        let server = MockServer::json(
+            200,
+            &deployments_response(vec![
+                deployment_response(
+                    40,
+                    "ore",
+                    "updating",
+                    "updating",
+                    "wss://newer-updating.example.test",
+                    "2026-09-05T00:02:00Z",
+                ),
+                deployment_response(
+                    29,
+                    "ORE",
+                    "active",
+                    "running",
+                    "wss://active.example.test",
+                    "2026-09-05T00:01:00Z",
+                ),
+            ]),
+        );
+        let client =
+            ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_test".to_string());
+
+        let url = resolve_stack_url(&client, "Ore").expect("serving deployment resolves");
+
+        assert_eq!(url, "wss://active.example.test");
     }
 
     #[test]
