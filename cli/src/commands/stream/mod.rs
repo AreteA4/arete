@@ -11,7 +11,8 @@ use anyhow::{bail, Context, Result};
 use arete_sdk::{Subscription, SubscriptionQuery};
 use clap::Args;
 
-use crate::api_client::ApiClient;
+use crate::api_client::{ApiClient, DeploymentPhase, DeploymentResponse, DeploymentStatus};
+use crate::commands::stack::deployment_selection_key;
 
 #[derive(Args)]
 pub struct StreamArgs {
@@ -26,7 +27,7 @@ pub struct StreamArgs {
     #[arg(long)]
     pub url: Option<String>,
 
-    /// Stack name (resolves URL from arete.toml)
+    /// Owned deployment or registry stack name
     #[arg(short, long)]
     pub stack: Option<String>,
 
@@ -217,22 +218,233 @@ fn resolve_url(args: &StreamArgs, _config_path: &str, _view: &str) -> Result<Str
         return Ok(url.clone());
     }
 
-    // 2. Explicit hosted stack name
+    // 2. Explicit owned deployment or hosted registry stack name
     if let Some(stack_name) = &args.stack {
-        let install = ApiClient::new()?.get_registry_stack_install(stack_name, None)?;
-        let url = install.websocket_url.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Hosted stack '{stack_name}' has no single WebSocket endpoint; pass --url for the desired live binding"
-            )
-        })?;
-        validate_ws_url(&url)?;
-        return Ok(url);
+        return resolve_stack_url(&ApiClient::new()?, stack_name);
     }
 
     bail!(
         "Could not determine WebSocket URL.\n\n\
          Specify one of:\n  \
          --url wss://your-stack.stack.arete.run\n  \
-         --stack <registry-name>  (resolves the hosted endpoint)",
+         --stack <name>  (resolves an owned deployment or hosted registry endpoint)",
     )
+}
+
+fn resolve_stack_url(client: &ApiClient, stack_name: &str) -> Result<String> {
+    if client.has_api_key() {
+        if let Some(deployment) = find_serving_owned_deployment(client, stack_name)? {
+            let url = deployment.websocket_url;
+            validate_ws_url(&url)?;
+            return Ok(url);
+        }
+    }
+
+    let install = client.get_registry_stack_install(stack_name, None)?;
+    let url = install.websocket_url.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Hosted stack '{stack_name}' has no single WebSocket endpoint; pass --url for the desired live binding"
+        )
+    })?;
+    validate_ws_url(&url)?;
+    Ok(url)
+}
+
+fn find_serving_owned_deployment(
+    client: &ApiClient,
+    stack_name: &str,
+) -> Result<Option<DeploymentResponse>> {
+    const PAGE_SIZE: i64 = 100;
+
+    let mut offset = 0;
+    let mut selected: Option<DeploymentResponse> = None;
+    loop {
+        let page = client.list_deployments_page(PAGE_SIZE, offset)?;
+        let page_len = page.len() as i64;
+        for deployment in page {
+            let serving = matches!(
+                (deployment.status, deployment.live_status.phase),
+                (
+                    DeploymentStatus::Active | DeploymentStatus::Updating,
+                    DeploymentPhase::Running | DeploymentPhase::Updating
+                )
+            );
+            if deployment.spec_name.eq_ignore_ascii_case(stack_name)
+                && deployment.branch.is_none()
+                && serving
+                && selected.as_ref().is_none_or(|current| {
+                    deployment_selection_key(&deployment) > deployment_selection_key(current)
+                })
+            {
+                selected = Some(deployment);
+            }
+        }
+        if page_len < PAGE_SIZE {
+            break;
+        }
+        offset += page_len;
+    }
+    Ok(selected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api_client::test_support::MockServer;
+
+    fn deployment_response(
+        id: i32,
+        spec_name: &str,
+        status: &str,
+        phase: &str,
+        websocket_url: &str,
+        last_deployed_at: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "spec_id": 38,
+            "spec_name": spec_name,
+            "atom_name": "ore-m4jgyh",
+            "branch": null,
+            "current_build_id": 191,
+            "current_spec_version_id": 38,
+            "current_version": 1,
+            "portable_ast_hash": null,
+            "deployment_release_hash": null,
+            "current_idl_program_ids": [],
+            "current_image_tag": null,
+            "websocket_url": websocket_url,
+            "http_url": "https://ore-m4jgyh.custom.example",
+            "websocket_auth": {},
+            "http_auth": {},
+            "transaction_relay_enabled": false,
+            "status": status,
+            "status_message": null,
+            "first_deployed_at": "2026-09-05T00:00:00Z",
+            "last_deployed_at": last_deployed_at,
+            "live_status": {
+                "phase": phase,
+                "desired_replicas": 1,
+                "ready_replicas": 1,
+                "available_replicas": 1,
+                "updated_replicas": 1,
+                "last_transition_time": null,
+                "source": "kubernetes",
+                "error_category": null
+            },
+            "latest_operation": null
+        })
+    }
+
+    fn deployments_response(deployments: Vec<serde_json::Value>) -> String {
+        serde_json::Value::Array(deployments).to_string()
+    }
+
+    fn registry_response() -> String {
+        r#"{"name":"ore","stack":"arete:h1:stack-manifest:sha256:test","websocketUrl":"wss://managed-ore.stack.arete.run","httpUrl":null,"websocketAuth":null,"httpAuth":null,"description":null,"visibility":"public","specVersionId":null,"liveSpecHash":null,"liveSpec":null,"liveSpecs":[],"stackManifestHash":"arete:h1:stack-manifest:sha256:test","stackManifest":{},"chainBinding":null,"transactionBinding":null,"extensions":null,"programs":[]}"#.to_string()
+    }
+
+    #[test]
+    fn stack_name_prefers_the_authenticated_owners_serving_deployment() {
+        let server = MockServer::json(
+            200,
+            &deployments_response(vec![deployment_response(
+                29,
+                "Ore",
+                "active",
+                "running",
+                "wss://ore-m4jgyh.custom.example",
+                "2026-09-05T00:01:00Z",
+            )]),
+        );
+        let client =
+            ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_test".to_string());
+
+        let url = resolve_stack_url(&client, "ore").expect("owned deployment resolves");
+
+        assert_eq!(url, "wss://ore-m4jgyh.custom.example");
+        let request = server.request();
+        assert_eq!(
+            request.request_line,
+            "GET /api/deployments?limit=100&offset=0 HTTP/1.1"
+        );
+        assert_eq!(request.header("authorization"), Some("Bearer a4_ak_test"));
+    }
+
+    #[test]
+    fn inactive_owned_stack_does_not_shadow_the_registry() {
+        let server = MockServer::json_sequence(vec![
+            (
+                200,
+                deployments_response(vec![deployment_response(
+                    29,
+                    "ore",
+                    "stopped",
+                    "scaled_down",
+                    "wss://stopped.example.test",
+                    "2026-09-05T00:01:00Z",
+                )]),
+            ),
+            (200, registry_response()),
+        ]);
+        let client =
+            ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_test".to_string());
+
+        let url = resolve_stack_url(&client, "ore").expect("registry fallback resolves");
+
+        assert_eq!(url, "wss://managed-ore.stack.arete.run");
+        assert_eq!(
+            server.request().request_line,
+            "GET /api/deployments?limit=100&offset=0 HTTP/1.1"
+        );
+        assert_eq!(
+            server.request().request_line,
+            "GET /api/registry/stacks/ore/install?capabilities=managed-solana-gateway-v1 HTTP/1.1"
+        );
+    }
+
+    #[test]
+    fn owned_stack_uses_established_deployment_precedence() {
+        let server = MockServer::json(
+            200,
+            &deployments_response(vec![
+                deployment_response(
+                    40,
+                    "ore",
+                    "updating",
+                    "updating",
+                    "wss://newer-updating.example.test",
+                    "2026-09-05T00:02:00Z",
+                ),
+                deployment_response(
+                    29,
+                    "ORE",
+                    "active",
+                    "running",
+                    "wss://active.example.test",
+                    "2026-09-05T00:01:00Z",
+                ),
+            ]),
+        );
+        let client =
+            ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_test".to_string());
+
+        let url = resolve_stack_url(&client, "Ore").expect("serving deployment resolves");
+
+        assert_eq!(url, "wss://active.example.test");
+    }
+
+    #[test]
+    fn unauthenticated_stack_name_resolves_the_registry_endpoint() {
+        let server = MockServer::json(200, &registry_response());
+        let client = ApiClient::with_base_url(server.base_url());
+
+        let url = resolve_stack_url(&client, "ore").expect("registry stack resolves");
+
+        assert_eq!(url, "wss://managed-ore.stack.arete.run");
+        assert_eq!(
+            server.request().request_line,
+            "GET /api/registry/stacks/ore/install?capabilities=managed-solana-gateway-v1 HTTP/1.1"
+        );
+    }
 }
