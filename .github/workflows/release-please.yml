@@ -198,6 +198,36 @@ jobs:
         if: needs.release-please.outputs.cli_release_created == 'true'
         run: ./scripts/publish-crate.sh cli
 
+  # Runs unconditionally and no-ops when no SDK was released, so downstream
+  # jobs can list it in `needs` without inheriting a skip. A skipped `needs`
+  # entry would skip its dependents, which would silently disable template
+  # bundling and CLI publication on releases that do not move the SDK.
+  verify-generated-rust-crates:
+    name: Verify Generated Rust Crates Against crates.io
+    needs: [release-please, publish-rust]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        if: needs.release-please.outputs.sdk_release_created == 'true'
+
+      - name: Install Rust toolchain
+        if: needs.release-please.outputs.sdk_release_created == 'true'
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
+
+      # Generated program/stack crates must resolve the exact published
+      # arete-a4-sdk from crates.io with no [patch.crates-io] or path
+      # dependency. A failure here is a publication-ordering or version
+      # contract failure; do not loosen the generated constraint to hide it.
+      - name: Check generated Rust crates build from the registry
+        if: needs.release-please.outputs.sdk_release_created == 'true'
+        run: bash ./scripts/check-generated-rust-crates.sh --mode registry
+
+      - name: No SDK release in this run
+        if: needs.release-please.outputs.sdk_release_created != 'true'
+        run: echo "No arete-a4-sdk release in this run; nothing to verify."
+
   publish-npm:
     name: Publish to npm
     needs: release-please
@@ -328,7 +358,12 @@ jobs:
 
   bundle-templates:
     name: Bundle CLI Templates
-    needs: [release-please, publish-npm, publish-rust]
+    # verify-generated-rust-crates must pass before any CLI template or CLI
+    # package is published: a generated crate that cannot resolve the freshly
+    # published SDK is a version-contract failure, and shipping the CLI first
+    # would hand users a broken generator.
+    needs:
+      [release-please, publish-npm, publish-rust, verify-generated-rust-crates]
     runs-on: ubuntu-latest
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:

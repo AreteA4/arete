@@ -1186,7 +1186,8 @@ fn generate_project_stack_source(
                     Some(arete_interpreter::rust::RustCompositionConfig {
                         stack: arete_interpreter::rust::RustStackConfig {
                             crate_name: format!("{}-stack", options.alias),
-                            sdk_version: "0.4".to_string(),
+                            sdk_version: arete_interpreter::rust::GENERATED_RUST_SDK_VERSION
+                                .to_string(),
                             module_mode: options.rust_module,
                             url: None,
                             http_url: None,
@@ -1239,7 +1240,8 @@ fn generate_project_stack_source(
                     Some(arete_interpreter::python::PythonCompositionConfig {
                         stack: arete_interpreter::python::PythonStackConfig {
                             package_name: format!("{}-stack", options.alias),
-                            sdk_version: "0.4".to_string(),
+                            sdk_version: arete_interpreter::python::GENERATED_PYTHON_SDK_VERSION
+                                .to_string(),
                             module_mode: options.python_module,
                             url: None,
                             http_url: None,
@@ -1364,7 +1366,7 @@ fn generate_project_rust_program(
     };
     let rust_config = arete_interpreter::rust::RustStackConfig {
         crate_name: format!("{}-program", options.alias),
-        sdk_version: "0.4".to_string(),
+        sdk_version: arete_interpreter::rust::GENERATED_RUST_SDK_VERSION.to_string(),
         module_mode: options.rust_module,
         url: None,
         http_url: None,
@@ -1468,7 +1470,7 @@ fn generate_project_python_program(
         .collect();
     let python_config = arete_interpreter::python::PythonStackConfig {
         package_name,
-        sdk_version: "0.4".to_string(),
+        sdk_version: arete_interpreter::python::GENERATED_PYTHON_SDK_VERSION.to_string(),
         module_mode: options.python_module,
         url: None,
         http_url: None,
@@ -4429,7 +4431,7 @@ pub fn create_rust(
             Some(arete_interpreter::rust::RustCompositionConfig {
                 stack: arete_interpreter::rust::RustStackConfig {
                     crate_name: crate_name.clone(),
-                    sdk_version: "0.4".to_string(),
+                    sdk_version: arete_interpreter::rust::GENERATED_RUST_SDK_VERSION.to_string(),
                     module_mode: as_module,
                     url: None,
                     http_url: None,
@@ -4522,7 +4524,7 @@ fn generate_rust_stack_sdk(
 
     let rust_config = arete_interpreter::rust::RustStackConfig {
         crate_name: crate_name.to_string(),
-        sdk_version: "0.4".to_string(),
+        sdk_version: arete_interpreter::rust::GENERATED_RUST_SDK_VERSION.to_string(),
         module_mode: as_module,
         url: stack_url,
         http_url: source.default_http_url(),
@@ -4721,7 +4723,8 @@ pub fn create_python(
             Some(arete_interpreter::python::PythonCompositionConfig {
                 stack: arete_interpreter::python::PythonStackConfig {
                     package_name: package_name.clone(),
-                    sdk_version: "0.4".to_string(),
+                    sdk_version: arete_interpreter::python::GENERATED_PYTHON_SDK_VERSION
+                        .to_string(),
                     module_mode: as_module,
                     url: None,
                     http_url: None,
@@ -4816,7 +4819,7 @@ fn generate_python_stack_sdk(
 
     let python_config = arete_interpreter::python::PythonStackConfig {
         package_name: package_name.to_string(),
-        sdk_version: "0.4".to_string(),
+        sdk_version: arete_interpreter::python::GENERATED_PYTHON_SDK_VERSION.to_string(),
         module_mode: as_module,
         url: stack_url,
         http_url: source.default_http_url(),
@@ -8301,5 +8304,95 @@ mod tests {
         assert!(root_init.contains("from . import alpha"));
         assert!(root_init.contains("from . import beta"));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn ore_fixture_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("cli crate lives in the repo root")
+            .join("stacks/ore/.arete")
+    }
+
+    fn assert_linked_sdk_dependency(manifest_path: &Path) {
+        let manifest = fs::read_to_string(manifest_path).expect("generated Cargo.toml");
+        let expected = format!(
+            "arete-sdk = {{ package = \"arete-a4-sdk\", version = {:?} }}",
+            arete_interpreter::rust::GENERATED_RUST_SDK_VERSION
+        );
+        assert!(
+            manifest.contains(&expected),
+            "{} must depend on the linked SDK release:\n{manifest}",
+            manifest_path.display()
+        );
+        assert!(
+            !manifest.contains("\"0.4\""),
+            "{} must not pin the obsolete 0.4 SDK:\n{manifest}",
+            manifest_path.display()
+        );
+        assert!(
+            !manifest.contains("path =") && !manifest.contains("[patch"),
+            "{} must not carry local path or patch dependencies:\n{manifest}",
+            manifest_path.display()
+        );
+    }
+
+    #[test]
+    fn generated_rust_program_and_stack_crates_pin_the_linked_sdk_release() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixtures = ore_fixture_root();
+
+        let program_dir = directory.path().join("ore-program");
+        generate_project_local_program(
+            &fixtures.join("ore.program-spec.json"),
+            ProjectGenerationOptions {
+                alias: "ore",
+                target: crate::project::manifest::InstallTarget::Rust,
+                output: &program_dir,
+                typescript_package: "@usearete/react",
+                rust_module: false,
+                python_module: false,
+            },
+        )
+        .expect("local program generation should succeed");
+        assert_linked_sdk_dependency(&program_dir.join("Cargo.toml"));
+
+        let stack_dir = directory.path().join("ore-stack");
+        generate_project_local_stack(
+            &fixtures.join("OreStream.stack-manifest.json"),
+            &[fixtures.clone()],
+            ProjectGenerationOptions {
+                alias: "ore",
+                target: crate::project::manifest::InstallTarget::Rust,
+                output: &stack_dir,
+                typescript_package: "@usearete/react",
+                rust_module: false,
+                python_module: false,
+            },
+        )
+        .expect("local stack generation should succeed");
+        assert_linked_sdk_dependency(&stack_dir.join("Cargo.toml"));
+
+        let python_dir = directory.path().join("ore-py");
+        generate_project_local_program(
+            &fixtures.join("ore.program-spec.json"),
+            ProjectGenerationOptions {
+                alias: "ore",
+                target: crate::project::manifest::InstallTarget::Python,
+                output: &python_dir,
+                typescript_package: "@usearete/react",
+                rust_module: false,
+                python_module: false,
+            },
+        )
+        .expect("local python generation should succeed");
+        let pyproject = fs::read_to_string(python_dir.join("pyproject.toml")).unwrap();
+        assert!(
+            pyproject.contains(&format!(
+                "dependencies = [\"arete-sdk>={}\"]",
+                arete_interpreter::python::GENERATED_PYTHON_SDK_VERSION
+            )),
+            "{pyproject}"
+        );
+        assert!(!pyproject.contains(">=0.4\""), "{pyproject}");
     }
 }

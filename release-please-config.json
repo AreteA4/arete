@@ -72,7 +72,13 @@
     },
     "rust/arete-a4-sdk": {
       "release-type": "rust",
-      "component": "arete-sdk"
+      "component": "arete-sdk",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "README.md"
+        }
+      ]
     },
     "typescript/react": {
       "release-type": "node",
