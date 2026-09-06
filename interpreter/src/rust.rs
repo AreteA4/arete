@@ -48,6 +48,17 @@ impl RustOutput {
     }
 }
 
+/// The `arete-a4-sdk` dependency version emitted into generated Rust
+/// program and stack crates.
+///
+/// `arete-interpreter` and `arete-a4-sdk` are released together in the
+/// `arete` linked-version group (`release-please-config.json`), so the
+/// interpreter's own package version is the SDK version a generated crate
+/// must build against. CI enforces that linkage with
+/// `scripts/check-linked-release-versions.mjs`; callers that deliberately
+/// need a different version still override `sdk_version` explicitly.
+pub const GENERATED_RUST_SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Debug, Clone)]
 pub struct RustConfig {
     pub crate_name: String,
@@ -61,7 +72,7 @@ impl Default for RustConfig {
     fn default() -> Self {
         Self {
             crate_name: "generated-stack".to_string(),
-            sdk_version: "0.4".to_string(),
+            sdk_version: GENERATED_RUST_SDK_VERSION.to_string(),
             module_mode: false,
             url: None,
         }
@@ -1529,7 +1540,64 @@ mod tests {
     fn generated_manifest_uses_published_arete_sdk_package() {
         let manifest = generate_stack_cargo_toml(&RustStackConfig::default());
 
-        assert!(manifest.contains("arete-sdk = { package = \"arete-a4-sdk\", version = \"0.4\" }"));
+        let expected = format!(
+            "arete-sdk = {{ package = \"arete-a4-sdk\", version = {:?} }}",
+            GENERATED_RUST_SDK_VERSION
+        );
+        assert!(manifest.contains(&expected), "{manifest}");
+        assert!(!manifest.contains("\"0.4\""), "{manifest}");
+    }
+
+    #[test]
+    fn generated_sdk_version_is_the_linked_interpreter_release() {
+        // `arete-interpreter` and `arete-a4-sdk` share the `arete` linked
+        // release group, so the interpreter version is the SDK version.
+        assert_eq!(GENERATED_RUST_SDK_VERSION, env!("CARGO_PKG_VERSION"));
+        assert!(semver_like(GENERATED_RUST_SDK_VERSION));
+        assert_eq!(
+            RustConfig::default().sdk_version,
+            GENERATED_RUST_SDK_VERSION,
+            "program crates default to the linked SDK version"
+        );
+        assert_eq!(
+            RustStackConfig::default().sdk_version,
+            GENERATED_RUST_SDK_VERSION,
+            "stack crates default to the linked SDK version"
+        );
+    }
+
+    #[test]
+    fn explicit_sdk_version_override_is_preserved() {
+        let program = RustCompiler::new(
+            capture_entity(),
+            "OreTreasury".to_string(),
+            RustConfig {
+                sdk_version: "9.8.7-override".to_string(),
+                ..RustConfig::default()
+            },
+        )
+        .generate_cargo_toml();
+        assert!(
+            program.contains("version = \"9.8.7-override\""),
+            "{program}"
+        );
+
+        let stack = generate_stack_cargo_toml(&RustStackConfig {
+            sdk_version: "9.8.7-override".to_string(),
+            ..RustStackConfig::default()
+        });
+        assert!(stack.contains("version = \"9.8.7-override\""), "{stack}");
+    }
+
+    fn semver_like(value: &str) -> bool {
+        let mut parts = value.split('.');
+        let numeric = |part: Option<&str>| {
+            part.is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        };
+        numeric(parts.next())
+            && numeric(parts.next())
+            && numeric(parts.next())
+            && parts.next().is_none()
     }
 
     fn resolved_field_of(name: &str, field_type: &str, base_type: BaseType) -> ResolvedField {
@@ -2188,7 +2256,7 @@ mod tests {
             stack,
             Some(RustStackConfig {
                 crate_name: "demo-program".to_string(),
-                sdk_version: env!("CARGO_PKG_VERSION").to_string(),
+                sdk_version: GENERATED_RUST_SDK_VERSION.to_string(),
                 program_reads: vec![RustProgramReadConfig {
                     program_id: TEST_PROGRAM_ID.to_string(),
                     program_spec_hash: "arete:h1:program-spec:sha256:test".to_string(),
@@ -2250,7 +2318,7 @@ mod tests {
         let mut manifest = std::fs::read_to_string(&manifest_path).expect("generated Cargo.toml");
         let generated_dependency = format!(
             "arete-sdk = {{ package = \"arete-a4-sdk\", version = {:?} }}",
-            env!("CARGO_PKG_VERSION")
+            GENERATED_RUST_SDK_VERSION
         );
         assert!(
             manifest.contains(&generated_dependency),
@@ -2715,7 +2783,7 @@ mod tests {
 
         let config = RustStackConfig {
             crate_name: "ore-stack".to_string(),
-            sdk_version: "0.4".to_string(),
+            sdk_version: GENERATED_RUST_SDK_VERSION.to_string(),
             module_mode: true,
             url: Some("wss://ore.stack.arete.run".to_string()),
             http_url: Some("https://ore.stack.arete.run".to_string()),
@@ -2809,7 +2877,7 @@ impl Default for RustStackConfig {
     fn default() -> Self {
         Self {
             crate_name: "generated-stack".to_string(),
-            sdk_version: "0.4".to_string(),
+            sdk_version: GENERATED_RUST_SDK_VERSION.to_string(),
             module_mode: false,
             url: None,
             http_url: None,

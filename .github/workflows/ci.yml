@@ -171,6 +171,9 @@ jobs:
       - name: Test selected views and aliased SDK composition
         run: cargo test -p a4-cli compose_ && cargo test -p a4-cli local_multi_live_generation
 
+      - name: Check generated Rust crates build against the linked SDK (pre-publication)
+        run: bash ./scripts/check-generated-rust-crates.sh --mode local
+
       - name: Build standalone ORE stack
         run: cargo build --manifest-path stacks/ore/Cargo.toml --locked
 

@@ -95,11 +95,17 @@ pub struct PythonProgramReadConfig {
     pub descriptor: Option<serde_json::Value>,
 }
 
+/// The `arete-sdk` (PyPI) minimum version emitted into generated Python
+/// packages. `arete-interpreter` and the Python SDK share the `arete`
+/// linked-version release group, so the interpreter's package version is the
+/// SDK version a generated package must install against.
+pub const GENERATED_PYTHON_SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 impl Default for PythonStackConfig {
     fn default() -> Self {
         Self {
             package_name: "generated-stack".to_string(),
-            sdk_version: "0.4".to_string(),
+            sdk_version: GENERATED_PYTHON_SDK_VERSION.to_string(),
             module_mode: false,
             url: None,
             http_url: None,
@@ -4128,9 +4134,21 @@ mod tests {
         let output = compile_stack_spec(programs_stack_spec(), None)
             .expect("python generation should succeed");
 
-        assert!(output
-            .pyproject_toml
-            .contains("dependencies = [\"arete-sdk>=0.4\"]"));
+        let expected = format!(
+            "dependencies = [\"arete-sdk>={}\"]",
+            GENERATED_PYTHON_SDK_VERSION
+        );
+        assert!(
+            output.pyproject_toml.contains(&expected),
+            "{}",
+            output.pyproject_toml
+        );
+        assert!(
+            !output.pyproject_toml.contains(">=0.4\""),
+            "{}",
+            output.pyproject_toml
+        );
+        assert_eq!(GENERATED_PYTHON_SDK_VERSION, env!("CARGO_PKG_VERSION"));
         assert!(output.pyproject_toml.contains("name = \"generated-stack\""));
         assert_eq!(output.module_name, "generated_stack");
     }
@@ -4827,7 +4845,7 @@ mod tests {
 
         let config = PythonStackConfig {
             package_name: "ore-stack".to_string(),
-            sdk_version: "0.4".to_string(),
+            sdk_version: GENERATED_PYTHON_SDK_VERSION.to_string(),
             module_mode: true,
             url: Some("wss://ore.stack.arete.run".to_string()),
             http_url: Some("https://ore.stack.arete.run".to_string()),
