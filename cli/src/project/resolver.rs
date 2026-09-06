@@ -72,6 +72,20 @@ impl ResolvedRegistryDependency {
             Self::Stack { package, .. } | Self::Program { package, .. } => package,
         }
     }
+
+    /// The immutable release identity the lockfile pins.
+    pub fn package_release_hash(&self) -> &str {
+        match self {
+            Self::Stack {
+                package_release_hash,
+                ..
+            }
+            | Self::Program {
+                package_release_hash,
+                ..
+            } => package_release_hash,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

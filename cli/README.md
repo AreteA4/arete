@@ -72,6 +72,7 @@ The deployment returns operational bindings for the exact StackManifest.
 |---------|-------------|
 | `a4 init` | Set up the project: manifest, `AGENTS.md`, skills, MCP config |
 | `a4 doctor` | Check the install, project, auth, network, and agent setup |
+| `a4 install program <alias\|upr_...>` / `a4 install stack <atom-name>` | Install an owner-private program or stack through the manifest resolver (login required; exact lock; portable local alias) |
 | `a4 self install\|update\|uninstall` | Manage the `a4` binary (`a4 upgrade` = `self update`) |
 | `a4 mcp` | Run the stream MCP server over stdio |
 | `a4 auth signup` | Register an agent account and store the key |

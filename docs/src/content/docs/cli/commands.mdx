@@ -754,7 +754,45 @@ matches that project dependency. It refuses output containing unowned files;
 
 `a4 sdk list` reports normalized manifest dependencies and lock status.
 Low-level `a4 sdk create` accepts explicit `--manifest` or
-`--program-spec` artifact inputs and hosted exact descriptors.
+`--program-spec` artifact inputs and hosted exact descriptors. It is a
+compatibility/direct-descriptor tool: it never writes `arete.toml` or
+`arete.lock`, and `a4 install` never falls back to it.
+
+### Private programs and stacks
+
+Owner-private programs (`a4 program push`) and private production stacks
+(`a4 up`) publish immutable, owner-scoped registry packages as part of the
+same lifecycle step that makes them ready or active, so they install through
+the ordinary dependency workflow:
+
+```bash
+a4 auth login                                   # private packages require the owner's session
+a4 install program My-Program --rust            # by alias (case-insensitive)
+a4 install program upr_AbC123... --ts           # by stable reference
+a4 install stack my-stack-a1b2 --python         # by deployed atom name
+a4 install                                      # reinstall: exact lock, never floats
+a4 update program my-program                    # explicit update to the newest revision
+```
+
+Four things are kept distinct:
+
+| Concept             | Where it lives                                                                   | Rule                                                                                                                                                                                                                                                                          |
+| ------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Remote lookup       | `source = { registry = "My-Program" }`                                           | Sent to the registry unchanged; an alias, a stable `upr_...` reference, or a deployed stack name.                                                                                                                                                                             |
+| Local alias         | the `[dependencies.<kind>.<alias>]` key and generated module/crate/package names | Derived deterministically from the lookup (lower-case, `-` separators, `pkg-` before a leading digit, `-pkg` after a reserved word) or set with `--alias`; must be a valid identifier in Rust, TypeScript, and Python. Regeneration on another machine yields the same names. |
+| Version requirement | `version = "^0.1.0"`                                                             | Private revisions are platform-managed (`0.1.0`, then the next patch); the requirement is what `a4 update` may advance within.                                                                                                                                                |
+| Exact lock          | `arete.lock` `package_release_hash`                                              | Immutable release identity; reinstall resolves exactly this, `a4 update` replaces it only after generation succeeds.                                                                                                                                                          |
+
+Public catalog packages win name resolution; the authenticated owner's private
+package is consulted next. Another account, an anonymous client, or an unknown
+name all receive the same not-found response, and the CLI never retries a
+failed manifest lookup against a differently scoped endpoint. Optional server
+SDK extensions are optional: without them the core client is generated.
+
+Chain reads and transaction submission for hosted programs and stacks use the
+managed Solana gateway descriptor embedded in the generated SDK, not the
+tenant stream URL; a stack descriptor reporting `transactions: false` describes
+the tenant runtime endpoint, not the account's entitlement.
 
 ## Configuration File
 
