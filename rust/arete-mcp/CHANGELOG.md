@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.14.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.13.0...arete-mcp-v0.14.0) (2026-09-06)
+
+
+### Features
+
+* **cli,mcp:** add catalog discovery clients ([ef7616f](https://github.com/AreteA4/arete/commit/ef7616ff15e944425a4964448a5f69e9a9e19b39))
+* register catalog bundle identities and add catalog discovery clients (Plan 039) ([146b9b9](https://github.com/AreteA4/arete/commit/146b9b9ab9516f7d3e2555b79c11a489fd6b3be8))
+
+
+### Bug Fixes
+
+* **cli,mcp:** paginate catalog search, pin install refs, harden slugs ([c862623](https://github.com/AreteA4/arete/commit/c8626233d27c22736a3209634ab10aecd228217c))
+
 ## [0.13.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.12.0...arete-mcp-v0.13.0) (2026-09-03)
 
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.5.0...arete-idl-v0.6.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **hash:** arete_interpreter::program_sdk no longer exports extract_pdas_from_idl or extract_instructions_from_idl. They were an unused second copy of the IDL converters that had drifted from the canonical implementation and reproduced the PDA misclassification this change fixes. No deprecated shim is provided: the corrected converters live in arete-hash, are private, and return arete-hash types, so a wrapper would mean re-exporting internals and maintaining a type bridge between two representations, which is the duplication being removed. Callers should use arete-hash's ProgramSpec projection.
+
+### Bug Fixes
+
+* **hash:** preserve instruction-local PDA provenance ([56278d4](https://github.com/AreteA4/arete/commit/56278d452c436d36f2b9b4ee4dd89ef8ad25aeec))
+
 ## [0.5.0](https://github.com/AreteA4/arete/compare/arete-idl-v0.4.0...arete-idl-v0.5.0) (2026-09-02)
 
 

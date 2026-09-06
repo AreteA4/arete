@@ -14,6 +14,49 @@
 * make `a4 stack delete` wait for a validated durable destroy result while retaining deployment tombstones and immutable history
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.14.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.13.0...a4-cli-v0.14.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** a4 init no longer installs arete-consume or arete-build.
+
+### Features
+
+* **cli,mcp:** add catalog discovery clients ([ef7616f](https://github.com/AreteA4/arete/commit/ef7616ff15e944425a4964448a5f69e9a9e19b39))
+* **cli:** add durable stack deletion ([9bd8fff](https://github.com/AreteA4/arete/commit/9bd8fff2e619f4f8c2eddf45fb98f3cbfc4d1537))
+* **cli:** add durable stack deletion ([2bac6ac](https://github.com/AreteA4/arete/commit/2bac6ac5a765fbfbc603f7c271106efd4d8c2af4))
+* **cli:** install owner-private registry packages ([f6c2214](https://github.com/AreteA4/arete/commit/f6c2214dae508d0961099519eb73013df4057e36))
+* **cli:** install owner-private registry packages ([6cb7eac](https://github.com/AreteA4/arete/commit/6cb7eac5a922afb257c627ddafe9ec58627859d8))
+* **cli:** install the five-skill surface and clean up legacy skills ([de0954e](https://github.com/AreteA4/arete/commit/de0954e4db2d3a5bc24ceef61eca8e1bf0608998))
+* register catalog bundle identities and add catalog discovery clients (Plan 039) ([146b9b9](https://github.com/AreteA4/arete/commit/146b9b9ab9516f7d3e2555b79c11a489fd6b3be8))
+
+
+### Bug Fixes
+
+* **cli,mcp:** paginate catalog search, pin install refs, harden slugs ([c862623](https://github.com/AreteA4/arete/commit/c8626233d27c22736a3209634ab10aecd228217c))
+* **cli:** harden durable destroy polling ([44d74b1](https://github.com/AreteA4/arete/commit/44d74b1b5888299b92f746df85ae4729b057c9e1))
+* **cli:** match current deployment precedence ([3f119de](https://github.com/AreteA4/arete/commit/3f119dece6ea8ff2b423b3cda71e9704319d3233))
+* **cli:** match the official skills source exactly, not by substring ([3e14946](https://github.com/AreteA4/arete/commit/3e149464306f726a046653a6d98095fb404dee18))
+* **cli:** require a serving owned stack ([9ebd5ce](https://github.com/AreteA4/arete/commit/9ebd5ce561268ca3598b112e75bd76fa70d92cb5))
+* **cli:** resolve owned stacks for streaming ([e7c16a2](https://github.com/AreteA4/arete/commit/e7c16a2c93deb4befc7fc8ae44cd555de3ac7569))
+* **cli:** resolve owned stacks for streaming ([511439e](https://github.com/AreteA4/arete/commit/511439e4cfa8e58cdf5012957b55409555c32ca4))
+* **interpreter:** emit the linked Arete SDK version in generated crates ([b8b9a70](https://github.com/AreteA4/arete/commit/b8b9a705019d73ea59b989697e895af984ba0588))
+* **interpreter:** emit the linked Arete SDK version in generated crates ([8ce80ae](https://github.com/AreteA4/arete/commit/8ce80aefcb0ae425ce60058b318712eda221a85d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.13.0 to 0.14.0
+    * arete-artifacts bumped from 0.3.1 to 0.3.2
+    * arete-idl bumped from 0.5.0 to 0.6.0
+    * arete-hash bumped from 0.3.2 to 0.4.0
+    * arete-mcp bumped from 0.13.0 to 0.14.0
+  * build-dependencies
+    * arete-hash bumped from 0.3.2 to 0.4.0
+
 ## [0.13.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.12.0...a4-cli-v0.13.0) (2026-09-03)
 
 

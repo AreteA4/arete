@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.14.0](https://github.com/AreteA4/arete/compare/arete-server-v0.13.0...arete-server-v0.14.0) (2026-09-06)
+
+
+### Features
+
+* **server:** attribute websocket usage to builds ([e649c6f](https://github.com/AreteA4/arete/commit/e649c6f00a799366c4f9fca6e9e2edf8521df710))
+* **server:** attribute websocket usage to builds ([dcae04d](https://github.com/AreteA4/arete/commit/dcae04dbe6939ce2ec7cf097af429c848e6267c0))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.13.0 to 0.14.0
+    * arete-hash bumped from 0.3.2 to 0.4.0
+
 ## [0.13.0](https://github.com/AreteA4/arete/compare/arete-server-v0.12.0...arete-server-v0.13.0) (2026-09-03)
 
 

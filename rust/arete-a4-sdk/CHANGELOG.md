@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.13.0...arete-sdk-v0.14.0) (2026-09-06)
+
+
+### Bug Fixes
+
+* **interpreter:** emit the linked Arete SDK version in generated crates ([b8b9a70](https://github.com/AreteA4/arete/commit/b8b9a705019d73ea59b989697e895af984ba0588))
+* **interpreter:** emit the linked Arete SDK version in generated crates ([8ce80ae](https://github.com/AreteA4/arete/commit/8ce80aefcb0ae425ce60058b318712eda221a85d))
+
 ## [0.13.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.12.0...arete-sdk-v0.13.0) (2026-09-03)
 
 
