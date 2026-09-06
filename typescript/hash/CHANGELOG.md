@@ -6,6 +6,23 @@
 
 * add strict hosted-private Program Release V3 identity and shared vectors
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.4.1...arete-hash-npm-v0.5.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **hash:** arete_interpreter::program_sdk no longer exports extract_pdas_from_idl or extract_instructions_from_idl. They were an unused second copy of the IDL converters that had drifted from the canonical implementation and reproduced the PDA misclassification this change fixes. No deprecated shim is provided: the corrected converters live in arete-hash, are private, and return arete-hash types, so a wrapper would mean re-exporting internals and maintaining a type bridge between two representations, which is the duplication being removed. Callers should use arete-hash's ProgramSpec projection.
+
+### Features
+
+* **hash:** register catalog bundle publication identities ([dcb1b4f](https://github.com/AreteA4/arete/commit/dcb1b4f6ac4751abf07cd9e2cb49d0e972aaa775))
+* register catalog bundle identities and add catalog discovery clients (Plan 039) ([146b9b9](https://github.com/AreteA4/arete/commit/146b9b9ab9516f7d3e2555b79c11a489fd6b3be8))
+
+
+### Bug Fixes
+
+* **hash:** preserve instruction-local PDA provenance ([56278d4](https://github.com/AreteA4/arete/commit/56278d452c436d36f2b9b4ee4dd89ef8ad25aeec))
+
 ## [0.4.1](https://github.com/AreteA4/arete/compare/arete-hash-npm-v0.4.0...arete-hash-npm-v0.4.1) (2026-09-03)
 
 
