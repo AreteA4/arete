@@ -110,6 +110,114 @@ test("projects conflicting instruction-local PDAs inline", () => {
   expect(spec.instructions[1]?.accounts[0]?.resolution.category).toBe("pdaInline");
 });
 
+const STATE_SEED = { kind: "const", value: [115, 116, 97, 116, 101] };
+const LOCAL_STATE_PDA = { name: "state", pda: { seeds: [STATE_SEED] } };
+const PLAIN_STATE = { name: "state" };
+
+function demoProgramSpec(instructions: unknown[], pdas?: unknown[]) {
+  const source = {
+    address: "11111111111111111111111111111111",
+    metadata: { name: "demo", version: "0.1.0" },
+    instructions,
+    ...(pdas === undefined ? {} : { pdas }),
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(source));
+  const { programId } = projectIdlV1(bytes);
+  return parseIdlV1(bytes, programId).programSpec;
+}
+
+function resolutionOf(
+  spec: ReturnType<typeof demoProgramSpec>,
+  instruction: string,
+  account: string,
+) {
+  const found = spec.instructions
+    .find((candidate) => candidate.name === instruction)
+    ?.accounts.find((candidate) => candidate.name === account);
+  if (found === undefined) throw new Error(`${instruction}.${account} missing`);
+  return found.resolution;
+}
+
+test("an instruction-local PDA never leaks to same-named plain accounts", () => {
+  const spec = demoProgramSpec([
+    { name: "create", discriminator: [1], accounts: [LOCAL_STATE_PDA], args: [] },
+    { name: "update", discriminator: [2], accounts: [PLAIN_STATE], args: [] },
+    { name: "close", discriminator: [3], accounts: [PLAIN_STATE], args: [] },
+  ]);
+
+  expect(spec.pdas).toHaveProperty("state");
+  expect(resolutionOf(spec, "create", "state")).toEqual({ category: "pdaRef", pda_name: "state" });
+  expect(resolutionOf(spec, "update", "state")).toEqual({ category: "userProvided" });
+  expect(resolutionOf(spec, "close", "state")).toEqual({ category: "userProvided" });
+});
+
+test("an explicit top-level PDA is referenced by every same-named account", () => {
+  const spec = demoProgramSpec(
+    [
+      { name: "create", discriminator: [1], accounts: [LOCAL_STATE_PDA], args: [] },
+      { name: "update", discriminator: [2], accounts: [PLAIN_STATE], args: [] },
+    ],
+    [{ name: "state", seeds: [STATE_SEED] }],
+  );
+
+  expect(Object.keys(spec.pdas)).toEqual(["state"]);
+  expect(resolutionOf(spec, "create", "state")).toEqual({ category: "pdaRef", pda_name: "state" });
+  expect(resolutionOf(spec, "update", "state")).toEqual({ category: "pdaRef", pda_name: "state" });
+});
+
+test("a local PDA that differs from the explicit PDA stays inline", () => {
+  const spec = demoProgramSpec(
+    [
+      {
+        name: "create",
+        discriminator: [1],
+        accounts: [
+          { name: "state", pda: { seeds: [{ kind: "const", value: [111, 116, 104, 101, 114] }] } },
+        ],
+        args: [],
+      },
+      { name: "update", discriminator: [2], accounts: [PLAIN_STATE], args: [] },
+    ],
+    [{ name: "state", seeds: [STATE_SEED] }],
+  );
+
+  expect(spec.pdas.state?.seeds).toEqual([{ type: "literal", value: "state" }]);
+  expect(resolutionOf(spec, "create", "state")).toMatchObject({
+    category: "pdaInline",
+    seeds: [{ type: "literal", value: "other" }],
+  });
+  expect(resolutionOf(spec, "update", "state")).toEqual({ category: "pdaRef", pda_name: "state" });
+});
+
+test("address lookup table derives lookup_table on create only", () => {
+  const bytes = readFileSync(
+    new URL("../../../arete-idl/tests/fixtures/address-lookup-table.json", import.meta.url),
+  );
+  const { programId } = projectIdlV1(bytes);
+  const spec = parseIdlV1(bytes, programId).programSpec;
+
+  expect(programId).toBe("AddressLookupTab1e1111111111111111111111111");
+  expect(Object.keys(spec.pdas)).toEqual(["lookup_table"]);
+  expect(resolutionOf(spec, "create_lookup_table", "lookup_table")).toEqual({
+    category: "pdaRef",
+    pda_name: "lookup_table",
+  });
+  for (const instruction of [
+    "freeze_lookup_table",
+    "extend_lookup_table",
+    "deactivate_lookup_table",
+    "close_lookup_table",
+  ]) {
+    expect(resolutionOf(spec, instruction, "lookup_table")).toEqual({ category: "userProvided" });
+  }
+  const extend = spec.instructions.find((candidate) => candidate.name === "extend_lookup_table");
+  expect(extend?.discriminator).toEqual([2, 0, 0, 0]);
+  expect(extend?.args[0]).toMatchObject({
+    name: "new_addresses",
+    type: "VecU64Len<solana_pubkey::Pubkey>",
+  });
+});
+
 test("preserves NUL const PDA seeds as bytes", () => {
   const source = {
     address: "11111111111111111111111111111111",

@@ -1306,11 +1306,17 @@ function createProgramSpecV1(
     normalized: IdlNormalizedHash;
   },
 ): ProgramSpecV1 {
+  // PDA provenance, not account name, decides how an instruction account
+  // resolves. Explicit top-level `idl.pdas` are program-level, reusable
+  // declarations. PDAs discovered on instruction accounts are published as
+  // named derivations when they have one consistent definition, but they are
+  // instruction-local: they never claim a same-named account that declares no
+  // PDA of its own. Mirrors `ExtractedPdas` in the Rust `arete-hash` crate.
   const pdas: { [name: string]: PdaDefinitionV1 } = {};
-  const namedPdas = new Set<string>();
+  const explicitPdas = new Set<string>();
   for (const pda of idl.pdas) {
     const name = sanitizeIdentifier(pda.name);
-    namedPdas.add(name);
+    explicitPdas.add(name);
     pdas[name] = convertPda(name, pda);
   }
   const conflictingAccountPdas = new Set<string>();
@@ -1318,7 +1324,7 @@ function createProgramSpecV1(
     for (const account of flattenAccounts(instruction.accounts)) {
       if (!account.pda) continue;
       const name = sanitizeIdentifier(account.pda.name ?? account.name);
-      if (namedPdas.has(name) || conflictingAccountPdas.has(name)) continue;
+      if (explicitPdas.has(name) || conflictingAccountPdas.has(name)) continue;
       const candidate = convertPda(name, account.pda);
       const existing = pdas[name];
       if (existing === undefined) {
@@ -1345,7 +1351,7 @@ function createProgramSpecV1(
         name: sanitizeIdentifier(account.name),
         is_signer: account.isSigner,
         is_writable: account.isMut,
-        resolution: accountResolution(account, pdas),
+        resolution: accountResolution(account, pdas, explicitPdas),
         is_optional: account.optional,
         ...(account.docs.length === 0 ? {} : { docs: account.docs }),
       })),
@@ -1365,12 +1371,15 @@ function createProgramSpecV1(
 function accountResolution(
   account: ParsedInstructionAccount,
   pdas: { [name: string]: PdaDefinitionV1 },
+  explicitPdas: ReadonlySet<string>,
 ): AccountResolutionV1 {
   if (account.isSigner && account.address === undefined && account.pda === undefined) {
     return { category: "signer" };
   }
   if (account.address !== undefined) return { category: "known", address: account.address };
   if (account.pda !== undefined) {
+    // The account declares its own derivation. Reference the published
+    // definition only when it is identical; otherwise keep it inline.
     const name = sanitizeIdentifier(account.pda.name ?? account.name);
     const pda = convertPda(name, account.pda);
     if (JSON.stringify(pdas[name]) === JSON.stringify(pda)) {
@@ -1383,8 +1392,11 @@ function accountResolution(
       ...(pda.program === undefined ? {} : { program: pda.program }),
     };
   }
+  // The account declares no derivation. Only an explicit top-level IDL PDA
+  // may claim it by name; a PDA discovered on another instruction's
+  // same-named account is instruction-local and must not leak here.
   const name = sanitizeIdentifier(account.name);
-  return Object.hasOwn(pdas, name)
+  return explicitPdas.has(name)
     ? { category: "pdaRef", pda_name: name }
     : { category: "userProvided" };
 }

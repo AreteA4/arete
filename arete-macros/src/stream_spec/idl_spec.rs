@@ -535,19 +535,8 @@ pub fn process_idl_spec(
                 }
                 let mut instructions: Vec<crate::ast::InstructionDef> =
                     transcode_program_projection(info.identity.program_spec.instructions.clone())?;
-                for account in instructions
-                    .iter_mut()
-                    .flat_map(|instruction| &mut instruction.accounts)
-                {
-                    if matches!(
-                        account.resolution,
-                        crate::ast::AccountResolution::UserProvided
-                    ) && pdas.contains_key(&account.name)
-                    {
-                        account.resolution = crate::ast::AccountResolution::PdaRef {
-                            pda_name: account.name.clone(),
-                        };
-                    }
+                if let Some(manual) = manual_pdas_by_program.get(&info.program_name) {
+                    apply_manual_pda_overlay(&mut instructions, manual);
                 }
                 all_pdas.insert(info.program_name.clone(), pdas);
                 all_instructions.extend(instructions);
@@ -744,6 +733,158 @@ where
             format!("shared ProgramSpec projection does not match legacy AST: {error}"),
         )
     })
+}
+
+/// Bind canonical user-provided instruction accounts to PDAs the stack author
+/// declared explicitly in a `pdas!` overlay.
+///
+/// The canonical `ProgramSpec` already resolved every account the IDL itself
+/// can justify (explicit top-level PDAs, and instruction-local PDAs kept per
+/// instruction). Only the manual overlay may reinterpret a remaining
+/// `UserProvided` account, and only by matching the author's declared name.
+/// Canonical PDAs discovered on other instructions never participate: a PDA
+/// that one instruction derives is not evidence that a same-named account in
+/// another instruction is the same address.
+fn apply_manual_pda_overlay(
+    instructions: &mut [crate::ast::InstructionDef],
+    manual_pdas: &BTreeMap<String, crate::ast::PdaDefinition>,
+) {
+    for account in instructions
+        .iter_mut()
+        .flat_map(|instruction| &mut instruction.accounts)
+    {
+        if matches!(
+            account.resolution,
+            crate::ast::AccountResolution::UserProvided
+        ) && manual_pdas.contains_key(&account.name)
+        {
+            account.resolution = crate::ast::AccountResolution::PdaRef {
+                pda_name: account.name.clone(),
+            };
+        }
+    }
+}
+
+#[cfg(test)]
+mod manual_pda_overlay_tests {
+    use super::*;
+    use crate::ast::{
+        AccountResolution, InstructionAccountDef, InstructionDef, PdaDefinition, PdaSeedDef,
+    };
+
+    fn account(name: &str, resolution: AccountResolution) -> InstructionAccountDef {
+        InstructionAccountDef {
+            name: name.to_string(),
+            is_signer: false,
+            is_writable: true,
+            resolution,
+            is_optional: false,
+            docs: vec![],
+        }
+    }
+
+    fn instruction(name: &str, accounts: Vec<InstructionAccountDef>) -> InstructionDef {
+        InstructionDef {
+            name: name.to_string(),
+            discriminator: vec![1],
+            discriminator_size: 1,
+            accounts,
+            args: vec![],
+            errors: vec![],
+            program_id: None,
+            docs: vec![],
+        }
+    }
+
+    fn treasury_pda() -> PdaDefinition {
+        PdaDefinition {
+            name: "treasury".to_string(),
+            seeds: vec![PdaSeedDef::Literal {
+                value: "treasury".to_string(),
+            }],
+            program_id: None,
+        }
+    }
+
+    fn canonical_instructions() -> Vec<InstructionDef> {
+        vec![
+            instruction(
+                "create",
+                vec![account(
+                    "treasury",
+                    AccountResolution::PdaInline {
+                        seeds: vec![PdaSeedDef::Literal {
+                            value: "treasury".to_string(),
+                        }],
+                        program_id: None,
+                    },
+                )],
+            ),
+            instruction(
+                "claim",
+                vec![
+                    account("treasury", AccountResolution::UserProvided),
+                    account("signer", AccountResolution::Signer),
+                    account("recipient", AccountResolution::UserProvided),
+                ],
+            ),
+        ]
+    }
+
+    fn resolution<'a>(
+        instructions: &'a [InstructionDef],
+        instruction: &str,
+        account: &str,
+    ) -> &'a AccountResolution {
+        &instructions
+            .iter()
+            .find(|candidate| candidate.name == instruction)
+            .unwrap()
+            .accounts
+            .iter()
+            .find(|candidate| candidate.name == account)
+            .unwrap()
+            .resolution
+    }
+
+    #[test]
+    fn canonical_user_provided_accounts_stay_user_provided_without_an_overlay() {
+        let mut instructions = canonical_instructions();
+        let before = instructions.clone();
+        // No `pdas!` block: nothing may reinterpret a canonical account, even
+        // though `create.treasury` derives a same-named PDA.
+        apply_manual_pda_overlay(&mut instructions, &BTreeMap::new());
+        assert_eq!(instructions, before);
+        assert_eq!(
+            resolution(&instructions, "claim", "treasury"),
+            &AccountResolution::UserProvided
+        );
+    }
+
+    #[test]
+    fn explicit_overlay_binds_only_the_named_user_provided_accounts() {
+        let mut instructions = canonical_instructions();
+        let manual = BTreeMap::from([("treasury".to_string(), treasury_pda())]);
+        apply_manual_pda_overlay(&mut instructions, &manual);
+
+        assert!(matches!(
+            resolution(&instructions, "claim", "treasury"),
+            AccountResolution::PdaRef { pda_name } if pda_name == "treasury"
+        ));
+        // Canonical inline, signer, and unrelated user-provided accounts are untouched.
+        assert!(matches!(
+            resolution(&instructions, "create", "treasury"),
+            AccountResolution::PdaInline { .. }
+        ));
+        assert_eq!(
+            resolution(&instructions, "claim", "signer"),
+            &AccountResolution::Signer
+        );
+        assert_eq!(
+            resolution(&instructions, "claim", "recipient"),
+            &AccountResolution::UserProvided
+        );
+    }
 }
 
 #[cfg(test)]

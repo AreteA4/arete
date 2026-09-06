@@ -318,6 +318,21 @@ describe('serializeInstructionData', () => {
     ]);
   });
 
+  it('serializes the ExtendLookupTable payload shape end to end', () => {
+    // Pinned to the Rust test `serializes_an_address_lookup_table_extend_payload`
+    // and the Python test of the same name: u32-LE tag, u64-LE count, raw keys.
+    const schema: ArgSchema[] = [{ name: 'newAddresses', type: { vecU64Len: 'pubkey' } }];
+    const out = serializeInstructionData(
+      new Uint8Array([2, 0, 0, 0]),
+      { newAddresses: ['11111111111111111111111111111111'] },
+      schema
+    );
+    expect([...out.subarray(0, 4)]).toEqual([2, 0, 0, 0]);
+    expect([...out.subarray(4, 12)]).toEqual([1, 0, 0, 0, 0, 0, 0, 0]);
+    expect([...out.subarray(12)]).toEqual(new Array(32).fill(0));
+    expect(out.length).toBe(4 + 8 + 32);
+  });
+
   it('serializes inline tuples recursively without a length prefix', () => {
     const schema: ArgSchema[] = [
       {
