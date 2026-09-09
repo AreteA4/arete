@@ -269,7 +269,14 @@ jobs:
 
       - name: Install Chromium
         working-directory: examples/ore-react
-        run: npx playwright install --with-deps chromium
+        # `--with-deps` runs `apt-get update`, which reads every source the runner image ships —
+        # including Google's Chrome repo. Playwright needs none of it, and a corrupt index there
+        # (`Hash Sum mismatch`, seen 2026-09-09) fails the whole job for an unrelated reason. Drop
+        # the source first so the update only covers what we actually install from.
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/google-chrome.sources
+          npx playwright install --with-deps chromium
 
       - name: Typecheck
         working-directory: examples/ore-react
