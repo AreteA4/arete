@@ -23,10 +23,15 @@
 //! - SIMD-0385 makes an **absent** V1 compute-unit limit mean *zero* compute
 //!   units (and an absent loaded-accounts limit mean *zero* bytes), not a
 //!   generous default like legacy/v0. A final, signable V1 message therefore
-//!   requires both, and the adapter refuses to sign a transaction that could
-//!   only fail on chain. The *provisional* message used for unsigned
-//!   inspection fills the gap with the runtime maxima instead, because
-//!   simulating a transaction whose declared budget is zero measures nothing.
+//!   has to carry both, so the adapter resolves them in three rungs
+//!   ([`SolanaWalletAdapter::resolve_v1_budgets`]): an explicit caller budget
+//!   is used verbatim and never raised; a missing one is measured by
+//!   simulating the *provisional* message — the same message unsigned
+//!   inspection builds, declaring the protocol maxima for what the caller
+//!   omitted — and derived from `unitsConsumed` /
+//!   `loadedAccountsDataSize` plus headroom; and only a metric the
+//!   simulation never reported is refused, naming the budget the caller then
+//!   has to supply.
 //!
 //! # Wire limits
 //!
@@ -81,15 +86,24 @@ pub const MAX_LEGACY_TRANSACTION_BYTES: usize = 1232;
 /// Wire ceiling for V1 transactions, in bytes (SIMD-0385).
 pub const MAX_V1_TRANSACTION_BYTES: usize = v1::MAX_TRANSACTION_SIZE;
 
-/// Compute-unit limit a *provisional* (inspection-only) V1 message declares
-/// when the caller supplied none: the runtime per-transaction maximum, so the
-/// simulation reports real consumption instead of failing against a zero
-/// budget.
+/// Compute-unit limit a *provisional* V1 message declares when the caller
+/// supplied none: the runtime per-transaction maximum, so the simulation
+/// reports real consumption instead of failing against a zero budget.
 pub const PROVISIONAL_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
 
 /// Loaded-accounts-data ceiling a *provisional* V1 message declares when the
 /// caller supplied none: the runtime maximum (64 MiB).
 pub const PROVISIONAL_LOADED_ACCOUNTS_DATA_SIZE: u32 = 64 * 1024 * 1024;
+
+/// Headroom added to a *measured* compute-unit consumption, in percent: a
+/// simulation is one slot's view of the chain, and the transaction that lands
+/// may take a slightly different branch.
+pub const ESTIMATED_COMPUTE_UNIT_HEADROOM_PERCENT: u64 = 20;
+
+/// Loaded-account-data page, in bytes. Estimated data budgets are rounded up
+/// to a whole page plus one page of headroom, because the runtime accounts
+/// for loaded data in pages of this size (SIMD-0385 cost model).
+pub const LOADED_ACCOUNTS_DATA_PAGE_BYTES: u32 = 32 * 1024;
 
 /// Versions this adapter builds and therefore advertises (contract §3).
 const SUPPORTED_VERSIONS: &[TransactionVersion] = &[
@@ -326,6 +340,91 @@ impl SolanaWalletAdapter {
         Ok(message)
     }
 
+    /// Resolve the two version-bound V1 budgets a final message must declare.
+    ///
+    /// Three rungs, in order:
+    ///
+    /// 1. An explicit caller budget wins verbatim and is never raised — if it
+    ///    turns out to be too low, the failure is reported as it happened.
+    /// 2. A missing budget is **measured**: the provisional message (maxima
+    ///    for what the caller omitted, the caller's own values for the rest)
+    ///    is simulated through the same transport with signature
+    ///    verification off — the placeholder signatures are zeroed and the
+    ///    relay's `simulate` route never asks for `sigVerify` — and the
+    ///    budget is derived from the reported metric plus headroom.
+    /// 3. A metric the simulation did not report is the only remaining
+    ///    refusal: an explicit budget is then required.
+    async fn resolve_v1_budgets(
+        &self,
+        transport: &Arc<dyn TransactionTransport>,
+        instructions: &[Instruction],
+        resources: &TransactionResourceOptions,
+        blockhash: Hash,
+        level: ConfirmationLevel,
+    ) -> Result<TransactionResourceOptions, WalletError> {
+        let mut resolved = *resources;
+        if resolved.compute_unit_limit.is_some()
+            && resolved.loaded_accounts_data_size_limit.is_some()
+        {
+            return Ok(resolved);
+        }
+
+        let probe = self.unsigned(self.compile(
+            TransactionVersion::V1,
+            Stage::Provisional,
+            instructions,
+            resources,
+            blockhash,
+        )?)?;
+        let simulation = transport
+            .simulate(
+                &probe,
+                TransactionSimulationOptions {
+                    commitment: Some(commitment_of(level)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| {
+                send_refused(format!("Budget estimation simulation failed: {error}"))
+            })?;
+        if let Some(error) = simulation.err {
+            return Err(send_refused(format!(
+                "Budget estimation simulation reported {error}; nothing was submitted"
+            )));
+        }
+
+        if resolved.compute_unit_limit.is_none() {
+            let units = simulation
+                .units_consumed
+                .ok_or_else(|| unestimable_v1_option(COMPUTE_UNIT_LIMIT, "unitsConsumed"))?;
+            resolved.compute_unit_limit = Some(estimated_compute_unit_limit(units));
+        }
+        if resolved.loaded_accounts_data_size_limit.is_none() {
+            let bytes = simulation.loaded_accounts_data_size.ok_or_else(|| {
+                unestimable_v1_option(LOADED_ACCOUNTS_DATA_SIZE_LIMIT, "loadedAccountsDataSize")
+            })?;
+            resolved.loaded_accounts_data_size_limit =
+                Some(estimated_loaded_accounts_data_size(bytes));
+        }
+        Ok(resolved)
+    }
+
+    /// Base64 wire form of an unsigned message with placeholder signatures,
+    /// for simulation only: nothing here touches a signer.
+    fn unsigned(&self, message: VersionedMessage) -> Result<String, WalletError> {
+        let transaction = VersionedTransaction {
+            signatures: vec![
+                Signature::default();
+                usize::from(message.header().num_required_signatures)
+            ],
+            message,
+        };
+        let wire = serialize(&transaction)?;
+        check_size(wire.len(), version_of(&transaction.message))?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(&wire))
+    }
+
     /// The owned signers matching the message's required-signature prefix, in
     /// message order — exactly what [`VersionedTransaction::try_new`] expects.
     fn ordered_signers(
@@ -469,13 +568,15 @@ impl WalletAdapter for SolanaWalletAdapter {
             build_failure(format!("Relay returned an invalid blockhash: {error}"))
         })?;
 
-        let message = self.compile(
-            version,
-            Stage::Final,
-            &upstream,
-            &options.resources,
-            blockhash,
-        )?;
+        // V1 budgets are resolved before the final message exists, so the
+        // config that is compiled, sized, simulated and signed is one config.
+        let resources = if version == TransactionVersion::V1 {
+            self.resolve_v1_budgets(&transport, &upstream, &options.resources, blockhash, level)
+                .await?
+        } else {
+            options.resources
+        };
+        let message = self.compile(version, Stage::Final, &upstream, &resources, blockhash)?;
         let signers = self.ordered_signers(&message)?;
         let transaction = VersionedTransaction::try_new(message, &signers).map_err(|error| {
             WalletError::from_outcome(TransactionFailureOutcome::NotSubmitted {
@@ -572,21 +673,12 @@ impl WalletAdapter for SolanaWalletAdapter {
             &options.resources,
             blockhash,
         )?;
+        let encoded_message = base64::engine::general_purpose::STANDARD.encode(message.serialize());
         // Placeholder signatures: inspection never touches a signer. V1
         // serializes exactly `num_required_signatures` of them, so the
-        // inspected payload has the size and shape of the real one.
-        let transaction = VersionedTransaction {
-            signatures: vec![
-                Signature::default();
-                usize::from(message.header().num_required_signatures)
-            ],
-            message,
-        };
-        let wire = serialize(&transaction)?;
-        check_size(wire.len(), version)?;
-        let encoded_transaction = base64::engine::general_purpose::STANDARD.encode(&wire);
-        let encoded_message =
-            base64::engine::general_purpose::STANDARD.encode(transaction.message.serialize());
+        // inspected payload has the size and shape of the real one, and the
+        // fee is quoted for the same message that is simulated.
+        let encoded_transaction = self.unsigned(message)?;
 
         let fee = transport
             .fee(
@@ -635,6 +727,15 @@ fn address(pubkey: &solana_pubkey::Pubkey) -> Address {
     Address::new_from_array(pubkey.to_bytes())
 }
 
+/// The transaction version a compiled message belongs to.
+fn version_of(message: &VersionedMessage) -> TransactionVersion {
+    match message {
+        VersionedMessage::Legacy(_) => TransactionVersion::Legacy,
+        VersionedMessage::V0(_) => TransactionVersion::V0,
+        VersionedMessage::V1(_) => TransactionVersion::V1,
+    }
+}
+
 /// `ComputeBudget` instructions for the legacy/v0 resource budget, in
 /// canonical order. V1 carries the same budget in its message config, so it
 /// gets none.
@@ -661,11 +762,20 @@ fn budget_instructions(
     instructions
 }
 
+/// Canonical wire keys of the two version-bound V1 budgets.
+const COMPUTE_UNIT_LIMIT: &str = "computeUnitLimit";
+const LOADED_ACCOUNTS_DATA_SIZE_LIMIT: &str = "loadedAccountsDataSizeLimit";
+
 /// The V1 message config for `stage`.
 ///
 /// Under SIMD-0385 an unset bit means the *minimum* value, not a default: a
-/// final message without a compute-unit limit requests zero compute units and
-/// a loaded-accounts limit of zero bytes, so it can only fail on chain.
+/// message without a compute-unit limit requests zero compute units and one
+/// without a loaded-accounts limit requests zero bytes of account data, so
+/// either could only fail on chain. A provisional message therefore declares
+/// the protocol maxima for what the caller omitted — that is the message
+/// whose simulation measures the real budget — and a final one is compiled
+/// from budgets already resolved by
+/// [`SolanaWalletAdapter::resolve_v1_budgets`].
 fn v1_config(
     resources: &TransactionResourceOptions,
     stage: Stage,
@@ -676,31 +786,66 @@ fn v1_config(
     config.compute_unit_limit = match (resources.compute_unit_limit, stage) {
         (Some(limit), _) => Some(limit),
         (None, Stage::Provisional) => Some(PROVISIONAL_COMPUTE_UNIT_LIMIT),
-        (None, Stage::Final) => {
-            return Err(missing_v1_option("computeUnitLimit", "zero compute units"))
-        }
+        (None, Stage::Final) => return Err(unresolved_v1_option(COMPUTE_UNIT_LIMIT)),
     };
     config.loaded_accounts_data_size_limit =
         match (resources.loaded_accounts_data_size_limit, stage) {
             (Some(limit), _) => Some(limit),
             (None, Stage::Provisional) => Some(PROVISIONAL_LOADED_ACCOUNTS_DATA_SIZE),
             (None, Stage::Final) => {
-                return Err(missing_v1_option(
-                    "loadedAccountsDataSizeLimit",
-                    "zero bytes of loaded account data",
-                ))
+                return Err(unresolved_v1_option(LOADED_ACCOUNTS_DATA_SIZE_LIMIT))
             }
         };
     Ok(config)
 }
 
-fn missing_v1_option(option: &'static str, consequence: &'static str) -> WalletError {
+/// Measured consumption plus [`ESTIMATED_COMPUTE_UNIT_HEADROOM_PERCENT`],
+/// rounded up, positive, and capped at the protocol maximum.
+fn estimated_compute_unit_limit(units_consumed: u64) -> u32 {
+    let padded = units_consumed
+        .saturating_mul(100 + ESTIMATED_COMPUTE_UNIT_HEADROOM_PERCENT)
+        .div_ceil(100);
+    padded.clamp(1, u64::from(PROVISIONAL_COMPUTE_UNIT_LIMIT)) as u32
+}
+
+/// Measured loaded-account data rounded up to a whole page, plus one page of
+/// headroom, positive and capped at the protocol maximum.
+fn estimated_loaded_accounts_data_size(loaded_bytes: u64) -> u32 {
+    let page = u64::from(LOADED_ACCOUNTS_DATA_PAGE_BYTES);
+    let bytes = loaded_bytes
+        .div_ceil(page)
+        .saturating_add(1)
+        .saturating_mul(page);
+    bytes.clamp(1, u64::from(PROVISIONAL_LOADED_ACCOUNTS_DATA_SIZE)) as u32
+}
+
+/// The one budget refusal left: the simulation reported no metric to derive
+/// the option from, so only the caller can supply it.
+fn unestimable_v1_option(option: &'static str, metric: &'static str) -> WalletError {
+    unresolvable(
+        option,
+        format!(
+            "could not be estimated because the simulation reported no `{metric}`. Pass an \
+             explicit budget, or use a relay whose simulation reports {metric}"
+        ),
+    )
+}
+
+/// A final message reached compilation with an unresolved budget. Reachable
+/// only by compiling [`Stage::Final`] without resolving budgets first.
+fn unresolved_v1_option(option: &'static str) -> WalletError {
+    unresolvable(
+        option,
+        "was neither supplied by the caller nor estimated from a simulation".to_string(),
+    )
+}
+
+fn unresolvable(option: &'static str, reason: String) -> WalletError {
     let error = TransactionCapabilityError::InvalidResourceOption {
         option,
         reason: format!(
-            "required for transaction version 1: an omitted value requests {consequence} \
-             (SIMD-0385), so the transaction could only fail on chain. Inspect the transaction \
-             first and pass the measured value"
+            "required for transaction version 1: an omitted value requests the minimum \
+             (SIMD-0385), so the transaction could only fail on chain, and this one {reason}"
         ),
     };
     build_failure(error.to_string()).with_source(error)

@@ -137,6 +137,8 @@ struct FakeTransport {
     fee_lamports: Option<u64>,
     simulation_error: Option<Value>,
     simulate_fails: bool,
+    units_consumed: Option<u64>,
+    loaded_accounts_data_size: Option<u64>,
     status: Option<TransactionSignatureStatus>,
     send: SendBehaviour,
     log: Mutex<Log>,
@@ -151,6 +153,8 @@ impl Default for FakeTransport {
             fee_lamports: Some(5_000),
             simulation_error: None,
             simulate_fails: false,
+            units_consumed: Some(1_234),
+            loaded_accounts_data_size: Some(4_096),
             status: None,
             send: SendBehaviour::Accept,
             log: Mutex::new(Log::default()),
@@ -183,9 +187,12 @@ impl FakeTransport {
     }
 
     fn simulated_transaction(&self) -> VersionedTransaction {
+        self.simulated_transaction_at(self.log().simulated.len() - 1)
+    }
+
+    fn simulated_transaction_at(&self, index: usize) -> VersionedTransaction {
         let log = self.log();
-        let last = log.simulated.last().expect("a simulation happened").clone();
-        decode(&base64_bytes(&Value::String(last)))
+        decode(&base64_bytes(&Value::String(log.simulated[index].clone())))
     }
 }
 
@@ -238,8 +245,8 @@ impl TransactionTransport for FakeTransport {
             context_slot: 42,
             err: self.simulation_error.clone(),
             logs: Some(vec!["Program log: hello".to_string()]),
-            units_consumed: Some(1_234),
-            loaded_accounts_data_size: Some(4_096),
+            units_consumed: self.units_consumed,
+            loaded_accounts_data_size: self.loaded_accounts_data_size,
             accounts: None,
         })
     }
@@ -927,6 +934,11 @@ async fn inspection_uses_a_provisional_config_and_never_reaches_a_signer() {
         Some(PROVISIONAL_LOADED_ACCOUNTS_DATA_SIZE)
     );
     assert_eq!(config.priority_fee, Some(5_000));
+    assert_eq!(
+        log.fee_messages[0],
+        base64::engine::general_purpose::STANDARD.encode(inspected.message.serialize()),
+        "the fee is quoted for exactly the message that was simulated"
+    );
 }
 
 #[tokio::test]
@@ -988,37 +1000,211 @@ async fn the_v1_structural_caps_are_enforced_before_signing() {
 }
 
 #[tokio::test]
-async fn a_final_v1_message_refuses_to_guess_the_budget() {
-    let transport = Arc::new(FakeTransport::confirmed_at(1));
-    let spy = Arc::new(SignerSpy(fixture_keypair(1).pubkey()));
-    let adapter = SolanaWalletAdapter::with_config(spy, fast_config(transport.clone()));
+async fn explicit_v1_budgets_are_forwarded_verbatim() {
+    // Metrics that would derive very different numbers if they were consulted.
+    let transport = Arc::new(FakeTransport {
+        units_consumed: Some(999_999),
+        loaded_accounts_data_size: Some(8 * 1024 * 1024),
+        ..FakeTransport::confirmed_at(1)
+    });
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        fast_config(transport.clone()),
+    );
 
-    for resources in [
-        TransactionResourceOptions {
-            compute_unit_limit: None,
-            ..full_v1_resources()
-        },
-        TransactionResourceOptions {
-            loaded_accounts_data_size_limit: None,
-            ..full_v1_resources()
-        },
+    adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(full_v1_resources()),
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect("send succeeds");
+
+    let sent = transport.sent_transaction();
+    let config = v1_config(&sent);
+    assert_eq!(config.compute_unit_limit, Some(20_000));
+    assert_eq!(config.loaded_accounts_data_size_limit, Some(64 * 1024));
+    let log = transport.log();
+    assert_eq!(
+        log.simulated.len(),
+        1,
+        "nothing to estimate, so no provisional probe: only the preflight"
+    );
+    assert_eq!(
+        log.simulated[0], log.sent[0],
+        "the preflighted bytes are the submitted bytes: one config, compiled once"
+    );
+}
+
+#[tokio::test]
+async fn absent_v1_budgets_are_estimated_from_the_simulation_metrics() {
+    let transport = Arc::new(FakeTransport {
+        units_consumed: Some(1_234),
+        loaded_accounts_data_size: Some(4_096),
+        ..FakeTransport::confirmed_at(1)
+    });
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        fast_config(transport.clone()),
+    );
+
+    adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(TransactionResourceOptions {
+                compute_unit_limit: None,
+                loaded_accounts_data_size_limit: None,
+                heap_size: Some(64 * 1024),
+                priority_fee_lamports: Some(5_000),
+                compute_unit_price_micro_lamports: None,
+            }),
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect("an unbudgeted V1 send estimates its budget and lands");
+
+    let log = transport.log();
+    assert_eq!(log.simulated.len(), 2, "provisional probe, then preflight");
+
+    // The probe declares the protocol maxima, so the metrics it returns are
+    // real consumption rather than a budget-exceeded failure.
+    let probe = v1_config(&transport.simulated_transaction_at(0));
+    assert_eq!(
+        probe.compute_unit_limit,
+        Some(PROVISIONAL_COMPUTE_UNIT_LIMIT)
+    );
+    assert_eq!(
+        probe.loaded_accounts_data_size_limit,
+        Some(PROVISIONAL_LOADED_ACCOUNTS_DATA_SIZE)
+    );
+    assert_eq!(
+        transport.log().sent.len(),
+        1,
+        "the probe is a simulation, never a second submission"
+    );
+
+    // 1234 units + 20% headroom, rounded up; 4096 bytes rounded up to one
+    // 32 KiB page plus one page of headroom.
+    let signed = v1_config(&transport.sent_transaction());
+    assert_eq!(signed.compute_unit_limit, Some(1_481));
+    assert_eq!(signed.loaded_accounts_data_size_limit, Some(65_536));
+    assert_eq!(signed.heap_size, Some(64 * 1024));
+    assert_eq!(signed.priority_fee, Some(5_000));
+    assert_eq!(
+        log.simulated[1], log.sent[0],
+        "the derived config is what got preflighted and signed"
+    );
+}
+
+#[tokio::test]
+async fn an_explicit_v1_budget_survives_alongside_an_estimated_one() {
+    let transport = Arc::new(FakeTransport::confirmed_at(1));
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        fast_config(transport.clone()),
+    );
+
+    adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(TransactionResourceOptions {
+                compute_unit_limit: Some(7_777),
+                loaded_accounts_data_size_limit: None,
+                ..full_v1_resources()
+            }),
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect("send succeeds");
+
+    // The caller's compute limit travels into the probe untouched, and only
+    // the omitted data budget is measured.
+    let probe = v1_config(&transport.simulated_transaction_at(0));
+    assert_eq!(probe.compute_unit_limit, Some(7_777));
+    assert_eq!(
+        probe.loaded_accounts_data_size_limit,
+        Some(PROVISIONAL_LOADED_ACCOUNTS_DATA_SIZE)
+    );
+    let signed = v1_config(&transport.sent_transaction());
+    assert_eq!(
+        signed.compute_unit_limit,
+        Some(7_777),
+        "an explicit budget is never silently raised"
+    );
+    assert_eq!(signed.loaded_accounts_data_size_limit, Some(65_536));
+}
+
+#[tokio::test]
+async fn a_metric_the_simulation_omits_requires_an_explicit_v1_budget() {
+    for (units, loaded, option, metric) in [
+        (None, Some(4_096), "computeUnitLimit", "unitsConsumed"),
+        (
+            Some(1_234),
+            None,
+            "loadedAccountsDataSizeLimit",
+            "loadedAccountsDataSize",
+        ),
     ] {
+        let transport = Arc::new(FakeTransport {
+            units_consumed: units,
+            loaded_accounts_data_size: loaded,
+            ..FakeTransport::confirmed_at(1)
+        });
+        let spy = Arc::new(SignerSpy(fixture_keypair(1).pubkey()));
+        let adapter = SolanaWalletAdapter::with_config(spy, fast_config(transport.clone()));
+
         let error = adapter
             .sign_and_send(
                 &[built_memo(vec![1], &[])],
-                &v1_send_options(resources),
+                &v1_send_options(TransactionResourceOptions {
+                    compute_unit_limit: None,
+                    loaded_accounts_data_size_limit: None,
+                    ..full_v1_resources()
+                }),
                 &WalletExecutionContext::default(),
             )
             .await
-            .expect_err("an unbudgeted V1 send is refused");
+            .expect_err("an unmeasurable budget cannot be invented");
+
         let outcome = outcome(error);
-        assert_eq!(outcome.phase(), FailurePhase::Build);
+        assert_eq!(outcome.phase(), FailurePhase::Build, "{option}");
         assert!(
-            outcome.message().contains("transaction version 1"),
-            "message names the version-bound requirement: {}",
+            outcome.message().contains(option) && outcome.message().contains(metric),
+            "the error names the option and the missing metric: {}",
             outcome.message()
         );
+        assert!(
+            transport.log().sent.is_empty(),
+            "{option}: submitted anyway"
+        );
     }
+}
+
+#[tokio::test]
+async fn a_failed_estimation_simulation_never_submits() {
+    let transport = Arc::new(FakeTransport {
+        simulation_error: Some(json!({"InstructionError": [0, {"Custom": 6_002}]})),
+        ..FakeTransport::confirmed_at(1)
+    });
+    let spy = Arc::new(SignerSpy(fixture_keypair(1).pubkey()));
+    let adapter = SolanaWalletAdapter::with_config(spy, fast_config(transport.clone()));
+
+    let error = adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(TransactionResourceOptions {
+                compute_unit_limit: None,
+                loaded_accounts_data_size_limit: None,
+                ..full_v1_resources()
+            }),
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect_err("a transaction that fails at the maxima is not worth signing");
+
+    let outcome = outcome(error);
+    assert_eq!(outcome.phase(), FailurePhase::Send);
     assert!(transport.log().sent.is_empty());
 }
 

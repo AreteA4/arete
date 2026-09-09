@@ -171,10 +171,8 @@ let receipt = a4.transaction(&[ix], TransactionOptions {
     send: SendOptions {
         transaction_version: Some(TransactionVersion::V1),
         resources: TransactionResourceOptions {
-            compute_unit_limit: Some(20_000),
-            loaded_accounts_data_size_limit: Some(64 * 1024),
             priority_fee_lamports: Some(5_000),   // V1 only: total lamports
-            ..Default::default()
+            ..Default::default()                  // budgets estimated below
         },
         ..Default::default()
     },
@@ -195,12 +193,24 @@ behaviour follows the transaction option contract:
 | Lookup tables | not supported by this adapter | not supported by the format |
 
 An omitted version keeps the existing v0 default. Caller-supplied
-`ComputeBudget` instructions are refused (use the typed options), and a V1
-send must declare `computeUnitLimit` and `loadedAccountsDataSizeLimit`: an
-omitted V1 budget field requests the *minimum*, so the transaction could only
-fail on chain. `inspect_transaction` fills those two with the runtime maxima
-for its provisional, never-signed message, so a simulation measures real
-consumption — inspect first, then send with the measured values.
+`ComputeBudget` instructions are refused — use the typed options.
+
+V1's two budget fields, `computeUnitLimit` and `loadedAccountsDataSizeLimit`,
+are resolved in three steps, because an omitted V1 budget requests the
+*minimum* rather than a generous default:
+
+1. an explicit value is used verbatim and never silently raised;
+2. an omitted one is **measured** — the adapter simulates a provisional
+   unsigned message that declares the protocol maxima (signature verification
+   off), then derives the budget from `unitsConsumed` (+20% headroom) and
+   `loadedAccountsDataSize` (rounded up to a 32 KiB page, plus one page).
+   The derived config is what gets compiled, simulated and signed — nothing
+   is recompiled afterwards;
+3. only if the simulation reports no such metric does the send fail, naming
+   the budget you then have to pass.
+
+`inspect_transaction` builds that same provisional message, never signs it,
+and returns the metrics, so you can pin the budgets yourself instead.
 
 `cargo run -p arete-a4-sdk --features solana-adapter --example solana_v1`
 walks the whole flow against a local relay; it inspects only unless

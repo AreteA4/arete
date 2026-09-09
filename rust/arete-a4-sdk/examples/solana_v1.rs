@@ -112,24 +112,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // A final V1 message must declare its budget: under SIMD-0385 an omitted
-    // compute-unit limit requests zero compute units. Take the measurement
-    // from the inspection above and leave headroom.
-    let compute_unit_limit = inspection
-        .compute_units_consumed
-        .and_then(|units| u32::try_from(units.saturating_mul(2)).ok())
-        .unwrap_or(20_000);
+    // The two V1 budgets are left out on purpose: the adapter measures them
+    // for itself (provisional message at the protocol maxima, simulated with
+    // signature verification off, then derived with headroom). Pass explicit
+    // values instead and they are used verbatim, never raised.
     let result = adapter
         .sign_and_send(
             &instructions,
             &SendOptions {
                 transaction_version: Some(TransactionVersion::V1),
                 resources: TransactionResourceOptions {
-                    compute_unit_limit: Some(compute_unit_limit),
-                    loaded_accounts_data_size_limit: Some(64 * 1024),
                     heap_size: Some(64 * 1024),
                     priority_fee_lamports: Some(5_000),
-                    compute_unit_price_micro_lamports: None,
+                    ..TransactionResourceOptions::default()
                 },
                 ..SendOptions::default()
             },
