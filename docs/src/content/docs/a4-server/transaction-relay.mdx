@@ -88,6 +88,11 @@ exclusive at both ends, `limit` is a JSON number capped at Solana's own 1000, an
 no history is an empty array rather than an error. Memos and confirmation status are dropped — the
 page is a cursor, and a caller that wants detail asks `get` for the signature.
 
+`simulate` returns `loadedAccountsDataSize` alongside `unitsConsumed`, both decimal strings. It is
+what a caller measures before setting a V1 `loadedAccountsDataSizeLimit`, so a budget can be
+derived from the simulation rather than guessed. Absent stays absent: an upstream that does not
+report the figure is not reporting zero, and the two must not be confused when sizing a limit.
+
 ## Authentication
 
 For production, configure `SignedSessionAuthPlugin` through the HTTP auth plugin boundary. Read, inspect, and send scopes are independent. A read-only token cannot inspect or submit transactions.

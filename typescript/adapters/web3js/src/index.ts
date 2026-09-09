@@ -33,8 +33,19 @@ import type {
   TransactionTransport,
   WalletAdapter,
   WalletExecutionContext,
+  TransactionBuildCapability,
 } from '@usearete/sdk';
-import { TransactionTransportError } from '@usearete/sdk';
+import { TransactionTransportError, resolveTransactionBuildOptions } from '@usearete/sdk';
+
+/**
+ * web3.js 1.x compiles v0 messages and nothing newer, and this adapter adds no
+ * compute-budget instructions of its own, so every resource option is rejected
+ * rather than silently dropped.
+ */
+const CAPABILITY: TransactionBuildCapability = {
+  supportedTransactionVersions: [0],
+  supportedResourceOptions: [],
+};
 
 export type AdapterTransportSelection = 'auto' | 'direct' | TransactionTransport;
 
@@ -95,6 +106,7 @@ export interface Web3JsInspectionResult extends TransactionInspectionResult {
 }
 
 export interface Web3JsWalletAdapter extends WalletAdapter {
+  readonly supportedTransactionVersions: readonly [0];
   signAndSend(
     instructions: readonly BuiltInstruction[],
     options?: Web3JsSendOptions,
@@ -444,12 +456,14 @@ export function createWalletAdapter(config: Web3JsAdapterConfig): Web3JsWalletAd
   return {
     publicKey: signer.publicKey.toBase58(),
     signerAddresses: [...new Set(signerAddresses)],
+    supportedTransactionVersions: CAPABILITY.supportedTransactionVersions as readonly [0],
 
     async inspectTransaction(
       instructions: readonly BuiltInstruction[],
       options?: Web3JsInspectionOptions,
       context?: WalletExecutionContext
     ): Promise<Web3JsInspectionResult> {
+      resolveTransactionBuildOptions(options, CAPABILITY);
       if (instructions.length === 0) {
         throw new Error('inspectTransaction requires at least one instruction');
       }
@@ -484,6 +498,8 @@ export function createWalletAdapter(config: Web3JsAdapterConfig): Web3JsWalletAd
           feeContextSlot: Number(fee.contextSlot), logs: simulation.logs ?? undefined,
           computeUnitsConsumed: simulation.unitsConsumed === undefined ? undefined : Number(simulation.unitsConsumed),
           contextSlot: Number(simulation.contextSlot), error: simulation.err ?? undefined,
+          loadedAccountsDataSize: simulation.loadedAccountsDataSize === undefined
+            ? undefined : Number(simulation.loadedAccountsDataSize),
           programError: parseProgramError(simulation.err),
         };
       }
@@ -508,6 +524,8 @@ export function createWalletAdapter(config: Web3JsAdapterConfig): Web3JsWalletAd
             : undefined,
         }),
       ]);
+      // The RPC reports the loaded-accounts budget that web3.js 1.x does not type.
+      const { loadedAccountsDataSize } = simulation.value as { loadedAccountsDataSize?: number };
 
       return {
         feeLamports: fee.value ?? undefined,
@@ -515,6 +533,7 @@ export function createWalletAdapter(config: Web3JsAdapterConfig): Web3JsWalletAd
         logs: simulation.value.logs ?? undefined,
         computeUnitsConsumed: simulation.value.unitsConsumed,
         contextSlot: simulation.context.slot,
+        loadedAccountsDataSize,
         error: simulation.value.err ?? undefined,
         programError: parseProgramError(simulation.value.err),
       };
@@ -525,6 +544,9 @@ export function createWalletAdapter(config: Web3JsAdapterConfig): Web3JsWalletAd
       options?: Web3JsSendOptions,
       context?: WalletExecutionContext
     ): Promise<SendResult> {
+      // web3.js 1.x can only build v0: an explicit legacy/V1 request or any
+      // resource option is rejected before the wallet is prompted.
+      resolveTransactionBuildOptions(options, CAPABILITY);
       const sendOptions = options;
       let transaction: VersionedTransaction;
       let blockhash: string;

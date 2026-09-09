@@ -51,8 +51,18 @@ import type {
   TransactionInspectionResult,
   TransactionTransport,
   WalletExecutionContext,
+  TransactionBuildCapability,
 } from '@usearete/sdk';
-import { TransactionTransportError } from '@usearete/sdk';
+import { TransactionTransportError, resolveTransactionBuildOptions } from '@usearete/sdk';
+
+/**
+ * Kit builds v0 messages only, and applies no compute-budget instructions of
+ * its own: transaction V1 and the resource budget options land with A4-253.
+ */
+const CAPABILITY: TransactionBuildCapability = {
+  supportedTransactionVersions: [0],
+  supportedResourceOptions: [],
+};
 
 export type AdapterTransportSelection = 'auto' | 'direct' | TransactionTransport;
 
@@ -95,6 +105,7 @@ export interface KitTransactionInspectionResult extends TransactionInspectionRes
 
 export interface KitWalletAdapter extends WalletAdapter {
   readonly signerAddresses: readonly string[];
+  readonly supportedTransactionVersions: readonly [0];
   signAndSend(
     instructions: readonly BuiltInstruction[],
     options?: KitSendOptions,
@@ -348,12 +359,16 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
   return {
     publicKey: signer.address,
     signerAddresses: [...new Set(signerAddresses)],
+    supportedTransactionVersions: CAPABILITY.supportedTransactionVersions as readonly [0],
 
     async signAndSend(
       instructions: readonly BuiltInstruction[],
       options?: SendOptions,
       context?: WalletExecutionContext
     ): Promise<SendResult> {
+      // Rejects an explicit non-v0 version and any resource option this
+      // adapter cannot apply, before a wallet is ever prompted.
+      resolveTransactionBuildOptions(options, CAPABILITY);
       if (instructions.length === 0) {
         const cause = new Error('signAndSend requires at least one instruction');
         throw new KitTransactionExecutionError({
@@ -545,6 +560,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
       options?: TransactionInspectionOptions,
       context?: WalletExecutionContext
     ): Promise<TransactionInspectionResult> {
+      resolveTransactionBuildOptions(options, CAPABILITY);
       if (instructions.length === 0) {
         throw new Error('inspectTransaction requires at least one instruction');
       }
@@ -585,6 +601,8 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
             ? undefined : toNumber(simulation.unitsConsumed),
           contextSlot: toNumber(simulation.contextSlot),
           error: simulation.err ?? undefined,
+          loadedAccountsDataSize: simulation.loadedAccountsDataSize === undefined
+            ? undefined : toNumber(simulation.loadedAccountsDataSize),
           feeContextSlot: toNumber(fee.contextSlot),
         };
       }
@@ -598,15 +616,25 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
           sigVerify: false,
         }).send(),
       ]);
+      // The RPC reports the loaded-accounts budget that @solana/kit 2.3 does
+      // not yet type. It is optional upstream and comes back as null when the
+      // node did not measure it — `Number(null)` would invent a measured zero
+      // and destroy the missing-versus-zero distinction budget estimation
+      // depends on.
+      const { loadedAccountsDataSize: directLoadedAccountsDataSize } = simulation.value as {
+        loadedAccountsDataSize?: number | bigint | null;
+      };
 
       return {
         feeLamports: fee.value === null ? undefined : toNumber(fee.value),
         logs: simulation.value.logs ?? undefined,
-        computeUnitsConsumed: simulation.value.unitsConsumed === undefined
+        computeUnitsConsumed: simulation.value.unitsConsumed == null
           ? undefined
           : toNumber(simulation.value.unitsConsumed),
         contextSlot: toNumber(simulation.context.slot),
         error: simulation.value.err ?? undefined,
+        loadedAccountsDataSize: directLoadedAccountsDataSize == null
+          ? undefined : Number(directLoadedAccountsDataSize),
         feeContextSlot: toNumber(fee.context.slot),
       };
     },

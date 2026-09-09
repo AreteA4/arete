@@ -1,0 +1,41 @@
+{
+  "payer": "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+  "cosigner": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+  "fixtures": {
+    "legacy": {
+      "version": "legacy",
+      "signatureCount": 1,
+      "firstSignature": "4BNGtG9rDNcaJQ1BY3FVanNM2RxfygJcB7ftBF3eKbk1LxqPnEFjfpX5Hr36K4ycQ6XEW8R6AL3PU8wHZJCpDqFi",
+      "bytes": 172,
+      "base64": "AZ79rQ75oKcthgYe28c+fdzmgNOYDfOzGS07cSCYBrJh1yI4nT2v7LNnPS7giYkEt/YBi4u3x5OajTz7bIQqggUBAAECiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1wFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEAAwECAw=="
+    },
+    "v0": {
+      "version": 0,
+      "signatureCount": 1,
+      "firstSignature": "4esvUKLy2GYHBnKfdSSF9WmcwKWPaQ6MXUEMLjm4BELTeNqYGhR11siKQg7TgQZqowt3RNNh7CgBdAEvP2pMFBt2",
+      "bytes": 174,
+      "base64": "Aba3K+TW2MhO/hRd5S0t+tPqhqLuIoGJcPzQHkTOYcoE3YCLSzAgLX8AnW6EtC6rBGsnfXTkdyktSk1AIIArEweAAQABAoqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29cBUpTWpkpIQZNJOhxYNo4fHw1td28kruB5B+oQEEFRI0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBAAMBAgMA"
+    },
+    "v1": {
+      "version": 1,
+      "signatureCount": 1,
+      "firstSignature": "2cEF4SwjG8rbNizvobEHt9fjgnaEjJfPz71cpGAvysDxYpCLCFaztdwjPnhtgsj72qmP3m6mjahdpMkeEpNDwwDe",
+      "bytes": 177,
+      "base64": "gQEAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAECiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1wFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQEAAwABAgNQZYUWaj+LDrQUbIZE/IjdGEqBKdXhr+KubMqc7E/8P9ZrUkS5XnZ2DcPwYP3Z5YU6Wdx1GhgsRMYo0w3xoCkF"
+    },
+    "v1_oversize": {
+      "version": 1,
+      "signatureCount": 1,
+      "firstSignature": "5TJfvvqq3Pvkp3RVvsRDxRDSEw8Lhvk9KkG1iBBSUtgLv3iGGPWMvULH55QTQDvg75yybKkiNVsVfWQi276v6mjc",
+      "bytes": 1574,
+      "base64": "gQEAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAECiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1wFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQEAeAUHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHB97AjL3zmng43JH3rNcply+4xxTY/7L2pYxq0AC3+cd4nmBqwpOmlQV6+LD7GXHwgdffc9t+5QYWtXwqZvo0Yg8="
+    },
+    "v1_two_signatures": {
+      "version": 1,
+      "signatureCount": 2,
+      "firstSignature": "3ppoYqgezjx2jmaDADNTFGHg71cMN88Wx6vjcjD5mqGJCDBsq6DNxjHkYLBEV9dNCV5EJjLWFQrCM9Urp9hgmWEu",
+      "bytes": 273,
+      "base64": "gQIAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEDiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1yBOXcOqH0XX1ajVGbDTH7My42KkbTuN6Jd9g9bj8mzlAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNAgIBAAABCY1Gl/SGKkXbl7I1XmROnrCTHTGHeCQaj5x6ME0FsaXi/qmnVY6axyMam4lPAjOQhlsD9lKin1R0B+C0OYwovAqTOmgYU+k/EeY0yK+CzbDWPTVSpcwH2OwMSiBhqCwy5YiaIGeABrEVa1JSM71WkhtTz125InOFK3yrWuF8j8YH"
+    }
+  }
+}

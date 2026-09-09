@@ -471,16 +471,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install package
-        run: pip install -e .
-
-      - name: Install test dependencies
-        run: pip install pytest
-        # continue-on-error: true
+      - name: Install package with dev extras
+        run: python -m pip install -e '.[dev]'
 
       - name: Run tests
-        run: pytest || echo "No tests found or tests skipped"
-        # continue-on-error: true
+        run: python -m pytest
 
   docs:
     name: Docs

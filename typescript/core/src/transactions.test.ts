@@ -59,4 +59,37 @@ describe('TransactionTransport', () => {
       submissionState: 'unknown', signature: 'local-sig', status: 504,
     });
   });
+
+  it('preserves the simulated loaded-accounts-data-size budget, zero included', async () => {
+    const cases: [unknown, bigint | undefined][] = [
+      [undefined, undefined],
+      [null, undefined],
+      ['0', 0n],
+      ['65536', 65536n],
+    ];
+    for (const [wire, expected] of cases) {
+      const transport = createTransactionTransport('https://stack.example', async () =>
+        json({
+          contextSlot: '7', err: null, logs: [], unitsConsumed: '1200',
+          ...(wire === undefined ? {} : { loadedAccountsDataSize: wire }),
+          accounts: null,
+        })
+      );
+      const result = await transport.simulateTransaction('unsigned-base64');
+      expect(result).toMatchObject({ contextSlot: 7n, unitsConsumed: 1200n });
+      expect(result.loadedAccountsDataSize).toBe(expected);
+      expect('loadedAccountsDataSize' in result).toBe(true);
+    }
+  });
+
+  it('rejects a malformed loaded-accounts-data-size like any other decimal u64', async () => {
+    for (const wire of [65536, '-1', 'lots']) {
+      const transport = createTransactionTransport('https://stack.example', async () =>
+        json({ contextSlot: '7', err: null, logs: [], loadedAccountsDataSize: wire })
+      );
+      await expect(transport.simulateTransaction('unsigned-base64')).rejects.toThrow(
+        "Invalid decimal u64 field 'loadedAccountsDataSize' in transaction response"
+      );
+    }
+  });
 });

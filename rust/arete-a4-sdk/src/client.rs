@@ -8,15 +8,18 @@ use crate::gateway::create_hosted_solana_gateway_transports;
 use crate::http::{HttpAuthClient, TokenSource};
 use crate::instruction::{BuiltInstruction, ErrorMetadata};
 use crate::operations::{
-    classify_wallet_error, execute_prepared_operation, ExecuteOptions, ExecutionHost, FailurePhase,
-    OperationExecutionError, OperationReceipt, PreparedOperation, SignerRegistry,
+    classify_wallet_error, execute_prepared_operation, inspect_prepared_operation, ExecuteOptions,
+    ExecutionHost, FailurePhase, OperationExecutionError, OperationInspection,
+    OperationInspectionError, OperationReceipt, PreparedOperation, SignerRegistry,
     TransactionFailureOutcome,
 };
 use crate::program::Programs;
 use crate::store::{SharedStore, StoreConfig};
 use crate::transactions::{HttpTransactionTransport, TransactionError, TransactionTransport};
 use crate::view::Views;
-use crate::wallet::{SendOptions, WalletAdapter, WalletExecutionContext};
+use crate::wallet::{
+    SendOptions, TransactionInspectionOptions, WalletAdapter, WalletExecutionContext,
+};
 use async_trait::async_trait;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -70,6 +73,37 @@ impl std::fmt::Debug for TransactionOptions {
             )
             .field("send", &self.send)
             .field("errors", &self.errors.len())
+            .finish()
+    }
+}
+
+/// Options for [`Arete::inspect_operation`] (mirror of Python's
+/// `inspect_operation` keyword arguments).
+#[derive(Clone, Default)]
+pub struct OperationInspectionOptions {
+    /// Wallet override; falls back to the client's default wallet.
+    pub wallet: Option<Arc<dyn WalletAdapter>>,
+    /// Inspection options forwarded to the wallet adapter.
+    pub inspect: TransactionInspectionOptions,
+    /// Transaction transport override; falls back to the client's transport.
+    pub transaction_transport: Option<Arc<dyn TransactionTransport>>,
+}
+
+impl std::fmt::Debug for OperationInspectionOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OperationInspectionOptions")
+            .field(
+                "wallet",
+                &self.wallet.as_ref().map(|wallet| wallet.public_key()),
+            )
+            .field("inspect", &self.inspect)
+            .field(
+                "transaction_transport",
+                &self
+                    .transaction_transport
+                    .as_ref()
+                    .map(|_| "TransactionTransport"),
+            )
             .finish()
     }
 }
@@ -381,6 +415,18 @@ impl<S: Stack> Arete<S> {
                 },
             )));
         };
+        // Pre-dispatch (contract §2/§3): refuse an undeclared explicit
+        // version or a wrong-version fee option instead of downgrading.
+        if let Err(error) = wallet
+            .validate_transaction_options(options.send.transaction_version, &options.send.resources)
+        {
+            return Err(AreteError::TransactionFailed(Box::new(
+                TransactionFailureOutcome::NotSubmitted {
+                    phase: FailurePhase::Build,
+                    message: error.to_string(),
+                },
+            )));
+        }
         let context = WalletExecutionContext::new(Some(self.transactions.clone()));
         match wallet
             .sign_and_send(instructions, &options.send, &context)
@@ -419,6 +465,27 @@ impl<S: Stack> Arete<S> {
             options.signer_registry = Some(self.signer_registry.clone());
         }
         execute_prepared_operation(&host, operation, &options).await
+    }
+
+    /// Inspect a prepared operation without signing or submitting it (mirror
+    /// of Python's `client.inspect_operation`).
+    ///
+    /// The wallet (call override or client default) receives the client's
+    /// transaction transport via [`WalletExecutionContext`]; nothing on this
+    /// path can reach the adapter's signing entry point.
+    pub async fn inspect_operation(
+        &self,
+        operation: &PreparedOperation,
+        options: OperationInspectionOptions,
+    ) -> Result<OperationInspection, OperationInspectionError> {
+        let wallet = options.wallet.clone().or_else(|| self.wallet());
+        let context = WalletExecutionContext::new(Some(
+            options
+                .transaction_transport
+                .clone()
+                .unwrap_or_else(|| self.transactions.clone()),
+        ));
+        inspect_prepared_operation(wallet.as_deref(), operation, &options.inspect, &context).await
     }
 }
 

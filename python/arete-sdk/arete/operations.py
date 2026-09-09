@@ -54,9 +54,12 @@ from arete.wallet import (
     SendResult,
     TransactionFailureOutcome,
     TransactionInspectionResult,
+    TransactionResourceOptions,
+    UnsupportedTransactionVersionError,
     WalletAdapter,
     WalletError,
     WalletExecutionContext,
+    ensure_transaction_version_supported,
 )
 
 __all__ = [
@@ -96,6 +99,9 @@ __all__ = [
     "format_prepared_operation",
     "ConfirmedTransactionOutcome",
     "TransactionFailureOutcome",
+    "TransactionResourceOptions",
+    "UnsupportedTransactionVersionError",
+    "ensure_transaction_version_supported",
 ]
 
 OPERATION_KINDS: Tuple[str, ...] = ("instruction", "transaction", "flow")
@@ -1281,6 +1287,13 @@ async def inspect_prepared_operation(
         raise WalletError(
             "Wallet adapter does not support unsigned transaction inspection"
         )
+
+    # Validate the shared version/resource contract before the adapter is
+    # touched: an explicit transaction version the adapter does not advertise
+    # fails here instead of being silently downgraded. ``options`` itself is
+    # forwarded unchanged, so adapter-specific keys keep working.
+    effective = SendOptions.coerce(options).validate()
+    ensure_transaction_version_supported(wallet, effective.transaction_version)
 
     transaction = operation.plan.transactions[0]
     description = describe_prepared_operation(operation)

@@ -566,6 +566,88 @@ describe('inspectTransaction', () => {
       },
     });
   });
+
+  it('surfaces the loaded-accounts-data-size reported by simulation', async () => {
+    const primary = Keypair.generate();
+    const { connection } = createConnectionStub();
+    const wallet = createWalletAdapter({
+      connection: {
+        ...connection,
+        async simulateTransaction() {
+          return {
+            context: { slot: 101 },
+            value: { err: null, logs: [], unitsConsumed: 1234, loadedAccountsDataSize: 65_536 },
+          };
+        },
+      } as unknown as Connection,
+      signer: createPrimarySigner(primary),
+    });
+
+    await expect(
+      wallet.inspectTransaction!([makeInstruction([primary.publicKey.toBase58()])])
+    ).resolves.toMatchObject({ loadedAccountsDataSize: 65_536 });
+  });
+});
+
+describe('transaction v1 options', () => {
+  it('transaction_v1 request is rejected without prompting the wallet', async () => {
+    const primary = Keypair.generate();
+    const signer = createPrimarySigner(primary);
+    const { connection, getSendCalls } = createConnectionStub();
+    const wallet = createWalletAdapter({ connection, signer });
+    const instructions = [makeInstruction([primary.publicKey.toBase58()])];
+
+    expect(wallet.supportedTransactionVersions).toEqual([0]);
+    await expect(wallet.signAndSend(instructions, { transactionVersion: 1 }))
+      .rejects.toMatchObject({
+        name: 'TransactionOptionsError',
+        code: 'unsupported_transaction_version',
+        requestedVersion: 1,
+        supportedVersions: [0],
+      });
+    await expect(wallet.inspectTransaction!(instructions, { transactionVersion: 1 }))
+      .rejects.toMatchObject({ code: 'unsupported_transaction_version' });
+    expect(signer.calls).toBe(0);
+    expect(getSendCalls()).toBe(0);
+  });
+
+  it('v1_contract resource options are rejected, leaving raw sends untouched', async () => {
+    const primary = Keypair.generate();
+    const signer = createPrimarySigner(primary);
+    const { connection, getSendCalls } = createConnectionStub();
+    const wallet = createWalletAdapter({ connection, signer });
+    const instructions = [makeInstruction([primary.publicKey.toBase58()])];
+
+    for (const resources of [
+      { computeUnitLimit: 200_000 },
+      { loadedAccountsDataSizeLimit: '65536' },
+      { heapSize: 262_144 },
+      { computeUnitPriceMicroLamports: 1_000n },
+    ]) {
+      await expect(wallet.signAndSend(instructions, { resources })).rejects.toMatchObject({
+        name: 'TransactionOptionsError',
+        code: 'unsupported_resource_option',
+        option: Object.keys(resources)[0],
+      });
+    }
+    // V1-only, so the version binding rejects it before the capability does.
+    await expect(wallet.signAndSend(instructions, {
+      resources: { priorityFeeLamports: 5_000n },
+    })).rejects.toMatchObject({
+      code: 'unsupported_resource_option',
+      option: 'priorityFeeLamports',
+    });
+    await expect(wallet.signAndSend(instructions, {
+      resources: { computeUnits: 1 } as never,
+    })).rejects.toMatchObject({ code: 'unsupported_resource_option', option: 'computeUnits' });
+    expect(signer.calls).toBe(0);
+    expect(getSendCalls()).toBe(0);
+
+    await expect(wallet.signAndSend(instructions)).resolves.toMatchObject({
+      signature: 'sig-web3js',
+    });
+    expect(getSendCalls()).toBe(1);
+  });
 });
 
 describe('connectionAccountLoader', () => {

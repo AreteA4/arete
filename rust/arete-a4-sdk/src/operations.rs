@@ -35,7 +35,10 @@ use std::sync::{Arc, RwLock};
 use serde_json::{json, Value};
 
 use crate::instruction::{BuiltInstruction, ErrorMetadata};
-use crate::wallet::{SendOptions, WalletAdapter, WalletError, WalletExecutionContext};
+use crate::wallet::{
+    SendOptions, TransactionCapabilityError, TransactionInspectionOptions,
+    TransactionInspectionResult, WalletAdapter, WalletError, WalletExecutionContext,
+};
 
 // ---------------------------------------------------------------------------
 // Transaction outcome model (port of instructions/error-parser.ts)
@@ -284,6 +287,9 @@ pub enum OperationError {
     /// A signer registry address was empty.
     #[error("Signer registry addresses must not be empty")]
     EmptySignerAddress,
+    /// Inspection was requested for a flow.
+    #[error("Cannot inspect flow '{0}': flow inspection is not supported")]
+    FlowInspection(String),
 }
 
 /// One transaction inside a prepared operation: named, non-empty instruction
@@ -1113,6 +1119,23 @@ pub async fn execute_prepared_operation(
             ));
         };
 
+        // Pre-dispatch (contract §2/§3): an explicit version the adapter does
+        // not advertise, or a fee option bound to another version, fails here
+        // rather than being downgraded or converted by the adapter.
+        if let Err(error) = wallet
+            .validate_transaction_options(options.send.transaction_version, &options.send.resources)
+        {
+            return Err(fail(
+                &receipts,
+                transaction_index,
+                transaction,
+                TransactionFailureOutcome::NotSubmitted {
+                    phase: FailurePhase::Build,
+                    message: error.to_string(),
+                },
+            ));
+        }
+
         let context = WalletExecutionContext::new(host.transaction_transport.clone());
         let result = wallet
             .sign_and_send(&transaction.instructions, &options.send, &context)
@@ -1214,6 +1237,124 @@ pub fn describe_prepared_operation(operation: &PreparedOperation) -> Value {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Unsigned inspection
+// ---------------------------------------------------------------------------
+
+/// Result of unsigned prepared-operation inspection (mirror of Python's
+/// `OperationInspection`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OperationInspection {
+    /// JSON description of the inspected operation
+    /// ([`describe_prepared_operation`]).
+    pub description: Value,
+    /// What the adapter reported without signing anything.
+    pub transaction: TransactionInspectionResult,
+    /// Program error resolved from the inspection error against the
+    /// transaction body's IDL metadata, when the error carries a custom code
+    /// that matches an entry.
+    pub program_error: Option<ProgramError>,
+}
+
+/// Failure of [`inspect_prepared_operation`].
+///
+/// Mirrors Python's two raise paths: the operation itself cannot be inspected
+/// ([`OperationError`]), or the wallet could not inspect it ([`WalletError`],
+/// carrying a
+/// [`TransactionCapabilityError`](crate::wallet::TransactionCapabilityError)
+/// source when the adapter lacks the capability or the options were refused).
+#[derive(Debug, thiserror::Error)]
+pub enum OperationInspectionError {
+    /// The operation cannot be inspected at all.
+    #[error(transparent)]
+    Operation(#[from] OperationError),
+    /// The wallet refused or failed the inspection.
+    ///
+    /// Boxed because `WalletError` carries a whole failure outcome: unboxed it
+    /// makes every `Result` in this module 160 bytes wide, which is what
+    /// `clippy::result_large_err` objects to. Same treatment the crate already
+    /// gives `TransactionError::Transport`.
+    #[error(transparent)]
+    Wallet(Box<WalletError>),
+}
+
+impl From<WalletError> for OperationInspectionError {
+    fn from(error: WalletError) -> Self {
+        Self::Wallet(Box::new(error))
+    }
+}
+
+impl From<TransactionCapabilityError> for OperationInspectionError {
+    fn from(error: TransactionCapabilityError) -> Self {
+        Self::from(WalletError::from(error))
+    }
+}
+
+/// Best-effort custom program-error code from a raw inspection error value
+/// (`{"InstructionError": [0, {"Custom": 6001}]}` and friends).
+///
+/// Divergence from Python's `extract_program_error_code`: only the error value
+/// is walked, never the whole inspection result — the Rust result is typed, so
+/// there is nothing else to duck-type.
+fn program_error_code(value: &Value) -> Option<u32> {
+    match value {
+        Value::Object(fields) => {
+            for key in ["Custom", "custom", "code"] {
+                if let Some(code) = fields.get(key).and_then(Value::as_u64) {
+                    return u32::try_from(code).ok();
+                }
+            }
+            fields.values().find_map(program_error_code)
+        }
+        Value::Array(entries) => entries.iter().find_map(program_error_code),
+        _ => None,
+    }
+}
+
+/// Inspect one prepared instruction/transaction without signing or submitting
+/// it (mirror of Python's `inspect_prepared_operation`).
+///
+/// Nothing here can reach the adapter's signing path: the only adapter call is
+/// [`WalletAdapter::inspect_transaction`]. Flows are intentionally
+/// unsupported, and an adapter without the inspection capability fails with
+/// the structured default error.
+pub async fn inspect_prepared_operation(
+    wallet: Option<&dyn WalletAdapter>,
+    operation: &PreparedOperation,
+    options: &TransactionInspectionOptions,
+    context: &WalletExecutionContext,
+) -> Result<OperationInspection, OperationInspectionError> {
+    // Divergence from Python, which also rejects a multi-transaction
+    // non-flow operation: only a flow can hold more than one transaction
+    // here, so the type system already covers that case.
+    let transaction = match operation {
+        PreparedOperation::Instruction(op) => &op.transaction,
+        PreparedOperation::Transaction(op) => &op.transaction,
+        PreparedOperation::Flow(op) => {
+            return Err(OperationError::FlowInspection(op.name.clone()).into())
+        }
+    };
+    let Some(wallet) = wallet else {
+        return Err(TransactionCapabilityError::InspectionUnsupported.into());
+    };
+    wallet.validate_transaction_options(options.transaction_version, &options.resources)?;
+
+    let description = describe_prepared_operation(operation);
+    let inspection = wallet
+        .inspect_transaction(&transaction.instructions, options, context)
+        .await?;
+    let program_error = inspection
+        .error
+        .as_ref()
+        .and_then(program_error_code)
+        .and_then(|code| parse_program_error(code, &transaction.errors));
+    Ok(OperationInspection {
+        description,
+        transaction: inspection,
+        program_error,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -1221,7 +1362,7 @@ mod tests {
 
     use super::*;
     use crate::instruction::{BuiltAccountMeta, Pubkey};
-    use crate::wallet::SendResult;
+    use crate::wallet::{SendResult, TransactionResourceOptions, TransactionVersion};
 
     fn key(byte: u8) -> Pubkey {
         Pubkey::from([byte; 32])
@@ -1311,6 +1452,54 @@ mod tests {
                     slot: None,
                 })
             })
+        }
+    }
+
+    /// Inspection-capable adapter. `sign_and_send` panics: inspection
+    /// reaching the signing path at all is a test failure, not a wrong value.
+    struct InspectingWallet {
+        result: TransactionInspectionResult,
+        versions: Option<Vec<TransactionVersion>>,
+        inspections: Mutex<Vec<usize>>,
+    }
+
+    impl InspectingWallet {
+        fn new(result: TransactionInspectionResult) -> Self {
+            InspectingWallet {
+                result,
+                versions: None,
+                inspections: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WalletAdapter for InspectingWallet {
+        fn public_key(&self) -> String {
+            addr(0xAA)
+        }
+
+        fn supported_transaction_versions(&self) -> Option<&[TransactionVersion]> {
+            self.versions.as_deref()
+        }
+
+        async fn sign_and_send(
+            &self,
+            _instructions: &[BuiltInstruction],
+            _options: &SendOptions,
+            _context: &WalletExecutionContext,
+        ) -> Result<SendResult, WalletError> {
+            panic!("inspection must never reach the signing path");
+        }
+
+        async fn inspect_transaction(
+            &self,
+            instructions: &[BuiltInstruction],
+            _options: &TransactionInspectionOptions,
+            _context: &WalletExecutionContext,
+        ) -> Result<TransactionInspectionResult, WalletError> {
+            self.inspections.lock().unwrap().push(instructions.len());
+            Ok(self.result.clone())
         }
     }
 
@@ -2064,5 +2253,206 @@ mod tests {
         assert_eq!(ix["signers"], json!([addr(10)]));
         assert_eq!(ix["account_count"], 2);
         assert_eq!(ix["data_len"], 1);
+    }
+
+    #[tokio::test]
+    async fn inspection_never_reaches_sign_and_send() {
+        let wallet = InspectingWallet::new(TransactionInspectionResult {
+            fee_lamports: Some(5_000),
+            logs: Some(vec!["Program log: ok".to_string()]),
+            compute_units_consumed: Some(1_200),
+            loaded_accounts_data_size: Some(65_536),
+            context_slot: Some(42),
+            error: Some(json!({ "InstructionError": [0, { "Custom": 6000 }] })),
+            extra: Default::default(),
+        });
+        let operation: PreparedOperation = create_prepared_instruction(
+            "inspect-me",
+            instruction(1, vec![meta(10, true)]),
+            Value::Null,
+            None,
+            Some(vec![error_metadata(
+                6000,
+                "OreProgramError",
+                "ORE deploy failed",
+            )]),
+        )
+        .into();
+
+        let inspection = inspect_prepared_operation(
+            Some(&wallet),
+            &operation,
+            &TransactionInspectionOptions::default(),
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*wallet.inspections.lock().unwrap(), vec![1]);
+        assert_eq!(inspection.description["name"], json!("inspect-me"));
+        assert_eq!(
+            inspection.transaction.loaded_accounts_data_size,
+            Some(65_536)
+        );
+        assert_eq!(inspection.transaction.compute_units_consumed, Some(1_200));
+        assert_eq!(inspection.transaction.fee_lamports, Some(5_000));
+        assert_eq!(inspection.transaction.context_slot, Some(42));
+        assert_eq!(
+            inspection.program_error,
+            Some(ProgramError {
+                code: 6000,
+                name: "OreProgramError".into(),
+                message: "ORE deploy failed".into(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn inspection_without_adapter_capability_is_a_typed_error() {
+        let operation: PreparedOperation = create_prepared_instruction(
+            "inspect-me",
+            instruction(1, vec![]),
+            Value::Null,
+            None,
+            None,
+        )
+        .into();
+        let wallet = MockWallet::new(Vec::new());
+
+        for adapter in [None, Some(&wallet as &dyn WalletAdapter)] {
+            let error = inspect_prepared_operation(
+                adapter,
+                &operation,
+                &TransactionInspectionOptions::default(),
+                &WalletExecutionContext::default(),
+            )
+            .await
+            .unwrap_err();
+            let OperationInspectionError::Wallet(error) = error else {
+                panic!("expected a wallet capability error");
+            };
+            assert_eq!(
+                error.message(),
+                "Wallet adapter does not support unsigned transaction inspection"
+            );
+        }
+        assert_eq!(wallet.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn inspection_rejects_flows() {
+        let wallet = InspectingWallet::new(TransactionInspectionResult::default());
+        let body = create_prepared_transaction_body("tx", vec![instruction(1, vec![])], None, None)
+            .unwrap();
+        let flow: PreparedOperation =
+            create_prepared_flow("many", vec![body.clone(), body], Value::Null)
+                .unwrap()
+                .into();
+
+        let error = inspect_prepared_operation(
+            Some(&wallet),
+            &flow,
+            &TransactionInspectionOptions::default(),
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            OperationInspectionError::Operation(OperationError::FlowInspection(name)) if name == "many"
+        ));
+        assert!(wallet.inspections.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn transaction_v1_inspection_rejects_undeclared_version() {
+        let mut wallet = InspectingWallet::new(TransactionInspectionResult::default());
+        wallet.versions = Some(vec![TransactionVersion::V0]);
+        let operation: PreparedOperation = create_prepared_instruction(
+            "inspect-me",
+            instruction(1, vec![]),
+            Value::Null,
+            None,
+            None,
+        )
+        .into();
+
+        let error = inspect_prepared_operation(
+            Some(&wallet),
+            &operation,
+            &TransactionInspectionOptions {
+                transaction_version: Some(TransactionVersion::V1),
+                ..TransactionInspectionOptions::default()
+            },
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("does not support transaction version 1"));
+        assert!(wallet.inspections.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn transaction_v1_send_is_refused_before_dispatch() {
+        let wallet = MockWallet::new(Vec::new());
+        let operation: PreparedOperation =
+            create_prepared_instruction("send-me", instruction(1, vec![]), Value::Null, None, None)
+                .into();
+        let host = ExecutionHost {
+            wallet: Some(&wallet),
+            available_signer_addresses: Vec::new(),
+            ..ExecutionHost::default()
+        };
+
+        // Explicit V1 against an adapter that has not declared V1 support.
+        let error = execute_prepared_operation(
+            &host,
+            &operation,
+            &ExecuteOptions {
+                send: SendOptions {
+                    transaction_version: Some(TransactionVersion::V1),
+                    ..SendOptions::default()
+                },
+                ..ExecuteOptions::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            &error.outcome,
+            TransactionFailureOutcome::NotSubmitted {
+                phase: FailurePhase::Build,
+                message,
+            } if message.contains("does not support transaction version 1")
+        ));
+
+        // A V1-only fee option against the default (v0) version.
+        let error = execute_prepared_operation(
+            &host,
+            &operation,
+            &ExecuteOptions {
+                send: SendOptions {
+                    resources: TransactionResourceOptions {
+                        priority_fee_lamports: Some(5_000),
+                        ..TransactionResourceOptions::default()
+                    },
+                    ..SendOptions::default()
+                },
+                ..ExecuteOptions::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            &error.outcome,
+            TransactionFailureOutcome::NotSubmitted {
+                phase: FailurePhase::Build,
+                message,
+            } if message.contains("'priorityFeeLamports' requires transaction version 1")
+        ));
+
+        assert_eq!(wallet.calls(), 0);
     }
 }

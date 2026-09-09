@@ -68,6 +68,10 @@ class TransactionSimulationResult:
     logs: Optional[List[str]] = None
     units_consumed: Optional[int] = None
     accounts: Optional[List[Any]] = None
+    # Loaded account data size the simulated transaction touched, in bytes.
+    # Absent/null stays ``None``; ``"0"`` parses to ``0`` (the distinction is
+    # load-bearing for transaction V1 budget estimation, SIMD-0385).
+    loaded_accounts_data_size: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -281,6 +285,9 @@ class HttpTransactionTransport:
             logs=value.get("logs"),
             units_consumed=_optional_int(value.get("unitsConsumed"), "unitsConsumed"),
             accounts=value.get("accounts"),
+            loaded_accounts_data_size=_optional_int(
+                value.get("loadedAccountsDataSize"), "loadedAccountsDataSize"
+            ),
         )
 
     async def send_transaction(

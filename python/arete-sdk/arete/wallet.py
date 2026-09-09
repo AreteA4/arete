@@ -71,7 +71,199 @@ _PHASES_BY_STATUS = {
     "chain-failed": ("confirmation", "chain"),
 }
 
-_SEND_OPTION_FIELDS = ("confirmation_level", "skip_preflight", "signers")
+_SEND_OPTION_FIELDS = (
+    "confirmation_level",
+    "skip_preflight",
+    "signers",
+    "transaction_version",
+    "resources",
+)
+
+#: Transaction versions an adapter may build (SIMD-0385 adds ``1``). Numeric
+#: versions are JSON numbers, never stringified numbers.
+TRANSACTION_VERSIONS: Tuple[Any, ...] = ("legacy", 0, 1)
+
+#: Final encoded transaction size ceilings, in bytes.
+MAX_TRANSACTION_BYTES = 1232
+V1_MAX_TRANSACTION_BYTES = 4096
+
+#: Transaction V1 per-transaction caps.
+V1_MAX_SIGNATURES = 12
+V1_MAX_ACCOUNTS = 64
+V1_MAX_INSTRUCTIONS = 64
+
+_U32_MAX = 0xFFFF_FFFF
+_U64_MAX = 0xFFFF_FFFF_FFFF_FFFF
+
+# snake_case accessor -> canonical camelCase wire key, with its integer width.
+_RESOURCE_OPTION_KEYS: Tuple[Tuple[str, str, int], ...] = (
+    ("compute_unit_limit", "computeUnitLimit", _U32_MAX),
+    ("loaded_accounts_data_size_limit", "loadedAccountsDataSizeLimit", _U32_MAX),
+    ("heap_size", "heapSize", _U32_MAX),
+    ("priority_fee_lamports", "priorityFeeLamports", _U64_MAX),
+    (
+        "compute_unit_price_micro_lamports",
+        "computeUnitPriceMicroLamports",
+        _U64_MAX,
+    ),
+)
+
+
+def _resource_int(value: Any, name: str, maximum: int) -> int:
+    """Accept an exact ``int`` or a decimal string.
+
+    Floats are rejected rather than coerced: a value that arrived as a double
+    may already have lost precision, and coercing it would launder that loss
+    into a fee or a budget ceiling. ``bool`` is an ``int`` subclass and is
+    never a valid quantity here.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an unsigned integer, got a bool")
+    if isinstance(value, float):
+        raise ValueError(
+            f"{name} must be an int or a decimal string, not a float ({value!r}): "
+            "a float may already have lost precision and will not be coerced"
+        )
+    if isinstance(value, str):
+        if not value or not value.isascii() or not value.isdigit():
+            raise ValueError(f"{name} must be a decimal integer string, got {value!r}")
+        value = int(value)
+    if not isinstance(value, int):
+        raise ValueError(
+            f"{name} must be an unsigned integer, got {type(value).__name__}"
+        )
+    if value < 0 or value > maximum:
+        raise ValueError(f"{name} must be between 0 and {maximum}, got {value}")
+    return value
+
+
+@dataclass(frozen=True)
+class TransactionResourceOptions:
+    """Compute-budget and fee ceilings shared by send and unsigned inspection.
+
+    snake_case accessors map to the canonical camelCase wire keys
+    (:meth:`to_wire`). Arithmetic is integer-only; the u64 fee values become
+    decimal strings at the JSON boundary, never floats.
+
+    The two fee fields are mutually exclusive and version-bound:
+    ``priority_fee_lamports`` is transaction-V1 only,
+    ``compute_unit_price_micro_lamports`` is legacy/v0 only. A mismatch is a
+    rejection, never a conversion.
+    """
+
+    compute_unit_limit: Optional[int] = None
+    loaded_accounts_data_size_limit: Optional[int] = None
+    heap_size: Optional[int] = None
+    priority_fee_lamports: Optional[int] = None
+    compute_unit_price_micro_lamports: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        for name, _wire, maximum in _RESOURCE_OPTION_KEYS:
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _resource_int(value, name, maximum))
+        if (
+            self.priority_fee_lamports is not None
+            and self.compute_unit_price_micro_lamports is not None
+        ):
+            raise ValueError(
+                "priority_fee_lamports (V1) and compute_unit_price_micro_lamports "
+                "(legacy/v0) are mutually exclusive"
+            )
+
+    @classmethod
+    def coerce(cls, value: Any) -> Optional["TransactionResourceOptions"]:
+        """``None`` → ``None``; passthrough; a mapping keyed by snake_case
+        accessors or canonical camelCase wire keys. Unrecognized keys are
+        rejected, never silently ignored."""
+        if value is None or isinstance(value, cls):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError(
+                "resource options must be a TransactionResourceOptions or mapping, "
+                f"got {type(value).__name__}"
+            )
+        by_key = {}
+        for name, wire, _maximum in _RESOURCE_OPTION_KEYS:
+            by_key[name] = name
+            by_key[wire] = name
+        fields: dict = {}
+        for key, item in value.items():
+            name = by_key.get(key)
+            if name is None:
+                raise ValueError(f"Unsupported resource option {key!r}")
+            if name in fields and fields[name] != item:
+                raise ValueError(
+                    f"Conflicting values for resource option {name!r}"
+                )
+            fields[name] = item
+        return cls(**fields)
+
+    def merged(
+        self, overrides: Optional["TransactionResourceOptions"]
+    ) -> "TransactionResourceOptions":
+        """Field-wise merge where ``overrides`` wins. The two fee fields are
+        one slot: an override that names either fee replaces both, so a
+        connect-time ``compute_unit_price_micro_lamports`` default does not
+        make a per-call V1 ``priority_fee_lamports`` unreachable."""
+        if overrides is None:
+            return self
+        merged = {
+            name: (
+                getattr(overrides, name)
+                if getattr(overrides, name) is not None
+                else getattr(self, name)
+            )
+            for name, _wire, _maximum in _RESOURCE_OPTION_KEYS
+        }
+        if (
+            overrides.priority_fee_lamports is not None
+            or overrides.compute_unit_price_micro_lamports is not None
+        ):
+            merged["priority_fee_lamports"] = overrides.priority_fee_lamports
+            merged["compute_unit_price_micro_lamports"] = (
+                overrides.compute_unit_price_micro_lamports
+            )
+        return TransactionResourceOptions(**merged)
+
+    def to_wire(self) -> dict:
+        """Canonical camelCase keys with decimal-string values; unset fields
+        are omitted."""
+        return {
+            wire: str(getattr(self, name))
+            for name, wire, _maximum in _RESOURCE_OPTION_KEYS
+            if getattr(self, name) is not None
+        }
+
+
+def _validate_transaction_version(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool) or value not in TRANSACTION_VERSIONS:
+        raise ValueError(
+            f"transaction_version must be one of {TRANSACTION_VERSIONS}, got {value!r}"
+        )
+    return value
+
+
+def _validate_version_fees(
+    version: Any, resources: Optional[TransactionResourceOptions]
+) -> None:
+    """Reject a fee field that does not belong to the requested version. An
+    omitted version is the existing v0 default."""
+    if resources is None:
+        return
+    effective = 0 if version is None else version
+    if resources.priority_fee_lamports is not None and effective != 1:
+        raise ValueError(
+            "priority_fee_lamports requires transaction_version 1, got "
+            f"{effective!r}"
+        )
+    if resources.compute_unit_price_micro_lamports is not None and effective == 1:
+        raise ValueError(
+            "compute_unit_price_micro_lamports is not valid for transaction_version 1; "
+            "use priority_fee_lamports"
+        )
 
 
 @dataclass(frozen=True)
@@ -81,14 +273,23 @@ class SendOptions:
     The core SDK does not interpret these; it passes them straight through to
     the adapter, which owns all RPC semantics. ``extra`` is the Python
     rendering of the TS index signature: adapter-specific passthrough options
-    (priority fees, lookup tables, ...). ``signers`` are optional extra local
-    signers for this send; their concrete type depends on the adapter.
+    (lookup tables, ...). ``signers`` are optional extra local signers for
+    this send; their concrete type depends on the adapter.
+
+    ``transaction_version`` (``"legacy" | 0 | 1``) and ``resources`` are the
+    typed replacements for stuffing budgets and fees into ``extra``. An
+    omitted ``transaction_version`` means the adapter's existing default (v0
+    for first-party builders); an explicit version an adapter does not
+    advertise raises :class:`UnsupportedTransactionVersionError` rather than
+    silently downgrading (see :func:`ensure_transaction_version_supported`).
     """
 
     confirmation_level: Optional[str] = None
     skip_preflight: Optional[bool] = None
     signers: Optional[Tuple[Any, ...]] = None
     extra: Mapping[str, Any] = field(default_factory=dict)
+    transaction_version: Optional[Any] = None
+    resources: Optional[TransactionResourceOptions] = None
 
     def __post_init__(self) -> None:
         if (
@@ -101,21 +302,54 @@ class SendOptions:
             )
         if self.signers is not None and not isinstance(self.signers, tuple):
             object.__setattr__(self, "signers", tuple(self.signers))
+        object.__setattr__(
+            self,
+            "transaction_version",
+            _validate_transaction_version(self.transaction_version),
+        )
+        object.__setattr__(
+            self, "resources", TransactionResourceOptions.coerce(self.resources)
+        )
+
+    def validate(self) -> "SendOptions":
+        """Reject an incompatible version/fee pair in the EFFECTIVE options.
+
+        Deliberately not called from ``__post_init__``: a per-call override is
+        coerced on its own, before execution defaults merge into it, so
+        validating there refuses ``{"resources": {"priorityFeeLamports": ...}}``
+        against the *default* version 0 rather than the version the caller
+        configured. Callers validate once, after merging and before dispatch.
+        """
+        _validate_version_fees(self.transaction_version, self.resources)
+        return self
 
     @classmethod
     def coerce(cls, value: Any) -> "SendOptions":
         """``None`` → defaults; :class:`SendOptions` passthrough; a mapping's
-        unknown keys land in ``extra`` (adapter passthrough)."""
+        unknown keys land in ``extra`` (adapter passthrough).
+
+        ``transactionVersion`` is accepted as an alias for
+        ``transaction_version`` so a camelCase mapping cannot smuggle a
+        version request into ``extra``, where it would be ignored.
+        """
         if value is None:
             return cls()
         if isinstance(value, cls):
             return value
         if isinstance(value, Mapping):
             known = {name: value[name] for name in _SEND_OPTION_FIELDS if name in value}
+            if "transactionVersion" in value:
+                if "transaction_version" in value:
+                    raise ValueError(
+                        "send options carry both transaction_version and "
+                        "transactionVersion"
+                    )
+                known["transaction_version"] = value["transactionVersion"]
             extra = {
                 key: item
                 for key, item in value.items()
-                if key not in _SEND_OPTION_FIELDS and key != "extra"
+                if key not in _SEND_OPTION_FIELDS
+                and key not in ("extra", "transactionVersion")
             }
             nested = value.get("extra")
             if isinstance(nested, Mapping):
@@ -126,7 +360,14 @@ class SendOptions:
         )
 
     def merged(self, overrides: Optional["SendOptions"]) -> "SendOptions":
-        """Field-wise merge where ``overrides`` wins; ``extra`` maps merge."""
+        """Field-wise merge where ``overrides`` wins; ``extra`` maps merge and
+        ``resources`` merges field-wise.
+
+        The merged result is the effective request, so it is validated here —
+        a version/fee combination the merge produces is rejected, while a
+        partial override that only makes sense once the configured version is
+        inherited is not.
+        """
         if overrides is None:
             return self
         return SendOptions(
@@ -142,7 +383,17 @@ class SendOptions:
             ),
             signers=overrides.signers if overrides.signers is not None else self.signers,
             extra={**dict(self.extra), **dict(overrides.extra)},
-        )
+            transaction_version=(
+                overrides.transaction_version
+                if overrides.transaction_version is not None
+                else self.transaction_version
+            ),
+            resources=(
+                self.resources.merged(overrides.resources)
+                if self.resources is not None
+                else overrides.resources
+            ),
+        ).validate()
 
     def with_signers(self, signers: Optional[Sequence[Any]]) -> "SendOptions":
         if signers is None:
@@ -176,6 +427,11 @@ class TransactionInspectionResult:
     """Unsigned transaction inspection returned by a capable wallet adapter.
 
     Inspection must not sign or submit the transaction.
+
+    ``loaded_accounts_data_size`` carries the simulated loaded account data
+    size (bytes) straight through from the relay's ``loadedAccountsDataSize``
+    so callers can size a transaction-V1 budget. ``None`` means the relay did
+    not report it; ``0`` means it reported zero.
     """
 
     fee_lamports: Optional[int] = None
@@ -184,6 +440,7 @@ class TransactionInspectionResult:
     context_slot: Optional[int] = None
     error: Any = None
     extra: Mapping[str, Any] = field(default_factory=dict)
+    loaded_accounts_data_size: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +606,74 @@ class WalletError(AreteError):
         )
 
 
+class UnsupportedTransactionVersionError(WalletError):
+    """An explicit ``transaction_version`` the adapter does not advertise.
+
+    Raised before anything is built or signed, so it carries a
+    ``not-submitted`` outcome in the ``build`` phase. Never a downgrade: the
+    request fails instead of quietly running as another version.
+    """
+
+    def __init__(self, version: Any, supported: Optional[Tuple[Any, ...]]) -> None:
+        if supported is None:
+            detail = "the adapter declares no supported_transaction_versions"
+        else:
+            detail = f"the adapter supports {supported}"
+        super().__init__(
+            f"Wallet adapter does not support transaction_version {version!r}: "
+            f"{detail}",
+            outcome=TransactionFailureOutcome.not_submitted(
+                "build",
+                message=(
+                    f"Wallet adapter does not support transaction_version "
+                    f"{version!r}: {detail}"
+                ),
+            ),
+        )
+        self.version = version
+        self.supported = supported
+
+
+def wallet_supported_transaction_versions(wallet: Any) -> Optional[Tuple[Any, ...]]:
+    """Versions the adapter advertises, or ``None`` when it advertises nothing.
+
+    ``None`` means *unknown*, never *none supported*: adapters written before
+    this capability existed keep working for the versions they always built.
+    """
+    declared = getattr(wallet, "supported_transaction_versions", None)
+    if declared is None or callable(declared) or isinstance(declared, (str, bytes)):
+        return None
+    versions = tuple(declared)
+    for version in versions:
+        if isinstance(version, bool) or version not in TRANSACTION_VERSIONS:
+            raise ValueError(
+                "supported_transaction_versions must contain only "
+                f"{TRANSACTION_VERSIONS}, got {version!r}"
+            )
+    return versions
+
+
+def ensure_transaction_version_supported(wallet: Any, version: Any) -> None:
+    """Fail closed on an explicit version the adapter cannot build.
+
+    - ``version is None`` (no explicit request) always passes: existing
+      callers are unaffected.
+    - No declared capability: legacy/v0 pass (unknown, not unsupported), an
+      explicit ``1`` fails.
+    - Declared capability: the version must be in it.
+    """
+    if version is None:
+        return
+    version = _validate_transaction_version(version)
+    supported = wallet_supported_transaction_versions(wallet)
+    if supported is None:
+        if version == 1:
+            raise UnsupportedTransactionVersionError(version, None)
+        return
+    if version not in supported:
+        raise UnsupportedTransactionVersionError(version, supported)
+
+
 @runtime_checkable
 class WalletAdapter(Protocol):
     """Wallet adapter interface for signing and sending transactions.
@@ -365,6 +690,11 @@ class WalletAdapter(Protocol):
     - ``async def inspect_transaction(instructions, options=None, context=None)
       -> TransactionInspectionResult`` — unsigned inspection; must not sign,
       submit, or prompt a wallet.
+    - ``supported_transaction_versions`` — the versions this adapter can
+      build, a subset of :data:`TRANSACTION_VERSIONS`. Absent means
+      *unknown*, not *none*: existing adapters keep serving callers who ask
+      for no particular version, while an explicit ``transaction_version=1``
+      raises :class:`UnsupportedTransactionVersionError`.
 
     Failures raise :class:`WalletError` (classified when possible).
     """

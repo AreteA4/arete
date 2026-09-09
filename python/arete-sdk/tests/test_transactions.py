@@ -171,6 +171,42 @@ async def test_simulate_wraps_accounts_and_parses_result():
 
 
 @pytest.mark.asyncio
+async def test_v1_contract_simulate_preserves_loaded_accounts_data_size():
+    """Absent, explicit null, "0" and a positive size are four distinct
+    outcomes: V1 budget estimation cannot tell "unreported" from "zero"
+    unless the distinction survives parsing (contract §1)."""
+    for payload, expected in (
+        ({}, None),
+        ({"loadedAccountsDataSize": None}, None),
+        ({"loadedAccountsDataSize": "0"}, 0),
+        ({"loadedAccountsDataSize": "65536"}, 65536),
+    ):
+        transport, _ = make_transport(
+            lambda r, payload=payload: httpx.Response(
+                200, json={"contextSlot": "77", "unitsConsumed": "1200", **payload}
+            )
+        )
+        result = await transport.simulate_transaction("tx")
+        assert result.loaded_accounts_data_size == expected
+        assert result.units_consumed == 1200
+
+
+@pytest.mark.asyncio
+async def test_v1_contract_malformed_loaded_accounts_data_size_raises():
+    """Malformed values raise the same typed error as a bad unitsConsumed —
+    a JSON number, a non-numeric string and a negative are all rejected
+    rather than silently dropped."""
+    for bad in (65536, "-1", "64k", "", 1.5, True):
+        transport, _ = make_transport(
+            lambda r, bad=bad: httpx.Response(
+                200, json={"contextSlot": "77", "loadedAccountsDataSize": bad}
+            )
+        )
+        with pytest.raises(TransactionTransportError, match="loadedAccountsDataSize"):
+            await transport.simulate_transaction("tx")
+
+
+@pytest.mark.asyncio
 async def test_signature_status_null_and_parsed():
     transport, requests = make_transport(
         lambda r: httpx.Response(200, json={"status": None})

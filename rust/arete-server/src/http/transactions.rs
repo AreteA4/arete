@@ -1639,6 +1639,13 @@ fn simulation_response(value: Value) -> Result<Value, TxError> {
             .get("unitsConsumed")
             .and_then(Value::as_u64)
             .map(|number| number.to_string()),
+        // V1 budgets cannot be estimated without it: a caller has to know how much account data
+        // the simulated transaction actually loaded before it can set a limit for the real one.
+        // Absent stays absent — an older upstream that never reports it must not read as zero.
+        "loadedAccountsDataSize": result
+            .get("loadedAccountsDataSize")
+            .and_then(Value::as_u64)
+            .map(|number| number.to_string()),
         "accounts": result.get("accounts").cloned().unwrap_or(Value::Null),
     }))
 }
@@ -2024,6 +2031,104 @@ mod tests {
         assert_eq!(simulation["contextSlot"], "44");
         assert_eq!(simulation["unitsConsumed"], "12");
         assert_eq!(simulation["logs"], json!(["ok"]));
+    }
+
+    /// V1 budgets cannot be estimated without the loaded-account size, so the relay has to carry
+    /// it. Absent must stay absent: an older upstream that never reports it is not reporting zero.
+    #[tokio::test]
+    async fn transaction_v1_simulation_carries_the_loaded_accounts_data_size() {
+        let reported = state_for(json!({
+            "context": { "slot": 44 },
+            "value": { "err": null, "unitsConsumed": 12, "loadedAccountsDataSize": 65_536u64 }
+        }))
+        .await;
+        let value = dispatch(
+            Operation::Simulate,
+            br#"{"transaction":"AQ=="}"#,
+            None,
+            &reported,
+            &mut false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(value["loadedAccountsDataSize"], "65536");
+
+        let zero = state_for(json!({
+            "context": { "slot": 44 },
+            "value": { "err": null, "loadedAccountsDataSize": 0u64 }
+        }))
+        .await;
+        let value = dispatch(
+            Operation::Simulate,
+            br#"{"transaction":"AQ=="}"#,
+            None,
+            &zero,
+            &mut false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            value["loadedAccountsDataSize"], "0",
+            "zero is a measurement"
+        );
+
+        let silent = state_for(json!({
+            "context": { "slot": 44 },
+            "value": { "err": null }
+        }))
+        .await;
+        let value = dispatch(
+            Operation::Simulate,
+            br#"{"transaction":"AQ=="}"#,
+            None,
+            &silent,
+            &mut false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(value["loadedAccountsDataSize"], Value::Null);
+    }
+
+    /// Real signed payloads from `tests/fixtures/transaction-v1`, produced by @solana/kit 8.2.0.
+    /// Hand-assembled bytes would only prove the parser agrees with itself.
+    fn fixture(name: &str) -> (String, Value) {
+        let raw = include_str!("../../../../tests/fixtures/transaction-v1/transactions.json");
+        let corpus: Value = serde_json::from_str(raw).expect("fixture corpus parses");
+        let entry = corpus["fixtures"][name].clone();
+        (entry["base64"].as_str().expect("base64").to_string(), entry)
+    }
+
+    /// The signature the relay derives for a submitted transaction is what a caller reconciles
+    /// against after an ambiguous send, so it has to match the codec's own, in every version.
+    #[test]
+    fn transaction_v1_fixtures_yield_the_codec_signature_in_every_version() {
+        use base64::Engine as _;
+        for name in ["legacy", "v0", "v1", "v1_oversize", "v1_two_signatures"] {
+            let (encoded, entry) = fixture(name);
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&encoded)
+                .expect("fixture decodes");
+            assert_eq!(
+                bytes.len(),
+                entry["bytes"].as_u64().expect("bytes") as usize,
+                "{name} length"
+            );
+            assert_eq!(
+                transaction_signature(&bytes).expect("{name} signature"),
+                entry["firstSignature"].as_str().expect("firstSignature"),
+                "{name} first signature"
+            );
+        }
+    }
+
+    /// 1574 bytes: refused by anything still applying the legacy 1232-byte ceiling, accepted under
+    /// V1's 4096. The minimal 177-byte V1 fixture passes either way and proves nothing here.
+    #[test]
+    fn transaction_v1_oversize_fixture_needs_the_v1_size_ceiling() {
+        let (encoded, _) = fixture("v1_oversize");
+        assert!(decode_bounded(&encoded, 1232, "transaction").is_err());
+        let decoded = decode_bounded(&encoded, 4096, "transaction").expect("within the V1 ceiling");
+        assert_eq!(decoded.first(), Some(&V1_VERSION_BYTE));
     }
 
     /// A valid base58 64-byte signature; the handler rejects anything else before dispatching.

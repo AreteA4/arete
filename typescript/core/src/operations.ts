@@ -10,6 +10,7 @@ import {
 } from './instructions';
 import type { SignerRegistry } from './signer-registry';
 import type { TransactionTransport } from './transactions';
+import { resolveTransactionBuildOptions } from './wallet/types';
 import type {
   BuiltInstruction,
   SendOptions,
@@ -837,6 +838,7 @@ export async function inspectPreparedOperation(
   if (!wallet?.inspectTransaction) {
     throw new Error('Wallet adapter does not support unsigned transaction inspection');
   }
+  resolveTransactionBuildOptions(options, wallet);
 
   const transaction = operation.plan.transactions[0]!;
   const description = describePreparedOperation(operation);

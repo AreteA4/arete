@@ -80,12 +80,19 @@ pub struct TransactionSimulationOptions {
 }
 
 /// Result of `simulate`.
+///
+/// `loaded_accounts_data_size` is the V1 budget input (SIMD-0385): a V1
+/// transaction's resource budget cannot be estimated without knowing how much
+/// account data the transaction loads. `None` means the relay did not report
+/// it (absent or explicit `null`); `Some(0)` means it reported zero — the
+/// distinction is preserved.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransactionSimulationResult {
     pub context_slot: u64,
     pub err: Option<Value>,
     pub logs: Option<Vec<String>>,
     pub units_consumed: Option<u64>,
+    pub loaded_accounts_data_size: Option<u64>,
     pub accounts: Option<Vec<Value>>,
 }
 
@@ -736,6 +743,10 @@ impl TransactionTransport for HttpTransactionTransport {
             err,
             logs,
             units_consumed: optional_decimal_u64(value.get("unitsConsumed"), "unitsConsumed")?,
+            loaded_accounts_data_size: optional_decimal_u64(
+                value.get("loadedAccountsDataSize"),
+                "loadedAccountsDataSize",
+            )?,
             accounts,
         })
     }
@@ -1064,6 +1075,7 @@ mod tests {
                         "err": null,
                         "logs": ["log-1", "log-2"],
                         "unitsConsumed": "700",
+                        "loadedAccountsDataSize": "65536",
                         "accounts": [null, { "lamports": "1" }],
                     }))
                 }
@@ -1092,6 +1104,7 @@ mod tests {
             Some(vec!["log-1".to_string(), "log-2".to_string()])
         );
         assert_eq!(result.units_consumed, Some(700));
+        assert_eq!(result.loaded_accounts_data_size, Some(65536));
         assert_eq!(result.accounts.as_ref().map(Vec::len), Some(2));
         assert_eq!(
             bodies.lock().unwrap()[0],
@@ -1103,6 +1116,61 @@ mod tests {
                 "replaceRecentBlockhash": false,
             })
         );
+    }
+
+    /// Contract §1: `loadedAccountsDataSize` is optional and a decimal string;
+    /// absent and `null` are the same, `"0"` is neither, and anything else is
+    /// the same invalid-response error as a bad `unitsConsumed`.
+    #[tokio::test]
+    async fn transaction_v1_simulate_preserves_loaded_accounts_data_size() {
+        async fn simulate_with(
+            field: Option<Value>,
+        ) -> Result<TransactionSimulationResult, TransactionError> {
+            let mut response = serde_json::json!({ "contextSlot": "9", "err": null });
+            if let Some(field) = field {
+                response
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("loadedAccountsDataSize".to_string(), field);
+            }
+            let router = Router::new().route(
+                "/transactions/v1/simulate",
+                post(move || {
+                    let response = response.clone();
+                    async move { Json(response) }
+                }),
+            );
+            let base = spawn(router).await;
+            let (transport, _) = transport(&base);
+            transport
+                .simulate("tx", TransactionSimulationOptions::default())
+                .await
+        }
+
+        let absent = simulate_with(None).await.unwrap();
+        assert_eq!(absent.loaded_accounts_data_size, None);
+        let null = simulate_with(Some(Value::Null)).await.unwrap();
+        assert_eq!(null.loaded_accounts_data_size, None);
+        let zero = simulate_with(Some(serde_json::json!("0"))).await.unwrap();
+        assert_eq!(zero.loaded_accounts_data_size, Some(0));
+        let positive = simulate_with(Some(serde_json::json!("65536")))
+            .await
+            .unwrap();
+        assert_eq!(positive.loaded_accounts_data_size, Some(65536));
+
+        for malformed in [
+            serde_json::json!(65536),
+            serde_json::json!("-1"),
+            serde_json::json!("64k"),
+            serde_json::json!(true),
+        ] {
+            let error = simulate_with(Some(malformed.clone())).await.unwrap_err();
+            assert!(
+                matches!(&error, TransactionError::InvalidResponse(message)
+                    if message.contains("Invalid decimal u64 field 'loadedAccountsDataSize'")),
+                "expected {malformed} to be rejected, got {error:?}"
+            );
+        }
     }
 
     #[tokio::test]
