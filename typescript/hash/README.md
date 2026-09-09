@@ -28,3 +28,9 @@ The root also exports strict hosted-private `arete.program-release/v3`
 creation, parsing, validation, and hashing helpers. V3 fixes
 `executablePolicy` to `observed` and deliberately has no ownership or
 visibility fields.
+
+## SDK content identity
+
+`SdkDefinitionV2` identifies generated content, its input, target, and runtime
+contract independently of compiler provenance. The V1 projection remains frozen.
+See [the content identity contract](../../docs/internal/sdk-content-identity.md).

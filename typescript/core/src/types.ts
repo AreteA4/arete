@@ -80,7 +80,7 @@ export interface StackQueryDefinition<TParams = unknown, TResult = unknown> {
 export interface ProgramSdkDefinition {
   readonly name: string;
   readonly programId?: string;
-  /** Typed identity of the generated program behavior and compiler provenance. */
+  /** Typed identity of generated program content. V2 excludes compiler provenance. */
   readonly sdkDefinitionHash?: string;
   readonly programSpecHash?: string;
   readonly idlContentHash?: string;

@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::identifier::DecoderBindingId;
 use crate::{
     hash_framed_tuple, hash_jcs, parse_json_bytes_strict, Compiler, HashError, HashId,
-    ProgramRelease, ProgramSpec, SdkDefinition, TupleField,
+    ProgramRelease, ProgramSpec, SdkDefinition, SdkOutputTree, TupleField,
 };
 
 pub const COMPILER_SCHEMA_V1: &str = "arete.compiler/v1";
@@ -155,6 +155,61 @@ impl SdkDefinitionV1 {
                     "inputKind must be '{}', not '{}'",
                     SDK_DEFINITION_PROGRAM_SPEC_INPUT_KIND, self.input_kind
                 ),
+            });
+        }
+        hash_jcs(self)
+    }
+}
+
+/// Identity of generated SDK content, independent of the compiler's source identity.
+/// V1 remains frozen and readable. The output tree projection is specified by the
+/// named runtime contract and excludes the identity itself and build provenance.
+pub const SDK_DEFINITION_SCHEMA_V2: &str = "arete.sdk-definition/v2";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SdkDefinitionV2 {
+    pub schema: String,
+    pub input_kind: String,
+    pub input_hash: HashId<ProgramSpec>,
+    pub target: String,
+    pub runtime_contract: String,
+    pub output_tree_hash: HashId<SdkOutputTree>,
+}
+
+impl SdkDefinitionV2 {
+    pub fn new(
+        input_hash: HashId<ProgramSpec>,
+        target: impl Into<String>,
+        runtime_contract: impl Into<String>,
+        output_tree_hash: HashId<SdkOutputTree>,
+    ) -> Self {
+        Self {
+            schema: SDK_DEFINITION_SCHEMA_V2.to_string(),
+            input_kind: SDK_DEFINITION_PROGRAM_SPEC_INPUT_KIND.to_string(),
+            input_hash,
+            target: target.into(),
+            runtime_contract: runtime_contract.into(),
+            output_tree_hash,
+        }
+    }
+
+    pub fn hash(&self) -> Result<HashId<SdkDefinition>, HashError> {
+        if self.schema != SDK_DEFINITION_SCHEMA_V2 {
+            return Err(HashError::UnknownVersion(self.schema.clone()));
+        }
+        if self.input_kind != SDK_DEFINITION_PROGRAM_SPEC_INPUT_KIND
+            || !matches!(self.target.as_str(), "typescript" | "rust" | "python")
+            || self.runtime_contract.is_empty()
+            || self.runtime_contract.len() > 128
+            || !self
+                .runtime_contract
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(HashError::InvalidProjection {
+                projection: "SDK definition",
+                reason: "expected program-spec input, a supported target and a printable ASCII runtime contract (1..128 bytes)".to_string(),
             });
         }
         hash_jcs(self)

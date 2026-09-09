@@ -184,6 +184,7 @@ struct TypeScriptLayout {
 }
 
 const SDK_PROVENANCE_FILE: &str = "sdk-provenance.json";
+const SDK_MANIFEST_FILE: &str = "sdk-manifest.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -223,10 +224,26 @@ struct SdkProvenanceManifestV2 {
     schema_version: u32,
     input: SdkProvenanceInputV2,
     generator: SdkProvenanceGeneratorV2,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sdk_output_tree_hash: Option<String>,
     extensions: Option<SdkProvenanceExtensionsV2>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     program_extensions: BTreeMap<String, SdkProvenanceProgramExtensionV2>,
     artifacts: Vec<String>,
+}
+
+/// Stable, committed description of generated content. The adjacent provenance
+/// document records the compiler used for each generation and owns this manifest.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkContentManifestV1<'a> {
+    schema_version: u32,
+    input: &'a SdkProvenanceInputV2,
+    sdk_output_tree_hash: &'a str,
+    extensions: &'a Option<SdkProvenanceExtensionsV2>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    program_extensions: &'a BTreeMap<String, SdkProvenanceProgramExtensionV2>,
+    artifacts: &'a [String],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -541,7 +558,7 @@ impl ResolvedStackSource {
         &self,
         stack_spec: &arete_interpreter::ast::SerializableStackSpec,
     ) -> Result<Option<Vec<arete_interpreter::typescript::TypeScriptProgramConfig>>> {
-        let mut programs = match self {
+        let programs = match self {
             Self::LocalArtifacts(_) if stack_spec.program_specs.is_empty() => return Ok(None),
             Self::LocalArtifacts(_) => stack_spec
                 .program_specs
@@ -560,11 +577,6 @@ impl ResolvedStackSource {
                 .map(typescript_program_config_from_registry)
                 .collect::<Result<Vec<_>>>()?,
         };
-        for program in &mut programs {
-            program.definition.sdk_definition_hash = Some(program_definition_hash(
-                &program.definition.program_spec_hash,
-            )?);
-        }
         Ok(Some(programs))
     }
 }
@@ -1562,7 +1574,9 @@ fn collect_relative_files(
         let path = entry.path();
         if path.is_dir() {
             collect_relative_files(root, &path, files)?;
-        } else if path.file_name().and_then(|name| name.to_str()) != Some(SDK_PROVENANCE_FILE) {
+        } else if path.file_name().and_then(|name| name.to_str()) != Some(SDK_PROVENANCE_FILE)
+            && path != root.join(SDK_MANIFEST_FILE)
+        {
             files.insert(
                 path.strip_prefix(root)
                     .context("Generated output escaped its staging root")?
@@ -2334,18 +2348,6 @@ fn sdk_compiler_hash() -> Result<arete_hash::HashId<arete_hash::Compiler>> {
         .context("Build embedded an invalid SDK compiler hash")
 }
 
-fn program_definition_hash(program_spec_hash: &str) -> Result<String> {
-    let program_spec_hash = program_spec_hash
-        .parse::<arete_hash::HashId<arete_hash::ProgramSpec>>()
-        .context("Invalid ProgramSpec hash for SDK definition")?;
-    Ok(
-        arete_hash::SdkDefinitionV1::new(program_spec_hash, sdk_compiler_hash()?)
-            .hash()
-            .context("Failed to hash SDK definition")?
-            .to_string(),
-    )
-}
-
 fn extensions_artifact_hash(artifact: &ResolvedExtensionsArtifact) -> String {
     let mut hasher = Sha256::new();
     update_hash_part(&mut hasher, "entry", artifact.entry.as_bytes());
@@ -2478,6 +2480,7 @@ fn build_sdk_provenance_manifest_from_artifacts(
             version: env!("CARGO_PKG_VERSION").to_string(),
             compiler_hash: sdk_compiler_hash()?.to_string(),
         },
+        sdk_output_tree_hash: None,
         extensions: extensions.map(|artifact| SdkProvenanceExtensionsV2 {
             content_sha256: extensions_artifact_hash(artifact),
             sdk_extension_hash: artifact.sdk_extension_hash.clone(),
@@ -2573,10 +2576,47 @@ fn write_sdk_provenance_manifest_file(
             output_dir.display()
         )
     })?;
+    // Validate and hash every declared payload file before pruning or writing metadata.
+    // Source fingerprints, absolute checkout paths and root metadata are excluded.
+    let mut payload = Vec::new();
+    for name in &manifest.artifacts {
+        arete_hash::validate_artifact_path(name)?;
+        if matches!(name.as_str(), SDK_PROVENANCE_FILE | SDK_MANIFEST_FILE) {
+            anyhow::bail!("Reserved SDK metadata path in generated payload: {name}");
+        }
+        let mut prefix = PathBuf::new();
+        for component in Path::new(name).components() {
+            prefix.push(component);
+            if output.symlink_metadata(&prefix)?.file_type().is_symlink() {
+                anyhow::bail!("Symlinks are not allowed in SDK payload: {name}");
+            }
+        }
+        payload.push((name.as_str(), output.read(name)?));
+    }
+    let entries = payload
+        .iter()
+        .map(|(name, bytes)| arete_hash::ArtifactTreeEntry::file(name, bytes))
+        .collect::<Vec<_>>();
+    let tree_hash =
+        arete_hash::hash_artifact_tree::<arete_hash::SdkOutputTree>(&entries)?.to_string();
+    let content_manifest = SdkContentManifestV1 {
+        schema_version: 1,
+        input: &manifest.input,
+        sdk_output_tree_hash: &tree_hash,
+        extensions: &manifest.extensions,
+        program_extensions: &manifest.program_extensions,
+        artifacts: &manifest.artifacts,
+    };
+    let content = format!("{}\n", serde_json::to_string_pretty(&content_manifest)?);
+    let mut manifest = manifest.clone();
+    manifest.sdk_output_tree_hash = Some(tree_hash);
+    manifest.artifacts.push(SDK_MANIFEST_FILE.to_string());
+    manifest.artifacts.sort();
     prune_stale_sdk_artifacts(&output, output_dir, &manifest.artifacts)?;
+    output.write(SDK_MANIFEST_FILE, content)?;
     let contents = format!(
         "{}\n",
-        serde_json::to_string_pretty(manifest)
+        serde_json::to_string_pretty(&manifest)
             .context("Failed to serialize SDK provenance manifest")?
     );
     let path = output_dir.join(SDK_PROVENANCE_FILE);
@@ -2776,9 +2816,7 @@ fn typescript_program_config_from_registry(
     Ok(arete_interpreter::typescript::TypeScriptProgramConfig {
         definition: arete_interpreter::typescript::TypeScriptProgramDefinitionMetadata {
             program_id: install.definition.program_id.clone(),
-            sdk_definition_hash: Some(program_definition_hash(
-                &install.definition.program_spec_hash,
-            )?),
+            sdk_definition_hash: None,
             program_spec_hash: install.definition.program_spec_hash.clone(),
             idl_content_hash: install.definition.idl_content_hash.clone(),
             normalized_idl_hash: install.definition.normalized_idl_hash.clone(),
@@ -2992,6 +3030,7 @@ fn write_typescript_core_modules(
         reserved.insert(generated_artifact_name(&layout.entry_path)?);
         reserved.insert("extensions.json".to_string());
         reserved.insert(SDK_PROVENANCE_FILE.to_string());
+        reserved.insert(SDK_MANIFEST_FILE.to_string());
         if let Some(path) = extension.files.iter().find_map(|file| {
             normalize_extension_relative_path(&file.path)
                 .ok()
@@ -3770,10 +3809,7 @@ fn generate_typescript_program_sdk_from_idl(
         &identity,
         &stack_name,
     );
-    let mut program = arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity);
-    program.definition.sdk_definition_hash = Some(program_definition_hash(
-        &program.definition.program_spec_hash,
-    )?);
+    let program = arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity);
 
     write_typescript_program_sdk(
         &sdk_name,
@@ -3807,10 +3843,7 @@ fn generate_typescript_program_sdk_from_artifact(
         std::slice::from_ref(program_spec),
     )
     .map_err(anyhow::Error::msg)?;
-    let mut program = arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity);
-    program.definition.sdk_definition_hash = Some(program_definition_hash(
-        &program.definition.program_spec_hash,
-    )?);
+    let program = arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity);
     let input_pin = ResolvedExtensionsInputPin {
         kind: ExtensionsInputKind::ProgramSpec,
         hash: program_spec.artifact_hash.to_string(),
@@ -5510,6 +5543,8 @@ mod tests {
             hash: format!("arete:h1:program-spec:sha256:{}", "22".repeat(32)),
         };
 
+        fs::write(&layout.core_path, "export const answer = 42;").unwrap();
+        fs::write(&layout.entry_path, "export * from './demo-core';").unwrap();
         write_sdk_provenance_manifest(&layout, &input_pin, None)
             .expect("provenance should be written");
         let first = fs::read_to_string(output_dir.join(SDK_PROVENANCE_FILE))
@@ -5527,8 +5562,45 @@ mod tests {
         };
         assert_eq!(manifest.input.kind, ExtensionsInputKind::ProgramSpec);
         assert_eq!(manifest.extensions, None);
-        assert_eq!(manifest.artifacts, vec!["demo-core.ts", "demo.ts"]);
+        assert_eq!(
+            manifest.artifacts,
+            vec!["demo-core.ts", "demo.ts", SDK_MANIFEST_FILE]
+        );
         assert!(!first.contains(&output_dir.display().to_string()));
+    }
+
+    #[test]
+    fn sdk_content_manifest_is_stable_across_compilers_and_tracks_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path();
+        let input = ResolvedExtensionsInputPin {
+            kind: ExtensionsInputKind::ProgramSpec,
+            hash: format!("arete:h1:program-spec:sha256:{}", "22".repeat(32)),
+        };
+        let mut manifest = build_sdk_provenance_manifest_from_artifacts(
+            BTreeSet::from(["sdk.ts".to_string()]),
+            "",
+            &input,
+            None,
+        )
+        .unwrap();
+        fs::write(output.join("sdk.ts"), "export const value = 1;").unwrap();
+        write_sdk_provenance_manifest_file(output, &manifest).unwrap();
+        let first = fs::read(output.join(SDK_MANIFEST_FILE)).unwrap();
+        let provenance = fs::read(output.join(SDK_PROVENANCE_FILE)).unwrap();
+        manifest.generator.compiler_hash = format!("arete:h1:compiler:sha256:{}", "99".repeat(32));
+        manifest.generator.version = "999.0.0".into();
+        write_sdk_provenance_manifest_file(output, &manifest).unwrap();
+        assert_eq!(first, fs::read(output.join(SDK_MANIFEST_FILE)).unwrap());
+        assert_ne!(
+            provenance,
+            fs::read(output.join(SDK_PROVENANCE_FILE)).unwrap()
+        );
+        fs::write(output.join("sdk.ts"), "export const value = 2;").unwrap();
+        write_sdk_provenance_manifest_file(output, &manifest).unwrap();
+        assert_ne!(first, fs::read(output.join(SDK_MANIFEST_FILE)).unwrap());
+        fs::remove_file(output.join("sdk.ts")).unwrap();
+        assert!(write_sdk_provenance_manifest_file(output, &manifest).is_err());
     }
 
     #[test]
@@ -5554,6 +5626,7 @@ mod tests {
 
         let mut next = previous.clone();
         next.artifacts = vec!["keep.ts".to_string(), "new.ts".to_string()];
+        fs::write(output_dir.join("new.ts"), "new").unwrap();
         write_sdk_provenance_manifest_file(&output_dir, &next)
             .expect("next provenance should be written");
 
@@ -5592,8 +5665,13 @@ mod tests {
             build_sdk_provenance_manifest_from_artifacts(BTreeSet::new(), "", &input_pin, None)
                 .expect("previous provenance");
         previous.artifacts = vec!["programs/escaped/stale.ts".to_string()];
-        write_sdk_provenance_manifest_file(&output_dir, &previous)
-            .expect("previous provenance should be written");
+        assert!(write_sdk_provenance_manifest_file(&output_dir, &previous).is_err());
+        // An old manifest may reference a path replaced by a symlink since generation.
+        fs::write(
+            output_dir.join(SDK_PROVENANCE_FILE),
+            serde_json::to_vec(&previous).unwrap(),
+        )
+        .unwrap();
 
         let mut next = previous.clone();
         next.artifacts.clear();
@@ -7638,10 +7716,7 @@ mod tests {
                 source, None,
             )
             .expect("CLI identity");
-        let definition_hash = program_definition_hash(&identity.program_spec_hash.to_string())
-            .expect("definition hash");
-        let mut program = arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity);
-        program.definition.sdk_definition_hash = Some(definition_hash.clone());
+        let program = arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity);
         let stack_spec =
             arete_interpreter::program_sdk::build_program_only_stack_spec_from_identity(
                 &identity, "Demo",
@@ -7661,7 +7736,7 @@ mod tests {
         );
         assert!(output
             .stack_definition
-            .contains(&format!("sdkDefinitionHash: '{definition_hash}',")));
+            .contains("sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:"));
         assert!(output.stack_definition.contains(&format!(
             "programReleaseHash: \"{}\"",
             identity.release_hash
@@ -7749,11 +7824,7 @@ mod tests {
         )
         .expect("hosted descriptor should compile");
         let generated = output.stack_definition;
-        let expected_definition_hash =
-            program_definition_hash(&identity.program_spec_hash.to_string())
-                .expect("definition hash");
-
-        assert!(generated.contains(&format!("sdkDefinitionHash: '{expected_definition_hash}',")));
+        assert!(generated.contains("sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:"));
         assert!(generated.contains(&format!("programReleaseHash: \"{hosted_release}\"")));
         assert!(!generated.contains(&identity.release_hash.to_string()));
         assert!(generated.contains("kind: 'hosted-binding'"));

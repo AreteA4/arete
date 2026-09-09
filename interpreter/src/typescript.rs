@@ -3149,6 +3149,7 @@ fn compile_serializable_spec_with_emitted(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeScriptProgramDefinitionMetadata {
     pub program_id: String,
+    /// Output metadata. Generation recomputes this from emitted content; input values are ignored.
     pub sdk_definition_hash: Option<String>,
     pub program_spec_hash: String,
     pub idl_content_hash: String,
@@ -3612,6 +3613,25 @@ fn compile_stack_spec_with_view_selection(
         }
     }
 
+    let imports = assemble_sdk_imports(
+        collect_emitted_pda_imports(&stack_spec.idls, &stack_spec.pdas),
+        !idl_account_artifacts.account_type_names.is_empty(),
+        &instructions_codegen,
+    );
+    let program_configs = program_content_identities(
+        &ProgramGenerationContext {
+            pdas: &stack_spec.pdas,
+            program_ids: &stack_spec.program_ids,
+            instruction_entries: &instructions_codegen.stack_entries,
+            schema_names: &schema_names.iter().cloned().collect(),
+            account_type_names: &idl_account_artifacts.account_type_names,
+            programs: &program_configs,
+        },
+        &stack_spec.idls,
+        &imports,
+        &interfaces,
+    )?;
+
     // 3. Generate unified stack definition with all entity views and attached program SDKs.
     let stack_definition = generate_stack_definition_multi(
         stack_name,
@@ -3628,13 +3648,6 @@ fn compile_stack_spec_with_view_selection(
         &config,
         exact_views,
     )?;
-
-    // 4. Assemble `@usearete/sdk` imports based on what was actually emitted.
-    let imports = assemble_sdk_imports(
-        collect_emitted_pda_imports(&stack_spec.idls, &stack_spec.pdas),
-        !idl_account_artifacts.account_type_names.is_empty(),
-        &instructions_codegen,
-    );
 
     Ok(TypeScriptStackOutput {
         imports,
@@ -4218,6 +4231,12 @@ pub fn compile_program_modules(
     let unique_schemas: BTreeSet<String> =
         idl_account_artifacts.schema_names.iter().cloned().collect();
 
+    let imports = assemble_sdk_imports(
+        collect_emitted_pda_imports(&stack_spec.idls, &stack_spec.pdas),
+        !idl_account_artifacts.account_type_names.is_empty(),
+        &instructions_codegen,
+    );
+
     let program_context = ProgramGenerationContext {
         pdas: &stack_spec.pdas,
         program_ids: &stack_spec.program_ids,
@@ -4226,14 +4245,14 @@ pub fn compile_program_modules(
         account_type_names: &idl_account_artifacts.account_type_names,
         programs: &program_configs,
     };
+    let program_configs =
+        program_content_identities(&program_context, &stack_spec.idls, &imports, &interfaces)?;
+    let program_context = ProgramGenerationContext {
+        programs: &program_configs,
+        ..program_context
+    };
     let stack_definition =
         generate_program_definitions(stack_name, &stack_spec.idls, &program_context);
-
-    let imports = assemble_sdk_imports(
-        collect_emitted_pda_imports(&stack_spec.idls, &stack_spec.pdas),
-        !idl_account_artifacts.account_type_names.is_empty(),
-        &instructions_codegen,
-    );
 
     Ok(TypeScriptStackOutput {
         imports,
@@ -4524,6 +4543,60 @@ struct ProgramGenerationContext<'a> {
     schema_names: &'a BTreeSet<String>,
     account_type_names: &'a BTreeMap<(String, String), String>,
     programs: &'a [TypeScriptProgramConfig],
+}
+
+/// Frozen content projection for the TypeScript program runtime contract.
+/// Includes the emitted imports, shared declarations (schemas and instruction
+/// implementations), and this program's literal body with sdkDefinitionHash
+/// absent. Release/read bindings and stack wrappers are separate identities.
+/// Shared declarations deliberately make this conservative within one module.
+const TYPESCRIPT_PROGRAM_RUNTIME_CONTRACT: &str = "@usearete/sdk/program-definition-v1";
+
+fn program_content_identities(
+    context: &ProgramGenerationContext<'_>,
+    idls: &[IdlSnapshot],
+    imports: &str,
+    declarations: &str,
+) -> Result<Vec<TypeScriptProgramConfig>, String> {
+    use arete_hash::{hash_artifact_tree, ArtifactTreeEntry, SdkDefinitionV2, SdkOutputTree};
+
+    let mut unhashed = context.programs.to_vec();
+    for program in &mut unhashed {
+        program.definition.sdk_definition_hash = None;
+    }
+    let unhashed_context = ProgramGenerationContext {
+        programs: &unhashed,
+        ..*context
+    };
+    let mut identified = unhashed.clone();
+    for (index, program) in identified.iter_mut().enumerate() {
+        let (_, sections) =
+            generate_single_program_sections(&idls[index], index, &unhashed_context);
+        let definition = sections.join("\n");
+        let output_tree_hash = hash_artifact_tree::<SdkOutputTree>(&[
+            ArtifactTreeEntry::file("imports.ts", imports.as_bytes()),
+            ArtifactTreeEntry::file("declarations.ts", declarations.as_bytes()),
+            ArtifactTreeEntry::file("definition.ts", definition.as_bytes()),
+        ])
+        .map_err(|error| error.to_string())?;
+        let input_hash = program
+            .definition
+            .program_spec_hash
+            .parse()
+            .map_err(|error: arete_hash::HashError| error.to_string())?;
+        program.definition.sdk_definition_hash = Some(
+            SdkDefinitionV2::new(
+                input_hash,
+                "typescript",
+                TYPESCRIPT_PROGRAM_RUNTIME_CONTRACT,
+                output_tree_hash,
+            )
+            .hash()
+            .map_err(|error| error.to_string())?
+            .to_string(),
+        );
+    }
+    Ok(identified)
 }
 
 /// Build one program's `{ name, programId, pdas?, accounts?, instructions? }`
@@ -5525,13 +5598,59 @@ mod tests {
         );
     }
 
+    fn emitted_definition_hash(output: &TypeScriptStackOutput) -> &str {
+        output
+            .stack_definition
+            .lines()
+            .find(|line| line.trim_start().starts_with("sdkDefinitionHash:"))
+            .unwrap()
+            .trim()
+    }
+
     #[test]
-    fn program_modules_emit_configured_sdk_definition_hash() {
+    fn program_content_identity_tracks_generated_pda_behavior_with_the_same_input_hash() {
+        let spec = program_only_test_spec(BTreeMap::new(), vec![]);
+        let initial = compile_program_modules(spec.clone(), None).unwrap();
+        let mut changed = spec.clone();
+        changed.pdas.insert(
+            "demo".into(),
+            BTreeMap::from([(
+                "position".into(),
+                PdaDefinition {
+                    name: "position".into(),
+                    seeds: vec![PdaSeedDef::Bytes {
+                        value: vec![1, 2, 3],
+                    }],
+                    program_id: None,
+                    program: None,
+                },
+            )]),
+        );
+        assert_eq!(
+            spec.program_specs[0].hash().unwrap(),
+            changed.program_specs[0].hash().unwrap()
+        );
+        let changed = compile_program_modules(changed, None).unwrap();
+        assert_ne!(
+            emitted_definition_hash(&initial),
+            emitted_definition_hash(&changed)
+        );
+        assert_eq!(
+            emitted_definition_hash(&initial),
+            emitted_definition_hash(&compile_program_modules(spec, None).unwrap())
+        );
+    }
+
+    #[test]
+    fn program_modules_recompute_content_identity_instead_of_trusting_input() {
         let stack_spec = program_only_test_spec(BTreeMap::new(), vec![]);
         let mut program = TypeScriptProgramConfig::from(
             &arete_hash::OssProgramIdentityV1::new(stack_spec.program_specs[0].clone()).unwrap(),
         );
+        let initial = compile_program_modules(stack_spec.clone(), None).unwrap();
         program.definition.sdk_definition_hash = Some("definition-v1".to_string());
+        program.release.program_release_hash =
+            "arete:h1:program-release:sha256:different-release".into();
         let output = compile_program_modules(
             stack_spec,
             Some(TypeScriptStackConfig {
@@ -5541,9 +5660,15 @@ mod tests {
         )
         .expect("program definition generation should succeed");
 
+        assert_eq!(
+            emitted_definition_hash(&initial),
+            emitted_definition_hash(&output)
+        );
+        assert_ne!(initial.full_file(), output.full_file());
+        assert!(!output.stack_definition.contains("definition-v1"));
         assert!(output
             .stack_definition
-            .contains("sdkDefinitionHash: 'definition-v1',"));
+            .contains("sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:"));
     }
 
     #[test]
@@ -5570,7 +5695,7 @@ mod tests {
         .expect("program definition generation should succeed");
         let definition = output.stack_definition;
 
-        assert!(definition.contains("sdkDefinitionHash: 'portable-definition',"));
+        assert!(definition.contains("sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:"));
         assert!(definition.contains(&format!(
             "programSpecHash: '{}',",
             local.definition.program_spec_hash

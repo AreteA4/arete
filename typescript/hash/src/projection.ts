@@ -10,6 +10,7 @@ import type {
   ProgramReleaseHash,
   ProgramSpecHash,
   SdkDefinitionHash,
+  SdkOutputTreeHash,
   TupleField,
 } from "./types.js";
 
@@ -160,6 +161,52 @@ export function hashSdkDefinitionV1(
   }
   parseHashId(projection.inputHash, "program-spec");
   parseHashId(projection.compilerHash, "compiler");
+  return hashJcs("sdk-definition", projection as unknown as JsonValue);
+}
+
+export const SDK_DEFINITION_SCHEMA_V2 = "arete.sdk-definition/v2" as const;
+
+export interface SdkDefinitionV2 {
+  readonly schema: typeof SDK_DEFINITION_SCHEMA_V2;
+  readonly inputKind: typeof SDK_DEFINITION_PROGRAM_SPEC_INPUT_KIND;
+  readonly inputHash: ProgramSpecHash;
+  readonly target: "typescript" | "rust" | "python";
+  readonly runtimeContract: string;
+  readonly outputTreeHash: SdkOutputTreeHash;
+}
+
+export function createSdkDefinitionV2(
+  inputHash: ProgramSpecHash,
+  target: SdkDefinitionV2["target"],
+  runtimeContract: string,
+  outputTreeHash: SdkOutputTreeHash,
+): SdkDefinitionV2 {
+  return {
+    schema: SDK_DEFINITION_SCHEMA_V2,
+    inputKind: SDK_DEFINITION_PROGRAM_SPEC_INPUT_KIND,
+    inputHash,
+    target,
+    runtimeContract,
+    outputTreeHash,
+  };
+}
+
+export function hashSdkDefinitionV2(projection: SdkDefinitionV2): SdkDefinitionHash {
+  if (projection.schema !== SDK_DEFINITION_SCHEMA_V2) {
+    return hashError("unknown-version", `unknown hash protocol version '${projection.schema}'`);
+  }
+  const fields = ["schema", "inputKind", "inputHash", "target", "runtimeContract", "outputTreeHash"];
+  if (
+    Object.keys(projection).some((key) => !fields.includes(key))
+    || projection.inputKind !== SDK_DEFINITION_PROGRAM_SPEC_INPUT_KIND
+    || !["typescript", "rust", "python"].includes(projection.target)
+    || typeof projection.runtimeContract !== "string"
+    || !/^[\x21-\x7e]{1,128}$/.test(projection.runtimeContract)
+  ) {
+    return hashError("invalid-projection", "invalid SDK definition V2 projection");
+  }
+  parseHashId(projection.inputHash, "program-spec");
+  parseHashId(projection.outputTreeHash, "sdk-output-tree");
   return hashJcs("sdk-definition", projection as unknown as JsonValue);
 }
 

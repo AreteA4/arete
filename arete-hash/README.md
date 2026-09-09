@@ -30,3 +30,9 @@ also consumed by `@usearete/hash`.
 ## License
 
 Apache-2.0
+
+## SDK content identity
+
+`SdkDefinitionV2` identifies generated content, its input, target, and runtime
+contract independently of compiler provenance. The V1 projection remains frozen.
+See [the content identity contract](../docs/internal/sdk-content-identity.md).

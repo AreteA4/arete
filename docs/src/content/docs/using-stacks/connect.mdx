@@ -253,7 +253,7 @@ a4 sdk create --manifest .arete/MyStack.stack-manifest.json --ts
 a4 sdk create --manifest .arete/MyStack.stack-manifest.json --rust
 ```
 
-Both approaches produce a generated stack definition that can be inserted into an Arete session. Generated directories are output boundaries: edit the stack, IDL, or extension source and regenerate instead of hand-editing core, entry, extension copies, or `sdk-provenance.json`.
+Both approaches produce a generated stack definition that can be inserted into an Arete session. Generated directories are output boundaries: edit the stack, IDL, or extension source and regenerate instead of hand-editing core, entry, extension copies, `sdk-manifest.json`, or `sdk-provenance.json`.
 
 Program account reads carry their own generated transport descriptor. Local SDK
 generation emits `transport: { kind: 'local-http', endpointSource:

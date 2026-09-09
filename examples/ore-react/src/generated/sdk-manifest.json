@@ -1,14 +1,10 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "input": {
     "kind": "stack-manifest",
     "hash": "arete:h1:stack-manifest:sha256:824b37aff794b7085b4f4bc622256adb0df6a6c104d5f21ad43a56d0b0ef9399"
   },
-  "generator": {
-    "name": "a4-cli",
-    "version": "0.17.0",
-    "compilerHash": "arete:h1:compiler:sha256:603c5ea03c27c2f874e40e36c49cd194790328bd524722900065d288d4009321"
-  },
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:826206fd8ac10d04862400ce65b67d385e02e65f2b65cf7394d7161bb8c42aee",
   "extensions": {
     "contentSha256": "802f4e4926810fd8beb2ce915d67470f877fc6d77744dfa1ee9adbd0886d7e10"
   },
