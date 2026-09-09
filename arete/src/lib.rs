@@ -57,6 +57,9 @@ pub use arete_server as server;
 pub use arete_sdk as sdk;
 
 #[cfg(feature = "runtime")]
+pub mod transaction_metadata;
+
+#[cfg(feature = "runtime")]
 #[doc(hidden)]
 pub mod runtime {
     pub use anyhow;
@@ -71,14 +74,18 @@ pub mod runtime {
     pub use serde;
     pub use serde_json;
     pub use sha3;
+    pub use shipstern;
+    pub use shipstern_core;
+    pub use shipstern_yellowstone_grpc_source;
     pub use smallvec;
     pub use tokio;
     pub use tracing;
     pub use yellowstone_grpc_client;
     pub use yellowstone_grpc_proto;
-    pub use yellowstone_vixen;
-    pub use yellowstone_vixen_core;
-    pub use yellowstone_vixen_yellowstone_grpc_source;
+    // Compatibility for generated code using the upstream's previous name.
+    pub use shipstern as yellowstone_vixen;
+    pub use shipstern_core as yellowstone_vixen_core;
+    pub use shipstern_yellowstone_grpc_source as yellowstone_vixen_yellowstone_grpc_source;
 
     pub mod serde_helpers {
         pub mod pubkey_base58 {

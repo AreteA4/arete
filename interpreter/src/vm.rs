@@ -145,6 +145,24 @@ impl UpdateContext {
         self.metadata.get(key)
     }
 
+    /// Attach authoritative transaction observations without changing program data.
+    pub fn with_solana_transaction(self, metadata: crate::SolanaTransactionMetadata) -> Self {
+        self.with_metadata(
+            crate::SOLANA_TRANSACTION_METADATA_KEY.to_string(),
+            serde_json::to_value(metadata).expect("transaction metadata is JSON serializable"),
+        )
+    }
+
+    /// Missing means unknown; malformed saved metadata is reported to the caller.
+    pub fn solana_transaction(
+        &self,
+    ) -> serde_json::Result<Option<crate::SolanaTransactionMetadata>> {
+        self.get_metadata(crate::SOLANA_TRANSACTION_METADATA_KEY)
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+    }
+
     /// Convert context to JSON value for injection into event data
     pub fn to_value(&self) -> Value {
         let mut obj = serde_json::Map::new();
@@ -773,6 +791,8 @@ pub struct QueuedInstructionEvent {
 /// Internal representation of a pending instruction event with queue metadata.
 #[derive(Debug, Clone)]
 pub struct PendingInstructionEvent {
+    /// Full originating context, retained while waiting for a PDA mapping.
+    pub context: UpdateContext,
     pub event_type: String,
     pub pda_address: String,
     pub event_data: Value,
@@ -2368,7 +2388,9 @@ impl VmContext {
                                 if let Some(pending_handler) =
                                     entity_bytecode.handlers.get(&pending.event_type)
                                 {
-                                    if let Ok(reprocessed_mutations) = self.execute_handler(
+                                    let previous_context =
+                                        self.current_context.replace(pending.context.clone());
+                                    let reprocessed = self.execute_handler(
                                         pending_handler,
                                         &pending.event_data,
                                         &pending.event_type,
@@ -2376,7 +2398,9 @@ impl VmContext {
                                         entity_name,
                                         entity_bytecode.computed_fields_evaluator.as_ref(),
                                         Some(&entity_bytecode.non_emitted_fields),
-                                    ) {
+                                    );
+                                    self.current_context = previous_context;
+                                    if let Ok(reprocessed_mutations) = reprocessed {
                                         all_mutations.extend(reprocessed_mutations);
                                     }
                                 }
@@ -2387,6 +2411,7 @@ impl VmContext {
                             if let Some(pending_handler) =
                                 entity_bytecode.handlers.get(&pending.account_type)
                             {
+                                let previous_context = self.current_context.clone();
                                 self.current_context = Some(if pending.is_stale_reprocess {
                                     UpdateContext::new_reprocessed(
                                         pending.slot,
@@ -2419,6 +2444,7 @@ impl VmContext {
                                         );
                                     }
                                 }
+                                self.current_context = previous_context;
                             }
                         }
 
@@ -2448,6 +2474,7 @@ impl VmContext {
                                     if let Some(pending_handler) =
                                         entity_bytecode.handlers.get(&pending.account_type)
                                     {
+                                        let previous_context = self.current_context.clone();
                                         self.current_context = Some(UpdateContext::new_account(
                                             pending.slot,
                                             pending.signature.clone(),
@@ -2473,6 +2500,7 @@ impl VmContext {
                                                 );
                                             }
                                         }
+                                        self.current_context = previous_context;
                                     }
                                 }
                             }
@@ -4830,6 +4858,10 @@ impl VmContext {
         let pda_address = event.pda_address.clone();
 
         let pending = PendingInstructionEvent {
+            context: self
+                .current_context
+                .clone()
+                .unwrap_or_else(|| UpdateContext::new(event.slot, event.signature.clone())),
             event_type: event.event_type,
             pda_address: event.pda_address,
             event_data: event.event_data,
