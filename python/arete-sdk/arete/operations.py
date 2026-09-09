@@ -1292,9 +1292,8 @@ async def inspect_prepared_operation(
     # touched: an explicit transaction version the adapter does not advertise
     # fails here instead of being silently downgraded. ``options`` itself is
     # forwarded unchanged, so adapter-specific keys keep working.
-    ensure_transaction_version_supported(
-        wallet, SendOptions.coerce(options).transaction_version
-    )
+    effective = SendOptions.coerce(options).validate()
+    ensure_transaction_version_supported(wallet, effective.transaction_version)
 
     transaction = operation.plan.transactions[0]
     description = describe_prepared_operation(operation)

@@ -22,6 +22,7 @@ import {
   type ProgramSdkDefinition,
 } from './types';
 import type { StorageAdapter } from './storage/adapter';
+import { mergeSendOptions } from './wallet/types';
 import type { WalletAdapter, BuiltInstruction } from './wallet/types';
 import type { ExecutionResult } from './instructions';
 import type {
@@ -537,9 +538,7 @@ export async function createSession<
       return executionHost.transaction(instructions, {
         wallet: transactionOptions?.wallet ?? defaults?.wallet,
         transactionTransport: transactionOptions?.transactionTransport ?? transactions,
-        send: defaults?.send || transactionOptions?.send
-          ? { ...(defaults?.send ?? {}), ...(transactionOptions?.send ?? {}) }
-          : undefined,
+        send: mergeSendOptions(defaults?.send, transactionOptions?.send),
         errors: transactionOptions?.errors,
         signers: signers.length > 0 ? signers : undefined,
       });
@@ -554,9 +553,7 @@ export async function createSession<
         wallet: executionOptions?.wallet ?? defaults?.wallet,
         transactionTransport:
           executionOptions?.transactionTransport ?? defaults?.transactionTransport ?? transactions,
-        send: defaults?.send || executionOptions?.send
-          ? { ...(defaults?.send ?? {}), ...(executionOptions?.send ?? {}) }
-          : undefined,
+        send: mergeSendOptions(defaults?.send, executionOptions?.send),
         signers: configuredSigners,
         signerRegistry,
         availableSignerAddresses:

@@ -310,7 +310,18 @@ class SendOptions:
         object.__setattr__(
             self, "resources", TransactionResourceOptions.coerce(self.resources)
         )
+
+    def validate(self) -> "SendOptions":
+        """Reject an incompatible version/fee pair in the EFFECTIVE options.
+
+        Deliberately not called from ``__post_init__``: a per-call override is
+        coerced on its own, before execution defaults merge into it, so
+        validating there refuses ``{"resources": {"priorityFeeLamports": ...}}``
+        against the *default* version 0 rather than the version the caller
+        configured. Callers validate once, after merging and before dispatch.
+        """
         _validate_version_fees(self.transaction_version, self.resources)
+        return self
 
     @classmethod
     def coerce(cls, value: Any) -> "SendOptions":
@@ -350,8 +361,13 @@ class SendOptions:
 
     def merged(self, overrides: Optional["SendOptions"]) -> "SendOptions":
         """Field-wise merge where ``overrides`` wins; ``extra`` maps merge and
-        ``resources`` merges field-wise. The merged result is re-validated, so
-        a version/fee combination the merge produces is rejected here."""
+        ``resources`` merges field-wise.
+
+        The merged result is the effective request, so it is validated here —
+        a version/fee combination the merge produces is rejected, while a
+        partial override that only makes sense once the configured version is
+        inherited is not.
+        """
         if overrides is None:
             return self
         return SendOptions(
@@ -377,7 +393,7 @@ class SendOptions:
                 if self.resources is not None
                 else overrides.resources
             ),
-        )
+        ).validate()
 
     def with_signers(self, signers: Optional[Sequence[Any]]) -> "SendOptions":
         if signers is None:

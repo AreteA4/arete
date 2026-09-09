@@ -260,6 +260,39 @@ function parseLamports(
 }
 
 /**
+ * Merge execution defaults with per-call send options.
+ *
+ * `resources` merges key by key, so a per-call fee does not discard a
+ * configured compute budget — except for the two fee fields, which are one
+ * slot: setting either clears the other, or the merged budget would hold both
+ * and be refused as mutually exclusive. Shared by every entry point that has
+ * defaults to merge; duplicating this logic is how `session` came to disagree
+ * with `Arete.execute`.
+ */
+export function mergeSendOptions<T extends TransactionBuildOptions>(
+  defaults: T | undefined,
+  override: T | undefined
+): T | undefined {
+  if (!defaults) return override;
+  if (!override) return defaults;
+
+  const inherited = { ...defaults.resources };
+  if (
+    override.resources?.priorityFeeLamports !== undefined ||
+    override.resources?.computeUnitPriceMicroLamports !== undefined
+  ) {
+    delete inherited.priorityFeeLamports;
+    delete inherited.computeUnitPriceMicroLamports;
+  }
+  const resources =
+    defaults.resources || override.resources
+      ? { ...inherited, ...override.resources }
+      : undefined;
+
+  return { ...defaults, ...override, ...(resources ? { resources } : {}) };
+}
+
+/**
  * Validate build options against an adapter's declared capability and
  * normalize every quantity to a bigint.
  *

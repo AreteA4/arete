@@ -617,20 +617,23 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
         }).send(),
       ]);
       // The RPC reports the loaded-accounts budget that @solana/kit 2.3 does
-      // not yet type.
+      // not yet type. It is optional upstream and comes back as null when the
+      // node did not measure it — `Number(null)` would invent a measured zero
+      // and destroy the missing-versus-zero distinction budget estimation
+      // depends on.
       const { loadedAccountsDataSize: directLoadedAccountsDataSize } = simulation.value as {
-        loadedAccountsDataSize?: number | bigint;
+        loadedAccountsDataSize?: number | bigint | null;
       };
 
       return {
         feeLamports: fee.value === null ? undefined : toNumber(fee.value),
         logs: simulation.value.logs ?? undefined,
-        computeUnitsConsumed: simulation.value.unitsConsumed === undefined
+        computeUnitsConsumed: simulation.value.unitsConsumed == null
           ? undefined
           : toNumber(simulation.value.unitsConsumed),
         contextSlot: toNumber(simulation.context.slot),
         error: simulation.value.err ?? undefined,
-        loadedAccountsDataSize: directLoadedAccountsDataSize === undefined
+        loadedAccountsDataSize: directLoadedAccountsDataSize == null
           ? undefined : Number(directLoadedAccountsDataSize),
         feeContextSlot: toNumber(fee.context.slot),
       };

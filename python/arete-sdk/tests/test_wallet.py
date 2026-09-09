@@ -225,21 +225,29 @@ class TestTransactionVersionOptions:
                 SendOptions(transaction_version=bad)
 
     def test_v1_contract_fee_fields_are_version_bound(self):
+        # Construction no longer validates: a per-call override is coerced on
+        # its own, before execution defaults merge into it, so a fee that is
+        # valid against the configured version must survive being built alone.
+        partial = SendOptions(resources={"priorityFeeLamports": "5000"})
+        assert partial.resources.priority_fee_lamports == 5000
+
+        # The EFFECTIVE options are what must be consistent, so validate() is
+        # the enforcement point, and every dispatch path calls it.
         with pytest.raises(ValueError, match="priority_fee_lamports requires"):
-            SendOptions(resources={"priorityFeeLamports": "5000"})
+            partial.validate()
         with pytest.raises(ValueError, match="priority_fee_lamports requires"):
             SendOptions(
                 transaction_version="legacy", resources={"priorityFeeLamports": "5000"}
-            )
+            ).validate()
         with pytest.raises(ValueError, match="not valid for transaction_version 1"):
             SendOptions(
                 transaction_version=1,
                 resources={"computeUnitPriceMicroLamports": "7"},
-            )
+            ).validate()
         assert (
-            SendOptions(
-                transaction_version=1, resources={"priorityFeeLamports": "5000"}
-            ).resources.priority_fee_lamports
+            SendOptions(transaction_version=1, resources={"priorityFeeLamports": "5000"})
+            .validate()
+            .resources.priority_fee_lamports
             == 5000
         )
 

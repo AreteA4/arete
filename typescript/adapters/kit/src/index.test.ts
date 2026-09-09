@@ -586,6 +586,40 @@ describe('createWalletAdapter', () => {
     )).resolves.toMatchObject({ loadedAccountsDataSize: 0 });
     expect(signTransactionMessageWithSigners).not.toHaveBeenCalled();
   });
+
+  // The field is optional upstream and comes back null when the node did not
+  // measure it. `Number(null)` is 0, which invents a measurement and destroys
+  // the missing-versus-zero distinction budget estimation depends on.
+  it('v1_contract keeps an unmeasured loaded-accounts-data-size missing, not zero', async () => {
+    simulateTransactionSend.mockResolvedValueOnce({
+      context: { slot: 401n },
+      value: { err: null, logs: [], unitsConsumed: 200_000n, loadedAccountsDataSize: null },
+    });
+    const wallet = createWalletAdapter({
+      rpc: createRpcStub() as never,
+      rpcSubscriptions: {} as never,
+      signer: { address: 'primary-signer' } as never,
+    });
+
+    const inspection = await wallet.inspectTransaction([makeInstruction(['primary-signer'])]);
+    expect(inspection.loadedAccountsDataSize).toBeUndefined();
+
+    // Absent behaves the same as an explicit null; a reported zero still reads
+    // as the measurement it is.
+    simulateTransactionSend.mockResolvedValueOnce({
+      context: { slot: 401n },
+      value: { err: null, logs: [], unitsConsumed: 200_000n },
+    });
+    await expect(wallet.inspectTransaction([makeInstruction(['primary-signer'])]))
+      .resolves.toMatchObject({ loadedAccountsDataSize: undefined });
+
+    simulateTransactionSend.mockResolvedValueOnce({
+      context: { slot: 401n },
+      value: { err: null, logs: [], unitsConsumed: 200_000n, loadedAccountsDataSize: 0 },
+    });
+    await expect(wallet.inspectTransaction([makeInstruction(['primary-signer'])]))
+      .resolves.toMatchObject({ loadedAccountsDataSize: 0 });
+  });
 });
 
 describe('instruction converters', () => {
