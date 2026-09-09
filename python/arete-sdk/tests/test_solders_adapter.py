@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -968,7 +970,7 @@ async def test_relay_rejection_is_not_submitted():
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_relay_failure_keeps_the_local_signature():
+async def test_ambiguous_relay_failure_keeps_the_local_signature(caplog):
     # The relay names a different signature on its way out; the adapter signed
     # the bytes it sent, so its own signature is the one to reconcile.
     impostor = fixture("legacy")["firstSignature"]
@@ -982,11 +984,12 @@ async def test_ambiguous_relay_failure_keeps_the_local_signature():
         )
     )
 
-    with pytest.warns(UserWarning, match=impostor):
+    with caplog.at_level(logging.WARNING, logger="arete.adapters.solders"):
         with pytest.raises(WalletError) as caught:
             await send(
                 transport, [memo([1, 2, 3])], SendOptions(transaction_version=1)
             )
+    assert impostor in caplog.text
 
     outcome = caught.value.outcome
     assert outcome.status == "submitted-unknown"
@@ -996,7 +999,7 @@ async def test_ambiguous_relay_failure_keeps_the_local_signature():
 
 
 @pytest.mark.asyncio
-async def test_a_relay_echoed_signature_never_replaces_the_derived_one():
+async def test_a_relay_echoed_signature_never_replaces_the_derived_one(caplog):
     """Reconciliation polls only what this adapter signed.
 
     Believing the echo would poll a different transaction entirely: it can
@@ -1007,13 +1010,35 @@ async def test_a_relay_echoed_signature_never_replaces_the_derived_one():
     assert impostor != local
     transport = FakeTransport(relay_signature=impostor)
 
-    with pytest.warns(UserWarning, match=impostor):
+    with caplog.at_level(logging.WARNING, logger="arete.adapters.solders"):
+        result = await send(
+            transport, [memo([1, 2, 3])], SendOptions(transaction_version=1)
+        )
+
+    assert impostor in caplog.text
+    assert result.signature == local
+    assert transport.polled == [local]
+    assert transport.calls.count("send") == 1
+
+
+@pytest.mark.asyncio
+async def test_reporting_a_signature_mismatch_cannot_break_a_submitted_send():
+    """Reporting runs after the transaction may already be on the wire.
+
+    `warnings.warn` raises under `-W error`, which would lose the signature and
+    let the executor call a submitted transaction never-sent — the one
+    misclassification that invites paying twice. A log cannot do that.
+    """
+    local = fixture("v1")["firstSignature"]
+    transport = FakeTransport(relay_signature=fixture("legacy")["firstSignature"])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         result = await send(
             transport, [memo([1, 2, 3])], SendOptions(transaction_version=1)
         )
 
     assert result.signature == local
-    assert transport.polled == [local]
     assert transport.calls.count("send") == 1
 
 

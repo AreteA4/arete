@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import time
-import warnings
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -84,6 +84,8 @@ __all__ = [
 #: Every version this adapter can actually build, so an explicit
 #: ``transaction_version=1`` is honoured instead of failing closed.
 SUPPORTED_TRANSACTION_VERSIONS: Tuple[Any, ...] = ("legacy", 0, 1)
+
+logger = logging.getLogger(__name__)
 
 _U32_MAX = 0xFFFF_FFFF
 _COMPUTE_BUDGET_ADDRESS = str(COMPUTE_BUDGET_PROGRAM_ID)
@@ -226,15 +228,21 @@ def _report_signature_mismatch(local: str, echoed: Optional[str]) -> None:
     the local one is authoritative. Reconciling an echoed signature would poll
     a transaction this adapter never submitted: it can report some other
     transaction's status, or never confirm the one that actually went out.
+
+    Logged rather than warned. This runs after the transaction may already be
+    on the wire, and ``warnings.warn`` raises under ``-W error``; a raised
+    warning here would lose the signature and let the executor classify a
+    submitted transaction as never sent, which is the misclassification that
+    invites paying twice.
     """
     if echoed and echoed != local:
-        warnings.warn(
-            f"The relay reported signature {echoed} for a transaction signed as "
-            f"{local}; the locally derived signature is authoritative and is "
-            "the one being reconciled",
-            stacklevel=3,
+        logger.warning(
+            "The relay reported signature %s for a transaction signed as %s; "
+            "the locally derived signature is authoritative and is the one "
+            "being reconciled",
+            echoed,
+            local,
         )
-
 
 
 @dataclass(frozen=True)
