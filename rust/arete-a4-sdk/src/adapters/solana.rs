@@ -54,7 +54,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::Engine as _;
 use serde_json::Value;
@@ -456,6 +456,11 @@ impl SolanaWalletAdapter {
 
     /// Poll the relay until the signature reaches `level`, the lifetime
     /// expires, or the timeout elapses. Never resubmits.
+    ///
+    /// The whole wait — including whatever request is in flight — is bounded
+    /// by [`SolanaAdapterConfig::confirmation_timeout`], so a relay that
+    /// stops answering still yields the uncertain-submission outcome instead
+    /// of hanging the caller after the one submission.
     async fn confirm(
         &self,
         transport: &Arc<dyn TransactionTransport>,
@@ -463,7 +468,32 @@ impl SolanaWalletAdapter {
         level: ConfirmationLevel,
         last_valid_block_height: u64,
     ) -> Result<SendResult, WalletError> {
-        let deadline = Instant::now() + self.config.confirmation_timeout;
+        let polling = self.poll_confirmation(transport, signature, level, last_valid_block_height);
+        tokio::time::timeout(self.config.confirmation_timeout, polling)
+            .await
+            .unwrap_or_else(|_| {
+                Err(submitted_unknown(
+                    signature,
+                    None,
+                    format!(
+                        "Timed out after {:?} waiting for {level} confirmation; the transaction \
+                         was submitted once and may still land",
+                        self.config.confirmation_timeout
+                    ),
+                ))
+            })
+    }
+
+    /// The unbounded half of [`SolanaWalletAdapter::confirm`]: poll until the
+    /// signature reaches `level` or its lifetime expires. Cancelled by the
+    /// confirmation deadline, so it needs no clock of its own.
+    async fn poll_confirmation(
+        &self,
+        transport: &Arc<dyn TransactionTransport>,
+        signature: &str,
+        level: ConfirmationLevel,
+        last_valid_block_height: u64,
+    ) -> Result<SendResult, WalletError> {
         let options = SignatureStatusOptions {
             search_transaction_history: Some(true),
         };
@@ -502,17 +532,6 @@ impl SolanaWalletAdapter {
                     ),
                 ));
             }
-            if Instant::now() >= deadline {
-                return Err(submitted_unknown(
-                    signature,
-                    None,
-                    format!(
-                        "Timed out after {:?} waiting for {level} confirmation; the transaction \
-                         was submitted once and may still land",
-                        self.config.confirmation_timeout
-                    ),
-                ));
-            }
             tokio::time::sleep(self.config.poll_interval).await;
         }
     }
@@ -545,11 +564,15 @@ impl WalletAdapter for SolanaWalletAdapter {
         options: &SendOptions,
         context: &WalletExecutionContext,
     ) -> Result<SendResult, WalletError> {
-        self.validate_transaction_options(options.transaction_version, &options.resources)
-            .map_err(capability_failure)?;
+        // The effective version, not the caller's `Option`, is what the
+        // resource options are bound to: validating before it is resolved
+        // checks them against the contract default while the message is
+        // compiled for this adapter's configured one.
         let version = options
             .transaction_version
             .unwrap_or(self.config.default_version);
+        self.validate_transaction_options(Some(version), &options.resources)
+            .map_err(capability_failure)?;
         let level = options
             .confirmation_level
             .unwrap_or(self.config.default_confirmation_level);
@@ -614,8 +637,11 @@ impl WalletAdapter for SolanaWalletAdapter {
             }
         }
 
-        // One submission. No rebuild, no re-sign, no resend.
-        let submitted = match transport
+        // One submission. No rebuild, no re-sign, no resend. The locally
+        // derived signature is authoritative: it is the one these bytes
+        // carry, so a relay echoing a different one is a reportable
+        // condition, never a correction to poll for.
+        match transport
             .send(
                 &encoded,
                 TransactionSendOptions {
@@ -626,13 +652,30 @@ impl WalletAdapter for SolanaWalletAdapter {
             )
             .await
         {
-            Ok(result) => result.signature,
+            Ok(result) if result.signature == derived => {}
+            Ok(result) => {
+                tracing::warn!(
+                    relay_signature = %result.signature,
+                    signed_signature = %derived,
+                    "relay acknowledged a submission under a signature the adapter did not sign"
+                );
+                return Err(submitted_unknown(
+                    &derived,
+                    None,
+                    format!(
+                        "Relay acknowledged the submission as signature {} but these bytes were \
+                         signed as {derived}; reconcile by the signed signature rather than \
+                         resending",
+                        result.signature
+                    ),
+                ));
+            }
             Err(error) => return Err(classify_send_error(error, &derived)),
-        };
+        }
 
         self.confirm(
             &transport,
-            &submitted,
+            &derived,
             level,
             lifetime.last_valid_block_height,
         )
@@ -645,11 +688,11 @@ impl WalletAdapter for SolanaWalletAdapter {
         options: &TransactionInspectionOptions,
         context: &WalletExecutionContext,
     ) -> Result<TransactionInspectionResult, WalletError> {
-        self.validate_transaction_options(options.transaction_version, &options.resources)
-            .map_err(capability_failure)?;
         let version = options
             .transaction_version
             .unwrap_or(self.config.default_version);
+        self.validate_transaction_options(Some(version), &options.resources)
+            .map_err(capability_failure)?;
         let transport = self.transport(context)?;
         let upstream =
             self.upstream_instructions(instructions, version, &options.resources, &options.extra)?;

@@ -123,6 +123,8 @@ struct Log {
 
 enum SendBehaviour {
     Accept,
+    /// Relay acknowledges the submission under a signature of its own.
+    AcceptAs(String),
     /// Relay error carrying a submission state and an optional signature.
     Reject {
         submission_state: Option<SubmissionState>,
@@ -140,6 +142,8 @@ struct FakeTransport {
     units_consumed: Option<u64>,
     loaded_accounts_data_size: Option<u64>,
     status: Option<TransactionSignatureStatus>,
+    /// How long `signature_status` stalls before answering.
+    status_delay: Duration,
     send: SendBehaviour,
     log: Mutex<Log>,
 }
@@ -156,6 +160,7 @@ impl Default for FakeTransport {
             units_consumed: Some(1_234),
             loaded_accounts_data_size: Some(4_096),
             status: None,
+            status_delay: Duration::ZERO,
             send: SendBehaviour::Accept,
             log: Mutex::new(Log::default()),
         }
@@ -268,6 +273,9 @@ impl TransactionTransport for FakeTransport {
                     signature: decoded.signatures[0].to_string(),
                 })
             }
+            SendBehaviour::AcceptAs(signature) => Ok(TransactionSendResult {
+                signature: signature.clone(),
+            }),
             SendBehaviour::Reject {
                 submission_state,
                 signature,
@@ -290,6 +298,7 @@ impl TransactionTransport for FakeTransport {
         _options: SignatureStatusOptions,
     ) -> Result<Option<TransactionSignatureStatus>, TransactionError> {
         self.log.lock().expect("log").status_calls += 1;
+        tokio::time::sleep(self.status_delay).await;
         Ok(self
             .status
             .clone()
@@ -1638,6 +1647,196 @@ async fn a_version_bound_fee_option_is_refused_rather_than_converted() {
         .expect_err("the legacy fee model is not converted into V1's");
     assert_eq!(outcome(error).phase(), FailurePhase::Build);
     assert!(transport.log().sent.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// The effective version, not the contract default, binds the resources
+// ---------------------------------------------------------------------------
+
+/// Adapter whose configured default is V1, so an omitted `transaction_version`
+/// still compiles a V1 message.
+fn v1_default_adapter(transport: Arc<FakeTransport>) -> SolanaWalletAdapter {
+    SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        SolanaAdapterConfig {
+            default_version: TransactionVersion::V1,
+            ..fast_config(transport)
+        },
+    )
+}
+
+#[tokio::test]
+async fn a_v1_default_adapter_accepts_the_v1_fee_when_the_caller_omits_the_version() {
+    let transport = Arc::new(FakeTransport::confirmed_at(5));
+    let adapter = v1_default_adapter(transport.clone());
+
+    adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &SendOptions {
+                transaction_version: None,
+                resources: full_v1_resources(),
+                ..SendOptions::default()
+            },
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect("the fee is legal for the version this adapter actually builds");
+
+    let sent = transport.sent_transaction();
+    assert_eq!(
+        v1_config(&sent).priority_fee,
+        Some(5_000),
+        "the priority fee reaches the compiled V1 message"
+    );
+}
+
+#[tokio::test]
+async fn a_v1_default_adapter_refuses_the_v0_only_fee_when_the_caller_omits_the_version() {
+    let transport = Arc::new(FakeTransport::confirmed_at(5));
+    let adapter = v1_default_adapter(transport.clone());
+
+    let error = adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &SendOptions {
+                transaction_version: None,
+                resources: TransactionResourceOptions {
+                    priority_fee_lamports: None,
+                    compute_unit_price_micro_lamports: Some(1_000),
+                    ..full_v1_resources()
+                },
+                ..SendOptions::default()
+            },
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect_err("a v0-only fee is refused, never dropped from the V1 message");
+
+    assert_eq!(outcome(error).phase(), FailurePhase::Build);
+    assert!(
+        transport.log().sent.is_empty(),
+        "a refused fee option never reaches a submission"
+    );
+}
+
+#[tokio::test]
+async fn inspection_binds_the_resources_to_the_effective_version_too() {
+    let transport = Arc::new(FakeTransport::default());
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(SignerSpy(fixture_keypair(1).pubkey())),
+        SolanaAdapterConfig {
+            default_version: TransactionVersion::V1,
+            ..fast_config(transport.clone())
+        },
+    );
+
+    let error = adapter
+        .inspect_transaction(
+            &[built_memo(vec![1], &[])],
+            &TransactionInspectionOptions {
+                transaction_version: None,
+                resources: TransactionResourceOptions {
+                    compute_unit_price_micro_lamports: Some(1_000),
+                    ..TransactionResourceOptions::default()
+                },
+                ..TransactionInspectionOptions::default()
+            },
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect_err("a v0-only fee is refused, never dropped from the inspected V1 message");
+
+    assert_eq!(outcome(error).phase(), FailurePhase::Build);
+    assert!(transport.log().simulated.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// The confirmation deadline and the authoritative signature
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_stalled_status_request_still_ends_at_the_confirmation_deadline() {
+    let transport = Arc::new(FakeTransport {
+        status: None,
+        // A relay that accepts the poll and never answers it: the adapter's
+        // own deadline, not the request, has to end the wait.
+        status_delay: Duration::from_secs(30),
+        ..FakeTransport::default()
+    });
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        fast_config(transport.clone()),
+    );
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        adapter.sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(full_v1_resources()),
+            &WalletExecutionContext::default(),
+        ),
+    )
+    .await
+    .expect("the 30ms confirmation timeout bounds the in-flight status request")
+    .expect_err("an unconfirmed transaction is not a success");
+
+    let expected = transport.sent_transaction().signatures[0].to_string();
+    let outcome = outcome(error);
+    assert!(matches!(
+        outcome,
+        TransactionFailureOutcome::SubmittedUnknown { .. }
+    ));
+    assert_eq!(outcome.signature(), Some(expected.as_str()));
+    assert_eq!(
+        transport.log().sent.len(),
+        1,
+        "exactly one submission, never a retry"
+    );
+}
+
+#[tokio::test]
+async fn a_relay_signature_that_differs_from_the_signed_one_is_never_polled_for() {
+    let echoed = Signature::from([7u8; 64]).to_string();
+    let transport = Arc::new(FakeTransport {
+        send: SendBehaviour::AcceptAs(echoed.clone()),
+        // Any signature would confirm here: adopting the relay's would
+        // report another transaction's status as this one's.
+        ..FakeTransport::confirmed_at(31)
+    });
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        fast_config(transport.clone()),
+    );
+
+    let error = adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(full_v1_resources()),
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect_err("a signature the adapter did not sign is not a confirmation");
+
+    let derived = transport.sent_transaction().signatures[0].to_string();
+    assert_ne!(derived, echoed);
+    let outcome = outcome(error);
+    assert!(matches!(
+        outcome,
+        TransactionFailureOutcome::SubmittedUnknown { .. }
+    ));
+    assert_eq!(
+        outcome.signature(),
+        Some(derived.as_str()),
+        "reconciliation keeps the locally derived signature"
+    );
+    assert!(outcome.message().contains(&echoed), "{}", outcome.message());
+    assert_eq!(
+        transport.log().status_calls,
+        0,
+        "the adapter never polls a signature it did not sign"
+    );
+    assert_eq!(transport.log().sent.len(), 1);
 }
 
 // ---------------------------------------------------------------------------
