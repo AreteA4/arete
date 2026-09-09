@@ -6,6 +6,8 @@
 
 Real-time streaming data pipelines for Solana - transform on-chain events into typed state projections.
 
+See [ingestion transaction metadata and release checks](INGESTION.md) for the Shipstern runtime contract.
+
 ## Installation
 
 ```toml

@@ -28,15 +28,11 @@ repository = "https://github.com/AreteA4/arete.git"
 authors = ["Arete Team"]
 
 [workspace.dependencies]
-# Yellowstone Vixen ecosystem.
-# Pinned to exact versions: vixen 0.6.1 relies on `yellowstone-grpc-proto`
-# 12.x, but proto 12.2.0 added required `cuckoo_*` fields that 0.6.1 does not
-# populate. Hold the grpc crates at 12.1.0, the latest proto/client line that
-# matches the published 0.6.1 Vixen API.
-yellowstone-vixen = "=0.6.1"
-yellowstone-vixen-core = "=0.6.1"
-yellowstone-vixen-proto = "=0.6.1"
-yellowstone-vixen-yellowstone-grpc-source = "=0.6.1"
-# Yellowstone gRPC client (for standalone slot subscriptions)
-yellowstone-grpc-client = "=12.1.0"
-yellowstone-grpc-proto = "=12.1.0"
+# Published ingestion tuple preserving Transaction V1 inline configuration.
+# Shipstern requires client >=13.1, <13.3; keep the runtime, standalone slot
+# subscription and protobuf conversion on the same tested type family.
+shipstern = "=0.9.0"
+shipstern-core = "=0.9.0"
+shipstern-yellowstone-grpc-source = "=0.9.0"
+yellowstone-grpc-client = "=13.2.1"
+yellowstone-grpc-proto = "=12.7.0"
