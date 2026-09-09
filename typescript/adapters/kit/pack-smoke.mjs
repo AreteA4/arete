@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const registry = process.argv.includes('--registry');
 const packageRoot = dirname(fileURLToPath(import.meta.url));
 const coreRoot = resolve(packageRoot, '../../core');
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'arete-adapter-kit-pack-'));
@@ -36,10 +37,10 @@ function assertNoRepositoryRelativeDependencies(packageJson) {
 }
 
 try {
-  const packResult = JSON.parse(
+  const packResult = registry ? null : JSON.parse(
     npm(['pack', '--json', '--pack-destination', temporaryRoot], packageRoot)
   )[0];
-  const packedFiles = new Set(packResult.files.map(({ path }) => path));
+  const packedFiles = new Set((packResult?.files ?? []).map(({ path }) => path));
   for (const requiredFile of [
     'LICENSE',
     'README.md',
@@ -48,10 +49,10 @@ try {
     'dist/index.js',
     'package.json',
   ]) {
-    assert(packedFiles.has(requiredFile), `packed tarball is missing ${requiredFile}`);
+    if (!registry) assert(packedFiles.has(requiredFile), `packed tarball is missing ${requiredFile}`);
   }
 
-  const tarball = join(temporaryRoot, packResult.filename);
+  const tarball = packResult && join(temporaryRoot, packResult.filename);
   const packageJson = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
   mkdirSync(consumerRoot);
   writeFileSync(join(consumerRoot, 'package.json'), JSON.stringify({
@@ -59,8 +60,8 @@ try {
     type: 'module',
     dependencies: {
       '@solana/kit': packageJson.devDependencies['@solana/kit'],
-      '@usearete/adapter-kit': `file:${tarball}`,
-      '@usearete/sdk': `file:${coreRoot}`,
+      '@usearete/adapter-kit': registry ? packageJson.version : `file:${tarball}`,
+      '@usearete/sdk': registry ? JSON.parse(readFileSync(join(coreRoot, 'package.json'), 'utf8')).version : `file:${coreRoot}`,
       vite: packageJson.devDependencies.vite,
     },
   }, null, 2));
@@ -124,7 +125,7 @@ try {
     ['build', 'vite', '--outDir', join(temporaryRoot, 'vite-dist')],
     { cwd: consumerRoot, stdio: 'inherit' }
   );
-  console.log(`Packed ESM/CJS/Vite smoke passed for ${packResult.filename}`);
+  console.log(`ESM/CJS/Vite imports passed for ${registry ? "registry " + packageJson.version : packResult.filename}`);
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });
 }

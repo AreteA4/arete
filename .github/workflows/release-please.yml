@@ -345,6 +345,11 @@ jobs:
         run: ../../../scripts/publish-npm-package.sh .
         working-directory: typescript/adapters/kit
 
+      - name: Check published Kit adapter imports
+        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        run: node pack-smoke.mjs --registry
+        working-directory: typescript/adapters/kit
+
       - name: Install web3.js adapter dependencies
         if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
         run: npm install ../../core --no-save --package-lock=false
@@ -652,3 +657,12 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: python/arete-sdk/dist/
+
+      - name: Check published Python adapter import
+        working-directory: python/arete-sdk
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          python -m venv "$RUNNER_TEMP/arete-python-consumer"
+          "$RUNNER_TEMP/arete-python-consumer/bin/python" -m pip install "arete-sdk[solana]==$version"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/arete-python-consumer/bin/python" -c 'from arete.adapters.solders import SoldersAdapterConfig, SoldersWalletAdapter'

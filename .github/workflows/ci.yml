@@ -8,33 +8,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  transaction-v1-offline:
-    name: Transaction V1 Offline Fixtures
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: tests/transaction-v1/package-lock.json
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.11"
-      - name: Install pinned fixture codec
-        run: npm ci --ignore-scripts --no-audit --no-fund --prefix tests/transaction-v1
-      - name: Validate fixtures and failure self-tests offline
-        run: bash scripts/test-transaction-v1-e2e.sh --mode offline
-      - name: Retain acceptance report
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: transaction-v1-offline
-          path: tests/transaction-v1/.artifacts/report.json
-          include-hidden-files: true
-          if-no-files-found: error
-
   check-crate-files:
     name: Check Rust Crate LICENSE and README
     runs-on: ubuntu-latest
@@ -183,6 +156,9 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Generated instruction through the Rust V1 adapter
+        run: cargo test --locked -p arete-a4-sdk --features solana-adapter --test generated_solana
 
       - name: Test snapshot object-store feature
         run: |

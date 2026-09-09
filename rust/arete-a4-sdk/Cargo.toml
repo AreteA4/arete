@@ -87,3 +87,7 @@ tokio = { version = "1.0", features = ["full"] }
 [[example]]
 name = "solana_v1"
 required-features = ["solana-adapter"]
+
+[[test]]
+name = "generated_solana"
+required-features = ["solana-adapter"]

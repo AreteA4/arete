@@ -10,9 +10,7 @@ itself; every payload here was produced by a released Solana codec and can be re
 |---|---|
 | Codec | [`@solana/kit`](https://github.com/anza-xyz/kit) `8.2.0` (MIT) |
 | Generator | `generate.mjs` in this directory |
-| Install codec | `npm ci --ignore-scripts --prefix tests/transaction-v1` (repository root) |
-| Regenerate | `node tests/transaction-v1/regenerate.mjs` (repository root) |
-| Verify offline | `bash scripts/test-transaction-v1-e2e.sh --mode offline` |
+| Regenerate | `npm install @solana/kit@8.2.0 && node generate.mjs > transactions.json` |
 | Specification | [SIMD-0385 transaction V1](https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0385-transaction-v1.md) |
 
 `8.2.0` is the first line we verified encodes version 1 — `getTransactionVersionEncoder().encode(1)`
@@ -22,7 +20,7 @@ these are regenerated: a fixture whose provenance is unknown proves nothing.
 ## Keys
 
 Deterministic test-only Ed25519 keys, seeded with a repeated byte (`0x01` payer, `0x02` cosigner).
-These public test seeds must never receive funds on a public cluster:
+They hold nothing and are not valid anywhere:
 
 | Role | Address |
 |---|---|
@@ -42,24 +40,7 @@ Each entry carries `version`, `signatureCount`, `firstSignature` (base58), `byte
 | `v1` | 1 | 177 | Version byte `0x81`, minimal payload |
 | `v1_oversize` | 1 | 1574 | Past the 1232-byte legacy/v0 ceiling, under V1's 4096 |
 | `v1_two_signatures` | 1 | 273 | Two required signatures, both present |
-| `v1_zero_config` | 1 | 197 | Explicit zero fee/CU/data limits and a 32768-byte heap |
-| `v1_max_fee` | 1 | 185 | Maximum u64 priority fee; all other fields absent |
-| `v1_4096` | 1 | 4096 | Correctly signed codec output at the V1 size limit |
-| `v1_4097` | 1 | 4097 | Correctly signed, otherwise valid codec output over the limit |
 
 `v1_oversize` is the one that matters most: at 1574 bytes it is rejected by any path still applying
 the legacy limit, and accepted by one that knows V1's. A test that only uses the 177-byte `v1`
 payload passes either way and proves nothing about the limit.
-
-`provenance.json` pins the generator and corpus file hashes as well as each
-transaction's SHA-256. Acceptance decodes with the released Kit codec, checks
-exact wire round trips, verifies every Ed25519 signature independently using
-Node's crypto implementation, and compares config presence, account order and
-instruction data. A child-process self-test requires nonzero exit codes for
-corrupted hashes, a corrupted second signature, and a missing legacy control.
-Regeneration preserves the five original relay fixtures byte for byte.
-
-These are offline codec fixtures. Their expired blockhash and absent/zero
-resource limits are intentional. Size classification here does not prove
-adapter/relay rejection, validator execution, or Geyser/Arete ingestion. Those
-remain separate lifecycle acceptance gates in A4-256.

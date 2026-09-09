@@ -71,3 +71,6 @@ runtime = [
     "dep:futures",
     "dep:sha3",
 ]
+
+[dev-dependencies]
+borsh = { version = "1.5", features = ["derive"] }

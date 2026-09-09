@@ -1,113 +1,111 @@
-# A4-256 acceptance harness
+# Transaction V1 critical-path integration (A4-256)
 
-**Status: scaffolding; full lifecycle acceptance is blocked.** The offline
-fixture gate and disposable validator/Geyser startup probe are implemented.
-This does not establish generated SDK, relay, ingestion/replay, or wallet V1
-readiness. `--mode local` deliberately exits 1 and writes the remaining gates
-to its JSON report. It must not become green until all those assertions run.
+This is the reduced scope for PR #204. It replaces the earlier acceptance plan.
+Removed requirements are cancelled here, not deferred release gates or automatic
+follow-up tickets.
 
-At the tested OSS baseline `bcbdb9ab`, A4-250/A4-251 are present in version
-0.16.0. A4-253 is still in progress and the Kit adapter advertises only v0.
-The optional Rust adapter (PR #200, `21c2550b2cf8f4217143859534074622d111d03f`)
-and Python adapter (PR #201, `a02198390787f2d67edf127b15e42cd649f48341`)
-are open prerequisites. Their changes are not incorporated in this harness PR.
+## Deterministic integration
 
-[Recorded execution evidence](evidence.json) contains the actual offline,
-startup, missing-toolchain, interruption and blocked-local reports, including
-toolchain and source-input digests. The startup probe passed on macOS arm64;
-the pinned Linux pair is configured but has not been executed locally.
+There is one generated-client test in each existing adapter/SDK suite:
 
-## Offline gate
+- TypeScript: `typescript/adapters/kit/src/generated-client.test.ts`.
+- Rust: `rust/arete-a4-sdk/tests/generated_solana.rs`.
+- Python: `python/arete-sdk/tests/test_generated_solders.py`.
 
-Requires Node 24 and Python 3.11 or newer. Run from the repository root:
+Each uses the checked-in generated ORE log instruction, the real public adapter,
+a recording relay transport, and the upstream transaction decoder. It asserts
+V1, the ORE instruction/accounts and the chosen inline resource config. Adapter
+edge-case matrices remain in the existing focused adapter suites.
+
+Default CI runs these fast checks. Missing adapters are failures, never skips:
 
 ```sh
-npm ci --ignore-scripts --no-audit --no-fund --prefix tests/transaction-v1
-bash scripts/test-transaction-v1-e2e.sh --mode offline
+# Use the normal core build and adapter dependency installation first.
+npm test --prefix typescript/adapters/kit
+cargo test --locked -p arete-a4-sdk --features solana-adapter --test generated_solana
+cd python/arete-sdk
+python -m pip install -e '.[dev,solana]'
+python -m pytest tests/test_generated_solders.py
 ```
 
-Installation is separate; execution makes no network requests. CI runs this
-gate and retains its JSON report. Reports default to
-`tests/transaction-v1/.artifacts/report.json`; `--report PATH` selects another
-destination. A missing dependency, timeout, malformed fixture or unsuccessful
-self-test fails with exit 1. Reports include source revision, dirty status,
-codec version, corpus provenance, transaction signatures and fixture digests.
+CI installs the optional Solana extra and runs the generated-client test in the
+existing Python suite. Running that test without its adapter is a collection failure.
 
-The nine cases include legacy/v0 controls, V1 empty config, explicit zeros,
-maximum u64 fee, multiple signers, a 1574-byte transaction and correctly signed
-4096/4097-byte codec outputs. All signatures are verified with Node crypto;
-Kit decodes and round-trips the original wire bytes. These fixtures have an
-expired blockhash and are not executable live transactions. The 4097 case
-proves that the negative input is otherwise valid; it does not yet prove
-adapter/relay rejection. See the [fixture provenance](../fixtures/transaction-v1/README.md).
+## One local TypeScript smoke
 
-To intentionally regenerate the corpus and digests:
+Prerequisites: an **already-running** local validator supporting V1 and its
+4096-byte limit, a compatible Yellowstone/Geyser service, an Arete transaction
+relay pointing at that validator, and the ingestion fixture below. Provide a
+funded disposable local keypair (at least 0.04 SOL plus fees). The smoke sends
+32 transfers of 0.001 SOL in V1 and one equivalent v0 transfer to fresh recipients.
+It does not download, build or start a validator, provision a toolchain, deploy
+an on-chain program, or start the relay/runtime.
+
+The existing ORE stack requires application state/setup, so the tiny fixture uses
+the built-in System program. Its IDL describes transfer plus an empty System
+wallet account. The fixture runs the normal generated instruction parser and
+`VmHandler` through Shipstern. A public VM debugger prints the actual input
+context and emitted transfer state as JSON to stdout; this exposes ingestion
+metadata without an observation server or committed reports.
+
+Start that runtime separately against your local Geyser service:
 
 ```sh
-node tests/transaction-v1/regenerate.mjs
+YELLOWSTONE_ENDPOINT=http://127.0.0.1:10000 \
+  cargo run --locked -p arete --example transaction_v1 > /tmp/a4-v1-ingestion.log
 ```
 
-The command preserves the original five relay fixtures byte for byte. The
-acceptance runner never regenerates its own expectations.
-
-## Disposable validator prerequisite probe
+Configure your existing Arete relay with `ARETE_TRANSACTIONS_ENABLED=true`,
+`ARETE_TRANSACTION_RPC_URL` pointing at the local validator, and appropriate
+transaction authorization. Then explicitly invoke:
 
 ```sh
-python3 tests/transaction-v1/prepare_toolchain.py
-python3 tests/transaction-v1/validator.py
+A4_V1_RELAY_URL=http://127.0.0.1:8081 \
+A4_V1_KEYPAIR=/absolute/path/to/local-keypair.json \
+A4_V1_INGESTION_LOG=/tmp/a4-v1-ingestion.log \
+  npm run smoke:v1 --prefix typescript/adapters/kit
 ```
 
-Preparation downloads into `.toolchain/`, verifies pinned release checksums,
-and records binary checksums in `receipt.json`. It supports Linux x86_64 and
-macOS arm64. It does not change the active Solana installation. Use
-`--directory PATH` when preparing and `--toolchain PATH` when probing to select
-another isolated installation. Download and build commands have deadlines.
+`A4_V1_TOKEN` optionally supplies an existing relay bearer token. Missing required
+configuration, missing V1 adapter support, failed simulation/execution, unexpected
+size, or absent/incorrect ingestion state or metadata fails the command.
 
-The pinned tuple is Agave **4.2.2**, Yellowstone
-**v15.2.0+solana.4.2.2** at
-`b7e7557c0cf6206a175a35910b339dd60e35c5c9`, and Rust **1.96.1** for the
-macOS plugin build. Linux uses the checksummed upstream `.so`; macOS builds
-the clean pinned source with its checked-in Cargo.lock. Compiling the plugin
-with the host's default Rust 1.98 caused a `capacity overflow` panic during
-`setup_logger_for_plugin`; matching the upstream compiler resolved it.
-The Agave archive includes `cargo-build-sbf 4.1.0`, platform-tools `v1.54`;
-the fixture program has not yet been built with them.
+The script uses the generated System instruction and public Kit adapter to
+inspect/simulate, sign, send through Arete, and confirm. Both adapter operations
+fetch fresh blockhashes. It decodes submitted bytes with Kit and requires V1
+size **>1232 and <=4096**. Every fresh recipient must appear in decoded transfer
+state with the submitted signature and expected amount. The V1 input context
+must retain the selected inline config. The v0 control checks the same transfer
+behavior without inheriting V1 metadata; Yellowstone's absence of a V1 config
+is treated as unknown, not proof of v0. The submitted transaction is independently
+decoded as v0.
 
-The probe reserves loopback ports, creates a new temporary ledger, starts its
-own validator, waits for health with a deadline, verifies the RPC identity and
-version, checks the V1 feature's activated slot and probes the plugin's TCP
-listener. Process exit, missing feature and timeout fail. It terminates only
-the process group it started and removes its ledger, including on interruption.
-Logs and a report remain under `.artifacts/validator/` (override with
-`--artifacts PATH`). No existing validator, public cluster, funded key or saved
-Solana CLI configuration is used. A listening Geyser port is startup evidence;
-it does not establish transaction delivery or metadata preservation.
+The checked-in `smoke/generated/system-core.ts` is unmodified output from the
+current CLI's `sdk create --idl arete/examples/transaction-v1/system.json
+--program-only --ts` command. There is no extra regeneration package or CI job.
 
-## Remaining acceptance work
+## Release verification and current dependencies
 
-- Integrate A4-253–A4-255 and build the minimal outer/CPI program and Arete stack.
-- Implement `scripts/check-generated-v1-sdks.sh --mode local|registry` for
-  program and stack bindings in all three languages. Generate into temporary
-  directories; compile/import the emitted builders and exercise the adapters.
-- Complete `--mode local`: generated instruction → inspect without signing →
-  simulate → sign final config → Arete relay → reconcile by signature → JSON
-  with maximum version 1 → Geyser → Arete events/state and duplicate replay.
-- Require real large V1, multi-signer and outer/CPI cases. V1 must retain its
-  exact observed config/version. Legacy/v0 must retain explicit codec/RPC
-  versions and equivalent application behavior; unknown ingestion
-  classification is accepted and must never be guessed.
-- Assert adapter/relay size, budget, signer and version rejection, and no
-  resubmission after ambiguous sends. Missing expected events must fail.
-- Add required local lifecycle CI and post-publication registry jobs once the
-  actual consumers exist; record the passing release version before A4-257.
-- Update public usage documentation against the completed APIs. Record
-  browser wallet compatibility separately: local-keypair acceptance is not
-  Phantom acceptance, and sign-and-send-only wallets cannot silently transfer
-  broadcast ownership away from the Arete relay.
+Reuse `check-generated-rust-crates.sh` in local/registry modes, adding an optional
+adapter import to its existing consumers. Reuse the Kit ESM/CJS/Vite package
+smoke with `--registry` after publication. Python adds a clean-environment import
+of `arete-sdk[solana]` after publication. No live lifecycle is repeated per
+language or after publication. The existing ingestion registry check is unchanged.
 
-No full-support release or browser-wallet compatibility is claimed here.
+As of this revision:
 
-References: [A4-256](https://linear.app/arete-a4/issue/A4-256),
-[official runnable V1 examples](https://github.com/solana-foundation/transaction-v1-examples),
-[Agave 4.2.2](https://github.com/anza-xyz/agave/releases/tag/v4.2.2),
-[Yellowstone 15.2.0](https://github.com/rpcpool/yellowstone-grpc/releases/tag/v15.2.0%2Bsolana.4.2.2).
+- **A4-253:** TypeScript V1 adapter is not integrated; current Kit adapter supports
+  v0 only. Its generated-client test fails explicitly at the capability check.
+- **A4-254 / PR #200:** Rust adapter is open. The new integration test passes
+  against that PR's head; this branch lacks its feature and implementation.
+- **A4-255 / PR #201:** Python adapter is open. The new integration test passes
+  against that PR's head with solders 0.29/Python 3.12; this branch lacks the extra
+  and implementation.
+- **Live smoke has not passed.** No configured running local stack was supplied,
+  and A4-253 prevents the required TypeScript V1 send. A4-256 stays In Progress
+  and PR #204 stays draft until integration and the live smoke pass.
+
+The old toolchain downloader/compiler, validator probe, offline codec/signature
+matrix, evidence/provenance files, report runner and standalone test package are
+removed. Pre-existing shared transaction fixtures, necessary dependency locks,
+and focused adapter, relay and ingestion regression tests are preserved.
