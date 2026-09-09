@@ -10,6 +10,7 @@ pub mod jsonc;
 pub mod mcp_config;
 pub mod report;
 pub mod skills;
+pub mod workspace;
 
 use std::collections::BTreeMap;
 use std::fs;

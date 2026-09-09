@@ -357,3 +357,9 @@ tenant-local transports.
 ## License
 
 Apache-2.0
+
+## Neutral workspace agent renderer
+
+`a4 workspace-agents --request REQUEST.json` accepts schema version 1: an explicit target, selected harness IDs, complete local skill source directories, neutral MCP definitions, instructions, and existing configuration with owned entries. `--protocol-info` reports supported schemas. It returns planned files/copies, shared configuration entries and activation requirements as JSON. The caller owns validation, filesystem transactions, exclusion receipts, and native readiness checks; rendering does not write the target or create a consumer `arete.toml`.
+
+The renderer reuses the public MCP writers for Codex, Claude Code, OpenCode, oh-my-pi and Cursor. It does not load private workspace manifests or preferences. Ordinary public commands ignore the optional inert `arete-dev.toml`; `ARETE_DEV_HOME` never redirects the public receipt directory selected by `ARETE_HOME` or its default `~/.arete`.

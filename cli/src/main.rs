@@ -81,6 +81,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Render explicit local agent configuration (no consumer initialization)
+    WorkspaceAgents(agents::workspace::WorkspaceArgs),
     /// Create a new Arete project from a template
     Create {
         /// Project name (creates directory)
@@ -779,28 +781,30 @@ fn main() {
     let json = cli.json;
 
     // `a4 mcp` owns stdout for MCP frames and must stay silent otherwise.
-    if cmd_name != "mcp" {
+    if cmd_name != "mcp" && cmd_name != "workspace-agents" {
         telemetry::show_consent_banner_if_needed();
     }
 
     let start = std::time::Instant::now();
     let result = run(cli);
 
-    telemetry::record_command(
-        cmd_name,
-        result.is_ok(),
-        result
-            .as_ref()
-            .err()
-            .and_then(telemetry::extract_error_code)
-            .as_deref(),
-        start.elapsed(),
-        None,
-    );
+    if cmd_name != "workspace-agents" {
+        telemetry::record_command(
+            cmd_name,
+            result.is_ok(),
+            result
+                .as_ref()
+                .err()
+                .and_then(telemetry::extract_error_code)
+                .as_deref(),
+            start.elapsed(),
+            None,
+        );
 
-    selfhost::maybe_nudge(cmd_name, json);
+        selfhost::maybe_nudge(cmd_name, json);
 
-    telemetry::flush();
+        telemetry::flush();
+    }
 
     if let Err(e) = result {
         if let Some(ui::ExitCode(code)) = e.downcast_ref::<ui::ExitCode>() {
@@ -815,6 +819,7 @@ fn command_name(cmd: &Commands) -> &'static str {
     match cmd {
         Commands::Create { .. } => "create",
         Commands::Init(_) => "init",
+        Commands::WorkspaceAgents(_) => "workspace-agents",
         Commands::Doctor(_) => "doctor",
         Commands::SelfCmd(_) => "self",
         Commands::Upgrade(_) => "upgrade",
@@ -870,6 +875,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             cli.json,
         ),
         Commands::Init(args) => commands::init::run(args, &cli.config, cli.json),
+        Commands::WorkspaceAgents(args) => agents::workspace::run(args),
         Commands::Doctor(args) => commands::doctor::run(args, &cli.config, cli.json),
         Commands::SelfCmd(self_cmd) => selfhost::run(self_cmd, cli.json),
         Commands::Upgrade(args) => selfhost::run(selfhost::SelfCommands::Update(args), cli.json),

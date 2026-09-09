@@ -229,6 +229,7 @@ pub fn skill_dirs(env: &Env, id: &str, global: bool) -> Vec<PathBuf> {
     };
     let mut dirs: Vec<PathBuf> = match id {
         "claude-code" => vec![base.join(".claude/skills")],
+        "oh-my-pi" => vec![base.join(".omp/skills")],
         "cursor" => vec![base.join(".cursor/skills")],
         "codex" => vec![if global {
             env.codex_home()

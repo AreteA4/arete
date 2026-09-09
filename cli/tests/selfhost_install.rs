@@ -389,3 +389,64 @@ fn uninstall_without_install_reports_nothing_to_remove() {
     assert_eq!(json["removed"], serde_json::json!([]));
     assert!(stderr(&output).contains("Nothing to remove"));
 }
+
+#[test]
+fn developer_workspace_never_redirects_default_or_overridden_public_receipts() {
+    for custom_receipts in [false, true] {
+        let mut sandbox = Sandbox::new();
+        let workspace = sandbox._dir.path().join("developer workspace");
+        fs::create_dir_all(workspace.join(".arete-workspace")).unwrap();
+        fs::write(
+            workspace.join(".arete-workspace/workspace.json"),
+            "private sentinel",
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("arete-dev.toml"),
+            "deliberately invalid private declaration",
+        )
+        .unwrap();
+        if custom_receipts {
+            sandbox.arete_home = sandbox._dir.path().join("independent public receipts");
+        }
+        let mut install = sandbox.a4();
+        install
+            .env("ARETE_DEV_HOME", &workspace)
+            .current_dir(&workspace);
+        if !custom_receipts {
+            install.env_remove("ARETE_HOME");
+        }
+        let output = install
+            .args(["self", "install", "--source", "sh", "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(sandbox.receipt()["version"], VERSION);
+        assert!(!workspace.join("receipt.json").exists());
+        assert!(!workspace.join(".arete/receipt.json").exists());
+        if custom_receipts {
+            assert!(!sandbox.home.join(".arete/receipt.json").exists());
+        }
+        let mut uninstall = sandbox.a4();
+        uninstall
+            .env("ARETE_DEV_HOME", &workspace)
+            .current_dir(&workspace);
+        if !custom_receipts {
+            uninstall.env_remove("ARETE_HOME");
+        }
+        let output = uninstall
+            .args(["self", "uninstall", "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(!sandbox.arete_home.join("receipt.json").exists());
+        assert_eq!(
+            fs::read_to_string(workspace.join(".arete-workspace/workspace.json")).unwrap(),
+            "private sentinel"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("arete-dev.toml")).unwrap(),
+            "deliberately invalid private declaration"
+        );
+    }
+}

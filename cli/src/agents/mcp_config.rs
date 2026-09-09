@@ -67,6 +67,8 @@ pub fn placement(env: &Env, id: &str, scope: Scope) -> Result<Placement> {
         ("claude-code", Scope::Project) => json(root.join(".mcp.json")),
         ("claude-code", Scope::Global) => json(home()?.join(".claude.json")),
         ("cursor", Scope::Project) => json(root.join(".cursor/mcp.json")),
+        ("oh-my-pi", Scope::Project) => json(root.join(".omp/mcp.json")),
+        ("oh-my-pi", Scope::Global) => json(home()?.join(".omp/agent/mcp.json")),
         ("cursor", Scope::Global) => json(home()?.join(".cursor/mcp.json")),
         ("vscode", Scope::Project) => json(root.join(".vscode/mcp.json")),
         ("vscode", Scope::Global) => Placement::Skipped("project only"),
@@ -153,7 +155,7 @@ fn plain(command: &str) -> Value {
 pub fn shape(id: &str, command: &str, copilot_owned: bool) -> Shape {
     let url = DOCS_MCP_URL;
     let (top_key, arete, docs) = match id {
-        "claude-code" => (
+        "claude-code" | "oh-my-pi" => (
             "mcpServers",
             json!({"type": "stdio", "command": command, "args": ["mcp"]}),
             json!({"type": "http", "url": url}),
@@ -256,6 +258,30 @@ fn render_with_entries(
     shape: &Shape,
     opencode_schema: bool,
 ) -> Result<String> {
+    render_entries(
+        format,
+        existing,
+        shape.top_key,
+        &[
+            (ARETE_SERVER.to_string(), shape.arete.clone()),
+            (DOCS_SERVER.to_string(), shape.docs.clone()),
+        ]
+        .into(),
+        &[],
+        opencode_schema,
+    )
+}
+
+/// Shared renderer for public init and neutral workspace configuration. Only
+/// named entries change; JSONC/TOML comments and unrelated fields survive.
+pub fn render_entries(
+    format: Format,
+    existing: Option<&str>,
+    top_key: &str,
+    entries: &std::collections::BTreeMap<String, Value>,
+    remove: &[String],
+    opencode_schema: bool,
+) -> Result<String> {
     match format {
         Format::Json => {
             let doc = JsonDoc::parse(existing.unwrap_or(""))?;
@@ -265,27 +291,36 @@ fn render_with_entries(
             if opencode_schema && existing.is_none() {
                 doc.set(&["$schema"], &json!("https://opencode.ai/config.json"));
             }
-            doc.set(&[shape.top_key, ARETE_SERVER], &shape.arete);
-            doc.set(&[shape.top_key, DOCS_SERVER], &shape.docs);
+            for name in remove {
+                doc.remove(&[top_key, name]);
+            }
+            for (name, value) in entries {
+                doc.set(&[top_key, name], value);
+            }
             Ok(doc.render())
         }
         Format::Toml => {
             let mut doc: toml_edit::DocumentMut =
                 existing.unwrap_or("").parse().context("invalid TOML")?;
             let servers = doc
-                .entry(shape.top_key)
+                .entry(top_key)
                 .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
             let servers_table = servers
                 .as_table_mut()
-                .ok_or_else(|| anyhow!("`{}` is not a table", shape.top_key))?;
+                .ok_or_else(|| anyhow!("`{}` is not a table", top_key))?;
             servers_table.set_implicit(true);
-            for (name, value) in [(ARETE_SERVER, &shape.arete), (DOCS_SERVER, &shape.docs)] {
+            for name in remove {
+                servers_table.remove(name);
+            }
+            for (name, value) in entries {
+                // Replace the selected entry as a whole: stale managed fields must disappear.
+                servers_table.remove(name);
                 let entry = servers_table
                     .entry(name)
                     .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
                 let entry_table = entry
                     .as_table_mut()
-                    .ok_or_else(|| anyhow!("`{}.{name}` is not a table", shape.top_key))?;
+                    .ok_or_else(|| anyhow!("`{}.{name}` is not a table", top_key))?;
                 let Value::Object(fields) = value else {
                     unreachable!("server shapes are objects");
                 };
@@ -305,14 +340,17 @@ fn render_with_entries(
             let serde_yaml::Value::Mapping(map) = &mut root else {
                 anyhow::bail!("root value is not a mapping");
             };
-            let key = serde_yaml::Value::String(shape.top_key.to_string());
+            let key = serde_yaml::Value::String(top_key.to_string());
             let servers = map
                 .entry(key)
                 .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
             let serde_yaml::Value::Mapping(servers) = servers else {
-                anyhow::bail!("`{}` is not a mapping", shape.top_key);
+                anyhow::bail!("`{}` is not a mapping", top_key);
             };
-            for (name, value) in [(ARETE_SERVER, &shape.arete), (DOCS_SERVER, &shape.docs)] {
+            for name in remove {
+                servers.remove(serde_yaml::Value::String(name.clone()));
+            }
+            for (name, value) in entries {
                 servers.insert(
                     serde_yaml::Value::String(name.to_string()),
                     serde_yaml::to_value(value)?,

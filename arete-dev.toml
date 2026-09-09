@@ -1,0 +1,4 @@
+# Optional internal development dependencies; public tooling does not read this file.
+schema_version = 1
+skills = ["internal/arete-dev", "internal/hyperstack-debug"]
+mcp = ["arete", "arete-docs"]

@@ -1,0 +1,12 @@
+
+# Local developer material is never a public package input.
+.arete-agent/
+.agents/
+.codex/
+.claude/
+.cursor/
+.omp/
+.mcp.json
+opencode.json
+opencode.jsonc
+arete-dev.toml

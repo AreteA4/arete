@@ -61,6 +61,25 @@ impl JsonDoc {
         }
     }
 
+    /// Remove only the named leaf, retaining all unrelated syntax.
+    pub fn remove(&self, path: &[&str]) {
+        let Some(mut object) = self.root.object_value() else {
+            return;
+        };
+        let Some((last, parents)) = path.split_last() else {
+            return;
+        };
+        for key in parents {
+            let Some(child) = object.object_value(key) else {
+                return;
+            };
+            object = child;
+        }
+        if let Some(property) = object.get(last) {
+            property.remove();
+        }
+    }
+
     /// Serialised text with a trailing newline.
     pub fn render(&self) -> String {
         let mut text = self.root.to_string();
