@@ -1,0 +1,19 @@
+{
+  "agaveVersion": "4.2.2",
+  "rustVersion": "1.96.1",
+  "geyserTag": "v15.2.0+solana.4.2.2",
+  "geyserCommit": "b7e7557c0cf6206a175a35910b339dd60e35c5c9",
+  "geyserCargoLockSha256": "2f5bffbf62b64dbc839f4239a998b7df8fd785c00f2c077d035aa1713f0709bd",
+  "feature": "txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL",
+  "agaveArchives": {
+    "Darwin-arm64": {
+      "name": "solana-release-aarch64-apple-darwin.tar.bz2",
+      "sha256": "580bb4bcdb439756645a83d856964a8d7b700512356ada819ad89a40bd76bca4"
+    },
+    "Linux-x86_64": {
+      "name": "solana-release-x86_64-unknown-linux-gnu.tar.bz2",
+      "sha256": "5fc8684f7430038105fde953d4308ed56addf627f658daa61709f345448247ee"
+    }
+  },
+  "linuxGeyserSha256": "71073a1dd1428d730039c6e0113c65cd953551eed5dde29c0f8701d38b3f84c1"
+}

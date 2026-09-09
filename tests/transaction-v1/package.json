@@ -1,0 +1,7 @@
+{
+  "name": "arete-transaction-v1-acceptance",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "dependencies": { "@solana/kit": "8.2.0" }
+}

@@ -22,10 +22,11 @@ function memoIx(bytes, signers = []) {
   };
 }
 
-async function build({ version, instructions, signers }) {
+async function build({ version, instructions, signers, config }) {
   let m = k.createTransactionMessage({ version });
   m = k.setTransactionMessageFeePayer(payerAddr, m);
   m = k.setTransactionMessageLifetimeUsingBlockhash(BLOCKHASH, m);
+  if (config !== undefined) m = k.setTransactionMessageConfig(config, m);
   for (const ix of instructions) m = k.appendTransactionMessageInstruction(ix, m);
   const compiled = k.compileTransaction(m);
   const signed = await k.signTransaction(signers, compiled);
@@ -80,5 +81,48 @@ out.v1_two_signatures = {
   bytes: multi.wire.length,
   base64: b64(multi.wire),
 };
+
+// Absent fields, explicit zero and maximum fee must survive the wire separately.
+// These are codec fixtures, not executable transactions: zero resource budgets
+// cannot execute a memo on a validator.
+for (const [name, config] of [
+  ['v1_zero_config', {
+    priorityFeeLamports: 0n,
+    computeUnitLimit: 0,
+    loadedAccountsDataSizeLimit: 0,
+    heapSize: 32768,
+  }],
+  ['v1_max_fee', { priorityFeeLamports: 18446744073709551615n }],
+]) {
+  const { signed, wire } = await build({
+    version: 1, config, instructions: [memoIx([1, 2, 3])], signers: [payer],
+  });
+  out[name] = {
+    version: 1,
+    signatureCount: Object.keys(signed.signatures).length,
+    firstSignature: k.getBase58Decoder().decode(Object.values(signed.signatures)[0]),
+    bytes: wire.length,
+    base64: b64(wire),
+  };
+}
+
+// Encode valid messages at both sides of the size boundary. The 4097-byte case
+// remains an otherwise well-formed, correctly signed codec output. Appending a
+// byte to the 4096-byte fixture would test malformed input instead of size.
+for (const bytes of [4096, 4097]) {
+  const { signed, wire } = await build({
+    version: 1,
+    instructions: [memoIx(new Array(bytes - 174).fill(7))],
+    signers: [payer],
+  });
+  if (wire.length !== bytes) throw new Error(`Expected ${bytes}, got ${wire.length}`);
+  out[`v1_${bytes}`] = {
+    version: 1,
+    signatureCount: Object.keys(signed.signatures).length,
+    firstSignature: k.getBase58Decoder().decode(Object.values(signed.signatures)[0]),
+    bytes: wire.length,
+    base64: b64(wire),
+  };
+}
 
 console.log(JSON.stringify({ payer: payerAddr, cosigner: coAddr, fixtures: out }, null, 2));

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "codec": {
+    "name": "@solana/kit",
+    "version": "8.2.0"
+  },
+  "files": {
+    "generate.mjs": "cc1c4fee90d0d8bef78fd0ad53f71ef1ae95d82e83fa338eb7e1183557b9e003",
+    "transactions.json": "f409330cdf7aed283121f5c076d69b5dd649101f6c112d7a414630225abf25f0"
+  },
+  "fixtures": {
+    "legacy": {
+      "sha256": "1c40f8d565de77cc761028e456238f460932b4f3f2aaf0283fa3d068c4934319"
+    },
+    "v0": {
+      "sha256": "2c1b84d8d045622e0336184e4b9c0c139575b6e101b59347392236f3fac3acb6"
+    },
+    "v1": {
+      "sha256": "eeff5112369e4bde7c7361264b071a678d3062b8cd7d2094270d65243171a2b3"
+    },
+    "v1_oversize": {
+      "sha256": "c08e4a476ebab33ab5f1352d8243717f981cd04b7b420b4113727ccab9c8c3a4"
+    },
+    "v1_two_signatures": {
+      "sha256": "a6987930a39ce250af435687a3eba15b26ca59765c3abb8b1861356787069f79"
+    },
+    "v1_zero_config": {
+      "sha256": "83d7e7a8d030f3fefcee06e143636bfeadebf050f2a0cd89131c7fd0d02c40a7"
+    },
+    "v1_max_fee": {
+      "sha256": "e612d3d74b228739a50da731cded72d8df9c42cca5e65b26235ad42222639156"
+    },
+    "v1_4096": {
+      "sha256": "d9ba875516a040c75084d7c72bf9c30f2d6ee1d06f032e034029db32decf97cb"
+    },
+    "v1_4097": {
+      "sha256": "11fc1e3f5c3616ddcadf96e95e0860d96ff9ac2d8ee1f103f43ea4e78a971f2f"
+    }
+  }
+}
