@@ -76,6 +76,7 @@ from arete.wallet import (
     TransactionFailureOutcome,
     WalletAdapter,
     WalletExecutionContext,
+    ensure_transaction_version_supported,
 )
 
 __all__ = [
@@ -632,6 +633,12 @@ class Arete:
                 )
             )
         options = SendOptions.coerce(send)
+        # Fail closed before the adapter is asked to sign: an explicit
+        # transaction version it does not advertise is a rejection, never a
+        # silent downgrade, and the effective version/fee pair is checked here
+        # rather than while each partial options object is coerced.
+        options.validate()
+        ensure_transaction_version_supported(adapter, options.transaction_version)
         if signers is not None:
             options = options.with_signers(signers)
         context = WalletExecutionContext(

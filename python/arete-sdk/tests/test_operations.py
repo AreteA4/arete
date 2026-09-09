@@ -4,6 +4,7 @@ program-instructions.test.ts)."""
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from arete.instructions import BuiltAccountMeta, BuiltInstruction, ErrorMetadata
@@ -27,10 +28,15 @@ from arete.operations import (
     to_json_value,
     unwrap_operation_execution_error,
 )
+from arete.http import HttpAuthClient
+from arete.transactions import HttpTransactionTransport
 from arete.wallet import (
     SendResult,
     TransactionFailureOutcome,
+    TransactionInspectionResult,
+    UnsupportedTransactionVersionError,
     WalletError,
+    WalletExecutionContext,
 )
 
 
@@ -660,6 +666,90 @@ class TestInspectPreparedOperation:
         operation = create_prepared_instruction(name="op", instruction=ix())
         with pytest.raises(WalletError, match="does not support"):
             await inspect_prepared_operation(PlainWallet(), operation)
+
+    async def test_v1_contract_inspection_carries_the_simulated_data_size(self):
+        """The relay's loadedAccountsDataSize has to survive all the way to
+        the inspection result, or a V1 budget cannot be sized (contract §1,
+        §4). The same test pins that inspection touches only the simulate
+        route: no send, no signing."""
+        routes = []
+        signed = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            routes.append(request.url.path)
+            return httpx.Response(
+                200,
+                json={
+                    "contextSlot": "50",
+                    "unitsConsumed": "1200",
+                    "loadedAccountsDataSize": "65536",
+                },
+            )
+
+        transport = HttpTransactionTransport(
+            "https://stack.example/",
+            HttpAuthClient(
+                http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            ),
+        )
+
+        class SimulatingWallet:
+            public_key = "wallet"
+
+            async def sign_and_send(self, instructions, options=None, context=None):
+                signed.append(instructions)
+                return SendResult(signature="sig")
+
+            async def inspect_transaction(self, instructions, options=None, context=None):
+                simulation = await context.transaction_transport.simulate_transaction(
+                    "unsigned-base64"
+                )
+                return TransactionInspectionResult(
+                    compute_units_consumed=simulation.units_consumed,
+                    context_slot=simulation.context_slot,
+                    loaded_accounts_data_size=simulation.loaded_accounts_data_size,
+                )
+
+        operation = create_prepared_instruction(name="op", instruction=ix())
+        result = await inspect_prepared_operation(
+            SimulatingWallet(),
+            operation,
+            None,
+            WalletExecutionContext(transaction_transport=transport),
+        )
+        assert result.transaction.loaded_accounts_data_size == 65536
+        assert result.transaction.compute_units_consumed == 1200
+        assert routes == ["/transactions/v1/simulate"]
+        assert signed == []
+
+    async def test_v1_contract_rejects_unsupported_version_before_inspecting(self):
+        calls = {"sign": 0, "inspect": 0}
+
+        class InspectingWallet:
+            public_key = "wallet"
+
+            async def sign_and_send(self, instructions, options=None, context=None):
+                calls["sign"] += 1
+                return SendResult(signature="sig")
+
+            async def inspect_transaction(self, instructions, options=None, context=None):
+                calls["inspect"] += 1
+                return TransactionInspectionResult()
+
+        operation = create_prepared_instruction(name="op", instruction=ix())
+        with pytest.raises(UnsupportedTransactionVersionError):
+            await inspect_prepared_operation(
+                InspectingWallet(), operation, {"transaction_version": 1}
+            )
+        assert calls == {"sign": 0, "inspect": 0}
+
+        # A v0 inspection against the same adapter still works: a missing
+        # capability is unknown, not unsupported.
+        assert (
+            await inspect_prepared_operation(
+                InspectingWallet(), operation, {"transaction_version": 0}
+            )
+        ).transaction == TransactionInspectionResult()
 
 
 class TestDescription:

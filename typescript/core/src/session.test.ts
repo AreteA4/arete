@@ -520,6 +520,51 @@ describe('createSession', () => {
     session.close();
   });
 
+  // The field-wise merge lived in `Arete.execute` only, so both session entry
+  // points replaced `resources` wholesale and silently dropped a configured
+  // compute budget whenever a per-call fee was set.
+  it('v1_contract merges session execution defaults into per-call resources', async () => {
+    let received: { resources?: Record<string, unknown> } | undefined;
+    const wallet = {
+      publicKey: SIGNER,
+      supportedTransactionVersions: [0, 1] as const,
+      async signAndSend(_instructions: unknown, options?: { resources?: Record<string, unknown> }) {
+        received = options;
+        return { signature: 'sig-session-resources' };
+      },
+    };
+    const session = await createSession(
+      { programs: { ore: ORE_PROGRAM_SDK } },
+      {
+        transport: 'http',
+        endpoints: { http: 'https://session.invalid' },
+        fetch: makeFetch() as typeof fetch,
+        wallet,
+        execution: {
+          send: {
+            resources: {
+              computeUnitLimit: 200_000,
+              loadedAccountsDataSizeLimit: '65536',
+              computeUnitPriceMicroLamports: 1_000n,
+            },
+          },
+        },
+      }
+    );
+
+    await session.transaction([session.programs.ore.raw.close.build({})], {
+      send: { resources: { computeUnitPriceMicroLamports: 2_000n } },
+    });
+
+    // The configured budget survives; only the fee it overrode changes.
+    expect(received?.resources).toEqual({
+      computeUnitLimit: 200_000,
+      loadedAccountsDataSizeLimit: '65536',
+      computeUnitPriceMicroLamports: 2_000n,
+    });
+    session.close();
+  });
+
   it('uses registered session signers for transactions and operation validation', async () => {
     const registeredSigner = { opaqueSigner: true };
     const registeredSignerAddress = 'registered-signer';

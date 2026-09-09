@@ -112,6 +112,8 @@ enum Operation {
     SignatureStatus,
     SignatureStatuses,
     BlockHeight,
+    Get,
+    Signatures,
 }
 
 #[derive(Debug, Serialize)]
@@ -144,6 +146,8 @@ impl Operation {
             "/transactions/v1/signature-status" => Some(Self::SignatureStatus),
             "/transactions/v1/signature-statuses" => Some(Self::SignatureStatuses),
             "/transactions/v1/block-height" => Some(Self::BlockHeight),
+            "/transactions/v1/get" => Some(Self::Get),
+            "/transactions/v1/signatures" => Some(Self::Signatures),
             _ => None,
         }
     }
@@ -165,6 +169,8 @@ impl Operation {
             Self::SignatureStatus => "signature_status",
             Self::SignatureStatuses => "signature_statuses",
             Self::BlockHeight => "block_height",
+            Self::Get => "get",
+            Self::Signatures => "signatures",
         }
     }
 }
@@ -313,6 +319,41 @@ struct SignatureStatusesRequest {
     signatures: Vec<String>,
     #[serde(default)]
     search_transaction_history: bool,
+}
+
+/// Highest transaction version `get` asks the cluster to encode. Balance deltas are
+/// version-independent, so this only has to keep pace with the network — pinning it at 0 would
+/// report every V1 transaction as unseen.
+const MAX_SUPPORTED_TRANSACTION_VERSION: u8 = 1;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GetTransactionRequest {
+    signature: String,
+    #[serde(default)]
+    commitment: Option<Commitment>,
+    /// Numeric, not a decimal string: a version is not a u64 quantity.
+    #[serde(default)]
+    max_supported_transaction_version: Option<u8>,
+}
+
+/// Solana's `getSignaturesForAddress` ceiling, mirrored so an oversized page fails here rather
+/// than as a remote 400.
+const MAX_SIGNATURE_PAGE: u16 = 1_000;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SignaturesRequest {
+    address: String,
+    /// A count, not a lamport quantity, so it stays a JSON number.
+    #[serde(default)]
+    limit: Option<u16>,
+    #[serde(default)]
+    before: Option<String>,
+    #[serde(default)]
+    until: Option<String>,
+    #[serde(default)]
+    commitment: Option<Commitment>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1108,6 +1149,105 @@ async fn dispatch(
             })?;
             Ok(json!({ "blockHeight": height.to_string() }))
         }
+        Operation::Get => {
+            let request: GetTransactionRequest = parse_json(body)?;
+            if !valid_signature(&request.signature) {
+                return Err(TxError::request(
+                    "invalid_signature",
+                    "signature must be a base58-encoded 64-byte value",
+                ));
+            }
+            let commitment = request.commitment.unwrap_or(Commitment::Finalized);
+            if matches!(commitment, Commitment::Processed) {
+                return Err(TxError::request(
+                    "invalid_commitment",
+                    "getTransaction accepts confirmed or finalized, not processed",
+                ));
+            }
+            let value = rpc_call(
+                state,
+                "getTransaction",
+                json!([
+                    request.signature,
+                    {
+                        // `jsonParsed` is what resolves lookup-table addresses into `accountKeys`.
+                        // Under `json` the balance arrays outrun the key list on any v0
+                        // transaction and the extra accounts vanish silently.
+                        "encoding": "jsonParsed",
+                        "commitment": commitment.as_str(),
+                        "maxSupportedTransactionVersion": request
+                            .max_supported_transaction_version
+                            .unwrap_or(MAX_SUPPORTED_TRANSACTION_VERSION),
+                    }
+                ]),
+                operation,
+                None,
+                upstream_attempted,
+            )
+            .await?;
+            Ok(json!({
+                "transaction": confirmed_transaction_json(&request.signature, &value)?
+            }))
+        }
+        Operation::Signatures => {
+            let request: SignaturesRequest = parse_json(body)?;
+            if !valid_address(&request.address) {
+                return Err(TxError::request(
+                    "invalid_address",
+                    "address must be a base58-encoded 32-byte value",
+                ));
+            }
+            for (field, cursor) in [("before", &request.before), ("until", &request.until)] {
+                if cursor
+                    .as_deref()
+                    .is_some_and(|value| !valid_signature(value))
+                {
+                    return Err(TxError::request(
+                        "invalid_signature",
+                        format!("{field} must be a base58-encoded 64-byte value"),
+                    ));
+                }
+            }
+            let limit = request.limit.unwrap_or(MAX_SIGNATURE_PAGE);
+            if limit == 0 || limit > MAX_SIGNATURE_PAGE {
+                return Err(TxError::request(
+                    "invalid_limit",
+                    format!("limit must be between 1 and {MAX_SIGNATURE_PAGE}"),
+                ));
+            }
+            let commitment = request.commitment.unwrap_or(Commitment::Finalized);
+            if matches!(commitment, Commitment::Processed) {
+                return Err(TxError::request(
+                    "invalid_commitment",
+                    "getSignaturesForAddress accepts confirmed or finalized, not processed",
+                ));
+            }
+            let mut config = json!({ "limit": limit, "commitment": commitment.as_str() });
+            if let Some(before) = &request.before {
+                config["before"] = json!(before);
+            }
+            if let Some(until) = &request.until {
+                config["until"] = json!(until);
+            }
+            let value = rpc_call(
+                state,
+                "getSignaturesForAddress",
+                json!([request.address, config]),
+                operation,
+                None,
+                upstream_attempted,
+            )
+            .await?;
+            let entries = value.as_array().ok_or_else(|| {
+                upstream_malformed("Malformed signatures response", operation, None)
+            })?;
+            Ok(json!({
+                "signatures": entries
+                    .iter()
+                    .map(signature_entry_json)
+                    .collect::<Result<Vec<_>, _>>()?
+            }))
+        }
     }
 }
 
@@ -1239,6 +1379,84 @@ fn status_json(status: &Value) -> Result<Value, TxError> {
         "confirmationStatus": status.get("confirmationStatus"),
         "err": status.get("err")
     }))
+}
+
+/// Reshape one `getSignaturesForAddress` entry. `memo` and `confirmationStatus` are dropped: the
+/// page is a cursor over history, and a caller that wants detail asks `get` for the signature.
+fn signature_entry_json(entry: &Value) -> Result<Value, TxError> {
+    Ok(json!({
+        "signature": required_str(entry, "/signature")?,
+        "slot": required_u64(entry, "/slot")?.to_string(),
+        "blockTime": entry
+            .pointer("/blockTime")
+            .and_then(Value::as_i64)
+            .map(|seconds| seconds.to_string()),
+        "err": entry.pointer("/err").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+/// Reshape one `getTransaction` result down to what payout verification needs: who held what
+/// before, who holds what after. `null` when the cluster has not seen the signature at the
+/// requested commitment.
+fn confirmed_transaction_json(signature: &str, value: &Value) -> Result<Value, TxError> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    let keys = value
+        .pointer("/transaction/message/accountKeys")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            upstream_malformed("Malformed transaction response", Operation::Get, None)
+        })?;
+    let pre = balances(value, "/meta/preBalances")?;
+    let post = balances(value, "/meta/postBalances")?;
+    // Balances are positional against the resolved key list; a short array would credit one
+    // account's movement to another.
+    if pre.len() != keys.len() || post.len() != keys.len() {
+        return Err(upstream_malformed(
+            "Transaction balances did not match its account keys",
+            Operation::Get,
+            None,
+        ));
+    }
+    let accounts = keys
+        .iter()
+        .zip(pre)
+        .zip(post)
+        .map(|((key, pre), post)| {
+            let pubkey = key.get("pubkey").and_then(Value::as_str).ok_or_else(|| {
+                upstream_malformed("Malformed transaction account key", Operation::Get, None)
+            })?;
+            Ok(json!({
+                "pubkey": pubkey,
+                "preBalance": pre.to_string(),
+                "postBalance": post.to_string(),
+            }))
+        })
+        .collect::<Result<Vec<_>, TxError>>()?;
+    Ok(json!({
+        "signature": signature,
+        "slot": required_u64(value, "/slot")?.to_string(),
+        "blockTime": value
+            .pointer("/blockTime")
+            .and_then(Value::as_i64)
+            .map(|seconds| seconds.to_string()),
+        "err": value.pointer("/meta/err").cloned().unwrap_or(Value::Null),
+        "accounts": accounts,
+    }))
+}
+
+fn balances(value: &Value, pointer: &str) -> Result<Vec<u64>, TxError> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_array)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .map(Value::as_u64)
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or_else(|| upstream_malformed("Malformed transaction balances", Operation::Get, None))
 }
 
 async fn rpc_call(
@@ -1421,6 +1639,13 @@ fn simulation_response(value: Value) -> Result<Value, TxError> {
             .get("unitsConsumed")
             .and_then(Value::as_u64)
             .map(|number| number.to_string()),
+        // V1 budgets cannot be estimated without it: a caller has to know how much account data
+        // the simulated transaction actually loaded before it can set a limit for the real one.
+        // Absent stays absent — an older upstream that never reports it must not read as zero.
+        "loadedAccountsDataSize": result
+            .get("loadedAccountsDataSize")
+            .and_then(Value::as_u64)
+            .map(|number| number.to_string()),
         "accounts": result.get("accounts").cloned().unwrap_or(Value::Null),
     }))
 }
@@ -1543,10 +1768,155 @@ mod tests {
             Operation::from_path("/transactions/v1/signature-statuses"),
             Some(Operation::SignatureStatuses)
         );
+        assert_eq!(
+            Operation::from_path("/transactions/v1/get"),
+            Some(Operation::Get)
+        );
+        assert_eq!(
+            Operation::from_path("/transactions/v1/signatures"),
+            Some(Operation::Signatures)
+        );
+        assert_eq!(Operation::Signatures.scope(), "transaction:inspect");
+        // A history read, never the send scope.
+        assert_eq!(Operation::Get.scope(), "transaction:inspect");
         // The batch reads chain state, so it must not require the send scope.
         assert_eq!(Operation::SignatureStatuses.scope(), "transaction:inspect");
         assert_eq!(Operation::Send.scope(), "transaction:send");
         assert_eq!(Operation::Simulate.scope(), "transaction:inspect");
+    }
+
+    #[tokio::test]
+    async fn signatures_pages_history_in_the_cluster_order() {
+        let address = bs58::encode([3u8; 32]).into_string();
+        let body = json!({ "address": address, "limit": 2, "before": sig(4) }).to_string();
+        let state = state_for(json!([
+            { "signature": "newer", "slot": 12, "blockTime": 1_757_222_400i64, "err": null,
+              "memo": null, "confirmationStatus": "finalized" },
+            { "signature": "older", "slot": 11, "blockTime": null,
+              "err": { "InstructionError": [0, "Custom"] } }
+        ]))
+        .await;
+
+        let value = dispatch(
+            Operation::Signatures,
+            body.as_bytes(),
+            None,
+            &state,
+            &mut false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            value,
+            json!({ "signatures": [
+                { "signature": "newer", "slot": "12", "blockTime": "1757222400", "err": null },
+                { "signature": "older", "slot": "11", "blockTime": null,
+                  "err": { "InstructionError": [0, "Custom"] } }
+            ]})
+        );
+    }
+
+    /// Bad input must fail here, not as a remote 400 the caller cannot read.
+    #[tokio::test]
+    async fn signatures_rejects_a_bad_address_cursor_or_page_size() {
+        let state = state_for(json!([])).await;
+        let address = bs58::encode([3u8; 32]).into_string();
+        let cases = [
+            (json!({ "address": "not-base58!" }), "invalid_address"),
+            (
+                json!({ "address": address, "before": "nope" }),
+                "invalid_signature",
+            ),
+            (json!({ "address": address, "limit": 0 }), "invalid_limit"),
+            (
+                json!({ "address": address, "limit": 1001 }),
+                "invalid_limit",
+            ),
+            (
+                json!({ "address": address, "commitment": "processed" }),
+                "invalid_commitment",
+            ),
+        ];
+        for (body, expected) in cases {
+            let error = dispatch(
+                Operation::Signatures,
+                body.to_string().as_bytes(),
+                None,
+                &state,
+                &mut false,
+            )
+            .await
+            .expect_err("rejected before the cluster");
+            assert_eq!(error.code, expected);
+            assert!(!error.upstream_attempted);
+        }
+    }
+
+    /// `jsonParsed` appends lookup-table accounts to `accountKeys` and the balance arrays cover
+    /// them, so a winner paid through an ALT has to survive the reshape.
+    #[tokio::test]
+    async fn get_pairs_every_resolved_account_with_its_balances() {
+        let signature = sig(7);
+        let body = json!({ "signature": signature }).to_string();
+        let state = state_for(json!({
+            "slot": 319_482_771u64,
+            "blockTime": 1_757_222_400i64,
+            "meta": { "err": null, "preBalances": [5000, 10], "postBalances": [3995, 1010] },
+            "transaction": { "message": { "accountKeys": [
+                { "pubkey": "vault", "source": "transaction" },
+                { "pubkey": "winner", "source": "lookupTable" }
+            ] } }
+        }))
+        .await;
+
+        let value = dispatch(Operation::Get, body.as_bytes(), None, &state, &mut false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            value,
+            json!({ "transaction": {
+                "signature": signature,
+                "slot": "319482771",
+                "blockTime": "1757222400",
+                "err": null,
+                "accounts": [
+                    { "pubkey": "vault", "preBalance": "5000", "postBalance": "3995" },
+                    { "pubkey": "winner", "preBalance": "10", "postBalance": "1010" }
+                ]
+            }})
+        );
+    }
+
+    #[tokio::test]
+    async fn get_answers_null_for_an_unseen_signature() {
+        let body = json!({ "signature": sig(9) }).to_string();
+        let state = state_for(Value::Null).await;
+        let value = dispatch(Operation::Get, body.as_bytes(), None, &state, &mut false)
+            .await
+            .unwrap();
+        assert_eq!(value, json!({ "transaction": null }));
+    }
+
+    /// Truncating instead of rejecting would credit one account's movement to another.
+    #[tokio::test]
+    async fn get_rejects_balances_that_do_not_cover_every_account() {
+        let body = json!({ "signature": sig(11) }).to_string();
+        let state = state_for(json!({
+            "slot": 1u64,
+            "meta": { "err": null, "preBalances": [5000], "postBalances": [3995] },
+            "transaction": { "message": { "accountKeys": [
+                { "pubkey": "vault" },
+                { "pubkey": "winner" }
+            ] } }
+        }))
+        .await;
+        assert!(
+            dispatch(Operation::Get, body.as_bytes(), None, &state, &mut false)
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -1661,6 +2031,104 @@ mod tests {
         assert_eq!(simulation["contextSlot"], "44");
         assert_eq!(simulation["unitsConsumed"], "12");
         assert_eq!(simulation["logs"], json!(["ok"]));
+    }
+
+    /// V1 budgets cannot be estimated without the loaded-account size, so the relay has to carry
+    /// it. Absent must stay absent: an older upstream that never reports it is not reporting zero.
+    #[tokio::test]
+    async fn transaction_v1_simulation_carries_the_loaded_accounts_data_size() {
+        let reported = state_for(json!({
+            "context": { "slot": 44 },
+            "value": { "err": null, "unitsConsumed": 12, "loadedAccountsDataSize": 65_536u64 }
+        }))
+        .await;
+        let value = dispatch(
+            Operation::Simulate,
+            br#"{"transaction":"AQ=="}"#,
+            None,
+            &reported,
+            &mut false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(value["loadedAccountsDataSize"], "65536");
+
+        let zero = state_for(json!({
+            "context": { "slot": 44 },
+            "value": { "err": null, "loadedAccountsDataSize": 0u64 }
+        }))
+        .await;
+        let value = dispatch(
+            Operation::Simulate,
+            br#"{"transaction":"AQ=="}"#,
+            None,
+            &zero,
+            &mut false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            value["loadedAccountsDataSize"], "0",
+            "zero is a measurement"
+        );
+
+        let silent = state_for(json!({
+            "context": { "slot": 44 },
+            "value": { "err": null }
+        }))
+        .await;
+        let value = dispatch(
+            Operation::Simulate,
+            br#"{"transaction":"AQ=="}"#,
+            None,
+            &silent,
+            &mut false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(value["loadedAccountsDataSize"], Value::Null);
+    }
+
+    /// Real signed payloads from `tests/fixtures/transaction-v1`, produced by @solana/kit 8.2.0.
+    /// Hand-assembled bytes would only prove the parser agrees with itself.
+    fn fixture(name: &str) -> (String, Value) {
+        let raw = include_str!("../../../../tests/fixtures/transaction-v1/transactions.json");
+        let corpus: Value = serde_json::from_str(raw).expect("fixture corpus parses");
+        let entry = corpus["fixtures"][name].clone();
+        (entry["base64"].as_str().expect("base64").to_string(), entry)
+    }
+
+    /// The signature the relay derives for a submitted transaction is what a caller reconciles
+    /// against after an ambiguous send, so it has to match the codec's own, in every version.
+    #[test]
+    fn transaction_v1_fixtures_yield_the_codec_signature_in_every_version() {
+        use base64::Engine as _;
+        for name in ["legacy", "v0", "v1", "v1_oversize", "v1_two_signatures"] {
+            let (encoded, entry) = fixture(name);
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&encoded)
+                .expect("fixture decodes");
+            assert_eq!(
+                bytes.len(),
+                entry["bytes"].as_u64().expect("bytes") as usize,
+                "{name} length"
+            );
+            assert_eq!(
+                transaction_signature(&bytes).expect("{name} signature"),
+                entry["firstSignature"].as_str().expect("firstSignature"),
+                "{name} first signature"
+            );
+        }
+    }
+
+    /// 1574 bytes: refused by anything still applying the legacy 1232-byte ceiling, accepted under
+    /// V1's 4096. The minimal 177-byte V1 fixture passes either way and proves nothing here.
+    #[test]
+    fn transaction_v1_oversize_fixture_needs_the_v1_size_ceiling() {
+        let (encoded, _) = fixture("v1_oversize");
+        assert!(decode_bounded(&encoded, 1232, "transaction").is_err());
+        let decoded = decode_bounded(&encoded, 4096, "transaction").expect("within the V1 ceiling");
+        assert_eq!(decoded.first(), Some(&V1_VERSION_BYTE));
     }
 
     /// A valid base58 64-byte signature; the handler rejects anything else before dispatching.

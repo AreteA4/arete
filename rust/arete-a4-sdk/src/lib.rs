@@ -63,7 +63,9 @@ pub use chain::{
     MintAccountInfo, NativeBalanceInfo, RawAccountInfo, TokenAccountInfo, TokenBalanceInfo,
     TokenBalanceInput,
 };
-pub use client::{Arete, AreteBuilder, ExecutionResult, TransactionOptions, Transport};
+pub use client::{
+    Arete, AreteBuilder, ExecutionResult, OperationInspectionOptions, TransactionOptions, Transport,
+};
 pub use collation::{collation_key, locale_compare, CollationKey};
 pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
@@ -91,9 +93,10 @@ pub use operations::{
     append_flow_transactions, append_transaction_instructions, create_prepared_flow,
     create_prepared_instruction, create_prepared_transaction, create_prepared_transaction_body,
     describe_prepared_operation, execute_prepared_operation, format_program_error,
-    parse_program_error, prepend_flow_transaction_instructions, prepend_transaction_instructions,
-    ExecuteOptions, ExecutionHost, FailurePhase, OperationCallback, OperationError,
-    OperationExecutionError, OperationExecutionEvent, OperationKind, OperationReceipt,
+    inspect_prepared_operation, parse_program_error, prepend_flow_transaction_instructions,
+    prepend_transaction_instructions, ExecuteOptions, ExecutionHost, FailurePhase,
+    OperationCallback, OperationError, OperationExecutionError, OperationExecutionEvent,
+    OperationInspection, OperationInspectionError, OperationKind, OperationReceipt,
     OperationTransactionReceipt, PreparedFlow, PreparedInstruction, PreparedOperation,
     PreparedTransaction, PreparedTransactionBody, PreparedTransactionChildren,
     PreparedTransactionInstruction, ProgramError, Signer, SignerRegistry,
@@ -120,7 +123,9 @@ pub use transactions::{
     HttpTransactionTransport, TransactionError, TransactionTransport, TransactionTransportError,
 };
 pub use wallet::{
-    ConfirmationLevel, SendOptions, SendResult, WalletAdapter, WalletError, WalletExecutionContext,
+    ConfirmationLevel, SendOptions, SendResult, TransactionCapabilityError,
+    TransactionInspectionOptions, TransactionInspectionResult, TransactionResourceOptions,
+    TransactionVersion, WalletAdapter, WalletError, WalletExecutionContext,
 };
 
 pub use subscription::{

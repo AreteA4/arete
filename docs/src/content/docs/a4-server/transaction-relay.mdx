@@ -54,15 +54,17 @@ Server::builder()
 
 ## Routes and scopes
 
-| Route                                      | Required scope        | Solana RPC method      |
-| ------------------------------------------ | --------------------- | ---------------------- |
-| `POST /transactions/v1/latest-blockhash`   | `transaction:inspect` | `getLatestBlockhash`   |
-| `POST /transactions/v1/fee`                | `transaction:inspect` | `getFeeForMessage`     |
-| `POST /transactions/v1/simulate`           | `transaction:inspect` | `simulateTransaction`  |
-| `POST /transactions/v1/signature-status`   | `transaction:inspect` | `getSignatureStatuses` |
-| `POST /transactions/v1/signature-statuses` | `transaction:inspect` | `getSignatureStatuses` |
-| `POST /transactions/v1/block-height`       | `transaction:inspect` | `getBlockHeight`       |
-| `POST /transactions/v1/send`               | `transaction:send`    | `sendTransaction`      |
+| Route                                      | Required scope        | Solana RPC method         |
+| ------------------------------------------ | --------------------- | ------------------------- |
+| `POST /transactions/v1/latest-blockhash`   | `transaction:inspect` | `getLatestBlockhash`      |
+| `POST /transactions/v1/fee`                | `transaction:inspect` | `getFeeForMessage`        |
+| `POST /transactions/v1/simulate`           | `transaction:inspect` | `simulateTransaction`     |
+| `POST /transactions/v1/signature-status`   | `transaction:inspect` | `getSignatureStatuses`    |
+| `POST /transactions/v1/signature-statuses` | `transaction:inspect` | `getSignatureStatuses`    |
+| `POST /transactions/v1/block-height`       | `transaction:inspect` | `getBlockHeight`          |
+| `POST /transactions/v1/get`                | `transaction:inspect` | `getTransaction`          |
+| `POST /transactions/v1/signatures`         | `transaction:inspect` | `getSignaturesForAddress` |
+| `POST /transactions/v1/send`               | `transaction:send`    | `sendTransaction`         |
 
 Routes accept validated JSON schemas and reject unknown fields. Solana `u64` values are decimal strings over HTTP.
 
@@ -71,6 +73,25 @@ with the request: an unknown signature is `null` in its own slot rather than omi
 cannot attribute one signature's status to another. An empty batch answers without contacting the
 cluster, and reports `X-Arete-Upstream-Attempted: false` accordingly. More than 256 signatures is
 refused as `batch_limit_exceeded`, which is Solana's own `getSignatureStatuses` ceiling.
+
+`get` answers what a confirmed transaction moved, not how: `err`, `slot`, `blockTime` and every
+resolved account's pre/post lamport balance. Instructions, logs and token balances are out of
+scope — a payer that settles inside a CPI is only visible in the balance deltas. The account list
+is the cluster's own resolved order, lookup-table entries included, so it lines up with the
+balances position by position. An unseen signature is `null` with 200, not an error.
+`maxSupportedTransactionVersion` defaults to the highest version the relay can describe (1) and is
+a JSON number, not a decimal string; `commitment` accepts `confirmed` or `finalized`.
+
+`signatures` pages an address's history, newest first: `{address, limit, before, until,
+commitment}` in, `[{signature, slot, blockTime, err}]` out. `before`/`until` are signatures and
+exclusive at both ends, `limit` is a JSON number capped at Solana's own 1000, and an address with
+no history is an empty array rather than an error. Memos and confirmation status are dropped — the
+page is a cursor, and a caller that wants detail asks `get` for the signature.
+
+`simulate` returns `loadedAccountsDataSize` alongside `unitsConsumed`, both decimal strings. It is
+what a caller measures before setting a V1 `loadedAccountsDataSizeLimit`, so a budget can be
+derived from the simulation rather than guessed. Absent stays absent: an upstream that does not
+report the figure is not reporting zero, and the two must not be confused when sizing a limit.
 
 ## Authentication
 

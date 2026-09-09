@@ -80,8 +80,10 @@ The source also exits when its receiver closes during an idle upstream stream.
 
 Local verification uses Rust `1.98.0 (88d9e12ae 2026-08-18)` and Cargo
 `1.98.0 (797e8a9bc 2026-08-05)` on aarch64-apple-darwin. The implementation was
-checked against the A4-251 revised baseline `a30cd285`; no incompatible drift
-was present in the scoped paths.
+initially checked against the A4-251 revised baseline `a30cd285`. It is now
+reconciled with `main` at `542dd39b`, preserving the linked **0.15.0** versions,
+release lockfile updates, and the SDK simulation-budget/V1 option contract from
+PR #198. The ingestion tuple above remains pinned independently.
 
 | Pre-publication gate | Result |
 | --- | --- |
@@ -92,12 +94,15 @@ was present in the scoped paths.
 | `cargo test --locked -p arete-macros --test transaction_v1_runtime` | Passed; 4 tests |
 | `cargo test --locked -p arete-macros --test phase1_runtime` | Passed; 1 test |
 | `cargo test --locked -p arete-macros --test artifact_native_v2` | Passed; 6 tests |
+| `cargo test --locked -p arete-a4-sdk` | Passed; 0.15.0 SDK contract and integration tests |
 | `cargo build --manifest-path stacks/ore/Cargo.toml --locked` | Passed |
 | `cargo check --manifest-path examples/ore-server/Cargo.toml --locked` | Passed |
 | `bash scripts/check-generated-rust-crates.sh --mode local` | Passed |
 | `bash scripts/check-generated-ingestion-runtime.sh --mode local` | Passed |
 | `bash scripts/generate-example-sdks.sh` (twice) | Passed; identical output across runs, refreshed compiler/SDK-definition hashes only |
 | Local TypeScript SDK build and ORE TypeScript strict compile | Passed |
+| TypeScript wallet/transaction/client/session contract tests | Passed; 81 tests |
+| Linked release version and npm lockfile synchronization checks | Passed; linked components remain at 0.15.0 |
 | `cargo clippy --workspace -- -D warnings` | Passed |
 | `git diff --check` | Passed |
 
@@ -118,9 +123,10 @@ after publishing Arete.
 
 **Implementation PR:** [AreteA4/arete#195](https://github.com/AreteA4/arete/pull/195).
 
-**Release status:** unpublished. The post-publication registry gate has not
-run for this change. After merge/publication, record the actual release version
-and run:
+**Release status:** this ingestion change is unpublished. The existing 0.15.0
+release on `main` predates #195 and does not satisfy its registry acceptance gate.
+After merging and publishing a release that includes #195, record the actual
+release version and run:
 
 ```sh
 bash scripts/check-generated-ingestion-runtime.sh --mode registry

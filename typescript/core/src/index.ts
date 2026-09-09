@@ -340,6 +340,22 @@ export type {
   TransactionInspectionOptions,
   TransactionInspectionResult,
   WalletExecutionContext,
+  TransactionVersion,
+  TransactionBuildCapability,
+  TransactionResourceOptions,
+  TransactionResourceOptionKey,
+  TransactionBuildOptions,
+  ResolvedTransactionBuildOptions,
+  ResourceUnits,
+  ResolvedTransactionResourceOptions,
+  ResourceLamports,
+  TransactionOptionsErrorCode,
+} from './wallet/types';
+export {
+  TRANSACTION_RESOURCE_OPTION_KEYS,
+  TransactionOptionsError,
+  resolveTransactionBuildOptions,
+  toWireResourceOptions,
 } from './wallet/types';
 
 // Instruction execution

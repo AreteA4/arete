@@ -28,6 +28,8 @@ export interface TransactionSimulationResult {
   err: unknown | null;
   logs: readonly string[] | null;
   unitsConsumed?: bigint;
+  /** Loaded account data size, when the relay reports it. */
+  loadedAccountsDataSize?: bigint;
   accounts?: readonly unknown[] | null;
 }
 
@@ -198,6 +200,10 @@ export function createTransactionTransport(
         err: value.err ?? null,
         logs: value.logs as readonly string[] | null ?? null,
         unitsConsumed: optionalBigint(value.unitsConsumed, 'unitsConsumed'),
+        loadedAccountsDataSize: optionalBigint(
+          value.loadedAccountsDataSize,
+          'loadedAccountsDataSize'
+        ),
         accounts: value.accounts as readonly unknown[] | null | undefined,
       };
     },
