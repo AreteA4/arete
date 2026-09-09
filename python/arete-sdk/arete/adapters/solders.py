@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
+import warnings
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -207,6 +208,35 @@ def _b64(payload: bytes) -> str:
     return base64.b64encode(payload).decode("ascii")
 
 
+def _non_negative(value: Any, name: str, *, integer: bool = False) -> None:
+    """Reject a configured quantity that only fails once it is used.
+
+    ``not value >= 0`` rather than ``value < 0`` so NaN is rejected too.
+    """
+    allowed = int if integer else (int, float)
+    if isinstance(value, bool) or not isinstance(value, allowed) or not value >= 0:
+        kind = "integer" if integer else "number"
+        raise ValueError(f"{name} must be a non-negative {kind}, got {value!r}")
+
+
+def _report_signature_mismatch(local: str, echoed: Optional[str]) -> None:
+    """Report, never adopt, a relay signature that is not the one signed here.
+
+    The adapter signs the final bytes and derives the signature from them, so
+    the local one is authoritative. Reconciling an echoed signature would poll
+    a transaction this adapter never submitted: it can report some other
+    transaction's status, or never confirm the one that actually went out.
+    """
+    if echoed and echoed != local:
+        warnings.warn(
+            f"The relay reported signature {echoed} for a transaction signed as "
+            f"{local}; the locally derived signature is authoritative and is "
+            "the one being reconciled",
+            stacklevel=3,
+        )
+
+
+
 @dataclass(frozen=True)
 class SoldersAdapterConfig:
     """Configuration for :class:`SoldersWalletAdapter`.
@@ -238,6 +268,24 @@ class SoldersAdapterConfig:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "signers", tuple(self.signers))
+        # Range-checked here, before anything is signed. ``confirmation_timeout``
+        # and ``poll_interval`` are only consumed after the single submission, so
+        # a value the arithmetic or the sleep cannot use raises once the
+        # transaction is already on the relay -- and an exception carrying no
+        # signature is classified not-submitted, which invites a duplicate send
+        # of a payment that already landed. A negative interval is no better: it
+        # turns reconciliation into an unthrottled poll loop.
+        _non_negative(self.confirmation_timeout, "confirmation_timeout")
+        _non_negative(self.poll_interval, "poll_interval")
+        _non_negative(self.compute_unit_margin, "compute_unit_margin", integer=True)
+        # Same shape: ``SendOptions`` treats ``None`` as "unset" and lets it
+        # through, but this is the fallback a per-send option falls back TO, so
+        # an unset one reaches the confirmation-rank lookup after the send.
+        if self.confirmation_level not in CONFIRMATION_LEVELS:
+            raise ValueError(
+                f"confirmation_level must be one of {CONFIRMATION_LEVELS}, got "
+                f"{self.confirmation_level!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -518,12 +566,22 @@ class SoldersWalletAdapter:
     ) -> TransactionInspectionResult:
         """Fee and simulation for the unsigned transaction. Never signs or sends."""
         plan = await self._plan(instructions, options, context)
-        fee = await plan.transport.get_fee_for_message(
-            _b64(to_bytes_versioned(plan.message)), commitment=plan.commitment
-        )
-        simulation = await plan.transport.simulate_transaction(
-            _b64(bytes(plan.unsigned)), commitment=plan.commitment
-        )
+        # A relay outage or a malformed response must not escape as a raw
+        # transport or parse error: the wallet contract is WalletError, and
+        # inspection never signed anything, so it is a build failure.
+        try:
+            fee = await plan.transport.get_fee_for_message(
+                _b64(to_bytes_versioned(plan.message)), commitment=plan.commitment
+            )
+            simulation = await plan.transport.simulate_transaction(
+                _b64(bytes(plan.unsigned)), commitment=plan.commitment
+            )
+        except WalletError:
+            raise
+        except Exception as cause:
+            raise _not_submitted(
+                f"Could not inspect the unsigned transaction: {cause}", cause=cause
+            ) from cause
         return TransactionInspectionResult(
             fee_lamports=fee.fee_lamports,
             logs=None if simulation.logs is None else tuple(simulation.logs),
@@ -616,9 +674,10 @@ class SoldersWalletAdapter:
                     phase="send",
                     cause=cause,
                 ) from cause
+            _report_signature_mismatch(signature, cause.signature)
             raise _failure(
                 TransactionFailureOutcome.submitted_unknown(
-                    cause.signature or signature, phase="send", cause=cause
+                    signature, phase="send", cause=cause
                 )
             ) from cause
         except Exception as cause:
@@ -628,7 +687,8 @@ class SoldersWalletAdapter:
                 )
             ) from cause
 
-        return await self._reconcile(plan, sent.signature or signature)
+        _report_signature_mismatch(signature, sent.signature)
+        return await self._reconcile(plan, signature)
 
     async def _reconcile(self, plan: _Plan, signature: str) -> SendResult:
         """Poll the submitted signature until it settles, expires or times out."""

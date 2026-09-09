@@ -120,6 +120,7 @@ class FakeTransport:
         self.sent = []
         self.fee_messages = []
         self.simulated = []
+        self.polled = []
         self.blockhash = blockhash
         self.last_valid_block_height = last_valid_block_height
         self.block_height = block_height
@@ -181,6 +182,7 @@ class FakeTransport:
 
     async def get_signature_status(self, signature, *, search_transaction_history=None):
         self.calls.append("status")
+        self.polled.append(signature)
         if not self.statuses:
             return None
         return self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
@@ -204,6 +206,66 @@ def sent_transaction(transport):
     """The single submitted payload, decoded by solders."""
     assert len(transport.sent) == 1
     return VersionedTransaction.from_bytes(base64.b64decode(transport.sent[0]))
+
+
+# ---------------------------------------------------------------------------
+# Configuration validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("poll_interval", -0.5),
+        ("poll_interval", "0.5"),
+        ("confirmation_timeout", -1),
+        ("compute_unit_margin", -1),
+    ],
+)
+def test_out_of_range_polling_configuration_is_rejected_at_construction(field, value):
+    with pytest.raises(ValueError, match=field):
+        SoldersAdapterConfig(keypair=PAYER, **{field: value})
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_poll_interval_fails_before_anything_is_submitted():
+    """Range checks belong at construction, not in ``_reconcile``.
+
+    A poll interval the sleep cannot use only blows up after
+    ``send_transaction`` already succeeded, and that exception carries no
+    signature, so the executor classifies a landed transaction as
+    not-submitted -- an invitation to send the same payment twice.
+    """
+    transport = FakeTransport(statuses=[status("processed")], allow_send=False)
+
+    with pytest.raises(ValueError, match="poll_interval"):
+        await send(
+            transport,
+            [memo([1, 2, 3])],
+            SendOptions(transaction_version=1),
+            poll_interval="0.5",
+            confirmation_timeout=5,
+        )
+
+    assert transport.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unset_confirmation_level_fails_before_anything_is_submitted():
+    """The same shape one level up: ``SendOptions`` reads ``None`` as "unset",
+    but this is what an unset per-send level falls back to, so it reaches the
+    confirmation-rank lookup as a ``KeyError`` after the single submission."""
+    transport = FakeTransport(allow_send=False)
+
+    with pytest.raises(ValueError, match="confirmation_level"):
+        await send(
+            transport,
+            [memo([1, 2, 3])],
+            SendOptions(transaction_version=1),
+            confirmation_level=None,
+        )
+
+    assert transport.calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -766,6 +828,41 @@ async def test_inspection_simulates_the_exact_bytes_it_would_submit():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,error",
+    [
+        (
+            "get_fee_for_message",
+            TransactionTransportError(
+                503, code="UPSTREAM_UNAVAILABLE", message="relay down"
+            ),
+        ),
+        # A malformed relay response surfaces as an ordinary parse error.
+        ("simulate_transaction", KeyError("value")),
+    ],
+)
+async def test_inspection_reports_a_relay_outage_as_a_wallet_error(method, error):
+    """A relay outage is an adapter failure, not a raw transport exception:
+    the wallet contract only speaks :class:`WalletError`."""
+
+    async def fail(*args, **kwargs):
+        raise error
+
+    transport = FakeTransport(allow_send=False)
+    setattr(transport, method, fail)
+
+    with pytest.raises(WalletError) as caught:
+        await adapter(transport).inspect_transaction(
+            [memo([1, 2, 3])], SendOptions(transaction_version=1)
+        )
+
+    outcome = caught.value.outcome
+    assert outcome.status == "not-submitted"
+    assert outcome.phase == "build"
+    assert outcome.cause is error
+
+
 # ---------------------------------------------------------------------------
 # Submit once, then reconcile
 # ---------------------------------------------------------------------------
@@ -872,19 +969,51 @@ async def test_relay_rejection_is_not_submitted():
 
 @pytest.mark.asyncio
 async def test_ambiguous_relay_failure_keeps_the_local_signature():
+    # The relay names a different signature on its way out; the adapter signed
+    # the bytes it sent, so its own signature is the one to reconcile.
+    impostor = fixture("legacy")["firstSignature"]
     transport = FakeTransport(
         send_error=TransactionTransportError(
-            504, code="TIMEOUT", message="upstream timeout", submission_state="unknown"
+            504,
+            code="TIMEOUT",
+            message="upstream timeout",
+            submission_state="unknown",
+            signature=impostor,
         )
     )
 
-    with pytest.raises(WalletError) as caught:
-        await send(transport, [memo([1, 2, 3])], SendOptions(transaction_version=1))
+    with pytest.warns(UserWarning, match=impostor):
+        with pytest.raises(WalletError) as caught:
+            await send(
+                transport, [memo([1, 2, 3])], SendOptions(transaction_version=1)
+            )
 
     outcome = caught.value.outcome
     assert outcome.status == "submitted-unknown"
     assert outcome.phase == "send"
     assert outcome.signature == fixture("v1")["firstSignature"]
+    assert transport.calls.count("send") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_relay_echoed_signature_never_replaces_the_derived_one():
+    """Reconciliation polls only what this adapter signed.
+
+    Believing the echo would poll a different transaction entirely: it can
+    report another payment's status, or never confirm the one submitted.
+    """
+    local = fixture("v1")["firstSignature"]
+    impostor = fixture("legacy")["firstSignature"]
+    assert impostor != local
+    transport = FakeTransport(relay_signature=impostor)
+
+    with pytest.warns(UserWarning, match=impostor):
+        result = await send(
+            transport, [memo([1, 2, 3])], SendOptions(transaction_version=1)
+        )
+
+    assert result.signature == local
+    assert transport.polled == [local]
     assert transport.calls.count("send") == 1
 
 
