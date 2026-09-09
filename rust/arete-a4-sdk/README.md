@@ -146,6 +146,66 @@ Failures classify into the same four-state outcome model as TypeScript
 errors resolved against IDL metadata. A `SignerRegistry` covers multi-signer
 flows with fail-closed validation before dispatch.
 
+## Optional Solana adapter (legacy, v0, transaction V1)
+
+The SDK ships no wallet adapter by default — the core only builds
+`BuiltInstruction` values, and nothing Solana-versioned reaches your
+dependency graph unless you ask for it:
+
+```toml
+arete-sdk = { package = "arete-a4-sdk", version = "0.14.0", features = ["solana-adapter"] } # x-release-please-version
+```
+
+```rust
+use arete_sdk::prelude::*;
+
+let wallet = Arc::new(SolanaWalletAdapter::with_config(
+    Arc::new(keypair),                      // any upstream `Signer`
+    SolanaAdapterConfig {
+        transport: Some(relay),             // fallback when the caller passes none
+        ..SolanaAdapterConfig::default()    // v0 default, confirmed, 60s timeout
+    },
+)).with_signer(Arc::new(cosigner));         // owned extra signers
+
+let receipt = a4.transaction(&[ix], TransactionOptions {
+    send: SendOptions {
+        transaction_version: Some(TransactionVersion::V1),
+        resources: TransactionResourceOptions {
+            compute_unit_limit: Some(20_000),
+            loaded_accounts_data_size_limit: Some(64 * 1024),
+            priority_fee_lamports: Some(5_000),   // V1 only: total lamports
+            ..Default::default()
+        },
+        ..Default::default()
+    },
+    ..Default::default()
+}).await?;
+```
+
+The adapter declares `legacy`, `0` and `1`, compiles and signs with the
+upstream `solana-message` / `solana-transaction` crates, submits **once**
+through the relay and reconciles by signature after a timeout. Version
+behaviour follows the transaction option contract:
+
+| | legacy / v0 | V1 (SIMD-0385) |
+|---|---|---|
+| Wire limit | 1232 bytes | 4096 bytes, 12 signatures, 64 accounts, 64 instructions |
+| Resource budget | prepended `ComputeBudget` instructions | typed message config |
+| Fee option | `computeUnitPriceMicroLamports` (per CU) | `priorityFeeLamports` (total) |
+| Lookup tables | not supported by this adapter | not supported by the format |
+
+An omitted version keeps the existing v0 default. Caller-supplied
+`ComputeBudget` instructions are refused (use the typed options), and a V1
+send must declare `computeUnitLimit` and `loadedAccountsDataSizeLimit`: an
+omitted V1 budget field requests the *minimum*, so the transaction could only
+fail on chain. `inspect_transaction` fills those two with the runtime maxima
+for its provisional, never-signed message, so a simulation measures real
+consumption — inspect first, then send with the measured values.
+
+`cargo run -p arete-a4-sdk --features solana-adapter --example solana_v1`
+walks the whole flow against a local relay; it inspects only unless
+`ARETE_EXAMPLE_EXECUTE=1`.
+
 ## Chain reads and transaction relay
 
 ```rust

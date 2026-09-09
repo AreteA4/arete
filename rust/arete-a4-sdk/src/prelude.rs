@@ -10,4 +10,7 @@ pub use crate::{
     ViewBuilder, ViewHandle, Views, WalletAdapter, WatchBuilder,
 };
 
+#[cfg(feature = "solana-adapter")]
+pub use crate::{SharedSigner, SolanaAdapterConfig, SolanaWalletAdapter};
+
 pub use futures_util::StreamExt;

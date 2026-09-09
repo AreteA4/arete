@@ -25,6 +25,7 @@
 //! }
 //! ```
 
+pub mod adapters;
 pub mod amounts;
 mod auth;
 pub mod chain;
@@ -53,6 +54,8 @@ pub mod transactions;
 pub mod view;
 pub mod wallet;
 
+#[cfg(feature = "solana-adapter")]
+pub use adapters::solana::{SharedSigner, SolanaAdapterConfig, SolanaWalletAdapter};
 pub use amounts::{
     format_raw_to_ui, parse_ui_amount_to_raw, resolve_amount, resolve_amount_to_raw, to_raw_amount,
     AmountError, AmountInput, AmountResolutionInput, ResolvedAmount,
