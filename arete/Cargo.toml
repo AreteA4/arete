@@ -35,9 +35,9 @@ tracing = { version = "0.1", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 bytemuck = { version = "1.21", features = ["derive", "min_const_generics"], optional = true }
-yellowstone-vixen = { workspace = true, optional = true }
-yellowstone-vixen-core = { workspace = true, optional = true }
-yellowstone-vixen-yellowstone-grpc-source = { workspace = true, optional = true }
+shipstern = { workspace = true, optional = true }
+shipstern-core = { workspace = true, optional = true }
+shipstern-yellowstone-grpc-source = { workspace = true, optional = true }
 yellowstone-grpc-client = { workspace = true, optional = true }
 yellowstone-grpc-proto = { workspace = true, optional = true }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"], optional = true }
@@ -62,9 +62,9 @@ runtime = [
     "dep:serde",
     "dep:serde_json",
     "dep:bytemuck",
-    "dep:yellowstone-vixen",
-    "dep:yellowstone-vixen-core",
-    "dep:yellowstone-vixen-yellowstone-grpc-source",
+    "dep:shipstern",
+    "dep:shipstern-core",
+    "dep:shipstern-yellowstone-grpc-source",
     "dep:yellowstone-grpc-client",
     "dep:yellowstone-grpc-proto",
     "dep:reqwest",

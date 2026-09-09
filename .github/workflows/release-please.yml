@@ -203,15 +203,15 @@ jobs:
   # entry would skip its dependents, which would silently disable template
   # bundling and CLI publication on releases that do not move the SDK.
   verify-generated-rust-crates:
-    name: Verify Generated Rust Crates Against crates.io
+    name: Verify Generated Rust Consumers Against crates.io
     needs: [release-please, publish-rust]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        if: needs.release-please.outputs.sdk_release_created == 'true'
+        if: needs.release-please.outputs.sdk_release_created == 'true' || needs.release-please.outputs.arete_release_created == 'true'
 
       - name: Install Rust toolchain
-        if: needs.release-please.outputs.sdk_release_created == 'true'
+        if: needs.release-please.outputs.sdk_release_created == 'true' || needs.release-please.outputs.arete_release_created == 'true'
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: ${{ inputs.rust_toolchain }}
@@ -224,9 +224,13 @@ jobs:
         if: needs.release-please.outputs.sdk_release_created == 'true'
         run: bash ./scripts/check-generated-rust-crates.sh --mode registry
 
-      - name: No SDK release in this run
-        if: needs.release-please.outputs.sdk_release_created != 'true'
-        run: echo "No arete-a4-sdk release in this run; nothing to verify."
+      - name: Check generated ingestion runtime from the registry
+        if: needs.release-please.outputs.arete_release_created == 'true'
+        run: bash ./scripts/check-generated-ingestion-runtime.sh --mode registry
+
+      - name: No Rust consumer release in this run
+        if: needs.release-please.outputs.sdk_release_created != 'true' && needs.release-please.outputs.arete_release_created != 'true'
+        run: echo "No arete or arete-a4-sdk release in this run; nothing to verify."
 
   publish-npm:
     name: Publish to npm
