@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.16.0](https://github.com/AreteA4/arete/compare/arete-v0.15.0...arete-v0.16.0) (2026-09-09)
+
+
+### Features
+
+* **ingestion:** upgrade to Shipstern and preserve V1 config (A4-251) ([faec0b3](https://github.com/AreteA4/arete/commit/faec0b3c2ba6b0dcceb4f05881a4bc95e6e72b25))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.15.0 to 0.16.0
+    * arete-macros bumped from 0.15.0 to 0.16.0
+    * arete-server bumped from 0.15.0 to 0.16.0
+
+## [0.15.0](https://github.com/AreteA4/arete/compare/arete-v0.14.0...arete-v0.15.0) (2026-09-09)
+
+
+### Miscellaneous Chores
+
+* **arete:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.14.0 to 0.15.0
+    * arete-macros bumped from 0.14.0 to 0.15.0
+    * arete-server bumped from 0.14.0 to 0.15.0
+
 ## [0.14.0](https://github.com/AreteA4/arete/compare/arete-v0.13.0...arete-v0.14.0) (2026-09-06)
 
 

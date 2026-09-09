@@ -297,7 +297,7 @@ fn generate_slot_scheduler_task() -> TokenStream {
 /// `SlotTracker` on each new slot. This drives the scheduler to fire callbacks
 /// immediately when the target slot arrives, rather than waiting for the next
 /// account/instruction event.
-fn generate_slot_subscription_task() -> TokenStream {
+pub(crate) fn generate_slot_subscription_task() -> TokenStream {
     quote! {
         // Helper function to parse SlotHashes sysvar data
         fn parse_and_cache_slot_hashes(current_slot: u64, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
@@ -358,6 +358,7 @@ fn generate_slot_subscription_task() -> TokenStream {
                         let mut builder = arete::runtime::yellowstone_grpc_client::GeyserGrpcClient
                             ::build_from_shared(endpoint.clone())?
                             .x_token(x_token.clone())?
+                            .set_reconnect_config(arete::runtime::yellowstone_grpc_client::ReconnectConfig::no_reconnect())
                             .max_decoding_message_size(usize::MAX)
                             .accept_compressed(
                                 arete::runtime::yellowstone_grpc_proto::tonic::codec::CompressionEncoding::Zstd
@@ -398,6 +399,7 @@ fn generate_slot_subscription_task() -> TokenStream {
                                     owner: vec![],
                                     filters: vec![],
                                     nonempty_txn_signature: None,
+                                    ..Default::default()
                                 },
                             )]),
                             transactions: std::collections::HashMap::new(),
@@ -413,11 +415,7 @@ fn generate_slot_subscription_task() -> TokenStream {
                             from_slot: None,
                         };
 
-                        let (sub_tx, mut stream) = client
-                            .subscribe_with_request(Some(subscribe_request))
-                            .await?;
-                        // Keep sender alive for the duration of the stream
-                        let _keep_alive = sub_tx;
+                        let mut stream = subscribe_managed(&mut client, subscribe_request).await?;
 
                         arete::runtime::tracing::info!("[SLOT_SUB] Connected and subscribed to slot and SlotHashes updates");
 
@@ -526,7 +524,7 @@ fn generate_slot_subscription_task() -> TokenStream {
     }
 }
 
-fn generate_managed_grpc_helpers() -> TokenStream {
+pub(crate) fn generate_managed_grpc_helpers() -> TokenStream {
     quote! {
         #[derive(Clone, Copy, Debug)]
         struct ManagedYellowstoneGrpcSettings {
@@ -569,6 +567,23 @@ fn generate_managed_grpc_helpers() -> TokenStream {
             } else {
                 builder
             }
+        }
+
+        /// Keep Arete's filters and input order intact. The client's high-level
+        /// subscription adds slot/block-meta filters and a dedup stream even
+        /// with reconnect disabled. Arete owns replay from processed checkpoints.
+        async fn subscribe_managed(
+            client: &mut arete::runtime::yellowstone_grpc_client::GeyserGrpcClient,
+            request: arete::runtime::yellowstone_grpc_proto::geyser::SubscribeRequest,
+        ) -> Result<
+            arete::runtime::yellowstone_grpc_proto::tonic::Streaming<arete::runtime::yellowstone_grpc_proto::geyser::SubscribeUpdate>,
+            arete::runtime::yellowstone_grpc_proto::tonic::Status,
+        > {
+            use arete::runtime::futures::StreamExt;
+            // Keep the request side open for the lifetime of the subscription.
+            let requests = arete::runtime::futures::stream::once(async move { request })
+                .chain(arete::runtime::futures::stream::pending());
+            Ok(client.geyser.subscribe(requests).await?.into_inner())
         }
 
         fn is_reconnectable_grpc_code(
@@ -646,6 +661,7 @@ fn generate_managed_grpc_helpers() -> TokenStream {
                     let mut builder = arete::runtime::yellowstone_grpc_client::GeyserGrpcClient
                         ::build_from_shared(config.endpoint.clone())?
                         .x_token(config.x_token.clone())?
+                        .set_reconnect_config(arete::runtime::yellowstone_grpc_client::ReconnectConfig::no_reconnect())
                         .max_decoding_message_size(
                             config.max_decoding_message_size.unwrap_or(usize::MAX),
                         )
@@ -688,15 +704,19 @@ fn generate_managed_grpc_helpers() -> TokenStream {
                         "Subscribing to gRPC stream"
                     );
 
-                    let (_sub_tx, stream) = client
-                        .subscribe_with_request(Some(subscribe_request))
-                        .await?;
+                    let stream = subscribe_managed(&mut client, subscribe_request).await?;
                     let mut stream = std::pin::pin!(stream);
 
                     arete::runtime::tracing::debug!("gRPC stream started");
 
                     let exit_status = loop {
-                        match stream.next().await {
+                        let next = arete::runtime::tokio::select! {
+                            _ = tx.closed() => {
+                                break arete::runtime::yellowstone_vixen::sources::SourceExitStatus::ReceiverDropped;
+                            }
+                            next = stream.next() => next,
+                        };
+                        match next {
                             Some(Ok(update)) => {
                                 if tx.send(Ok(update)).await.is_err() {
                                     arete::runtime::tracing::info!(
@@ -1147,7 +1167,7 @@ pub fn generate_vm_handler(
                     .set("event_type", event_type)
                     .set("slot", slot)
                     .set("program", #entity_name_lit)
-                    .set("account", account_address);
+                    .set("account", &account_address);
                 let mut event_value = value.to_value();
 
                 if let Some(obj) = event_value.as_object_mut() {
@@ -1337,7 +1357,7 @@ pub fn generate_vm_handler(
             ) -> arete::runtime::yellowstone_vixen::HandlerResult<()> {
                 let slot = raw_update.shared.slot;
                 let txn_index = raw_update.shared.txn_index;
-                let signature = arete::runtime::bs58::encode(&raw_update.shared.signature).into_string();
+                let context = arete::transaction_metadata::instruction_update_context(&raw_update.shared);
 
                 if let Some(ref health) = self.health_monitor {
                     health.record_event().await;
@@ -1373,8 +1393,6 @@ pub fn generate_vm_handler(
                 let bytecode = self.bytecode.clone();
                 let (mutations_result, resolver_requests, scheduled_callbacks) = {
                     let mut vm = self.vm.lock().unwrap_or_else(|e| e.into_inner());
-
-                    let context = arete::runtime::arete_interpreter::UpdateContext::new_instruction(slot, signature.clone(), txn_index);
 
                     let mut result = vm.process_event(&bytecode, event_value.clone(), event_type, Some(&context), Some(&mut log))
                         .map_err(|e| e.to_string());
@@ -1470,7 +1488,9 @@ pub fn generate_vm_handler(
                                         )
                                     };
 
-                                    match vm.process_event(&bytecode, account_data, &update.account_type, Some(&update_context), None) {
+                                    let pending_result = vm.process_event(&bytecode, account_data, &update.account_type, Some(&update_context), None);
+                                    vm.set_current_context(Some(context.clone()));
+                                    match pending_result {
                                         Ok(pending_mutations) => {
                                             arete::runtime::tracing::info!(
                                                 account_type = %update.account_type,
@@ -1528,11 +1548,7 @@ pub fn generate_vm_handler(
                 let resolver_mutations = if mutations_result.is_ok() {
                     self.resolve_and_apply_resolvers(
                         resolver_requests,
-                        Some(arete::runtime::arete_interpreter::UpdateContext::new_instruction(
-                            slot,
-                            signature.clone(),
-                            txn_index,
-                        )),
+                        Some(context.clone()),
                     )
                     .await
                 } else {
@@ -1650,7 +1666,7 @@ pub fn generate_spec_function(
             health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
             reconnection_config: arete::runtime::arete_server::ReconnectionConfig,
         ) -> arete::runtime::anyhow::Result<()> {
-            use arete::runtime::yellowstone_vixen::config::{BufferConfig, VixenConfig};
+            use arete::runtime::yellowstone_vixen::config::{BufferConfig, ShipsternConfig};
             use arete::runtime::yellowstone_vixen_yellowstone_grpc_source::YellowstoneGrpcConfig;
             use arete::runtime::yellowstone_vixen::Pipeline;
             use std::sync::{Arc, Mutex};
@@ -1774,7 +1790,7 @@ pub fn generate_spec_function(
                     arete::runtime::tracing::info!("Resuming from slot {}", from_slot.unwrap());
                 }
 
-                let vixen_config = VixenConfig {
+                let vixen_config = ShipsternConfig {
                     source: YellowstoneGrpcConfig {
                         endpoint: endpoint.clone(),
                         x_token: x_token.clone(),
@@ -1783,6 +1799,11 @@ pub fn generate_spec_function(
                         from_slot,
                         accept_compression: None,
                         max_decoding_message_size: None,
+                        accounts_data_slice: Vec::new(),
+                        // Arete owns retries and resumes from its processed checkpoint.
+                        auto_reconnect: false,
+                        reconnect_max_retries: None,
+                        reconnect_slot_retention: None,
                     },
                     buffer: BufferConfig::default(),
                 };
@@ -2475,7 +2496,7 @@ pub fn generate_instruction_handler_impl(
             ) -> arete::runtime::yellowstone_vixen::HandlerResult<()> {
                 let slot = raw_update.shared.slot;
                 let txn_index = raw_update.shared.txn_index;
-                let signature = arete::runtime::bs58::encode(&raw_update.shared.signature).into_string();
+                let context = arete::transaction_metadata::instruction_update_context(&raw_update.shared);
 
                 if let Some(ref health) = self.health_monitor {
                     health.record_event().await;
@@ -2509,8 +2530,6 @@ pub fn generate_instruction_handler_impl(
                 let bytecode = self.bytecode.clone();
                 let (mutations_result, resolver_requests, scheduled_callbacks) = {
                     let mut vm = self.vm.lock().unwrap_or_else(|e| e.into_inner());
-
-                    let context = arete::runtime::arete_interpreter::UpdateContext::new_instruction(slot, signature.clone(), txn_index);
 
                     let mut result = vm.process_event(&bytecode, event_value.clone(), event_type, Some(&context), Some(&mut log))
                         .map_err(|e| e.to_string());
@@ -2605,7 +2624,9 @@ pub fn generate_instruction_handler_impl(
                                         )
                                     };
 
-                                    match vm.process_event(&bytecode, account_data, &update.account_type, Some(&update_context), None) {
+                                    let pending_result = vm.process_event(&bytecode, account_data, &update.account_type, Some(&update_context), None);
+                                    vm.set_current_context(Some(context.clone()));
+                                    match pending_result {
                                         Ok(pending_mutations) => {
                                             arete::runtime::tracing::info!(
                                                 account_type = %update.account_type,
@@ -2750,11 +2771,7 @@ pub fn generate_instruction_handler_impl(
                 let resolver_mutations = if mutations_result.is_ok() {
                     self.resolve_and_apply_resolvers(
                         resolver_requests,
-                        Some(arete::runtime::arete_interpreter::UpdateContext::new_instruction(
-                            slot,
-                            signature.clone(),
-                            txn_index,
-                        )),
+                        Some(context.clone()),
                     )
                     .await
                 } else {
@@ -3041,7 +3058,7 @@ pub fn generate_multi_pipeline_spec_function(
             health_monitor: Option<arete::runtime::arete_server::HealthMonitor>,
             reconnection_config: arete::runtime::arete_server::ReconnectionConfig,
         ) -> arete::runtime::anyhow::Result<()> {
-            use arete::runtime::yellowstone_vixen::config::{BufferConfig, VixenConfig};
+            use arete::runtime::yellowstone_vixen::config::{BufferConfig, ShipsternConfig};
             use arete::runtime::yellowstone_vixen_yellowstone_grpc_source::YellowstoneGrpcConfig;
             use arete::runtime::yellowstone_vixen::Pipeline;
             use std::sync::{Arc, Mutex};
@@ -3164,7 +3181,7 @@ pub fn generate_multi_pipeline_spec_function(
                     arete::runtime::tracing::info!("Resuming from slot {}", from_slot.unwrap());
                 }
 
-                let vixen_config = VixenConfig {
+                let vixen_config = ShipsternConfig {
                     source: YellowstoneGrpcConfig {
                         endpoint: endpoint.clone(),
                         x_token: x_token.clone(),
@@ -3173,6 +3190,11 @@ pub fn generate_multi_pipeline_spec_function(
                         from_slot,
                         accept_compression: None,
                         max_decoding_message_size: None,
+                        accounts_data_slice: Vec::new(),
+                        // Arete owns retries and resumes from its processed checkpoint.
+                        auto_reconnect: false,
+                        reconnect_max_retries: None,
+                        reconnect_slot_retention: None,
                     },
                     buffer: BufferConfig::default(),
                 };

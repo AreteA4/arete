@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.16.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.15.0...arete-typescript-v0.16.0) (2026-09-09)
+
+
+### Miscellaneous Chores
+
+* **arete-typescript:** Synchronize arete versions
+
+## [0.15.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.14.0...arete-typescript-v0.15.0) (2026-09-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** public Rust structs gain fields (SendOptions transaction_version/resources, TransactionSimulationResult loaded_accounts_data_size), so struct-literal construction without ..Default::default() no longer compiles. The TypeScript adapter interfaces require supportedTransactionVersions, and resource keys that previously passed through the SendOptions index signature untouched are now typed and validated.
+
+### Features
+
+* **sdk:** preserve simulation budgets and define the V1 option contract ([#198](https://github.com/AreteA4/arete/issues/198)) ([38d9537](https://github.com/AreteA4/arete/commit/38d9537f77a37a7ffa89b9f23ba08da641e8fe99))
+
 ## [0.14.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.13.0...arete-typescript-v0.14.0) (2026-09-06)
 
 

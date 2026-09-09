@@ -1,6 +1,6 @@
 [package]
 name = "arete"
-version = "0.14.0"
+version = "0.16.0"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
@@ -13,16 +13,16 @@ readme = "README.md"
 
 [dependencies]
 # Core interpreter - AST transformation runtime and VM
-arete-interpreter = { version = "0.14.0", path = "../interpreter", optional = true }
+arete-interpreter = { version = "0.16.0", path = "../interpreter", optional = true }
 
 # Macros - proc-macros for defining streams
-arete-macros = { version = "0.14.0", path = "../arete-macros", optional = true }
+arete-macros = { version = "0.16.0", path = "../arete-macros", optional = true }
 
 # Server - WebSocket server and projection handlers
-arete-server = { version = "0.14.0", path = "../rust/arete-server", optional = true }
+arete-server = { version = "0.16.0", path = "../rust/arete-server", optional = true }
 
 # SDK - Rust client for connecting to Arete servers
-arete-sdk = { package = "arete-a4-sdk", version = "0.14.0", path = "../rust/arete-a4-sdk", optional = true }
+arete-sdk = { package = "arete-a4-sdk", version = "0.16.0", path = "../rust/arete-a4-sdk", optional = true }
 
 # Runtime dependencies for macro-generated code (re-exported via arete::runtime)
 tokio = { version = "1.0", features = ["full"], optional = true }
@@ -35,9 +35,9 @@ tracing = { version = "0.1", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 bytemuck = { version = "1.21", features = ["derive", "min_const_generics"], optional = true }
-yellowstone-vixen = { workspace = true, optional = true }
-yellowstone-vixen-core = { workspace = true, optional = true }
-yellowstone-vixen-yellowstone-grpc-source = { workspace = true, optional = true }
+shipstern = { workspace = true, optional = true }
+shipstern-core = { workspace = true, optional = true }
+shipstern-yellowstone-grpc-source = { workspace = true, optional = true }
 yellowstone-grpc-client = { workspace = true, optional = true }
 yellowstone-grpc-proto = { workspace = true, optional = true }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"], optional = true }
@@ -62,9 +62,9 @@ runtime = [
     "dep:serde",
     "dep:serde_json",
     "dep:bytemuck",
-    "dep:yellowstone-vixen",
-    "dep:yellowstone-vixen-core",
-    "dep:yellowstone-vixen-yellowstone-grpc-source",
+    "dep:shipstern",
+    "dep:shipstern-core",
+    "dep:shipstern-yellowstone-grpc-source",
     "dep:yellowstone-grpc-client",
     "dep:yellowstone-grpc-proto",
     "dep:reqwest",

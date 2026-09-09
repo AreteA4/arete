@@ -79,6 +79,7 @@ pub struct InstructionContext<'a> {
     pub(crate) slot: Option<u64>,
     pub(crate) signature: Option<String>,
     pub(crate) timestamp: Option<i64>,
+    update_context: Option<crate::UpdateContext>,
     pub(crate) dirty_tracker: crate::vm::DirtyTracker,
     _borrow: PhantomData<&'a mut ()>,
 }
@@ -994,6 +995,16 @@ export const TokenMetadataPatchSchema = z.object({
 }
 
 impl<'a> InstructionContext<'a> {
+    /// Transaction observations from the originating instruction, if retained.
+    pub fn solana_transaction(
+        &self,
+    ) -> serde_json::Result<Option<crate::SolanaTransactionMetadata>> {
+        match &self.update_context {
+            Some(context) => context.solana_transaction(),
+            None => Ok(None),
+        }
+    }
+
     pub fn new(
         accounts: HashMap<String, String>,
         state_id: u32,
@@ -1011,6 +1022,7 @@ impl<'a> InstructionContext<'a> {
             slot: None,
             signature: None,
             timestamp: None,
+            update_context: None,
             dirty_tracker: crate::vm::DirtyTracker::new(),
             _borrow: PhantomData,
         }
@@ -1027,6 +1039,7 @@ impl<'a> InstructionContext<'a> {
         signature: Option<String>,
         timestamp: i64,
     ) -> Self {
+        let update_context = vm.current_context().cloned();
         // Store raw pointers so the hook context can access VM internals without
         // holding overlapping Rust references to `vm` and `vm.registers`.
         let reverse_lookup_tx =
@@ -1047,6 +1060,7 @@ impl<'a> InstructionContext<'a> {
             slot,
             signature,
             timestamp: Some(timestamp),
+            update_context,
             dirty_tracker: crate::vm::DirtyTracker::new(),
             _borrow: PhantomData,
         }

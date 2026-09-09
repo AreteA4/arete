@@ -42,6 +42,7 @@ pub mod scheduler;
 pub mod slot_hash_cache;
 pub mod snapshot;
 pub mod spec_trait;
+pub mod transaction_metadata;
 pub mod typescript;
 pub mod typescript_instructions;
 pub mod versioned;
@@ -61,6 +62,10 @@ pub use runtime_resolvers::{
     InProcessResolver, ResolverApplyFuture, ResolverBatchFuture, ResolverBatchResult,
     RuntimeResolver, RuntimeResolverBatchRequest, RuntimeResolverBatchResponse,
     RuntimeResolverRequest, RuntimeResolverResponse, SharedRuntimeResolver,
+};
+pub use transaction_metadata::{
+    SolanaTransactionConfig, SolanaTransactionMetadata, SolanaTransactionVersion,
+    SOLANA_TRANSACTION_METADATA_KEY,
 };
 pub use typescript::{write_typescript_to_file, TypeScriptCompiler, TypeScriptConfig};
 pub use vm::{
