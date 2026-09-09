@@ -101,6 +101,40 @@ async def read_chain(a4, address):
     return clock, lamports, accounts, blockhash
 ```
 
+## Optional solders adapter (`solana` extra)
+
+The core SDK never imports a Solana library. The optional first-party adapter does,
+and builds legacy, v0 and transaction-V1 (SIMD-0385) transactions through the relay:
+
+```bash
+pip install 'arete-sdk[solana]'   # solders >= 0.29, needs Python >= 3.10
+```
+
+```python
+from solders.keypair import Keypair
+from arete.adapters.solders import SoldersAdapterConfig, SoldersWalletAdapter
+from arete.wallet import SendOptions, TransactionResourceOptions
+
+wallet = SoldersWalletAdapter(SoldersAdapterConfig(keypair=Keypair(), transport=a4.transactions))
+
+# Compute budget and priority fee are typed options, never hand-built
+# ComputeBudget instructions (which the adapter rejects): V1 carries them inline
+# in the message, legacy/v0 get the equivalent instructions prepended.
+result = await a4.transaction([ix], wallet=wallet, send=SendOptions(
+    transaction_version=1,
+    resources=TransactionResourceOptions(priority_fee_lamports=10_000, heap_size=64 * 1024),
+))
+```
+
+`priority_fee_lamports` (total lamports) is V1-only and
+`compute_unit_price_micro_lamports` (per compute unit) is legacy/v0-only; the wrong
+pairing is rejected rather than converted. `estimate_resources=True` simulates the
+unsigned transaction and fills in only the ceilings the caller left unset.
+`await wallet.inspect_transaction([ix])` returns fee, logs, consumed units and
+loaded-accounts data size without signing, submitting or prompting. See
+`examples/solana_v1.py`. The base install and Python 3.9 support are unaffected: the
+extra is required only to import `arete.adapters.solders`.
+
 ## Sessions (multi-stack)
 
 ```python
@@ -117,6 +151,10 @@ async def stream_session(auth):
 ```bash
 pip install -e '.[dev]'
 python -m pytest tests/ -q
+
+# The solders adapter suite is collected only when the extra is installed
+pip install -e '.[dev,solana]'
+python -m pytest tests/test_solders_adapter.py -q
 ```
 
 ## License

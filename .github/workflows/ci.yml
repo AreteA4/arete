@@ -458,24 +458,49 @@ jobs:
           node -e "const plugin = require('./eslint-plugin.cjs'); if (!plugin.rules?.['fluent-hooks']) throw new Error('Missing fluent-hooks ESLint rule');"
 
   python:
-    name: Python
+    name: Python ${{ matrix.python-version }} (${{ matrix.extras }})
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: python/arete-sdk
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Base install: solders is absent, so the optional adapter suite is
+          # not collected and the core SDK must work without it.
+          - python-version: "3.9"
+            extras: dev
+          - python-version: "3.11"
+            extras: dev
+          # Optional solders transaction adapter; solders needs Python >= 3.10.
+          - python-version: "3.10"
+            extras: dev,solana
+          - python-version: "3.11"
+            extras: dev,solana
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.11"
+          python-version: "${{ matrix.python-version }}"
 
       - name: Install package with dev extras
-        run: python -m pip install -e '.[dev]'
+        run: python -m pip install -e '.[${{ matrix.extras }}]'
+
+      - name: Require the adapter dependency
+        if: contains(matrix.extras, 'solana')
+        run: python -c "import solders; print('solders', solders.__version__)"
 
       - name: Run tests
         run: python -m pytest
+
+      # Named explicitly so a missing extra fails the job ("no tests ran")
+      # instead of silently skipping the adapter suite.
+      - name: Run the solders adapter suite
+        if: contains(matrix.extras, 'solana')
+        run: python -m pytest tests/test_solders_adapter.py
 
   docs:
     name: Docs
