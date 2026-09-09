@@ -14,7 +14,7 @@ phantom-typed object literals.
 
 ```toml
 [dependencies]
-arete-sdk = { package = "arete-a4-sdk", version = "0.15.0" } # x-release-please-version
+arete-sdk = { package = "arete-a4-sdk", version = "0.16.0" } # x-release-please-version
 ```
 
 By default the SDK uses `rustls` for TLS. Switch to native TLS with
