@@ -856,20 +856,23 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
 
         // The budgets are resolved before the final message exists, so the
         // configuration that is compiled, sized, preflighted and signed is
-        // one configuration.
+        // one configuration. The provisional message is sized too: an
+        // oversized payload is a build failure with an exact byte count,
+        // not a backend-specific simulation error.
+        const encodeSized = (compiled: ReturnType<typeof compileTransaction>) => {
+          assertWithinSizeLimit(version, getTransactionSize(compiled));
+          return getBase64EncodedWireTransaction(compiled);
+        };
         const resources = version === 1
           ? await resolveV1Budgets(
             resolved,
-            (provisional) => getBase64EncodedWireTransaction(
-              compileTransaction(compile(provisional))
-            ),
+            (provisional) => encodeSized(compileTransaction(compile(provisional))),
             plan.resources,
             commitment
           )
           : plan.resources;
         message = compile(resources);
-        const preview = compileTransaction(message);
-        assertWithinSizeLimit(version, getTransactionSize(preview));
+        assertWithinSizeLimit(version, getTransactionSize(compileTransaction(message)));
       } catch (cause) {
         throw new KitTransactionExecutionError({
           status: 'not-submitted',
@@ -1027,6 +1030,11 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
         feePayer: createNoopSigner(address(inspectionOptions?.feePayer ?? signer.address)),
       });
       const unsignedTransaction = compileTransaction(message);
+      // The same ceiling the send path enforces: a payload that could only
+      // be rejected on submission is refused here with its byte count,
+      // rather than answered with inspection results or a backend-specific
+      // simulation error.
+      assertWithinSizeLimit(version, getTransactionSize(unsignedTransaction));
       const wireTransaction = getBase64EncodedWireTransaction(unsignedTransaction);
       const encodedMessage = getBase64Decoder().decode(
         unsignedTransaction.messageBytes

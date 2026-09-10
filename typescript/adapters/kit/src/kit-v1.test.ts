@@ -438,6 +438,33 @@ describe('limits', () => {
     });
     expect(calls).not.toContain('send');
   });
+
+  it('refuses an oversized payload during inspection, before any backend call', async () => {
+    // Inspecting a payload the send path deterministically rejects must not
+    // answer with metrics or a backend-specific simulation error.
+    const { transport, calls } = fakeTransport();
+
+    await expect(
+      adapter(transport).inspectTransaction([memo(new Array(4_200).fill(7))], explicitV1)
+    ).rejects.toThrow(/4096-byte limit/);
+    expect(calls).not.toContain('simulate');
+    expect(calls).not.toContain('fee');
+  });
+
+  it('refuses an oversized provisional message before simulating it', async () => {
+    const { transport, calls } = fakeTransport();
+
+    await expect(
+      adapter(transport).signAndSend(
+        [memo(new Array(4_200).fill(7))],
+        { transactionVersion: 1 }
+      )
+    ).rejects.toMatchObject({
+      outcome: { status: 'not-submitted', phase: 'build' },
+      cause: { message: expect.stringContaining('4096-byte limit') },
+    });
+    expect(calls).not.toContain('simulate');
+  });
 });
 
 // ---------------------------------------------------------------------------
