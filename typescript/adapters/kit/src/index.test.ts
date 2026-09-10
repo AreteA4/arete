@@ -177,9 +177,9 @@ describe('createWalletAdapter', () => {
       getLatestBlockhash: vi.fn(async () => ({
         blockhash: 'latest-blockhash', contextSlot: 1n, lastValidBlockHeight: 999n,
       })),
-      sendTransaction: vi.fn(async () => ({ signature: 'sig-arete' })),
+      sendTransaction: vi.fn(async () => ({ signature: 'sig-kit' })),
       getSignatureStatus: vi.fn(async () => ({
-        signature: 'sig-arete', slot: 88n, confirmationStatus: 'confirmed', err: null,
+        signature: 'sig-kit', slot: 88n, confirmationStatus: 'confirmed', err: null,
       })),
       getBlockHeight: vi.fn(async () => 100n),
     } as unknown as TransactionTransport;
@@ -191,7 +191,7 @@ describe('createWalletAdapter', () => {
       [makeInstruction(['primary-signer'])],
       { statusPollIntervalMs: 0 },
       { transactionTransport: transport }
-    )).resolves.toEqual({ signature: 'sig-arete', slot: 88 });
+    )).resolves.toEqual({ signature: 'sig-kit', slot: 88 });
     expect(transport.sendTransaction).toHaveBeenCalledTimes(1);
     expect(sendAndConfirmTransactionFactory).not.toHaveBeenCalled();
     expect(signTransactionMessageWithSigners).toHaveBeenCalledTimes(1);

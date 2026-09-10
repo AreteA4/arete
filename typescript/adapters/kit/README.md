@@ -94,4 +94,4 @@ Submission failures throw `KitTransactionExecutionError` with an Arete-compatibl
 - `submitted-unknown` when confirmation fails and one signature-status query cannot prove the result.
 - `chain-failed` when that status query reports an on-chain error.
 
-The adapter never rebuilds, retries, or resubmits a transaction. Known signatures and landed slots are preserved on results and errors.
+The adapter never rebuilds, retries, or resubmits a transaction. On the Arete path, `confirmationTimeoutMs` is one deadline covering submission **and** confirmation, including whatever request is in flight, so a relay that stops answering yields `submitted-unknown` rather than hanging. The signature derived from the signed bytes is authoritative throughout: a relay reporting a different one is logged as a diagnostic, never polled for and never returned as the transaction submitted.

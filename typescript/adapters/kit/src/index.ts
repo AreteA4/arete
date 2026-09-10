@@ -299,20 +299,83 @@ function resolveTransport(
   throw new Error('No transaction transport is available; connect through Arete or configure direct RPC');
 }
 
+/**
+ * Report, never adopt, a relay signature that is not the one signed here.
+ *
+ * The adapter signs the final bytes and derives the signature from them, so
+ * the local one is authoritative. Reconciling an echoed signature would
+ * poll a transaction this adapter never submitted: it can report another
+ * transaction's status as this one's, or never confirm the one that went
+ * out.
+ */
+function reportSignatureMismatch(local: string, echoed: string | undefined): void {
+  if (echoed && echoed !== local) {
+    // eslint-disable-next-line no-console -- the adapter has no logger, and
+    // this runs after the transaction may already be on the wire, so it
+    // must not interrupt the signature-bearing outcome.
+    console.warn(
+      `Arete relay reported signature ${echoed} for a transaction signed as ${local}; `
+      + 'the locally derived signature is authoritative and is the one being reconciled'
+    );
+  }
+}
+
+/** Thrown by {@link withDeadline} when the shared deadline passes first. */
+class DeadlineExpiredError extends Error {
+  constructor() {
+    super('The configured confirmation deadline expired');
+    this.name = 'DeadlineExpiredError';
+  }
+}
+
+const DEADLINE_EXPIRED = Symbol('deadline-expired');
+
+/**
+ * Await `work`, or give up at `deadline`.
+ *
+ * A racing timer rather than an abort signal: `TransactionTransport` takes
+ * none, and no HTTP client under it imposes a request timeout, so a backend
+ * that stops answering would otherwise hold the caller forever. The
+ * abandoned request is left with a no-op rejection handler — it may still be
+ * in flight, which is exactly why the outcome is *unknown* rather than
+ * failed.
+ */
+async function withDeadline<T>(deadline: number, work: Promise<T>): Promise<T> {
+  work.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Executor form, not `Promise.withResolvers`: that landed in Node 22 and
+  // this package's floor is the Node 20.18 that Kit 8 requires.
+  const expiry = new Promise<typeof DEADLINE_EXPIRED>((resolve) => {
+    timer = setTimeout(() => resolve(DEADLINE_EXPIRED), Math.max(deadline - Date.now(), 0));
+  });
+  try {
+    const result = await Promise.race([work, expiry]);
+    if (result === DEADLINE_EXPIRED) throw new DeadlineExpiredError();
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Poll until the signature reaches `commitment`, its lifetime expires, or
+ * `deadline` passes — including while a request is in flight. Never
+ * resubmits, and only ever polls the signature the caller signed.
+ */
 async function pollAreteStatus(
   transport: TransactionTransport,
   signature: string,
   commitment: Commitment,
   lastValidBlockHeight: bigint,
+  deadline: number,
   options?: KitSendOptions
 ): Promise<SendResult> {
-  const deadline = Date.now() + (options?.confirmationTimeoutMs ?? 60_000);
   const interval = options?.statusPollIntervalMs ?? 500;
   let emptyStatusPolls = 0;
   while (Date.now() <= deadline) {
-    const status = await transport.getSignatureStatus(signature, {
+    const status = await withDeadline(deadline, transport.getSignatureStatus(signature, {
       commitment, searchTransactionHistory: true,
-    });
+    }));
     if (status?.err) {
       throw new KitTransactionExecutionError({
         status: 'chain-failed', phase: 'confirmation', signature,
@@ -322,7 +385,8 @@ async function pollAreteStatus(
     if (status && hasReachedCommitment(status.confirmationStatus, commitment)) {
       return { signature, slot: status.slot === null ? undefined : Number(status.slot) };
     }
-    if (await transport.getBlockHeight({ commitment }) > lastValidBlockHeight) {
+    if (await withDeadline(deadline, transport.getBlockHeight({ commitment }))
+      > lastValidBlockHeight) {
       throw new KitTransactionExecutionError({
         status: 'submitted-unknown', phase: 'confirmation', signature,
         slot: status?.slot === null ? undefined : Number(status?.slot),
@@ -330,7 +394,8 @@ async function pollAreteStatus(
       });
     }
     emptyStatusPolls = status ? 0 : emptyStatusPolls + 1;
-    const delayMs = Math.min(interval * (2 ** Math.min(emptyStatusPolls, 3)), 4_000);
+    const backoffMs = Math.min(interval * (2 ** Math.min(emptyStatusPolls, 3)), 4_000);
+    const delayMs = Math.min(backoffMs, Math.max(deadline - Date.now(), 0));
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
   throw new KitTransactionExecutionError({
@@ -896,33 +961,49 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
       }
 
       if (resolved.kind === 'arete') {
-        let submittedSignature: string;
+        // One deadline over submission *and* confirmation: a relay that
+        // takes the transaction and then stalls would otherwise hold the
+        // caller forever, because no HTTP client here imposes a request
+        // timeout. Expiry on either side is submitted-unknown under the
+        // signature these bytes carry — never a rebuild, re-sign or resend.
+        const deadline = Date.now() + (sendOptions?.confirmationTimeoutMs ?? 60_000);
         try {
-          const sent = await resolved.transport.sendTransaction(
+          const sent = await withDeadline(deadline, resolved.transport.sendTransaction(
             getBase64EncodedWireTransaction(signedTransaction),
             { skipPreflight: options?.skipPreflight ?? false, preflightCommitment: commitment }
-          );
-          submittedSignature = sent.signature;
+          ));
+          reportSignatureMismatch(signature, sent.signature);
         } catch (cause) {
+          if (cause instanceof DeadlineExpiredError) {
+            throw new KitTransactionExecutionError({
+              status: 'submitted-unknown', phase: 'send', signature,
+              cause: new Error(
+                'The relay did not acknowledge the submission before the confirmation '
+                + 'deadline; the transaction was dispatched once and may still land'
+              ),
+            });
+          }
           if (cause instanceof TransactionTransportError && cause.submissionState === 'not_submitted') {
             throw new KitTransactionExecutionError({ status: 'not-submitted', phase: 'send', cause });
           }
+          if (cause instanceof TransactionTransportError) {
+            reportSignatureMismatch(signature, cause.signature);
+          }
+          // The locally derived signature stays authoritative: it is the one
+          // these bytes carry, so a relay reporting another identifies some
+          // other transaction and cannot be what the caller reconciles.
           throw new KitTransactionExecutionError({
-            status: 'submitted-unknown', phase: 'send',
-            signature: cause instanceof TransactionTransportError && cause.signature
-              ? cause.signature : signature,
-            cause,
+            status: 'submitted-unknown', phase: 'send', signature, cause,
           });
         }
         try {
           return await pollAreteStatus(
-            resolved.transport, submittedSignature, commitment, lastValidBlockHeight, sendOptions
+            resolved.transport, signature, commitment, lastValidBlockHeight, deadline, sendOptions
           );
         } catch (cause) {
           if (cause instanceof KitTransactionExecutionError) throw cause;
           throw new KitTransactionExecutionError({
-            status: 'submitted-unknown', phase: 'confirmation',
-            signature: submittedSignature, cause,
+            status: 'submitted-unknown', phase: 'confirmation', signature, cause,
           });
         }
       }

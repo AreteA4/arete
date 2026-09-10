@@ -14,13 +14,16 @@ import {
   createKeyPairSignerFromPrivateKeyBytes,
   getBase64Encoder,
   getCompiledTransactionMessageDecoder,
+  getSignatureFromTransaction,
   getTransactionDecoder,
   type TransactionSigner,
 } from '@solana/kit';
+import { TransactionTransportError } from '@usearete/sdk';
 import type { BuiltInstruction, TransactionTransport } from '@usearete/sdk';
 import {
   MAX_COMPUTE_UNIT_LIMIT,
   MAX_LOADED_ACCOUNTS_DATA_SIZE,
+  KitTransactionExecutionError,
   createWalletAdapter,
 } from './index';
 
@@ -62,6 +65,21 @@ interface FakeTransportOptions {
   unitsConsumed?: bigint;
   loadedAccountsDataSize?: bigint;
   simulationError?: unknown;
+  /** A signature of the relay's own, instead of echoing the signed one. */
+  relaySignature?: string;
+  /** Fail the submission with this, after recording the dispatch. */
+  sendError?: unknown;
+  /** Record the dispatch, then never answer. */
+  stallSend?: boolean;
+  /** Answer the submission, then never answer a status poll. */
+  stallStatus?: boolean;
+}
+
+/** A promise that never settles, for the stalled-backend probes. */
+function pending<T>(): Promise<T> {
+  // Executor form: `Promise.withResolvers` needs Node 22, and this package
+  // targets the Node 20.18 floor Kit 8 declares.
+  return new Promise<T>(() => {});
 }
 
 /** Recording Arete relay: `calls` is how "never sent" is asserted. */
@@ -93,14 +111,17 @@ function fakeTransport(options: FakeTransportOptions = {}) {
     async sendTransaction(transaction: string) {
       calls.push('send');
       sent.push(transaction);
+      if (options.stallSend) return pending<{ signature: string }>();
+      if (options.sendError) throw options.sendError;
       const decoded = getTransactionDecoder().decode(
         getBase64Encoder().encode(transaction) as Uint8Array
       );
-      return { signature: Object.keys(decoded.signatures)[0] };
+      return { signature: options.relaySignature ?? getSignatureFromTransaction(decoded) };
     },
-    async getSignatureStatus() {
+    async getSignatureStatus(signature: string) {
       calls.push('status');
-      return { confirmationStatus: 'confirmed' as const, err: null, slot: 42n };
+      if (options.stallStatus) return pending<unknown>();
+      return { signature, confirmationStatus: 'confirmed' as const, err: null, slot: 42n };
     },
     async getBlockHeight() {
       calls.push('height');
@@ -117,6 +138,11 @@ function adapter(transport: TransactionTransport, signers: readonly TransactionS
     additionalSigners: signers,
     defaultCommitment: 'confirmed',
   });
+}
+
+/** The signature the submitted bytes actually carry. */
+function submittedSignature(sent: readonly string[]): string {
+  return getSignatureFromTransaction(decodeWire(sent[0]).transaction);
 }
 
 function decodeWire(wire: string) {
@@ -575,5 +601,115 @@ describe('inspection', () => {
     const inspection = await adapter(transport).inspectTransaction([memo([1])]);
 
     expect(inspection.loadedAccountsDataSize).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The locally derived signature, and the shared submission deadline
+// ---------------------------------------------------------------------------
+
+describe('relay submission', () => {
+  const explicitV1 = {
+    transactionVersion: 1 as const,
+    resources: { computeUnitLimit: 1_000, loadedAccountsDataSizeLimit: 32_768 },
+  };
+  const impostor = '4bMuqmB1nZ1nH6WHhqnbGdrWvGFtcH1sZLYNHFDaCmoxfPnCnSKmyVW3xQ3DFXbEsdKrLtC2K1e2A1SmXKKbrKPu';
+
+  /** The rejection, so `sent` is populated before it is read. */
+  async function failedSend(
+    transport: TransactionTransport,
+    options: Record<string, unknown> = {}
+  ) {
+    return adapter(transport)
+      .signAndSend([memo([1])], { ...explicitV1, ...options })
+      .then(
+        () => { throw new Error('expected the send to fail'); },
+        (cause: KitTransactionExecutionError) => cause
+      );
+  }
+
+  it('reconciles the signature it signed, not the one the relay echoed', async () => {
+    // Adopting the echo would poll a different transaction entirely and
+    // report its status as this one's.
+    const { transport, calls, sent } = fakeTransport({ relaySignature: impostor });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await adapter(transport).signAndSend([memo([1])], explicitV1);
+
+    expect(result.signature).toBe(submittedSignature(sent));
+    expect(result.signature).not.toBe(impostor);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(impostor));
+    expect(calls.filter((call) => call === 'send')).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it('keeps that signature on an ambiguous error carrying another', async () => {
+    const { transport, sent } = fakeTransport({
+      sendError: new TransactionTransportError(504, {
+        code: 'upstream_timeout',
+        message: 'Submission outcome is unknown',
+        retryable: false,
+        submission_state: 'unknown',
+        signature: impostor,
+      }),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const error = await failedSend(transport);
+
+    expect(error.outcome).toMatchObject({
+      status: 'submitted-unknown',
+      signature: submittedSignature(sent),
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(impostor));
+    warn.mockRestore();
+  });
+
+  it('still reports a proven non-dispatch as not submitted', async () => {
+    const { transport } = fakeTransport({
+      sendError: new TransactionTransportError(400, {
+        code: 'invalid_transaction',
+        message: 'blockhash not found',
+        retryable: false,
+        submission_state: 'not_submitted',
+      }),
+    });
+
+    const error = await failedSend(transport);
+
+    expect(error.outcome).toMatchObject({ status: 'not-submitted', phase: 'send' });
+  });
+
+  it('ends a stalled submission at the deadline with the signed signature', async () => {
+    const { transport, calls, sent } = fakeTransport({ stallSend: true });
+
+    const error = await failedSend(transport, {
+      confirmationTimeoutMs: 30,
+      statusPollIntervalMs: 1,
+    });
+
+    expect(error.outcome).toMatchObject({
+      status: 'submitted-unknown',
+      phase: 'send',
+      signature: submittedSignature(sent),
+    });
+    expect(calls.filter((call) => call === 'send')).toHaveLength(1);
+    expect(calls).not.toContain('status');
+  });
+
+  it('ends a stalled status request at the same deadline', async () => {
+    const { transport, calls, sent } = fakeTransport({ stallStatus: true });
+
+    const error = await failedSend(transport, {
+      confirmationTimeoutMs: 30,
+      statusPollIntervalMs: 1,
+    });
+
+    expect(error.outcome).toMatchObject({
+      status: 'submitted-unknown',
+      phase: 'confirmation',
+      signature: submittedSignature(sent),
+    });
+    expect(calls.filter((call) => call === 'send')).toHaveLength(1);
   });
 });
