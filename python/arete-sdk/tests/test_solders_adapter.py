@@ -13,6 +13,7 @@ against itself.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -1063,7 +1064,7 @@ async def test_timeout_is_submitted_unknown_after_exactly_one_send():
             transport,
             [memo([1, 2, 3])],
             SendOptions(transaction_version=1),
-            confirmation_timeout=0,
+            confirmation_timeout=0.02,
         )
 
     outcome = caught.value.outcome
@@ -1072,6 +1073,71 @@ async def test_timeout_is_submitted_unknown_after_exactly_one_send():
     assert outcome.signature == submitted_signature(transport)
     assert transport.calls.count("send") == 1
     assert len(transport.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_submission_ends_at_the_deadline_with_the_signature():
+    """The relay takes the transaction and never answers.
+
+    Nothing here imposes a request timeout of its own, so without a bound on
+    the dispatch the caller waits forever on a transaction that may already
+    have landed.
+    """
+
+    class Stalling(FakeTransport):
+        async def send_transaction(self, transaction, **kwargs):
+            self.calls.append("send")
+            self.sent.append(transaction)
+            await asyncio.Future()
+            raise AssertionError("unreachable")
+
+    transport = Stalling()
+    with pytest.raises(WalletError) as caught:
+        await asyncio.wait_for(
+            send(
+                transport,
+                [memo([1, 2, 3])],
+                SendOptions(transaction_version=1),
+                confirmation_timeout=0.03,
+                poll_interval=0.001,
+            ),
+            timeout=1.0,
+        )
+
+    outcome = caught.value.outcome
+    assert outcome.status == "submitted-unknown"
+    assert outcome.phase == "send"
+    assert outcome.signature == submitted_signature(transport)
+    assert transport.calls.count("send") == 1
+    assert "status" not in transport.calls, "the deadline is spent before polling"
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_status_request_ends_at_the_deadline():
+    class Stalling(FakeTransport):
+        async def get_signature_status(self, signature, **kwargs):
+            self.calls.append("status")
+            await asyncio.Future()
+            raise AssertionError("unreachable")
+
+    transport = Stalling()
+    with pytest.raises(WalletError) as caught:
+        await asyncio.wait_for(
+            send(
+                transport,
+                [memo([1, 2, 3])],
+                SendOptions(transaction_version=1),
+                confirmation_timeout=0.03,
+                poll_interval=0.001,
+            ),
+            timeout=1.0,
+        )
+
+    outcome = caught.value.outcome
+    assert outcome.status == "submitted-unknown"
+    assert outcome.phase == "confirmation"
+    assert outcome.signature == submitted_signature(transport)
+    assert transport.calls.count("send") == 1
 
 
 @pytest.mark.asyncio
@@ -1112,7 +1178,7 @@ async def test_processed_status_does_not_satisfy_a_finalized_request():
             transport,
             [memo([1])],
             SendOptions(transaction_version=1, confirmation_level="finalized"),
-            confirmation_timeout=0,
+            confirmation_timeout=0.02,
         )
 
     assert caught.value.outcome.status == "submitted-unknown"
@@ -1541,7 +1607,7 @@ async def test_a_timed_out_rpc_send_makes_exactly_one_attempt():
     )
     arete_relay = FakeTransport(allow_send=False)
     a4 = await make_client(
-        v1_default_adapter(rpc, transport_selection="direct", confirmation_timeout=0),
+        v1_default_adapter(rpc, transport_selection="direct", confirmation_timeout=0.05),
         transactions=arete_relay,
     )
 

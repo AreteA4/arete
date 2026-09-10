@@ -178,6 +178,11 @@ The backend is chosen once, before the operation: a failure on the selected one
 never falls back to the other, and nothing is rebuilt, re-signed or resent
 after an uncertain result.
 
+`confirmation_timeout` is one deadline covering submission **and**
+confirmation, including whatever request is in flight. A transport that takes
+the transaction and then stops answering yields a `submitted-unknown` outcome
+carrying the locally derived signature — never a hang, and never a resend.
+
 ## Sessions (multi-stack)
 
 ```python

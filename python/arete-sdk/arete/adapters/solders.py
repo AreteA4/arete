@@ -218,6 +218,16 @@ def _compute_budget_instructions(
     return instructions
 
 
+async def _within(deadline: float, awaitable: Any) -> Any:
+    """Await bounded by the shared submission/confirmation deadline.
+
+    ``asyncio.wait_for`` rather than ``asyncio.timeout``: the ``solana``
+    extra supports Python 3.10, where the context manager does not exist.
+    An already-expired deadline raises rather than starting the request.
+    """
+    return await asyncio.wait_for(awaitable, max(deadline - time.monotonic(), 0.0))
+
+
 def _compile(
     version: Any,
     payer: Pubkey,
@@ -872,14 +882,24 @@ class SoldersWalletAdapter:
         transaction = self._sign(plan)
         signature = str(transaction.signatures[0])
 
-        # Exactly one submission. Anything ambiguous is reconciled by signature;
-        # the transaction is never rebuilt, re-signed or resent.
+        # Exactly one submission, on one deadline that also covers
+        # confirmation. A transport that takes the transaction and then
+        # stalls before answering would otherwise leave the caller pending
+        # forever: nothing here imposes a request timeout of its own, and
+        # the reconciliation clock used to start only once send returned.
+        # The transaction is never rebuilt, re-signed or resent.
+        deadline = time.monotonic() + self._config.confirmation_timeout
         try:
-            sent = await plan.transport.send_transaction(
-                _b64(bytes(transaction)),
-                skip_preflight=bool(plan.options.skip_preflight),
-                preflight_commitment=plan.commitment,
+            sent = await _within(
+                deadline,
+                plan.transport.send_transaction(
+                    _b64(bytes(transaction)),
+                    skip_preflight=bool(plan.options.skip_preflight),
+                    preflight_commitment=plan.commitment,
+                ),
             )
+        except asyncio.TimeoutError as cause:
+            raise self._unknown_after_deadline(signature, "send") from cause
         except TransactionTransportError as cause:
             if cause.submission_state == "not_submitted":
                 raise _not_submitted(
@@ -901,16 +921,35 @@ class SoldersWalletAdapter:
             ) from cause
 
         _report_signature_mismatch(signature, sent.signature)
-        return await self._reconcile(plan, signature)
+        return await self._reconcile(plan, signature, deadline)
 
-    async def _reconcile(self, plan: _Plan, signature: str) -> SendResult:
-        """Poll the submitted signature until it settles, expires or times out."""
+    def _unknown_after_deadline(self, signature: str, phase: str) -> WalletError:
+        """The transaction went out; only its outcome is unknown."""
+        return _failure(
+            TransactionFailureOutcome.submitted_unknown(
+                signature,
+                phase=phase,
+                message=(
+                    f"Transaction {signature} was submitted but its status was still "
+                    f"unknown after {self._config.confirmation_timeout}s; reconcile by "
+                    "signature rather than resending"
+                ),
+            )
+        )
+
+    async def _reconcile(
+        self, plan: _Plan, signature: str, deadline: float
+    ) -> SendResult:
+        """Poll the submitted signature until it settles, expires or the
+        shared deadline passes — including while a request is in flight."""
         wanted = _CONFIRMATION_RANK[plan.commitment]
-        deadline = time.monotonic() + self._config.confirmation_timeout
         while True:
             try:
-                status = await plan.transport.get_signature_status(
-                    signature, search_transaction_history=True
+                status = await _within(
+                    deadline,
+                    plan.transport.get_signature_status(
+                        signature, search_transaction_history=True
+                    ),
                 )
                 if status is not None:
                     if status.err is not None:
@@ -928,8 +967,9 @@ class SoldersWalletAdapter:
                     if reached >= wanted:
                         return SendResult(signature=signature, slot=status.slot)
                 if plan.last_valid_block_height is not None:
-                    height = await plan.transport.get_block_height(
-                        commitment=plan.commitment
+                    height = await _within(
+                        deadline,
+                        plan.transport.get_block_height(commitment=plan.commitment),
                     )
                     if height > plan.last_valid_block_height:
                         raise _failure(
@@ -945,22 +985,15 @@ class SoldersWalletAdapter:
                         )
             except WalletError:
                 raise
+            except asyncio.TimeoutError as cause:
+                raise self._unknown_after_deadline(signature, "confirmation") from cause
             except Exception as cause:
                 raise _failure(
                     TransactionFailureOutcome.submitted_unknown(
                         signature, phase="confirmation", cause=cause
                     )
                 ) from cause
-            if time.monotonic() >= deadline:
-                raise _failure(
-                    TransactionFailureOutcome.submitted_unknown(
-                        signature,
-                        phase="confirmation",
-                        message=(
-                            f"Transaction {signature} was submitted but its status "
-                            f"was still unknown after "
-                            f"{self._config.confirmation_timeout}s"
-                        ),
-                    )
-                )
-            await asyncio.sleep(self._config.poll_interval)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise self._unknown_after_deadline(signature, "confirmation")
+            await asyncio.sleep(min(self._config.poll_interval, remaining))
