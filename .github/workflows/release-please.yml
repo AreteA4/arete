@@ -48,6 +48,7 @@ jobs:
       core_version: ${{ steps.release.outputs['typescript/core--version'] }}
       core_release_created: ${{ steps.release.outputs['typescript/core--release_created'] }}
       react_release_created: ${{ steps.release.outputs['typescript/react--release_created'] }}
+      adapter_kit_version: ${{ steps.release.outputs['typescript/adapters/kit--version'] }}
       adapter_kit_release_created: ${{ steps.release.outputs['typescript/adapters/kit--release_created'] }}
       adapter_web3js_release_created: ${{ steps.release.outputs['typescript/adapters/web3js--release_created'] }}
       python_release_created: ${{ steps.release.outputs['python/arete-sdk--release_created'] }}
@@ -344,6 +345,24 @@ jobs:
         if: needs.release-please.outputs.adapter_kit_release_created == 'true'
         run: ../../../scripts/publish-npm-package.sh .
         working-directory: typescript/adapters/kit
+
+      - name: Wait for Kit adapter registry propagation
+        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        env:
+          KIT_VERSION: ${{ needs.release-please.outputs.adapter_kit_version }}
+        run: |
+          for attempt in {1..30}; do
+            published_version="$(npm view "@usearete/adapter-kit@${KIT_VERSION}" version 2>/dev/null || true)"
+            if [[ "$published_version" == "$KIT_VERSION" ]]; then
+              echo "@usearete/adapter-kit@${KIT_VERSION} is available"
+              exit 0
+            fi
+            echo "Waiting for @usearete/adapter-kit@${KIT_VERSION} (attempt ${attempt}/30)"
+            sleep 10
+          done
+          echo "::error::@usearete/adapter-kit@${KIT_VERSION} did not propagate within 5 minutes"
+          exit 1
+        shell: bash
 
       - name: Check published Kit adapter imports
         if: needs.release-please.outputs.adapter_kit_release_created == 'true'
