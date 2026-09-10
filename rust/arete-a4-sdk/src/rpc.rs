@@ -204,6 +204,12 @@ impl RpcTransactionTransport {
                 if entry.is_null() {
                     return Ok(None);
                 }
+                if !entry.is_object() {
+                    return Err(invalid(
+                        "getSignatureStatuses",
+                        "each status must be an object or null",
+                    ));
+                }
                 Ok(Some(TransactionSignatureStatus {
                     signature: signature.clone(),
                     slot: entry.get("slot").and_then(Value::as_u64),
@@ -434,50 +440,85 @@ impl TransactionTransport for RpcTransactionTransport {
             return Ok(None);
         }
 
-        let meta = result.get("meta");
+        // `meta` is where every balance lives. A node running without
+        // transaction status storage answers `"meta": null`, and treating
+        // that as "all zeroes" would hand the caller fabricated balances
+        // indistinguishable from measured ones.
+        let meta = result
+            .get("meta")
+            .filter(|meta| meta.is_object())
+            .ok_or_else(|| {
+                invalid(
+                    METHOD,
+                    "'meta' is unavailable: this node did not record the transaction's balances",
+                )
+            })?;
         let balances = |key: &str| -> Result<Vec<u64>, TransactionError> {
-            match meta.and_then(|meta| meta.get(key)) {
-                None | Some(Value::Null) => Ok(Vec::new()),
-                Some(Value::Array(entries)) => entries
-                    .iter()
-                    .map(|entry| {
-                        entry
-                            .as_u64()
-                            .ok_or_else(|| invalid(METHOD, &format!("'meta.{key}' must be u64")))
-                    })
-                    .collect(),
-                Some(_) => Err(invalid(METHOD, &format!("'meta.{key}' must be an array"))),
-            }
+            meta.get(key)
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid(METHOD, &format!("missing 'meta.{key}'")))?
+                .iter()
+                .map(|entry| {
+                    entry
+                        .as_u64()
+                        .ok_or_else(|| invalid(METHOD, &format!("'meta.{key}' must be u64")))
+                })
+                .collect()
         };
         let pre = balances("preBalances")?;
         let post = balances("postBalances")?;
 
         // Balance arrays are indexed by the cluster's resolved account
         // order: static keys first, then lookup-table writables, then
-        // lookup-table readonlys.
-        let loaded = |key: &str| {
-            meta.and_then(|meta| meta.get("loadedAddresses"))
-                .and_then(|loaded| loaded.get(key))
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
+        // lookup-table readonlys. A non-string key dropped from the middle
+        // would shift every later balance onto the wrong account, so the
+        // whole response is refused instead.
+        let keys = |value: Option<&Value>, field: &str| -> Result<Vec<String>, TransactionError> {
+            match value {
+                None | Some(Value::Null) => Ok(Vec::new()),
+                Some(Value::Array(entries)) => entries
+                    .iter()
+                    .map(|entry| {
+                        entry
+                            .as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| invalid(METHOD, &format!("'{field}' must be strings")))
+                    })
+                    .collect(),
+                Some(_) => Err(invalid(METHOD, &format!("'{field}' must be an array"))),
+            }
         };
-        let mut accounts: Vec<String> = result
-            .get("transaction")
-            .and_then(|transaction| transaction.get("message"))
-            .and_then(|message| message.get("accountKeys"))
-            .and_then(Value::as_array)
-            .ok_or_else(|| invalid(METHOD, "missing 'transaction.message.accountKeys'"))?
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect();
-        accounts.extend(loaded("writable"));
-        accounts.extend(loaded("readonly"));
+        let loaded = meta.get("loadedAddresses");
+        let mut accounts = keys(
+            result
+                .get("transaction")
+                .and_then(|transaction| transaction.get("message"))
+                .and_then(|message| message.get("accountKeys")),
+            "transaction.message.accountKeys",
+        )?;
+        if accounts.is_empty() {
+            return Err(invalid(METHOD, "missing 'transaction.message.accountKeys'"));
+        }
+        accounts.extend(keys(
+            loaded.and_then(|loaded| loaded.get("writable")),
+            "meta.loadedAddresses.writable",
+        )?);
+        accounts.extend(keys(
+            loaded.and_then(|loaded| loaded.get("readonly")),
+            "meta.loadedAddresses.readonly",
+        )?);
+        if pre.len() != accounts.len() || post.len() != accounts.len() {
+            return Err(invalid(
+                METHOD,
+                &format!(
+                    "balances do not line up with the resolved accounts: {} accounts, \
+                     {} preBalances, {} postBalances",
+                    accounts.len(),
+                    pre.len(),
+                    post.len()
+                ),
+            ));
+        }
 
         Ok(Some(ConfirmedTransaction {
             signature: signature.to_string(),
@@ -486,15 +527,17 @@ impl TransactionTransport for RpcTransactionTransport {
                 .and_then(Value::as_u64)
                 .ok_or_else(|| invalid(METHOD, "missing 'slot'"))?,
             block_time: result.get("blockTime").and_then(Value::as_i64),
-            err: nullable(meta.and_then(|meta| meta.get("err"))),
+            err: nullable(meta.get("err")),
             accounts: accounts
                 .into_iter()
-                .enumerate()
-                .map(|(index, pubkey)| TransactionAccountBalance {
-                    pubkey,
-                    pre_balance: pre.get(index).copied().unwrap_or(0),
-                    post_balance: post.get(index).copied().unwrap_or(0),
-                })
+                .zip(pre.into_iter().zip(post))
+                .map(
+                    |(pubkey, (pre_balance, post_balance))| TransactionAccountBalance {
+                        pubkey,
+                        pre_balance,
+                        post_balance,
+                    },
+                )
                 .collect(),
         }))
     }
@@ -983,6 +1026,82 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn unavailable_metadata_is_refused_rather_than_read_as_zero_balances() {
+        // A node running without transaction status storage. `ConfirmedTransaction`
+        // carries non-optional balances, so "no metadata" cannot be reported
+        // as a real measurement of zero.
+        let node = Node::spawn(json!({
+            "getTransaction": {
+                "slot": 512,
+                "meta": Value::Null,
+                "transaction": { "message": { "accountKeys": ["Static1"] } },
+            },
+        }))
+        .await;
+
+        let error = node
+            .transport()
+            .transaction("sigA", TransactionInspectOptions::default())
+            .await
+            .expect_err("balances cannot be invented");
+        assert!(matches!(error, TransactionError::InvalidResponse(_)));
+    }
+
+    #[tokio::test]
+    async fn balances_that_do_not_line_up_with_the_accounts_are_refused() {
+        let node = Node::spawn(json!({
+            "getTransaction": {
+                "slot": 512,
+                "transaction": { "message": { "accountKeys": ["Static1", "Static2"] } },
+                "meta": { "preBalances": [10], "postBalances": [9] },
+            },
+        }))
+        .await;
+
+        let error = node
+            .transport()
+            .transaction("sigA", TransactionInspectOptions::default())
+            .await
+            .expect_err("a short balance array would zero-fill the tail");
+        assert!(matches!(error, TransactionError::InvalidResponse(_)));
+    }
+
+    #[tokio::test]
+    async fn a_non_string_account_key_is_refused_rather_than_dropped() {
+        // Dropping it would shift every later balance onto the wrong account.
+        let node = Node::spawn(json!({
+            "getTransaction": {
+                "slot": 512,
+                "transaction": { "message": { "accountKeys": ["Static1", 7, "Static3"] } },
+                "meta": { "preBalances": [10, 20, 30], "postBalances": [9, 21, 31] },
+            },
+        }))
+        .await;
+
+        let error = node
+            .transport()
+            .transaction("sigA", TransactionInspectOptions::default())
+            .await
+            .expect_err("a malformed key cannot be silently skipped");
+        assert!(matches!(error, TransactionError::InvalidResponse(_)));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_status_entry_is_a_typed_response_error() {
+        let node = Node::spawn(json!({
+            "getSignatureStatuses": { "context": { "slot": 9 }, "value": ["confirmed"] },
+        }))
+        .await;
+
+        let error = node
+            .transport()
+            .signature_status("sigA", SignatureStatusOptions::default())
+            .await
+            .expect_err("a bare string is not a status object");
+        assert!(matches!(error, TransactionError::InvalidResponse(_)));
     }
 
     #[tokio::test]
