@@ -8,12 +8,7 @@
   "instructions": [
     {
       "name": "transfer",
-      "discriminator": [
-        2,
-        0,
-        0,
-        0
-      ],
+      "discriminant": { "type": "u32", "value": 2 },
       "accounts": [
         {
           "name": "from",

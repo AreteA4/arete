@@ -52,7 +52,11 @@ the built-in System program. Its IDL describes transfer plus an empty System
 wallet account. The fixture runs the normal generated instruction parser and
 `VmHandler` through Shipstern. A public VM debugger prints the actual input
 context and emitted transfer state as JSON to stdout; this exposes ingestion
-metadata without an observation server or committed reports.
+metadata without an observation server or committed reports. The fixture subscribes
+at processed commitment because Surfpool does not provide the full Agave slot
+lifecycle used by newer Yellowstone confirmed-stream reconstruction. The smoke
+separately requires successful transaction confirmation through Arete before
+accepting the observed state and metadata.
 
 ### Start the local services
 
@@ -63,13 +67,22 @@ The sibling `arete-examples` repository provides a reference in
 Surfpool 1.4.0 and Yellowstone 13.3.0; it is a configuration reference, not a
 validated V1 pairing.
 
-Use Surfpool **1.5+** and a plugin build compatible with that Surfpool binary's
-Geyser interface and Rust ABI. The plugin must preserve V1 `Message.config`;
-upstream Yellowstone added that conversion in **15.1.1**. An older plugin can
-drop the metadata even if RPC execution succeeds. These version requirements
-come from the [upstream V1 examples](https://github.com/solana-foundation/transaction-v1-examples#version-requirements);
-they do not certify an arbitrary Surfpool/plugin binary pairing. Supply your
-existing compatible binaries; this PR does not download or compile them.
+The complete smoke passed on macOS ARM64 with this pairing:
+
+| Component | Tested build |
+| --- | --- |
+| Surfpool | Commit `30242a4fe3b87557f3d6f1629f548e2515718242`, macOS ARM64 artifact from [upstream run 33936070302](https://github.com/solana-foundation/surfpool/actions/runs/33936070302) |
+| Host dependencies | Agave 4.2.1, Rust 1.95.0, `solana-message` 4.3.0, `solana-transaction` 4.1.5 |
+| Yellowstone plugin | [15.1.2+solana.4.2.0 source](https://github.com/rpcpool/yellowstone-grpc/tree/v15.1.2%2Bsolana.4.2.0), rebuilt with Rust 1.95.0, its Agave 4.2.0 pins changed to 4.2.1, and the message/transaction versions above, using the host lockfile as the starting point |
+
+The Surfpool binary reports 1.5.0, but the release-tagged 1.5.0 binary uses
+Agave 4.1.2: the version label alone does not identify a compatible plugin.
+Match the host's Geyser interface, shared Solana types and Rust ABI. The plugin
+must preserve V1 `Message.config`; upstream Yellowstone added that conversion
+in 15.1.1. An older plugin can drop metadata even when RPC execution succeeds.
+Supply compatible binaries before starting the smoke. The build above was local
+environment preparation; this PR contains no downloader, plugin build scripts
+or toolchain provisioning.
 
 1. Copy the reference plugin config to a local file, such as
    `/tmp/a4-v1-geyser.json`. Set `libpath` to the **absolute path of your compatible
@@ -84,7 +97,7 @@ surfpool --version
 surfpool start --offline --no-deploy --yes --no-tui --no-studio \
   --host 127.0.0.1 --port 8899 --ws-port 8900 \
   --block-production-mode clock \
-  --feature txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL \
+  --features-all \
   --geyser-plugin-config /tmp/a4-v1-geyser.json \
   --airdrop-keypair-path /absolute/path/to/local-keypair.json \
   --airdrop-amount 1000000000
@@ -92,14 +105,25 @@ surfpool start --offline --no-deploy --yes --no-tui --no-studio \
 
 Keep signature verification and blockhash checks enabled. The Jurassic demo's
 impersonation launcher passes `--skip-signature-verification`; use the command
-above for this smoke. Flags are documented in the
+above for this smoke. `--features-all` includes V1 without hardcoding a feature
+identifier that differs between Agave builds. Flags are documented in the
 [Surfpool CLI reference](https://solana.com/docs/tools/surfpool/toolchain/cli).
 
-3. Configure and start your existing Arete relay with
-   `ARETE_TRANSACTIONS_ENABLED=true`,
-   `ARETE_TRANSACTION_RPC_URL=http://127.0.0.1:8899`, and appropriate transaction
-   authorization. The smoke below assumes its HTTP endpoint is
-   `http://127.0.0.1:8081`.
+3. Point your existing Arete relay at `http://127.0.0.1:8899`, or start the
+   standalone gateway example in another terminal. It uses the normal public
+   server API, binds to loopback, and reads the existing transaction settings:
+
+```sh
+ARETE_TRANSACTIONS_ENABLED=true \
+ARETE_TRANSACTIONS_ALLOW_UNAUTHENTICATED=true \
+ARETE_TRANSACTION_RPC_URL=http://127.0.0.1:8899 \
+  cargo run --locked -p arete-server --example solana_gateway
+```
+
+The smoke below assumes its HTTP endpoint is `http://127.0.0.1:8081`. The local
+example explicitly allows unauthenticated transactions; use `A4_V1_TOKEN` with
+your existing authenticated relay instead when applicable.
+
 4. From this repository root, start the ingestion runtime in another terminal
    and leave it running. Use the same gRPC port as the plugin config:
 
@@ -147,7 +171,7 @@ The checked-in `smoke/generated/system-core.ts` is unmodified output from the
 current CLI's `sdk create --idl arete/examples/transaction-v1/system.json
 --program-only --ts` command. There is no extra regeneration package or CI job.
 
-## Release verification and remaining work
+## Release verification and completion
 
 Reuse `check-generated-rust-crates.sh` in local/registry modes, adding an optional
 adapter import to its existing consumers. Reuse the Kit ESM/CJS/Vite package
@@ -162,15 +186,17 @@ implementation dependency remains. Python's required aggregate CI check and
 base/extra matrix are preserved. The generated Rust test runs in the existing
 Solana adapter job alongside its regression suite and V1 example.
 
-**The live smoke has not passed.** The remaining local work is to start a
-V1-capable Surfpool/Geyser pairing, point an Arete relay and the ingestion fixture
-at it, and run the command above through both V1 and v0 successfully. The
-inspected local setup still has Surfpool 1.4.0 and the older reference plugin;
-the documented RPC, relay and Geyser ports were not listening at the rebase check.
-Resolve any execution or ingestion failures exposed by that run and require
-the rebased branch's CI to pass. A4-256 stays In Progress and PR #204 stays draft
-until those checks pass. Existing publication checks remain in the release
-workflow; no extra per-language live runs are required.
+The live smoke passed on 2026-09-10 with the pairing above: **1790-byte V1**
+and **273-byte v0**, both simulated, signed, submitted through Arete, confirmed
+and ingested. It checked all 32 V1 transfer states and their inline config, plus
+the v0 control state without inherited V1 metadata. Signature verification and
+fresh-blockhash checks remained enabled. The fixture IDL declares System's
+four-byte tag as a `u32` discriminant so both generated clients and the generated
+ingestion parser use the correct wire layout.
+
+The three adapter dependencies are resolved. PR CI remains required for merge;
+existing publication checks remain in the release workflow. No extra
+per-language live runs are required.
 
 The old toolchain downloader/compiler, validator probe, offline codec/signature
 matrix, evidence/provenance files, report runner and standalone test package are

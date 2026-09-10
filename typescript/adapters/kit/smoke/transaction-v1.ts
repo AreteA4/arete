@@ -95,4 +95,4 @@ async function main() {
   }
 }
 
-main().catch(error => { console.error(error.message); process.exitCode = 1; });
+await main().catch(error => { console.error(error.message); process.exitCode = 1; });

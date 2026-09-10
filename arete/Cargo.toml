@@ -74,3 +74,4 @@ runtime = [
 
 [dev-dependencies]
 borsh = { version = "1.5", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

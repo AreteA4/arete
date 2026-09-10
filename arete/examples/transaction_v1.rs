@@ -58,6 +58,12 @@ async fn main() -> anyhow::Result<()> {
     };
     use shipstern::config::{BufferConfig, ShipsternConfig};
 
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .with_writer(std::io::stderr)
+        .init();
     let endpoint = std::env::var("YELLOWSTONE_ENDPOINT").map_err(|_| {
         anyhow::anyhow!("Set YELLOWSTONE_ENDPOINT to the already-running local Geyser service")
     })?;
@@ -90,9 +96,10 @@ async fn main() -> anyhow::Result<()> {
                 endpoint,
                 x_token: std::env::var("YELLOWSTONE_X_TOKEN").ok(),
                 timeout: 60,
-                commitment_level: Some(
-                    arete::runtime::shipstern_core::CommitmentLevel::Confirmed,
-                ),
+                // Surfpool exposes transaction notifications before the full
+                // Agave slot lifecycle used by Yellowstone's reconstruction.
+                // The smoke independently requires confirmation through Arete.
+                commitment_level: Some(arete::runtime::shipstern_core::CommitmentLevel::Processed),
                 from_slot: None,
                 accept_compression: None,
                 max_decoding_message_size: None,

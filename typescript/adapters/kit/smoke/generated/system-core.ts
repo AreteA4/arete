@@ -44,10 +44,10 @@ export const transferInstruction = createInstructionHandler<TransferParams, Tran
 export const SYSTEM = {
   name: 'system',
   programId: '11111111111111111111111111111111',
-  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:a1a70a9899c59464d08181e638ebe08e0693a01f2704f33e4467e172ce0fc5fe',
-  programSpecHash: 'arete:h1:program-spec:sha256:c63f5b5944e7b9fc60d4c1a0abbc7b84c26e55c21475f12ffd7a7fe62a73740d',
-  idlContentHash: 'arete:h1:idl-content:sha256:2b39a903f01e12242135db13cf8d9023704dc4a7313bb541d89a245187183fe7',
-  normalizedIdlHash: 'arete:h1:idl-normalized:sha256:478e5b307d07ba408dd9b5bb0a56ac1ca89d0d4e02da4252c35d9fcd3c54f406',
+  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:74b5845c9133060c61b330594b020adb6e19249b05b66091f906fb30e72d5b82',
+  programSpecHash: 'arete:h1:program-spec:sha256:33b3ced1cf2a32886de725191b57ed80c735f198e80deb02c072c62ba44c2af4',
+  idlContentHash: 'arete:h1:idl-content:sha256:79719791583a0e80d7398252da7c607ad71241a9fbaa83b3764b32ea92e08101',
+  normalizedIdlHash: 'arete:h1:idl-normalized:sha256:af2a015ad666dbc0afc100210cd1bc64e09f80f0c371b84f08280993f477ce7a',
   accounts: {
     Wallet: programAccountRead<Wallet>({ account: 'Wallet', schema: WalletSchema }),
   },
@@ -75,7 +75,7 @@ export const SYSTEM = {
 
 /** Release and explicit read transport for 'system' */
 export const SYSTEM_READ = {
-release: { programReleaseHash: "arete:h1:program-release:sha256:c2fccc3dda11c72cb562d9275ebf984f23e4bba63d809ee23510fa27501c7bd2", programSpecHash: "arete:h1:program-spec:sha256:c63f5b5944e7b9fc60d4c1a0abbc7b84c26e55c21475f12ffd7a7fe62a73740d" },
+release: { programReleaseHash: "arete:h1:program-release:sha256:b8c04409cae62b62cc7abe30274fcd593405ca192522776741ccbbacac185f64", programSpecHash: "arete:h1:program-spec:sha256:33b3ced1cf2a32886de725191b57ed80c735f198e80deb02c072c62ba44c2af4" },
 transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
 } as const;
 

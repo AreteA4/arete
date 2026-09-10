@@ -173,6 +173,7 @@ dependencies = [
  "smallvec",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "yellowstone-grpc-client",
  "yellowstone-grpc-proto",
 ]
