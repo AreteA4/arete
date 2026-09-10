@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.17.0](https://github.com/AreteA4/arete/compare/arete-adapter-kit-v0.16.0...arete-adapter-kit-v0.17.0) (2026-09-10)
+
+
+### Features
+
+* **sdk:** build, inspect and send V1 through the TypeScript Kit adapter ([#205](https://github.com/AreteA4/arete/issues/205)) ([292d718](https://github.com/AreteA4/arete/commit/292d7183def8bd1589553577819a9415c7234cd4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.16.0 to ^0.17.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.16.0 to ^0.17.0
+
 ## [0.16.0](https://github.com/AreteA4/arete/compare/arete-adapter-kit-v0.15.0...arete-adapter-kit-v0.16.0) (2026-09-09)
 
 
