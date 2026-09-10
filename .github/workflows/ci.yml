@@ -157,9 +157,6 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      - name: Generated instruction through the Rust V1 adapter
-        run: cargo test --locked -p arete-a4-sdk --features solana-adapter --test generated_solana
-
       - name: Test snapshot object-store feature
         run: |
           cargo test -p arete-server --features snapshot-object-store
@@ -509,11 +506,15 @@ jobs:
       - name: Run tests
         run: python -m pytest
 
-      # Named explicitly so a missing extra fails the job ("no tests ran")
-      # instead of silently skipping the adapter suite.
+      # Separate invocations ensure neither module can disappear from collection
+      # while the other suite still makes pytest succeed.
       - name: Run the solders adapter suite
         if: contains(matrix.extras, 'solana')
         run: python -m pytest tests/test_solders_adapter.py
+
+      - name: Run the generated solders integration
+        if: contains(matrix.extras, 'solana')
+        run: python -m pytest tests/test_generated_solders.py
 
   # The repository ruleset requires a check named exactly `Python`. A matrix
   # job cannot produce one — every member is named after its own cell — so
@@ -605,6 +606,7 @@ jobs:
         run: |
           cargo test --locked -p arete-a4-sdk --features solana-adapter
           cargo test --locked -p arete-a4-sdk --features solana-adapter --test solana_adapter
+          cargo test --locked -p arete-a4-sdk --features solana-adapter --test generated_solana
 
       - name: Check the V1 example
         run: cargo check --locked -p arete-a4-sdk --features solana-adapter --example solana_v1

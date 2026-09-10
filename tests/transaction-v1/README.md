@@ -17,7 +17,7 @@ a recording relay transport, and the upstream transaction decoder. It asserts
 V1, the ORE instruction/accounts and the chosen inline resource config. Adapter
 edge-case matrices remain in the existing focused adapter suites.
 
-Default CI runs these fast checks. Missing adapters are failures, never skips:
+Default CI runs these fast checks. The adapter jobs require real dependencies:
 
 ```sh
 # Use the normal core build and adapter dependency installation first.
@@ -28,14 +28,20 @@ python -m pip install -e '.[dev,solana]'
 python -m pytest tests/test_generated_solders.py
 ```
 
-CI installs the optional Solana extra and runs the generated-client test in the
-existing Python suite. Running that test without its adapter is a collection failure.
+Python CI preserves the base install on Python 3.9 and 3.11 (`.[dev]`). Without
+`solders`, the shared collection rule excludes both `test_solders_adapter.py`
+and `test_generated_solders.py`. The Python 3.10/3.11 Solana-extra jobs install
+`.[dev,solana]`, require `import solders`, run the full suite, and explicitly run
+each adapter module in a separate pytest invocation. Missing dependencies or an
+uncollected generated module fail those jobs; neither test uses `importorskip`.
 
 ## One local TypeScript smoke
 
-Prerequisites: an **already-running** local validator supporting V1 and its
-4096-byte limit, a compatible Yellowstone/Geyser service, an Arete transaction
-relay pointing at that validator, and the ingestion fixture below. Provide a
+Use **Surfpool** as the local backend. The smoke requires an **already-running**
+V1-capable backend supporting the 4096-byte limit, a compatible Yellowstone/Geyser
+service, an Arete transaction relay pointing at that backend, and the ingestion
+fixture below. An existing V1-capable Agave validator also works with the same
+command; a second run against Agave is not an acceptance requirement. Provide a
 funded disposable local keypair (at least 0.04 SOL plus fees). The smoke sends
 32 transfers of 0.001 SOL in V1 and one equivalent v0 transfer to fresh recipients.
 It does not download, build or start a validator, provision a toolchain, deploy
@@ -48,16 +54,73 @@ wallet account. The fixture runs the normal generated instruction parser and
 context and emitted transfer state as JSON to stdout; this exposes ingestion
 metadata without an observation server or committed reports.
 
-Start that runtime separately against your local Geyser service:
+### Start the local services
+
+The sibling `arete-examples` repository provides a reference in
+`scripts/localnet/start-squads-surfpool.sh` and
+`config/localnet/yellowstone-grpc.json`. Its local plugin is
+`.localnet/plugins/libyellowstone_grpc_geyser.dylib`. The inspected setup uses
+Surfpool 1.4.0 and Yellowstone 13.3.0; it is a configuration reference, not a
+validated V1 pairing.
+
+Use Surfpool **1.5+** and a plugin build compatible with that Surfpool binary's
+Geyser interface and Rust ABI. The plugin must preserve V1 `Message.config`;
+upstream Yellowstone added that conversion in **15.1.1**. An older plugin can
+drop the metadata even if RPC execution succeeds. These version requirements
+come from the [upstream V1 examples](https://github.com/solana-foundation/transaction-v1-examples#version-requirements);
+they do not certify an arbitrary Surfpool/plugin binary pairing. Supply your
+existing compatible binaries; this PR does not download or compile them.
+
+1. Copy the reference plugin config to a local file, such as
+   `/tmp/a4-v1-geyser.json`. Set `libpath` to the **absolute path of your compatible
+   plugin**, `grpc.listen[0].address` to `127.0.0.1:10009`, and
+   `prometheus.address` to `127.0.0.1:18999`. Keep the reference's unauthenticated
+   loopback gRPC listener for this local fixture. On Linux the library uses `.so`.
+2. Start Surfpool in its own terminal using a disposable keypair. This fixture
+   needs only the built-in System program, so offline mode is sufficient:
 
 ```sh
-YELLOWSTONE_ENDPOINT=http://127.0.0.1:10000 \
+surfpool --version
+surfpool start --offline --no-deploy --yes --no-tui --no-studio \
+  --host 127.0.0.1 --port 8899 --ws-port 8900 \
+  --block-production-mode clock \
+  --feature txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL \
+  --geyser-plugin-config /tmp/a4-v1-geyser.json \
+  --airdrop-keypair-path /absolute/path/to/local-keypair.json \
+  --airdrop-amount 1000000000
+```
+
+Keep signature verification and blockhash checks enabled. The Jurassic demo's
+impersonation launcher passes `--skip-signature-verification`; use the command
+above for this smoke. Flags are documented in the
+[Surfpool CLI reference](https://solana.com/docs/tools/surfpool/toolchain/cli).
+
+3. Configure and start your existing Arete relay with
+   `ARETE_TRANSACTIONS_ENABLED=true`,
+   `ARETE_TRANSACTION_RPC_URL=http://127.0.0.1:8899`, and appropriate transaction
+   authorization. The smoke below assumes its HTTP endpoint is
+   `http://127.0.0.1:8081`.
+4. From this repository root, start the ingestion runtime in another terminal
+   and leave it running. Use the same gRPC port as the plugin config:
+
+```sh
+YELLOWSTONE_ENDPOINT=http://127.0.0.1:10009 \
   cargo run --locked -p arete --example transaction_v1 > /tmp/a4-v1-ingestion.log
 ```
 
-Configure your existing Arete relay with `ARETE_TRANSACTIONS_ENABLED=true`,
-`ARETE_TRANSACTION_RPC_URL` pointing at the local validator, and appropriate
-transaction authorization. Then explicitly invoke:
+### Run the smoke
+
+After the TypeScript V1 adapter is integrated, prepare the SDK using the same
+core build and Kit dependency installation as CI (Node >=20.18):
+
+```sh
+npm ci --prefix typescript/core
+npm run build --prefix typescript/core
+npm ci --prefix typescript/adapters/kit
+(cd typescript/adapters/kit && npm install ../../core --no-save --package-lock=false)
+```
+
+With the services above ready, explicitly invoke from this repository root:
 
 ```sh
 A4_V1_RELAY_URL=http://127.0.0.1:8081 \
@@ -99,11 +162,14 @@ As of this revision:
 - **A4-254 / PR #200:** Rust adapter is open. The new integration test passes
   against that PR's head; this branch lacks its feature and implementation.
 - **A4-255 / PR #201:** Python adapter is open. The new integration test passes
-  against that PR's head with solders 0.29/Python 3.12; this branch lacks the extra
-  and implementation.
-- **Live smoke has not passed.** No configured running local stack was supplied,
-  and A4-253 prevents the required TypeScript V1 send. A4-256 stays In Progress
-  and PR #204 stays draft until integration and the live smoke pass.
+  against that PR's head with solders 0.29 on Python 3.10/3.11/3.12; this branch
+  lacks the extra and implementation. The base suites pass without solders on
+  Python 3.9/3.11 both here and with #201's implementation.
+- **Live smoke has not passed.** The Surfpool/Geyser reference is available, but
+  its older binary pairing is not V1-qualified and A4-253 prevents the required
+  TypeScript V1 send. Run the smoke with a compatible local Surfpool/Geyser pair
+  after the adapter is integrated. A4-256 stays In Progress and PR #204 stays
+  draft until integration and the live smoke pass.
 
 The old toolchain downloader/compiler, validator probe, offline codec/signature
 matrix, evidence/provenance files, report runner and standalone test package are
