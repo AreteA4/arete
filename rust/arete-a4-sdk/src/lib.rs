@@ -44,6 +44,7 @@ pub mod prelude;
 pub mod program;
 pub mod program_read_transport;
 pub mod read;
+pub mod rpc;
 pub mod serde_utils;
 pub mod session;
 pub mod spl;
@@ -55,7 +56,9 @@ pub mod view;
 pub mod wallet;
 
 #[cfg(feature = "solana-adapter")]
-pub use adapters::solana::{SharedSigner, SolanaAdapterConfig, SolanaWalletAdapter};
+pub use adapters::solana::{
+    AdapterTransportSelection, SharedSigner, SolanaAdapterConfig, SolanaWalletAdapter,
+};
 pub use amounts::{
     format_raw_to_ui, parse_ui_amount_to_raw, resolve_amount, resolve_amount_to_raw, to_raw_amount,
     AmountError, AmountInput, AmountResolutionInput, ResolvedAmount,
@@ -116,6 +119,7 @@ pub use read::{
     ProgramQueryDef, ProgramReadBinding, ProgramReadDescriptor, ProgramReadTransportKind,
     ProgramReleaseReference, QueryExecutor, ReadError, ReadRequestError, StackQueryDef,
 };
+pub use rpc::RpcTransactionTransport;
 pub use session::{Session, SessionBuilder, SessionMemberOptions};
 pub use store::{deep_merge_with_append, SharedStore, StoreConfig, StoreUpdate};
 pub use stream::{

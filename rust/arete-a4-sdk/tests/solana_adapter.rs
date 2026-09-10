@@ -12,12 +12,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arete_a4_sdk::adapters::solana::{
-    SolanaAdapterConfig, SolanaWalletAdapter, MAX_LEGACY_TRANSACTION_BYTES,
-    MAX_V1_TRANSACTION_BYTES, PROVISIONAL_COMPUTE_UNIT_LIMIT,
+    AdapterTransportSelection, SharedSigner, SolanaAdapterConfig, SolanaWalletAdapter,
+    MAX_LEGACY_TRANSACTION_BYTES, MAX_V1_TRANSACTION_BYTES, PROVISIONAL_COMPUTE_UNIT_LIMIT,
     PROVISIONAL_LOADED_ACCOUNTS_DATA_SIZE,
 };
 use arete_a4_sdk::instruction::{BuiltAccountMeta, BuiltInstruction};
-use arete_a4_sdk::operations::{FailurePhase, TransactionFailureOutcome};
+use arete_a4_sdk::operations::{
+    create_prepared_transaction_body, execute_prepared_operation, inspect_prepared_operation,
+    ExecuteOptions, ExecutionHost, FailurePhase, PreparedOperation, PreparedTransaction,
+    TransactionFailureOutcome,
+};
+use arete_a4_sdk::rpc::RpcTransactionTransport;
 use arete_a4_sdk::transactions::{
     Commitment, ConfirmedTransaction, LatestBlockhashResult, SignaturePageEntry,
     SignaturePageOptions, SignatureStatusOptions, SubmissionState, TransactionError,
@@ -112,7 +117,7 @@ fn built_memo(data: Vec<u8>, signers: &[Pubkey]) -> BuiltInstruction {
 // Test doubles
 // ---------------------------------------------------------------------------
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 struct Log {
     blockhash_calls: usize,
     fee_messages: Vec<String>,
@@ -144,6 +149,8 @@ struct FakeTransport {
     status: Option<TransactionSignatureStatus>,
     /// How long `signature_status` stalls before answering.
     status_delay: Duration,
+    /// How long `send` stalls *after* recording the dispatch.
+    send_delay: Duration,
     send: SendBehaviour,
     log: Mutex<Log>,
 }
@@ -161,6 +168,7 @@ impl Default for FakeTransport {
             loaded_accounts_data_size: Some(4_096),
             status: None,
             status_delay: Duration::ZERO,
+            send_delay: Duration::ZERO,
             send: SendBehaviour::Accept,
             log: Mutex::new(Log::default()),
         }
@@ -266,6 +274,7 @@ impl TransactionTransport for FakeTransport {
             .expect("log")
             .sent
             .push(transaction.to_string());
+        tokio::time::sleep(self.send_delay).await;
         match &self.send {
             SendBehaviour::Accept => {
                 let decoded = decode(&base64_bytes(&Value::String(transaction.to_string())));
@@ -1889,4 +1898,625 @@ async fn a_pre_capability_adapter_still_compiles_and_declares_nothing() {
         .await
         .is_err());
     let _ = ConfirmationLevel::Confirmed;
+}
+
+// ---------------------------------------------------------------------------
+// The core operation paths validate against the adapter's effective version
+// ---------------------------------------------------------------------------
+
+/// The same instruction the direct-adapter tests use, wrapped as the
+/// prepared operation `execute`/`inspect` take.
+fn prepared_memo() -> PreparedOperation {
+    PreparedOperation::Transaction(PreparedTransaction {
+        name: "memo".to_string(),
+        transaction: create_prepared_transaction_body(
+            "memo",
+            vec![built_memo(vec![1], &[])],
+            None,
+            None,
+        )
+        .expect("a single-instruction body"),
+        artifacts: Value::Null,
+    })
+}
+
+#[tokio::test]
+async fn execution_honours_the_adapter_default_version_before_dispatch() {
+    let transport = Arc::new(FakeTransport::confirmed_at(7));
+    let adapter = v1_default_adapter(transport.clone());
+    let host = ExecutionHost {
+        wallet: Some(&adapter),
+        available_signer_addresses: Vec::new(),
+        transaction_transport: None,
+    };
+
+    // Pre-dispatch validation runs before the adapter is reached: with the
+    // inherited hook this V1 fee was rejected as a v0 mismatch.
+    execute_prepared_operation(
+        &host,
+        &prepared_memo(),
+        &ExecuteOptions {
+            send: SendOptions {
+                transaction_version: None,
+                resources: full_v1_resources(),
+                ..SendOptions::default()
+            },
+            ..ExecuteOptions::default()
+        },
+    )
+    .await
+    .expect("the V1 fee is legal for the version this adapter builds");
+
+    assert_eq!(
+        v1_config(&transport.sent_transaction()).priority_fee,
+        Some(5_000)
+    );
+}
+
+#[tokio::test]
+async fn execution_still_refuses_a_fee_bound_to_another_version() {
+    let transport = Arc::new(FakeTransport::confirmed_at(7));
+    let adapter = v1_default_adapter(transport.clone());
+    let host = ExecutionHost {
+        wallet: Some(&adapter),
+        available_signer_addresses: Vec::new(),
+        transaction_transport: None,
+    };
+
+    let error = execute_prepared_operation(
+        &host,
+        &prepared_memo(),
+        &ExecuteOptions {
+            send: SendOptions {
+                transaction_version: None,
+                resources: TransactionResourceOptions {
+                    priority_fee_lamports: None,
+                    compute_unit_price_micro_lamports: Some(1_000),
+                    ..full_v1_resources()
+                },
+                ..SendOptions::default()
+            },
+            ..ExecuteOptions::default()
+        },
+    )
+    .await
+    .expect_err("resolving the default never weakens the fee check");
+
+    assert_eq!(error.outcome.phase(), FailurePhase::Build);
+    assert!(transport.log().sent.is_empty());
+}
+
+#[tokio::test]
+async fn inspection_through_the_core_path_honours_the_adapter_default_version() {
+    let transport = Arc::new(FakeTransport::default());
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(SignerSpy(fixture_keypair(1).pubkey())),
+        SolanaAdapterConfig {
+            default_version: TransactionVersion::V1,
+            ..fast_config(transport.clone())
+        },
+    );
+
+    inspect_prepared_operation(
+        Some(&adapter),
+        &prepared_memo(),
+        &TransactionInspectionOptions {
+            transaction_version: None,
+            resources: TransactionResourceOptions {
+                priority_fee_lamports: Some(5_000),
+                ..TransactionResourceOptions::default()
+            },
+            ..TransactionInspectionOptions::default()
+        },
+        &WalletExecutionContext::default(),
+    )
+    .await
+    .expect("inspection validates against the version it will compile");
+
+    assert_eq!(transport.log().simulated.len(), 1);
+    assert!(transport.log().sent.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// The deadline covers the submission itself, not only confirmation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_stalled_submission_ends_at_the_deadline_with_the_derived_signature() {
+    let transport = Arc::new(FakeTransport {
+        // The relay takes the transaction and then never answers. Without a
+        // bound on the dispatch itself this hangs forever: no HTTP client
+        // here sets a request timeout.
+        send_delay: Duration::from_secs(30),
+        ..FakeTransport::confirmed_at(11)
+    });
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        fast_config(transport.clone()),
+    );
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        adapter.sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(full_v1_resources()),
+            &WalletExecutionContext::default(),
+        ),
+    )
+    .await
+    .expect("the 30ms deadline bounds the in-flight submission")
+    .expect_err("an unacknowledged submission is not a success");
+
+    let derived = transport.sent_transaction().signatures[0].to_string();
+    let outcome = outcome(error);
+    assert!(matches!(
+        outcome,
+        TransactionFailureOutcome::SubmittedUnknown { .. }
+    ));
+    assert_eq!(
+        outcome.signature(),
+        Some(derived.as_str()),
+        "the transaction may have landed: it stays reconcilable by signature"
+    );
+    assert_eq!(
+        transport.log().sent.len(),
+        1,
+        "no rebuild, no re-sign, no resend"
+    );
+    assert_eq!(
+        transport.log().status_calls,
+        0,
+        "the deadline is spent, so confirmation never starts"
+    );
+}
+
+#[tokio::test]
+async fn a_conflicting_signature_on_an_error_response_is_diagnostic_only() {
+    let conflicting = Signature::from([9u8; 64]).to_string();
+    let transport = Arc::new(FakeTransport {
+        send: SendBehaviour::Reject {
+            submission_state: Some(SubmissionState::Unknown),
+            signature: Some(conflicting.clone()),
+        },
+        ..FakeTransport::default()
+    });
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        fast_config(transport.clone()),
+    );
+
+    let error = adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(full_v1_resources()),
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect_err("an unknown submission is not a success");
+
+    let derived = transport.sent_transaction().signatures[0].to_string();
+    assert_ne!(derived, conflicting);
+    let outcome = outcome(error);
+    assert_eq!(
+        outcome.signature(),
+        Some(derived.as_str()),
+        "an error body cannot rename the transaction these bytes are"
+    );
+    assert!(
+        outcome.message().contains(&conflicting),
+        "the relay's signature is reported: {}",
+        outcome.message()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Oversized legacy account sets fail as build errors, not panics
+// ---------------------------------------------------------------------------
+
+/// One memo instruction touching `count` distinct readonly accounts — past
+/// 256 the legacy header can no longer index them.
+fn wide_memo(count: u16) -> BuiltInstruction {
+    let mut instruction = built_memo(vec![1], &[]);
+    instruction.accounts = (0..count)
+        .map(|index| {
+            let mut bytes = [7u8; 32];
+            bytes[..2].copy_from_slice(&index.to_le_bytes());
+            BuiltAccountMeta {
+                pubkey: Pubkey::new_from_array(bytes),
+                is_signer: false,
+                is_writable: false,
+            }
+        })
+        .collect();
+    instruction
+}
+
+#[tokio::test]
+async fn an_oversized_legacy_account_set_is_a_build_error() {
+    let transport = Arc::new(FakeTransport::confirmed_at(1));
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        fast_config(transport.clone()),
+    );
+    let legacy = SendOptions {
+        transaction_version: Some(TransactionVersion::Legacy),
+        ..SendOptions::default()
+    };
+
+    let error = adapter
+        .sign_and_send(
+            &[wide_memo(257)],
+            &legacy,
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect_err("257 accounts cannot be indexed by a legacy header");
+
+    assert_eq!(outcome(error).phase(), FailurePhase::Build);
+    assert!(transport.log().sent.is_empty());
+}
+
+#[tokio::test]
+async fn an_oversized_legacy_account_set_fails_inspection_without_panicking() {
+    let transport = Arc::new(FakeTransport::default());
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(SignerSpy(fixture_keypair(1).pubkey())),
+        fast_config(transport.clone()),
+    );
+
+    let error = adapter
+        .inspect_transaction(
+            &[wide_memo(257)],
+            &TransactionInspectionOptions {
+                transaction_version: Some(TransactionVersion::Legacy),
+                ..TransactionInspectionOptions::default()
+            },
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect_err("unsigned inspection reports the same structured failure");
+
+    assert_eq!(outcome(error).phase(), FailurePhase::Build);
+    assert!(transport.log().simulated.is_empty());
+}
+
+#[tokio::test]
+async fn a_legacy_account_set_at_the_limit_still_compiles() {
+    let transport = Arc::new(FakeTransport::confirmed_at(1));
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        fast_config(transport.clone()),
+    );
+
+    // 254 readonly accounts + the memo program + the fee payer = 256 keys,
+    // the last legacy message that can index every one of them. The wire
+    // limit is what refuses it, not an index overflow.
+    let error = adapter
+        .sign_and_send(
+            &[wide_memo(254)],
+            &SendOptions {
+                transaction_version: Some(TransactionVersion::Legacy),
+                ..SendOptions::default()
+            },
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect_err("8 KiB of account keys is over the 1232-byte wire limit");
+
+    let message = outcome(error).message().to_string();
+    assert!(
+        message.contains(&MAX_LEGACY_TRANSACTION_BYTES.to_string()),
+        "{message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Arete by default, direct RPC as the explicit escape hatch
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn direct_selection_wins_over_the_invoking_client_transport() {
+    let configured = Arc::new(FakeTransport::confirmed_at(3));
+    let context_transport = Arc::new(FakeTransport::confirmed_at(4));
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        SolanaAdapterConfig {
+            transport_selection: AdapterTransportSelection::Direct,
+            ..fast_config(configured.clone())
+        },
+    );
+
+    let result = adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(full_v1_resources()),
+            &WalletExecutionContext::new(Some(context_transport.clone())),
+        )
+        .await
+        .expect("the explicitly selected transport runs the operation");
+
+    assert_eq!(
+        result.slot,
+        Some(3),
+        "the configured transport confirmed it"
+    );
+    assert_eq!(configured.log().sent.len(), 1);
+    assert_eq!(
+        context_transport.log().blockhash_calls,
+        0,
+        "an explicit selection is not a preference the client can override"
+    );
+}
+
+#[tokio::test]
+async fn a_failure_on_the_selected_transport_never_falls_back_to_the_other() {
+    let configured = Arc::new(FakeTransport {
+        simulate_fails: true,
+        ..FakeTransport::confirmed_at(3)
+    });
+    let context_transport = Arc::new(FakeTransport::confirmed_at(4));
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        SolanaAdapterConfig {
+            transport_selection: AdapterTransportSelection::Direct,
+            ..fast_config(configured.clone())
+        },
+    );
+
+    adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(full_v1_resources()),
+            &WalletExecutionContext::new(Some(context_transport.clone())),
+        )
+        .await
+        .expect_err("the selected transport's preflight failed");
+
+    assert!(configured.log().sent.is_empty());
+    assert_eq!(
+        context_transport.log(),
+        Log::default(),
+        "the other transport is never tried after a failure"
+    );
+}
+
+#[tokio::test]
+async fn direct_selection_without_a_configured_transport_is_a_build_error() {
+    let adapter = SolanaWalletAdapter::with_config(
+        Arc::new(fixture_keypair(1)),
+        SolanaAdapterConfig {
+            transport_selection: AdapterTransportSelection::Direct,
+            ..SolanaAdapterConfig::default()
+        },
+    );
+
+    let error = adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(full_v1_resources()),
+            // Arete context present, and deliberately not used.
+            &WalletExecutionContext::new(Some(Arc::new(FakeTransport::confirmed_at(1)))),
+        )
+        .await
+        .expect_err("Direct requires the transport it selects");
+
+    let outcome = outcome(error);
+    assert_eq!(outcome.phase(), FailurePhase::Build);
+    assert!(
+        outcome.message().contains("Direct"),
+        "{}",
+        outcome.message()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The same adapter over a direct JSON-RPC node
+// ---------------------------------------------------------------------------
+
+/// Mock Solana node: enough of the JSON-RPC surface for one whole send.
+/// `sendTransaction` answers with the signature the submitted bytes carry,
+/// the way a real node does, so confirmation reconciles against it.
+struct RpcNode {
+    methods: Arc<tokio::sync::Mutex<Vec<String>>>,
+    send_delay: Duration,
+    url: String,
+}
+
+impl RpcNode {
+    async fn spawn(send_delay: Duration) -> Arc<Self> {
+        use axum::routing::post;
+        use axum::{Json, Router};
+
+        let methods = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let recorded = methods.clone();
+        let router = Router::new().route(
+            "/",
+            post(move |Json(body): Json<Value>| {
+                let recorded = recorded.clone();
+                async move {
+                    let method = body["method"].as_str().unwrap_or_default().to_string();
+                    let params = body["params"].clone();
+                    recorded.lock().await.push(method.clone());
+                    let result = match method.as_str() {
+                        "getLatestBlockhash" => json!({
+                            "context": { "slot": 42 },
+                            "value": {
+                                "blockhash": "9zjKZ3cCSHu9tqjX2gDaBUBpDzMSxaGyKmVMhbSNn5vP",
+                                "lastValidBlockHeight": 200,
+                            },
+                        }),
+                        "getFeeForMessage" => {
+                            json!({ "context": { "slot": 42 }, "value": 5000 })
+                        }
+                        "simulateTransaction" => json!({
+                            "context": { "slot": 42 },
+                            "value": {
+                                "err": Value::Null,
+                                "logs": ["Program log: hello"],
+                                "unitsConsumed": 1234,
+                                "loadedAccountsDataSize": 4096,
+                            },
+                        }),
+                        "sendTransaction" => {
+                            tokio::time::sleep(send_delay).await;
+                            let wire = params[0].as_str().unwrap_or_default().to_string();
+                            let decoded = decode(&base64_bytes(&Value::String(wire)));
+                            json!(decoded.signatures[0].to_string())
+                        }
+                        "getSignatureStatuses" => json!({
+                            "context": { "slot": 42 },
+                            "value": [{
+                                "slot": 77,
+                                "confirmations": Value::Null,
+                                "err": Value::Null,
+                                "confirmationStatus": "confirmed",
+                            }],
+                        }),
+                        "getBlockHeight" => json!(100),
+                        other => panic!("unexpected RPC method '{other}'"),
+                    };
+                    Json(json!({ "jsonrpc": "2.0", "id": 1, "result": result }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move { axum::serve(listener, router).await.expect("serve") });
+        Arc::new(Self {
+            methods,
+            send_delay,
+            url: format!("http://{addr}/"),
+        })
+    }
+
+    async fn methods(&self) -> Vec<String> {
+        self.methods.lock().await.clone()
+    }
+
+    fn transport(&self) -> Arc<dyn TransactionTransport> {
+        Arc::new(RpcTransactionTransport::new(&self.url))
+    }
+}
+
+/// Adapter that must ignore the Arete context and run on the node.
+fn direct_rpc_adapter(node: &RpcNode, payer: SharedSigner) -> SolanaWalletAdapter {
+    SolanaWalletAdapter::with_config(
+        payer,
+        SolanaAdapterConfig {
+            transport: Some(node.transport()),
+            transport_selection: AdapterTransportSelection::Direct,
+            confirmation_timeout: Duration::from_millis(300),
+            poll_interval: Duration::from_millis(1),
+            ..SolanaAdapterConfig::default()
+        },
+    )
+}
+
+#[tokio::test]
+async fn a_v1_send_runs_end_to_end_over_direct_rpc() {
+    let node = RpcNode::spawn(Duration::ZERO).await;
+    let arete = Arc::new(FakeTransport::confirmed_at(1));
+    let adapter = direct_rpc_adapter(&node, Arc::new(fixture_keypair(1)));
+
+    let result = adapter
+        .sign_and_send(
+            &[built_memo(vec![1], &[])],
+            // Both V1 budgets omitted: the estimator has to run over RPC.
+            &v1_send_options(TransactionResourceOptions {
+                priority_fee_lamports: Some(5_000),
+                ..TransactionResourceOptions::default()
+            }),
+            &WalletExecutionContext::new(Some(arete.clone())),
+        )
+        .await
+        .expect("the same compiler, estimator and signer work over RPC");
+
+    assert_eq!(result.slot, Some(77));
+    let methods = node.methods().await;
+    assert_eq!(
+        methods.iter().filter(|m| *m == "sendTransaction").count(),
+        1,
+        "one application-level submission attempt: {methods:?}"
+    );
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|m| *m == "simulateTransaction")
+            .count(),
+        2,
+        "estimation then preflight: {methods:?}"
+    );
+    assert_eq!(
+        arete.log(),
+        Log::default(),
+        "an explicit RPC selection wins even with an Arete client attached"
+    );
+}
+
+#[tokio::test]
+async fn unsigned_inspection_over_rpc_never_signs_or_sends() {
+    let node = RpcNode::spawn(Duration::ZERO).await;
+    let adapter = direct_rpc_adapter(&node, Arc::new(SignerSpy(fixture_keypair(1).pubkey())));
+
+    let inspection = adapter
+        .inspect_transaction(
+            &[built_memo(vec![1], &[])],
+            &TransactionInspectionOptions {
+                transaction_version: Some(TransactionVersion::V1),
+                ..TransactionInspectionOptions::default()
+            },
+            &WalletExecutionContext::default(),
+        )
+        .await
+        .expect("inspection works over RPC");
+
+    assert_eq!(inspection.fee_lamports, Some(5_000));
+    assert_eq!(inspection.compute_units_consumed, Some(1_234));
+    assert_eq!(inspection.loaded_accounts_data_size, Some(4_096));
+    let methods = node.methods().await;
+    assert!(
+        !methods.iter().any(|method| method == "sendTransaction"),
+        "{methods:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_stalled_rpc_submission_keeps_its_signature_after_one_attempt() {
+    let node = RpcNode::spawn(Duration::from_secs(30)).await;
+    let arete = Arc::new(FakeTransport::confirmed_at(1));
+    let adapter = direct_rpc_adapter(&node, Arc::new(fixture_keypair(1)));
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        adapter.sign_and_send(
+            &[built_memo(vec![1], &[])],
+            &v1_send_options(full_v1_resources()),
+            &WalletExecutionContext::new(Some(arete.clone())),
+        ),
+    )
+    .await
+    .expect("the adapter deadline bounds a stalled RPC submission")
+    .expect_err("an unacknowledged submission is not a success");
+
+    let outcome = outcome(error);
+    assert!(matches!(
+        outcome,
+        TransactionFailureOutcome::SubmittedUnknown { .. }
+    ));
+    assert!(
+        outcome
+            .signature()
+            .is_some_and(|signature| signature.parse::<Signature>().is_ok()),
+        "the locally derived signature survives: {outcome:?}"
+    );
+    let methods = node.methods().await;
+    assert_eq!(
+        methods.iter().filter(|m| *m == "sendTransaction").count(),
+        1,
+        "no resend, and no fallback to the Arete transport: {methods:?}"
+    );
+    assert_eq!(arete.log(), Log::default());
+    let _ = node.send_delay;
 }

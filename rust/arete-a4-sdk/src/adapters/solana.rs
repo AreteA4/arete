@@ -123,21 +123,47 @@ const LOOKUP_TABLE_KEYS: &[&str] = &[
 /// implementing upstream [`Signer`].
 pub type SharedSigner = Arc<dyn Signer + Send + Sync>;
 
+/// Which transport an operation runs on, mirroring the TypeScript adapters'
+/// `AdapterTransportSelection = 'auto' | 'direct' | TransactionTransport`.
+///
+/// The TypeScript union's third arm — an explicitly supplied transport — is
+/// [`SolanaAdapterConfig::transport`] here, so `Direct` covers both of its
+/// explicit cases: it makes the configured transport win over the invoking
+/// client's, whether that is an
+/// [`RpcTransactionTransport`](crate::rpc::RpcTransactionTransport) or any
+/// other implementation. Selection happens once, before the operation; a
+/// failure on the selected transport never falls back to the other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AdapterTransportSelection {
+    /// Arete by default: the invoking client's transport, then
+    /// [`SolanaAdapterConfig::transport`] when the adapter is used
+    /// standalone.
+    #[default]
+    Auto,
+    /// The escape hatch: [`SolanaAdapterConfig::transport`] wins even under
+    /// a connected client, and its absence is an error rather than a
+    /// silent fall back to Arete.
+    Direct,
+}
+
 /// Configuration for [`SolanaWalletAdapter`].
 #[derive(Clone)]
 pub struct SolanaAdapterConfig {
-    /// Relay used when the executing client passes no transport in the
-    /// [`WalletExecutionContext`]. The context transport always wins: it is
-    /// the connection that actually owns the session.
+    /// Transport used when [`Self::transport_selection`] resolves to it:
+    /// the fallback under `Auto`, and the required backend under `Direct`.
     pub transport: Option<Arc<dyn TransactionTransport>>,
+    /// Whether the invoking client's transport or [`Self::transport`] wins.
+    /// Defaults to [`AdapterTransportSelection::Auto`] — Arete first.
+    pub transport_selection: AdapterTransportSelection,
     /// Version used when the caller requests none. Defaults to
     /// [`TransactionVersion::DEFAULT`] (v0) — the version first-party
     /// builders already used before V1 existed.
     pub default_version: TransactionVersion,
     /// Confirmation level used when the caller requests none.
     pub default_confirmation_level: ConfirmationLevel,
-    /// How long to wait for confirmation before reporting the submission as
-    /// unknown. The transaction is never rebuilt, re-signed, or resent.
+    /// Deadline covering submission *and* confirmation, after which the
+    /// send is reported as unknown under the locally derived signature. The
+    /// transaction is never rebuilt, re-signed, or resent.
     pub confirmation_timeout: Duration,
     /// Delay between signature-status polls.
     pub poll_interval: Duration,
@@ -147,6 +173,7 @@ impl Default for SolanaAdapterConfig {
     fn default() -> Self {
         Self {
             transport: None,
+            transport_selection: AdapterTransportSelection::Auto,
             default_version: TransactionVersion::DEFAULT,
             default_confirmation_level: ConfirmationLevel::Confirmed,
             confirmation_timeout: Duration::from_secs(60),
@@ -162,6 +189,7 @@ impl fmt::Debug for SolanaAdapterConfig {
                 "transport",
                 &self.transport.as_ref().map(|_| "TransactionTransport"),
             )
+            .field("transport_selection", &self.transport_selection)
             .field("default_version", &self.default_version)
             .field(
                 "default_confirmation_level",
@@ -231,21 +259,36 @@ impl SolanaWalletAdapter {
         std::iter::once(&self.payer).chain(self.additional_signers.iter())
     }
 
-    /// Context transport first, configured transport second (contract §5).
+    /// Resolve the transport for one operation, once, before anything is
+    /// built (contract §5).
+    ///
+    /// `Auto` keeps Arete first — the connection that owns the session wins,
+    /// and the configured transport is the standalone fallback. `Direct`
+    /// inverts that for the explicit escape hatch. Neither ever falls back
+    /// to the other after a failure: the operation runs on the transport
+    /// chosen here or not at all.
     fn transport(
         &self,
         context: &WalletExecutionContext,
     ) -> Result<Arc<dyn TransactionTransport>, WalletError> {
-        context
-            .transaction_transport
-            .clone()
-            .or_else(|| self.config.transport.clone())
-            .ok_or_else(|| {
+        match self.config.transport_selection {
+            AdapterTransportSelection::Direct => self.config.transport.clone().ok_or_else(|| {
                 build_failure(
-                    "No transaction transport available: pass one in the execution context or \
-                     set SolanaAdapterConfig::transport",
+                    "AdapterTransportSelection::Direct requires SolanaAdapterConfig::transport \
+                         to be set (for example an RpcTransactionTransport)",
                 )
-            })
+            }),
+            AdapterTransportSelection::Auto => context
+                .transaction_transport
+                .clone()
+                .or_else(|| self.config.transport.clone())
+                .ok_or_else(|| {
+                    build_failure(
+                        "No transaction transport available: pass one in the execution context or \
+                         set SolanaAdapterConfig::transport",
+                    )
+                }),
+        }
     }
 
     /// Convert built instructions into upstream ones, refusing inputs the
@@ -312,9 +355,25 @@ impl SolanaWalletAdapter {
     ) -> Result<VersionedMessage, WalletError> {
         let payer = self.payer_address();
         let message = match version {
-            TransactionVersion::Legacy => VersionedMessage::Legacy(
-                LegacyMessage::new_with_blockhash(instructions, Some(&payer), &blockhash),
-            ),
+            // `LegacyMessage::new_with_blockhash` is infallible by signature
+            // only: upstream `expect`s the header conversion (panicking past
+            // 255 signers or readonly accounts) and truncates account
+            // indexes past 255 with an `as u8`. v0 compiles the very same
+            // components fallibly, and with no lookup tables the two layouts
+            // are identical, so an oversized account set becomes a build
+            // error here instead of a panic.
+            TransactionVersion::Legacy => {
+                let compiled = v0::Message::try_compile(&payer, instructions, &[], blockhash)
+                    .map_err(|error| {
+                        build_failure(format!("Failed to compile message: {error}"))
+                    })?;
+                VersionedMessage::Legacy(LegacyMessage {
+                    header: compiled.header,
+                    account_keys: compiled.account_keys,
+                    recent_blockhash: compiled.recent_blockhash,
+                    instructions: compiled.instructions,
+                })
+            }
             TransactionVersion::V0 => VersionedMessage::V0(
                 v0::Message::try_compile(&payer, instructions, &[], blockhash).map_err(
                     |error| build_failure(format!("Failed to compile message: {error}")),
@@ -455,21 +514,23 @@ impl SolanaWalletAdapter {
     }
 
     /// Poll the relay until the signature reaches `level`, the lifetime
-    /// expires, or the timeout elapses. Never resubmits.
+    /// expires, or `deadline` passes. Never resubmits.
     ///
     /// The whole wait — including whatever request is in flight — is bounded
-    /// by [`SolanaAdapterConfig::confirmation_timeout`], so a relay that
-    /// stops answering still yields the uncertain-submission outcome instead
-    /// of hanging the caller after the one submission.
+    /// by the same [`SolanaAdapterConfig::confirmation_timeout`] deadline
+    /// the submission is, so a relay that stops answering still yields the
+    /// uncertain-submission outcome instead of hanging the caller after the
+    /// one submission.
     async fn confirm(
         &self,
         transport: &Arc<dyn TransactionTransport>,
         signature: &str,
         level: ConfirmationLevel,
         last_valid_block_height: u64,
+        deadline: tokio::time::Instant,
     ) -> Result<SendResult, WalletError> {
         let polling = self.poll_confirmation(transport, signature, level, last_valid_block_height);
-        tokio::time::timeout(self.config.confirmation_timeout, polling)
+        tokio::time::timeout_at(deadline, polling)
             .await
             .unwrap_or_else(|_| {
                 Err(submitted_unknown(
@@ -558,20 +619,44 @@ impl WalletAdapter for SolanaWalletAdapter {
         Some(SUPPORTED_VERSIONS)
     }
 
+    /// Resolve an omitted version against
+    /// [`SolanaAdapterConfig::default_version`] before validating the
+    /// resource options bound to it.
+    ///
+    /// The inherited default reads `None` as
+    /// [`TransactionVersion::DEFAULT`], which is what
+    /// `execute_prepared_operation` / `inspect_prepared_operation` call
+    /// before the adapter is ever reached: with a V1-defaulted adapter that
+    /// rejects a valid `priority_fee_lamports` as a v0 fee mismatch, and
+    /// admits a v0-only `compute_unit_price_micro_lamports` the compiled V1
+    /// message would then drop.
+    fn validate_transaction_options(
+        &self,
+        version: Option<TransactionVersion>,
+        resources: &TransactionResourceOptions,
+    ) -> Result<(), TransactionCapabilityError> {
+        let effective = version.unwrap_or(self.config.default_version);
+        if !SUPPORTED_VERSIONS.contains(&effective) {
+            return Err(TransactionCapabilityError::UnsupportedVersion {
+                requested: effective,
+                declared: Some(SUPPORTED_VERSIONS.to_vec()),
+            });
+        }
+        resources.validate_for(effective)
+    }
+
     async fn sign_and_send(
         &self,
         instructions: &[BuiltInstruction],
         options: &SendOptions,
         context: &WalletExecutionContext,
     ) -> Result<SendResult, WalletError> {
-        // The effective version, not the caller's `Option`, is what the
-        // resource options are bound to: validating before it is resolved
-        // checks them against the contract default while the message is
-        // compiled for this adapter's configured one.
+        // Same resolution the validation hook applies, so the version that
+        // is validated is the version that is compiled.
         let version = options
             .transaction_version
             .unwrap_or(self.config.default_version);
-        self.validate_transaction_options(Some(version), &options.resources)
+        self.validate_transaction_options(options.transaction_version, &options.resources)
             .map_err(capability_failure)?;
         let level = options
             .confirmation_level
@@ -641,19 +726,41 @@ impl WalletAdapter for SolanaWalletAdapter {
         // derived signature is authoritative: it is the one these bytes
         // carry, so a relay echoing a different one is a reportable
         // condition, never a correction to poll for.
-        match transport
-            .send(
+        //
+        // The dispatch itself is on the clock: a relay that receives the
+        // transaction and then stalls before answering would otherwise hang
+        // the caller forever, because no HTTP transport here imposes a
+        // request timeout. `confirmation_timeout` is one deadline covering
+        // submission and confirmation, and expiring on either side yields
+        // the same submitted-unknown outcome under the derived signature.
+        let deadline = tokio::time::Instant::now() + self.config.confirmation_timeout;
+        let submitted = tokio::time::timeout_at(
+            deadline,
+            transport.send(
                 &encoded,
                 TransactionSendOptions {
                     skip_preflight: options.skip_preflight,
                     preflight_commitment: Some(commitment_of(level)),
                     min_context_slot: None,
                 },
-            )
-            .await
-        {
-            Ok(result) if result.signature == derived => {}
-            Ok(result) => {
+            ),
+        )
+        .await;
+        match submitted {
+            Err(_) => {
+                return Err(submitted_unknown(
+                    &derived,
+                    None,
+                    format!(
+                        "Timed out after {:?} waiting for the relay to acknowledge the \
+                         submission; the transaction was dispatched once and may still land — \
+                         reconcile by signature rather than resending",
+                        self.config.confirmation_timeout
+                    ),
+                ))
+            }
+            Ok(Ok(result)) if result.signature == derived => {}
+            Ok(Ok(result)) => {
                 tracing::warn!(
                     relay_signature = %result.signature,
                     signed_signature = %derived,
@@ -670,7 +777,7 @@ impl WalletAdapter for SolanaWalletAdapter {
                     ),
                 ));
             }
-            Err(error) => return Err(classify_send_error(error, &derived)),
+            Ok(Err(error)) => return Err(classify_send_error(error, &derived)),
         }
 
         self.confirm(
@@ -678,6 +785,7 @@ impl WalletAdapter for SolanaWalletAdapter {
             &derived,
             level,
             lifetime.last_valid_block_height,
+            deadline,
         )
         .await
     }
@@ -691,7 +799,7 @@ impl WalletAdapter for SolanaWalletAdapter {
         let version = options
             .transaction_version
             .unwrap_or(self.config.default_version);
-        self.validate_transaction_options(Some(version), &options.resources)
+        self.validate_transaction_options(options.transaction_version, &options.resources)
             .map_err(capability_failure)?;
         let transport = self.transport(context)?;
         let upstream =
@@ -989,20 +1097,36 @@ fn custom_program_error(error: &Value) -> Option<ProgramError> {
 
 /// Classify a failed submission. Only a relay that proved the transaction was
 /// never dispatched yields a not-submitted outcome; anything else keeps the
-/// signature so the caller can reconcile instead of resending.
+/// locally derived signature so the caller can reconcile instead of resending.
+///
+/// The relay's own signature never replaces it: these bytes were signed as
+/// `derived`, so a conflicting relay signature identifies some other
+/// transaction and is reported as diagnostic text only.
 fn classify_send_error(error: TransactionError, derived: &str) -> WalletError {
     let transport = match &error {
         TransactionError::Transport(inner) => Some(inner.as_ref()),
         _ => None,
     };
-    let message = format!("Failed to submit transaction: {error}");
-    match transport.and_then(|inner| inner.submission_state) {
-        Some(SubmissionState::NotSubmitted) => send_refused(message),
-        _ => {
-            let signature = transport
-                .and_then(|inner| inner.signature.as_deref())
-                .unwrap_or(derived);
-            submitted_unknown(signature, None, message)
-        }
+    let mut message = format!("Failed to submit transaction: {error}");
+    if matches!(
+        transport.and_then(|inner| inner.submission_state),
+        Some(SubmissionState::NotSubmitted)
+    ) {
+        return send_refused(message);
     }
+    if let Some(relay) = transport
+        .and_then(|inner| inner.signature.as_deref())
+        .filter(|relay| *relay != derived)
+    {
+        tracing::warn!(
+            relay_signature = %relay,
+            signed_signature = %derived,
+            "relay error reported a signature the adapter did not sign"
+        );
+        message.push_str(&format!(
+            " (the relay reported signature {relay}, but these bytes were signed as {derived}; \
+             reconcile by the signed signature)"
+        ));
+    }
+    submitted_unknown(derived, None, message)
 }

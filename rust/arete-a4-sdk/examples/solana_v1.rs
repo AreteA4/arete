@@ -14,18 +14,30 @@
 //! ARETE_EXAMPLE_EXECUTE=1 \
 //!   cargo run -p arete-a4-sdk --features solana-adapter --example solana_v1
 //! ```
+//!
+//! Arete is the default backend. The escape hatch is one variable — the
+//! adapter then talks to that node directly, with the same compiler, budget
+//! estimator, inspection, signing and confirmation above it:
+//!
+//! ```text
+//! ARETE_EXAMPLE_RPC_URL=http://127.0.0.1:8899 \
+//!   cargo run -p arete-a4-sdk --features solana-adapter --example solana_v1
+//! ```
 
 use std::env;
 use std::sync::Arc;
 
 use arete_a4_sdk::http::{AuthTokenRequest, TokenSource};
 use arete_a4_sdk::instruction::BuiltInstruction;
-use arete_a4_sdk::transactions::HttpTransactionTransport;
+use arete_a4_sdk::rpc::RpcTransactionTransport;
+use arete_a4_sdk::transactions::{HttpTransactionTransport, TransactionTransport};
 use arete_a4_sdk::wallet::{
     SendOptions, TransactionInspectionOptions, TransactionResourceOptions, TransactionVersion,
     WalletAdapter, WalletExecutionContext,
 };
-use arete_a4_sdk::{AreteError, SolanaAdapterConfig, SolanaWalletAdapter};
+use arete_a4_sdk::{
+    AdapterTransportSelection, AreteError, SolanaAdapterConfig, SolanaWalletAdapter,
+};
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 
@@ -59,22 +71,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A disposable signer: this example never reads a key file and never
     // touches mainnet. Fund it on a local validator to execute for real.
     let payer = Arc::new(Keypair::new());
-    let transport = Arc::new(HttpTransactionTransport::new(
-        &relay,
-        Arc::new(EnvApiKey(env::var("ARETE_API_KEY").ok())),
-    ));
+
+    // Arete by default; an explicit RPC URL selects the node instead and
+    // wins over any transport a connected client would pass in.
+    let (backend, transport, transport_selection) = match env::var("ARETE_EXAMPLE_RPC_URL") {
+        Ok(url) => (
+            url.clone(),
+            Arc::new(RpcTransactionTransport::new(url)) as Arc<dyn TransactionTransport>,
+            AdapterTransportSelection::Direct,
+        ),
+        Err(_) => (
+            relay.clone(),
+            Arc::new(HttpTransactionTransport::new(
+                &relay,
+                Arc::new(EnvApiKey(env::var("ARETE_API_KEY").ok())),
+            )) as Arc<dyn TransactionTransport>,
+            AdapterTransportSelection::Auto,
+        ),
+    };
 
     let adapter = SolanaWalletAdapter::with_config(
         payer.clone(),
         SolanaAdapterConfig {
-            // Configured relay: used whenever the caller passes no transport
-            // in the execution context.
             transport: Some(transport),
+            transport_selection,
             ..SolanaAdapterConfig::default()
         },
     );
     println!("payer   {}", adapter.public_key());
-    println!("relay   {relay}");
+    println!("backend {backend} ({transport_selection:?})");
     println!("versions {:?}", adapter.supported_transaction_versions());
 
     let instructions = vec![BuiltInstruction {
