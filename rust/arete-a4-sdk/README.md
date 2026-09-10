@@ -146,6 +146,120 @@ Failures classify into the same four-state outcome model as TypeScript
 errors resolved against IDL metadata. A `SignerRegistry` covers multi-signer
 flows with fail-closed validation before dispatch.
 
+## Optional Solana adapter (legacy, v0, transaction V1)
+
+The SDK ships no wallet adapter by default — the core only builds
+`BuiltInstruction` values, and nothing Solana-versioned reaches your
+dependency graph unless you ask for it:
+
+```toml
+arete-sdk = { package = "arete-a4-sdk", version = "0.16.0", features = ["solana-adapter"] } # x-release-please-version
+```
+
+```rust
+use arete_sdk::prelude::*;
+
+let wallet = Arc::new(
+    SolanaWalletAdapter::with_config(
+        Arc::new(keypair),                      // any upstream `Signer`
+        SolanaAdapterConfig {
+            transport: Some(relay),             // fallback when the caller passes none
+            ..SolanaAdapterConfig::default()    // v0 default, confirmed, 60s deadline
+        },
+    )
+    .with_signer(Arc::new(cosigner)),           // owned extra signers
+);
+
+let receipt = a4.transaction(&[ix], TransactionOptions {
+    send: SendOptions {
+        transaction_version: Some(TransactionVersion::V1),
+        resources: TransactionResourceOptions {
+            priority_fee_lamports: Some(5_000),   // V1 only: total lamports
+            ..Default::default()                  // budgets estimated below
+        },
+        ..Default::default()
+    },
+    ..Default::default()
+}).await?;
+```
+
+The adapter declares `legacy`, `0` and `1`, compiles and signs with the
+upstream `solana-message` / `solana-transaction` crates, submits **once**
+and reconciles by signature. One deadline
+(`confirmation_timeout`) covers submission *and* confirmation, so a backend
+that stops answering yields a `submitted-unknown` outcome carrying the
+locally derived signature — never a hang and never a resend. That signature
+is authoritative: a backend that reports a different one is logged and
+reported, never polled for. Version behaviour follows the transaction option
+contract:
+
+| | legacy / v0 | V1 (SIMD-0385) |
+|---|---|---|
+| Wire limit | 1232 bytes | 4096 bytes, 12 signatures, 64 accounts, 64 instructions |
+| Resource budget | prepended `ComputeBudget` instructions | typed message config |
+| Fee option | `computeUnitPriceMicroLamports` (per CU) | `priorityFeeLamports` (total) |
+| Lookup tables | not supported by this adapter | not supported by the format |
+
+An omitted version keeps the existing v0 default. Caller-supplied
+`ComputeBudget` instructions are refused — use the typed options.
+
+V1's two budget fields, `computeUnitLimit` and `loadedAccountsDataSizeLimit`,
+are resolved in three steps, because an omitted V1 budget requests the
+*minimum* rather than a generous default:
+
+1. an explicit value is used verbatim and never silently raised;
+2. an omitted one is **measured** — the adapter simulates a provisional
+   unsigned message that declares the protocol maxima (signature verification
+   off), then derives the budget from `unitsConsumed` (+20% headroom) and
+   `loadedAccountsDataSize` (rounded up to a 32 KiB page, plus one page).
+   The derived config is what gets compiled, simulated and signed — nothing
+   is recompiled afterwards;
+3. only if the simulation reports no such metric does the send fail, naming
+   the budget you then have to pass.
+
+`inspect_transaction` builds that same provisional message, never signs it,
+and returns the metrics, so you can pin the budgets yourself instead.
+
+`cargo run -p arete-a4-sdk --features solana-adapter --example solana_v1`
+walks the whole flow against a local relay; it inspects only unless
+`ARETE_EXAMPLE_EXECUTE=1`.
+
+### Arete by default, direct RPC as an explicit escape hatch
+
+`RpcTransactionTransport` implements the same `TransactionTransport` trait
+the relay does, over a node's JSON-RPC endpoint, using the `reqwest` the SDK
+already carries — no `solana-client`, no change to the core `Pubkey`, and
+provider credentials kept out of Arete authentication:
+
+```rust
+let rpc = Arc::new(
+    RpcTransactionTransport::new("https://api.devnet.solana.com")
+        .with_header("x-provider-key", provider_key),
+);
+
+let wallet = SolanaWalletAdapter::with_config(Arc::new(keypair), SolanaAdapterConfig {
+    transport: Some(rpc),
+    // Auto (the default) prefers the invoking client's Arete transport;
+    // Direct runs on `transport` even under a connected client.
+    transport_selection: AdapterTransportSelection::Direct,
+    ..SolanaAdapterConfig::default()
+});
+```
+
+| selection | with an Arete client | standalone |
+|---|---|---|
+| `Auto` (default) | the client's transport | `config.transport` |
+| `Direct` | `config.transport` | `config.transport`, required |
+
+The backend is chosen once, before the operation: a failure on the selected
+one never falls back to the other, and nothing is rebuilt, re-signed, or
+resent after an uncertain result. It is also injectable at the client level
+through `AreteBuilder::transactions(...)`, `SessionBuilder::transactions(...)`
+and the per-call inspection override.
+
+`ARETE_EXAMPLE_RPC_URL=http://127.0.0.1:8899` runs the example above that
+way instead of through the relay.
+
 ## Chain reads and transaction relay
 
 ```rust

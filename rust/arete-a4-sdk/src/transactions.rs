@@ -37,7 +37,7 @@ impl Commitment {
         }
     }
 
-    fn from_wire(value: &str) -> Option<Self> {
+    pub(crate) fn from_wire(value: &str) -> Option<Self> {
         match value {
             "processed" => Some(Self::Processed),
             "confirmed" => Some(Self::Confirmed),
