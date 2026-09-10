@@ -48,6 +48,7 @@ jobs:
       core_version: ${{ steps.release.outputs['typescript/core--version'] }}
       core_release_created: ${{ steps.release.outputs['typescript/core--release_created'] }}
       react_release_created: ${{ steps.release.outputs['typescript/react--release_created'] }}
+      adapter_kit_version: ${{ steps.release.outputs['typescript/adapters/kit--version'] }}
       adapter_kit_release_created: ${{ steps.release.outputs['typescript/adapters/kit--release_created'] }}
       adapter_web3js_release_created: ${{ steps.release.outputs['typescript/adapters/web3js--release_created'] }}
       python_release_created: ${{ steps.release.outputs['python/arete-sdk--release_created'] }}
@@ -343,6 +344,29 @@ jobs:
       - name: Publish Kit adapter
         if: needs.release-please.outputs.adapter_kit_release_created == 'true'
         run: ../../../scripts/publish-npm-package.sh .
+        working-directory: typescript/adapters/kit
+
+      - name: Wait for Kit adapter registry propagation
+        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        env:
+          KIT_VERSION: ${{ needs.release-please.outputs.adapter_kit_version }}
+        run: |
+          for attempt in {1..30}; do
+            published_version="$(npm view "@usearete/adapter-kit@${KIT_VERSION}" version 2>/dev/null || true)"
+            if [[ "$published_version" == "$KIT_VERSION" ]]; then
+              echo "@usearete/adapter-kit@${KIT_VERSION} is available"
+              exit 0
+            fi
+            echo "Waiting for @usearete/adapter-kit@${KIT_VERSION} (attempt ${attempt}/30)"
+            sleep 10
+          done
+          echo "::error::@usearete/adapter-kit@${KIT_VERSION} did not propagate within 5 minutes"
+          exit 1
+        shell: bash
+
+      - name: Check published Kit adapter imports
+        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        run: node pack-smoke.mjs --registry
         working-directory: typescript/adapters/kit
 
       - name: Install web3.js adapter dependencies
@@ -652,3 +676,12 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: python/arete-sdk/dist/
+
+      - name: Check published Python adapter import
+        working-directory: python/arete-sdk
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          python -m venv "$RUNNER_TEMP/arete-python-consumer"
+          "$RUNNER_TEMP/arete-python-consumer/bin/python" -m pip install "arete-sdk[solana]==$version"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/arete-python-consumer/bin/python" -c 'from arete.adapters.solders import SoldersAdapterConfig, SoldersWalletAdapter'

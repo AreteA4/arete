@@ -1,0 +1,46 @@
+{
+  "address": "11111111111111111111111111111111",
+  "metadata": {
+    "name": "system",
+    "version": "1.0.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "transfer",
+      "discriminant": { "type": "u32", "value": 2 },
+      "accounts": [
+        {
+          "name": "from",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "to",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "lamports",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Wallet",
+      "discriminator": []
+    }
+  ],
+  "types": [
+    {
+      "name": "Wallet",
+      "type": {
+        "kind": "struct",
+        "fields": []
+      }
+    }
+  ]
+}

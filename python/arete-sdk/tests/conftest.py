@@ -1,15 +1,14 @@
-"""Shared collection rules.
+"""Keep optional Solana suites out of base-install collection.
 
-``test_solders_adapter.py`` imports ``solders`` unconditionally: it tests the
-optional ``solana`` extra against the real codec, and skipping individual cases
-would hide a broken adapter. A base install has no solders, so the whole module
-is left out of collection there; installing the extra brings it back.
-
-Adapter environments must not rely on this: they check for the dependency
-explicitly and run ``pytest tests/test_solders_adapter.py``, which fails (exit
-code 5, "no tests ran") if the module was dropped.
+Both modules import the real solders codec and adapter unconditionally. When
+the extra is installed, normal collection includes them. Solana-extra CI also
+requires solders explicitly and invokes each module separately, so a missing
+dependency or an uncollected module cannot produce a successful adapter check.
 """
 
 from importlib.util import find_spec
 
-collect_ignore = [] if find_spec("solders") is not None else ["test_solders_adapter.py"]
+collect_ignore = [] if find_spec("solders") is not None else [
+    "test_solders_adapter.py",
+    "test_generated_solders.py",
+]

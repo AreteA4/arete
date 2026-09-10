@@ -158,6 +158,17 @@ compile_crate() {
     if ! grep -q '^\[workspace\]' "$manifest"; then
         printf '\n[workspace]\n' >>"$manifest"
     fi
+    # Compile the public optional adapter in this existing consumer as well.
+    # This adds no transaction lifecycle or separate fixture crate.
+    printf '\n[features]\ncheck-solana-adapter = ["arete-sdk/solana-adapter"]\n' >>"$manifest"
+    mkdir -p "$crate_dir/examples"
+    cat >"$crate_dir/examples/adapter_import.rs" <<'RS'
+use arete_sdk::adapters::solana::{SolanaAdapterConfig, SolanaWalletAdapter};
+fn main() {
+    let _ = SolanaAdapterConfig::default();
+    let _ = std::any::type_name::<SolanaWalletAdapter>();
+}
+RS
     case "$MODE" in
         local)
             # Temporary pre-publication patch: compile against this checkout's
@@ -165,14 +176,14 @@ compile_crate() {
             # dependencies, so it is the only crate that needs patching.
             printf '\n[patch.crates-io]\narete-a4-sdk = { path = %s }\n' \
                 "\"$ROOT_DIR/rust/arete-a4-sdk\"" >>"$manifest"
-            (cd "$crate_dir" && cargo check --quiet)
+            (cd "$crate_dir" && cargo check --quiet --features check-solana-adapter --examples)
             ;;
         registry)
             if grep -qE '^\[patch|path[[:space:]]*=' "$manifest"; then
                 echo "registry mode must not carry a path or patch dependency: $manifest" >&2
                 exit 1
             fi
-            (cd "$crate_dir" && cargo generate-lockfile --quiet && cargo check --quiet --locked)
+            (cd "$crate_dir" && cargo generate-lockfile --quiet && cargo check --quiet --locked --features check-solana-adapter --examples)
             if ! grep -qE "^name = \"arete-a4-sdk\"" "$crate_dir/Cargo.lock"; then
                 echo "arete-a4-sdk was not resolved into $crate_dir/Cargo.lock" >&2
                 exit 1
