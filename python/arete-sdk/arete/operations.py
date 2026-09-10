@@ -60,6 +60,7 @@ from arete.wallet import (
     WalletError,
     WalletExecutionContext,
     ensure_transaction_version_supported,
+    resolve_transaction_options,
 )
 
 __all__ = [
@@ -864,11 +865,36 @@ def classify_execution_failure(
 # ---------------------------------------------------------------------------
 
 
+#: Base58 (Bitcoin alphabet) — the encoding every Solana address uses. Only
+#: applied to non-string accessor results, so an opaque signer exposing a
+#: plain ``address`` string keeps behaving exactly as before.
+_BASE58_ALPHABET = frozenset(
+    "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+)
+
+
+def _as_address(candidate: Any) -> Optional[str]:
+    """An address string from a public-key object, or ``None``.
+
+    ``solders`` returns a ``Pubkey``, other libraries return their own type;
+    normalising through ``str`` keeps the base SDK free of any Solana
+    import. Anything whose text is not a base58 address of the right length
+    fails closed rather than becoming a signer address by accident.
+    """
+    if candidate is None or isinstance(candidate, (str, bytes, bytearray)):
+        return None
+    text = str(candidate)
+    if 32 <= len(text) <= 44 and not set(text) - _BASE58_ALPHABET:
+        return text
+    return None
+
+
 def infer_signer_address(value: Any) -> Optional[str]:
     """Best-effort address of an opaque signer: a non-empty string, or an
-    object exposing ``address`` / ``public_key`` / ``pubkey``. Opaque signers
-    without an inferable address never satisfy signer validation (fail
-    closed)."""
+    object exposing ``address`` / ``public_key`` / ``pubkey`` as an attribute
+    or as a no-argument accessor (``solders`` keypairs expose ``pubkey()``
+    returning a ``Pubkey``). Opaque signers without an inferable address
+    never satisfy signer validation (fail closed)."""
     if isinstance(value, str):
         return value or None
     if value is None:
@@ -877,8 +903,16 @@ def infer_signer_address(value: Any) -> Optional[str]:
         candidate = (
             value.get(attr) if isinstance(value, Mapping) else getattr(value, attr, None)
         )
+        if callable(candidate):
+            try:
+                candidate = candidate()
+            except Exception:
+                continue
         if isinstance(candidate, str) and candidate:
             return candidate
+        address = _as_address(candidate)
+        if address:
+            return address
     return None
 
 
@@ -1290,10 +1324,12 @@ async def inspect_prepared_operation(
 
     # Validate the shared version/resource contract before the adapter is
     # touched: an explicit transaction version the adapter does not advertise
-    # fails here instead of being silently downgraded. ``options`` itself is
-    # forwarded unchanged, so adapter-specific keys keep working.
-    effective = SendOptions.coerce(options).validate()
-    ensure_transaction_version_supported(wallet, effective.transaction_version)
+    # fails here instead of being silently downgraded, and an adapter that
+    # exposes ``resolve_send_options`` gets its own defaults merged in first
+    # so the pair is checked against the version it will compile.
+    # ``options`` itself is forwarded unchanged, so adapter-specific keys
+    # keep working.
+    resolve_transaction_options(wallet, options)
 
     transaction = operation.plan.transactions[0]
     description = describe_prepared_operation(operation)

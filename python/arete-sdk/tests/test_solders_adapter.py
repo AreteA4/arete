@@ -21,6 +21,7 @@ import sys
 import warnings
 from pathlib import Path
 
+import httpx
 import pytest
 from solders.compute_budget import (
     request_heap_frame,
@@ -28,12 +29,26 @@ from solders.compute_budget import (
     set_compute_unit_price,
     set_loaded_accounts_data_size_limit,
 )
+from solders.hash import Hash
 from solders.keypair import Keypair
 from solders.message import MessageV1
 from solders.transaction import VersionedTransaction
 
-from arete.adapters.solders import SoldersAdapterConfig, SoldersWalletAdapter
+from arete.adapters.solders import (
+    MAX_COMPUTE_UNIT_LIMIT,
+    MAX_LOADED_ACCOUNTS_DATA_SIZE,
+    SoldersAdapterConfig,
+    SoldersWalletAdapter,
+    to_instruction,
+)
+from arete.client import Arete
 from arete.instructions import BuiltAccountMeta, BuiltInstruction
+from arete.operations import (
+    TransactionExecutionError,
+    create_prepared_instruction,
+)
+from arete.rpc import RpcTransactionTransport
+from arete.stack import StackDef, StackEndpoints
 from arete.transactions import (
     LatestBlockhashResult,
     TransactionFeeResult,
@@ -210,6 +225,16 @@ def sent_transaction(transport):
     return VersionedTransaction.from_bytes(base64.b64decode(transport.sent[0]))
 
 
+def submitted_signature(transport):
+    """The signature the submitted bytes actually carry.
+
+    V1 sends resolve their two SIMD-0385 budgets before signing, so the
+    payload is not the budget-less kit fixture and its signature is derived
+    here rather than read from the corpus.
+    """
+    return str(sent_transaction(transport).signatures[0])
+
+
 # ---------------------------------------------------------------------------
 # Configuration validation
 # ---------------------------------------------------------------------------
@@ -276,10 +301,7 @@ async def test_an_unset_confirmation_level_fails_before_anything_is_submitted():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "name,version",
-    [("legacy", "legacy"), ("v0", 0), ("v1", 1)],
-)
+@pytest.mark.parametrize("name,version", [("legacy", "legacy"), ("v0", 0)])
 async def test_wire_bytes_match_the_kit_fixtures(name, version):
     expected = fixture(name)
     transport = FakeTransport()
@@ -296,16 +318,48 @@ async def test_wire_bytes_match_the_kit_fixtures(name, version):
     assert result.slot == 42
 
 
+@pytest.mark.parametrize("name", ["v1", "v1_oversize", "v1_two_signatures"])
+def test_v1_wire_bytes_match_the_kit_fixtures(name):
+    """V1 codec conformance, compiled directly rather than sent.
+
+    Every kit V1 fixture carries an empty ``TransactionConfig``, and a V1
+    message with no budgets requests the SIMD-0385 *minimum* -- so
+    :meth:`sign_and_send` can never produce these exact bytes. What the
+    corpus pins is the codec, which is checked here against the fixture's
+    own inputs.
+    """
+    expected = fixture(name)
+    signers = [PAYER] if expected["signatureCount"] == 1 else [PAYER, COSIGNER]
+    accounts = [] if expected["signatureCount"] == 1 else [
+        str(keypair.pubkey()) for keypair in signers
+    ]
+    data = {"v1": [1, 2, 3], "v1_oversize": [7] * 1400, "v1_two_signatures": [9]}[name]
+
+    message = MessageV1.try_compile(
+        PAYER.pubkey(),
+        [to_instruction(memo(data, signers=accounts))],
+        Hash.from_string(FIXTURE_BLOCKHASH),
+        None,
+    )
+    transaction = VersionedTransaction(message, signers)
+    wire = bytes(transaction)
+
+    assert base64.b64encode(wire).decode("ascii") == expected["base64"]
+    assert len(wire) == expected["bytes"]
+    assert len(transaction.signatures) == expected["signatureCount"]
+    assert str(transaction.signatures[0]) == expected["firstSignature"]
+
+
 @pytest.mark.asyncio
 async def test_v1_payload_over_the_legacy_ceiling_is_accepted():
-    expected = fixture("v1_oversize")
-    assert expected["bytes"] > 1232
+    assert fixture("v1_oversize")["bytes"] > 1232
     transport = FakeTransport()
 
     await send(transport, [memo([7] * 1400)], SendOptions(transaction_version=1))
 
-    assert transport.sent[0] == expected["base64"]
-    assert isinstance(sent_transaction(transport).message, MessageV1)
+    decoded = sent_transaction(transport)
+    assert isinstance(decoded.message, MessageV1)
+    assert len(base64.b64decode(transport.sent[0])) > 1232
 
 
 @pytest.mark.asyncio
@@ -321,8 +375,7 @@ async def test_same_payload_is_rejected_for_v0():
 
 
 @pytest.mark.asyncio
-async def test_two_signature_v1_matches_the_fixture():
-    expected = fixture("v1_two_signatures")
+async def test_two_signature_v1_signs_in_message_order():
     transport = FakeTransport()
 
     result = await send(
@@ -331,10 +384,10 @@ async def test_two_signature_v1_matches_the_fixture():
         SendOptions(transaction_version=1, signers=(COSIGNER,)),
     )
 
-    assert transport.sent[0] == expected["base64"]
     decoded = sent_transaction(transport)
-    assert len(decoded.signatures) == 2 == expected["signatureCount"]
-    assert result.signature == expected["firstSignature"]
+    assert len(decoded.signatures) == 2
+    assert result.signature == str(decoded.signatures[0])
+    assert decoded.verify_with_results() == [True, True]
 
 
 @pytest.mark.asyncio
@@ -348,7 +401,7 @@ async def test_configured_signer_covers_a_required_cosigner():
         signers=(COSIGNER,),
     )
 
-    assert transport.sent[0] == fixture("v1_two_signatures")["base64"]
+    assert sent_transaction(transport).verify_with_results() == [True, True]
 
 
 @pytest.mark.asyncio
@@ -380,14 +433,101 @@ async def test_estimation_fills_unset_ceilings_from_simulation():
         transport,
         [memo([1])],
         SendOptions(transaction_version=1),
-        estimate_resources=True,
         compute_unit_margin=1000,
     )
 
     config = sent_transaction(transport).message.config
     assert config.compute_unit_limit == 2200
-    assert config.loaded_accounts_data_size_limit == 4096
+    # 4096 measured bytes round up to one 32 KiB page, plus a page of
+    # headroom for account growth between simulation and execution.
+    assert config.loaded_accounts_data_size_limit == 65536
     assert transport.calls.count("simulate") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "measured,expected",
+    [
+        (0, 32768),
+        (1, 65536),
+        (32768, 65536),
+        (32769, 98304),
+        (4097, 65536),
+        # At the ceiling the headroom cannot push the budget out of range.
+        (MAX_LOADED_ACCOUNTS_DATA_SIZE, MAX_LOADED_ACCOUNTS_DATA_SIZE),
+    ],
+)
+async def test_estimated_data_budgets_are_page_rounded_and_bounded(
+    measured, expected
+):
+    transport = FakeTransport(result=simulation(units=1200, size=measured))
+
+    await send(transport, [memo([1])], SendOptions(transaction_version=1))
+
+    config = sent_transaction(transport).message.config
+    assert config.loaded_accounts_data_size_limit == expected
+
+
+@pytest.mark.asyncio
+async def test_estimated_compute_budgets_are_bounded_by_the_protocol_maximum():
+    transport = FakeTransport(
+        result=simulation(units=MAX_COMPUTE_UNIT_LIMIT, size=4096)
+    )
+
+    await send(
+        transport,
+        [memo([1])],
+        SendOptions(transaction_version=1),
+        compute_unit_margin=1000,
+    )
+
+    config = sent_transaction(transport).message.config
+    assert config.compute_unit_limit == MAX_COMPUTE_UNIT_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_the_provisional_message_declares_the_protocol_maxima():
+    """The message that gets measured must be executable.
+
+    Signature verification being off does not lift a resource limit, so a
+    provisional V1 message carrying the SIMD-0385 minimum could never
+    produce an ordinary successful estimate.
+    """
+    transport = FakeTransport()
+
+    await send(transport, [memo([1])], SendOptions(transaction_version=1))
+
+    provisional = VersionedTransaction.from_bytes(
+        base64.b64decode(transport.simulated[0])
+    ).message.config
+    assert provisional.compute_unit_limit == MAX_COMPUTE_UNIT_LIMIT
+    assert provisional.loaded_accounts_data_size_limit == (
+        MAX_LOADED_ACCOUNTS_DATA_SIZE
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_budget_is_preserved_in_the_provisional_message():
+    transport = FakeTransport(result=simulation(units=1200, size=4096))
+
+    await send(
+        transport,
+        [memo([1])],
+        SendOptions(
+            transaction_version=1, resources={"computeUnitLimit": 5000}
+        ),
+    )
+
+    provisional = VersionedTransaction.from_bytes(
+        base64.b64decode(transport.simulated[0])
+    ).message.config
+    assert provisional.compute_unit_limit == 5000
+    assert provisional.loaded_accounts_data_size_limit == (
+        MAX_LOADED_ACCOUNTS_DATA_SIZE
+    )
+    final = sent_transaction(transport).message.config
+    assert final.compute_unit_limit == 5000, "an explicit budget is never raised"
+    assert final.loaded_accounts_data_size_limit == 65536
 
 
 @pytest.mark.asyncio
@@ -414,19 +554,48 @@ async def test_explicit_overrides_win_and_skip_simulation():
 
 
 @pytest.mark.asyncio
-async def test_missing_simulation_metrics_leave_the_request_untouched():
+@pytest.mark.parametrize(
+    "units,size,missing",
+    [
+        (None, None, "computeUnitLimit"),
+        (1200, None, "loadedAccountsDataSizeLimit"),
+        (None, 4096, "computeUnitLimit"),
+    ],
+)
+async def test_a_missing_metric_refuses_to_sign_a_v1_transaction(
+    units, size, missing
+):
+    """An unmeasurable V1 ceiling cannot be left unset.
+
+    Unset requests the minimum (SIMD-0385), so signing anyway would submit a
+    transaction that can only fail on chain.
+    """
+    transport = FakeTransport(result=simulation(units=units, size=size, logs=None))
+
+    with pytest.raises(WalletError) as caught:
+        await send(transport, [memo([1, 2, 3])], SendOptions(transaction_version=1))
+
+    outcome = caught.value.outcome
+    assert outcome.status == "not-submitted"
+    assert outcome.phase == "build"
+    assert missing in caught.value.message
+    assert "send" not in transport.calls
+
+
+@pytest.mark.asyncio
+async def test_missing_metrics_leave_a_v0_request_to_the_runtime_defaults():
+    """legacy/v0 carry ceilings as ``ComputeBudget`` instructions, where an
+    omitted one means the runtime's own default rather than zero."""
     transport = FakeTransport(result=simulation(units=None, size=None, logs=None))
 
     await send(
         transport,
         [memo([1, 2, 3])],
-        SendOptions(transaction_version=1),
+        SendOptions(transaction_version=0),
         estimate_resources=True,
     )
 
-    # Nothing to estimate from: the transaction is the unbudgeted fixture.
-    assert transport.sent[0] == fixture("v1")["base64"]
-    assert sent_transaction(transport).message.config.compute_unit_limit is None
+    assert transport.sent[0] == fixture("v0")["base64"]
 
 
 @pytest.mark.asyncio
@@ -793,7 +962,14 @@ async def test_inspection_never_signs_prompts_or_sends(monkeypatch):
     assert result.error is None
     assert result.extra["transactionVersion"] == 1
     assert result.extra["feeContextSlot"] == 3
-    assert result.extra["wireBytes"] == fixture("v1")["bytes"]
+    # The provisional V1 message declares the maxima the caller omitted, so
+    # it is the budget-carrying payload -- wider than the budget-less kit
+    # fixture, and exactly the bytes that were simulated.
+    assert result.extra["wireBytes"] == len(base64.b64decode(transport.simulated[0]))
+    assert result.extra["resources"] == {
+        "computeUnitLimit": str(MAX_COMPUTE_UNIT_LIMIT),
+        "loadedAccountsDataSizeLimit": str(MAX_LOADED_ACCOUNTS_DATA_SIZE),
+    }
 
 
 @pytest.mark.asyncio
@@ -806,7 +982,7 @@ async def test_inspection_reports_the_resources_it_would_apply():
 
     assert result.extra["resources"] == {
         "computeUnitLimit": "2200",
-        "loadedAccountsDataSizeLimit": "4096",
+        "loadedAccountsDataSizeLimit": "65536",
     }
 
 
@@ -815,12 +991,20 @@ async def test_inspection_simulates_the_exact_bytes_it_would_submit():
     inspecting = FakeTransport(allow_send=False)
     sending = FakeTransport()
 
-    await adapter(inspecting).inspect_transaction(
+    # Estimating on both sides: the budgets inspection resolves are the ones
+    # the send resolves, so the payload it simulates is the payload that
+    # would go out.
+    await adapter(inspecting, estimate_resources=True).inspect_transaction(
         [memo([1, 2, 3])], SendOptions(transaction_version=1)
     )
-    await send(sending, [memo([1, 2, 3])], SendOptions(transaction_version=1))
+    await send(
+        sending,
+        [memo([1, 2, 3])],
+        SendOptions(transaction_version=1),
+        estimate_resources=True,
+    )
 
-    inspected = base64.b64decode(inspecting.simulated[0])
+    inspected = base64.b64decode(inspecting.simulated[-1])
     submitted = base64.b64decode(sending.sent[0])
     # Same size and same message: the simulated payload differs from the
     # submitted one only in the signature slot it never filled in.
@@ -885,7 +1069,7 @@ async def test_timeout_is_submitted_unknown_after_exactly_one_send():
     outcome = caught.value.outcome
     assert outcome.status == "submitted-unknown"
     assert outcome.phase == "confirmation"
-    assert outcome.signature == fixture("v1")["firstSignature"]
+    assert outcome.signature == submitted_signature(transport)
     assert transport.calls.count("send") == 1
     assert len(transport.sent) == 1
 
@@ -914,7 +1098,7 @@ async def test_chain_error_is_chain_failed_with_the_signature():
     outcome = caught.value.outcome
     assert outcome.status == "chain-failed"
     assert outcome.phase == "chain"
-    assert outcome.signature == fixture("v1")["firstSignature"]
+    assert outcome.signature == submitted_signature(transport)
     assert outcome.slot == 99
     assert outcome.cause == err
 
@@ -994,7 +1178,7 @@ async def test_ambiguous_relay_failure_keeps_the_local_signature(caplog):
     outcome = caught.value.outcome
     assert outcome.status == "submitted-unknown"
     assert outcome.phase == "send"
-    assert outcome.signature == fixture("v1")["firstSignature"]
+    assert outcome.signature == submitted_signature(transport)
     assert transport.calls.count("send") == 1
 
 
@@ -1005,9 +1189,7 @@ async def test_a_relay_echoed_signature_never_replaces_the_derived_one(caplog):
     Believing the echo would poll a different transaction entirely: it can
     report another payment's status, or never confirm the one submitted.
     """
-    local = fixture("v1")["firstSignature"]
     impostor = fixture("legacy")["firstSignature"]
-    assert impostor != local
     transport = FakeTransport(relay_signature=impostor)
 
     with caplog.at_level(logging.WARNING, logger="arete.adapters.solders"):
@@ -1015,6 +1197,8 @@ async def test_a_relay_echoed_signature_never_replaces_the_derived_one(caplog):
             transport, [memo([1, 2, 3])], SendOptions(transaction_version=1)
         )
 
+    local = submitted_signature(transport)
+    assert impostor != local
     assert impostor in caplog.text
     assert result.signature == local
     assert transport.polled == [local]
@@ -1029,7 +1213,7 @@ async def test_reporting_a_signature_mismatch_cannot_break_a_submitted_send():
     let the executor call a submitted transaction never-sent — the one
     misclassification that invites paying twice. A log cannot do that.
     """
-    local = fixture("v1")["firstSignature"]
+
     transport = FakeTransport(relay_signature=fixture("legacy")["firstSignature"])
 
     with warnings.catch_warnings():
@@ -1038,7 +1222,7 @@ async def test_reporting_a_signature_mismatch_cannot_break_a_submitted_send():
             transport, [memo([1, 2, 3])], SendOptions(transaction_version=1)
         )
 
-    assert result.signature == local
+    assert result.signature == submitted_signature(transport)
     assert transport.calls.count("send") == 1
 
 
@@ -1050,7 +1234,7 @@ async def test_transport_failure_without_classification_is_submitted_unknown():
         await send(transport, [memo([1, 2, 3])], SendOptions(transaction_version=1))
 
     assert caught.value.outcome.status == "submitted-unknown"
-    assert caught.value.outcome.signature == fixture("v1")["firstSignature"]
+    assert caught.value.outcome.signature == submitted_signature(transport)
     assert transport.calls.count("send") == 1
 
 
@@ -1069,7 +1253,7 @@ async def test_status_polling_failure_never_resends():
 
     assert caught.value.outcome.status == "submitted-unknown"
     assert caught.value.outcome.phase == "confirmation"
-    assert caught.value.outcome.signature == fixture("v1")["firstSignature"]
+    assert caught.value.outcome.signature == submitted_signature(transport)
     assert transport.calls.count("send") == 1
 
 
@@ -1117,3 +1301,300 @@ def test_base_sdk_imports_without_solders_and_names_the_extra():
     assert result.returncode == 0, result.stderr
     assert "arete-sdk[solana]" in result.stdout
     assert "solders >= 0.29" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# The public client resolves adapter defaults before it validates
+# ---------------------------------------------------------------------------
+
+
+def make_client_stack():
+    """Smallest stack a client needs: no views, no programs, HTTP only."""
+    return StackDef(
+        name="adapter-tests",
+        endpoints=StackEndpoints(ws="", http="https://api.example.test"),
+        views={},
+        programs={},
+    )
+
+
+async def make_client(wallet, transactions=None):
+    return await Arete.connect(
+        make_client_stack(),
+        transport="http",
+        wallet=wallet,
+        transactions=transactions,
+    )
+
+
+def v1_default_adapter(transport=None, **config):
+    config.setdefault("transaction_version", 1)
+    return adapter(transport, **config)
+
+
+@pytest.mark.asyncio
+async def test_the_public_client_honours_the_adapter_default_version():
+    """Client-side validation runs before the adapter is reached.
+
+    Reading the caller's options alone made a V1-defaulted adapter's valid
+    priority fee a v0 fee mismatch, before any blockhash call.
+    """
+    transport = FakeTransport()
+    a4 = await make_client(v1_default_adapter(transport), transactions=transport)
+
+    await a4.transaction(
+        [memo([1])], send={"resources": {"priorityFeeLamports": 5000}}
+    )
+
+    assert sent_transaction(transport).message.config.priority_fee == 5000
+
+
+@pytest.mark.asyncio
+async def test_the_public_client_still_rejects_a_fee_bound_to_another_version():
+    transport = FakeTransport(allow_send=False)
+    a4 = await make_client(v1_default_adapter(transport), transactions=transport)
+
+    with pytest.raises(ValueError, match="compute_unit_price_micro_lamports"):
+        await a4.transaction(
+            [memo([1])],
+            send={"resources": {"computeUnitPriceMicroLamports": 1000}},
+        )
+
+    assert transport.calls == []
+
+
+@pytest.mark.asyncio
+async def test_client_execution_honours_the_adapter_default_version():
+    transport = FakeTransport()
+    a4 = await make_client(v1_default_adapter(transport), transactions=transport)
+    prepared = create_prepared_instruction(name="memo", instruction=memo([1]))
+
+    await a4.execute(prepared, send={"resources": {"priorityFeeLamports": 5000}})
+
+    assert sent_transaction(transport).message.config.priority_fee == 5000
+
+
+@pytest.mark.asyncio
+async def test_client_inspection_honours_the_adapter_default_version():
+    transport = FakeTransport(allow_send=False)
+    a4 = await make_client(v1_default_adapter(transport), transactions=transport)
+    prepared = create_prepared_instruction(name="memo", instruction=memo([1]))
+
+    inspection = await a4.inspect_operation(
+        prepared, inspect={"resources": {"priorityFeeLamports": 5000}}
+    )
+
+    assert inspection.transaction.extra["transactionVersion"] == 1
+    assert "send" not in transport.calls
+
+
+@pytest.mark.asyncio
+async def test_execute_accepts_a_per_call_solders_cosigner():
+    """``pubkey()`` is a method returning a ``Pubkey``; signer validation has
+    to recognise it or fail closed on a cosigner the adapter can sign for."""
+    transport = FakeTransport()
+    a4 = await make_client(v1_default_adapter(transport), transactions=transport)
+    prepared = create_prepared_instruction(
+        name="memo",
+        instruction=memo([9], signers=[str(PAYER.pubkey()), str(COSIGNER.pubkey())]),
+    )
+
+    await a4.execute(prepared, signers=[COSIGNER])
+
+    decoded = sent_transaction(transport)
+    assert len(decoded.signatures) == 2
+    assert decoded.verify_with_results() == [True, True]
+
+
+# ---------------------------------------------------------------------------
+# Arete by default, direct RPC as the explicit escape hatch
+# ---------------------------------------------------------------------------
+
+
+def rpc_node(*, send_error=None, results=None):
+    """Mock Solana node: enough JSON-RPC for one whole send.
+
+    ``sendTransaction`` answers with the signature the submitted bytes carry,
+    the way a real node does, so confirmation reconciles against it.
+    """
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        method = body["method"]
+        calls.append(method)
+        if results and method in results:
+            payload = results[method]
+        elif method == "getLatestBlockhash":
+            payload = {
+                "context": {"slot": 1},
+                "value": {
+                    "blockhash": FIXTURE_BLOCKHASH,
+                    "lastValidBlockHeight": 100,
+                },
+            }
+        elif method == "getFeeForMessage":
+            payload = {"context": {"slot": 3}, "value": 5000}
+        elif method == "simulateTransaction":
+            payload = {
+                "context": {"slot": 7},
+                "value": {
+                    "err": None,
+                    "logs": ["Program log: ok"],
+                    "unitsConsumed": 1200,
+                    "loadedAccountsDataSize": 4096,
+                },
+            }
+        elif method == "sendTransaction":
+            if send_error is not None:
+                return httpx.Response(
+                    200, json={"jsonrpc": "2.0", "id": body["id"], "error": send_error}
+                )
+            payload = str(
+                VersionedTransaction.from_bytes(
+                    base64.b64decode(body["params"][0])
+                ).signatures[0]
+            )
+        elif method == "getSignatureStatuses":
+            payload = {
+                "context": {"slot": 9},
+                "value": [
+                    {
+                        "slot": 42,
+                        "confirmations": None,
+                        "err": None,
+                        "confirmationStatus": "confirmed",
+                    }
+                ],
+            }
+        elif method == "getBlockHeight":
+            payload = 10
+        else:
+            raise AssertionError(f"unexpected RPC method {method!r}")
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": body["id"], "result": payload}
+        )
+
+    transport = RpcTransactionTransport(
+        "https://node.example/rpc",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    return transport, calls
+
+
+@pytest.mark.asyncio
+async def test_a_v1_send_runs_end_to_end_over_direct_rpc():
+    rpc, calls = rpc_node()
+    arete_relay = FakeTransport(allow_send=False)
+    a4 = await make_client(
+        v1_default_adapter(rpc, transport_selection="direct"),
+        transactions=arete_relay,
+    )
+
+    # Both V1 budgets omitted: the estimator has to run over RPC too.
+    result = await a4.transaction(
+        [memo([1])], send={"resources": {"priorityFeeLamports": 5000}}
+    )
+
+    assert result.slot == 42
+    assert calls.count("sendTransaction") == 1, calls
+    assert calls.count("simulateTransaction") == 1, calls
+    assert arete_relay.calls == [], (
+        "an explicit RPC selection wins even with an Arete client attached"
+    )
+
+
+@pytest.mark.asyncio
+async def test_arete_remains_the_default_backend():
+    rpc, calls = rpc_node()
+    arete_relay = FakeTransport()
+    a4 = await make_client(v1_default_adapter(rpc), transactions=arete_relay)
+
+    await a4.transaction([memo([1])], send={"resources": {"priorityFeeLamports": 5000}})
+
+    assert arete_relay.calls.count("send") == 1
+    assert calls == [], "auto keeps the client's own transport"
+
+
+@pytest.mark.asyncio
+async def test_unsigned_inspection_over_rpc_never_signs_or_sends(monkeypatch):
+    rpc, calls = rpc_node()
+
+    def fail(self, plan):
+        raise AssertionError("inspection must not sign")
+
+    monkeypatch.setattr(SoldersWalletAdapter, "_sign", fail)
+    wallet = v1_default_adapter(rpc, transport_selection="direct")
+
+    result = await wallet.inspect_transaction([memo([1])])
+
+    assert result.fee_lamports == 5000
+    assert result.compute_units_consumed == 1200
+    assert result.loaded_accounts_data_size == 4096
+    assert "sendTransaction" not in calls
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_rpc_send_makes_exactly_one_attempt():
+    rpc, calls = rpc_node(
+        results={"getSignatureStatuses": {"context": {"slot": 9}, "value": [None]}}
+    )
+    arete_relay = FakeTransport(allow_send=False)
+    a4 = await make_client(
+        v1_default_adapter(rpc, transport_selection="direct", confirmation_timeout=0),
+        transactions=arete_relay,
+    )
+
+    with pytest.raises(TransactionExecutionError) as caught:
+        await a4.transaction(
+            [memo([1])], send={"resources": {"priorityFeeLamports": 5000}}
+        )
+
+    assert caught.value.outcome.status == "submitted-unknown"
+    assert caught.value.outcome.signature
+    assert calls.count("sendTransaction") == 1, calls
+    assert arete_relay.calls == [], "no cross-transport fallback after uncertainty"
+
+
+@pytest.mark.asyncio
+async def test_a_failure_on_the_selected_transport_never_falls_back():
+    rpc, calls = rpc_node(
+        send_error={"code": -32002, "message": "Transaction simulation failed"}
+    )
+    arete_relay = FakeTransport(allow_send=False)
+    a4 = await make_client(
+        v1_default_adapter(rpc, transport_selection="direct"),
+        transactions=arete_relay,
+    )
+
+    with pytest.raises(TransactionExecutionError) as caught:
+        await a4.transaction(
+            [memo([1])], send={"resources": {"priorityFeeLamports": 5000}}
+        )
+
+    assert caught.value.outcome.status == "not-submitted", (
+        "the node proved it never dispatched"
+    )
+    assert calls.count("sendTransaction") == 1
+    assert arete_relay.calls == []
+
+
+@pytest.mark.asyncio
+async def test_direct_selection_requires_a_configured_transport():
+    wallet = adapter(None, transaction_version=1, transport_selection="direct")
+
+    with pytest.raises(WalletError) as caught:
+        await wallet.sign_and_send(
+            [memo([1])],
+            None,
+            # Arete context present, and deliberately not used.
+            WalletExecutionContext(transaction_transport=FakeTransport()),
+        )
+
+    assert "direct" in caught.value.message
+    assert caught.value.outcome.phase == "build"
+
+
+def test_an_unknown_transport_selection_is_rejected_at_construction():
+    with pytest.raises(ValueError, match="transport_selection"):
+        SoldersAdapterConfig(keypair=PAYER, transport_selection="rpc")

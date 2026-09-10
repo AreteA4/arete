@@ -85,9 +85,17 @@ __all__ = [
 #: ``transaction_version=1`` is honoured instead of failing closed.
 SUPPORTED_TRANSACTION_VERSIONS: Tuple[Any, ...] = ("legacy", 0, 1)
 
+#: Which transport an operation runs on, mirroring the TypeScript adapters'
+#: ``AdapterTransportSelection = 'auto' | 'direct' | TransactionTransport``.
+#: ``"auto"`` keeps Arete first: the invoking client's transport, then the
+#: configured one when the adapter is used standalone. ``"direct"`` inverts
+#: that, so the configured transport wins even under a connected client --
+#: covering TypeScript's explicit ``'direct'`` and explicit-transport arms,
+#: which are the same field here.
+TRANSPORT_SELECTIONS: Tuple[str, ...] = ("auto", "direct")
+
 logger = logging.getLogger(__name__)
 
-_U32_MAX = 0xFFFF_FFFF
 _COMPUTE_BUDGET_ADDRESS = str(COMPUTE_BUDGET_PROGRAM_ID)
 _CONFIRMATION_RANK = {level: rank for rank, level in enumerate(CONFIRMATION_LEVELS)}
 
@@ -97,6 +105,39 @@ _CONFIRMATION_RANK = {level: rank for rank, level in enumerate(CONFIRMATION_LEVE
 _HEAP_ALIGNMENT = 1024
 _MIN_HEAP_BYTES = 32 * 1024
 _MAX_HEAP_BYTES = 256 * 1024
+
+#: Per-transaction compute-unit maximum. Also the ceiling a *provisional* V1
+#: message declares for a limit the caller omitted, so the simulation reports
+#: real consumption instead of failing against a zero budget (SIMD-0385 makes
+#: an unset V1 config bit request the *minimum*, not a default).
+MAX_COMPUTE_UNIT_LIMIT = 1_400_000
+
+#: Loaded-account-data maximum (64 MiB), used the same way.
+MAX_LOADED_ACCOUNTS_DATA_SIZE = 64 * 1024 * 1024
+
+#: The runtime accounts for loaded data in pages of this size, so an
+#: estimated data budget is rounded up to a whole page plus one page of
+#: headroom: a snapshot measurement leaves no room for account growth
+#: between simulation and execution.
+LOADED_ACCOUNTS_DATA_PAGE_BYTES = 32 * 1024
+
+#: Wire keys of the two version-bound V1 budgets, for error messages.
+_COMPUTE_UNIT_LIMIT_KEY = "computeUnitLimit"
+_LOADED_DATA_KEY = "loadedAccountsDataSizeLimit"
+
+
+def _estimated_compute_unit_limit(units_consumed: int, margin: int) -> int:
+    """Measured consumption plus the configured margin, positive and bounded
+    by the protocol maximum."""
+    return min(max(units_consumed + margin, 1), MAX_COMPUTE_UNIT_LIMIT)
+
+
+def _estimated_loaded_accounts_data_size(loaded_bytes: int) -> int:
+    """Measured loaded data rounded up to a whole page, plus one page of
+    headroom, positive and bounded by the protocol maximum."""
+    page = LOADED_ACCOUNTS_DATA_PAGE_BYTES
+    padded = (-(-loaded_bytes // page) + 1) * page
+    return min(max(padded, 1), MAX_LOADED_ACCOUNTS_DATA_SIZE)
 
 
 def to_instruction(built: BuiltInstruction) -> Instruction:
@@ -249,22 +290,30 @@ def _report_signature_mismatch(local: str, echoed: Optional[str]) -> None:
 class SoldersAdapterConfig:
     """Configuration for :class:`SoldersWalletAdapter`.
 
-    ``transport`` is the fallback relay used when the executing client does not
-    supply one through :class:`arete.wallet.WalletExecutionContext`; the context
-    transport always wins so a client-driven send keeps using the client's
-    relay.
+    ``transport`` is the transport ``transport_selection`` resolves to: the
+    fallback under ``"auto"`` (the default, where the executing client's own
+    relay wins so a client-driven send keeps using the client's connection),
+    and the required backend under ``"direct"``, where it wins over the
+    client -- the explicit escape hatch, typically an
+    :class:`arete.rpc.RpcTransactionTransport`. TypeScript's third selection
+    arm, an explicitly supplied transport, is this same field. The backend is
+    chosen once, before the operation; a failure on it never falls back to
+    the other.
 
     ``transaction_version`` and ``resources`` are the adapter's defaults; a
     per-send :class:`arete.wallet.SendOptions` merges over them under the shared
     contract (an override naming either fee clears the other).
 
-    With ``estimate_resources`` the adapter simulates the unsigned transaction
-    and fills in the compute-unit limit and loaded-accounts-data-size limit that
-    the caller left unset. An explicitly configured value is never re-estimated.
+    With ``estimate_resources`` the adapter simulates a provisional unsigned
+    transaction and fills in the compute-unit limit and loaded-accounts-data-size
+    limit that the caller left unset. An explicitly configured value is never
+    re-estimated. Transaction V1 requires both before signing (SIMD-0385): pass
+    them, or turn estimation on.
     """
 
     keypair: Keypair
     transport: Optional[TransactionTransport] = None
+    transport_selection: str = "auto"
     signers: Tuple[Keypair, ...] = ()
     confirmation_level: str = "confirmed"
     transaction_version: Optional[Any] = None
@@ -293,6 +342,11 @@ class SoldersAdapterConfig:
             raise ValueError(
                 f"confirmation_level must be one of {CONFIRMATION_LEVELS}, got "
                 f"{self.confirmation_level!r}"
+            )
+        if self.transport_selection not in TRANSPORT_SELECTIONS:
+            raise ValueError(
+                f"transport_selection must be one of {TRANSPORT_SELECTIONS}, got "
+                f"{self.transport_selection!r}"
             )
 
 
@@ -340,6 +394,21 @@ class SoldersWalletAdapter:
     def _transport(
         self, context: Optional[WalletExecutionContext]
     ) -> TransactionTransport:
+        """Pick the backend once, before anything is built.
+
+        ``"auto"`` keeps Arete first -- the connection that owns the session
+        wins, and the configured transport is the standalone fallback.
+        ``"direct"`` inverts that for the explicit escape hatch. Neither
+        falls back to the other after a failure.
+        """
+        if self._config.transport_selection == "direct":
+            if self._config.transport is None:
+                raise _not_submitted(
+                    "transport_selection='direct' requires "
+                    "SoldersAdapterConfig(transport=...) -- for example an "
+                    "arete.rpc.RpcTransactionTransport"
+                )
+            return self._config.transport
         transport = context.transaction_transport if context is not None else None
         if transport is None:
             transport = self._config.transport
@@ -349,6 +418,18 @@ class SoldersWalletAdapter:
                 "Arete client or set SoldersAdapterConfig(transport=...)"
             )
         return transport
+
+    def resolve_send_options(self, options: Any) -> SendOptions:
+        """Merge this adapter's defaults under a per-call override.
+
+        The public adapter hook: a caller that validates options before
+        dispatch (``Arete.transaction`` / ``Arete.execute`` /
+        ``inspect_prepared_operation``) resolves them here first, so the
+        version/fee pair is checked against the version this adapter will
+        actually compile. Without it a V1-defaulted adapter rejects a valid
+        ``priorityFeeLamports`` as a v0 mismatch before it is ever reached.
+        """
+        return self._effective_options(options)
 
     def _effective_options(self, options: Any) -> SendOptions:
         # ``merged`` validates the effective version/fee pair; a per-call
@@ -443,6 +524,8 @@ class SoldersWalletAdapter:
         instructions: Sequence[BuiltInstruction],
         options: Any,
         context: Optional[WalletExecutionContext],
+        *,
+        signing: bool,
     ) -> _Plan:
         """Build the provisional unsigned transaction. Never signs, never sends."""
         options = self._effective_options(options)
@@ -467,17 +550,18 @@ class SoldersWalletAdapter:
                 f"Could not fetch a recent blockhash: {cause}", cause=cause
             ) from cause
 
+        resources = await self._resolve_resources(
+            transport,
+            version,
+            payer,
+            converted,
+            blockhash,
+            resources,
+            commitment,
+            signing,
+        )
+        self._check_resources(resources)
         message = self._compile(version, payer, converted, blockhash, resources)
-        if self._config.estimate_resources:
-            estimated = await self._estimate(
-                transport, message, resources, commitment
-            )
-            if estimated is not resources:
-                resources = estimated
-                self._check_resources(resources)
-                message = self._compile(
-                    version, payer, converted, blockhash, resources
-                )
         unsigned = _unsigned(message)
         self._enforce_limits(version, message, len(bytes(unsigned)))
         return _Plan(
@@ -507,33 +591,171 @@ class SoldersWalletAdapter:
                 cause=cause,
             ) from cause
 
-    async def _estimate(
+    async def _resolve_resources(
         self,
         transport: TransactionTransport,
-        message: Any,
+        version: Any,
+        payer: Pubkey,
+        instructions: Sequence[Instruction],
+        blockhash: Hash,
         resources: Optional[TransactionResourceOptions],
         commitment: str,
+        signing: bool,
     ) -> Optional[TransactionResourceOptions]:
-        """Fill unset compute ceilings from a simulation of the unsigned message.
+        """Resolve the budgets the built message will carry.
 
-        An explicit value is authoritative and skips the round trip entirely.
-        A simulation failure is a build failure: the transaction was never
-        signed, so it can never be reported as submitted. The simulated message
-        is the pre-estimate one, so the estimate is a lower bound on the final
-        message's own cost -- that is what ``compute_unit_margin`` covers.
+        An explicit caller value is authoritative and is never re-estimated
+        or raised. An unset one is measured by simulating a *provisional*
+        message, then derived with headroom and protocol bounds.
+
+        V1 is the strict case (SIMD-0385): an omitted compute-unit limit
+        requests **zero** compute units and an omitted loaded-accounts limit
+        requests **zero** bytes, so a final V1 message missing either could
+        only fail on chain. Both are therefore always resolved for V1 --
+        supplied by the caller, or measured, whatever ``estimate_resources``
+        says -- and a metric the simulation never reported is refused by
+        name rather than left unset. legacy/v0 express the same ceilings as
+        ``ComputeBudget`` instructions, where an omitted one means the
+        runtime's own default, so there estimation stays opt-in and an
+        unmeasurable ceiling is simply left to the runtime.
+
+        Inspection (``signing=False``) never refuses: an unresolved V1
+        ceiling becomes the protocol maximum, which is exactly the
+        provisional message whose reported metrics let the caller pin the
+        budgets themselves.
         """
-        wanted = resources is None or (
-            resources.compute_unit_limit is None
-            or resources.loaded_accounts_data_size_limit is None
-        )
-        if not wanted:
+        needed = [
+            key
+            for key, value in (
+                (
+                    _COMPUTE_UNIT_LIMIT_KEY,
+                    None if resources is None else resources.compute_unit_limit,
+                ),
+                (
+                    _LOADED_DATA_KEY,
+                    None
+                    if resources is None
+                    else resources.loaded_accounts_data_size_limit,
+                ),
+            )
+            if value is None
+        ]
+        if not needed:
             return resources
+
+        updates: Dict[str, int] = {}
+        unmeasured: Dict[str, str] = {}
+        # V1 signing must resolve both budgets, so it always measures.
+        # Inspection stays a single round trip unless estimation is
+        # configured: the maxima below are the provisional message whose
+        # reported metrics are the point of inspecting.
+        if self._config.estimate_resources or (signing and version == 1):
+            simulation = await self._simulate_provisional(
+                transport,
+                version,
+                payer,
+                instructions,
+                blockhash,
+                resources,
+                commitment,
+            )
+            if _COMPUTE_UNIT_LIMIT_KEY in needed:
+                if simulation.units_consumed is None:
+                    unmeasured[_COMPUTE_UNIT_LIMIT_KEY] = "unitsConsumed"
+                else:
+                    updates["compute_unit_limit"] = _estimated_compute_unit_limit(
+                        simulation.units_consumed, self._config.compute_unit_margin
+                    )
+            if _LOADED_DATA_KEY in needed:
+                if simulation.loaded_accounts_data_size is None:
+                    unmeasured[_LOADED_DATA_KEY] = "loadedAccountsDataSize"
+                else:
+                    updates["loaded_accounts_data_size_limit"] = (
+                        _estimated_loaded_accounts_data_size(
+                            simulation.loaded_accounts_data_size
+                        )
+                    )
+        else:
+            unmeasured = {key: "" for key in needed}
+
+        if version == 1 and unmeasured:
+            if signing:
+                raise self._unresolved_v1_budgets(unmeasured)
+            # Provisional: the maxima stand in for what is still unresolved.
+            if _COMPUTE_UNIT_LIMIT_KEY in unmeasured:
+                updates["compute_unit_limit"] = MAX_COMPUTE_UNIT_LIMIT
+            if _LOADED_DATA_KEY in unmeasured:
+                updates["loaded_accounts_data_size_limit"] = (
+                    MAX_LOADED_ACCOUNTS_DATA_SIZE
+                )
+        if not updates:
+            # legacy/v0 only: an unmeasured ceiling is the runtime's default.
+            return resources
+        base = resources if resources is not None else TransactionResourceOptions()
+        return replace(base, **updates)
+
+    @staticmethod
+    def _unresolved_v1_budgets(unmeasured: Dict[str, str]) -> WalletError:
+        """Why each still-unresolved V1 budget cannot be signed for."""
+        return _not_submitted(
+            "Transaction version 1 requires "
+            + " and ".join(unmeasured)
+            + ": an omitted V1 budget requests the minimum (SIMD-0385), so the "
+            "transaction could only fail on chain. "
+            + "; ".join(
+                f"{option} was not supplied and the simulation reported no {metric}"
+                for option, metric in unmeasured.items()
+            )
+            + ". Pass the value explicitly, or use a relay whose simulation "
+            "reports it."
+        )
+
+    async def _simulate_provisional(
+        self,
+        transport: TransactionTransport,
+        version: Any,
+        payer: Pubkey,
+        instructions: Sequence[Instruction],
+        blockhash: Hash,
+        resources: Optional[TransactionResourceOptions],
+        commitment: str,
+    ) -> Any:
+        """Simulate the message whose budgets are the ones being measured.
+
+        For V1 the ceilings the caller omitted declare the protocol maxima
+        here: signature verification being off does not lift a resource
+        limit, so a provisional message carrying the SIMD-0385 minimum could
+        not produce an ordinary successful execution estimate. The caller's
+        own values are preserved untouched.
+
+        A failure is a build failure: nothing was signed, so nothing can be
+        reported as submitted.
+        """
+        provisional = resources
+        if version == 1:
+            base = resources if resources is not None else TransactionResourceOptions()
+            provisional = replace(
+                base,
+                compute_unit_limit=(
+                    base.compute_unit_limit
+                    if base.compute_unit_limit is not None
+                    else MAX_COMPUTE_UNIT_LIMIT
+                ),
+                loaded_accounts_data_size_limit=(
+                    base.loaded_accounts_data_size_limit
+                    if base.loaded_accounts_data_size_limit is not None
+                    else MAX_LOADED_ACCOUNTS_DATA_SIZE
+                ),
+            )
+        message = self._compile(version, payer, instructions, blockhash, provisional)
         try:
             simulation = await transport.simulate_transaction(
                 _b64(bytes(_unsigned(message))),
                 commitment=commitment,
                 replace_recent_blockhash=False,
             )
+        except WalletError:
+            raise
         except Exception as cause:
             raise _not_submitted(
                 f"Could not estimate transaction resources: {cause}", cause=cause
@@ -545,24 +767,7 @@ class SoldersWalletAdapter:
                 "Unsigned resource estimation simulation failed: "
                 f"{simulation.err!r}"
             )
-        updates: Dict[str, int] = {}
-        if (
-            resources is None or resources.compute_unit_limit is None
-        ) and simulation.units_consumed is not None:
-            updates["compute_unit_limit"] = min(
-                simulation.units_consumed + self._config.compute_unit_margin, _U32_MAX
-            )
-        if (
-            resources is None or resources.loaded_accounts_data_size_limit is None
-        ) and simulation.loaded_accounts_data_size is not None:
-            updates["loaded_accounts_data_size_limit"] = (
-                simulation.loaded_accounts_data_size
-            )
-        if not updates:
-            # A relay that reports no metrics leaves the request untouched.
-            return resources
-        base = resources if resources is not None else TransactionResourceOptions()
-        return replace(base, **updates)
+        return simulation
 
     # -- inspection --------------------------------------------------------
 
@@ -573,7 +778,7 @@ class SoldersWalletAdapter:
         context: Optional[WalletExecutionContext] = None,
     ) -> TransactionInspectionResult:
         """Fee and simulation for the unsigned transaction. Never signs or sends."""
-        plan = await self._plan(instructions, options, context)
+        plan = await self._plan(instructions, options, context, signing=False)
         # A relay outage or a malformed response must not escape as a raw
         # transport or parse error: the wallet contract is WalletError, and
         # inspection never signed anything, so it is a build failure.
@@ -663,7 +868,7 @@ class SoldersWalletAdapter:
         options: Any = None,
         context: Optional[WalletExecutionContext] = None,
     ) -> SendResult:
-        plan = await self._plan(instructions, options, context)
+        plan = await self._plan(instructions, options, context, signing=True)
         transaction = self._sign(plan)
         signature = str(transaction.signatures[0])
 

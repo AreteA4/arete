@@ -128,12 +128,55 @@ result = await a4.transaction([ix], wallet=wallet, send=SendOptions(
 
 `priority_fee_lamports` (total lamports) is V1-only and
 `compute_unit_price_micro_lamports` (per compute unit) is legacy/v0-only; the wrong
-pairing is rejected rather than converted. `estimate_resources=True` simulates the
-unsigned transaction and fills in only the ceilings the caller left unset.
+pairing is rejected rather than converted.
+
+V1's `compute_unit_limit` and `loaded_accounts_data_size_limit` are always
+resolved before signing, because an omitted V1 budget requests the *minimum*
+rather than a generous default (SIMD-0385) — a message without them could only
+fail on chain. An explicit value is used verbatim and never raised; an omitted
+one is measured by simulating a provisional unsigned message that declares the
+protocol maxima, then derived with headroom: the configured
+`compute_unit_margin` on compute units (bounded by 1,400,000) and one 32 KiB
+page of headroom on loaded data (bounded by 64 MiB). Only a metric the
+simulation never reports is refused, naming the option to pass. For legacy/v0,
+where an omitted ceiling means the runtime's own default, estimation stays
+opt-in through `estimate_resources=True`.
+
 `await wallet.inspect_transaction([ix])` returns fee, logs, consumed units and
-loaded-accounts data size without signing, submitting or prompting. See
-`examples/solana_v1.py`. The base install and Python 3.9 support are unaffected: the
-extra is required only to import `arete.adapters.solders`.
+loaded-accounts data size without signing, submitting or prompting; it builds
+that same provisional message, so its metrics are what you pin the budgets
+with. See `examples/solana_v1.py`. The base install and Python 3.9 support are
+unaffected: the extra is required only to import `arete.adapters.solders`.
+
+### Arete by default, direct RPC as an explicit escape hatch
+
+`arete.rpc.RpcTransactionTransport` implements the same `TransactionTransport`
+protocol the relay does, over a node's JSON-RPC endpoint, using the `httpx` the
+SDK already carries — no Solana client dependency, no change to the base Python
+minimum, and provider credentials kept out of Arete authentication:
+
+```python
+from arete.rpc import RpcTransactionTransport
+
+rpc = RpcTransactionTransport("https://api.devnet.solana.com", headers={"x-api-key": key})
+
+# Client-wide: Arete stays the default unless you inject this instead.
+a4 = await Arete.connect(STACK, transactions=rpc)
+
+# Adapter-level: `direct` wins even under a connected Arete client.
+wallet = SoldersWalletAdapter(SoldersAdapterConfig(
+    keypair=Keypair(), transport=rpc, transport_selection="direct",
+))
+```
+
+| `transport_selection` | with an Arete client | standalone |
+|---|---|---|
+| `"auto"` (default) | the client's transport | `config.transport` |
+| `"direct"` | `config.transport` | `config.transport`, required |
+
+The backend is chosen once, before the operation: a failure on the selected one
+never falls back to the other, and nothing is rebuilt, re-signed or resent
+after an uncertain result.
 
 ## Sessions (multi-stack)
 

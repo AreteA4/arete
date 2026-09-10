@@ -70,6 +70,7 @@ from arete.transactions import (  # noqa: E402
     TransactionTransport,
     TransactionTransportError,
 )
+from arete.rpc import RpcTransactionTransport  # noqa: E402
 from arete.gateway import (  # noqa: E402
     HostedSolanaGatewayBindings,
     create_hosted_solana_gateway_transports,
@@ -135,6 +136,7 @@ from arete.wallet import (  # noqa: E402
     WalletError,
     WalletExecutionContext,
     ensure_transaction_version_supported,
+    resolve_transaction_options,
     wallet_supported_transaction_versions,
 )
 from arete.operations import (  # noqa: E402
@@ -253,6 +255,7 @@ __all__ = [
     "V1_MAX_ACCOUNTS",
     "V1_MAX_INSTRUCTIONS",
     "ensure_transaction_version_supported",
+    "resolve_transaction_options",
     "wallet_supported_transaction_versions",
     "ConfirmedTransactionOutcome",
     "TransactionFailureOutcome",
@@ -291,6 +294,7 @@ __all__ = [
     "NativeBalanceInfo",
     "TransactionTransport",
     "HttpTransactionTransport",
+    "RpcTransactionTransport",
     "HostedSolanaGatewayBindings",
     "create_hosted_solana_gateway_transports",
     # amounts & SPL
