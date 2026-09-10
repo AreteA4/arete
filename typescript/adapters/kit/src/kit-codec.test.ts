@@ -10,7 +10,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
 } from '@solana/kit';
 
-describe('@solana/kit 2.3 message encoding', () => {
+describe('@solana/kit 8 message encoding', () => {
   it('decodes compiled message bytes to the base64 value required by getFeeForMessage', () => {
     const systemAddress = address('11111111111111111111111111111111');
     const feePayer = address('mpngsFd4tmbUfzDYJayjKZwZcaR7aWb2793J6grLsGu');
