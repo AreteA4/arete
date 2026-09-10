@@ -351,16 +351,28 @@ class RpcTransactionTransport:
                 method, f"expected {len(signatures)} statuses, got {len(value)}"
             )
         return [
-            None
-            if entry is None
-            else TransactionSignatureStatus(
-                signature=signature,
-                slot=_optional_u64(method, entry.get("slot"), "slot"),
-                confirmation_status=entry.get("confirmationStatus"),
-                err=entry.get("err"),
-            )
+            self._status(method, signature, entry)
             for signature, entry in zip(signatures, value)
         ]
+
+    @staticmethod
+    def _status(
+        method: str, signature: str, entry: Any
+    ) -> Optional[TransactionSignatureStatus]:
+        """One status entry. ``None`` means the cluster has not seen it;
+        anything that is neither null nor an object is a malformed response,
+        raised as this transport's typed error rather than an
+        ``AttributeError`` from the field reads below."""
+        if entry is None:
+            return None
+        if not isinstance(entry, dict):
+            raise _invalid(method, f"status for {signature!r} must be an object or null")
+        return TransactionSignatureStatus(
+            signature=signature,
+            slot=_optional_u64(method, entry.get("slot"), "slot"),
+            confirmation_status=entry.get("confirmationStatus"),
+            err=entry.get("err"),
+        )
 
     async def get_block_height(
         self,

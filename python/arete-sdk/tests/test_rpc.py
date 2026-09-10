@@ -301,3 +301,16 @@ async def test_provider_headers_go_to_the_node():
     await transport.get_block_height()
 
     assert requests[0]["headers"]["x-api-key"] == "secret"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_status_entry_is_a_typed_response_error():
+    """Neither null nor an object: the field reads would raise
+    ``AttributeError`` at the caller instead of this transport's typed
+    error."""
+    transport, _ = make_transport(
+        {"getSignatureStatuses": {"context": {"slot": 9}, "value": ["confirmed"]}}
+    )
+
+    with pytest.raises(TransactionTransportError, match="must be an object or null"):
+        await transport.get_signature_status("sigA")
