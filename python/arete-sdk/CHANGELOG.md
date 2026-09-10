@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/AreteA4/arete/compare/arete-python-v0.16.0...arete-python-v0.17.0) (2026-09-10)
+
+
+### Features
+
+* **sdk:** provide an optional Python solders transaction adapter ([#201](https://github.com/AreteA4/arete/issues/201)) ([fd7ce0e](https://github.com/AreteA4/arete/commit/fd7ce0e0c67fc1c0488a54dbe3189787a590a2c5))
+
 ## [0.16.0](https://github.com/AreteA4/arete/compare/arete-python-v0.15.0...arete-python-v0.16.0) (2026-09-09)
 
 

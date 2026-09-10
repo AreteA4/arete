@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.16.0...arete-sdk-v0.17.0) (2026-09-10)
+
+
+### Features
+
+* **sdk:** provide an optional Rust Solana transaction adapter ([#200](https://github.com/AreteA4/arete/issues/200)) ([d92d8f3](https://github.com/AreteA4/arete/commit/d92d8f34f361672de53e09c4ec8a4a941a7ec173))
+
 ## [0.16.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.15.0...arete-sdk-v0.16.0) (2026-09-09)
 
 

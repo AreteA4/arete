@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.17.0](https://github.com/AreteA4/arete/compare/arete-react-v0.16.0...arete-react-v0.17.0) (2026-09-10)
+
+
+### Bug Fixes
+
+* **react:** pin react-test-renderer so a floating major cannot break CI ([#202](https://github.com/AreteA4/arete/issues/202)) ([bcbdb9a](https://github.com/AreteA4/arete/commit/bcbdb9ab7519e7459a0807dc8a859d901b728704))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @usearete/sdk bumped from ^0.16.0 to ^0.17.0
+
 ## [0.16.0](https://github.com/AreteA4/arete/compare/arete-react-v0.15.0...arete-react-v0.16.0) (2026-09-09)
 
 

@@ -6,7 +6,7 @@
   },
   "generator": {
     "name": "a4-cli",
-    "version": "0.16.0",
+    "version": "0.17.0",
     "compilerHash": "arete:h1:compiler:sha256:603c5ea03c27c2f874e40e36c49cd194790328bd524722900065d288d4009321"
   },
   "extensions": {
