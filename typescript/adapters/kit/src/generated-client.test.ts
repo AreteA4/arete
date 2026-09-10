@@ -32,7 +32,7 @@ it('sends a generated ORE instruction as V1 with the chosen config', async () =>
     getBlockHeight: async () => 1n,
   };
   const wallet = createWalletAdapter({ signer, transport });
-  expect(wallet.supportedTransactionVersions, 'A4-253: the Kit V1 adapter must be integrated').toContain(1);
+  expect(wallet.supportedTransactionVersions, 'The public Kit adapter must support V1').toContain(1);
   const instruction = buildInstruction(oreLogInstruction, { signer: signer.address });
   const config = {
     computeUnitLimit: 200_000, loadedAccountsDataSizeLimit: 1_048_576,

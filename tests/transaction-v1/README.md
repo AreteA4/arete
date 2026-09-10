@@ -110,8 +110,8 @@ YELLOWSTONE_ENDPOINT=http://127.0.0.1:10009 \
 
 ### Run the smoke
 
-After the TypeScript V1 adapter is integrated, prepare the SDK using the same
-core build and Kit dependency installation as CI (Node >=20.18):
+Prepare the SDK using the same core build and Kit dependency installation as
+CI (Node >=20.18):
 
 ```sh
 npm ci --prefix typescript/core
@@ -147,7 +147,7 @@ The checked-in `smoke/generated/system-core.ts` is unmodified output from the
 current CLI's `sdk create --idl arete/examples/transaction-v1/system.json
 --program-only --ts` command. There is no extra regeneration package or CI job.
 
-## Release verification and current dependencies
+## Release verification and remaining work
 
 Reuse `check-generated-rust-crates.sh` in local/registry modes, adding an optional
 adapter import to its existing consumers. Reuse the Kit ESM/CJS/Vite package
@@ -155,21 +155,22 @@ smoke with `--registry` after publication. Python adds a clean-environment impor
 of `arete-sdk[solana]` after publication. No live lifecycle is repeated per
 language or after publication. The existing ingestion registry check is unchanged.
 
-As of this revision:
+This branch is rebased onto main `fd7ce0e0`, including **A4-253 / PR #205**
+(TypeScript), **A4-254 / PR #200** (Rust), and **A4-255 / PR #201** (Python).
+All three real adapter implementations are now integrated; no adapter
+implementation dependency remains. Python's required aggregate CI check and
+base/extra matrix are preserved. The generated Rust test runs in the existing
+Solana adapter job alongside its regression suite and V1 example.
 
-- **A4-253:** TypeScript V1 adapter is not integrated; current Kit adapter supports
-  v0 only. Its generated-client test fails explicitly at the capability check.
-- **A4-254 / PR #200:** Rust adapter is open. The new integration test passes
-  against that PR's head; this branch lacks its feature and implementation.
-- **A4-255 / PR #201:** Python adapter is open. The new integration test passes
-  against that PR's head with solders 0.29 on Python 3.10/3.11/3.12; this branch
-  lacks the extra and implementation. The base suites pass without solders on
-  Python 3.9/3.11 both here and with #201's implementation.
-- **Live smoke has not passed.** The Surfpool/Geyser reference is available, but
-  its older binary pairing is not V1-qualified and A4-253 prevents the required
-  TypeScript V1 send. Run the smoke with a compatible local Surfpool/Geyser pair
-  after the adapter is integrated. A4-256 stays In Progress and PR #204 stays
-  draft until integration and the live smoke pass.
+**The live smoke has not passed.** The remaining local work is to start a
+V1-capable Surfpool/Geyser pairing, point an Arete relay and the ingestion fixture
+at it, and run the command above through both V1 and v0 successfully. The
+inspected local setup still has Surfpool 1.4.0 and the older reference plugin;
+the documented RPC, relay and Geyser ports were not listening at the rebase check.
+Resolve any execution or ingestion failures exposed by that run and require
+the rebased branch's CI to pass. A4-256 stays In Progress and PR #204 stays draft
+until those checks pass. Existing publication checks remain in the release
+workflow; no extra per-language live runs are required.
 
 The old toolchain downloader/compiler, validator probe, offline codec/signature
 matrix, evidence/provenance files, report runner and standalone test package are

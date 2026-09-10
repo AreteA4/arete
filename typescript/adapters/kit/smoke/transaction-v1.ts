@@ -23,7 +23,7 @@ async function main() {
     headers: { ...init.headers, ...(process.env.A4_V1_TOKEN ? { authorization: `Bearer ${process.env.A4_V1_TOKEN}` } : {}) },
     signal: AbortSignal.timeout(30_000),
   }));
-  let sent: { version: number; bytes: number } | undefined;
+  const submissions: { version: number; bytes: number }[] = [];
   const wallet = createWalletAdapter({ signer, transport: {
     ...relay,
     sendTransaction: async (wire, options) => {
@@ -33,11 +33,11 @@ async function main() {
       assert(message.version === 0 || message.version === 1);
       assert(message.version === 1 ? bytes.length > 1232 && bytes.length <= 4096 : bytes.length <= 1232,
         `Unexpected v${message.version} transaction size: ${bytes.length}`);
-      sent = { version: message.version, bytes: bytes.length };
+      submissions.push({ version: message.version, bytes: bytes.length });
       return relay.sendTransaction(wire, options);
     },
   } });
-  assert(wallet.supportedTransactionVersions.includes(1), 'A4-253 is outstanding: the public Kit adapter must support V1');
+  assert(wallet.supportedTransactionVersions.includes(1), 'The public Kit adapter must support V1');
 
   // Fresh recipients make stale state impossible. 32 ordinary transfers exceed
   // 1232 bytes without a deployed padding program or hand-built instruction.
@@ -53,9 +53,11 @@ async function main() {
     // Both public adapter operations fetch fresh blockhashes through Arete.
     const inspected = await wallet.inspectTransaction(instructions, { transactionVersion: version, resources });
     assert.equal(inspected.error, undefined, `v${version} simulation failed: ${JSON.stringify(inspected.error)}`);
-    sent = undefined;
+    const submissionIndex = submissions.length;
     const result = await wallet.signAndSend(instructions, { transactionVersion: version, resources, confirmationLevel: 'confirmed' });
-    assert.equal(sent?.version, version, 'The adapter must submit through Arete');
+    assert.equal(submissions.length, submissionIndex + 1, 'The adapter must submit once through Arete');
+    const sent = submissions[submissionIndex];
+    assert.equal(sent.version, version);
     const status = await relay.getSignatureStatus(result.signature, { commitment: 'confirmed', searchTransactionHistory: true });
     assert(status && ['confirmed', 'finalized'].includes(status.confirmationStatus ?? ''), 'Transaction did not confirm');
     assert.equal(status.err, null, 'Transaction execution failed');
@@ -89,7 +91,7 @@ async function main() {
       await delay(250);
     }
     assert(observed, `Timed out waiting for decoded transfer state and metadata for ${result.signature}`);
-    console.log(`v${version}: simulated, submitted via Arete, confirmed and ingested (${sent?.bytes} bytes): ${result.signature}`);
+    console.log(`v${version}: simulated, submitted via Arete, confirmed and ingested (${sent.bytes} bytes): ${result.signature}`);
   }
 }
 
