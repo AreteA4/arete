@@ -32,6 +32,14 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+# Optional first-party Solana transaction adapter (arete.adapters.solders).
+# solders 0.29 is the first release with transaction V1 (SIMD-0385) and needs
+# Python >= 3.10; the base package stays >= 3.9 and never imports solders, so
+# requesting this extra on 3.9 fails loudly instead of resolving to a
+# V1-incapable solders.
+solana = [
+    "solders>=0.29,<0.30",
+]
 
 [project.urls]
 Homepage = "https://arete.run"

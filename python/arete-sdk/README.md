@@ -101,6 +101,88 @@ async def read_chain(a4, address):
     return clock, lamports, accounts, blockhash
 ```
 
+## Optional solders adapter (`solana` extra)
+
+The core SDK never imports a Solana library. The optional first-party adapter does,
+and builds legacy, v0 and transaction-V1 (SIMD-0385) transactions through the relay:
+
+```bash
+pip install 'arete-sdk[solana]'   # solders >= 0.29, needs Python >= 3.10
+```
+
+```python
+from solders.keypair import Keypair
+from arete.adapters.solders import SoldersAdapterConfig, SoldersWalletAdapter
+from arete.wallet import SendOptions, TransactionResourceOptions
+
+wallet = SoldersWalletAdapter(SoldersAdapterConfig(keypair=Keypair(), transport=a4.transactions))
+
+# Compute budget and priority fee are typed options, never hand-built
+# ComputeBudget instructions (which the adapter rejects): V1 carries them inline
+# in the message, legacy/v0 get the equivalent instructions prepended.
+result = await a4.transaction([ix], wallet=wallet, send=SendOptions(
+    transaction_version=1,
+    resources=TransactionResourceOptions(priority_fee_lamports=10_000, heap_size=64 * 1024),
+))
+```
+
+`priority_fee_lamports` (total lamports) is V1-only and
+`compute_unit_price_micro_lamports` (per compute unit) is legacy/v0-only; the wrong
+pairing is rejected rather than converted.
+
+V1's `compute_unit_limit` and `loaded_accounts_data_size_limit` are always
+resolved before signing, because an omitted V1 budget requests the *minimum*
+rather than a generous default (SIMD-0385) — a message without them could only
+fail on chain. An explicit value is used verbatim and never raised; an omitted
+one is measured by simulating a provisional unsigned message that declares the
+protocol maxima, then derived with headroom: the configured
+`compute_unit_margin` on compute units (bounded by 1,400,000) and one 32 KiB
+page of headroom on loaded data (bounded by 64 MiB). Only a metric the
+simulation never reports is refused, naming the option to pass. For legacy/v0,
+where an omitted ceiling means the runtime's own default, estimation stays
+opt-in through `estimate_resources=True`.
+
+`await wallet.inspect_transaction([ix])` returns fee, logs, consumed units and
+loaded-accounts data size without signing, submitting or prompting; it builds
+that same provisional message, so its metrics are what you pin the budgets
+with. See `examples/solana_v1.py`. The base install and Python 3.9 support are
+unaffected: the extra is required only to import `arete.adapters.solders`.
+
+### Arete by default, direct RPC as an explicit escape hatch
+
+`arete.rpc.RpcTransactionTransport` implements the same `TransactionTransport`
+protocol the relay does, over a node's JSON-RPC endpoint, using the `httpx` the
+SDK already carries — no Solana client dependency, no change to the base Python
+minimum, and provider credentials kept out of Arete authentication:
+
+```python
+from arete.rpc import RpcTransactionTransport
+
+rpc = RpcTransactionTransport("https://api.devnet.solana.com", headers={"x-api-key": key})
+
+# Client-wide: Arete stays the default unless you inject this instead.
+a4 = await Arete.connect(STACK, transactions=rpc)
+
+# Adapter-level: `direct` wins even under a connected Arete client.
+wallet = SoldersWalletAdapter(SoldersAdapterConfig(
+    keypair=Keypair(), transport=rpc, transport_selection="direct",
+))
+```
+
+| `transport_selection` | with an Arete client | standalone |
+|---|---|---|
+| `"auto"` (default) | the client's transport | `config.transport` |
+| `"direct"` | `config.transport` | `config.transport`, required |
+
+The backend is chosen once, before the operation: a failure on the selected one
+never falls back to the other, and nothing is rebuilt, re-signed or resent
+after an uncertain result.
+
+`confirmation_timeout` is one deadline covering submission **and**
+confirmation, including whatever request is in flight. A transport that takes
+the transaction and then stops answering yields a `submitted-unknown` outcome
+carrying the locally derived signature — never a hang, and never a resend.
+
 ## Sessions (multi-stack)
 
 ```python
@@ -117,6 +199,10 @@ async def stream_session(auth):
 ```bash
 pip install -e '.[dev]'
 python -m pytest tests/ -q
+
+# The solders adapter suite is collected only when the extra is installed
+pip install -e '.[dev,solana]'
+python -m pytest tests/test_solders_adapter.py -q
 ```
 
 ## License

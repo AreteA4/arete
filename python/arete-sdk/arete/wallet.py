@@ -674,6 +674,39 @@ def ensure_transaction_version_supported(wallet: Any, version: Any) -> None:
         raise UnsupportedTransactionVersionError(version, supported)
 
 
+def adapter_send_defaults(wallet: Any) -> "SendOptions":
+    """The adapter's own default send options, or empty ones.
+
+    Layering these under the execution defaults and the per-call override
+    keeps every intermediate merge valid: ``SendOptions.merged`` validates
+    the version/fee pair it produces, so a merge that starts from nothing
+    rejects a V1 fee before the adapter's configured version is in scope.
+    """
+    resolve = getattr(wallet, "resolve_send_options", None)
+    return resolve(None) if callable(resolve) else SendOptions()
+
+
+def resolve_transaction_options(wallet: Any, options: Any) -> "SendOptions":
+    """Effective send options for pre-dispatch validation.
+
+    An adapter may expose ``resolve_send_options(options) -> SendOptions`` to
+    merge its own defaults under the per-call override first. Without it the
+    caller's options are read alone, so an adapter configured with
+    ``transaction_version=1`` sees a valid ``priorityFeeLamports`` rejected
+    here as a v0 fee mismatch, before it can supply the version it will
+    actually compile.
+
+    Adapters without the hook keep the previous behaviour exactly: coerce,
+    validate, then check the explicit version against the declared
+    capability.
+    """
+    resolve = getattr(wallet, "resolve_send_options", None)
+    effective = resolve(options) if callable(resolve) else SendOptions.coerce(options)
+    effective = effective.validate()
+    ensure_transaction_version_supported(wallet, effective.transaction_version)
+    return effective
+
+
 @runtime_checkable
 class WalletAdapter(Protocol):
     """Wallet adapter interface for signing and sending transactions.

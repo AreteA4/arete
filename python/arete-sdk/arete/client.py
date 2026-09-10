@@ -76,7 +76,9 @@ from arete.wallet import (
     TransactionFailureOutcome,
     WalletAdapter,
     WalletExecutionContext,
+    adapter_send_defaults,
     ensure_transaction_version_supported,
+    resolve_transaction_options,
 )
 
 __all__ = [
@@ -636,9 +638,12 @@ class Arete:
         # Fail closed before the adapter is asked to sign: an explicit
         # transaction version it does not advertise is a rejection, never a
         # silent downgrade, and the effective version/fee pair is checked here
-        # rather than while each partial options object is coerced.
-        options.validate()
-        ensure_transaction_version_supported(adapter, options.transaction_version)
+        # rather than while each partial options object is coerced. The
+        # adapter's own defaults are merged in first when it exposes
+        # ``resolve_send_options``, so the pair is validated against the
+        # version it will actually compile. ``options`` itself is forwarded
+        # unchanged; the adapter merges its defaults again for the build.
+        resolve_transaction_options(adapter, options)
         if signers is not None:
             options = options.with_signers(signers)
         context = WalletExecutionContext(
@@ -686,10 +691,22 @@ class Arete:
         validation, per-transaction callbacks, receipts with signatures.
         Connect-time ``execution`` defaults merge under per-call options."""
         defaults = self._execution_defaults
+        effective_wallet = (
+            wallet
+            if wallet is not None
+            else defaults.get("wallet") if defaults.get("wallet") is not None
+            else self._wallet
+        )
         merged_send: Any = None
         if defaults.get("send") is not None or send is not None:
-            merged_send = SendOptions.coerce(defaults.get("send")).merged(
-                SendOptions.coerce(send) if send is not None else None
+            # Adapter defaults first: every intermediate merge validates the
+            # version/fee pair it produces, so starting from nothing would
+            # reject a V1 fee before the adapter's configured version is in
+            # scope.
+            merged_send = (
+                adapter_send_defaults(effective_wallet)
+                .merged(SendOptions.coerce(defaults.get("send")))
+                .merged(SendOptions.coerce(send) if send is not None else None)
             )
         return await execute_prepared_operation(
             self,

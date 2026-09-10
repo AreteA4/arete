@@ -207,6 +207,36 @@ class TestSignerRegistry:
         assert infer_signer_address({"opaque": True}) is None
         assert infer_signer_address("") is None
 
+    def test_infer_signer_address_from_a_public_key_accessor(self):
+        """``solders`` keypairs expose ``pubkey()`` returning a ``Pubkey``.
+
+        The base SDK cannot import solders, so the accessor is called and
+        its result normalised through ``str`` -- and only accepted when it
+        reads as a base58 address."""
+        address = "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9"
+
+        class Pubkey:
+            def __str__(self):
+                return address
+
+        class Keypair:
+            def pubkey(self):
+                return Pubkey()
+
+        assert infer_signer_address(Keypair()) == address
+
+    def test_an_unusable_accessor_still_fails_closed(self):
+        class Opaque:
+            def pubkey(self):
+                return object()
+
+        class Exploding:
+            def pubkey(self):
+                raise RuntimeError("locked")
+
+        assert infer_signer_address(Opaque()) is None
+        assert infer_signer_address(Exploding()) is None
+
 
 @pytest.mark.asyncio
 class TestExecutePreparedOperation:
