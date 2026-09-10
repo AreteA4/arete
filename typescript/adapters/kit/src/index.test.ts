@@ -45,6 +45,34 @@ const setTransactionMessageLifetimeUsingBlockhash = vi.fn((blockhash, message) =
 }));
 const signTransactionMessageWithSigners = vi.fn();
 const simulateTransactionSend = vi.fn();
+const createNoopSigner = vi.fn((addressValue: string) => ({ address: addressValue }));
+const setTransactionMessageConfig = vi.fn((config, message) => ({
+  ...message,
+  config: { ...(message.config ?? {}), ...config },
+}));
+const setTransactionMessageComputeUnitLimit = vi.fn((computeUnitLimit, message) => ({
+  ...message,
+  computeUnitLimit,
+}));
+const setTransactionMessageComputeUnitPrice = vi.fn((computeUnitPrice, message) => ({
+  ...message,
+  computeUnitPrice,
+}));
+const setTransactionMessageHeapSize = vi.fn((heapSize, message) => ({ ...message, heapSize }));
+const setTransactionMessageLoadedAccountsDataSizeLimit = vi.fn(
+  (loadedAccountsDataSizeLimit, message) => ({ ...message, loadedAccountsDataSizeLimit })
+);
+// The decoder only backs the V1 structural caps; the mocked message never
+// reaches them, and the real limits are covered in kit-v1.test.ts.
+const decodeCompiledMessage = vi.fn(() => ({
+  version: 0,
+  header: { numSignerAccounts: 1 },
+  staticAccounts: [],
+  numInstructions: 0,
+}));
+const getCompiledTransactionMessageDecoder = vi.fn(() => ({ decode: decodeCompiledMessage }));
+const getTransactionSize = vi.fn(() => 100);
+const assertIsTransactionWithBlockhashLifetime = vi.fn();
 
 vi.mock('@solana/kit', () => ({
   AccountRole: {
@@ -57,18 +85,24 @@ vi.mock('@solana/kit', () => ({
   addSignersToTransactionMessage,
   address: (value: string) => value,
   appendTransactionMessageInstructions,
+  assertIsTransactionWithBlockhashLifetime,
   compileTransaction,
+  createNoopSigner,
   createTransactionMessage,
   getBase64Decoder,
   getBase64EncodedWireTransaction,
+  getCompiledTransactionMessageDecoder,
   getSignatureFromTransaction,
+  getTransactionSize,
   isSolanaError,
-  pipe: (value: unknown, ...fns: Array<(input: unknown) => unknown>) =>
-    fns.reduce((current, fn) => fn(current), value),
   sendAndConfirmTransactionFactory,
-  setTransactionMessageFeePayer,
+  setTransactionMessageComputeUnitLimit,
+  setTransactionMessageComputeUnitPrice,
+  setTransactionMessageConfig,
   setTransactionMessageFeePayerSigner,
+  setTransactionMessageHeapSize,
   setTransactionMessageLifetimeUsingBlockhash,
+  setTransactionMessageLoadedAccountsDataSizeLimit,
   signTransactionMessageWithSigners,
 }));
 
@@ -177,7 +211,7 @@ describe('createWalletAdapter', () => {
     expect(result).toEqual({ signature: 'sig-kit', slot: 456 });
     expect(wallet.signerAddresses).toEqual([primary.address]);
     expect(setTransactionMessageFeePayerSigner).toHaveBeenCalledWith(primary, expect.anything());
-    expect(addSignersToTransactionMessage).toHaveBeenCalledWith([], expect.anything());
+    expect(addSignersToTransactionMessage).not.toHaveBeenCalled();
     expect(signTransactionMessageWithSigners).toHaveBeenCalledTimes(1);
     expect(sendAndConfirm).toHaveBeenCalledTimes(1);
     expect(rpc.getSignatureStatuses).toHaveBeenCalledWith(
@@ -428,17 +462,20 @@ describe('createWalletAdapter', () => {
         feePayer: 'inspection-fee-payer',
         minContextSlot: 300n,
       })
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       feeLamports: 5_000,
       logs: ['Program log: inspected'],
       computeUnitsConsumed: 200_000,
       contextSlot: 401,
       error: undefined,
       feeContextSlot: 400,
+      transactionVersion: 0,
+      resources: {},
     });
 
-    expect(setTransactionMessageFeePayer).toHaveBeenCalledWith(
-      'inspection-fee-payer',
+    expect(createNoopSigner).toHaveBeenCalledWith('inspection-fee-payer');
+    expect(setTransactionMessageFeePayerSigner).toHaveBeenCalledWith(
+      { address: 'inspection-fee-payer' },
       expect.anything()
     );
     expect(signTransactionMessageWithSigners).not.toHaveBeenCalled();
@@ -509,34 +546,29 @@ describe('createWalletAdapter', () => {
     });
   });
 
-  it('transaction_v1 request is rejected before compiling or signing anything', async () => {
+  it('an unknown transaction version is rejected before compiling or signing', async () => {
     const wallet = createWalletAdapter({
       rpc: createRpcStub() as never,
       rpcSubscriptions: {} as never,
       signer: { address: 'primary-signer' } as never,
     });
-    expect(wallet.supportedTransactionVersions).toEqual([0]);
+    expect(wallet.supportedTransactionVersions).toEqual(['legacy', 0, 1]);
 
     await expect(wallet.signAndSend(
       [makeInstruction(['primary-signer'])],
-      { transactionVersion: 1 }
-    )).rejects.toMatchObject({
-      name: 'TransactionOptionsError',
-      code: 'unsupported_transaction_version',
-      requestedVersion: 1,
-      supportedVersions: [0],
-    });
+      { transactionVersion: 2 as never }
+    )).rejects.toMatchObject({ outcome: { status: 'not-submitted', phase: 'build' } });
     await expect(wallet.inspectTransaction(
       [makeInstruction(['primary-signer'])],
-      { transactionVersion: 1 }
-    )).rejects.toMatchObject({ code: 'unsupported_transaction_version' });
+      { transactionVersion: 2 as never }
+    )).rejects.toMatchObject({ code: 'invalid_transaction_option' });
 
     expect(createTransactionMessage).not.toHaveBeenCalled();
     expect(signTransactionMessageWithSigners).not.toHaveBeenCalled();
     expect(sendAndConfirm).not.toHaveBeenCalled();
   });
 
-  it('v1_contract resource options are rejected until a builder can apply them', async () => {
+  it('a fee option bound to another version is refused, never converted', async () => {
     const wallet = createWalletAdapter({
       rpc: createRpcStub() as never,
       rpcSubscriptions: {} as never,
@@ -545,12 +577,35 @@ describe('createWalletAdapter', () => {
 
     await expect(wallet.signAndSend(
       [makeInstruction(['primary-signer'])],
-      { resources: { computeUnitLimit: 200_000 } }
+      { resources: { priorityFeeLamports: 5_000n } }
     )).rejects.toMatchObject({
-      code: 'unsupported_resource_option',
-      option: 'computeUnitLimit',
+      cause: { code: 'unsupported_resource_option', option: 'priorityFeeLamports' },
+    });
+    await expect(wallet.signAndSend(
+      [makeInstruction(['primary-signer'])],
+      { transactionVersion: 1, resources: { computeUnitPriceMicroLamports: 7n } }
+    )).rejects.toMatchObject({
+      cause: { code: 'unsupported_resource_option', option: 'computeUnitPriceMicroLamports' },
     });
     expect(signTransactionMessageWithSigners).not.toHaveBeenCalled();
+  });
+
+  it('applies the legacy/v0 budget as ComputeBudget instructions', async () => {
+    const wallet = createWalletAdapter({
+      rpc: createRpcStub() as never,
+      rpcSubscriptions: {} as never,
+      signer: { address: 'primary-signer' } as never,
+    });
+
+    await wallet.signAndSend(
+      [makeInstruction(['primary-signer'])],
+      { resources: { computeUnitLimit: 200_000, computeUnitPriceMicroLamports: 7n } }
+    );
+
+    expect(setTransactionMessageComputeUnitLimit)
+      .toHaveBeenCalledWith(200_000, expect.anything());
+    expect(setTransactionMessageComputeUnitPrice).toHaveBeenCalledWith(7n, expect.anything());
+    expect(setTransactionMessageConfig).not.toHaveBeenCalled();
   });
 
   it('surfaces the simulated loaded-accounts-data-size from both transports', async () => {

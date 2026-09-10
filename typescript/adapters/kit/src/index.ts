@@ -11,18 +11,24 @@
 
 import {
   address,
-  pipe,
+  createNoopSigner,
   addSignersToTransactionMessage,
   createTransactionMessage,
-  setTransactionMessageFeePayer,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
+  setTransactionMessageComputeUnitLimit,
+  setTransactionMessageComputeUnitPrice,
+  setTransactionMessageHeapSize,
+  setTransactionMessageLoadedAccountsDataSizeLimit,
+  setTransactionMessageConfig,
   appendTransactionMessageInstructions,
   compileTransaction,
   getBase64Decoder,
   getBase64EncodedWireTransaction,
+  getTransactionSize,
   signTransactionMessageWithSigners,
   getSignatureFromTransaction,
+  assertIsTransactionWithBlockhashLifetime,
   isSolanaError,
   sendAndConfirmTransactionFactory,
   SOLANA_ERROR__JSON_RPC__SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
@@ -32,8 +38,8 @@ import {
   type SolanaRpcApi,
   type SolanaRpcSubscriptionsApi,
   type TransactionSigner,
-  type IInstruction,
-  type IAccountMeta,
+  type Instruction as KitInstruction,
+  type AccountMeta as KitAccountMeta,
   type Commitment,
   type Signature,
   type Slot,
@@ -50,19 +56,79 @@ import type {
   TransactionInspectionOptions,
   TransactionInspectionResult,
   TransactionTransport,
+  TransactionVersion,
+  ResolvedTransactionResourceOptions,
   WalletExecutionContext,
   TransactionBuildCapability,
 } from '@usearete/sdk';
-import { TransactionTransportError, resolveTransactionBuildOptions } from '@usearete/sdk';
+import {
+  TransactionTransportError,
+  resolveTransactionBuildOptions,
+  toWireResourceOptions,
+} from '@usearete/sdk';
 
 /**
- * Kit builds v0 messages only, and applies no compute-budget instructions of
- * its own: transaction V1 and the resource budget options land with A4-253.
+ * Kit 8 is the first release that constructs transaction V1 messages and
+ * carries the resource budget as a typed message config, so this adapter
+ * builds every version the contract defines and honours every typed
+ * resource option.
  */
 const CAPABILITY: TransactionBuildCapability = {
-  supportedTransactionVersions: [0],
-  supportedResourceOptions: [],
+  supportedTransactionVersions: ['legacy', 0, 1],
+  supportedResourceOptions: [
+    'computeUnitLimit',
+    'loadedAccountsDataSizeLimit',
+    'heapSize',
+    'priorityFeeLamports',
+    'computeUnitPriceMicroLamports',
+  ],
 };
+
+/** Wire ceiling for legacy and v0 transactions, in bytes (one UDP packet). */
+export const LEGACY_TRANSACTION_SIZE_LIMIT = 1232;
+
+/** Wire ceiling for V1 transactions, in bytes (SIMD-0385). */
+export const V1_TRANSACTION_SIZE_LIMIT = 4096;
+
+/** Structural V1 caps enforced before a signer is reached (SIMD-0385). */
+export const V1_MAX_SIGNATURES = 12;
+export const V1_MAX_ACCOUNTS = 64;
+export const V1_MAX_INSTRUCTIONS = 64;
+
+/**
+ * Per-transaction compute-unit maximum. Also the limit a *provisional* V1
+ * message declares for a budget the caller omitted: SIMD-0385 makes an unset
+ * V1 config field request the **minimum**, not a default, so a provisional
+ * message carrying nothing could never produce an ordinary successful
+ * execution estimate.
+ */
+export const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
+
+/** Loaded-account-data maximum (64 MiB), used the same way. */
+export const MAX_LOADED_ACCOUNTS_DATA_SIZE = 64 * 1024 * 1024;
+
+/**
+ * Headroom added to measured compute consumption, in percent: a simulation
+ * is one slot's view of the chain and the transaction that lands may take a
+ * slightly different branch.
+ */
+export const ESTIMATED_COMPUTE_UNIT_HEADROOM_PERCENT = 20n;
+
+/**
+ * The runtime accounts for loaded data in pages of this size, so an
+ * estimated data budget is rounded up to a whole page plus one page of
+ * headroom for account growth between simulation and execution.
+ */
+export const LOADED_ACCOUNTS_DATA_PAGE_BYTES = 32 * 1024;
+
+const COMPUTE_BUDGET_PROGRAM_ADDRESS = 'ComputeBudget111111111111111111111111111111';
+
+/** Option keys that would carry address lookup tables. */
+const LOOKUP_TABLE_OPTION_KEYS = [
+  'addressLookupTables',
+  'addressLookupTableAccounts',
+  'lookupTables',
+] as const;
 
 export type AdapterTransportSelection = 'auto' | 'direct' | TransactionTransport;
 
@@ -101,11 +167,20 @@ export interface KitTransactionInspectionOptions extends TransactionInspectionOp
 export interface KitTransactionInspectionResult extends TransactionInspectionResult {
   /** RPC context used for the fee estimate. */
   feeContextSlot?: number;
+  /** The version the inspected message was compiled for. */
+  transactionVersion: TransactionVersion;
+  /**
+   * The resource budget the inspected message actually declares, as decimal
+   * strings. For a V1 message this includes the protocol maxima standing in
+   * for the ceilings the caller omitted, which is what the reported metrics
+   * let you replace with pinned values.
+   */
+  resources: Record<string, string>;
 }
 
 export interface KitWalletAdapter extends WalletAdapter {
   readonly signerAddresses: readonly string[];
-  readonly supportedTransactionVersions: readonly [0];
+  readonly supportedTransactionVersions: readonly ['legacy', 0, 1];
   signAndSend(
     instructions: readonly BuiltInstruction[],
     options?: KitSendOptions,
@@ -199,14 +274,21 @@ function hasReachedCommitment(
   return rank[actual] >= rank[required];
 }
 
+/** The backend one operation runs on, selected once before it starts. */
+export type ResolvedTransport =
+  | { readonly kind: 'arete'; readonly transport: TransactionTransport }
+  | {
+    readonly kind: 'direct';
+    readonly rpc: Rpc<SolanaRpcApi>;
+    readonly rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
+  };
+
 function resolveTransport(
   selection: AdapterTransportSelection | undefined,
   rpc: Rpc<SolanaRpcApi> | undefined,
   rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi> | undefined,
   context: WalletExecutionContext | undefined
-): { kind: 'arete'; transport: TransactionTransport } | {
-  kind: 'direct'; rpc: Rpc<SolanaRpcApi>; rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
-} {
+): ResolvedTransport {
   if (typeof selection === 'object') return { kind: 'arete', transport: selection };
   if (selection === 'direct') {
     if (!rpc || !rpcSubscriptions) throw new Error('Kit direct transport requires RPC and RPC subscriptions');
@@ -322,9 +404,9 @@ export function fromAccountRole(role: AccountRole): { isSigner: boolean; isWrita
   }
 }
 
-/** Convert an Arete BuiltInstruction to a kit IInstruction. */
-export function toKitInstruction(ix: BuiltInstruction): IInstruction {
-  const accounts: IAccountMeta[] = ix.keys.map((k) => ({
+/** Convert an Arete BuiltInstruction to a kit Instruction. */
+export function toKitInstruction(ix: BuiltInstruction): KitInstruction {
+  const accounts: KitAccountMeta[] = ix.keys.map((k) => ({
     address: address(k.pubkey),
     role: toAccountRole(k),
   }));
@@ -335,8 +417,8 @@ export function toKitInstruction(ix: BuiltInstruction): IInstruction {
   };
 }
 
-/** Convert a kit IInstruction to an Arete BuiltInstruction. */
-export function fromKitInstruction(ix: IInstruction): BuiltInstruction {
+/** Convert a kit Instruction to an Arete BuiltInstruction. */
+export function fromKitInstruction(ix: KitInstruction): BuiltInstruction {
   return {
     programId: ix.programAddress,
     keys: (ix.accounts ?? []).map((account) => ({
@@ -345,6 +427,349 @@ export function fromKitInstruction(ix: IInstruction): BuiltInstruction {
     })),
     data: ix.data ? new Uint8Array(ix.data) : new Uint8Array(0),
   };
+}
+
+// ---------------------------------------------------------------------------
+// One version/configuration planner, shared by send and unsigned inspection
+// ---------------------------------------------------------------------------
+
+/**
+ * Refuse the inputs the typed configuration owns.
+ *
+ * A hand-built `ComputeBudget` instruction is not an effective V1
+ * configuration — the runtime reads V1 budgets from the message config — and
+ * silently accepting one would apply a budget on legacy/v0 and none on V1
+ * from the same caller code. Address lookup tables have no V1 encoding at
+ * all, and this adapter compiles none for any version.
+ */
+function assertBuildableInputs(
+  instructions: readonly BuiltInstruction[],
+  options: TransactionInspectionOptions | SendOptions | undefined,
+  version: TransactionVersion
+): void {
+  if (instructions.length === 0) {
+    throw new Error('A transaction requires at least one instruction');
+  }
+  if (instructions.some((ix) => ix.programId === COMPUTE_BUDGET_PROGRAM_ADDRESS)) {
+    throw new Error(
+      'Caller-supplied ComputeBudget instructions are rejected: request compute units, heap '
+      + 'size, loaded-accounts size and fees through the typed `resources` options so one '
+      + 'contract covers every transaction version'
+    );
+  }
+  const lookupTableKey = LOOKUP_TABLE_OPTION_KEYS.find(
+    (key) => (options as Record<string, unknown> | undefined)?.[key] !== undefined
+  );
+  if (lookupTableKey) {
+    throw new Error(
+      `Address lookup tables are not supported by this adapter (rejected option `
+      + `'${lookupTableKey}')`
+      + (version === 1 ? '; transaction version 1 has no lookup tables at all (SIMD-0385)' : '')
+    );
+  }
+}
+
+function toUnits(value: bigint | undefined): number | undefined {
+  return value === undefined ? undefined : Number(value);
+}
+
+interface PlanInput {
+  readonly version: TransactionVersion;
+  readonly resources: ResolvedTransactionResourceOptions;
+  readonly instructions: readonly BuiltInstruction[];
+  readonly latestBlockhash: { blockhash: string; lastValidBlockHeight: bigint };
+  /**
+   * The fee payer. Unsigned inspection passes a no-op signer for a bare
+   * address, so both paths compile through one code path and the inspected
+   * payload has the size and shape of the real one.
+   */
+  readonly feePayer: TransactionSigner;
+  readonly attachedSigners?: readonly TransactionSigner[];
+}
+
+/**
+ * A V1 message: the resource budget is the message's typed config, and the
+ * runtime reads it from there — which is why a caller-supplied
+ * `ComputeBudget` instruction is rejected rather than merged.
+ */
+function planV1Message(input: PlanInput) {
+  const { resources } = input;
+  const configured = setTransactionMessageConfig(
+    {
+      computeUnitLimit: toUnits(resources.computeUnitLimit),
+      heapSize: toUnits(resources.heapSize),
+      loadedAccountsDataSizeLimit: toUnits(resources.loadedAccountsDataSizeLimit),
+      priorityFeeLamports: resources.priorityFeeLamports,
+    },
+    createTransactionMessage({ version: 1 })
+  );
+  const withFeePayer = setTransactionMessageFeePayerSigner(input.feePayer, configured);
+  const withLifetime = setTransactionMessageLifetimeUsingBlockhash(
+    input.latestBlockhash as Parameters<typeof setTransactionMessageLifetimeUsingBlockhash>[0],
+    withFeePayer
+  );
+  return appendTransactionMessageInstructions(
+    input.instructions.map(toKitInstruction),
+    withLifetime
+  );
+}
+
+/**
+ * A legacy or v0 message: the same budget, rendered as the canonical
+ * `ComputeBudget` instructions kit prepends.
+ */
+function planLegacyMessage(input: PlanInput) {
+  const { resources } = input;
+  const created = input.version === 0
+    ? createTransactionMessage({ version: 0 })
+    : createTransactionMessage({ version: 'legacy' });
+  const withFeePayer = setTransactionMessageFeePayerSigner(input.feePayer, created);
+  const withLifetime = setTransactionMessageLifetimeUsingBlockhash(
+    input.latestBlockhash as Parameters<typeof setTransactionMessageLifetimeUsingBlockhash>[0],
+    withFeePayer
+  );
+  let message = appendTransactionMessageInstructions(
+    input.instructions.map(toKitInstruction),
+    withLifetime
+  );
+  if (resources.computeUnitLimit !== undefined) {
+    message = setTransactionMessageComputeUnitLimit(Number(resources.computeUnitLimit), message);
+  }
+  if (resources.computeUnitPriceMicroLamports !== undefined) {
+    message = setTransactionMessageComputeUnitPrice(
+      resources.computeUnitPriceMicroLamports,
+      message
+    );
+  }
+  if (resources.heapSize !== undefined) {
+    message = setTransactionMessageHeapSize(Number(resources.heapSize), message);
+  }
+  if (resources.loadedAccountsDataSizeLimit !== undefined) {
+    message = setTransactionMessageLoadedAccountsDataSizeLimit(
+      Number(resources.loadedAccountsDataSizeLimit),
+      message
+    );
+  }
+  return message;
+}
+
+/**
+ * One version/configuration planner for send and unsigned inspection: the
+ * only difference between the two is whether the fee payer can sign.
+ */
+function planMessage(input: PlanInput) {
+  const message = input.version === 1 ? planV1Message(input) : planLegacyMessage(input);
+  return input.attachedSigners?.length
+    ? addSignersToTransactionMessage([...input.attachedSigners], message)
+    : message;
+}
+
+/**
+ * The version's wire ceiling, checked on the compiled bytes before a signer
+ * is ever reached.
+ *
+ * The V1 structural caps ({@link V1_MAX_SIGNATURES} signatures,
+ * {@link V1_MAX_ACCOUNTS} accounts, {@link V1_MAX_INSTRUCTIONS} top-level
+ * instructions) are enforced by `compileTransaction` itself, so they fail
+ * here too — one compile earlier than this check, and equally before
+ * signing. Re-implementing them would only risk disagreeing with the codec.
+ */
+function assertWithinSizeLimit(version: TransactionVersion, size: number): void {
+  const limit = version === 1 ? V1_TRANSACTION_SIZE_LIMIT : LEGACY_TRANSACTION_SIZE_LIMIT;
+  if (size > limit) {
+    throw new Error(
+      `Transaction is ${size} bytes, over the ${limit}-byte limit for version `
+      + `${JSON.stringify(version)}`
+    );
+  }
+}
+
+/** Measured consumption plus headroom, positive and protocol-bounded. */
+export function estimatedComputeUnitLimit(unitsConsumed: bigint): bigint {
+  const padded = (unitsConsumed * (100n + ESTIMATED_COMPUTE_UNIT_HEADROOM_PERCENT) + 99n) / 100n;
+  if (padded < 1n) return 1n;
+  return padded > BigInt(MAX_COMPUTE_UNIT_LIMIT) ? BigInt(MAX_COMPUTE_UNIT_LIMIT) : padded;
+}
+
+/** Measured loaded data rounded up to a whole page plus one page of headroom. */
+export function estimatedLoadedAccountsDataSize(loadedBytes: bigint): bigint {
+  const page = BigInt(LOADED_ACCOUNTS_DATA_PAGE_BYTES);
+  const padded = ((loadedBytes + page - 1n) / page + 1n) * page;
+  const max = BigInt(MAX_LOADED_ACCOUNTS_DATA_SIZE);
+  return padded > max ? max : padded;
+}
+
+
+interface SimulationMetrics {
+  readonly contextSlot: bigint;
+  readonly err: unknown;
+  readonly logs?: readonly string[];
+  /**
+   * `undefined` means the backend reported no measurement; `0n` means it
+   * measured zero. A V1 budget derived from a missing metric would be a
+   * guess, so the distinction is preserved all the way to the refusal.
+   */
+  readonly unitsConsumed?: bigint;
+  readonly loadedAccountsDataSize?: bigint;
+}
+
+async function fetchLatestBlockhash(
+  resolved: ResolvedTransport,
+  commitment: Commitment,
+  minContextSlot?: Slot
+): Promise<{ blockhash: string; lastValidBlockHeight: bigint }> {
+  const value = resolved.kind === 'arete'
+    ? await resolved.transport.getLatestBlockhash({ commitment, minContextSlot })
+    : (await resolved.rpc.getLatestBlockhash({ commitment, minContextSlot }).send()).value;
+  return {
+    blockhash: value.blockhash,
+    lastValidBlockHeight: BigInt(value.lastValidBlockHeight),
+  };
+}
+
+/**
+ * Simulate a transaction carrying placeholder signatures. Verification is
+ * off on both backends: nothing on this path has touched a signer.
+ */
+async function simulateUnsigned(
+  resolved: ResolvedTransport,
+  wireTransaction: string,
+  commitment: Commitment,
+  minContextSlot?: Slot
+): Promise<SimulationMetrics> {
+  if (resolved.kind === 'arete') {
+    const simulation = await resolved.transport.simulateTransaction(wireTransaction, {
+      commitment,
+      minContextSlot,
+    });
+    return {
+      contextSlot: simulation.contextSlot,
+      err: simulation.err ?? undefined,
+      logs: simulation.logs ?? undefined,
+      unitsConsumed: simulation.unitsConsumed,
+      loadedAccountsDataSize: simulation.loadedAccountsDataSize,
+    };
+  }
+  const simulation = await resolved.rpc.simulateTransaction(
+    wireTransaction as Parameters<typeof resolved.rpc.simulateTransaction>[0],
+    { commitment, encoding: 'base64', minContextSlot, sigVerify: false }
+  ).send();
+  // The loaded-accounts budget is optional upstream and comes back as null
+  // when the node did not measure it; `Number(null)` would invent a measured
+  // zero and destroy the distinction estimation depends on.
+  const { loadedAccountsDataSize } = simulation.value as {
+    loadedAccountsDataSize?: number | bigint | null;
+  };
+  return {
+    contextSlot: simulation.context.slot,
+    err: simulation.value.err ?? undefined,
+    logs: simulation.value.logs ?? undefined,
+    unitsConsumed: simulation.value.unitsConsumed == null
+      ? undefined
+      : BigInt(simulation.value.unitsConsumed),
+    loadedAccountsDataSize: loadedAccountsDataSize == null
+      ? undefined
+      : BigInt(loadedAccountsDataSize),
+  };
+}
+
+async function estimateFee(
+  resolved: ResolvedTransport,
+  encodedMessage: TransactionMessageBytesBase64,
+  commitment: Commitment,
+  minContextSlot?: Slot
+): Promise<{ feeLamports?: bigint; contextSlot: bigint }> {
+  if (resolved.kind === 'arete') {
+    const fee = await resolved.transport.getFeeForMessage(encodedMessage, {
+      commitment,
+      minContextSlot,
+    });
+    return {
+      feeLamports: fee.feeLamports === null ? undefined : fee.feeLamports,
+      contextSlot: fee.contextSlot,
+    };
+  }
+  const fee = await resolved.rpc
+    .getFeeForMessage(encodedMessage, { commitment, minContextSlot })
+    .send();
+  return {
+    feeLamports: fee.value === null ? undefined : fee.value,
+    contextSlot: fee.context.slot,
+  };
+}
+
+/**
+ * The V1 message a simulation can actually execute: the caller's own budgets
+ * where they gave them, the protocol maxima where they did not.
+ */
+function provisionalV1Resources(
+  resources: ResolvedTransactionResourceOptions
+): ResolvedTransactionResourceOptions {
+  return {
+    ...resources,
+    computeUnitLimit: resources.computeUnitLimit ?? BigInt(MAX_COMPUTE_UNIT_LIMIT),
+    loadedAccountsDataSizeLimit:
+      resources.loadedAccountsDataSizeLimit ?? BigInt(MAX_LOADED_ACCOUNTS_DATA_SIZE),
+  };
+}
+
+/**
+ * Resolve the two budgets a signable V1 message must declare.
+ *
+ * An unset V1 budget requests the *minimum* rather than a default
+ * (SIMD-0385), so a final message missing either could only fail on chain.
+ * An explicit caller budget is used verbatim and never raised; a missing one
+ * is measured by simulating the provisional message and derived with
+ * headroom; and a metric the simulation never reported is refused by name.
+ */
+async function resolveV1Budgets(
+  resolved: ResolvedTransport,
+  compileProvisional: (resources: ResolvedTransactionResourceOptions) => string,
+  resources: ResolvedTransactionResourceOptions,
+  commitment: Commitment,
+  minContextSlot?: Slot
+): Promise<ResolvedTransactionResourceOptions> {
+  if (
+    resources.computeUnitLimit !== undefined
+    && resources.loadedAccountsDataSizeLimit !== undefined
+  ) {
+    return resources;
+  }
+
+  const simulation = await simulateUnsigned(
+    resolved,
+    compileProvisional(provisionalV1Resources(resources)),
+    commitment,
+    minContextSlot
+  );
+  if (simulation.err) {
+    throw new Error(
+      `Budget estimation simulation reported ${JSON.stringify(simulation.err)}; `
+      + 'nothing was submitted'
+    );
+  }
+
+  const unestimable = (option: string, metric: string) => new Error(
+    `${option} is required for transaction version 1 and could not be estimated: the `
+    + `simulation reported no ${metric}. Pass an explicit ${option}, or use a backend whose `
+    + `simulation reports ${metric}.`
+  );
+  let { computeUnitLimit, loadedAccountsDataSizeLimit } = resources;
+  if (computeUnitLimit === undefined) {
+    if (simulation.unitsConsumed === undefined) {
+      throw unestimable('computeUnitLimit', 'unitsConsumed');
+    }
+    computeUnitLimit = estimatedComputeUnitLimit(simulation.unitsConsumed);
+  }
+  if (loadedAccountsDataSizeLimit === undefined) {
+    if (simulation.loadedAccountsDataSize === undefined) {
+      throw unestimable('loadedAccountsDataSizeLimit', 'loadedAccountsDataSize');
+    }
+    loadedAccountsDataSizeLimit = estimatedLoadedAccountsDataSize(
+      simulation.loadedAccountsDataSize
+    );
+  }
+  return { ...resources, computeUnitLimit, loadedAccountsDataSizeLimit };
 }
 
 /**
@@ -359,29 +784,33 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
   return {
     publicKey: signer.address,
     signerAddresses: [...new Set(signerAddresses)],
-    supportedTransactionVersions: CAPABILITY.supportedTransactionVersions as readonly [0],
+    supportedTransactionVersions:
+      CAPABILITY.supportedTransactionVersions as readonly ['legacy', 0, 1],
 
     async signAndSend(
       instructions: readonly BuiltInstruction[],
       options?: SendOptions,
       context?: WalletExecutionContext
     ): Promise<SendResult> {
-      // Rejects an explicit non-v0 version and any resource option this
-      // adapter cannot apply, before a wallet is ever prompted.
-      resolveTransactionBuildOptions(options, CAPABILITY);
-      if (instructions.length === 0) {
-        const cause = new Error('signAndSend requires at least one instruction');
+      // Rejects an unsupported explicit version and any version-bound fee
+      // used against the wrong version, before a wallet is ever prompted.
+      let plan: { transactionVersion: TransactionVersion; resources: ResolvedTransactionResourceOptions };
+      try {
+        plan = resolveTransactionBuildOptions(options, CAPABILITY);
+        assertBuildableInputs(instructions, options, plan.transactionVersion);
+      } catch (cause) {
         throw new KitTransactionExecutionError({
           status: 'not-submitted',
           phase: 'build',
           cause,
         });
       }
+      const version = plan.transactionVersion;
 
       const sendOptions = options as KitSendOptions | undefined;
       const feePayer = sendOptions?.feePayer ?? signer;
       const commitment = toCommitment(options?.confirmationLevel, fallbackCommitment);
-      let resolved: ReturnType<typeof resolveTransport>;
+      let resolved: ResolvedTransport;
       try {
         resolved = resolveTransport(config.transport, rpc, rpcSubscriptions, context);
       } catch (cause) {
@@ -414,20 +843,33 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
         const attachedSigners = [...requiredSignerAddresses]
           .filter((requiredAddress) => requiredAddress !== feePayer.address)
           .map((requiredAddress) => localSignerMap.get(requiredAddress)!);
-        const latestBlockhash = resolved.kind === 'arete'
-          ? await resolved.transport.getLatestBlockhash({ commitment })
-          : (await resolved.rpc.getLatestBlockhash({ commitment }).send()).value;
-        lastValidBlockHeight = BigInt(latestBlockhash.lastValidBlockHeight);
-        const messageWithFeePayer = pipe(
-          createTransactionMessage({ version: 0 }),
-          (m) => setTransactionMessageFeePayerSigner(feePayer, m),
-          (m) => setTransactionMessageLifetimeUsingBlockhash(
-            latestBlockhash as Parameters<typeof setTransactionMessageLifetimeUsingBlockhash>[0],
-            m
-          ),
-          (m) => appendTransactionMessageInstructions(instructions.map(toKitInstruction), m)
-        );
-        message = addSignersToTransactionMessage(attachedSigners, messageWithFeePayer);
+        const latestBlockhash = await fetchLatestBlockhash(resolved, commitment);
+        lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
+        const compile = (resources: ResolvedTransactionResourceOptions) => planMessage({
+          version,
+          resources,
+          instructions,
+          latestBlockhash,
+          feePayer,
+          attachedSigners,
+        });
+
+        // The budgets are resolved before the final message exists, so the
+        // configuration that is compiled, sized, preflighted and signed is
+        // one configuration.
+        const resources = version === 1
+          ? await resolveV1Budgets(
+            resolved,
+            (provisional) => getBase64EncodedWireTransaction(
+              compileTransaction(compile(provisional))
+            ),
+            plan.resources,
+            commitment
+          )
+          : plan.resources;
+        message = compile(resources);
+        const preview = compileTransaction(message);
+        assertWithinSizeLimit(version, getTransactionSize(preview));
       } catch (cause) {
         throw new KitTransactionExecutionError({
           status: 'not-submitted',
@@ -440,6 +882,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
       let signature: Signature;
       try {
         signedTransaction = await signTransactionMessageWithSigners(message);
+        assertIsTransactionWithBlockhashLifetime(signedTransaction);
         signature = getSignatureFromTransaction(signedTransaction);
       } catch (cause) {
         throw new KitTransactionExecutionError({
@@ -559,84 +1002,70 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
       instructions: readonly BuiltInstruction[],
       options?: TransactionInspectionOptions,
       context?: WalletExecutionContext
-    ): Promise<TransactionInspectionResult> {
-      resolveTransactionBuildOptions(options, CAPABILITY);
-      if (instructions.length === 0) {
-        throw new Error('inspectTransaction requires at least one instruction');
-      }
+    ): Promise<KitTransactionInspectionResult> {
+      const plan = resolveTransactionBuildOptions(options, CAPABILITY);
+      const version = plan.transactionVersion;
+      assertBuildableInputs(instructions, options, version);
 
       const inspectionOptions = options as KitTransactionInspectionOptions | undefined;
       const commitment = inspectionOptions?.commitment ?? fallbackCommitment;
       const minContextSlot = inspectionOptions?.minContextSlot;
       const resolved = resolveTransport(config.transport, rpc, rpcSubscriptions, context);
-      const latestBlockhash = resolved.kind === 'arete'
-        ? await resolved.transport.getLatestBlockhash({ commitment, minContextSlot })
-        : (await resolved.rpc.getLatestBlockhash({ commitment, minContextSlot }).send()).value;
-      const message = pipe(
-        createTransactionMessage({ version: 0 }),
-        (m) => setTransactionMessageFeePayer(
-          address(inspectionOptions?.feePayer ?? signer.address),
-          m
-        ),
-        (m) => setTransactionMessageLifetimeUsingBlockhash(
-          latestBlockhash as Parameters<typeof setTransactionMessageLifetimeUsingBlockhash>[0],
-          m
-        ),
-        (m) => appendTransactionMessageInstructions(instructions.map(toKitInstruction), m)
-      );
+      const latestBlockhash = await fetchLatestBlockhash(resolved, commitment, minContextSlot);
+
+      // Inspection is where you discover the budgets to pin, so an omitted
+      // V1 ceiling becomes the protocol maximum rather than the SIMD-0385
+      // minimum: that provisional message is what the reported metrics
+      // describe. Nothing here touches a signer — the fee payer is a bare
+      // address and the compiled transaction carries placeholder signatures.
+      const resources = version === 1 ? provisionalV1Resources(plan.resources) : plan.resources;
+      const message = planMessage({
+        version,
+        resources,
+        instructions,
+        latestBlockhash,
+        feePayer: createNoopSigner(address(inspectionOptions?.feePayer ?? signer.address)),
+      });
       const unsignedTransaction = compileTransaction(message);
       const wireTransaction = getBase64EncodedWireTransaction(unsignedTransaction);
       const encodedMessage = getBase64Decoder().decode(
         unsignedTransaction.messageBytes
       ) as TransactionMessageBytesBase64;
-      if (resolved.kind === 'arete') {
-        const [fee, simulation] = await Promise.all([
-          resolved.transport.getFeeForMessage(encodedMessage, { commitment, minContextSlot }),
-          resolved.transport.simulateTransaction(wireTransaction, { commitment, minContextSlot }),
-        ]);
-        return {
-          feeLamports: fee.feeLamports === null ? undefined : toNumber(fee.feeLamports),
-          logs: simulation.logs ?? undefined,
-          computeUnitsConsumed: simulation.unitsConsumed === undefined
-            ? undefined : toNumber(simulation.unitsConsumed),
-          contextSlot: toNumber(simulation.contextSlot),
-          error: simulation.err ?? undefined,
-          loadedAccountsDataSize: simulation.loadedAccountsDataSize === undefined
-            ? undefined : toNumber(simulation.loadedAccountsDataSize),
-          feeContextSlot: toNumber(fee.contextSlot),
-        };
-      }
 
       const [fee, simulation] = await Promise.all([
-        resolved.rpc.getFeeForMessage(encodedMessage, { commitment, minContextSlot }).send(),
-        resolved.rpc.simulateTransaction(wireTransaction, {
-          commitment,
-          encoding: 'base64',
-          minContextSlot,
-          sigVerify: false,
-        }).send(),
+        estimateFee(resolved, encodedMessage, commitment, minContextSlot),
+        simulateUnsigned(resolved, wireTransaction, commitment, minContextSlot),
       ]);
-      // The RPC reports the loaded-accounts budget that @solana/kit 2.3 does
-      // not yet type. It is optional upstream and comes back as null when the
-      // node did not measure it — `Number(null)` would invent a measured zero
-      // and destroy the missing-versus-zero distinction budget estimation
-      // depends on.
-      const { loadedAccountsDataSize: directLoadedAccountsDataSize } = simulation.value as {
-        loadedAccountsDataSize?: number | bigint | null;
-      };
-
       return {
-        feeLamports: fee.value === null ? undefined : toNumber(fee.value),
-        logs: simulation.value.logs ?? undefined,
-        computeUnitsConsumed: simulation.value.unitsConsumed == null
+        feeLamports: fee.feeLamports === undefined ? undefined : toNumber(fee.feeLamports),
+        logs: simulation.logs === undefined ? undefined : [...simulation.logs],
+        computeUnitsConsumed: simulation.unitsConsumed === undefined
           ? undefined
-          : toNumber(simulation.value.unitsConsumed),
-        contextSlot: toNumber(simulation.context.slot),
-        error: simulation.value.err ?? undefined,
-        loadedAccountsDataSize: directLoadedAccountsDataSize == null
-          ? undefined : Number(directLoadedAccountsDataSize),
-        feeContextSlot: toNumber(fee.context.slot),
+          : toNumber(simulation.unitsConsumed),
+        contextSlot: toNumber(simulation.contextSlot),
+        error: simulation.err ?? undefined,
+        loadedAccountsDataSize: simulation.loadedAccountsDataSize === undefined
+          ? undefined
+          : toNumber(simulation.loadedAccountsDataSize),
+        feeContextSlot: toNumber(fee.contextSlot),
+        transactionVersion: version,
+        resources: toWireResourceOptions(resources),
       };
     },
   };
 }
+
+export {
+  SOLANA_SIGN_AND_SEND_TRANSACTION,
+  SOLANA_SIGN_TRANSACTION,
+  WalletStandardSignerError,
+  createWalletStandardSigner,
+  type WalletStandardAccount,
+  type WalletStandardSignTransactionFeature,
+  type WalletStandardSignTransactionInput,
+  type WalletStandardSignTransactionOutput,
+  type WalletStandardSignerConfig,
+  type WalletStandardSignerErrorCode,
+  type WalletStandardTransactionVersion,
+  type WalletStandardWallet,
+} from './wallet-standard';
