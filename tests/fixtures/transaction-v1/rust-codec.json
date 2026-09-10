@@ -1,0 +1,154 @@
+{
+  "$comment": "Rust-side decode expectations for the payloads in transactions.json. Written from the inputs in generate.mjs (deterministic seeds, the all-zero lifetime blockhash, the memo instruction data) and independently cross-checked against a from-scratch byte walk of the payloads - not produced by any Rust decoder, so a Rust codec that disagrees with @solana/kit 8.2.0 fails instead of agreeing with itself.",
+  "consumedBy": "rust/arete-a4-sdk/tests/solana_adapter.rs",
+  "codec": {
+    "message": "solana-message 4.6.0",
+    "transaction": "solana-transaction 4.3.0",
+    "serialization": "wincode 0.6"
+  },
+  "keys": {
+    "payer": {
+      "address": "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+      "seedByte": 1
+    },
+    "cosigner": {
+      "address": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+      "seedByte": 2
+    }
+  },
+  "memoProgram": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+  "lifetimeSpecifier": "11111111111111111111111111111111",
+  "wireLimits": {
+    "legacyOrV0": 1232,
+    "v1": 4096
+  },
+  "fixtures": {
+    "legacy": {
+      "version": "legacy",
+      "wireBytes": 172,
+      "signatureCount": 1,
+      "header": {
+        "numRequiredSignatures": 1,
+        "numReadonlySignedAccounts": 0,
+        "numReadonlyUnsignedAccounts": 1
+      },
+      "accountKeys": [
+        "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+        "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+      ],
+      "instructions": [
+        {
+          "programIdIndex": 1,
+          "accounts": [],
+          "dataBase64": "AQID"
+        }
+      ]
+    },
+    "v0": {
+      "version": 0,
+      "wireBytes": 174,
+      "signatureCount": 1,
+      "header": {
+        "numRequiredSignatures": 1,
+        "numReadonlySignedAccounts": 0,
+        "numReadonlyUnsignedAccounts": 1
+      },
+      "accountKeys": [
+        "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+        "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+      ],
+      "instructions": [
+        {
+          "programIdIndex": 1,
+          "accounts": [],
+          "dataBase64": "AQID"
+        }
+      ]
+    },
+    "v1": {
+      "version": 1,
+      "wireBytes": 177,
+      "signatureCount": 1,
+      "header": {
+        "numRequiredSignatures": 1,
+        "numReadonlySignedAccounts": 0,
+        "numReadonlyUnsignedAccounts": 1
+      },
+      "accountKeys": [
+        "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+        "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+      ],
+      "instructions": [
+        {
+          "programIdIndex": 1,
+          "accounts": [],
+          "dataBase64": "AQID"
+        }
+      ],
+      "config": {
+        "priorityFee": null,
+        "computeUnitLimit": null,
+        "loadedAccountsDataSizeLimit": null,
+        "heapSize": null
+      }
+    },
+    "v1_oversize": {
+      "version": 1,
+      "wireBytes": 1574,
+      "signatureCount": 1,
+      "header": {
+        "numRequiredSignatures": 1,
+        "numReadonlySignedAccounts": 0,
+        "numReadonlyUnsignedAccounts": 1
+      },
+      "accountKeys": [
+        "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+        "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+      ],
+      "instructions": [
+        {
+          "programIdIndex": 1,
+          "accounts": [],
+          "dataBase64": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+        }
+      ],
+      "config": {
+        "priorityFee": null,
+        "computeUnitLimit": null,
+        "loadedAccountsDataSizeLimit": null,
+        "heapSize": null
+      }
+    },
+    "v1_two_signatures": {
+      "version": 1,
+      "wireBytes": 273,
+      "signatureCount": 2,
+      "header": {
+        "numRequiredSignatures": 2,
+        "numReadonlySignedAccounts": 0,
+        "numReadonlyUnsignedAccounts": 1
+      },
+      "accountKeys": [
+        "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+        "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+      ],
+      "instructions": [
+        {
+          "programIdIndex": 2,
+          "accounts": [
+            0,
+            1
+          ],
+          "dataBase64": "CQ=="
+        }
+      ],
+      "config": {
+        "priorityFee": null,
+        "computeUnitLimit": null,
+        "loadedAccountsDataSizeLimit": null,
+        "heapSize": null
+      }
+    }
+  }
+}
