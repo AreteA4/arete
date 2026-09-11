@@ -166,3 +166,8 @@ examples/pumpfun-server/
 .claude
 # Agent dirs
 .claude
+
+# Example content manifests are committed; generation provenance is a CI artifact.
+/examples/ore-react/src/generated/sdk-provenance.json
+/examples/ore-typescript/src/generated/sdk-provenance.json
+/examples/ore-rust/src/generated/ore/sdk-provenance.json

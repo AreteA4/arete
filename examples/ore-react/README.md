@@ -146,7 +146,7 @@ Regenerate every ORE example SDK from the repository root:
 bash scripts/generate-example-sdks.sh
 ```
 
-The script first builds the standalone ORE crate against this checkout's local Arete source, then generates React, TypeScript, and Rust outputs. `sdk-provenance.json` records the canonical stack AST hash, generator hash, extension hash, and artifact list. Generation is deterministic and CI runs it twice before accepting the committed output.
+The script first builds the standalone ORE crate against this checkout's local Arete source, then generates React, TypeScript, and Rust outputs. `sdk-manifest.json` records the canonical input, extension identities, artifact inventory, and generated content hash. It is committed alongside the generated code. `sdk-provenance.json` records compiler provenance separately and is uploaded by CI. Generation is deterministic and CI runs it twice before accepting the committed output.
 
 After deploying ORE, compare the public deployment's AST and extension provenance without credentials:
 

@@ -396,7 +396,8 @@ directory can contain:
 - `<stack>-core.ts`: generated entities, schemas, views, and program modules
 - `<stack>.ts`: public entry point and extension wiring
 - extension artifacts copied from the stack's extension source
-- `sdk-provenance.json`: canonical input, generator, extension, and artifact hashes
+- `sdk-manifest.json`: stable input, extension identities, artifact inventory, and generated content hash
+- `sdk-provenance.json`: compiler provenance linked to the generated content
 
 Regenerate after changing a stack, IDL, extension, or generator. For this monorepo's ORE examples:
 

@@ -1,0 +1,11 @@
+{
+  "projection": {
+    "schema": "arete.sdk-definition/v2",
+    "inputKind": "program-spec",
+    "inputHash": "arete:h1:program-spec:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "target": "typescript",
+    "runtimeContract": "@usearete/sdk/program-definition-v1",
+    "outputTreeHash": "arete:h1:sdk-output-tree:sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "expectedHash": "arete:h1:sdk-definition:sha256:994897d94b3ad876800a6a61a559d4a67e038bc7ce07b6f9125f2636f3336bb5"
+}

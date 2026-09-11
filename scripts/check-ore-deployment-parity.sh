@@ -7,7 +7,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STACK_ID="${ARETE_ORE_STACK_ID:-ore}"
 API_URL="${ARETE_API_URL:-https://api.arete.run}"
 LOCAL_MANIFEST="${ARETE_ORE_MANIFEST_PATH:-$ROOT_DIR/stacks/ore/.arete/OreStream.stack-manifest.json}"
-LOCAL_PROVENANCE="${ARETE_ORE_PROVENANCE_PATH:-$ROOT_DIR/examples/ore-react/src/generated/sdk-provenance.json}"
+LOCAL_PROVENANCE="${ARETE_ORE_PROVENANCE_PATH:-$ROOT_DIR/examples/ore-react/src/generated/sdk-manifest.json}"
 
 for command in curl jq; do
     if ! command -v "$command" >/dev/null 2>&1; then
@@ -53,7 +53,7 @@ if [[ -f "$LOCAL_PROVENANCE" ]]; then
         exit 1
     fi
 
-    local_extensions_hash="$(jq -r '.extensions.sha256 // ""' "$LOCAL_PROVENANCE")"
+    local_extensions_hash="$(jq -r '.extensions.contentSha256 // .extensions.sha256 // ""' "$LOCAL_PROVENANCE")"
     remote_extensions_hash="$(jq -r '.dependencies[0].sdkExtensions[]? | select(.target == "typescript") | .contentHash' "$remote_json")"
     if [[ -n "$remote_extensions_hash" ]]; then
         if [[ "$local_extensions_hash" != "$remote_extensions_hash" ]]; then

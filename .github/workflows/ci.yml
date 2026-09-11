@@ -224,6 +224,16 @@ jobs:
             exit 1
           fi
 
+      - name: Record SDK generation provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: example-sdk-provenance
+          if-no-files-found: error
+          path: |
+            examples/ore-react/src/generated/sdk-provenance.json
+            examples/ore-typescript/src/generated/sdk-provenance.json
+            examples/ore-rust/src/generated/ore/sdk-provenance.json
+
       - name: Build local TypeScript SDK
         working-directory: typescript/core
         run: npm ci && npm run build
