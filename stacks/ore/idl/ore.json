@@ -590,6 +590,100 @@
       ]
     },
     {
+      "name": "buyback",
+      "discriminant": {
+        "type": "u8",
+        "value": 13
+      },
+      "docs": [
+        "Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.",
+        "The 15 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator."
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "isMut": true,
+          "isSigner": true,
+          "address": "HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T"
+        },
+        {
+          "name": "board",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "config",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "manager",
+          "isMut": true,
+          "isSigner": false,
+          "address": "DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee"
+        },
+        {
+          "name": "managerSol",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "mint",
+          "isMut": true,
+          "isSigner": false,
+          "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
+        },
+        {
+          "name": "treasury",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "treasuryOre",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "treasurySol",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "stakeTreasury",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "stakeTreasuryOre",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "stakeVesting",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false,
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "oreProgram",
+          "isMut": false,
+          "isSigner": false,
+          "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
+        },
+        {
+          "name": "oreStakeProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "wrap",
       "discriminant": {
         "type": "u8",
@@ -788,6 +882,20 @@
           {
             "name": "reload",
             "type": "u64"
+          },
+          {
+            "name": "total_sol_spent",
+            "type": "u64"
+          },
+          {
+            "name": "total_ore_earned",
+            "type": "u64"
+          },
+          {
+            "name": "conditions",
+            "type": {
+              "defined": "AutomationConditions"
+            }
           }
         ]
       }
