@@ -61,6 +61,10 @@
         {
           "name": "strategy",
           "type": "u8"
+        },
+        {
+          "name": "reload",
+          "type": "u64"
         }
       ]
     },
