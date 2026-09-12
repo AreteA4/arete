@@ -1,6 +1,5 @@
 {
-  "version": "3.8.15",
-  "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv",
+  "version": "4.0.0",
   "name": "ore",
   "instructions": [
     {
@@ -12,8 +11,7 @@
       "docs": [
         "Configures or closes a miner automation account.",
         "Automation PDA seeds: [\"automation\", signer].",
-        "Miner PDA seeds: [\"miner\", signer].",
-        "The declared args are the legacy `Automate` layout (41 bytes after the tag). The program first tries `AutomateV2::try_from_bytes` and falls back to `Automate`, so payloads may carry an optional 24-byte `conditions` (AutomationConditions) tail at offset 42. That tail is intentionally left unmodelled in the baseline and reported as trailing bytes; model it in the augmented spec."
+        "Miner PDA seeds: [\"miner\", signer]."
       ],
       "accounts": [
         {
@@ -63,10 +61,6 @@
         {
           "name": "strategy",
           "type": "u8"
-        },
-        {
-          "name": "reload",
-          "type": "u64"
         }
       ]
     },
@@ -172,10 +166,7 @@
         "value": 4
       },
       "docs": [
-        "Claims ORE token rewards from the treasury vault.",
-        "The baseline payload is tag-only: upstream `ClaimORE` args are parsed with `if let Ok(args) = ClaimORE::try_from_bytes(data)` and default to DENOMINATOR_BPS (10000) when absent, so the program accepts both a 1-byte payload and a 9-byte payload.",
-        "Optional trailing arg (not modelled in the baseline): `bps: u64` little-endian at offset 1, a discretionary claim percentage in basis points; when omitted the program claims 100% (10000 bps).",
-        "Both shapes are live on mainnet, so the optional bps tail belongs in the augmented spec; declaring it here would hard-fail the tag-only variant."
+        "Claims ORE token rewards from the treasury vault."
       ],
       "accounts": [
         {
@@ -513,104 +504,10 @@
       "args": []
     },
     {
-      "name": "buyback",
-      "discriminant": {
-        "type": "u8",
-        "value": 13
-      },
-      "docs": [
-        "Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.",
-        "The 15 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator."
-      ],
-      "accounts": [
-        {
-          "name": "signer",
-          "isMut": true,
-          "isSigner": true,
-          "address": "HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T"
-        },
-        {
-          "name": "board",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "config",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "manager",
-          "isMut": true,
-          "isSigner": false,
-          "address": "DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee"
-        },
-        {
-          "name": "managerSol",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "mint",
-          "isMut": true,
-          "isSigner": false,
-          "address": "oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp"
-        },
-        {
-          "name": "treasury",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "treasuryOre",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "treasurySol",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "stakeTreasury",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "stakeTreasuryOre",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "stakeVesting",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "tokenProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "oreProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
-        },
-        {
-          "name": "oreStakeProgram",
-          "isMut": false,
-          "isSigner": false
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "bury",
       "discriminant": {
         "type": "u8",
-        "value": 24
+        "value": 13
       },
       "docs": [
         "Burns ORE and distributes yield to stakers.",
@@ -772,7 +669,7 @@
       "name": "newVar",
       "discriminant": {
         "type": "u8",
-        "value": 19
+        "value": 17
       },
       "docs": [
         "Creates a new entropy var account through the entropy program."
@@ -835,40 +732,6 @@
           "type": "u64"
         }
       ]
-    },
-    {
-      "name": "reloadSol",
-      "discriminant": {
-        "type": "u8",
-        "value": 21
-      },
-      "docs": [
-        "Deprecated since 3.8.15; this behavior is now included in checkpoint."
-      ],
-      "accounts": [
-        {
-          "name": "signer",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "automation",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "miner",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "systemProgram",
-          "isMut": false,
-          "isSigner": false,
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
     }
   ],
   "accounts": [
@@ -921,20 +784,6 @@
           {
             "name": "reload",
             "type": "u64"
-          },
-          {
-            "name": "total_sol_spent",
-            "type": "u64"
-          },
-          {
-            "name": "total_ore_earned",
-            "type": "u64"
-          },
-          {
-            "name": "conditions",
-            "type": {
-              "defined": "AutomationConditions"
-            }
           }
         ]
       }
@@ -1199,7 +1048,7 @@
             "type": "u64"
           },
           {
-            "name": "total_winnings",
+            "name": "total_returned_sol",
             "type": "u64"
           },
           {
@@ -1254,29 +1103,6 @@
     }
   ],
   "types": [
-    {
-      "name": "AutomationConditions",
-      "docs": [
-        "Conditions that gate whether an automation deploys in a round."
-      ],
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "max_production_cost",
-            "type": "u64"
-          },
-          {
-            "name": "min_motherlode",
-            "type": "u64"
-          },
-          {
-            "name": "max_motherlode",
-            "type": "u64"
-          }
-        ]
-      }
-    },
     {
       "name": "AdminConfig",
       "docs": [
@@ -1355,6 +1181,29 @@
                 16
               ]
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "AutomationConditions",
+      "docs": [
+        "Conditions that gate whether an automation deploys in a round."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "max_production_cost",
+            "type": "u64"
+          },
+          {
+            "name": "min_motherlode",
+            "type": "u64"
+          },
+          {
+            "name": "max_motherlode",
+            "type": "u64"
           }
         ]
       }
@@ -1621,7 +1470,7 @@
           "index": false
         },
         {
-          "name": "total_winnings",
+          "name": "total_returned_sol",
           "type": "u64",
           "index": false
         },
@@ -1851,5 +1700,6 @@
     "version": "3.8.15",
     "spec": "0.1.0",
     "origin": "steel"
-  }
+  },
+  "address": "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"
 }

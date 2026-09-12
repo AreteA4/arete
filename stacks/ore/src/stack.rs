@@ -92,7 +92,10 @@ pub mod ore_stream {
               transform = ui_amount(9))]
         pub total_vaulted: Option<f64>,
 
-        #[map(ore_sdk::accounts::Round::total_winnings, strategy = LastWrite,
+        // The ORE program renamed this field to `total_returned_sol` (same
+        // position, same u64). The output field keeps its original name so the
+        // client surface and `extensions/ore-devex.ts` stay unchanged.
+        #[map(ore_sdk::accounts::Round::total_returned_sol, strategy = LastWrite,
               transform = ui_amount(9))]
         pub total_winnings: Option<f64>,
 
