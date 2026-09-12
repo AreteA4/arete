@@ -81,10 +81,30 @@ impl RotationKey {
 /// let verifier = MultiKeyVerifier::new(vec![old_key, new_key], "issuer", "audience")
 ///     .with_cleanup_interval(Duration::from_secs(3600));
 /// ```
+/// Build the per-key verifier used for one rotation candidate, carrying the
+/// accepted-audience set and origin policy through unchanged.
+fn build_inner_verifier(
+    key: crate::keys::VerifyingKey,
+    issuer: &str,
+    audiences: &crate::AudienceSet,
+    require_origin: bool,
+) -> TokenVerifier {
+    let verifier = match audiences.as_single() {
+        Some(single) => TokenVerifier::new(key, issuer, single),
+        None => TokenVerifier::with_audiences(key, issuer, audiences.iter())
+            .expect("an AudienceSet is never empty"),
+    };
+    if require_origin {
+        verifier.with_origin_validation()
+    } else {
+        verifier
+    }
+}
+
 pub struct MultiKeyVerifier {
     keys: Arc<RwLock<HashMap<String, RotationKey>>>,
     issuer: String,
-    audience: String,
+    audiences: crate::AudienceSet,
     require_origin: bool,
     cleanup_interval: Duration,
     last_cleanup: Arc<RwLock<Instant>>,
@@ -103,7 +123,7 @@ impl MultiKeyVerifier {
         Self {
             keys: Arc::new(RwLock::new(key_map)),
             issuer: issuer.into(),
-            audience: audience.into(),
+            audiences: crate::AudienceSet::single(audience),
             require_origin: false,
             cleanup_interval: Duration::from_secs(3600), // 1 hour default
             last_cleanup: Arc::new(RwLock::new(Instant::now())),
@@ -225,20 +245,12 @@ impl MultiKeyVerifier {
                 continue;
             }
 
-            let verifier = if self.require_origin {
-                TokenVerifier::new(
-                    key_entry.key.clone(),
-                    self.issuer.clone(),
-                    self.audience.clone(),
-                )
-                .with_origin_validation()
-            } else {
-                TokenVerifier::new(
-                    key_entry.key.clone(),
-                    self.issuer.clone(),
-                    self.audience.clone(),
-                )
-            };
+            let verifier = build_inner_verifier(
+                key_entry.key.clone(),
+                &self.issuer,
+                &self.audiences,
+                self.require_origin,
+            );
 
             match verifier.verify(token, expected_origin, expected_client_ip) {
                 Ok(ctx) => {
@@ -284,20 +296,12 @@ impl MultiKeyVerifier {
                 continue;
             }
 
-            let verifier = if self.require_origin {
-                TokenVerifier::new(
-                    key_entry.key.clone(),
-                    self.issuer.clone(),
-                    self.audience.clone(),
-                )
-                .with_origin_validation()
-            } else {
-                TokenVerifier::new(
-                    key_entry.key.clone(),
-                    self.issuer.clone(),
-                    self.audience.clone(),
-                )
-            };
+            let verifier = build_inner_verifier(
+                key_entry.key.clone(),
+                &self.issuer,
+                &self.audiences,
+                self.require_origin,
+            );
 
             match verifier.verify(token, expected_origin, expected_client_ip) {
                 Ok(ctx) => return Ok(ctx),

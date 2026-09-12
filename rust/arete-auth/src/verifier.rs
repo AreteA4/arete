@@ -22,7 +22,7 @@ pub struct AsyncVerifier {
     /// Issuer for JWKS-based verification
     issuer: String,
     /// Audience for JWKS-based verification
-    audience: String,
+    audiences: crate::AudienceSet,
     require_origin: bool,
 }
 
@@ -50,7 +50,7 @@ impl AsyncVerifier {
             cache_duration: Duration::from_secs(3600), // 1 hour default
             cached_jwks: Arc::new(RwLock::new(None)),
             issuer: issuer_str,
-            audience: audience_str,
+            audiences: crate::AudienceSet::single(audience_str),
             require_origin: false,
         }
     }
@@ -73,7 +73,7 @@ impl AsyncVerifier {
             cache_duration: Duration::from_secs(3600),
             cached_jwks: Arc::new(RwLock::new(None)),
             issuer: issuer_str,
-            audience: audience_str,
+            audiences: crate::AudienceSet::single(audience_str),
             require_origin: false,
         }
     }
@@ -95,7 +95,7 @@ impl AsyncVerifier {
             )),
             jwks_url: Some(url.into()),
             issuer: issuer_str,
-            audience: audience_str,
+            audiences: crate::AudienceSet::single(audience_str),
             cache_duration: Duration::from_secs(3600),
             cached_jwks: Arc::new(RwLock::new(None)),
             require_origin: false,
@@ -167,10 +167,12 @@ impl AsyncVerifier {
                 .map_err(|e| VerifyError::InvalidFormat(format!("Failed to fetch JWKS: {}", e)))?;
 
             // Create new verifier with fetched JWKS
+            let verifier =
+                JwksVerifier::with_audience_set(jwks, &self.issuer, self.audiences.clone());
             let verifier = if self.require_origin {
-                JwksVerifier::new(jwks, &self.issuer, &self.audience).with_origin_validation()
+                verifier.with_origin_validation()
             } else {
-                JwksVerifier::new(jwks, &self.issuer, &self.audience)
+                verifier
             };
 
             // Update cache
