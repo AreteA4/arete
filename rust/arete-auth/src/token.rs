@@ -114,7 +114,7 @@ impl From<base64::DecodeError> for TokenError {
 pub struct TokenVerifier {
     verifying_key: VerifyingKey,
     issuer: String,
-    audience: String,
+    audiences: crate::AudienceSet,
     require_origin: bool,
     require_client_ip: bool,
 }
@@ -132,10 +132,35 @@ impl TokenVerifier {
         Self {
             verifying_key,
             issuer: issuer.into(),
-            audience: audience.into(),
+            audiences: crate::AudienceSet::single(audience),
             require_origin: false,
             require_client_ip: false,
         }
+    }
+
+    /// Create a verifier that accepts any audience in `audiences`.
+    ///
+    /// The matched audience reaches callers as
+    /// [`crate::claims::AuthContext::audience`], so a verifier serving several
+    /// audiences can tell which one a token was minted for. Returns an error
+    /// rather than defaulting to something permissive when the set is empty or
+    /// blank.
+    pub fn with_audiences<I, S>(
+        verifying_key: VerifyingKey,
+        issuer: impl Into<String>,
+        audiences: I,
+    ) -> Result<Self, crate::AudienceSetError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Ok(Self {
+            verifying_key,
+            issuer: issuer.into(),
+            audiences: crate::AudienceSet::new(audiences)?,
+            require_origin: false,
+            require_client_ip: false,
+        })
     }
 
     /// Require origin validation
@@ -215,8 +240,9 @@ impl TokenVerifier {
             return Err(VerifyError::InvalidIssuer);
         }
 
-        // Check audience
-        if claims.aud != self.audience {
+        // Check audience. Exact membership: a loose comparison would accept a
+        // token minted for a different audience.
+        if !self.audiences.accepts(&claims.aud) {
             return Err(VerifyError::InvalidAudience);
         }
 
@@ -296,9 +322,25 @@ impl TokenVerifier {
         &self.issuer
     }
 
-    /// Get the expected audience
+    /// The accepted audiences.
+    pub fn audiences(&self) -> &crate::AudienceSet {
+        &self.audiences
+    }
+
+    /// The sole accepted audience.
+    ///
+    /// Retained for source compatibility: every verifier built through
+    /// [`Self::new`] has exactly one audience, so this keeps returning what it
+    /// always did. A verifier built with [`Self::with_audiences`] has no single
+    /// audience — this then returns the first in sorted order, which is why it
+    /// is deprecated in favour of [`Self::audiences`]. That path is
+    /// unreachable for code written before multi-audience verifiers existed.
+    #[deprecated(
+        since = "0.5.0",
+        note = "use `audiences()`; a verifier may accept more than one audience"
+    )]
     pub fn audience(&self) -> &str {
-        &self.audience
+        self.audiences.iter().next().unwrap_or_default()
     }
 }
 
@@ -322,17 +364,31 @@ pub struct Jwk {
 pub struct JwksVerifier {
     jwks: Jwks,
     issuer: String,
-    audience: String,
+    audiences: crate::AudienceSet,
     require_origin: bool,
 }
 
 impl JwksVerifier {
+    /// Create a JWKS verifier over an existing accepted-audience set.
+    pub(crate) fn with_audience_set(
+        jwks: Jwks,
+        issuer: impl Into<String>,
+        audiences: crate::AudienceSet,
+    ) -> Self {
+        Self {
+            jwks,
+            issuer: issuer.into(),
+            audiences,
+            require_origin: false,
+        }
+    }
+
     /// Create a new JWKS verifier
     pub fn new(jwks: Jwks, issuer: impl Into<String>, audience: impl Into<String>) -> Self {
         Self {
             jwks,
             issuer: issuer.into(),
-            audience: audience.into(),
+            audiences: crate::AudienceSet::single(audience),
             require_origin: false,
         }
     }
@@ -389,10 +445,12 @@ impl JwksVerifier {
         let verifying_key = VerifyingKey::from_bytes(&public_key)
             .map_err(|e| VerifyError::InvalidFormat(e.to_string()))?;
 
-        let verifier = if self.require_origin {
-            TokenVerifier::new(verifying_key, &self.issuer, &self.audience).with_origin_validation()
-        } else {
-            TokenVerifier::new(verifying_key, &self.issuer, &self.audience)
+        let verifier = TokenVerifier {
+            verifying_key,
+            issuer: self.issuer.clone(),
+            audiences: self.audiences.clone(),
+            require_origin: self.require_origin,
+            require_client_ip: false,
         };
 
         verifier.verify(token, expected_origin, expected_client_ip)
@@ -660,6 +718,62 @@ mod tests {
         // Should fail with invalid issuer
         let result = verifier.verify(&token, None, None);
         assert!(matches!(result, Err(VerifyError::InvalidIssuer)));
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn the_single_audience_accessor_still_answers_for_scalar_verifiers() {
+        // Source compatibility: this is what every pre-existing caller uses.
+        let verifying_key = crate::keys::SigningKey::generate().verifying_key();
+        let verifier = TokenVerifier::new(verifying_key, "test-issuer", "deployment-31");
+        assert_eq!(verifier.audience(), "deployment-31");
+        assert_eq!(verifier.audiences().as_single(), Some("deployment-31"));
+    }
+
+    /// One verifier serving several audiences accepts each of them, and the
+    /// *matched* audience tells the caller which one a token was minted for.
+    #[test]
+    fn a_multi_audience_verifier_accepts_each_and_reports_which_matched() {
+        let signing_key = crate::keys::SigningKey::generate();
+        let verifying_key = signing_key.verifying_key();
+        let signer = TokenSigner::new(signing_key, "test-issuer");
+
+        let verifier = TokenVerifier::with_audiences(
+            verifying_key,
+            "test-issuer",
+            ["deployment-31", "deployment-32"],
+        )
+        .expect("non-empty audience set");
+
+        for audience in ["deployment-31", "deployment-32"] {
+            let claims = SessionClaims::builder("test-issuer", "test-subject", audience)
+                .with_ttl(300)
+                .with_scope("read")
+                .with_metering_key("meter-123")
+                .with_key_class(KeyClass::Publishable)
+                .build();
+            let token = signer.sign(claims).unwrap();
+
+            let ctx = verifier
+                .verify(&token, None, None)
+                .unwrap_or_else(|error| panic!("{audience} should verify: {error:?}"));
+            // The caller learns which audience matched.
+            assert_eq!(ctx.audience, audience);
+        }
+
+        // An audience outside the set is still rejected, which is what stops a
+        // validly signed token being accepted where it does not belong.
+        let claims = SessionClaims::builder("test-issuer", "test-subject", "deployment-99")
+            .with_ttl(300)
+            .with_scope("read")
+            .with_metering_key("meter-123")
+            .with_key_class(KeyClass::Publishable)
+            .build();
+        let token = signer.sign(claims).unwrap();
+        assert!(matches!(
+            verifier.verify(&token, None, None),
+            Err(VerifyError::InvalidAudience)
+        ));
     }
 
     #[test]

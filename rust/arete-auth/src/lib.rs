@@ -3,6 +3,7 @@
 //! This crate provides authentication and authorization utilities for Arete,
 //! including JWT token handling, claims validation, and key management.
 
+pub mod audience;
 pub mod audit;
 pub mod claims;
 pub mod error;
@@ -15,6 +16,7 @@ pub mod solana_gateway;
 pub mod token;
 pub mod verifier;
 
+pub use audience::{AudienceSet, AudienceSetError};
 pub use audit::{
     auth_failure_event, auth_success_event, rate_limit_event, AuditEvent, AuditSeverity,
     ChannelAuditLogger, NoOpAuditLogger, SecurityAuditEvent, SecurityAuditLogger,
