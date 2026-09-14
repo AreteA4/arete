@@ -17,10 +17,10 @@ pub mod ore {
     pub const PROGRAM_ID: &str = "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv";
 
     /// Content hash of the exact program specification captured at generation time.
-    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:15f2e0292df1188828dc09afa2b8d4d1475411bf8c91815c19ae2d176647c140";
+    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72";
 
     /// Release identity addressing hosted account reads for this program.
-    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:714754ca64a398f5b1614503d393d3179dd95ff072ac68ea6bf5342a9cf3cf7a";
+    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:4742d9f7be960b2c35571cdaae6fb5de9874836037e13c9f13697800c18d39b5";
 
     /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
@@ -55,7 +55,6 @@ pub mod ore {
     /// Configures or closes a miner automation account.
     /// Automation PDA seeds: ["automation", signer].
     /// Miner PDA seeds: ["miner", signer].
-    /// The declared args are the legacy `Automate` layout (41 bytes after the tag). The program first tries `AutomateV2::try_from_bytes` and falls back to `Automate`, so payloads may carry an optional 24-byte `conditions` (AutomationConditions) tail at offset 42. That tail is intentionally left unmodelled in the baseline and reported as trailing bytes; model it in the augmented spec.
     ///
     /// Codegen notes:
     /// - account `automation` degraded to user-provided (PDA 'automation': seed references account 'authority' not present in this instruction)
@@ -312,9 +311,6 @@ pub mod ore {
     }
 
     /// Claims ORE token rewards from the treasury vault.
-    /// The baseline payload is tag-only: upstream `ClaimORE` args are parsed with `if let Ok(args) = ClaimORE::try_from_bytes(data)` and default to DENOMINATOR_BPS (10000) when absent, so the program accepts both a 1-byte payload and a 9-byte payload.
-    /// Optional trailing arg (not modelled in the baseline): `bps: u64` little-endian at offset 1, a discretionary claim percentage in basis points; when omitted the program claims 100% (10000 bps).
-    /// Both shapes are live on mainnet, so the optional bps tail belongs in the augmented spec; declaring it here would hard-fail the tag-only variant.
     ///
     /// Codegen notes:
     /// - account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
@@ -863,163 +859,6 @@ pub mod ore {
         }
     }
 
-    /// Typed params for `buyback`: instruction args plus overridable accounts.
-    #[derive(Debug, Clone, Serialize, Default)]
-    pub struct BuybackParams {
-        /// Address of the `managerSol` account.
-        #[serde(rename = "managerSol")]
-        pub manager_sol: String,
-        /// Address of the `treasuryOre` account.
-        #[serde(rename = "treasuryOre")]
-        pub treasury_ore: String,
-        /// Address of the `treasurySol` account.
-        #[serde(rename = "treasurySol")]
-        pub treasury_sol: String,
-        /// Address of the `stakeTreasury` account.
-        #[serde(rename = "stakeTreasury")]
-        pub stake_treasury: String,
-        /// Address of the `stakeTreasuryOre` account.
-        #[serde(rename = "stakeTreasuryOre")]
-        pub stake_treasury_ore: String,
-        /// Address of the `stakeVesting` account.
-        #[serde(rename = "stakeVesting")]
-        pub stake_vesting: String,
-        /// Address of the `oreStakeProgram` account.
-        #[serde(rename = "oreStakeProgram")]
-        pub ore_stake_program: String,
-    }
-
-    /// Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.
-    /// The 15 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
-    pub fn buyback(params: BuybackParams) -> Result<BuiltInstruction, InstructionError> {
-        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-            context: "params".to_string(),
-            message: error.to_string(),
-        })?;
-        buyback_handler().build(params)
-    }
-
-    /// Raw instruction handler for `buyback`.
-    pub fn buyback_handler() -> InstructionHandler {
-        InstructionHandler {
-            program_id: PROGRAM_ID.to_string(),
-            discriminator: vec![13],
-            accounts: vec![
-                AccountMeta {
-                    name: "signer".to_string(),
-                    is_signer: true,
-                    is_writable: true,
-                    resolution: AccountResolution::Known("HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T".to_string()),
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "board".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "config".to_string(),
-                    is_signer: false,
-                    is_writable: false,
-                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("config".to_string())] }),
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "manager".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::Known("DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee".to_string()),
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "managerSol".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::UserProvided,
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "mint".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::Known("oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp".to_string()),
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "treasury".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("treasury".to_string())] }),
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "treasuryOre".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::UserProvided,
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "treasurySol".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::UserProvided,
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "stakeTreasury".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::UserProvided,
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "stakeTreasuryOre".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::UserProvided,
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "stakeVesting".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::UserProvided,
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "tokenProgram".to_string(),
-                    is_signer: false,
-                    is_writable: false,
-                    resolution: AccountResolution::Known("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string()),
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "oreProgram".to_string(),
-                    is_signer: false,
-                    is_writable: false,
-                    resolution: AccountResolution::Known("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string()),
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "oreStakeProgram".to_string(),
-                    is_signer: false,
-                    is_writable: false,
-                    resolution: AccountResolution::UserProvided,
-                    is_optional: false,
-                },
-            ],
-            args: vec![],
-            errors: vec![
-                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
-                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
-                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
-            ],
-        }
-    }
-
     /// Typed params for `bury`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct BuryParams {
@@ -1150,6 +989,146 @@ pub mod ore {
             args: vec![
                 ArgSchema { name: "amount".to_string(), ty: ArgType::U64 },
             ],
+            errors: vec![
+                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
+                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
+                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
+            ],
+        }
+    }
+
+    /// Typed params for `buyback`: instruction args plus overridable accounts.
+    #[derive(Debug, Clone, Serialize, Default)]
+    pub struct BuybackParams {
+        /// Address of the `treasuryOre` account.
+        #[serde(rename = "treasuryOre")]
+        pub treasury_ore: String,
+        /// Address of the `treasurySol` account.
+        #[serde(rename = "treasurySol")]
+        pub treasury_sol: String,
+        /// Address of the `stakeTreasury` account.
+        #[serde(rename = "stakeTreasury")]
+        pub stake_treasury: String,
+        /// Address of the `stakeTreasuryOre` account.
+        #[serde(rename = "stakeTreasuryOre")]
+        pub stake_treasury_ore: String,
+        /// Address of the `stakeVesting` account.
+        #[serde(rename = "stakeVesting")]
+        pub stake_vesting: String,
+        /// Address of the `oreStakeProgram` account.
+        #[serde(rename = "oreStakeProgram")]
+        pub ore_stake_program: String,
+    }
+
+    /// Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.
+    /// The 13 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
+    pub fn buyback(params: BuybackParams) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        buyback_handler().build(params)
+    }
+
+    /// Raw instruction handler for `buyback`.
+    pub fn buyback_handler() -> InstructionHandler {
+        InstructionHandler {
+            program_id: PROGRAM_ID.to_string(),
+            discriminator: vec![13],
+            accounts: vec![
+                AccountMeta {
+                    name: "signer".to_string(),
+                    is_signer: true,
+                    is_writable: true,
+                    resolution: AccountResolution::Known("HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T".to_string()),
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "board".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("board".to_string())] }),
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "config".to_string(),
+                    is_signer: false,
+                    is_writable: false,
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("config".to_string())] }),
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "mint".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::Known("oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp".to_string()),
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "treasury".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::Pda(PdaConfig { program_id: None, seeds: vec![PdaSeed::Literal("treasury".to_string())] }),
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "treasuryOre".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::UserProvided,
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "treasurySol".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::UserProvided,
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "stakeTreasury".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::UserProvided,
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "stakeTreasuryOre".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::UserProvided,
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "stakeVesting".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::UserProvided,
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "tokenProgram".to_string(),
+                    is_signer: false,
+                    is_writable: false,
+                    resolution: AccountResolution::Known("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string()),
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "oreProgram".to_string(),
+                    is_signer: false,
+                    is_writable: false,
+                    resolution: AccountResolution::Known("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv".to_string()),
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "oreStakeProgram".to_string(),
+                    is_signer: false,
+                    is_writable: false,
+                    resolution: AccountResolution::UserProvided,
+                    is_optional: false,
+                },
+            ],
+            args: vec![],
             errors: vec![
                 ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
                 ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
@@ -1315,7 +1294,7 @@ pub mod ore {
     pub fn new_var_handler() -> InstructionHandler {
         InstructionHandler {
             program_id: PROGRAM_ID.to_string(),
-            discriminator: vec![19],
+            discriminator: vec![17],
             accounts: vec![
                 AccountMeta {
                     name: "signer".to_string(),
@@ -1372,77 +1351,6 @@ pub mod ore {
                 ArgSchema { name: "commit".to_string(), ty: ArgType::Array(Box::new(ArgType::U8), 32) },
                 ArgSchema { name: "samples".to_string(), ty: ArgType::U64 },
             ],
-            errors: vec![
-                ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
-                ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
-                ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
-            ],
-        }
-    }
-
-    /// Typed params for `reloadSol`: instruction args plus overridable accounts.
-    #[derive(Debug, Clone, Serialize, Default)]
-    pub struct ReloadSolParams {
-        /// Optional address override for the `signer` signer (defaults to the payer).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub signer: Option<String>,
-        /// Address of the `automation` account.
-        pub automation: String,
-        /// Address of the `miner` account.
-        pub miner: String,
-    }
-
-    /// Deprecated since 3.8.15; this behavior is now included in checkpoint.
-    ///
-    /// Codegen notes:
-    /// - account `automation` degraded to user-provided (PDA 'automation': seed references account 'authority' not present in this instruction)
-    /// - account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
-    pub fn reload_sol(params: ReloadSolParams) -> Result<BuiltInstruction, InstructionError> {
-        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
-            context: "params".to_string(),
-            message: error.to_string(),
-        })?;
-        reload_sol_handler().build(params)
-    }
-
-    /// Raw instruction handler for `reloadSol`.
-    pub fn reload_sol_handler() -> InstructionHandler {
-        InstructionHandler {
-            program_id: PROGRAM_ID.to_string(),
-            discriminator: vec![21],
-            accounts: vec![
-                AccountMeta {
-                    name: "signer".to_string(),
-                    is_signer: true,
-                    is_writable: true,
-                    resolution: AccountResolution::Signer,
-                    is_optional: false,
-                },
-                // [arete codegen] account `automation` degraded to user-provided (PDA 'automation': seed references account 'authority' not present in this instruction)
-                AccountMeta {
-                    name: "automation".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::UserProvided,
-                    is_optional: false,
-                },
-                // [arete codegen] account `miner` degraded to user-provided (PDA 'miner': seed references account 'authority' not present in this instruction)
-                AccountMeta {
-                    name: "miner".to_string(),
-                    is_signer: false,
-                    is_writable: true,
-                    resolution: AccountResolution::UserProvided,
-                    is_optional: false,
-                },
-                AccountMeta {
-                    name: "systemProgram".to_string(),
-                    is_signer: false,
-                    is_writable: false,
-                    resolution: AccountResolution::Known("11111111111111111111111111111111".to_string()),
-                    is_optional: false,
-                },
-            ],
-            args: vec![],
             errors: vec![
                 ErrorMetadata { code: 0, name: "AmountTooSmall".to_string(), msg: "Amount too small".to_string() },
                 ErrorMetadata { code: 1, name: "NotAuthorized".to_string(), msg: "Not authorized".to_string() },
@@ -1544,12 +1452,12 @@ pub mod ore {
             reset(params)
         }
 
-        pub fn buyback(&self, params: BuybackParams) -> Result<BuiltInstruction, InstructionError> {
-            buyback(params)
-        }
-
         pub fn bury(&self, params: BuryParams) -> Result<BuiltInstruction, InstructionError> {
             bury(params)
+        }
+
+        pub fn buyback(&self, params: BuybackParams) -> Result<BuiltInstruction, InstructionError> {
+            buyback(params)
         }
 
         pub fn wrap(&self, params: WrapParams) -> Result<BuiltInstruction, InstructionError> {
@@ -1562,10 +1470,6 @@ pub mod ore {
 
         pub fn new_var(&self, params: NewVarParams) -> Result<BuiltInstruction, InstructionError> {
             new_var(params)
-        }
-
-        pub fn reload_sol(&self, params: ReloadSolParams) -> Result<BuiltInstruction, InstructionError> {
-            reload_sol(params)
         }
 
         /// Typed reader for `Automation` accounts (release-addressed HTTP reads).

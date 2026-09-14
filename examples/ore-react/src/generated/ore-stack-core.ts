@@ -1627,7 +1627,7 @@ export type OreBuryError = OreStreamOreProgramError;
  */
 export const oreBuryInstruction = createInstructionHandler<OreBuryParams, OreBuryError>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-  discriminator: [13],
+  discriminator: [24],
   args: [
     { name: 'amount', type: 'u64' },
   ],
@@ -1651,7 +1651,6 @@ export const oreBuryInstruction = createInstructionHandler<OreBuryParams, OreBur
 export interface OreBuybackParams {
   board?: string;
   config?: string;
-  managerSol: string;
   treasury?: string;
   treasuryOre: string;
   treasurySol: string;
@@ -1665,7 +1664,7 @@ export type OreBuybackError = OreStreamOreProgramError;
 
 /**
  * Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.
- * The 15 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
+ * The 13 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
  */
 export const oreBuybackInstruction = createInstructionHandler<OreBuybackParams, OreBuybackError>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
@@ -1675,8 +1674,6 @@ export const oreBuybackInstruction = createInstructionHandler<OreBuybackParams, 
     { name: 'signer', isSigner: true, isWritable: true, category: 'known', knownAddress: 'HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T' },
     { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
     { name: 'config', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
-    { name: 'manager', isSigner: false, isWritable: true, category: 'known', knownAddress: 'DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee' },
-    { name: 'managerSol', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'mint', isSigner: false, isWritable: true, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
     { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
     { name: 'treasuryOre', isSigner: false, isWritable: true, category: 'userProvided' },
@@ -2027,10 +2024,10 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:d65cc05f1afe0a1f1e1a24c4d527a714aa2c92f29a0df905a18745f1df87ab5d',
-      programSpecHash: 'arete:h1:program-spec:sha256:6d6688065dc31df9a03e037b30f8391471eb48b27e727407c9febb6caa752803',
-      idlContentHash: 'arete:h1:idl-content:sha256:8d6d2302dc4d2873ec22eab862624bda1f2e934479dde0f381b621c239851316',
-      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:116c0457e78cc514ce0f27e9839eeb24226d20fc51c52678af74e73dc1b765f8',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:43e4f8c4fdf9c02347c5eeec38c7a8f28bd04c6e3024337f306b0deae26b3d26',
+      programSpecHash: 'arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72',
+      idlContentHash: 'arete:h1:idl-content:sha256:7a14fb6c2c406d74ac61bf93ff14949da4677a5f6a3d53058e550f1fe86f7bf3',
+      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:b16f15a8d4ed1ce44127170eaf2050349573759961c33bd010a4cf59df787157',
       pdas: {
         automation: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('automation'), account('authority')),
         board: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('board')),
@@ -2197,7 +2194,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:23cb4899752b55ce36290c0d4284bfea58fefe459b817d25d6ba0f882f1c12c9',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:9b85f333d143af6a90d0e5fcd5e692b066426504016639214183573fb2cf7e7e',
       programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
       idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',
@@ -2268,7 +2265,7 @@ export const ORE_STREAM_STACK_CORE = {
   },
   programReads: {
     ore: {
-      release: { programReleaseHash: "arete:h1:program-release:sha256:a6da05d391c60faa93ff2f42d4cc2655d96ebd48f592d9b57be0ec7670093598", programSpecHash: "arete:h1:program-spec:sha256:6d6688065dc31df9a03e037b30f8391471eb48b27e727407c9febb6caa752803" },
+      release: { programReleaseHash: "arete:h1:program-release:sha256:4742d9f7be960b2c35571cdaae6fb5de9874836037e13c9f13697800c18d39b5", programSpecHash: "arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72" },
       transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
     },
     entropy: {

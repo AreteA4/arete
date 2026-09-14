@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "input": {
     "kind": "stack-manifest",
-    "hash": "arete:h1:stack-manifest:sha256:730926acfef4f399ca57b85a6fee8a44b6544bddd658b2766a7c1f414cfe67a8"
+    "hash": "arete:h1:stack-manifest:sha256:338c718dfbb5a260392414ee5e7f2e07ceb01a07fdcccbf748822d43cdb89a09"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:d69676d4204ad02f67e69ef83a3cf97c70c23e5570c8a48ca2ad6e71d3e9ea17",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:11f2d27d6820622af3b4b38c9110e1ba84028d5b748076cecaec3718a5ff0c1b",
   "extensions": {
-    "contentSha256": "16c7f89fbe9e01eacd22eeddb29e316762291fadd378ddbb9b83b250f6a97bcc"
+    "contentSha256": "73e98e06555ddd6377446703db6146f82d6418b034e205888065941029882295"
   },
   "artifacts": [
     "extensions.json",

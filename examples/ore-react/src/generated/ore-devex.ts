@@ -803,7 +803,7 @@ export function previewCheckpoint(input: {
       rewardsSol =
         minerDeployed -
         adminFee +
-        (input.round.totalWinnings * minerDeployed) / roundDeployed;
+        (input.round.totalReturnedSol * minerDeployed) / roundDeployed;
 
       if (input.round.topMiner === SPLIT_REWARD_ADDRESS) {
         const roundReward = input.round.rewards.reduce(
