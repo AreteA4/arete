@@ -46,7 +46,7 @@ fn generate_resolver_registry(resolver_hooks: &[ResolverHook]) -> TokenStream {
                             if let Some(key) = ctx.pda_reverse_lookup(account_address) {
                                 return arete::runtime::arete_interpreter::resolvers::KeyResolution::Found(key);
                             }
-                            arete::runtime::arete_interpreter::resolvers::KeyResolution::QueueUntil(&[#(#disc_bytes),*])
+                            arete::runtime::arete_interpreter::resolvers::KeyResolution::QueueUntil(vec![#(#disc_bytes),*])
                         })
                     }
                 }
