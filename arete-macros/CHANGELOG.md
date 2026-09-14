@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.18.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.17.0...arete-macros-v0.18.0) (2026-09-14)
+
+
+### Features
+
+* **interpreter:** let QueueUntil own its discriminators ([ca6bd3f](https://github.com/AreteA4/arete/commit/ca6bd3fc9801645f34da600c2630d627c2c82ae8))
+* **server:** spawnable, embeddable runtime handle; QueueUntil owns its bytes ([acbb3f2](https://github.com/AreteA4/arete/commit/acbb3f2b77b79ada65732c841183bfa2ab469d05))
+
+
+### Bug Fixes
+
+* **ore:** synchronize SDK artifacts and track IDL build inputs ([1fb239f](https://github.com/AreteA4/arete/commit/1fb239faafae50866dd2328861a377bd06aa38e2))
+* **ore:** synchronize SDK artifacts and track IDL build inputs ([8cdba3f](https://github.com/AreteA4/arete/commit/8cdba3f4682c42c365c973e4c3a3e3c9c96c562b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-hash bumped from 0.4.0 to 0.5.0
+    * arete-artifacts bumped from 0.3.2 to 0.3.3
+
 ## [0.17.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.16.0...arete-macros-v0.17.0) (2026-09-10)
 
 

@@ -10,6 +10,14 @@
   `catalog-bundle`, `catalog-publication-set`) with shared Rust/TypeScript
   vectors; no existing identity changes
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-hash-v0.4.0...arete-hash-v0.5.0) (2026-09-14)
+
+
+### Features
+
+* **sdk:** separate generated content identity from compiler provenance ([2f6c3bc](https://github.com/AreteA4/arete/commit/2f6c3bc24de462b22d8577ecb9b4d2f6e35ed21f))
+* **sdk:** separate generated content identity from compiler provenance ([466be84](https://github.com/AreteA4/arete/commit/466be841bc1c73c67bc248cf47ca78b215479cbd))
+
 ## [0.4.0](https://github.com/AreteA4/arete/compare/arete-hash-v0.3.2...arete-hash-v0.4.0) (2026-09-06)
 
 

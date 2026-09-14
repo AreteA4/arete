@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.17.0...arete-typescript-v0.18.0) (2026-09-14)
+
+
+### Features
+
+* **sdk:** separate generated content identity from compiler provenance ([2f6c3bc](https://github.com/AreteA4/arete/commit/2f6c3bc24de462b22d8577ecb9b4d2f6e35ed21f))
+* **sdk:** separate generated content identity from compiler provenance ([466be84](https://github.com/AreteA4/arete/commit/466be841bc1c73c67bc248cf47ca78b215479cbd))
+
 ## [0.17.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.16.0...arete-typescript-v0.17.0) (2026-09-10)
 
 
