@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "arete-artifacts"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "arete-hash",
  "arete-idl",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "arete-auth"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "arete-hash"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arete-idl",
  "bs58",
