@@ -36,6 +36,7 @@ use tokio_tungstenite::{
     },
 };
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
@@ -293,6 +294,9 @@ struct SubscriptionContext {
     view_index: Arc<ViewIndex>,
     usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     metrics: WsMetrics,
+    /// Cancelled when the server stops; every session ends through its normal
+    /// cleanup path rather than being dropped mid-flight.
+    shutdown: CancellationToken,
 }
 
 pub struct WebSocketServer {
@@ -372,46 +376,139 @@ impl WebSocketServer {
         self
     }
 
+    /// Bind the configured address and serve connections until the task is
+    /// dropped. Equivalent to [`into_acceptor`](Self::into_acceptor) followed by
+    /// [`ConnectionAcceptor::serve_listener`].
     pub async fn start(self) -> Result<()> {
         info!(
             "Starting WebSocket server on {} (max_clients: {})",
             self.bind_addr, self.max_clients
         );
         let listener = TcpListener::bind(&self.bind_addr).await?;
+        let (acceptor, _cleanup) = self.into_acceptor();
+        acceptor.serve_listener(listener).await
+    }
+
+    /// Split this server into the part that serves connections and the
+    /// client-manager cleanup task, leaving the caller to own the listener.
+    ///
+    /// The cleanup handle is returned rather than detached so a caller that
+    /// stops serving can stop it too.
+    pub(crate) fn into_acceptor(self) -> (ConnectionAcceptor, tokio::task::JoinHandle<()>) {
         let client_manager = self
             .rate_limit_config
             .map(ClientManager::with_config)
             .unwrap_or(self.client_manager);
-        client_manager.start_cleanup_task();
+        let cleanup = client_manager.start_cleanup_task();
 
         #[cfg(feature = "otel")]
         let metrics = WsMetrics::new(self.metrics.clone());
         #[cfg(not(feature = "otel"))]
         let metrics = WsMetrics::default();
 
-        loop {
-            match listener.accept().await {
-                Ok((stream, addr)) => {
-                    if client_manager.client_count() >= self.max_clients {
-                        warn!("Rejecting connection from {}: max clients reached", addr);
-                        continue;
-                    }
+        let acceptor = ConnectionAcceptor {
+            client_manager,
+            bus_manager: self.bus_manager,
+            entity_cache: self.entity_cache,
+            view_index: self.view_index,
+            max_clients: self.max_clients,
+            auth_plugin: self.auth_plugin,
+            usage_emitter: self.usage_emitter,
+            metrics,
+            shutdown: CancellationToken::new(),
+            sessions: TaskTracker::new(),
+        };
+        (acceptor, cleanup)
+    }
+}
 
-                    let context = SubscriptionContext {
-                        client_id: Uuid::nil(),
-                        client_manager: client_manager.clone(),
-                        bus_manager: self.bus_manager.clone(),
-                        entity_cache: self.entity_cache.clone(),
-                        view_index: self.view_index.clone(),
-                        usage_emitter: self.usage_emitter.clone(),
-                        metrics: metrics.clone(),
-                    };
-                    let auth_plugin = self.auth_plugin.clone();
-                    tokio::spawn(
+/// Serves already-accepted TCP connections against one server's buses, cache
+/// and views.
+///
+/// This is what [`WebSocketServer::start`] runs behind its listener, separated
+/// so that a caller that owns the listener (an application that terminates
+/// TLS itself, a test with an ephemeral port) can hand streams in without the
+/// server binding anything.
+#[derive(Clone)]
+pub(crate) struct ConnectionAcceptor {
+    client_manager: ClientManager,
+    bus_manager: BusManager,
+    entity_cache: EntityCache,
+    view_index: Arc<ViewIndex>,
+    max_clients: usize,
+    auth_plugin: Arc<dyn WebSocketAuthPlugin>,
+    usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    metrics: WsMetrics,
+    shutdown: CancellationToken,
+    /// Sessions spawned by [`serve_listener`](Self::serve_listener), so a
+    /// stop can wait for them. Sessions a caller serves on its own tasks are
+    /// the caller's to wait for.
+    sessions: TaskTracker,
+}
+
+impl ConnectionAcceptor {
+    /// Number of clients currently connected to this server.
+    pub(crate) fn client_count(&self) -> usize {
+        self.client_manager.client_count()
+    }
+
+    /// End every session this acceptor is serving and stop accepting.
+    ///
+    /// Sessions notice on their next poll and leave through the same cleanup
+    /// as a client disconnect, so the client manager, buses and usage events
+    /// see an ordinary close.
+    pub(crate) fn shutdown(&self) {
+        self.shutdown.cancel();
+        self.sessions.close();
+    }
+
+    /// Resolves once every listener-spawned session has finished cleaning
+    /// up. Call after [`shutdown`](Self::shutdown).
+    pub(crate) async fn wait_for_sessions(&self) {
+        self.sessions.wait().await;
+    }
+
+    /// Serve one accepted connection: WebSocket handshake, authentication,
+    /// then the subscription session until the peer disconnects.
+    ///
+    /// Returns `Ok(())` without serving when the server is at its client
+    /// limit, exactly as the listener loop does.
+    pub(crate) async fn serve(&self, stream: TcpStream, remote_addr: SocketAddr) -> Result<()> {
+        if self.client_manager.client_count() >= self.max_clients {
+            warn!(
+                "Rejecting connection from {}: max clients reached",
+                remote_addr
+            );
+            return Ok(());
+        }
+
+        let context = SubscriptionContext {
+            client_id: Uuid::nil(),
+            client_manager: self.client_manager.clone(),
+            bus_manager: self.bus_manager.clone(),
+            entity_cache: self.entity_cache.clone(),
+            view_index: self.view_index.clone(),
+            usage_emitter: self.usage_emitter.clone(),
+            metrics: self.metrics.clone(),
+            shutdown: self.shutdown.clone(),
+        };
+        handle_connection(stream, context, remote_addr, self.auth_plugin.clone()).await
+    }
+
+    /// Accept from `listener` until [`shutdown`](Self::shutdown), serving each
+    /// connection on its own task.
+    pub(crate) async fn serve_listener(self, listener: TcpListener) -> Result<()> {
+        loop {
+            let accepted = tokio::select! {
+                _ = self.shutdown.cancelled() => return Ok(()),
+                accepted = listener.accept() => accepted,
+            };
+            match accepted {
+                Ok((stream, addr)) => {
+                    let acceptor = self.clone();
+                    self.sessions.spawn(
                         async move {
-                            if let Err(error) =
-                                handle_connection(stream, context, addr, auth_plugin).await
-                            {
+                            if let Err(error) = acceptor.serve(stream, addr).await {
                                 error!("WebSocket connection error: {}", error);
                             }
                         }
@@ -529,14 +626,18 @@ async fn handle_connection(
     remote_addr: SocketAddr,
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
 ) -> Result<()> {
-    let Some((ws_stream, auth_context)) = accept_authorized_connection(
-        stream,
-        remote_addr,
-        auth_plugin.clone(),
-        context.client_manager.clone(),
-    )
-    .await?
-    else {
+    // The handshake is raced against shutdown too: a peer that stalls it must
+    // not keep a task alive after the server has stopped.
+    let accepted = tokio::select! {
+        _ = context.shutdown.cancelled() => return Ok(()),
+        accepted = accept_authorized_connection(
+            stream,
+            remote_addr,
+            auth_plugin.clone(),
+            context.client_manager.clone(),
+        ) => accepted?,
+    };
+    let Some((ws_stream, auth_context)) = accepted else {
         return Ok(());
     };
 
@@ -563,7 +664,14 @@ async fn handle_connection(
     );
 
     let mut active_subscriptions: HashMap<String, String> = HashMap::new();
-    while let Some(message) = ws_receiver.next().await {
+    loop {
+        let message = tokio::select! {
+            _ = context.shutdown.cancelled() => break,
+            next = ws_receiver.next() => match next {
+                Some(message) => message,
+                None => break,
+            },
+        };
         let message = match message {
             Ok(message) => message,
             Err(error) => {

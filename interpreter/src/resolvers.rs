@@ -58,7 +58,11 @@ pub enum KeyResolution {
 
     /// Queue this update until we see one of these instruction discriminators
     /// The discriminators identify which instructions can populate the reverse lookup
-    QueueUntil(&'static [u8]),
+    ///
+    /// Owned rather than `&'static [u8]`: the bytes are never read after the
+    /// variant is constructed, so nothing justified forcing callers that build
+    /// them at runtime to leak them.
+    QueueUntil(Vec<u8>),
 
     /// Skip this update entirely (don't queue)
     Skip,

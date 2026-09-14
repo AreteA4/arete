@@ -528,7 +528,7 @@ pub fn generate_resolver_functions(
                         if let Some(key) = ctx.pda_reverse_lookup(account_address) {
                             return arete::runtime::arete_interpreter::resolvers::KeyResolution::Found(key);
                         }
-                        arete::runtime::arete_interpreter::resolvers::KeyResolution::QueueUntil(&[#(#disc_bytes),*])
+                        arete::runtime::arete_interpreter::resolvers::KeyResolution::QueueUntil(vec![#(#disc_bytes),*])
                     }
                 });
             }
@@ -596,7 +596,7 @@ pub fn generate_auto_resolver_functions(hooks: &[ResolverHook]) -> proc_macro2::
                         if let Some(key) = ctx.pda_reverse_lookup(account_address) {
                             return arete::runtime::arete_interpreter::resolvers::KeyResolution::Found(key);
                         }
-                        arete::runtime::arete_interpreter::resolvers::KeyResolution::QueueUntil(&[#(#disc_bytes),*])
+                        arete::runtime::arete_interpreter::resolvers::KeyResolution::QueueUntil(vec![#(#disc_bytes),*])
                     }
                 });
             }

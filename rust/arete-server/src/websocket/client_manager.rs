@@ -1024,7 +1024,10 @@ impl ClientManager {
     }
 
     /// Start a background task that periodically cleans up stale clients.
-    pub fn start_cleanup_task(&self) {
+    ///
+    /// Returns the task so an owner that stops serving can abort it; callers
+    /// that run for the life of the process may simply drop the handle.
+    pub fn start_cleanup_task(&self) -> tokio::task::JoinHandle<()> {
         let client_manager = self.clone();
 
         tokio::spawn(async move {
@@ -1038,7 +1041,7 @@ impl ClientManager {
                 }
                 client_manager.cleanup_account_state();
             }
-        });
+        })
     }
 
     /// ENFORCEMENT HOOKS

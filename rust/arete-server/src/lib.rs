@@ -75,7 +75,7 @@ pub use program_runtime::{
     ProgramRuntimeCatalog, ProgramRuntimeDefinition, ProgramSpecHash,
 };
 pub use projector::Projector;
-pub use runtime::Runtime;
+pub use runtime::{ConnectionServer, Runtime, RuntimeHandle};
 pub use snapshot::{SnapshotConfig, SnapshotService};
 pub use telemetry::{init as init_telemetry, TelemetryConfig};
 #[cfg(feature = "otel")]
@@ -509,7 +509,17 @@ impl ServerBuilder {
         self.http_bind(addr)
     }
 
+    /// Build, start and block until shutdown. See [`Runtime::run`].
     pub async fn start(self) -> Result<()> {
+        self.build()?.run().await
+    }
+
+    /// Build the [`Runtime`] without starting it.
+    ///
+    /// For callers that embed the server: `build` then [`Runtime::spawn`]
+    /// gives a [`runtime::RuntimeHandle`] that serves connections the caller
+    /// accepted and can be shut down on demand.
+    pub fn build(self) -> Result<Runtime> {
         let (view_index, materialized_registry) =
             Self::build_view_index_and_registry(self.views, self.materialized_views, &self.spec);
 
@@ -546,7 +556,7 @@ impl ServerBuilder {
             runtime = runtime.with_spec(spec)?;
         }
 
-        runtime.run().await
+        Ok(runtime)
     }
 
     fn build_view_index_and_registry(
@@ -677,37 +687,6 @@ impl ServerBuilder {
                 view_def.id == format!("{export}/state")
             }
         }
-    }
-
-    pub fn build(self) -> Result<Runtime> {
-        let (view_index, materialized_registry) =
-            Self::build_view_index_and_registry(self.views, self.materialized_views, &self.spec);
-
-        #[cfg(feature = "otel")]
-        let mut runtime = Runtime::new(self.config, view_index, self.metrics);
-        #[cfg(not(feature = "otel"))]
-        let mut runtime = Runtime::new(self.config, view_index);
-
-        if let Some(plugin) = self.websocket_auth_plugin {
-            runtime = runtime.with_websocket_auth_plugin(plugin);
-        }
-
-        if let Some(plugin) = self.http_auth_plugin {
-            runtime = runtime.with_http_auth_plugin(plugin);
-        }
-
-        if let Some(max_clients) = self.websocket_max_clients {
-            runtime = runtime.with_websocket_max_clients(max_clients);
-        }
-
-        if let Some(registry) = materialized_registry {
-            runtime = runtime.with_materialized_views(registry);
-        }
-
-        if let Some(spec) = self.spec {
-            runtime = runtime.with_spec(spec)?;
-        }
-        Ok(runtime)
     }
 }
 
