@@ -88,7 +88,16 @@ async fn a_handle_serves_caller_accepted_connections_and_stops_only_its_own_runt
     let (mut open_socket, _) = tokio_tungstenite::client_async(format!("ws://{addr}/"), client)
         .await
         .expect("websocket handshake");
-    assert_eq!(first.client_count(), 1);
+    // The server registers the client on the serving task after the
+    // handshake completes on its side, so the count can trail the client's
+    // view of the handshake by a scheduling tick.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while first.client_count() != 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the open session is counted");
     first.shutdown().await.expect("first shutdown");
     served
         .await
