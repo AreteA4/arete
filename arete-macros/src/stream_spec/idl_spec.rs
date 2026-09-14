@@ -67,9 +67,14 @@ pub fn process_idl_spec(
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
 
     let mut idl_infos: Vec<IdlInfo> = Vec::new();
+    let mut idl_dependencies = Vec::new();
 
     for idl_path in idl_paths {
         let full_path = std::path::Path::new(&manifest_dir).join(idl_path);
+        idl_dependencies.push(syn::LitStr::new(
+            &full_path.to_string_lossy(),
+            module.ident.span(),
+        ));
 
         let idl_bytes = match std::fs::read(&full_path) {
             Ok(bytes) => bytes,
@@ -145,6 +150,9 @@ pub fn process_idl_spec(
         .map(|info| syn::LitStr::new(&info.identity.release_hash.to_string(), module.ident.span()))
         .collect();
     let identity_constants = quote! {
+        // Proc-macro file reads alone are invisible to Cargo. Include every IDL
+        // in rustc's dependency graph so an IDL-only edit reruns this macro.
+        #(const _: &[u8] = include_bytes!(#idl_dependencies);)*
         #[doc(hidden)]
         pub const __ARETE_PROGRAM_SPECS_V1_JSON: &[&str] = &[#(#program_specs_json),*];
         #[doc(hidden)]

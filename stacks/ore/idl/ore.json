@@ -511,7 +511,7 @@
       "name": "bury",
       "discriminant": {
         "type": "u8",
-        "value": 13
+        "value": 24
       },
       "docs": [
         "Burns ORE and distributes yield to stakers.",
@@ -597,7 +597,7 @@
       },
       "docs": [
         "Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.",
-        "The 15 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator."
+        "The 13 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator."
       ],
       "accounts": [
         {
@@ -614,17 +614,6 @@
         {
           "name": "config",
           "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "manager",
-          "isMut": true,
-          "isSigner": false,
-          "address": "DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee"
-        },
-        {
-          "name": "managerSol",
-          "isMut": true,
           "isSigner": false
         },
         {

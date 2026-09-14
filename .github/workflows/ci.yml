@@ -204,6 +204,9 @@ jobs:
             typescript/core/package-lock.json
             examples/ore-typescript/package-lock.json
 
+      - name: Test example SDK pin checks
+        run: node --test scripts/check-example-sdk-pins.test.mjs
+
       - name: Regenerate example SDKs
         run: bash ./scripts/generate-example-sdks.sh
 
@@ -245,6 +248,13 @@ jobs:
       - name: Strict compile TypeScript example
         working-directory: examples/ore-typescript
         run: npx tsc --noEmit
+
+      - name: Test TypeScript example extensions
+        working-directory: examples/ore-typescript
+        run: npm test
+
+      - name: Check Rust example
+        run: cargo check --locked --manifest-path examples/ore-rust/Cargo.toml
 
   ore-react:
     name: ORE React App

@@ -12,9 +12,11 @@ import {
   quoteAutomationFunding,
   quoteManualDeployment,
   previewSolClaim,
+  previewCheckpoint,
   reverseBits64,
 } from './generated/ore-devex.js';
 import { ORE_STREAM_STACK } from './generated/ore-stack.js';
+import { oreBuryInstruction, oreBuybackInstruction } from './generated/ore-stack-core.js';
 
 function deployed(entries: ReadonlyArray<readonly [number, bigint]> = []): bigint[] {
   const amounts = Array<bigint>(25).fill(0n);
@@ -57,6 +59,41 @@ test('builds a prepared deploy without the optional entropy program', () => {
   );
 });
 
+test('encodes reloadWinnings in the automation instruction bytes', () => {
+  const configure = (reloadWinnings: boolean) => buildPreparedOreInstruction(
+    prepareConfigureAutomation({
+      authority: ORE_PROGRAM_ADDRESS,
+      executor: ORE_PROGRAM_ADDRESS,
+      amountPerSquare: 1n,
+      deposit: 5_001n,
+      executorFee: 5_000n,
+      selection: { kind: 'preferred', squares: [0, 24] },
+      reloadWinnings,
+    }),
+  ).data;
+  const disabled = configure(false);
+  const enabled = configure(true);
+  // One tag, four u64 arguments, one strategy byte, then the reload u64.
+  assert.equal(enabled.length, 42);
+  assert.deepEqual(enabled.slice(0, 34), disabled.slice(0, 34));
+  assert.deepEqual(Array.from(disabled.slice(34)), [0, 0, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(Array.from(enabled.slice(34)), [1, 0, 0, 0, 0, 0, 0, 0]);
+});
+
+test('keeps buyback and bury distinct on the wire', () => {
+  // regolith-labs/ore @ a3177af: api/src/instruction.rs and program/src/buyback.rs.
+  assert.deepEqual(Array.from(oreBuybackInstruction.build({}, []).data), [13]);
+  assert.deepEqual(
+    Array.from(oreBuryInstruction.build({ amount: 256n }, []).data),
+    [24, 0, 1, 0, 0, 0, 0, 0, 0],
+  );
+  assert.deepEqual(oreBuybackInstruction.accounts.map((account) => account.name), [
+    'signer', 'board', 'config', 'mint', 'treasury', 'treasuryOre', 'treasurySol',
+    'stakeTreasury', 'stakeTreasuryOre', 'stakeVesting', 'tokenProgram',
+    'oreProgram', 'oreStakeProgram',
+  ]);
+});
+
 test('classifies the transaction needed to realize and claim SOL rewards', () => {
   const checkpoint = {
     status: 'claimable' as const,
@@ -82,6 +119,50 @@ test('classifies the transaction needed to realize and claim SOL rewards', () =>
     'checkpoint',
   );
   assert.equal(previewSolClaim({ checkpointedRewardsSol: 25n }).action, 'claim');
+});
+
+test('previews checkpoint rewards using the renamed Round account field', () => {
+  const preview = previewCheckpoint({
+    boardRoundId: 2n,
+    currentSlot: 100n,
+    miner: {
+      authority: ORE_PROGRAM_ADDRESS,
+      autoReturn: 0n,
+      checkpointId: 0n,
+      checkpointFee: 0n,
+      deployed: Array<bigint>(25).fill(100n),
+      mass: deployed(),
+      cumulative: deployed(),
+      roundId: 1n,
+      rewardsFactor: { bits: Array<number>(16).fill(0) },
+      rewardsSol: 0n,
+      refinedOre: 0n,
+      rewardsOre: 0n,
+      lastClaimOreAt: 0n,
+      lastClaimSolAt: 0n,
+      lifetimeRewardsOre: 0n,
+      lifetimeDeployed: 0n,
+      lifetimeRewardsSol: 0n,
+    },
+    round: {
+      id: 1n,
+      deployed: Array<bigint>(25).fill(200n),
+      mass: deployed(),
+      count: deployed(),
+      slotHash: [1, ...Array<number>(31).fill(0)],
+      expiresAt: 10_000n,
+      motherlode: 0n,
+      rentPayer: ORE_PROGRAM_ADDRESS,
+      rewards: deployed(),
+      totalVaulted: 0n,
+      totalReturnedSol: 1_000n,
+      totalMiners: 2n,
+      topMiner: ORE_PROGRAM_ADDRESS,
+    },
+  });
+  assert.equal(preview.status, 'claimable');
+  // 100 deployed - 1 fee + half of the round's 1,000 returned lamports.
+  assert.equal(preview.rewardsSol, 599n);
 });
 
 test('exposes the named quote helpers on the generated stack API', () => {

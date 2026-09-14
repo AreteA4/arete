@@ -682,6 +682,9 @@ export interface Automation {
   strategy: bigint;
   mask: bigint;
   reload: bigint;
+  totalSolSpent: bigint;
+  totalOreEarned: bigint;
+  conditions: Record<string, any>;
 }
 
 export const MinerSchema = z.object({
@@ -731,6 +734,9 @@ export const AutomationSchema = z.object({
   strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_sol_spent: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_ore_earned: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  conditions: z.record(z.any()),
 }).transform((value) => ({
   amount: value.amount,
   authority: value.authority,
@@ -740,6 +746,9 @@ export const AutomationSchema = z.object({
   strategy: value.strategy,
   mask: value.mask,
   reload: value.reload,
+  totalSolSpent: value.total_sol_spent,
+  totalOreEarned: value.total_ore_earned,
+  conditions: value.conditions,
 }));
 
 export const MinerPatchSchema = z.object({
@@ -789,6 +798,9 @@ export const AutomationPatchSchema = z.object({
   strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
   mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
   reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  total_sol_spent: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  total_ore_earned: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)).optional(),
+  conditions: z.record(z.any()).optional(),
 }).transform((value) => ({
   ...(value.amount !== undefined ? { amount: value.amount } : {}),
   ...(value.authority !== undefined ? { authority: value.authority } : {}),
@@ -798,6 +810,9 @@ export const AutomationPatchSchema = z.object({
   ...(value.strategy !== undefined ? { strategy: value.strategy } : {}),
   ...(value.mask !== undefined ? { mask: value.mask } : {}),
   ...(value.reload !== undefined ? { reload: value.reload } : {}),
+  ...(value.total_sol_spent !== undefined ? { totalSolSpent: value.total_sol_spent } : {}),
+  ...(value.total_ore_earned !== undefined ? { totalOreEarned: value.total_ore_earned } : {}),
+  ...(value.conditions !== undefined ? { conditions: value.conditions } : {}),
 }));
 
 export const OreMinerAutomationSchema = z.object({
@@ -982,6 +997,12 @@ export interface AdminConfig {
   feeRate: bigint;
 }
 
+export interface AutomationConditions {
+  maxProductionCost: bigint;
+  minMotherlode: bigint;
+  maxMotherlode: bigint;
+}
+
 export interface Numeric {
   bits: number[];
 }
@@ -1005,6 +1026,9 @@ export interface OreAutomation {
   strategy: bigint;
   mask: bigint;
   reload: bigint;
+  totalSolSpent: bigint;
+  totalOreEarned: bigint;
+  conditions: AutomationConditions;
 }
 
 export interface OreBoard2 {
@@ -1086,6 +1110,16 @@ export const AdminConfigSchema = z.object({
   feeRate: value.fee_rate,
 }));
 
+export const AutomationConditionsSchema = z.object({
+  max_production_cost: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  min_motherlode: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  max_motherlode: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+}).transform((value) => ({
+  maxProductionCost: value.max_production_cost,
+  minMotherlode: value.min_motherlode,
+  maxMotherlode: value.max_motherlode,
+}));
+
 export const NumericSchema = z.object({
   bits: z.array(z.number()).length(16),
 }).transform((value) => ({
@@ -1119,6 +1153,9 @@ export const OreAutomationSchema = z.object({
   strategy: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   mask: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
   reload: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_sol_spent: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  total_ore_earned: z.union([z.bigint(), z.string(), z.number().int()]).transform((value) => BigInt(value)),
+  conditions: z.lazy(() => AutomationConditionsSchema),
 }).transform((value) => ({
   amount: value.amount,
   authority: value.authority,
@@ -1128,6 +1165,9 @@ export const OreAutomationSchema = z.object({
   strategy: value.strategy,
   mask: value.mask,
   reload: value.reload,
+  totalSolSpent: value.total_sol_spent,
+  totalOreEarned: value.total_ore_earned,
+  conditions: value.conditions,
 }));
 
 export const OreBoard2Schema = z.object({
@@ -1587,7 +1627,7 @@ export type OreBuryError = OreStreamOreProgramError;
  */
 export const oreBuryInstruction = createInstructionHandler<OreBuryParams, OreBuryError>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-  discriminator: [13],
+  discriminator: [24],
   args: [
     { name: 'amount', type: 'u64' },
   ],
@@ -1600,6 +1640,46 @@ export const oreBuryInstruction = createInstructionHandler<OreBuryParams, OreBur
     { name: 'treasuryOre', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'stakeTreasury', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'stakeTreasuryTokens', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stakeVesting', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'tokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+    { name: 'oreProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv' },
+    { name: 'oreStakeProgram', isSigner: false, isWritable: false, category: 'userProvided' },
+  ],
+  errors: ORE_STREAM_ORE_PROGRAM_ERRORS,
+});
+
+export interface OreBuybackParams {
+  board?: string;
+  config?: string;
+  treasury?: string;
+  treasuryOre: string;
+  treasurySol: string;
+  stakeTreasury: string;
+  stakeTreasuryOre: string;
+  stakeVesting: string;
+  oreStakeProgram: string;
+}
+
+export type OreBuybackError = OreStreamOreProgramError;
+
+/**
+ * Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.
+ * The 13 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
+ */
+export const oreBuybackInstruction = createInstructionHandler<OreBuybackParams, OreBuybackError>({
+  programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
+  discriminator: [13],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'known', knownAddress: 'HNWhK5f8RMWBqcA7mXJPaxdTPGrha3rrqUrri7HSKb3T' },
+    { name: 'board', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] } },
+    { name: 'config', isSigner: false, isWritable: false, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'config' }] } },
+    { name: 'mint', isSigner: false, isWritable: true, category: 'known', knownAddress: 'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp' },
+    { name: 'treasury', isSigner: false, isWritable: true, category: 'pda', pdaConfig: { seeds: [{ type: 'literal', value: 'treasury' }] } },
+    { name: 'treasuryOre', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'treasurySol', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stakeTreasury', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'stakeTreasuryOre', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'stakeVesting', isSigner: false, isWritable: true, category: 'userProvided' },
     { name: 'tokenProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
     { name: 'oreProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv' },
@@ -1896,6 +1976,7 @@ export const ORE_STREAM_STACK_CORE = {
   },
   schemas: {
     AdminConfig: AdminConfigSchema,
+    AutomationConditions: AutomationConditionsSchema,
     Automation: AutomationSchema,
     Board: BoardSchema,
     Config: ConfigSchema,
@@ -1943,10 +2024,10 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:255254d6ae7fb5df74cce9e862592ccd94ea920558a68d8ddaf20df5603fd3df',
-      programSpecHash: 'arete:h1:program-spec:sha256:cd05de2ce88f2e31d0a56934e8496dea52059f37fb359e765e03696319e58c88',
-      idlContentHash: 'arete:h1:idl-content:sha256:dbff1a7862bc361d605e8da0412b45485694ed2d87e5a25e367c64294dde9d71',
-      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:1de8fc6e7b95397defe9b28a8da41940dab26d2241fb73c069fc67a875f9b830',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:43e4f8c4fdf9c02347c5eeec38c7a8f28bd04c6e3024337f306b0deae26b3d26',
+      programSpecHash: 'arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72',
+      idlContentHash: 'arete:h1:idl-content:sha256:7a14fb6c2c406d74ac61bf93ff14949da4677a5f6a3d53058e550f1fe86f7bf3',
+      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:b16f15a8d4ed1ce44127170eaf2050349573759961c33bd010a4cf59df787157',
       pdas: {
         automation: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('automation'), account('authority')),
         board: pda('oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv', literal('board')),
@@ -1979,6 +2060,7 @@ export const ORE_STREAM_STACK_CORE = {
         log: oreLogInstruction,
         reset: oreResetInstruction,
         bury: oreBuryInstruction,
+        buyback: oreBuybackInstruction,
         wrap: oreWrapInstruction,
         setAdmin: oreSetAdminInstruction,
         newVar: oreNewVarInstruction,
@@ -2068,6 +2150,15 @@ export const ORE_STREAM_STACK_CORE = {
                 errors: oreBuryInstruction.errors,
               });
             }),
+            buyback: instructionOperation(async (params: OreBuybackParams) => {
+              const instruction = buildInstruction(oreBuybackInstruction, params as unknown as Record<string, unknown>);
+              return createPreparedInstruction({
+                name: 'buyback',
+                instruction,
+                artifacts: { instruction },
+                errors: oreBuybackInstruction.errors,
+              });
+            }),
             wrap: instructionOperation(async (params: OreWrapParams) => {
               const instruction = buildInstruction(oreWrapInstruction, params as unknown as Record<string, unknown>);
               return createPreparedInstruction({
@@ -2103,7 +2194,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:1f4fa8b4be348b189a7c7c6f53ff1ed12ed0e198c8b284c182027330961a546b',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:9b85f333d143af6a90d0e5fcd5e692b066426504016639214183573fb2cf7e7e',
       programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
       idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',
@@ -2174,7 +2265,7 @@ export const ORE_STREAM_STACK_CORE = {
   },
   programReads: {
     ore: {
-      release: { programReleaseHash: "arete:h1:program-release:sha256:3cbe6993dd66223ca8f7c49b7ac44387c399804df07409d457ea109a359efa16", programSpecHash: "arete:h1:program-spec:sha256:cd05de2ce88f2e31d0a56934e8496dea52059f37fb359e765e03696319e58c88" },
+      release: { programReleaseHash: "arete:h1:program-release:sha256:4742d9f7be960b2c35571cdaae6fb5de9874836037e13c9f13697800c18d39b5", programSpecHash: "arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72" },
       transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
     },
     entropy: {

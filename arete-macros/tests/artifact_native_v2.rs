@@ -72,6 +72,68 @@ fn main() {{
 }
 
 #[test]
+fn idl_only_edits_rebuild_each_program_and_the_manifest() {
+    let fixture_dir = macro_manifest_dir()
+        .parent()
+        .unwrap()
+        .join("arete-idl/tests/fixtures");
+    let pump = fs::read_to_string(fixture_dir.join("pump.json")).unwrap();
+    let entropy = fs::read_to_string(fixture_dir.join("entropy.json")).unwrap();
+    let temp = TempCrate::new(
+        "artifact-native-v2",
+        "idl-dependency-tracking",
+        cargo_toml("idl-dependency-tracking", &dependencies()),
+        r#"use arete_macros::arete;
+#[arete(idl = ["idl/pump.json", "idl/entropy.json"])]
+mod tracked_programs {}
+fn main() {}
+"#,
+        &[("idl/pump.json", &pump), ("idl/entropy.json", &entropy)],
+    );
+    let check = || {
+        let output = temp.cargo_check();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    check();
+    let artifact_dir = temp.path().join(".arete");
+    let manifest_path = artifact_dir.join("TrackedPrograms.stack-manifest.json");
+    let mut previous_manifest = fs::read(&manifest_path).unwrap();
+
+    // Do not touch Rust source or clean Cargo between builds. Both the primary
+    // and secondary IDLs must independently invalidate the macro expansion.
+    for (changed, unchanged) in [("pump", "entropy"), ("entropy", "pump")] {
+        let spec_path = artifact_dir.join(format!("{changed}.program-spec.json"));
+        let unchanged_path = artifact_dir.join(format!("{unchanged}.program-spec.json"));
+        let previous_spec = fs::read(&spec_path).unwrap();
+        let unchanged_spec = fs::read(&unchanged_path).unwrap();
+        let idl_path = temp.path().join(format!("idl/{changed}.json"));
+        let mut idl: serde_json::Value =
+            serde_json::from_slice(&fs::read(&idl_path).unwrap()).unwrap();
+        idl["instructions"][0]["docs"] = serde_json::json!(["Changed without editing Rust source"]);
+        fs::write(idl_path, serde_json::to_vec_pretty(&idl).unwrap()).unwrap();
+        check();
+        assert_ne!(
+            fs::read(&spec_path).unwrap(),
+            previous_spec,
+            "{changed} was not rebuilt"
+        );
+        assert_eq!(fs::read(&unchanged_path).unwrap(), unchanged_spec);
+        let manifest = fs::read(&manifest_path).unwrap();
+        assert_ne!(
+            manifest, previous_manifest,
+            "manifest did not follow {changed}"
+        );
+        previous_manifest = manifest;
+    }
+    check();
+    assert_eq!(fs::read(manifest_path).unwrap(), previous_manifest);
+}
+
+#[test]
 fn single_live_macro_emits_the_typed_default_view_golden() {
     let source = r#"use arete_macros::arete;
 

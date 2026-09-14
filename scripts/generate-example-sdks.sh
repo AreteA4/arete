@@ -31,6 +31,11 @@ if [[ ! -f "$ORE_MANIFEST_PATH" ]]; then
     exit 1
 fi
 
+RUST_SDK_OUTPUT="$ROOT_DIR/examples/ore-rust/src/generated/ore"
+# Check both source extension bundles before generation writes any SDK output.
+node "$SCRIPT_DIR/check-example-sdk-pins.mjs" "$ORE_MANIFEST_PATH" \
+    "$EXTENSIONS_PATH/extensions.json" "$RUST_SDK_OUTPUT/extensions.json"
+
 echo "Generating example SDKs from StackManifest: $ORE_MANIFEST_PATH"
 
 ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create --manifest "$ORE_MANIFEST_PATH" --ts \
@@ -43,7 +48,6 @@ ARETE_TELEMETRY_DISABLED=1 "${A4_CMD[@]}" sdk create --manifest "$ORE_MANIFEST_P
     --package-name "@usearete/sdk" \
     --extensions "$EXTENSIONS_PATH"
 
-RUST_SDK_OUTPUT="$ROOT_DIR/examples/ore-rust/src/generated/ore"
 RUST_SDK_TMP="$(mktemp -d "${RUST_SDK_OUTPUT}.tmp.XXXXXX")"
 trap 'rm -rf "$RUST_SDK_TMP"' EXIT
 
