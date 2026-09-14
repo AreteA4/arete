@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.4.0...arete-auth-v0.5.0) (2026-09-14)
+
+
+### Features
+
+* **auth:** let a verifier accept a set of audiences ([ddd5886](https://github.com/AreteA4/arete/commit/ddd5886a053e66ba354cdedb24177cf4a5994fdb))
+* **auth:** let a verifier accept a set of audiences ([65da50e](https://github.com/AreteA4/arete/commit/65da50e9075cc47095afa71c62c8016e0af1adba))
+
 ## [0.4.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.3.0...arete-auth-v0.4.0) (2026-08-22)
 
 

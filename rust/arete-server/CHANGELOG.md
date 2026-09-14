@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.18.0](https://github.com/AreteA4/arete/compare/arete-server-v0.17.0...arete-server-v0.18.0) (2026-09-14)
+
+
+### Features
+
+* **server:** let an application spawn, serve and stop the runtime it embeds ([da21fd0](https://github.com/AreteA4/arete/commit/da21fd0bf9ddc26f450aebf3a771dfe7ad7ce1b8))
+* **server:** spawnable, embeddable runtime handle; QueueUntil owns its bytes ([acbb3f2](https://github.com/AreteA4/arete/commit/acbb3f2b77b79ada65732c841183bfa2ab469d05))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.17.0 to 0.18.0
+    * arete-hash bumped from 0.4.0 to 0.5.0
+    * arete-auth bumped from 0.4.0 to 0.5.0
+
 ## [0.17.0](https://github.com/AreteA4/arete/compare/arete-server-v0.16.0...arete-server-v0.17.0) (2026-09-10)
 
 

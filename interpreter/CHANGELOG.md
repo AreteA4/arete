@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.18.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.17.0...arete-interpreter-v0.18.0) (2026-09-14)
+
+
+### Features
+
+* **interpreter:** let QueueUntil own its discriminators ([ca6bd3f](https://github.com/AreteA4/arete/commit/ca6bd3fc9801645f34da600c2630d627c2c82ae8))
+* **sdk:** separate generated content identity from compiler provenance ([2f6c3bc](https://github.com/AreteA4/arete/commit/2f6c3bc24de462b22d8577ecb9b4d2f6e35ed21f))
+* **sdk:** separate generated content identity from compiler provenance ([466be84](https://github.com/AreteA4/arete/commit/466be841bc1c73c67bc248cf47ca78b215479cbd))
+* **server:** spawnable, embeddable runtime handle; QueueUntil owns its bytes ([acbb3f2](https://github.com/AreteA4/arete/commit/acbb3f2b77b79ada65732c841183bfa2ab469d05))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.17.0 to 0.18.0
+    * arete-hash bumped from 0.4.0 to 0.5.0
+    * arete-artifacts bumped from 0.3.2 to 0.3.3
+
 ## [0.17.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.16.0...arete-interpreter-v0.17.0) (2026-09-10)
 
 
