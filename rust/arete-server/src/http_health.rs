@@ -28,6 +28,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use crate::websocket::auth::{AuthDecision, AuthDeny, ConnectionAuthRequest, WebSocketAuthPlugin};
@@ -72,6 +73,8 @@ struct HttpRequestState {
 
 /// HTTP server that exposes health endpoints
 pub struct HttpHealthServer {
+    /// Cancelled to stop the accept loop; see [`HttpHealthServer::with_shutdown`].
+    shutdown: Option<CancellationToken>,
     bind_addr: SocketAddr,
     health_monitor: Option<HealthMonitor>,
     snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
@@ -89,6 +92,7 @@ impl HttpHealthServer {
     pub fn new(bind_addr: SocketAddr) -> Self {
         Self {
             bind_addr,
+            shutdown: None,
             health_monitor: None,
             snapshot_runtime: None,
             runtime_plan: RuntimePlan::http(),
@@ -152,6 +156,13 @@ impl HttpHealthServer {
         self
     }
 
+    /// Stop accepting and return from [`start`](Self::start) when `token` is
+    /// cancelled. Without one the server accepts until the process exits.
+    pub fn with_shutdown(mut self, token: CancellationToken) -> Self {
+        self.shutdown = Some(token);
+        self
+    }
+
     pub async fn start(self) -> Result<()> {
         info!("Starting HTTP health server on {}", self.bind_addr);
 
@@ -179,8 +190,16 @@ impl HttpHealthServer {
             program_read_binding_target_id: Arc::new(self.program_read_binding_target_id),
         };
 
+        let shutdown = self.shutdown.unwrap_or_default();
         loop {
-            match listener.accept().await {
+            let accepted = tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!("HTTP health server on {} stopping", self.bind_addr);
+                    return Ok(());
+                }
+                accepted = listener.accept() => accepted,
+            };
+            match accepted {
                 Ok((stream, remote_addr)) => {
                     let io = TokioIo::new(stream);
                     let request_state = request_state.clone();

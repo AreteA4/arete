@@ -10,15 +10,20 @@ use crate::program_runtime::ProgramRuntimeCatalog;
 use crate::projector::Projector;
 use crate::view::ViewIndex;
 use crate::websocket::client_manager::RateLimitConfig;
+use crate::websocket::server::ConnectionAcceptor;
 use crate::websocket::WebSocketServer;
 use crate::Spec;
 use crate::WebSocketAuthPlugin;
 use crate::WebSocketUsageEmitter;
 use anyhow::Result;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tracing::{error, info, info_span, Instrument};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, info_span, warn, Instrument};
 
 #[cfg(feature = "otel")]
 use crate::metrics::Metrics;
@@ -154,7 +159,36 @@ impl Runtime {
         self.config.runtime_plan
     }
 
+    /// Start everything and block until a shutdown signal, then stop cleanly.
+    ///
+    /// This is [`spawn`](Self::spawn) followed by waiting for SIGINT/SIGTERM
+    /// (or for a core task to exit) and [`RuntimeHandle::shutdown`]. Callers
+    /// that embed the server in a larger process should use `spawn` directly
+    /// and decide for themselves when to stop.
     pub async fn run(self) -> Result<()> {
+        let mut handle = self.spawn().await?;
+        info!("Arete runtime is running. Press Ctrl+C to stop.");
+
+        tokio::select! {
+            _ = handle.exited() => {}
+            _ = shutdown_signal() => {}
+        }
+
+        handle.shutdown().await
+    }
+
+    /// Start the runtime's tasks and return a handle that owns them.
+    ///
+    /// Everything `run` starts is started here: projector, parser, snapshot
+    /// manager, bus cleanup, stats, and - only when configured - the WebSocket
+    /// listener and the HTTP health server. Nothing here installs signal
+    /// handlers or blocks; the handle is how the caller waits, serves
+    /// connections it accepted itself, and shuts the runtime down.
+    ///
+    /// A handle owns its runtime's channel, buses, cache and snapshot state
+    /// outright; nothing is shared through process globals, so a test or an
+    /// application can start and stop runtimes independently.
+    pub async fn spawn(self) -> Result<RuntimeHandle> {
         info!("Starting Arete runtime");
 
         let plan = self.config.runtime_plan;
@@ -181,20 +215,20 @@ impl Runtime {
         } else {
             None
         };
+        let mut background = Vec::new();
         if let Some(monitor) = &health_monitor {
-            let _health_task = monitor.start().await;
+            background.push(monitor.start().await);
             info!("Health monitoring enabled");
         }
 
         let mut projector_handle = None;
         let mut ws_handle = None;
         let mut parser_handle = None;
-        let mut bus_cleanup_handle = None;
-        let mut stats_handle = None;
         let mut mutations_tx_guard = None;
         let mut snapshot_service: Option<Arc<crate::snapshot::SnapshotService>> = None;
         let mut snapshot_manager_handle = None;
         let mut snapshot_runtime = None;
+        let mut acceptor = None;
 
         if plan.live_runtime_enabled() {
             let (mutations_tx, mutations_rx) = mpsc::channel::<MutationBatch>(1024);
@@ -266,48 +300,67 @@ impl Runtime {
                 .instrument(info_span!("projector")),
             ));
 
-            if plan.websocket {
-                if let Some(ws_config) = &self.config.websocket {
-                    #[cfg(feature = "otel")]
-                    let mut ws_server = WebSocketServer::new(
-                        ws_config.bind_address,
-                        bus_manager.clone(),
-                        entity_cache.clone(),
-                        self.view_index.clone(),
-                        self.metrics.clone(),
-                    );
-                    #[cfg(not(feature = "otel"))]
-                    let mut ws_server = WebSocketServer::new(
-                        ws_config.bind_address,
-                        bus_manager.clone(),
-                        entity_cache.clone(),
-                        self.view_index.clone(),
-                    );
+            // The connection-serving half of the WebSocket server exists
+            // whenever there is a live runtime, so a caller that owns its own
+            // listener can hand in the connections it accepts. The listener
+            // is bound only when a WebSocket address is configured.
+            let bind_address = self
+                .config
+                .websocket
+                .as_ref()
+                .map(|ws_config| ws_config.bind_address)
+                .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+            #[cfg(feature = "otel")]
+            let mut ws_server = WebSocketServer::new(
+                bind_address,
+                bus_manager.clone(),
+                entity_cache.clone(),
+                self.view_index.clone(),
+                self.metrics.clone(),
+            );
+            #[cfg(not(feature = "otel"))]
+            let mut ws_server = WebSocketServer::new(
+                bind_address,
+                bus_manager.clone(),
+                entity_cache.clone(),
+                self.view_index.clone(),
+            );
 
-                    if let Some(max_clients) = self.websocket_max_clients {
-                        ws_server = ws_server.with_max_clients(max_clients);
-                    }
-                    if let Some(plugin) = self.websocket_auth_plugin.clone() {
-                        ws_server = ws_server.with_auth_plugin(plugin);
-                    }
-                    if let Some(emitter) = self.websocket_usage_emitter.clone() {
-                        ws_server = ws_server.with_usage_emitter(emitter);
-                    }
-                    if let Some(rate_limit_config) = self.websocket_rate_limit_config {
-                        ws_server = ws_server.with_rate_limit_config(rate_limit_config);
-                    }
-
-                    let bind_addr = ws_config.bind_address;
-                    ws_handle = Some(tokio::spawn(
-                        async move {
-                            if let Err(e) = ws_server.start().await {
-                                error!("WebSocket server error: {}", e);
-                            }
-                        }
-                        .instrument(info_span!("ws.server", %bind_addr)),
-                    ));
-                }
+            if let Some(max_clients) = self.websocket_max_clients {
+                ws_server = ws_server.with_max_clients(max_clients);
             }
+            if let Some(plugin) = self.websocket_auth_plugin.clone() {
+                ws_server = ws_server.with_auth_plugin(plugin);
+            }
+            if let Some(emitter) = self.websocket_usage_emitter.clone() {
+                ws_server = ws_server.with_usage_emitter(emitter);
+            }
+            if let Some(rate_limit_config) = self.websocket_rate_limit_config {
+                ws_server = ws_server.with_rate_limit_config(rate_limit_config);
+            }
+            let (connection_acceptor, cleanup_handle) = ws_server.into_acceptor();
+            background.push(cleanup_handle);
+
+            if plan.websocket && self.config.websocket.is_some() {
+                let listener_acceptor = connection_acceptor.clone();
+                ws_handle = Some(tokio::spawn(
+                    async move {
+                        info!("Starting WebSocket server on {}", bind_address);
+                        let listener = match TcpListener::bind(&bind_address).await {
+                            Ok(listener) => listener,
+                            Err(e) => {
+                                error!("WebSocket server error: {}", e);
+                                return;
+                            }
+                        };
+                        if let Err(e) = listener_acceptor.serve_listener(listener).await {
+                            error!("WebSocket server error: {}", e);
+                        }
+                    }
+                    .instrument(info_span!("ws.server", %bind_address)),
+                ));
+            }
+            acceptor = Some(connection_acceptor);
 
             if let Some(spec) = self.spec.as_ref() {
                 if let Some(parser_setup) = spec.parser_setup.clone() {
@@ -343,7 +396,7 @@ impl Runtime {
             }
 
             let cleanup_bus = bus_manager.clone();
-            bus_cleanup_handle = Some(tokio::spawn(
+            background.push(tokio::spawn(
                 async move {
                     let mut interval = tokio::time::interval(Duration::from_secs(60));
                     loop {
@@ -362,7 +415,7 @@ impl Runtime {
                 .instrument(info_span!("bus.cleanup")),
             ));
 
-            stats_handle = Some(tokio::spawn(
+            background.push(tokio::spawn(
                 async move {
                     let mut interval = tokio::time::interval(Duration::from_secs(30));
                     loop {
@@ -381,10 +434,12 @@ impl Runtime {
 
         // Run the HTTP server on a dedicated OS thread with its own single-threaded
         // tokio runtime so liveness remains responsive under projection load.
-        let _http_health_handle = if let Some(http_health_config) = &self.config.http_health {
+        let http_shutdown = CancellationToken::new();
+        let http_health_thread = if let Some(http_health_config) = &self.config.http_health {
             let mut http_server = HttpServer::new(http_health_config.bind_address)
                 .with_runtime_plan(plan)
-                .with_program_runtime_catalog(program_runtime_catalog);
+                .with_program_runtime_catalog(program_runtime_catalog)
+                .with_shutdown(http_shutdown.clone());
             if let Some(target_id) = self.config.program_read_binding_target_id.clone() {
                 http_server = http_server.with_program_read_binding_target(target_id);
             }
@@ -437,36 +492,176 @@ impl Runtime {
             None
         };
 
-        info!("Arete runtime is running. Press Ctrl+C to stop.");
+        Ok(RuntimeHandle {
+            plan,
+            health_monitor,
+            snapshot_runtime,
+            snapshot_service,
+            snapshot_manager_handle,
+            mutations_tx: mutations_tx_guard,
+            projector_handle,
+            parser_handle,
+            ws_handle,
+            background,
+            acceptor,
+            http_shutdown,
+            http_health_thread,
+        })
+    }
+}
 
-        async fn wait_for_task(handle: Option<tokio::task::JoinHandle<()>>) {
-            if let Some(handle) = handle {
-                let _ = handle.await;
-            } else {
-                std::future::pending().await
+/// A running [`Runtime`], owned by whoever called [`Runtime::spawn`].
+///
+/// Dropping the handle does **not** stop the runtime; the tasks it owns keep
+/// running on the tokio runtime. Call [`shutdown`](Self::shutdown) to stop
+/// them and release the memory they hold. This is deliberate: the same
+/// semantics as dropping a `JoinHandle`, and what lets `run` hand the handle
+/// across a `select!`.
+pub struct RuntimeHandle {
+    plan: crate::RuntimePlan,
+    health_monitor: Option<HealthMonitor>,
+    snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
+    snapshot_service: Option<Arc<crate::snapshot::SnapshotService>>,
+    snapshot_manager_handle: Option<JoinHandle<()>>,
+    mutations_tx: Option<mpsc::Sender<MutationBatch>>,
+    projector_handle: Option<JoinHandle<()>>,
+    parser_handle: Option<JoinHandle<()>>,
+    ws_handle: Option<JoinHandle<()>>,
+    background: Vec<JoinHandle<()>>,
+    acceptor: Option<ConnectionAcceptor>,
+    http_shutdown: CancellationToken,
+    http_health_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Serves caller-accepted connections against one runtime. Obtained from
+/// [`RuntimeHandle::connection_server`]; cheap to clone into the task that
+/// owns each connection.
+#[derive(Clone)]
+pub struct ConnectionServer(ConnectionAcceptor);
+
+impl ConnectionServer {
+    /// Serve one accepted connection until the peer disconnects or the
+    /// runtime shuts down. See [`RuntimeHandle::serve_connection`].
+    pub async fn serve(&self, stream: TcpStream, remote_addr: SocketAddr) -> Result<()> {
+        self.0.serve(stream, remote_addr).await
+    }
+
+    /// Number of WebSocket clients currently connected to the runtime.
+    pub fn client_count(&self) -> usize {
+        self.0.client_count()
+    }
+}
+
+/// How long `shutdown` waits for listener-spawned sessions to finish their
+/// cleanup after being told to stop.
+const SESSION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long `shutdown` lets the projector drain queued batches after the
+/// producers have stopped.
+const PROJECTOR_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bound on the final snapshot, chosen to fit inside the platform's
+/// termination grace period.
+const SHUTDOWN_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(20);
+
+impl RuntimeHandle {
+    /// The capability plan this runtime was started with.
+    pub fn plan(&self) -> crate::RuntimePlan {
+        self.plan
+    }
+
+    /// Whether this runtime should take traffic: the stream is healthy and,
+    /// after a snapshot restore, the parser has caught back up to the slot
+    /// tip. The same test the HTTP `/ready` endpoint applies.
+    pub async fn is_ready(&self) -> bool {
+        let stream_ready = match self.health_monitor.as_ref() {
+            Some(monitor) => monitor.is_healthy().await,
+            None => true,
+        };
+        let snapshot_ready = self
+            .snapshot_runtime
+            .as_ref()
+            .is_none_or(crate::snapshot::SnapshotRuntime::resume_gate_ready);
+        stream_ready && snapshot_ready
+    }
+
+    /// Number of WebSocket clients currently connected to this runtime.
+    pub fn client_count(&self) -> usize {
+        self.acceptor
+            .as_ref()
+            .map(ConnectionAcceptor::client_count)
+            .unwrap_or(0)
+    }
+
+    /// Serve a TCP connection the caller accepted, as this runtime's
+    /// WebSocket server would have: handshake, authentication, then the
+    /// subscription session until the peer disconnects.
+    ///
+    /// Resolves when the session ends, or when the runtime shuts down. Fails
+    /// if the runtime has no live runtime (no buses to subscribe to). Callers
+    /// that serve from an accept loop should take a
+    /// [`connection_server`](Self::connection_server), which is cheap to clone
+    /// into each connection's task.
+    pub async fn serve_connection(&self, stream: TcpStream, remote_addr: SocketAddr) -> Result<()> {
+        match self.connection_server() {
+            Some(server) => server.serve(stream, remote_addr).await,
+            None => anyhow::bail!("this runtime has no live runtime to serve connections from"),
+        }
+    }
+
+    /// A clonable handle that serves connections against this runtime.
+    ///
+    /// `None` when the runtime has no live runtime. Sessions served through a
+    /// clone are ended by [`shutdown`](Self::shutdown) like any other.
+    pub fn connection_server(&self) -> Option<ConnectionServer> {
+        self.acceptor.clone().map(ConnectionServer)
+    }
+
+    /// Resolves when a core task - projector, parser or WebSocket listener -
+    /// exits on its own. `run` treats that as a reason to shut down.
+    pub async fn exited(&mut self) {
+        async fn wait(handle: Option<&mut JoinHandle<()>>) {
+            match handle {
+                Some(handle) => {
+                    let _ = handle.await;
+                }
+                None => std::future::pending().await,
             }
         }
 
         tokio::select! {
-            _ = wait_for_task(ws_handle) => info!("WebSocket server task completed"),
-            _ = wait_for_task(projector_handle) => info!("Projector task completed"),
-            _ = wait_for_task(parser_handle) => info!("Parser runtime task completed"),
-            _ = wait_for_task(bus_cleanup_handle) => info!("Bus cleanup task completed"),
-            _ = wait_for_task(stats_handle) => info!("Stats reporter task completed"),
-            _ = shutdown_signal() => {}
+            _ = wait(self.ws_handle.as_mut()) => info!("WebSocket server task completed"),
+            _ = wait(self.projector_handle.as_mut()) => info!("Projector task completed"),
+            _ = wait(self.parser_handle.as_mut()) => info!("Parser runtime task completed"),
         }
+    }
 
-        // Final snapshot while the projector is still draining, so planned
-        // deploys restart near-lossless. Bounded to fit inside the platform's
-        // termination grace period.
-        if let Some(service) = snapshot_service.take() {
-            if let Some(handle) = snapshot_manager_handle.take() {
+    /// Stop the runtime: take the final snapshot if configured, stop
+    /// producing, let the projector drain, close sessions, then stop
+    /// everything else.
+    ///
+    /// Order matters. The final snapshot is taken *first*, while the parser
+    /// is still running: capture takes the barrier exclusively, so it waits
+    /// for every in-flight update to reach the projector and records one
+    /// consistent cut. Aborting the parser before that could cut an update
+    /// between its VM write and its batch, and the snapshot would keep the
+    /// write without the projection. Only then is the parser aborted; anything
+    /// it produces after the snapshot is simply not restored. The sender is
+    /// dropped so the projector exits once its queue is empty, bounded by a
+    /// timeout after which it is aborted and awaited. Sessions are ended
+    /// through their normal cleanup, the HTTP health server is signalled and
+    /// its thread joined, and the remaining tasks are aborted.
+    pub async fn shutdown(mut self) -> Result<()> {
+        // Final snapshot before anything stops, so planned stops restart
+        // near-lossless. Bounded to fit inside a termination grace period.
+        if let Some(service) = self.snapshot_service.take() {
+            if let Some(handle) = self.snapshot_manager_handle.take() {
                 handle.abort();
             }
             if service.config().snapshot_on_shutdown {
                 info!("Taking final snapshot before shutdown");
                 match tokio::time::timeout(
-                    Duration::from_secs(20),
+                    SHUTDOWN_SNAPSHOT_TIMEOUT,
                     service.snapshot_now(crate::snapshot::SnapshotTrigger::Shutdown),
                 )
                 .await
@@ -477,7 +672,57 @@ impl Runtime {
                 }
             }
         }
-        drop(mutations_tx_guard);
+        if let Some(handle) = self.snapshot_manager_handle.take() {
+            handle.abort();
+        }
+
+        if let Some(parser) = self.parser_handle.take() {
+            parser.abort();
+            let _ = parser.await;
+        }
+        if let Some(acceptor) = &self.acceptor {
+            acceptor.shutdown();
+        }
+        if let Some(ws) = self.ws_handle.take() {
+            let _ = ws.await;
+        }
+        if let Some(acceptor) = &self.acceptor {
+            if tokio::time::timeout(SESSION_DRAIN_TIMEOUT, acceptor.wait_for_sessions())
+                .await
+                .is_err()
+            {
+                warn!(
+                    "Sessions did not finish within {:?} of shutdown",
+                    SESSION_DRAIN_TIMEOUT
+                );
+            }
+        }
+
+        drop(self.mutations_tx.take());
+        if let Some(mut projector) = self.projector_handle.take() {
+            if tokio::time::timeout(PROJECTOR_DRAIN_TIMEOUT, &mut projector)
+                .await
+                .is_err()
+            {
+                warn!(
+                    "Projector did not drain within {:?}; aborting it",
+                    PROJECTOR_DRAIN_TIMEOUT
+                );
+                projector.abort();
+                let _ = projector.await;
+            }
+        }
+
+        for handle in self.background.drain(..) {
+            handle.abort();
+        }
+
+        self.http_shutdown.cancel();
+        if let Some(thread) = self.http_health_thread.take() {
+            if let Err(e) = tokio::task::spawn_blocking(move || thread.join()).await {
+                error!("Health server thread join failed: {e}");
+            }
+        }
 
         info!("Shutting down Arete runtime");
         Ok(())
