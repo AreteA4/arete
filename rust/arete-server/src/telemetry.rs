@@ -128,6 +128,10 @@ pub fn init_with_otel(config: TelemetryConfig) -> anyhow::Result<TelemetryGuard>
     use opentelemetry_sdk::propagation::TraceContextPropagator;
     use opentelemetry_sdk::trace::Tracer;
 
+    anyhow::ensure!(
+        !config.metrics_period.is_zero(),
+        "OpenTelemetry metrics export period must be greater than zero"
+    );
     global::set_text_map_propagator(TraceContextPropagator::new());
 
     let endpoint = config
@@ -161,6 +165,7 @@ pub fn init_with_otel(config: TelemetryConfig) -> anyhow::Result<TelemetryGuard>
         .with_resource(resource)
         .with_period(config.metrics_period)
         .build()?;
+    global::set_meter_provider(meter_provider.clone());
 
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
@@ -236,5 +241,17 @@ mod tests {
             resource.get(Key::new("custom.key")),
             Some("custom-value".into())
         );
+    }
+
+    #[test]
+    fn zero_metrics_period_is_rejected() {
+        let error = match init_with_otel(
+            TelemetryConfig::new("test-service").with_metrics_period(Duration::ZERO),
+        ) {
+            Ok(_) => panic!("a zero export period must not reach Tokio's interval"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("must be greater than zero"));
     }
 }

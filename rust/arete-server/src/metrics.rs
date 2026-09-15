@@ -123,7 +123,10 @@ impl Metrics {
         attributes: Vec<KeyValue>,
     ) -> Self {
         let meter = global::meter(service_name);
+        Self::with_meter(meter, attributes)
+    }
 
+    fn with_meter(meter: Meter, attributes: Vec<KeyValue>) -> Self {
         // WebSocket metrics
         let ws_connections_total = meter
             .u64_counter("arete.ws.connections.total")
@@ -889,10 +892,9 @@ mod tests {
         let provider = SdkMeterProvider::builder()
             .with_reader(PeriodicReader::builder(exporter, runtime::Tokio).build())
             .build();
-        opentelemetry::global::set_meter_provider(provider.clone());
-
-        let metrics = Metrics::with_attributes(
-            "test_service_with_attributes",
+        use opentelemetry::metrics::MeterProvider;
+        let metrics = Metrics::with_meter(
+            provider.meter("test_service_with_attributes"),
             vec![KeyValue::new("base.key", "base-value")],
         );
         metrics.record_stream_event("test-event");
