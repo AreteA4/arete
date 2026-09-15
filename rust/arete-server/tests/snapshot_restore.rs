@@ -106,6 +106,8 @@ fn make_projector(
         BusManager::new(),
         entity_cache.clone(),
         rx,
+        #[cfg(feature = "otel")]
+        None,
     );
     (tx, projector)
 }

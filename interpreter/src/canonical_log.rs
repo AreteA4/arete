@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 #[cfg(feature = "otel")]
-use opentelemetry::trace::TraceContextExt;
+use opentelemetry::{trace::TraceContextExt, KeyValue};
 #[cfg(feature = "otel")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -88,6 +88,12 @@ impl CanonicalLog {
             let span_ref = context.span();
             let span_context = span_ref.span_context();
             if span_context.is_valid() {
+                if canonical_span_events_enabled() {
+                    span_ref.add_event(
+                        "canonical_event",
+                        canonical_span_event_attributes(&self.data),
+                    );
+                }
                 self.data.insert(
                     "trace_id".to_string(),
                     json!(format!("{:032x}", span_context.trace_id())),
@@ -120,6 +126,58 @@ impl CanonicalLog {
             }
         }
     }
+}
+
+#[cfg(feature = "otel")]
+fn canonical_span_events_enabled() -> bool {
+    std::env::var("ARETE_CANONICAL_SPAN_EVENTS")
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "otel")]
+fn canonical_span_event_attributes(data: &HashMap<String, Value>) -> Vec<KeyValue> {
+    const FIELDS: [&str; 10] = [
+        "phase",
+        "event_type",
+        "entity",
+        "outcome",
+        "duration_ms",
+        "opcodes",
+        "mutations",
+        "pda_hits",
+        "pda_misses",
+        "skip_reason",
+    ];
+
+    FIELDS
+        .into_iter()
+        .filter_map(|key| {
+            let value = data.get(key)?;
+            let value = match value {
+                Value::String(value) => value.clone().into(),
+                Value::Bool(value) => (*value).into(),
+                Value::Number(value) => {
+                    if let Some(value) = value.as_i64() {
+                        value.into()
+                    } else if let Some(value) =
+                        value.as_u64().and_then(|value| value.try_into().ok())
+                    {
+                        opentelemetry::Value::I64(value)
+                    } else {
+                        value.as_f64()?.into()
+                    }
+                }
+                _ => return None,
+            };
+            Some(KeyValue::new(key, value))
+        })
+        .collect()
 }
 
 impl Default for CanonicalLog {

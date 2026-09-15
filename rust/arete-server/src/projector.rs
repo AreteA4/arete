@@ -9,7 +9,7 @@ use serde_json::Value;
 use smallvec::SmallVec;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, instrument};
+use tracing::{debug, error, info_span, instrument};
 
 #[cfg(feature = "otel")]
 use crate::metrics::Metrics;
@@ -74,13 +74,22 @@ impl Projector {
         let mut json_buffer = Vec::with_capacity(4096);
 
         while let Some(mut batch) = self.mutations_rx.recv().await {
-            let _span_guard = batch.span.enter();
-
             let mut log = CanonicalLog::new();
             log.set("phase", "projector");
 
             let batch_size = batch.len();
             let slot_context = batch.slot_context;
+            let batch_span = info_span!(
+                parent: &batch.span,
+                "projector.batch",
+                batch.mutations = batch_size,
+                batch.position = tracing::field::Empty,
+                frames_published = tracing::field::Empty,
+            );
+            if let Some(context) = slot_context {
+                batch_span.record("batch.position", context.to_seq_string());
+            }
+            let _span_guard = batch_span.enter();
             let mut frames_published = 0u32;
             let mut errors = 0u32;
 
@@ -133,6 +142,7 @@ impl Projector {
             log.set("batch_size", batch_size)
                 .set("frames_published", frames_published)
                 .set("errors", errors);
+            batch_span.record("frames_published", frames_published);
 
             #[cfg(feature = "otel")]
             if let Some(ref metrics) = self.metrics {

@@ -29,13 +29,14 @@ use opentelemetry::{
     KeyValue,
 };
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 /// Central metrics container for Arete server components
 #[derive(Clone)]
 pub struct Metrics {
     #[allow(dead_code)]
     meter: Meter,
+    base_attributes: Arc<[KeyValue]>,
 
     // WebSocket metrics
     pub ws_connections_total: Counter<u64>,
@@ -110,6 +111,17 @@ impl Metrics {
     ///
     /// The service name is used as the meter name for all metrics.
     pub fn new(service_name: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+        Self::with_attributes(service_name, Vec::new())
+    }
+
+    /// Create metrics that append the supplied attributes to every measurement.
+    ///
+    /// Keep this list small: callers are responsible for the cardinality of
+    /// attribute values and its effect on their metrics backend.
+    pub fn with_attributes(
+        service_name: impl Into<std::borrow::Cow<'static, str>>,
+        attributes: Vec<KeyValue>,
+    ) -> Self {
         let meter = global::meter(service_name);
 
         // WebSocket metrics
@@ -371,6 +383,7 @@ impl Metrics {
 
         Self {
             meter,
+            base_attributes: attributes.into(),
             ws_connections_total,
             ws_connections_active,
             ws_messages_received,
@@ -425,6 +438,13 @@ impl Metrics {
         }
     }
 
+    fn attributes(&self, attributes: impl IntoIterator<Item = KeyValue>) -> Vec<KeyValue> {
+        let mut merged = Vec::with_capacity(self.base_attributes.len() + 4);
+        merged.extend(self.base_attributes.iter().cloned());
+        merged.extend(attributes);
+        merged
+    }
+
     // ==================== WebSocket Helpers ====================
 
     pub fn record_transaction_request(
@@ -434,329 +454,325 @@ impl Metrics {
         latency_ms: f64,
         bytes: u64,
     ) {
-        let attrs = &[
+        let attrs = self.attributes([
             KeyValue::new("operation", operation),
             KeyValue::new("result", result),
-        ];
-        self.transaction_requests_total.add(1, attrs);
-        self.transaction_request_latency.record(latency_ms, attrs);
-        self.transaction_request_bytes.record(bytes, attrs);
+        ]);
+        self.transaction_requests_total.add(1, &attrs);
+        self.transaction_request_latency.record(latency_ms, &attrs);
+        self.transaction_request_bytes.record(bytes, &attrs);
     }
 
     pub fn record_transaction_upstream(&self, operation: &'static str, outcome: &'static str) {
-        self.transaction_upstream_total.add(
-            1,
-            &[
-                KeyValue::new("operation", operation),
-                KeyValue::new("outcome", outcome),
-            ],
-        );
+        let attrs = self.attributes([
+            KeyValue::new("operation", operation),
+            KeyValue::new("outcome", outcome),
+        ]);
+        self.transaction_upstream_total.add(1, &attrs);
     }
 
     pub fn record_transaction_inflight(&self, delta: i64, operation: &'static str) {
-        self.transaction_inflight
-            .add(delta, &[KeyValue::new("operation", operation)]);
+        let attrs = self.attributes([KeyValue::new("operation", operation)]);
+        self.transaction_inflight.add(delta, &attrs);
     }
 
     pub fn record_transaction_denial(&self, reason: &'static str) {
-        self.transaction_denials_total
-            .add(1, &[KeyValue::new("reason", reason)]);
+        let attrs = self.attributes([KeyValue::new("reason", reason)]);
+        self.transaction_denials_total.add(1, &attrs);
     }
 
     /// Record a new WebSocket connection
     pub fn record_ws_connection(&self) {
-        self.ws_connections_total.add(1, &[]);
-        self.ws_connections_active.add(1, &[]);
+        self.ws_connections_total
+            .add(1, self.base_attributes.as_ref());
+        self.ws_connections_active
+            .add(1, self.base_attributes.as_ref());
     }
 
     /// Record a new WebSocket connection with metering key attribution
     pub fn record_ws_connection_with_metering(&self, metering_key: &str) {
-        let attrs = &[KeyValue::new("metering_key", metering_key.to_string())];
-        self.ws_connections_total.add(1, attrs);
-        self.ws_connections_active.add(1, attrs);
+        let attrs = self.attributes([KeyValue::new("metering_key", metering_key.to_string())]);
+        self.ws_connections_total.add(1, &attrs);
+        self.ws_connections_active.add(1, &attrs);
     }
 
     /// Record a WebSocket disconnection with duration
     pub fn record_ws_disconnection(&self, duration_secs: f64) {
-        self.ws_connections_active.add(-1, &[]);
-        self.ws_connection_duration.record(duration_secs, &[]);
+        self.ws_connections_active
+            .add(-1, self.base_attributes.as_ref());
+        self.ws_connection_duration
+            .record(duration_secs, self.base_attributes.as_ref());
     }
 
     /// Record a WebSocket disconnection with metering key attribution
     pub fn record_ws_disconnection_with_metering(&self, duration_secs: f64, metering_key: &str) {
-        let attrs = &[KeyValue::new("metering_key", metering_key.to_string())];
-        self.ws_connections_active.add(-1, attrs);
-        self.ws_connection_duration.record(duration_secs, attrs);
+        let attrs = self.attributes([KeyValue::new("metering_key", metering_key.to_string())]);
+        self.ws_connections_active.add(-1, &attrs);
+        self.ws_connection_duration.record(duration_secs, &attrs);
     }
 
     /// Record a WebSocket message received
     pub fn record_ws_message_received(&self) {
-        self.ws_messages_received.add(1, &[]);
+        self.ws_messages_received
+            .add(1, self.base_attributes.as_ref());
     }
 
     /// Record a WebSocket message received with metering key attribution
     pub fn record_ws_message_received_with_metering(&self, metering_key: &str) {
-        self.ws_messages_received.add(
-            1,
-            &[KeyValue::new("metering_key", metering_key.to_string())],
-        );
+        let attrs = self.attributes([KeyValue::new("metering_key", metering_key.to_string())]);
+        self.ws_messages_received.add(1, &attrs);
     }
 
     /// Record a WebSocket message sent
     pub fn record_ws_message_sent(&self) {
-        self.ws_messages_sent.add(1, &[]);
+        self.ws_messages_sent.add(1, self.base_attributes.as_ref());
     }
 
     /// Record a WebSocket message sent with metering key attribution
     pub fn record_ws_message_sent_with_metering(&self, metering_key: &str) {
-        self.ws_messages_sent.add(
-            1,
-            &[KeyValue::new("metering_key", metering_key.to_string())],
-        );
+        let attrs = self.attributes([KeyValue::new("metering_key", metering_key.to_string())]);
+        self.ws_messages_sent.add(1, &attrs);
     }
 
     /// Record a subscription created for a view
     pub fn record_subscription_created(&self, view_id: &str) {
-        self.ws_subscriptions_active
-            .add(1, &[KeyValue::new("view_id", view_id.to_string())]);
+        let attrs = self.attributes([KeyValue::new("view_id", view_id.to_string())]);
+        self.ws_subscriptions_active.add(1, &attrs);
     }
 
     /// Record a subscription created with metering key attribution
     pub fn record_subscription_created_with_metering(&self, view_id: &str, metering_key: &str) {
-        self.ws_subscriptions_active.add(
-            1,
-            &[
-                KeyValue::new("view_id", view_id.to_string()),
-                KeyValue::new("metering_key", metering_key.to_string()),
-            ],
-        );
+        let attrs = self.attributes([
+            KeyValue::new("view_id", view_id.to_string()),
+            KeyValue::new("metering_key", metering_key.to_string()),
+        ]);
+        self.ws_subscriptions_active.add(1, &attrs);
     }
 
     /// Record a subscription removed for a view
     pub fn record_subscription_removed(&self, view_id: &str) {
-        self.ws_subscriptions_active
-            .add(-1, &[KeyValue::new("view_id", view_id.to_string())]);
+        let attrs = self.attributes([KeyValue::new("view_id", view_id.to_string())]);
+        self.ws_subscriptions_active.add(-1, &attrs);
     }
 
     /// Record a subscription removed with metering key attribution
     pub fn record_subscription_removed_with_metering(&self, view_id: &str, metering_key: &str) {
-        self.ws_subscriptions_active.add(
-            -1,
-            &[
-                KeyValue::new("view_id", view_id.to_string()),
-                KeyValue::new("metering_key", metering_key.to_string()),
-            ],
-        );
+        let attrs = self.attributes([
+            KeyValue::new("view_id", view_id.to_string()),
+            KeyValue::new("metering_key", metering_key.to_string()),
+        ]);
+        self.ws_subscriptions_active.add(-1, &attrs);
     }
 
     /// Record a rejected protocol message. Error codes are bounded server constants.
     pub fn record_ws_protocol_error(&self, code: &str) {
-        self.ws_protocol_errors
-            .add(1, &[KeyValue::new("code", code.to_string())]);
+        let attrs = self.attributes([KeyValue::new("code", code.to_string())]);
+        self.ws_protocol_errors.add(1, &attrs);
     }
 
     // ==================== Projector Helpers ====================
 
     /// Record a mutation processed
     pub fn record_mutation_processed(&self, entity: &str) {
-        self.projector_mutations_processed
-            .add(1, &[KeyValue::new("entity", entity.to_string())]);
+        let attrs = self.attributes([KeyValue::new("entity", entity.to_string())]);
+        self.projector_mutations_processed.add(1, &attrs);
     }
 
     /// Record a frame published
     pub fn record_frame_published(&self, mode: &str, entity: &str) {
-        self.projector_frames_published.add(
-            1,
-            &[
-                KeyValue::new("mode", mode.to_string()),
-                KeyValue::new("entity", entity.to_string()),
-            ],
-        );
+        let attrs = self.attributes([
+            KeyValue::new("mode", mode.to_string()),
+            KeyValue::new("entity", entity.to_string()),
+        ]);
+        self.projector_frames_published.add(1, &attrs);
     }
 
     /// Record projector processing latency in milliseconds
     pub fn record_projector_latency(&self, latency_ms: f64) {
-        self.projector_processing_latency.record(latency_ms, &[]);
+        self.projector_processing_latency
+            .record(latency_ms, self.base_attributes.as_ref());
     }
 
     // ==================== Stream Helpers ====================
 
     /// Record an event received from the stream
     pub fn record_stream_event(&self, event_type: &str) {
-        self.stream_events_received
-            .add(1, &[KeyValue::new("event_type", event_type.to_string())]);
+        let attrs = self.attributes([KeyValue::new("event_type", event_type.to_string())]);
+        self.stream_events_received.add(1, &attrs);
     }
 
     /// Record a stream error
     pub fn record_stream_error(&self, error_type: &str) {
-        self.stream_errors_total
-            .add(1, &[KeyValue::new("error_type", error_type.to_string())]);
+        let attrs = self.attributes([KeyValue::new("error_type", error_type.to_string())]);
+        self.stream_errors_total.add(1, &attrs);
     }
 
     // ==================== VM Helpers ====================
 
     /// Record VM instructions executed
     pub fn record_vm_instructions(&self, count: u64) {
-        self.vm_instructions_executed.add(count, &[]);
+        self.vm_instructions_executed
+            .add(count, self.base_attributes.as_ref());
     }
 
     /// Record a VM event processed
     pub fn record_vm_event(&self, event_type: &str, program_id: &str) {
-        self.vm_events_processed.add(
-            1,
-            &[
-                KeyValue::new("event_type", event_type.to_string()),
-                KeyValue::new("program_id", program_id.to_string()),
-            ],
-        );
+        let attrs = self.attributes([
+            KeyValue::new("event_type", event_type.to_string()),
+            KeyValue::new("program_id", program_id.to_string()),
+        ]);
+        self.vm_events_processed.add(1, &attrs);
     }
 
     /// Record VM event processing duration in milliseconds
     pub fn record_vm_event_duration(&self, duration_ms: f64, event_type: &str) {
-        self.vm_event_processing_duration.record(
-            duration_ms,
-            &[KeyValue::new("event_type", event_type.to_string())],
-        );
+        let attrs = self.attributes([KeyValue::new("event_type", event_type.to_string())]);
+        self.vm_event_processing_duration
+            .record(duration_ms, &attrs);
     }
 
     /// Record mutations emitted by the VM
     pub fn record_vm_mutations(&self, count: u64, entity: &str) {
-        self.vm_mutations_emitted
-            .add(count, &[KeyValue::new("entity", entity.to_string())]);
+        let attrs = self.attributes([KeyValue::new("entity", entity.to_string())]);
+        self.vm_mutations_emitted.add(count, &attrs);
     }
 
     /// Record a PDA cache hit
     pub fn record_pda_cache_hit(&self) {
-        self.vm_pda_cache_hits.add(1, &[]);
+        self.vm_pda_cache_hits.add(1, self.base_attributes.as_ref());
     }
 
     /// Record a PDA cache miss
     pub fn record_pda_cache_miss(&self) {
-        self.vm_pda_cache_misses.add(1, &[]);
+        self.vm_pda_cache_misses
+            .add(1, self.base_attributes.as_ref());
     }
 
     /// Update the pending queue size
     pub fn update_pending_queue_size(&self, delta: i64) {
-        self.vm_pending_queue_size.add(delta, &[]);
+        self.vm_pending_queue_size
+            .add(delta, self.base_attributes.as_ref());
     }
 
     // ==================== Interpreter Cache Helpers ====================
 
     /// Record all gauge metrics from VmMemoryStats
     pub fn record_vm_memory_stats(&self, stats: &arete_interpreter::VmMemoryStats, entity: &str) {
-        let attrs = &[KeyValue::new("entity", entity.to_string())];
+        let attrs = self.attributes([KeyValue::new("entity", entity.to_string())]);
 
         self.vm_state_table_entries
-            .record(stats.state_table_entity_count as i64, attrs);
+            .record(stats.state_table_entity_count as i64, &attrs);
         self.vm_state_table_capacity
-            .record(stats.state_table_max_entries as i64, attrs);
+            .record(stats.state_table_max_entries as i64, &attrs);
 
         self.vm_lookup_index_count
-            .record(stats.lookup_index_count as i64, attrs);
+            .record(stats.lookup_index_count as i64, &attrs);
         self.vm_lookup_index_entries
-            .record(stats.lookup_index_total_entries as i64, attrs);
+            .record(stats.lookup_index_total_entries as i64, &attrs);
 
         self.vm_temporal_index_count
-            .record(stats.temporal_index_count as i64, attrs);
+            .record(stats.temporal_index_count as i64, &attrs);
         self.vm_temporal_index_entries
-            .record(stats.temporal_index_total_entries as i64, attrs);
+            .record(stats.temporal_index_total_entries as i64, &attrs);
 
         self.vm_pda_reverse_lookup_count
-            .record(stats.pda_reverse_lookup_count as i64, attrs);
+            .record(stats.pda_reverse_lookup_count as i64, &attrs);
         self.vm_pda_reverse_lookup_entries
-            .record(stats.pda_reverse_lookup_total_entries as i64, attrs);
+            .record(stats.pda_reverse_lookup_total_entries as i64, &attrs);
 
         self.vm_version_tracker_entries
-            .record(stats.version_tracker_entries as i64, attrs);
+            .record(stats.version_tracker_entries as i64, &attrs);
 
         self.vm_path_cache_size
-            .record(stats.path_cache_size as i64, attrs);
+            .record(stats.path_cache_size as i64, &attrs);
 
         if let Some(ref pq) = stats.pending_queue_stats {
             self.vm_pending_queue_updates
-                .record(pq.total_updates as i64, attrs);
+                .record(pq.total_updates as i64, &attrs);
             self.vm_pending_queue_unique_pdas
-                .record(pq.unique_pdas as i64, attrs);
+                .record(pq.unique_pdas as i64, &attrs);
             self.vm_pending_queue_memory_bytes
-                .record(pq.estimated_memory_bytes as i64, attrs);
+                .record(pq.estimated_memory_bytes as i64, &attrs);
             self.vm_pending_queue_oldest_age
-                .record(pq.oldest_age_seconds as f64, attrs);
+                .record(pq.oldest_age_seconds as f64, &attrs);
         }
     }
 
     /// Record state table evictions
     pub fn record_state_table_eviction(&self, count: u64, entity: &str) {
-        self.vm_state_table_evictions
-            .add(count, &[KeyValue::new("entity", entity.to_string())]);
+        let attrs = self.attributes([KeyValue::new("entity", entity.to_string())]);
+        self.vm_state_table_evictions.add(count, &attrs);
     }
 
     /// Record state table at capacity event
     pub fn record_state_table_at_capacity(&self, entity: &str) {
-        self.vm_state_table_at_capacity_events
-            .add(1, &[KeyValue::new("entity", entity.to_string())]);
+        let attrs = self.attributes([KeyValue::new("entity", entity.to_string())]);
+        self.vm_state_table_at_capacity_events.add(1, &attrs);
     }
 
     /// Record cleanup results
     pub fn record_vm_cleanup(&self, pending_removed: usize, temporal_removed: usize, entity: &str) {
-        let attrs = &[KeyValue::new("entity", entity.to_string())];
+        let attrs = self.attributes([KeyValue::new("entity", entity.to_string())]);
         self.vm_cleanup_pending_removed
-            .add(pending_removed as u64, attrs);
+            .add(pending_removed as u64, &attrs);
         self.vm_cleanup_temporal_removed
-            .add(temporal_removed as u64, attrs);
+            .add(temporal_removed as u64, &attrs);
     }
 
     /// Record a path cache hit
     pub fn record_path_cache_hit(&self) {
-        self.vm_path_cache_hits.add(1, &[]);
+        self.vm_path_cache_hits
+            .add(1, self.base_attributes.as_ref());
     }
 
     /// Record a path cache miss
     pub fn record_path_cache_miss(&self) {
-        self.vm_path_cache_misses.add(1, &[]);
+        self.vm_path_cache_misses
+            .add(1, self.base_attributes.as_ref());
     }
 
     /// Record a lookup index hit
     pub fn record_lookup_index_hit(&self, index_name: &str) {
-        self.vm_lookup_index_hits
-            .add(1, &[KeyValue::new("index", index_name.to_string())]);
+        let attrs = self.attributes([KeyValue::new("index", index_name.to_string())]);
+        self.vm_lookup_index_hits.add(1, &attrs);
     }
 
     /// Record a lookup index miss
     pub fn record_lookup_index_miss(&self, index_name: &str) {
-        self.vm_lookup_index_misses
-            .add(1, &[KeyValue::new("index", index_name.to_string())]);
+        let attrs = self.attributes([KeyValue::new("index", index_name.to_string())]);
+        self.vm_lookup_index_misses.add(1, &attrs);
     }
 
     /// Record an update queued for later processing
     pub fn record_pending_update_queued(&self, entity: &str) {
-        self.vm_pending_updates_queued
-            .add(1, &[KeyValue::new("entity", entity.to_string())]);
+        let attrs = self.attributes([KeyValue::new("entity", entity.to_string())]);
+        self.vm_pending_updates_queued.add(1, &attrs);
     }
 
     /// Record queued updates flushed
     pub fn record_pending_updates_flushed(&self, count: u64, entity: &str) {
-        self.vm_pending_updates_flushed
-            .add(count, &[KeyValue::new("entity", entity.to_string())]);
+        let attrs = self.attributes([KeyValue::new("entity", entity.to_string())]);
+        self.vm_pending_updates_flushed.add(count, &attrs);
     }
 
     /// Record expired pending updates
     pub fn record_pending_updates_expired(&self, count: u64, entity: &str) {
-        self.vm_pending_updates_expired
-            .add(count, &[KeyValue::new("entity", entity.to_string())]);
+        let attrs = self.attributes([KeyValue::new("entity", entity.to_string())]);
+        self.vm_pending_updates_expired.add(count, &attrs);
     }
 
     // ==================== Business Helpers ====================
 
     /// Record an entity being tracked
     pub fn record_entity_active(&self, entity_name: &str) {
-        self.entities_active
-            .add(1, &[KeyValue::new("entity", entity_name.to_string())]);
+        let attrs = self.attributes([KeyValue::new("entity", entity_name.to_string())]);
+        self.entities_active.add(1, &attrs);
     }
 
     /// Record an entity no longer being tracked
     pub fn record_entity_inactive(&self, entity_name: &str) {
-        self.entities_active
-            .add(-1, &[KeyValue::new("entity", entity_name.to_string())]);
+        let attrs = self.attributes([KeyValue::new("entity", entity_name.to_string())]);
+        self.entities_active.add(-1, &attrs);
     }
 }
 
@@ -795,6 +811,97 @@ impl Drop for MetricsTimer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn base_attributes_are_appended_to_measurements() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use async_trait::async_trait;
+        use opentelemetry::metrics::Result;
+        use opentelemetry_sdk::metrics::{
+            data::{ResourceMetrics, Temporality},
+            exporter::PushMetricsExporter,
+            reader::{
+                AggregationSelector, DefaultAggregationSelector, DefaultTemporalitySelector,
+                TemporalitySelector,
+            },
+            Aggregation, InstrumentKind, PeriodicReader, SdkMeterProvider,
+        };
+        use opentelemetry_sdk::runtime;
+
+        #[derive(Clone, Debug, Default)]
+        struct AttributeExporter {
+            saw_attributes: Arc<AtomicBool>,
+        }
+
+        impl AggregationSelector for AttributeExporter {
+            fn aggregation(&self, kind: InstrumentKind) -> Aggregation {
+                DefaultAggregationSelector::new().aggregation(kind)
+            }
+        }
+
+        impl TemporalitySelector for AttributeExporter {
+            fn temporality(&self, kind: InstrumentKind) -> Temporality {
+                DefaultTemporalitySelector::new().temporality(kind)
+            }
+        }
+
+        #[async_trait]
+        impl PushMetricsExporter for AttributeExporter {
+            async fn export(&self, metrics: &mut ResourceMetrics) -> Result<()> {
+                let found = metrics
+                    .scope_metrics
+                    .iter()
+                    .flat_map(|scope| &scope.metrics)
+                    .filter(|metric| metric.name == "arete.stream.events.received")
+                    .flat_map(|metric| {
+                        metric
+                            .data
+                            .as_any()
+                            .downcast_ref::<opentelemetry_sdk::metrics::data::Sum<u64>>()
+                            .into_iter()
+                            .flat_map(|sum| &sum.data_points)
+                    })
+                    .any(|point| {
+                        let base = point.attributes.iter().any(|(key, value)| {
+                            key.as_str() == "base.key" && value.as_str() == "base-value"
+                        });
+                        let event = point.attributes.iter().any(|(key, value)| {
+                            key.as_str() == "event_type" && value.as_str() == "test-event"
+                        });
+                        base && event
+                    });
+                self.saw_attributes.store(found, Ordering::SeqCst);
+                Ok(())
+            }
+
+            async fn force_flush(&self) -> Result<()> {
+                Ok(())
+            }
+
+            fn shutdown(&self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let exporter = AttributeExporter::default();
+        let saw_attributes = exporter.saw_attributes.clone();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(exporter, runtime::Tokio).build())
+            .build();
+        opentelemetry::global::set_meter_provider(provider.clone());
+
+        let metrics = Metrics::with_attributes(
+            "test_service_with_attributes",
+            vec![KeyValue::new("base.key", "base-value")],
+        );
+        metrics.record_stream_event("test-event");
+        provider.force_flush().unwrap();
+
+        assert!(saw_attributes.load(Ordering::SeqCst));
+
+        provider.shutdown().unwrap();
+    }
 
     #[test]
     fn test_metrics_creation() {
