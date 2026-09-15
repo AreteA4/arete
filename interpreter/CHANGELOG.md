@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.19.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.18.0...arete-interpreter-v0.19.0) (2026-09-15)
+
+
+### Features
+
+* add generic OpenTelemetry runtime signals ([#214](https://github.com/AreteA4/arete/issues/214)) ([49e7bdc](https://github.com/AreteA4/arete/commit/49e7bdc2cc1914305bbb963addb785b415560f7e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.18.0 to 0.19.0
+
 ## [0.18.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.17.0...arete-interpreter-v0.18.0) (2026-09-14)
 
 

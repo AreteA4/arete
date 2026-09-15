@@ -14,6 +14,21 @@
 * make `a4 stack delete` wait for a validated durable destroy result while retaining deployment tombstones and immutable history
 * **a4-cli:** Fix `a4 stream` to Arete Cloud (`*.stack.arete.run`): mint `hs_token` via `/ws/sessions` when the URL omits it (using `a4 auth login` credentials), use native TLS roots for WebSocket so WSS matches the OS trust store (notably on Windows), improve connection error messages, and redact `hs_token` in logs and snapshot metadata.
 
+## [0.19.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.18.0...a4-cli-v0.19.0) (2026-09-15)
+
+
+### Miscellaneous Chores
+
+* **a4-cli:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.18.0 to 0.19.0
+    * arete-mcp bumped from 0.18.0 to 0.19.0
+
 ## [0.18.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.17.0...a4-cli-v0.18.0) (2026-09-14)
 
 
