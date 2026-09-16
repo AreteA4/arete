@@ -150,6 +150,20 @@ async fn a_runtime_without_a_live_runtime_refuses_connections() {
         .await
         .expect_err("no live runtime to serve from");
     assert!(error.to_string().contains("no live runtime"));
+    assert_eq!(handle.entity_cache_stats().await, None);
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn a_handle_reports_its_own_entity_cache() {
+    let handle = spawn_embedded().await;
+    let stats = handle
+        .entity_cache_stats()
+        .await
+        .expect("a live runtime has an entity cache");
+    assert_eq!(stats.view_count, 0);
+    assert_eq!(stats.total_entities, 0);
+    assert!(stats.top_views.is_empty());
     handle.shutdown().await.expect("shutdown");
 }
 
