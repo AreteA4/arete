@@ -14,6 +14,48 @@ pub const DEFAULT_QUERY_PARAMETER: &str = "hs_token";
 pub const DEFAULT_HOSTED_TOKEN_ENDPOINT: &str = "https://api.arete.run/ws/sessions";
 pub const HOSTED_WEBSOCKET_SUFFIX: &str = ".stack.arete.run";
 
+/// Environment variable naming extra hosted suffixes, comma separated.
+///
+/// A deployment can be served on a hostname outside the default suffix - the
+/// live service's test domain is the first - and a client that does not know
+/// the suffix will not mint a session for it. It then connects unauthenticated
+/// and the host answers 401, which reads as a credential problem rather than
+/// an unrecognised hostname.
+pub const HOSTED_WEBSOCKET_SUFFIXES_ENV: &str = "ARETE_HOSTED_WEBSOCKET_SUFFIXES";
+
+/// Every suffix treated as hosted Arete: the default plus anything in
+/// `ARETE_HOSTED_WEBSOCKET_SUFFIXES`. Entries are normalised to lowercase and
+/// to a leading dot, so `cell.arete.run` and `.cell.arete.run` both work.
+pub fn hosted_websocket_suffixes() -> Vec<String> {
+    let mut suffixes = vec![HOSTED_WEBSOCKET_SUFFIX.to_string()];
+    let Ok(configured) = std::env::var(HOSTED_WEBSOCKET_SUFFIXES_ENV) else {
+        return suffixes;
+    };
+    for entry in configured.split(',') {
+        let entry = entry.trim().trim_end_matches('.').to_ascii_lowercase();
+        if entry.is_empty() {
+            continue;
+        }
+        let entry = if entry.starts_with('.') {
+            entry
+        } else {
+            format!(".{entry}")
+        };
+        if !suffixes.contains(&entry) {
+            suffixes.push(entry);
+        }
+    }
+    suffixes
+}
+
+/// True when `host` is served by hosted Arete under any known suffix.
+pub fn is_hosted_websocket_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    hosted_websocket_suffixes()
+        .iter()
+        .any(|suffix| host.ends_with(suffix.as_str()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthToken {
     pub token: String,
@@ -217,7 +259,7 @@ pub(crate) fn is_hosted_arete_websocket_url(websocket_url: &str) -> bool {
     Url::parse(websocket_url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|host| host.ends_with(HOSTED_WEBSOCKET_SUFFIX))
+        .is_some_and(|host| is_hosted_websocket_host(&host))
 }
 
 pub(crate) fn build_websocket_url(
@@ -250,6 +292,71 @@ struct JwtPayload {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        hosted_websocket_suffixes, is_hosted_websocket_host, HOSTED_WEBSOCKET_SUFFIXES_ENV,
+    };
+
+    /// The environment is process-wide, so these run under one lock and put it
+    /// back; a leaked value would silently change what every other test treats
+    /// as hosted.
+    static SUFFIX_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_suffixes<T>(value: Option<&str>, body: impl FnOnce() -> T) -> T {
+        let _guard = SUFFIX_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var(HOSTED_WEBSOCKET_SUFFIXES_ENV).ok();
+        match value {
+            Some(value) => std::env::set_var(HOSTED_WEBSOCKET_SUFFIXES_ENV, value),
+            None => std::env::remove_var(HOSTED_WEBSOCKET_SUFFIXES_ENV),
+        }
+        let outcome = body();
+        match previous {
+            Some(value) => std::env::set_var(HOSTED_WEBSOCKET_SUFFIXES_ENV, value),
+            None => std::env::remove_var(HOSTED_WEBSOCKET_SUFFIXES_ENV),
+        }
+        outcome
+    }
+
+    #[test]
+    fn the_default_suffix_is_hosted_without_configuration() {
+        with_suffixes(None, || {
+            assert!(is_hosted_websocket_host("ore.stack.arete.run"));
+            assert_eq!(hosted_websocket_suffixes(), vec![".stack.arete.run"]);
+        });
+    }
+
+    #[test]
+    fn an_unconfigured_suffix_is_not_hosted() {
+        // This is the failure the change exists for: unrecognised means no
+        // session is minted, and the refusal arrives later as a 401.
+        with_suffixes(None, || {
+            assert!(!is_hosted_websocket_host("ore-vwqmxr.cell.arete.run"));
+        });
+    }
+
+    #[test]
+    fn a_configured_suffix_is_hosted_and_the_default_still_is() {
+        with_suffixes(Some("cell.arete.run"), || {
+            assert!(is_hosted_websocket_host("ore-vwqmxr.cell.arete.run"));
+            assert!(is_hosted_websocket_host("ore.stack.arete.run"));
+        });
+    }
+
+    #[test]
+    fn suffixes_are_accepted_with_or_without_a_leading_dot_and_any_case() {
+        with_suffixes(Some(" .Cell.Arete.Run , , second.example. "), || {
+            assert!(is_hosted_websocket_host("ORE.cell.arete.run"));
+            assert!(is_hosted_websocket_host("a.second.example"));
+            assert!(!is_hosted_websocket_host("elsewhere.example"));
+        });
+    }
+
+    #[test]
+    fn a_trailing_dot_on_the_host_still_matches() {
+        with_suffixes(Some("cell.arete.run"), || {
+            assert!(is_hosted_websocket_host("ore-vwqmxr.cell.arete.run."));
+        });
+    }
+
     use super::*;
 
     fn encode_base64url(input: &str) -> String {

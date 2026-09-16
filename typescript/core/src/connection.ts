@@ -26,6 +26,50 @@ const MIN_REFRESH_DELAY_MS = 1_000;
 const DEFAULT_QUERY_PARAMETER = 'hs_token';
 const DEFAULT_HOSTED_TOKEN_ENDPOINT = 'https://api.arete.run/ws/sessions';
 const HOSTED_WEBSOCKET_SUFFIX = '.stack.arete.run';
+/**
+ * Extra suffixes treated as hosted Arete, beyond the default.
+ *
+ * A deployment can be served on a hostname outside the default suffix - the
+ * live service's test domain is the first - and a client that does not
+ * recognise it will not mint a session. It then connects unauthenticated and
+ * the host answers 401, which reads as a credential problem rather than an
+ * unrecognised hostname.
+ *
+ * Read from `ARETE_HOSTED_WEBSOCKET_SUFFIXES` where a process environment
+ * exists, and settable directly with `setHostedWebsocketSuffixes` for
+ * browsers, which have none.
+ */
+let extraHostedSuffixes: string[] = readHostedSuffixesFromEnvironment();
+
+function normaliseHostedSuffix(entry: string): string | undefined {
+  const trimmed = entry.trim().replace(/\.+$/, '').toLowerCase();
+  if (trimmed === '') return undefined;
+  return trimmed.startsWith('.') ? trimmed : `.${trimmed}`;
+}
+
+function readHostedSuffixesFromEnvironment(): string[] {
+  const environment = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env;
+  const configured = environment?.['ARETE_HOSTED_WEBSOCKET_SUFFIXES'];
+  if (!configured) return [];
+  return configured.split(',').flatMap((entry) => {
+    const suffix = normaliseHostedSuffix(entry);
+    return suffix === undefined ? [] : [suffix];
+  });
+}
+
+/** Replace the extra hosted suffixes. Pass `[]` to keep only the default. */
+export function setHostedWebsocketSuffixes(suffixes: readonly string[]): void {
+  extraHostedSuffixes = suffixes.flatMap((entry) => {
+    const suffix = normaliseHostedSuffix(entry);
+    return suffix === undefined ? [] : [suffix];
+  });
+}
+
+/** Every suffix treated as hosted Arete: the default plus any extras. */
+export function hostedWebsocketSuffixes(): string[] {
+  return [HOSTED_WEBSOCKET_SUFFIX, ...extraHostedSuffixes];
+}
 const MAX_HTTP_AUTH_TOKEN_STATES = 32;
 
 interface TokenEndpointResponse {
@@ -231,7 +275,8 @@ function isSocketIssueMessage(value: unknown): value is SocketIssueWireMessage {
 
 export function isHostedAreteEndpoint(url: string): boolean {
   try {
-    return new URL(url).hostname.toLowerCase().endsWith(HOSTED_WEBSOCKET_SUFFIX);
+    const hostname = new URL(url).hostname.toLowerCase().replace(/\.+$/, '');
+    return hostedWebsocketSuffixes().some((suffix) => hostname.endsWith(suffix));
   } catch {
     return false;
   }

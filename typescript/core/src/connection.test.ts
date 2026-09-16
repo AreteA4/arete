@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ConnectionManager, isHostedAreteEndpoint } from './connection';
+import {
+  ConnectionManager,
+  isHostedAreteEndpoint,
+  setHostedWebsocketSuffixes,
+} from './connection';
 import { SubscriptionRegistry } from './subscription';
 import { QueryStore } from './query-store';
 import { MemoryAdapter } from './storage/memory-adapter';
@@ -132,6 +136,35 @@ describe('hosted endpoint classification', () => {
     expect(isHostedAreteEndpoint('wss://stack.arete.run.example.com')).toBe(false);
     expect(isHostedAreteEndpoint('ws://127.0.0.1:8877')).toBe(false);
     expect(isHostedAreteEndpoint('not-a-url')).toBe(false);
+  });
+
+  it('does not recognize a suffix that has not been configured', () => {
+    // The failure this guards: unrecognized means no session is minted, and
+    // the refusal surfaces later as a 401 that looks like bad credentials.
+    setHostedWebsocketSuffixes([]);
+    expect(isHostedAreteEndpoint('wss://ore-vwqmxr.cell.arete.run')).toBe(false);
+  });
+
+  it('recognizes a configured suffix while keeping the default', () => {
+    setHostedWebsocketSuffixes(['cell.arete.run']);
+    try {
+      expect(isHostedAreteEndpoint('wss://ore-vwqmxr.cell.arete.run')).toBe(true);
+      expect(isHostedAreteEndpoint('wss://ore.stack.arete.run')).toBe(true);
+      expect(isHostedAreteEndpoint('wss://cell.arete.run.example.com')).toBe(false);
+    } finally {
+      setHostedWebsocketSuffixes([]);
+    }
+  });
+
+  it('accepts a configured suffix with or without a leading dot, in any case', () => {
+    setHostedWebsocketSuffixes([' .Cell.Arete.Run ', 'second.example']);
+    try {
+      expect(isHostedAreteEndpoint('wss://ORE.cell.arete.run')).toBe(true);
+      expect(isHostedAreteEndpoint('wss://a.second.example')).toBe(true);
+      expect(isHostedAreteEndpoint('wss://elsewhere.example')).toBe(false);
+    } finally {
+      setHostedWebsocketSuffixes([]);
+    }
   });
 });
 

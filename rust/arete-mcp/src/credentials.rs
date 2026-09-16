@@ -35,7 +35,6 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
-const HOSTED_WEBSOCKET_SUFFIX: &str = ".stack.arete.run";
 const DEFAULT_API_URL: &str = "https://api.arete.run";
 const ENV_VAR_API_KEY: &str = "ARETE_API_KEY";
 const ENV_VAR_API_URL: &str = "ARETE_API_URL";
@@ -177,16 +176,16 @@ pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Res
 }
 
 /// Whether the URL points at a Arete-hosted WebSocket endpoint.
-/// Mirrors `arete_sdk::auth::is_hosted_arete_websocket_url`, which is
-/// `pub(crate)` in the SDK and not reachable from here. Kept in sync with the
-/// SDK's `HOSTED_WEBSOCKET_SUFFIX` constant.
+/// Defers to the SDK so the set of hosted suffixes is decided in one place;
+/// this used to keep its own copy of the constant because the SDK's check was
+/// `pub(crate)`, which meant the two could drift.
 fn is_hosted_websocket_url(url: &str) -> bool {
     let rest = url
         .strip_prefix("wss://")
         .or_else(|| url.strip_prefix("ws://"))
         .unwrap_or(url);
     let host_end = rest.find(['/', ':', '?', '#']).unwrap_or(rest.len());
-    rest[..host_end].ends_with(HOSTED_WEBSOCKET_SUFFIX)
+    arete_sdk::is_hosted_websocket_host(&rest[..host_end])
 }
 
 /// Parse a credentials.toml body and return a key if either supported schema
