@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.20.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.19.1...arete-interpreter-v0.20.0) (2026-09-16)
+
+
+### Features
+
+* expose runtime cache sizes for memory accounting ([31b1676](https://github.com/AreteA4/arete/commit/31b167663898fdf1d2bc4d08192f96df27b81afb))
+* **interpreter:** report resolver and instruction dedup cache sizes ([94f8584](https://github.com/AreteA4/arete/commit/94f8584cbd09e2b715b9e71094e3fd4ab8c8c8c6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.19.1 to 0.20.0
+
 ## [0.19.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.19.0...arete-interpreter-v0.19.1) (2026-09-16)
 
 

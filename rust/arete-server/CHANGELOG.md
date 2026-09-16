@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.20.0](https://github.com/AreteA4/arete/compare/arete-server-v0.19.1...arete-server-v0.20.0) (2026-09-16)
+
+
+### Features
+
+* expose runtime cache sizes for memory accounting ([31b1676](https://github.com/AreteA4/arete/commit/31b167663898fdf1d2bc4d08192f96df27b81afb))
+* **server:** expose entity cache stats on RuntimeHandle ([8e3dd1e](https://github.com/AreteA4/arete/commit/8e3dd1eb0e15c28852e26799d2266601c92f790d))
+
+
+### Bug Fixes
+
+* **server:** restore RPC transaction retries ([#218](https://github.com/AreteA4/arete/issues/218)) ([1529c59](https://github.com/AreteA4/arete/commit/1529c59064bd27cb05f4f4fcc4379f29a2ccef0b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.19.1 to 0.20.0
+
 ## [0.19.1](https://github.com/AreteA4/arete/compare/arete-server-v0.19.0...arete-server-v0.19.1) (2026-09-16)
 
 
