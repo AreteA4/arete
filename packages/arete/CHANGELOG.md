@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/AreteA4/arete/compare/a4-npm-v0.19.0...a4-npm-v0.19.1) (2026-09-16)
+
+
+### Miscellaneous Chores
+
+* **a4-npm:** Synchronize arete versions
+
 ## [0.19.0](https://github.com/AreteA4/arete/compare/a4-npm-v0.18.0...a4-npm-v0.19.0) (2026-09-15)
 
 

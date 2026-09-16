@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.19.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.19.0...a4-cli-v0.19.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **sdk,cli:** let a client recognise a configured hosted suffix ([6becadc](https://github.com/AreteA4/arete/commit/6becadcb9ff89157087b80eb6ec76c05c37aa281))
+* **sdk,cli:** let a client recognise a configured hosted suffix ([dbf7139](https://github.com/AreteA4/arete/commit/dbf7139585b481db87d8890e352047e6ab11e6cf))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.19.0 to 0.19.1
+    * arete-mcp bumped from 0.19.0 to 0.19.1
+
 ## [0.19.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.18.0...a4-cli-v0.19.0) (2026-09-15)
 
 
