@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.1](https://github.com/AreteA4/arete/compare/arete-python-v0.19.0...arete-python-v0.19.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **sdk,cli:** let a client recognise a configured hosted suffix ([6becadc](https://github.com/AreteA4/arete/commit/6becadcb9ff89157087b80eb6ec76c05c37aa281))
+* **sdk:** reach the suffix configuration from Python and the browser ([9a54556](https://github.com/AreteA4/arete/commit/9a545561527548d26cca056b779e1d1dbda81eda))
+
 ## [0.19.0](https://github.com/AreteA4/arete/compare/arete-python-v0.18.0...arete-python-v0.19.0) (2026-09-15)
 
 
