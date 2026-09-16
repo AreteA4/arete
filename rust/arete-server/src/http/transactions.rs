@@ -1029,7 +1029,6 @@ async fn dispatch(
                 "encoding": "base64",
                 "skipPreflight": request.skip_preflight,
                 "preflightCommitment": request.preflight_commitment.unwrap_or(Commitment::Confirmed).as_str(),
-                "maxRetries": 0
             });
             if let Some(slot) = request.min_context_slot {
                 config["minContextSlot"] = json!(slot.0);
@@ -1693,7 +1692,10 @@ mod tests {
     use super::*;
     use std::convert::Infallible;
 
-    async fn mock_rpc(result: Value) -> String {
+    async fn mock_rpc(
+        result: Value,
+        request_tx: Option<tokio::sync::mpsc::UnboundedSender<Value>>,
+    ) -> String {
         use hyper::server::conn::http1;
         use hyper::service::service_fn;
         use hyper_util::rt::TokioIo;
@@ -1706,9 +1708,16 @@ mod tests {
             http1::Builder::new()
                 .serve_connection(
                     TokioIo::new(stream),
-                    service_fn(move |_request| {
+                    service_fn(move |request: Request<Incoming>| {
                         let response = response.clone();
+                        let request_tx = request_tx.clone();
                         async move {
+                            if let Some(request_tx) = request_tx {
+                                let body = request.into_body().collect().await.unwrap().to_bytes();
+                                request_tx
+                                    .send(serde_json::from_slice(&body).unwrap())
+                                    .unwrap();
+                            }
                             Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
                                 json!({
                                     "jsonrpc": "2.0",
@@ -1729,7 +1738,7 @@ mod tests {
     async fn state_for(result: Value) -> TransactionState {
         let config = TransactionConfig {
             enabled: true,
-            rpc_url: Some(mock_rpc(result).await),
+            rpc_url: Some(mock_rpc(result, None).await),
             ..TransactionConfig::default()
         };
         TransactionState::new(config).unwrap()
@@ -1935,6 +1944,43 @@ mod tests {
         assert_eq!(
             transaction_signature(&unsigned).unwrap_err().code,
             "unsigned_transaction"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_leaves_rebroadcast_retries_to_upstream() {
+        let (transaction, fixture) = fixture("legacy");
+        let signature = fixture["firstSignature"].as_str().unwrap();
+        let (request_tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let state = TransactionState::new(TransactionConfig {
+            enabled: true,
+            rpc_url: Some(mock_rpc(json!(signature), Some(request_tx)).await),
+            ..TransactionConfig::default()
+        })
+        .unwrap();
+        let body = json!({
+            "transaction": transaction.clone(),
+            "minContextSlot": "42"
+        })
+        .to_string();
+
+        dispatch(Operation::Send, body.as_bytes(), None, &state, &mut false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "arete-transaction",
+                "method": "sendTransaction",
+                "params": [transaction, {
+                    "encoding": "base64",
+                    "skipPreflight": false,
+                    "preflightCommitment": "confirmed",
+                    "minContextSlot": 42
+                }]
+            })
         );
     }
 
