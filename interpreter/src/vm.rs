@@ -905,8 +905,16 @@ pub struct VmMemoryStats {
     pub pda_reverse_lookup_count: usize,
     pub pda_reverse_lookup_total_entries: usize,
     pub version_tracker_entries: usize,
+    /// Entries in the state's instruction deduplication cache.
+    pub instruction_dedup_entries: usize,
     pub pending_queue_stats: Option<PendingQueueStats>,
+    /// VM-wide, like `path_cache_size`: the same for every state id.
     pub path_cache_size: usize,
+    /// Resolved and negative results held in the VM-wide resolver cache.
+    pub resolver_cache_entries: usize,
+    /// The resolver cache's capacity, after any `ARETE_RESOLVER_CACHE_CAPACITY`
+    /// override.
+    pub resolver_cache_capacity: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4962,6 +4970,8 @@ impl VmContext {
     pub fn get_memory_stats(&self, state_id: u32) -> VmMemoryStats {
         let mut stats = VmMemoryStats {
             path_cache_size: self.path_cache.len(),
+            resolver_cache_entries: self.resolver_cache.len(),
+            resolver_cache_capacity: self.resolver_cache.cap().get(),
             ..Default::default()
         };
 
@@ -4989,6 +4999,7 @@ impl VmContext {
                 .sum();
 
             stats.version_tracker_entries = state.version_tracker.len();
+            stats.instruction_dedup_entries = state.instruction_dedup_cache.len();
 
             stats.pending_queue_stats = self.get_pending_queue_stats(state_id);
         }
@@ -7023,6 +7034,35 @@ mod snapshot_tests {
             vm.get_cached_resolver_value("token:negative"),
             Some(CachedResolverValue::Negative)
         ));
+    }
+
+    #[test]
+    fn memory_stats_count_the_resolver_and_instruction_dedup_caches() {
+        let mut vm = VmContext::new();
+        let empty = vm.get_memory_stats(0);
+        assert_eq!(empty.resolver_cache_entries, 0);
+        assert_eq!(
+            empty.resolver_cache_capacity,
+            resolver_cache_capacity().get()
+        );
+        assert_eq!(empty.instruction_dedup_entries, 0);
+
+        let resolver = ResolverType::Token;
+        vm.cache_resolver_value(&resolver, &json!("mint1"), &json!({"symbol": "T"}));
+        vm.cache_negative_resolver_value(&resolver, &json!("missing"));
+        let table = vm.get_state_table_mut(0).expect("state 0 exists");
+        assert!(!table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0));
+        assert!(!table.is_duplicate_instruction(&json!("key-2"), "Buy", 10, 1));
+        // An exact duplicate is not recorded again.
+        assert!(table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0));
+
+        let stats = vm.get_memory_stats(0);
+        assert_eq!(stats.resolver_cache_entries, 2);
+        assert_eq!(stats.instruction_dedup_entries, 2);
+        // VM-wide figures are reported for a state that has no table too.
+        let missing = vm.get_memory_stats(99);
+        assert_eq!(missing.resolver_cache_entries, 2);
+        assert_eq!(missing.instruction_dedup_entries, 0);
     }
 
     #[test]
