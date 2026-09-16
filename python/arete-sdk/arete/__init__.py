@@ -44,7 +44,11 @@ from arete.errors import (  # noqa: E402
     ProcessedSlotTimeoutError,
     SubscriptionError,
 )
-from arete.auth import AuthConfig  # noqa: E402
+from arete.auth import (  # noqa: E402
+    AuthConfig,
+    hosted_websocket_suffixes,
+    set_hosted_websocket_suffixes,
+)
 from arete.wire import RichUpdate, Update  # noqa: E402
 from arete.views import (  # noqa: E402
     DEFAULT_INITIAL_DATA_TIMEOUT,
@@ -215,6 +219,8 @@ __all__ = [
     "WalletError",
     # auth
     "AuthConfig",
+    "hosted_websocket_suffixes",
+    "set_hosted_websocket_suffixes",
     # views & updates
     "Update",
     "RichUpdate",

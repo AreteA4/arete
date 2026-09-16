@@ -17,6 +17,8 @@ from arete.auth import (
     build_token_endpoint_request_body,
     build_websocket_url,
     is_hosted_arete_websocket_url,
+    is_hosted_websocket_host,
+    set_hosted_websocket_suffixes,
     parse_jwt_expiry,
     request_token_from_endpoint,
     resolve_token_endpoint,
@@ -67,6 +69,47 @@ def test_resolve_token_endpoint_strategy():
     assert resolve_token_endpoint(hosted, "wss://self.hosted.example/s") is None
     assert resolve_token_endpoint(None, None) is None
     assert is_hosted_arete_websocket_url("wss://x.stack.arete.run/s")
+
+
+def test_an_unconfigured_suffix_is_not_hosted():
+    # The failure this guards: unrecognised means no session is minted, and
+    # the refusal surfaces later as a 401 that reads as bad credentials.
+    set_hosted_websocket_suffixes([])
+    try:
+        assert not is_hosted_websocket_host("ore-vwqmxr.cell.arete.run")
+        assert not is_hosted_arete_websocket_url("wss://ore-vwqmxr.cell.arete.run/s")
+    finally:
+        set_hosted_websocket_suffixes(None)
+
+
+def test_a_configured_suffix_is_hosted_and_the_default_still_is():
+    set_hosted_websocket_suffixes(["cell.arete.run"])
+    try:
+        assert is_hosted_websocket_host("ore-vwqmxr.cell.arete.run")
+        assert is_hosted_arete_websocket_url("wss://ore-vwqmxr.cell.arete.run/s")
+        assert is_hosted_websocket_host("ore.stack.arete.run")
+        assert not is_hosted_websocket_host("cell.arete.run.example.com")
+    finally:
+        set_hosted_websocket_suffixes(None)
+
+
+def test_suffixes_accept_a_leading_dot_and_any_case():
+    set_hosted_websocket_suffixes([" .Cell.Arete.Run ", "second.example"])
+    try:
+        assert is_hosted_websocket_host("ORE.cell.arete.run")
+        assert is_hosted_websocket_host("a.second.example")
+        assert not is_hosted_websocket_host("elsewhere.example")
+    finally:
+        set_hosted_websocket_suffixes(None)
+
+
+def test_the_configuration_helpers_are_public_package_exports():
+    # The setter is only useful if consumers can import it; the first cut of
+    # this change left it unreachable from the package root.
+    import arete
+
+    assert callable(arete.set_hosted_websocket_suffixes)
+    assert callable(arete.hosted_websocket_suffixes)
 
 
 def test_build_token_endpoint_request_body_untargeted():
