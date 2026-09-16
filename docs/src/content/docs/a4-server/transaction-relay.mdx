@@ -134,7 +134,7 @@ The send route:
 - requires nonzero signatures
 - derives the first transaction signature before contacting upstream, from the leading shortvec for legacy and v0 and from the tail signature array for v1 (SIMD-0385, version byte `129`)
 - calls upstream `sendTransaction` once
-- forces provider `maxRetries: 0`
+- leaves provider `maxRetries` unset, allowing the upstream RPC to rebroadcast until the blockhash expires
 - verifies that the provider returns the expected signature
 - marks timeout/transport uncertainty with the derived signature
 
