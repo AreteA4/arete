@@ -905,16 +905,24 @@ pub struct VmMemoryStats {
     pub pda_reverse_lookup_count: usize,
     pub pda_reverse_lookup_total_entries: usize,
     pub version_tracker_entries: usize,
-    /// Entries in the state's instruction deduplication cache.
-    pub instruction_dedup_entries: usize,
     pub pending_queue_stats: Option<PendingQueueStats>,
-    /// VM-wide, like `path_cache_size`: the same for every state id.
     pub path_cache_size: usize,
+}
+
+/// Sizes of the VM's bounded caches that [`VmMemoryStats`] does not cover,
+/// from [`VmContext::get_cache_stats`]. Non-exhaustive so further caches can
+/// be reported without breaking callers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VmCacheStats {
     /// Resolved and negative results held in the VM-wide resolver cache.
     pub resolver_cache_entries: usize,
-    /// The resolver cache's capacity, after any `ARETE_RESOLVER_CACHE_CAPACITY`
-    /// override.
+    /// The resolver cache's capacity, after any
+    /// `ARETE_RESOLVER_CACHE_CAPACITY` override.
     pub resolver_cache_capacity: usize,
+    /// Entries in the state's instruction deduplication cache; zero for a
+    /// state whose table does not exist yet.
+    pub instruction_dedup_entries: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4970,8 +4978,6 @@ impl VmContext {
     pub fn get_memory_stats(&self, state_id: u32) -> VmMemoryStats {
         let mut stats = VmMemoryStats {
             path_cache_size: self.path_cache.len(),
-            resolver_cache_entries: self.resolver_cache.len(),
-            resolver_cache_capacity: self.resolver_cache.cap().get(),
             ..Default::default()
         };
 
@@ -4999,12 +5005,24 @@ impl VmContext {
                 .sum();
 
             stats.version_tracker_entries = state.version_tracker.len();
-            stats.instruction_dedup_entries = state.instruction_dedup_cache.len();
 
             stats.pending_queue_stats = self.get_pending_queue_stats(state_id);
         }
 
         stats
+    }
+
+    /// Sizes of the resolver cache (VM-wide) and of the state's instruction
+    /// deduplication cache, for an embedder accounting for the VM's memory.
+    pub fn get_cache_stats(&self, state_id: u32) -> VmCacheStats {
+        VmCacheStats {
+            resolver_cache_entries: self.resolver_cache.len(),
+            resolver_cache_capacity: self.resolver_cache.cap().get(),
+            instruction_dedup_entries: self
+                .states
+                .get(&state_id)
+                .map_or(0, |state| state.instruction_dedup_cache.len()),
+        }
     }
 
     pub fn cleanup_all_expired(&mut self, state_id: u32) -> CleanupResult {
@@ -7037,9 +7055,9 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn memory_stats_count_the_resolver_and_instruction_dedup_caches() {
+    fn cache_stats_count_the_resolver_and_instruction_dedup_caches() {
         let mut vm = VmContext::new();
-        let empty = vm.get_memory_stats(0);
+        let empty = vm.get_cache_stats(0);
         assert_eq!(empty.resolver_cache_entries, 0);
         assert_eq!(
             empty.resolver_cache_capacity,
@@ -7056,11 +7074,12 @@ mod snapshot_tests {
         // An exact duplicate is not recorded again.
         assert!(table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0));
 
-        let stats = vm.get_memory_stats(0);
+        let stats = vm.get_cache_stats(0);
         assert_eq!(stats.resolver_cache_entries, 2);
         assert_eq!(stats.instruction_dedup_entries, 2);
-        // VM-wide figures are reported for a state that has no table too.
-        let missing = vm.get_memory_stats(99);
+        // The resolver cache is VM-wide; a state with no table has no dedup
+        // entries.
+        let missing = vm.get_cache_stats(99);
         assert_eq!(missing.resolver_cache_entries, 2);
         assert_eq!(missing.instruction_dedup_entries, 0);
     }
