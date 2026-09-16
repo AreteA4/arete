@@ -9,8 +9,12 @@ use url::Url;
 use crate::api_client::ApiClient;
 use crate::config;
 
-/// Host suffix for Arete Cloud WebSocket endpoints (see `arete_sdk::auth`).
-const HOSTED_SUFFIX: &str = ".stack.arete.run";
+/// Which host suffixes count as Arete Cloud comes from the SDK, so the CLI
+/// and the SDKs agree on what needs a session. A deployment served outside
+/// the default suffix - the live service's test domain, say - is otherwise
+/// not recognised here, no token is minted, and the connection is refused
+/// with a 401 that looks like bad credentials rather than an unknown host.
+use arete_sdk::is_hosted_websocket_host;
 
 /// Replace `hs_token` query values so session tokens are never logged, embedded in errors, or saved to snapshot headers.
 pub fn redact_hs_token_for_display(url: &str) -> String {
@@ -58,7 +62,7 @@ pub fn is_hosted_arete_cloud_url(url: &str) -> bool {
     let Some(host) = u.host_str() else {
         return false;
     };
-    host.to_ascii_lowercase().ends_with(HOSTED_SUFFIX)
+    is_hosted_websocket_host(&host.to_ascii_lowercase())
 }
 
 /// Returns true if this URL points at hosted Arete infrastructure and has no `hs_token` yet.
@@ -70,7 +74,7 @@ pub fn hosted_url_needs_token(url: &str) -> bool {
         return false;
     };
     let host = host.to_ascii_lowercase();
-    if !host.ends_with(HOSTED_SUFFIX) {
+    if !is_hosted_websocket_host(&host) {
         return false;
     }
     !u.query_pairs().any(|(k, _)| k == "hs_token")

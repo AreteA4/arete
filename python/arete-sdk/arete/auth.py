@@ -6,10 +6,11 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Coroutine, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Coroutine, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import httpx
 
@@ -22,6 +23,54 @@ MIN_REFRESH_DELAY_SECONDS = 1
 DEFAULT_QUERY_PARAMETER = "hs_token"
 DEFAULT_HOSTED_TOKEN_ENDPOINT = "https://api.arete.run/ws/sessions"
 HOSTED_WEBSOCKET_SUFFIX = ".stack.arete.run"
+HOSTED_WEBSOCKET_SUFFIXES_ENV = "ARETE_HOSTED_WEBSOCKET_SUFFIXES"
+
+_extra_hosted_suffixes: Optional[List[str]] = None
+
+
+def _normalise_hosted_suffix(entry: str) -> Optional[str]:
+    trimmed = entry.strip().rstrip(".").lower()
+    if not trimmed:
+        return None
+    return trimmed if trimmed.startswith(".") else f".{trimmed}"
+
+
+def set_hosted_websocket_suffixes(suffixes: Optional[Iterable[str]]) -> None:
+    """Replace the extra hosted suffixes, or pass ``None`` to read the env again.
+
+    A deployment can be served on a hostname outside the default suffix. A
+    client that does not recognise it mints no session, connects without a
+    token, and the server answers 401 - which reads as a credential problem
+    rather than an unknown hostname.
+    """
+    global _extra_hosted_suffixes
+    if suffixes is None:
+        _extra_hosted_suffixes = None
+        return
+    normalised = []
+    for entry in suffixes:
+        suffix = _normalise_hosted_suffix(entry)
+        if suffix is not None and suffix not in normalised:
+            normalised.append(suffix)
+    _extra_hosted_suffixes = normalised
+
+
+def hosted_websocket_suffixes() -> List[str]:
+    """The default suffix plus any configured extras."""
+    extras = _extra_hosted_suffixes
+    if extras is None:
+        extras = []
+        for entry in os.environ.get(HOSTED_WEBSOCKET_SUFFIXES_ENV, "").split(","):
+            suffix = _normalise_hosted_suffix(entry)
+            if suffix is not None and suffix not in extras:
+                extras.append(suffix)
+    return [HOSTED_WEBSOCKET_SUFFIX, *extras]
+
+
+def is_hosted_websocket_host(host: str) -> bool:
+    """True when ``host`` is served by hosted Arete under any known suffix."""
+    normalised = host.rstrip(".").lower()
+    return any(normalised.endswith(suffix) for suffix in hosted_websocket_suffixes())
 
 
 class TokenTransport(Enum):
@@ -255,7 +304,7 @@ def is_hosted_arete_websocket_url(websocket_url: str) -> bool:
         from urllib.parse import urlparse
 
         host = urlparse(websocket_url).hostname or ""
-        return host.lower().endswith(HOSTED_WEBSOCKET_SUFFIX)
+        return is_hosted_websocket_host(host)
     except Exception:
         return False
 

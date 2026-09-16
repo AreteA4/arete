@@ -157,7 +157,12 @@ export type {
   ProgramReadTransport,
 } from './program-read-transport';
 
-export { ConnectionManager, isHostedAreteEndpoint } from './connection';
+export {
+  ConnectionManager,
+  hostedWebsocketSuffixes,
+  isHostedAreteEndpoint,
+  setHostedWebsocketSuffixes,
+} from './connection';
 export {
   SubscriptionRegistry,
   canonicalQueryKey,

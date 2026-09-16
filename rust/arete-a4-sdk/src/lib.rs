@@ -63,7 +63,10 @@ pub use amounts::{
     format_raw_to_ui, parse_ui_amount_to_raw, resolve_amount, resolve_amount_to_raw, to_raw_amount,
     AmountError, AmountInput, AmountResolutionInput, ResolvedAmount,
 };
-pub use auth::{AuthConfig, AuthToken, TokenTransport};
+pub use auth::{
+    hosted_websocket_suffixes, is_hosted_websocket_host, AuthConfig, AuthToken, TokenTransport,
+    HOSTED_WEBSOCKET_SUFFIX, HOSTED_WEBSOCKET_SUFFIXES_ENV,
+};
 pub use chain::{
     derive_http_endpoint, ChainClient, ChainClock, ChainError, ContextSlotOptions, HttpChainClient,
     MintAccountInfo, NativeBalanceInfo, RawAccountInfo, TokenAccountInfo, TokenBalanceInfo,
