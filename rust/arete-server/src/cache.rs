@@ -272,7 +272,8 @@ impl EntityCache {
     }
 }
 
-#[derive(Debug)]
+/// A point-in-time count of an [`EntityCache`]'s contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheStats {
     pub view_count: usize,
     pub total_entities: usize,

@@ -229,12 +229,14 @@ impl Runtime {
         let mut snapshot_manager_handle = None;
         let mut snapshot_runtime = None;
         let mut acceptor = None;
+        let mut entity_cache_handle = None;
 
         if plan.live_runtime_enabled() {
             let (mutations_tx, mutations_rx) = mpsc::channel::<MutationBatch>(1024);
             mutations_tx_guard = Some(mutations_tx.clone());
             let bus_manager = BusManager::new();
             let entity_cache = EntityCache::new();
+            entity_cache_handle = Some(entity_cache.clone());
 
             // Restore state from the latest snapshot (when enabled) before the
             // WebSocket server spawns, so the first client's snapshot-on-subscribe
@@ -504,6 +506,7 @@ impl Runtime {
             ws_handle,
             background,
             acceptor,
+            entity_cache: entity_cache_handle,
             http_shutdown,
             http_health_thread,
         })
@@ -529,6 +532,7 @@ pub struct RuntimeHandle {
     ws_handle: Option<JoinHandle<()>>,
     background: Vec<JoinHandle<()>>,
     acceptor: Option<ConnectionAcceptor>,
+    entity_cache: Option<EntityCache>,
     http_shutdown: CancellationToken,
     http_health_thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -591,6 +595,16 @@ impl RuntimeHandle {
             .as_ref()
             .map(ConnectionAcceptor::client_count)
             .unwrap_or(0)
+    }
+
+    /// What this runtime's entity cache holds: the entities kept per view
+    /// for snapshot-on-subscribe. For an embedder accounting for the
+    /// runtime's memory. `None` when the runtime has no live runtime.
+    pub async fn entity_cache_stats(&self) -> Option<crate::cache::CacheStats> {
+        match &self.entity_cache {
+            Some(cache) => Some(cache.stats().await),
+            None => None,
+        }
     }
 
     /// Serve a TCP connection the caller accepted, as this runtime's

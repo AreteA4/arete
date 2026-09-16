@@ -150,6 +150,92 @@ async fn a_runtime_without_a_live_runtime_refuses_connections() {
         .await
         .expect_err("no live runtime to serve from");
     assert!(error.to_string().contains("no live runtime"));
+    assert_eq!(handle.entity_cache_stats().await, None);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A runtime whose parser publishes one `Token` entity on start. The spec
+/// gives the entity its default `list`, `state` and `append` views, and the
+/// projector caches the entity under each.
+async fn spawn_with_one_token() -> RuntimeHandle {
+    use arete_interpreter::ast::{IdentitySpec, TypedStreamSpec};
+    use arete_server::{MutationBatch, SlotContext, Spec};
+
+    let entity_spec = TypedStreamSpec::<serde_json::Value>::new(
+        "Token".to_string(),
+        IdentitySpec {
+            primary_keys: vec!["id".to_string()],
+            lookup_indexes: Vec::new(),
+        },
+        Vec::new(),
+    );
+    let bytecode = arete_interpreter::compiler::MultiEntityBytecode::new()
+        .add_entity("Token".to_string(), entity_spec, 1)
+        .build();
+    let setup: arete_server::ParserSetupFn = std::sync::Arc::new(|mutations, _, _| {
+        Box::pin(async move {
+            let mutation = arete_interpreter::Mutation {
+                export: "Token".to_string(),
+                key: serde_json::json!("token-1"),
+                patch: serde_json::json!({"id": "token-1", "price": 1}),
+                append: vec![],
+            };
+            mutations
+                .send(MutationBatch::with_slot_context(
+                    vec![mutation].into_iter().collect(),
+                    SlotContext::new(1, 1),
+                ))
+                .await?;
+            std::future::pending::<()>().await;
+            Ok(())
+        })
+    });
+    Server::builder()
+        .runtime_plan(embedded_plan())
+        .spec(Spec::new(bytecode, "Program111").with_parser_setup(setup))
+        .build()
+        .expect("build runtime")
+        .spawn()
+        .await
+        .expect("spawn runtime")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_handle_reports_what_its_own_entity_cache_holds() {
+    let handle = spawn_with_one_token().await;
+    let stats = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let stats = handle
+                .entity_cache_stats()
+                .await
+                .expect("a live runtime has an entity cache");
+            if stats.total_entities > 0 {
+                break stats;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the published entity reaches the runtime's entity cache");
+    assert_eq!(stats.view_count, 3);
+    assert_eq!(stats.total_entities, 3);
+    let mut views = stats.top_views.clone();
+    views.sort();
+    assert_eq!(
+        views,
+        vec![
+            ("Token/append".to_string(), 1),
+            ("Token/list".to_string(), 1),
+            ("Token/state".to_string(), 1),
+        ]
+    );
+
+    // A second runtime's cache is its own.
+    let other = spawn_embedded().await;
+    let other_stats = other.entity_cache_stats().await.expect("live runtime");
+    assert_eq!(other_stats.total_entities, 0);
+
+    other.shutdown().await.expect("other shutdown");
     handle.shutdown().await.expect("shutdown");
 }
 

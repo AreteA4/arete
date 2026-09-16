@@ -909,6 +909,22 @@ pub struct VmMemoryStats {
     pub path_cache_size: usize,
 }
 
+/// Sizes of the VM's bounded caches that [`VmMemoryStats`] does not cover,
+/// from [`VmContext::get_cache_stats`]. Non-exhaustive so further caches can
+/// be reported without breaking callers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VmCacheStats {
+    /// Resolved and negative results held in the VM-wide resolver cache.
+    pub resolver_cache_entries: usize,
+    /// The resolver cache's capacity, after any
+    /// `ARETE_RESOLVER_CACHE_CAPACITY` override.
+    pub resolver_cache_capacity: usize,
+    /// Entries in the state's instruction deduplication cache; zero for a
+    /// state whose table does not exist yet.
+    pub instruction_dedup_entries: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CleanupResult {
     pub pending_updates_removed: usize,
@@ -4996,6 +5012,19 @@ impl VmContext {
         stats
     }
 
+    /// Sizes of the resolver cache (VM-wide) and of the state's instruction
+    /// deduplication cache, for an embedder accounting for the VM's memory.
+    pub fn get_cache_stats(&self, state_id: u32) -> VmCacheStats {
+        VmCacheStats {
+            resolver_cache_entries: self.resolver_cache.len(),
+            resolver_cache_capacity: self.resolver_cache.cap().get(),
+            instruction_dedup_entries: self
+                .states
+                .get(&state_id)
+                .map_or(0, |state| state.instruction_dedup_cache.len()),
+        }
+    }
+
     pub fn cleanup_all_expired(&mut self, state_id: u32) -> CleanupResult {
         let pending_removed = self.cleanup_expired_pending_updates(state_id);
         let temporal_removed = self.cleanup_temporal_indexes(state_id);
@@ -7023,6 +7052,36 @@ mod snapshot_tests {
             vm.get_cached_resolver_value("token:negative"),
             Some(CachedResolverValue::Negative)
         ));
+    }
+
+    #[test]
+    fn cache_stats_count_the_resolver_and_instruction_dedup_caches() {
+        let mut vm = VmContext::new();
+        let empty = vm.get_cache_stats(0);
+        assert_eq!(empty.resolver_cache_entries, 0);
+        assert_eq!(
+            empty.resolver_cache_capacity,
+            resolver_cache_capacity().get()
+        );
+        assert_eq!(empty.instruction_dedup_entries, 0);
+
+        let resolver = ResolverType::Token;
+        vm.cache_resolver_value(&resolver, &json!("mint1"), &json!({"symbol": "T"}));
+        vm.cache_negative_resolver_value(&resolver, &json!("missing"));
+        let table = vm.get_state_table_mut(0).expect("state 0 exists");
+        assert!(!table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0));
+        assert!(!table.is_duplicate_instruction(&json!("key-2"), "Buy", 10, 1));
+        // An exact duplicate is not recorded again.
+        assert!(table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0));
+
+        let stats = vm.get_cache_stats(0);
+        assert_eq!(stats.resolver_cache_entries, 2);
+        assert_eq!(stats.instruction_dedup_entries, 2);
+        // The resolver cache is VM-wide; a state with no table has no dedup
+        // entries.
+        let missing = vm.get_cache_stats(99);
+        assert_eq!(missing.resolver_cache_entries, 2);
+        assert_eq!(missing.instruction_dedup_entries, 0);
     }
 
     #[test]
