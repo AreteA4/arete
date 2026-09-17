@@ -152,7 +152,28 @@ pub enum ViewDelta {
     Update { key: String, entity: Value },
 }
 
-/// Sorted view cache maintaining entities in sort order
+/// Sorted view cache maintaining entities in sort order.
+///
+/// # Bounding
+///
+/// The cache holds a full copy of every entity it has been given, so callers
+/// that feed it from a bounded source (the projector and snapshot restore feed
+/// it from the LRU-capped [`EntityCache`](crate::EntityCache)) should use
+/// [`upsert_bounded`](Self::upsert_bounded) or
+/// [`trim_to_max_entries`](Self::trim_to_max_entries) with that source's cap.
+///
+/// Entries are evicted from the *bottom* of the sort order, not by recency.
+/// Evicting the least-recently-updated entries (mirroring the entity cache)
+/// would drop a top-ranked entity that simply has not updated recently and
+/// break leaderboard-style `sort` + `take` views. Evicting everything beyond
+/// position `max_entries` keeps every window with `skip + take <= max_entries`
+/// exact. An evicted entity re-enters on its next update, because the
+/// projector re-reads the full entity from the entity cache before upserting.
+///
+/// Known edge: after entities are removed from (or move down out of) the top
+/// of the order, a previously evicted entity that has not updated since is
+/// missing from the cache until it next updates, so a window near the cap can
+/// under-fill or show a lower-ranked entity in its place until then.
 #[derive(Debug)]
 pub struct SortedViewCache {
     /// View identifier
@@ -253,6 +274,46 @@ impl SortedViewCache {
         let position = self.find_position(&entity_key);
 
         UpsertResult::Inserted { position }
+    }
+
+    /// Upsert an entity, then evict from the bottom of the sort order so the
+    /// cache holds at most `max_entries` entities.
+    ///
+    /// If the upserted entity itself sorts beyond `max_entries` it is evicted
+    /// immediately and the returned position is `>= max_entries`.
+    pub fn upsert_bounded(
+        &mut self,
+        entity_key: String,
+        entity: Value,
+        max_entries: usize,
+    ) -> UpsertResult {
+        let result = self.upsert(entity_key, entity);
+        self.trim_to_max_entries(max_entries);
+        result
+    }
+
+    /// Evict entities from the bottom of the sort order until at most
+    /// `max_entries` remain. Returns the number of evicted entities.
+    ///
+    /// Each eviction is an `O(log n)` pop from the end of the ordered index,
+    /// so a batch of evictions (e.g. after a bulk rebuild) costs no more than
+    /// the inserts that caused it. The ordered-keys cache is truncated in place
+    /// when it is current, so trimming does not force a full rebuild.
+    pub fn trim_to_max_entries(&mut self, max_entries: usize) -> usize {
+        let mut evicted = 0;
+        while self.sorted.len() > max_entries {
+            let Some((sort_key, ())) = self.sorted.pop_last() else {
+                break;
+            };
+            self.entities.remove(&sort_key.entity_key);
+            evicted += 1;
+        }
+        if evicted > 0 && !self.cache_dirty {
+            // Only the tail of the order was removed, so the prefix is still
+            // exact.
+            self.keys_cache.truncate(self.sorted.len());
+        }
+        evicted
     }
 
     fn deep_merge(base: Value, patch: Value) -> Value {
@@ -597,6 +658,183 @@ mod tests {
         assert!(deltas
             .iter()
             .any(|d| matches!(d, ViewDelta::Add { key, .. } if key == "e6")));
+    }
+
+    fn keys(cache: &mut SortedViewCache) -> Vec<String> {
+        cache.ordered_keys().to_vec()
+    }
+
+    #[test]
+    fn bounded_upsert_evicts_bottom_of_desc_order() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+
+        for i in 1..=10 {
+            cache.upsert_bounded(format!("e{i}"), json!({"score": i}), 4);
+            assert!(cache.len() <= 4);
+        }
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(keys(&mut cache), ["e10", "e9", "e8", "e7"]);
+        assert!(cache.get("e1").is_none());
+        assert!(cache.get("e6").is_none());
+    }
+
+    #[test]
+    fn bounded_upsert_evicts_bottom_of_asc_order() {
+        let mut cache = SortedViewCache::new(
+            "test/bottom".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Asc,
+        );
+
+        for i in (1..=10).rev() {
+            cache.upsert_bounded(format!("e{i}"), json!({"score": i}), 4);
+            assert!(cache.len() <= 4);
+        }
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(keys(&mut cache), ["e1", "e2", "e3", "e4"]);
+        assert!(cache.get("e10").is_none());
+    }
+
+    #[test]
+    fn bounded_upsert_does_not_evict_stale_top_entities() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+
+        // The leader is inserted first and never updated again; recency-based
+        // eviction would drop it.
+        cache.upsert_bounded("leader".to_string(), json!({"score": 1_000}), 3);
+        for i in 1..=20 {
+            cache.upsert_bounded(format!("e{i}"), json!({"score": i}), 3);
+        }
+
+        assert_eq!(keys(&mut cache), ["leader", "e20", "e19"]);
+    }
+
+    #[test]
+    fn windows_within_cap_match_unbounded_cache() {
+        let mut bounded = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+        let mut unbounded = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+
+        // Scores arrive out of order within each round and every entity moves
+        // up on each later round. Entities never move down, so nothing
+        // evicted can belong back inside the cap (see the edge-case test
+        // below for what happens when they do).
+        for i in 0..200u64 {
+            let key = format!("e{}", i % 60);
+            let score = (i / 60) * 1_000 + (i * 37) % 101;
+            let entity = json!({"score": score, "n": i});
+            bounded.upsert_bounded(key.clone(), entity.clone(), 25);
+            unbounded.upsert(key, entity);
+        }
+
+        assert_eq!(bounded.len(), 25);
+        for (skip, take) in [(0, 25), (0, 10), (5, 20), (24, 1)] {
+            assert_eq!(
+                bounded.get_window(skip, take),
+                unbounded.get_window(skip, take),
+                "window skip={skip} take={take}"
+            );
+        }
+    }
+
+    #[test]
+    fn evicted_entity_is_missing_after_top_moves_down_until_it_updates() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+
+        for i in 1..=4 {
+            cache.upsert_bounded(format!("e{i}"), json!({"score": i}), 3);
+        }
+        assert_eq!(keys(&mut cache), ["e4", "e3", "e2"]);
+
+        // The leader drops to the bottom; e1 would now rank third but was
+        // evicted and has not updated, so e4 holds third place instead.
+        cache.upsert_bounded("e4".to_string(), json!({"score": 0}), 3);
+        assert_eq!(keys(&mut cache), ["e3", "e2", "e4"]);
+
+        // Once e1 updates it re-enters at its correct position.
+        cache.upsert_bounded("e1".to_string(), json!({"score": 1}), 3);
+        assert_eq!(keys(&mut cache), ["e3", "e2", "e1"]);
+    }
+
+    #[test]
+    fn evicted_entity_reenters_when_upserted_again() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+
+        for i in 1..=5 {
+            cache.upsert_bounded(format!("e{i}"), json!({"score": i}), 3);
+        }
+        assert!(cache.get("e1").is_none());
+
+        let result = cache.upsert_bounded("e1".to_string(), json!({"score": 100}), 3);
+        assert_eq!(result, UpsertResult::Inserted { position: 0 });
+        assert_eq!(keys(&mut cache), ["e1", "e5", "e4"]);
+        assert_eq!(cache.len(), 3);
+    }
+
+    #[test]
+    fn upsert_below_full_cap_is_evicted_immediately() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+
+        for i in 10..=12 {
+            cache.upsert_bounded(format!("e{i}"), json!({"score": i}), 3);
+        }
+        let result = cache.upsert_bounded("low".to_string(), json!({"score": 1}), 3);
+
+        assert_eq!(result, UpsertResult::Inserted { position: 3 });
+        assert!(cache.get("low").is_none());
+        assert_eq!(keys(&mut cache), ["e12", "e11", "e10"]);
+    }
+
+    #[test]
+    fn trim_keeps_keys_cache_and_entities_consistent() {
+        let mut cache = SortedViewCache::new(
+            "test/top".to_string(),
+            vec!["score".to_string()],
+            SortOrder::Desc,
+        );
+
+        for i in 1..=10 {
+            cache.upsert(format!("e{i}"), json!({"score": i}));
+        }
+        // Build the keys cache so the trim takes the in-place truncate path.
+        assert_eq!(cache.ordered_keys().len(), 10);
+
+        assert_eq!(cache.trim_to_max_entries(4), 6);
+        assert_eq!(cache.trim_to_max_entries(4), 0);
+        assert_eq!(cache.len(), 4);
+        assert_eq!(keys(&mut cache), ["e10", "e9", "e8", "e7"]);
+        assert_eq!(cache.get_all_ordered().len(), 4);
+        assert_eq!(cache.remove("e7"), Some(3));
+        assert_eq!(keys(&mut cache), ["e10", "e9", "e8"]);
     }
 
     #[test]

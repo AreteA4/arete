@@ -288,12 +288,15 @@ impl Projector {
             None => return,
         };
 
+        // Bound each derived sorted copy by the source view's cache size,
+        // evicting from the bottom of the sort order (see `SortedViewCache`).
+        let max_entries = self.entity_cache.max_entities_per_view();
         let sorted_caches = self.view_index.sorted_caches();
         let mut caches = sorted_caches.write().await;
 
         for derived_spec in derived_views {
             if let Some(cache) = caches.get_mut(&derived_spec.id) {
-                cache.upsert(entity_key.to_string(), entity_data.clone());
+                cache.upsert_bounded(entity_key.to_string(), entity_data.clone(), max_entries);
                 debug!(
                     "Updated sorted cache for derived view {} with key {}",
                     derived_spec.id, entity_key
