@@ -79,6 +79,14 @@ impl EntityCache {
         }
     }
 
+    /// Maximum number of entities cached per view.
+    ///
+    /// Derived sorted view caches are bounded by the same value so they never
+    /// hold more entities than their source view caches.
+    pub fn max_entities_per_view(&self) -> usize {
+        self.config.max_entities_per_view
+    }
+
     pub async fn upsert(&self, view_id: &str, key: &str, patch: Value) {
         self.upsert_with_append(view_id, key, patch, &[]).await;
     }

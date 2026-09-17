@@ -646,6 +646,7 @@ impl SnapshotService {
 /// they are derived state and MB-scale rebuilds are sub-millisecond.
 async fn rebuild_sorted_caches(view_index: &ViewIndex, entity_cache: &EntityCache) {
     let sorted_caches = view_index.sorted_caches();
+    let max_entries = entity_cache.max_entities_per_view();
     for spec in view_index.get_derived_views() {
         let Some(source_view) = spec.source_view.as_ref() else {
             continue;
@@ -660,6 +661,8 @@ async fn rebuild_sorted_caches(view_index: &ViewIndex, entity_cache: &EntityCach
             for (key, entity) in entities {
                 cache.upsert(key, entity);
             }
+            // Trim once after the batch; the bound matches the projector's.
+            cache.trim_to_max_entries(max_entries);
             debug!(view_id = %spec.id, count, "Rebuilt sorted cache from snapshot");
         }
     }
