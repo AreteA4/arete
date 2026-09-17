@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.20.1](https://github.com/AreteA4/arete/compare/arete-server-v0.20.0...arete-server-v0.20.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **server:** bound derived sorted view caches by the entity cache cap ([d22c79d](https://github.com/AreteA4/arete/commit/d22c79d30ed4b8fe111c302615e498502dec865f))
+* **server:** bound derived sorted view caches by the entity cache cap ([7d75715](https://github.com/AreteA4/arete/commit/7d757159c965dedd480c32dea35d5680a7e7b673))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.20.0 to 0.20.1
+
 ## [0.20.0](https://github.com/AreteA4/arete/compare/arete-server-v0.19.1...arete-server-v0.20.0) (2026-09-16)
 
 

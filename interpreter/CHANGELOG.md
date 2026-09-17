@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.20.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.20.0...arete-interpreter-v0.20.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **interpreter:** bound queued instruction events with a TTL and total cap ([b402285](https://github.com/AreteA4/arete/commit/b402285ce689891a1a82f4b3ff41b9e12dc79bc6))
+* **interpreter:** bound queued instruction events with a TTL and total cap ([9666bae](https://github.com/AreteA4/arete/commit/9666baecbd0ec49a16d45c811679fc861406e0df))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.20.0 to 0.20.1
+
 ## [0.20.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.19.1...arete-interpreter-v0.20.0) (2026-09-16)
 
 
