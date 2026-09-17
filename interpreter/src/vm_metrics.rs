@@ -43,6 +43,8 @@ pub struct VmMetrics {
     pub pending_updates_queued: Counter<u64>,
     pub pending_updates_flushed: Counter<u64>,
     pub pending_updates_expired: Counter<u64>,
+    pub pending_instruction_events_expired: Counter<u64>,
+    pub pending_instruction_events_dropped: Counter<u64>,
 }
 
 #[cfg(feature = "otel")]
@@ -150,6 +152,14 @@ impl VmMetrics {
             pending_updates_expired: meter
                 .u64_counter("arete.vm.pending_updates.expired")
                 .with_description("Queued updates that expired")
+                .init(),
+            pending_instruction_events_expired: meter
+                .u64_counter("arete.vm.pending_instruction_events.expired")
+                .with_description("Queued instruction events that expired")
+                .init(),
+            pending_instruction_events_dropped: meter
+                .u64_counter("arete.vm.pending_instruction_events.dropped")
+                .with_description("Queued instruction events dropped at the total cap")
                 .init(),
         }
     }
@@ -267,6 +277,28 @@ pub fn record_pending_updates_expired(count: u64, entity: &str) {
 #[cfg(not(feature = "otel"))]
 #[inline]
 pub fn record_pending_updates_expired(_count: u64, _entity: &str) {}
+
+#[cfg(feature = "otel")]
+pub fn record_pending_instruction_events_expired(count: u64, entity: &str) {
+    get_vm_metrics()
+        .pending_instruction_events_expired
+        .add(count, &[KeyValue::new("entity", entity.to_string())]);
+}
+
+#[cfg(not(feature = "otel"))]
+#[inline]
+pub fn record_pending_instruction_events_expired(_count: u64, _entity: &str) {}
+
+#[cfg(feature = "otel")]
+pub fn record_pending_instruction_events_dropped(count: u64, entity: &str) {
+    get_vm_metrics()
+        .pending_instruction_events_dropped
+        .add(count, &[KeyValue::new("entity", entity.to_string())]);
+}
+
+#[cfg(not(feature = "otel"))]
+#[inline]
+pub fn record_pending_instruction_events_dropped(_count: u64, _entity: &str) {}
 
 #[cfg(feature = "otel")]
 pub fn record_memory_stats(stats: &crate::vm::VmMemoryStats, entity: &str) {
