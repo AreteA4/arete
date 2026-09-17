@@ -199,6 +199,10 @@ const MAX_PENDING_UPDATES_TOTAL: usize = 2_500;
 const MAX_PENDING_UPDATES_PER_PDA: usize = 50;
 const PENDING_UPDATE_TTL_SECONDS: i64 = 300; // 5 minutes
 
+// Instruction events queued on a lookup miss share the per-PDA cap and TTL
+// above, plus their own total cap per state table.
+const MAX_PENDING_INSTRUCTION_EVENTS_TOTAL: usize = 2_500;
+
 // Temporal index configuration - prevents unbounded history growth
 const TEMPORAL_HISTORY_TTL_SECONDS: i64 = 300; // 5 minutes, matches pending queue TTL
 const MAX_TEMPORAL_ENTRIES_PER_KEY: usize = 250;
@@ -927,6 +931,7 @@ pub struct VmCacheStats {
 
 #[derive(Debug, Clone, Default)]
 pub struct CleanupResult {
+    /// Expired queued account updates and queued instruction events removed.
     pub pending_updates_removed: usize,
     pub temporal_entries_removed: usize,
 }
@@ -1027,6 +1032,9 @@ pub struct StateTable {
     pub pda_reverse_lookups: HashMap<String, PdaReverseLookup>,
     pub pending_updates: DashMap<String, Vec<PendingAccountUpdate>>,
     pub pending_instruction_events: DashMap<String, Vec<PendingInstructionEvent>>,
+    /// Number of events across `pending_instruction_events`. Maintained on
+    /// queue, flush and eviction, and recomputed exactly by TTL cleanup.
+    pending_instruction_event_count: usize,
     /// Cache of the most recent account data per PDA address.  When a PDA
     /// mapping changes (same PDA, different seed) the cached data is returned
     /// for reprocessing so cross-account Lookup handlers resolve to the new key.
@@ -1298,6 +1306,7 @@ impl StateTable {
             pda_reverse_lookups,
             pending_updates: DashMap::new(),
             pending_instruction_events: DashMap::new(),
+            pending_instruction_event_count: 0,
             last_account_data,
             version_tracker,
             instruction_dedup_cache,
@@ -1345,6 +1354,7 @@ impl VmContext {
                 pda_reverse_lookups: HashMap::new(),
                 pending_updates: DashMap::new(),
                 pending_instruction_events: DashMap::new(),
+                pending_instruction_event_count: 0,
                 last_account_data: DashMap::new(),
                 version_tracker: VersionTracker::new(),
                 instruction_dedup_cache: VersionTracker::with_capacity(
@@ -1450,6 +1460,7 @@ impl VmContext {
                 pda_reverse_lookups: HashMap::new(),
                 pending_updates: DashMap::new(),
                 pending_instruction_events: DashMap::new(),
+                pending_instruction_event_count: 0,
                 last_account_data: DashMap::new(),
                 version_tracker: VersionTracker::new(),
                 instruction_dedup_cache: VersionTracker::with_capacity(
@@ -2772,6 +2783,7 @@ impl VmContext {
                             pda_reverse_lookups: HashMap::new(),
                             pending_updates: DashMap::new(),
                             pending_instruction_events: DashMap::new(),
+                            pending_instruction_event_count: 0,
                             last_account_data: DashMap::new(),
                             version_tracker: VersionTracker::new(),
                             instruction_dedup_cache: VersionTracker::with_capacity(
@@ -4716,9 +4728,18 @@ impl VmContext {
 
     /// Clean up expired pending updates that are older than the TTL
     ///
-    /// Returns the number of updates that were removed.
+    /// Covers both queued account updates and queued instruction events, so
+    /// periodic callers bound both buffers. Returns the total number of queued
+    /// entries removed across the two; use
+    /// [`Self::cleanup_expired_pending_instruction_events`] for the instruction
+    /// event count alone.
     /// This should be called periodically to prevent memory leaks from orphaned updates.
     pub fn cleanup_expired_pending_updates(&mut self, state_id: u32) -> usize {
+        self.cleanup_expired_pending_account_updates(state_id)
+            + self.cleanup_expired_pending_instruction_events(state_id)
+    }
+
+    fn cleanup_expired_pending_account_updates(&mut self, state_id: u32) -> usize {
         let state = match self.states.get_mut(&state_id) {
             Some(s) => s,
             None => return 0,
@@ -4752,6 +4773,50 @@ impl VmContext {
         if removed_count > 0 {
             #[cfg(feature = "otel")]
             crate::vm_metrics::record_pending_updates_expired(
+                removed_count as u64,
+                &state.entity_name,
+            );
+        }
+
+        removed_count
+    }
+
+    /// Remove queued instruction events older than the pending update TTL.
+    ///
+    /// Events queued for an address that is never registered would otherwise
+    /// stay until the per-PDA cap displaces them, which never happens for
+    /// addresses seen only once. Returns the number of events removed.
+    pub fn cleanup_expired_pending_instruction_events(&mut self, state_id: u32) -> usize {
+        let state = match self.states.get_mut(&state_id) {
+            Some(s) => s,
+            None => return 0,
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let mut removed_count = 0;
+        let mut remaining = 0;
+
+        state
+            .pending_instruction_events
+            .retain(|_pda_address, events| {
+                let original_len = events.len();
+                events.retain(|event| now - event.queued_at <= PENDING_UPDATE_TTL_SECONDS);
+                removed_count += original_len - events.len();
+                remaining += events.len();
+                !events.is_empty()
+            });
+
+        // The full pass gives an exact count, which also corrects any drift from
+        // callers that edit the public map directly.
+        state.pending_instruction_event_count = remaining;
+
+        if removed_count > 0 {
+            #[cfg(feature = "otel")]
+            crate::vm_metrics::record_pending_instruction_events_expired(
                 removed_count as u64,
                 &state.entity_name,
             );
@@ -4806,7 +4871,7 @@ impl VmContext {
         update: QueuedAccountUpdate,
     ) -> Result<()> {
         if self.pending_queue_size >= MAX_PENDING_UPDATES_TOTAL as u64 {
-            self.cleanup_expired_pending_updates(state_id);
+            self.cleanup_expired_pending_account_updates(state_id);
             if self.pending_queue_size >= MAX_PENDING_UPDATES_TOTAL as u64 {
                 self.drop_oldest_pending_update(state_id)?;
             }
@@ -4861,11 +4926,37 @@ impl VmContext {
         Ok(())
     }
 
+    /// Queue an instruction event whose key lookup missed, for replay when the
+    /// PDA is registered.
+    ///
+    /// Bounded per address by `MAX_PENDING_UPDATES_PER_PDA` (dropping that
+    /// address's oldest event) and per state table by
+    /// `MAX_PENDING_INSTRUCTION_EVENTS_TOTAL`. When the table is full, expired
+    /// events are cleaned up first and, if that frees nothing, the oldest
+    /// queued event across all addresses is dropped.
     pub fn queue_instruction_event(
         &mut self,
         state_id: u32,
         event: QueuedInstructionEvent,
     ) -> Result<()> {
+        let state = self.states.get(&state_id).ok_or("State table not found")?;
+        // An address already at its own cap replaces an event rather than
+        // adding one, so it must not also trigger a table-wide eviction.
+        let grows_total = state
+            .pending_instruction_events
+            .get(&event.pda_address)
+            .is_none_or(|events| events.len() < MAX_PENDING_UPDATES_PER_PDA);
+        if grows_total
+            && state.pending_instruction_event_count >= MAX_PENDING_INSTRUCTION_EVENTS_TOTAL
+        {
+            self.cleanup_expired_pending_instruction_events(state_id);
+            if self.states.get(&state_id).is_some_and(|s| {
+                s.pending_instruction_event_count >= MAX_PENDING_INSTRUCTION_EVENTS_TOTAL
+            }) {
+                self.drop_oldest_pending_instruction_event(state_id)?;
+            }
+        }
+
         let state = self
             .states
             .get_mut(&state_id)
@@ -4896,6 +4987,8 @@ impl VmContext {
 
         if events.len() >= MAX_PENDING_UPDATES_PER_PDA {
             events.remove(0);
+        } else {
+            state.pending_instruction_event_count += 1;
         }
 
         events.push(pending);
@@ -4930,6 +5023,9 @@ impl VmContext {
         };
 
         if let Some((_, events)) = state.pending_instruction_events.remove(pda_address) {
+            state.pending_instruction_event_count = state
+                .pending_instruction_event_count
+                .saturating_sub(events.len());
             events
         } else {
             Vec::new()
@@ -5113,6 +5209,52 @@ impl VmContext {
                         state.pending_updates.remove(&pda);
                     }
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Drop the oldest queued instruction event across all addresses.
+    ///
+    /// Each address's events are in queue order, so the oldest event is the
+    /// front of some address's queue; this scans those fronts. `queued_at` has
+    /// one-second resolution, so ties within a second are broken arbitrarily.
+    fn drop_oldest_pending_instruction_event(&mut self, state_id: u32) -> Result<()> {
+        let state = self
+            .states
+            .get_mut(&state_id)
+            .ok_or("State table not found")?;
+
+        let oldest_pda = state
+            .pending_instruction_events
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .value()
+                    .first()
+                    .map(|event| (event.queued_at, entry.key().clone()))
+            })
+            .min_by_key(|(queued_at, _)| *queued_at)
+            .map(|(_, pda)| pda);
+
+        if let Some(pda) = oldest_pda {
+            let now_empty = match state.pending_instruction_events.get_mut(&pda) {
+                Some(mut events) if !events.is_empty() => {
+                    events.remove(0);
+                    state.pending_instruction_event_count =
+                        state.pending_instruction_event_count.saturating_sub(1);
+                    #[cfg(feature = "otel")]
+                    crate::vm_metrics::record_pending_instruction_events_dropped(
+                        1,
+                        &state.entity_name,
+                    );
+                    events.is_empty()
+                }
+                _ => false,
+            };
+            if now_empty {
+                state.pending_instruction_events.remove(&pda);
             }
         }
 
@@ -6841,6 +6983,208 @@ mod tests {
                 .is_some(),
             "Mutation should include pre_reveal_winning_square"
         );
+    }
+
+    fn queued_ix(pda: &str, slot: u64) -> QueuedInstructionEvent {
+        QueuedInstructionEvent {
+            pda_address: pda.to_string(),
+            event_type: "BuyIxState".to_string(),
+            event_data: json!({"slot": slot}),
+            slot,
+            signature: format!("sig{slot}"),
+        }
+    }
+
+    /// Insert a queued instruction event with an explicit `queued_at`, keeping
+    /// the table's count in step as `queue_instruction_event` would.
+    fn push_ix_at(vm: &mut VmContext, pda: &str, slot: u64, queued_at: i64) {
+        let state = vm.states.get_mut(&0).unwrap();
+        let event = queued_ix(pda, slot);
+        state
+            .pending_instruction_events
+            .entry(pda.to_string())
+            .or_default()
+            .push(PendingInstructionEvent {
+                context: UpdateContext::new(slot, event.signature.clone()),
+                event_type: event.event_type,
+                pda_address: event.pda_address,
+                event_data: event.event_data,
+                slot,
+                signature: event.signature,
+                queued_at,
+            });
+        state.pending_instruction_event_count += 1;
+    }
+
+    fn queued_ix_total(vm: &VmContext) -> usize {
+        vm.states[&0]
+            .pending_instruction_events
+            .iter()
+            .map(|entry| entry.value().len())
+            .sum()
+    }
+
+    fn unix_now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    #[test]
+    fn test_pending_instruction_events_per_pda_cap_drops_oldest() {
+        let mut vm = VmContext::new();
+        for slot in 0..(MAX_PENDING_UPDATES_PER_PDA as u64 + 5) {
+            vm.queue_instruction_event(0, queued_ix("pda", slot))
+                .unwrap();
+        }
+
+        let state = &vm.states[&0];
+        let events = state.pending_instruction_events.get("pda").unwrap();
+        assert_eq!(events.len(), MAX_PENDING_UPDATES_PER_PDA);
+        assert_eq!(
+            events[0].slot, 5,
+            "oldest events for the address are dropped"
+        );
+        assert_eq!(
+            state.pending_instruction_event_count,
+            MAX_PENDING_UPDATES_PER_PDA
+        );
+    }
+
+    #[test]
+    fn test_pending_instruction_events_total_cap_evicts_instead_of_growing() {
+        let mut vm = VmContext::new();
+        let now = unix_now();
+        // Fill to the cap with live events, the oldest under "oldest".
+        push_ix_at(&mut vm, "oldest", 0, now - 10);
+        for i in 1..MAX_PENDING_INSTRUCTION_EVENTS_TOTAL {
+            push_ix_at(&mut vm, &format!("pda{i}"), i as u64, now);
+        }
+
+        for i in 0..10 {
+            vm.queue_instruction_event(0, queued_ix(&format!("new{i}"), 10_000 + i))
+                .unwrap();
+        }
+
+        let state = &vm.states[&0];
+        assert_eq!(queued_ix_total(&vm), MAX_PENDING_INSTRUCTION_EVENTS_TOTAL);
+        assert_eq!(
+            state.pending_instruction_event_count,
+            MAX_PENDING_INSTRUCTION_EVENTS_TOTAL
+        );
+        assert!(
+            !state.pending_instruction_events.contains_key("oldest"),
+            "the oldest event is evicted first and its empty key removed"
+        );
+        assert!(state.pending_instruction_events.contains_key("new9"));
+    }
+
+    #[test]
+    fn test_pending_instruction_events_total_cap_prefers_expired_events() {
+        let mut vm = VmContext::new();
+        let now = unix_now();
+        let expired_at = now - PENDING_UPDATE_TTL_SECONDS - 1;
+        for i in 0..10 {
+            push_ix_at(&mut vm, "stale", i, expired_at);
+        }
+        for i in 10..MAX_PENDING_INSTRUCTION_EVENTS_TOTAL {
+            push_ix_at(&mut vm, &format!("pda{i}"), i as u64, now);
+        }
+
+        vm.queue_instruction_event(0, queued_ix("new", 99_999))
+            .unwrap();
+
+        let state = &vm.states[&0];
+        assert!(!state.pending_instruction_events.contains_key("stale"));
+        assert!(state.pending_instruction_events.contains_key("pda10"));
+        assert_eq!(
+            state.pending_instruction_event_count,
+            MAX_PENDING_INSTRUCTION_EVENTS_TOTAL - 10 + 1
+        );
+        assert_eq!(queued_ix_total(&vm), state.pending_instruction_event_count);
+    }
+
+    #[test]
+    fn test_pending_instruction_events_full_address_does_not_evict_others() {
+        let mut vm = VmContext::new();
+        let now = unix_now();
+        for i in 0..MAX_PENDING_UPDATES_PER_PDA {
+            push_ix_at(&mut vm, "full", i as u64, now - 5);
+        }
+        for i in MAX_PENDING_UPDATES_PER_PDA..MAX_PENDING_INSTRUCTION_EVENTS_TOTAL {
+            push_ix_at(&mut vm, &format!("pda{i}"), i as u64, now - 10);
+        }
+
+        vm.queue_instruction_event(0, queued_ix("full", 99_999))
+            .unwrap();
+
+        let state = &vm.states[&0];
+        assert_eq!(
+            state.pending_instruction_events.len(),
+            MAX_PENDING_INSTRUCTION_EVENTS_TOTAL - MAX_PENDING_UPDATES_PER_PDA + 1,
+            "no other address lost its event"
+        );
+        assert_eq!(
+            state.pending_instruction_event_count,
+            MAX_PENDING_INSTRUCTION_EVENTS_TOTAL
+        );
+    }
+
+    #[test]
+    fn test_cleanup_expired_pending_instruction_events_removes_expired_and_empty_keys() {
+        let mut vm = VmContext::new();
+        let now = unix_now();
+        let expired_at = now - PENDING_UPDATE_TTL_SECONDS - 1;
+        push_ix_at(&mut vm, "expired", 1, expired_at);
+        push_ix_at(&mut vm, "expired", 2, expired_at);
+        push_ix_at(&mut vm, "mixed", 3, expired_at);
+        push_ix_at(&mut vm, "mixed", 4, now);
+        push_ix_at(&mut vm, "live", 5, now);
+
+        assert_eq!(vm.cleanup_expired_pending_instruction_events(0), 3);
+
+        let state = &vm.states[&0];
+        assert!(!state.pending_instruction_events.contains_key("expired"));
+        let mixed = state.pending_instruction_events.get("mixed").unwrap();
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].slot, 4);
+        drop(mixed);
+        assert!(state.pending_instruction_events.contains_key("live"));
+        assert_eq!(state.pending_instruction_event_count, 2);
+    }
+
+    #[test]
+    fn test_cleanup_all_expired_covers_pending_instruction_events() {
+        let mut vm = VmContext::new();
+        push_ix_at(
+            &mut vm,
+            "expired",
+            1,
+            unix_now() - PENDING_UPDATE_TTL_SECONDS - 1,
+        );
+
+        let result = vm.cleanup_all_expired(0);
+
+        assert_eq!(result.pending_updates_removed, 1);
+        assert!(vm.states[&0].pending_instruction_events.is_empty());
+        assert_eq!(vm.states[&0].pending_instruction_event_count, 0);
+    }
+
+    #[test]
+    fn test_flush_pending_instruction_events_returns_queue_and_updates_count() {
+        let mut vm = VmContext::new();
+        vm.queue_instruction_event(0, queued_ix("pda", 1)).unwrap();
+        vm.queue_instruction_event(0, queued_ix("pda", 2)).unwrap();
+        vm.queue_instruction_event(0, queued_ix("other", 3))
+            .unwrap();
+
+        let flushed = vm.flush_pending_instruction_events(0, "pda");
+
+        assert_eq!(flushed.iter().map(|e| e.slot).collect::<Vec<_>>(), [1, 2]);
+        let state = &vm.states[&0];
+        assert!(!state.pending_instruction_events.contains_key("pda"));
+        assert_eq!(state.pending_instruction_event_count, 1);
     }
 }
 
