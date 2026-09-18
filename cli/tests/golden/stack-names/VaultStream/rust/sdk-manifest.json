@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "stack-manifest",
+    "hash": "arete:h1:stack-manifest:sha256:681aa6b5a7988bc97c6db1d0355a8a98c56b851753d1c280b3ae5782824df85c"
+  },
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:27f8ca28c01d7f26ea80200b35b334dc024e0d340f7c538133923a6a24ef5fb3",
+  "extensions": null,
+  "artifacts": [
+    "Cargo.toml",
+    "src/entity.rs",
+    "src/lib.rs",
+    "src/programs.rs",
+    "src/types.rs"
+  ]
+}

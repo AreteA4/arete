@@ -8467,3 +8467,6 @@ mod tests {
         assert!(!pyproject.contains(">=0.4\""), "{pyproject}");
     }
 }
+
+#[cfg(test)]
+mod stack_name_golden;
