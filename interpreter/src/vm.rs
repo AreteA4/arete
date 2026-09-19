@@ -2631,8 +2631,58 @@ impl VmContext {
         >,
         non_emitted_fields: Option<&HashSet<String>>,
     ) -> Result<Vec<Mutation>> {
-        self.reset_registers();
         self.last_pda_lookup_miss = None;
+
+        if !handler
+            .iter()
+            .any(|op| matches!(op, OpCode::SegmentBoundary))
+        {
+            return self.execute_handler_segment(
+                handler,
+                event_value,
+                event_type,
+                override_state_id,
+                entity_name,
+                entity_evaluator,
+                non_emitted_fields,
+            );
+        }
+
+        // One event feeds several independently keyed segments (for example an
+        // instruction that updates two instances of the same entity through two
+        // different accounts). Each segment resolves its own key, reads and
+        // writes its own entity instance, and emits its own mutation; an early
+        // exit in one segment (null key, stale or duplicate update) must not
+        // skip the others.
+        let mut output = Vec::new();
+        for segment in handler.split(|op| matches!(op, OpCode::SegmentBoundary)) {
+            output.extend(self.execute_handler_segment(
+                segment,
+                event_value,
+                event_type,
+                override_state_id,
+                entity_name,
+                entity_evaluator,
+                non_emitted_fields,
+            )?);
+        }
+        Ok(output)
+    }
+
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+    fn execute_handler_segment(
+        &mut self,
+        handler: &[OpCode],
+        event_value: &Value,
+        event_type: &str,
+        override_state_id: u32,
+        entity_name: &str,
+        entity_evaluator: Option<
+            &Box<dyn Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync>,
+        >,
+        non_emitted_fields: Option<&HashSet<String>>,
+    ) -> Result<Vec<Mutation>> {
+        self.reset_registers();
 
         let mut pc: usize = 0;
         let mut output = Vec::new();
@@ -3864,6 +3914,11 @@ impl VmContext {
                         }
                     }
 
+                    pc += 1;
+                }
+                OpCode::SegmentBoundary => {
+                    // `execute_handler` splits handlers at boundaries, so a
+                    // segment never contains one; treat it as a no-op.
                     pc += 1;
                 }
             }

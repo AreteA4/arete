@@ -413,7 +413,7 @@ fn build_handlers(
     }
 
     for ((source_type, join_key), mappings) in &sources_by_type_and_join {
-        if let Some(handler) = build_source_handler(
+        handlers.extend(build_source_handler(
             source_type,
             join_key,
             mappings,
@@ -421,9 +421,7 @@ fn build_handlers(
             primary_keys,
             lookup_indexes,
             idls,
-        )? {
-            handlers.push(handler);
-        }
+        )?);
     }
 
     // Group events by instruction and join key
@@ -444,15 +442,17 @@ fn build_handlers(
     }
 
     for ((instruction, join_key), event_mappings) in &events_by_instruction_and_join {
-        if let Some(handler) = build_event_handler(
-            instruction,
-            join_key,
-            event_mappings,
-            primary_keys,
-            lookup_indexes,
-            idls,
-        )? {
-            handlers.push(handler);
+        for event_mappings in split_event_mappings_by_lookup(join_key, event_mappings)? {
+            if let Some(handler) = build_event_handler(
+                instruction,
+                join_key,
+                &event_mappings,
+                primary_keys,
+                lookup_indexes,
+                idls,
+            )? {
+                handlers.push(handler);
+            }
         }
     }
 
@@ -467,10 +467,9 @@ fn build_source_handler(
     primary_keys: &[String],
     lookup_indexes: &[(String, Option<String>)],
     idls: IdlLookup,
-) -> syn::Result<Option<SerializableHandlerSpec>> {
+) -> syn::Result<Vec<SerializableHandlerSpec>> {
     let account_type = source_type.split("::").last().unwrap_or(source_type);
     let idl = find_idl_for_type(source_type, idls);
-    let program_name = program_name_for_type(source_type, idls);
     let is_instruction = mappings.iter().any(|m| m.is_instruction);
     // CPI events are sourced from `::events::` submodule paths (e.g. generated_sdk::events::Swap).
     // All event fields are stored under "data.*" (no "accounts.*" section).
@@ -482,7 +481,7 @@ fn build_source_handler(
             .iter()
             .any(|m| m.target_field_name.starts_with("events."))
     {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
     if !is_instruction && !is_cpi_event {
@@ -493,6 +492,8 @@ fn build_source_handler(
     }
 
     let mut serializable_mappings = Vec::new();
+    // The parsed attribute and primary-key field behind each serializable mapping.
+    let mut mapping_origins: Vec<(&parse::MapAttribute, Option<String>)> = Vec::new();
     let mut has_primary_key = false;
     let mut primary_field = None;
 
@@ -610,6 +611,7 @@ fn build_source_handler(
             emit: mapping.emit,
         });
 
+        let mut mapping_primary_field = None;
         if mapping.is_primary_key {
             has_primary_key = true;
             if let Some(field) = context_field {
@@ -635,7 +637,9 @@ fn build_source_handler(
             } else {
                 primary_field = Some(mapping.source_field_name.clone());
             }
+            mapping_primary_field = primary_field.clone();
         }
+        mapping_origins.push((mapping, mapping_primary_field));
     }
 
     let is_aggregation = mappings.iter().any(|m| {
@@ -645,26 +649,132 @@ fn build_source_handler(
         )
     });
 
+    let lookup_by_path = |fs: &parse::FieldSpec| {
+        // FieldSpec has explicit_location which tells us if it's accounts:: or data::
+        // For CPI events, all fields (including identifiers) are under "data".
+        let prefix = match &fs.explicit_location {
+            Some(parse::FieldLocation::Account) => "accounts",
+            Some(parse::FieldLocation::InstructionArg) => "data",
+            None => {
+                if is_cpi_event {
+                    "data" // CPI event fields are always in "data"
+                } else {
+                    "accounts" // Default to accounts for instruction compatibility
+                }
+            }
+        };
+        format!("{}.{}", prefix, fs.ident)
+    };
+
     // Try to find lookup_by from the first mapping that has it
     let lookup_by_field = mappings
         .iter()
         .find_map(|m| m.lookup_by.as_ref())
-        .map(|fs| {
-            // FieldSpec has explicit_location which tells us if it's accounts:: or data::
-            // For CPI events, all fields (including identifiers) are under "data".
-            let prefix = match &fs.explicit_location {
-                Some(parse::FieldLocation::Account) => "accounts",
-                Some(parse::FieldLocation::InstructionArg) => "data",
-                None => {
-                    if is_cpi_event {
-                        "data" // CPI event fields are always in "data"
-                    } else {
-                        "accounts" // Default to accounts for instruction compatibility
-                    }
-                }
-            };
-            format!("{}.{}", prefix, fs.ident)
-        });
+        .map(lookup_by_path);
+
+    // Each primary-key mapping and each aggregate `lookup_by` declares the key
+    // its update is routed by. When one source declares several distinct keys
+    // (e.g. `split_position` counting `split_source_count` via `first_position`
+    // and `split_child_count` via `second_position`), every key gets its own
+    // handler instead of all updates riding whichever key was seen last.
+    let honors_lookup_by = is_aggregation && (is_instruction || is_cpi_event);
+    let primary_key_paths: Vec<&str> = mapping_origins
+        .iter()
+        .filter_map(|(_, field)| field.as_deref())
+        .collect();
+    let lookup_route = |path: String| {
+        let leaf = path.split('.').next_back().unwrap_or(&path);
+        let is_primary_key_field = primary_key_paths.contains(&path.as_str())
+            || primary_keys
+                .iter()
+                .any(|pk| pk.split('.').next_back().unwrap_or(pk) == leaf);
+        if is_primary_key_field {
+            RouteKey::Embedded(path)
+        } else {
+            RouteKey::Lookup(path)
+        }
+    };
+    let mut declared_routes: Vec<RouteKey> = Vec::new();
+    for mapping in mappings {
+        let route = if mapping.is_primary_key {
+            mapping_origins
+                .iter()
+                .find(|(origin, _)| std::ptr::eq(*origin, mapping))
+                .and_then(|(_, field)| field.clone())
+                .map(RouteKey::Embedded)
+        } else if honors_lookup_by {
+            mapping
+                .lookup_by
+                .as_ref()
+                .map(|fs| lookup_route(lookup_by_path(fs)))
+        } else {
+            None
+        };
+        if let Some(route) = route {
+            if !declared_routes.contains(&route) {
+                declared_routes.push(route);
+            }
+        }
+    }
+
+    if declared_routes.len() > 1 {
+        // Conditional aggregates compile to instruction hooks without a key of
+        // their own, so they cannot follow one of several keys.
+        if let Some(conditional) = mappings
+            .iter()
+            .find(|m| aggregate_conditions.contains_key(&m.target_field_name))
+        {
+            return Err(syn::Error::new(
+                conditional.attr_span,
+                format!(
+                    "conditional aggregate `{}` on '{}' is not supported: this source updates \
+                     the entity through several keys ({}), and a conditional aggregate cannot \
+                     choose one of them.",
+                    conditional.target_field_name,
+                    source_type,
+                    declared_routes
+                        .iter()
+                        .map(|route| format!("`{}`", route.path()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        }
+        return split_source_handler_by_route(
+            source_type,
+            &declared_routes,
+            &mapping_origins,
+            serializable_mappings,
+            honors_lookup_by,
+            &lookup_route,
+            &lookup_by_path,
+            SourceSpec::Source {
+                program_id: None,
+                discriminator: None,
+                type_name: source_type_name(source_type, is_instruction, is_cpi_event, idls),
+                serialization: source_serialization(idl, account_type, is_instruction),
+                is_account: !is_instruction && !is_cpi_event,
+            },
+        );
+    }
+
+    // A keyless instruction or CPI-event source routes by the source field that
+    // key validation accepted for it (a primary-key or lookup-index field).
+    // These events carry no `__account_address`, so the account-handler
+    // fallback below would leave the key null and drop the update.
+    let infer_route = || {
+        if is_instruction || is_cpi_event {
+            infer_source_route(
+                source_type,
+                &mapping_origins,
+                &serializable_mappings,
+                primary_keys,
+                lookup_indexes,
+            )
+        } else {
+            Ok(None)
+        }
+    };
 
     let key_resolution = if has_primary_key {
         let primary_field_str = primary_field.as_deref().unwrap_or("");
@@ -672,41 +782,44 @@ fn build_source_handler(
         KeyResolutionStrategy::Embedded {
             primary_field: FieldPath::new(&segments),
         }
-    } else if is_aggregation && is_instruction {
-        // Use lookup_by if available, otherwise fall back to join_key or a sensible default
-        if let Some(ref lookup_field) = lookup_by_field {
-            // Check if lookup_by points directly to a field that matches the primary key.
-            // If the lookup_by field name matches the primary key field name, it means we're
-            // pointing directly to the primary key field itself (e.g., accounts.mint when
-            // id.mint is the primary key), so we should use Embedded resolution.
-            //
-            // If it doesn't match the primary key, we need a Lookup resolution to do a
-            // reverse lookup (e.g., accounts.bonding_curve -> mint via PDA lookup).
-            let lookup_field_name = lookup_field.split('.').next_back().unwrap_or(lookup_field);
+    } else if let (true, Some(lookup_field)) = (honors_lookup_by, &lookup_by_field) {
+        // Check if lookup_by points directly to a field that matches the primary key.
+        // If the lookup_by field name matches the primary key field name, it means we're
+        // pointing directly to the primary key field itself (e.g., accounts.mint when
+        // id.mint is the primary key), so we should use Embedded resolution.
+        //
+        // If it doesn't match the primary key, we need a Lookup resolution to do a
+        // reverse lookup (e.g., accounts.bonding_curve -> mint via PDA lookup).
+        let lookup_field_name = lookup_field.split('.').next_back().unwrap_or(lookup_field);
 
-            // Check if any primary key field name matches the lookup_by field name
-            // Primary keys are like "id.mint", so we compare the last segment
-            let is_primary_key_field = primary_keys
-                .iter()
-                .any(|pk| pk.split('.').next_back().unwrap_or(pk) == lookup_field_name);
+        // Check if any primary key field name matches the lookup_by field name
+        // Primary keys are like "id.mint", so we compare the last segment
+        let is_primary_key_field = primary_keys
+            .iter()
+            .any(|pk| pk.split('.').next_back().unwrap_or(pk) == lookup_field_name);
 
-            if is_primary_key_field {
-                // The lookup_by field IS the primary key itself - use Embedded
-                let segments: Vec<&str> = lookup_field.split('.').collect();
-                KeyResolutionStrategy::Embedded {
-                    primary_field: FieldPath::new(&segments),
-                }
-            } else {
-                // The lookup_by field is a PDA that needs reverse lookup
-                let segments: Vec<&str> = lookup_field.split('.').collect();
-                KeyResolutionStrategy::Lookup {
-                    primary_field: FieldPath::new(&segments),
-                }
+        if is_primary_key_field {
+            // The lookup_by field IS the primary key itself - use Embedded
+            let segments: Vec<&str> = lookup_field.split('.').collect();
+            KeyResolutionStrategy::Embedded {
+                primary_field: FieldPath::new(&segments),
             }
-        } else if let Some(ref join_field) = join_key {
+        } else {
+            // The lookup_by field is a PDA that needs reverse lookup
+            let segments: Vec<&str> = lookup_field.split('.').collect();
+            KeyResolutionStrategy::Lookup {
+                primary_field: FieldPath::new(&segments),
+            }
+        }
+    } else if is_aggregation && is_instruction {
+        // No lookup_by: fall back to join_key, the inferred key field, or a
+        // resolver-provided key.
+        if let Some(ref join_field) = join_key {
             KeyResolutionStrategy::Lookup {
                 primary_field: FieldPath::new(&[join_field]),
             }
+        } else if let Some(route) = infer_route()? {
+            route.to_strategy()
         } else {
             // No lookup_by specified - use embedded with empty path
             // The instruction handler will need the primary key from elsewhere
@@ -718,6 +831,8 @@ fn build_source_handler(
         KeyResolutionStrategy::Lookup {
             primary_field: FieldPath::new(&[join_field]),
         }
+    } else if let Some(route) = infer_route()? {
+        route.to_strategy()
     } else if !lookup_indexes.is_empty() && !is_instruction {
         // Entity has lookup indexes and this is an account handler without an embedded
         // primary key. Use Lookup strategy with __account_address so the VM can resolve
@@ -732,6 +847,29 @@ fn build_source_handler(
         }
     };
 
+    Ok(vec![SerializableHandlerSpec {
+        source: SourceSpec::Source {
+            program_id: None,
+            discriminator: None,
+            type_name: source_type_name(source_type, is_instruction, is_cpi_event, idls),
+            serialization: source_serialization(idl, account_type, is_instruction),
+            is_account: !is_instruction && !is_cpi_event,
+        },
+        key_resolution,
+        mappings: serializable_mappings,
+        conditions: Vec::new(),
+        emit: true,
+    }])
+}
+
+/// Scoped event type name of a `#[map]` source, e.g. `cp_amm::SplitPositionIxState`.
+fn source_type_name(
+    source_type: &str,
+    is_instruction: bool,
+    is_cpi_event: bool,
+    idls: IdlLookup,
+) -> String {
+    let account_type = source_type.split("::").last().unwrap_or(source_type);
     // Determine type suffix:
     // - CPI events (from `::events::` submodule) use "CpiEvent"
     // - Instructions use "IxState"
@@ -743,42 +881,205 @@ fn build_source_handler(
     } else {
         "State"
     };
-    let serialization = if is_instruction {
-        None
-    } else {
-        idl.and_then(|idl| {
-            idl.types
-                .iter()
-                .find(|t| t.name == account_type)
-                .and_then(|t| t.serialization.as_ref())
-                .map(|s| match s {
-                    idl_parser::IdlSerialization::Borsh => IdlSerializationSnapshot::Borsh,
-                    idl_parser::IdlSerialization::Bytemuck => IdlSerializationSnapshot::Bytemuck,
-                    idl_parser::IdlSerialization::BytemuckUnsafe => {
-                        IdlSerializationSnapshot::BytemuckUnsafe
-                    }
-                })
-        })
-    };
-    let type_name = if let Some(program_name) = program_name {
+    if let Some(program_name) = program_name_for_type(source_type, idls) {
         format!("{}::{}{}", program_name, account_type, type_suffix)
     } else {
         format!("{}{}", account_type, type_suffix)
-    };
+    }
+}
 
-    Ok(Some(SerializableHandlerSpec {
-        source: SourceSpec::Source {
-            program_id: None,
-            discriminator: None,
-            type_name,
-            serialization,
-            is_account: !is_instruction && !is_cpi_event,
-        },
-        key_resolution,
-        mappings: serializable_mappings,
-        conditions: Vec::new(),
-        emit: true,
-    }))
+fn source_serialization(
+    idl: Option<&idl_parser::IdlSpec>,
+    account_type: &str,
+    is_instruction: bool,
+) -> Option<IdlSerializationSnapshot> {
+    if is_instruction {
+        return None;
+    }
+    idl.and_then(|idl| {
+        idl.types
+            .iter()
+            .find(|t| t.name == account_type)
+            .and_then(|t| t.serialization.as_ref())
+            .map(|s| match s {
+                idl_parser::IdlSerialization::Borsh => IdlSerializationSnapshot::Borsh,
+                idl_parser::IdlSerialization::Bytemuck => IdlSerializationSnapshot::Bytemuck,
+                idl_parser::IdlSerialization::BytemuckUnsafe => {
+                    IdlSerializationSnapshot::BytemuckUnsafe
+                }
+            })
+    })
+}
+
+/// The key of a keyless instruction or CPI-event source: the event field of a
+/// mapping whose leaf names a primary-key field (used directly) or a
+/// lookup-index field (resolved through that index). This is the same field
+/// key validation accepts for such a source. Several distinct candidate fields
+/// are ambiguous and rejected.
+fn infer_source_route(
+    source_type: &str,
+    mapping_origins: &[(&parse::MapAttribute, Option<String>)],
+    serializable_mappings: &[SerializableFieldMapping],
+    primary_keys: &[String],
+    lookup_indexes: &[(String, Option<String>)],
+) -> syn::Result<Option<RouteKey>> {
+    let leaf = |path: &str| path.split('.').next_back().unwrap_or(path).to_string();
+    let primary_key_leafs: HashSet<String> = primary_keys.iter().map(|pk| leaf(pk)).collect();
+    let mut lookup_index_leafs: HashSet<String> = HashSet::new();
+    for (field, _) in lookup_indexes {
+        let field_leaf = leaf(field);
+        if let Some(stripped) = field_leaf.strip_suffix("_address") {
+            lookup_index_leafs.insert(stripped.to_string());
+        }
+        lookup_index_leafs.insert(field_leaf);
+    }
+
+    let mut candidates: Vec<(RouteKey, proc_macro2::Span)> = Vec::new();
+    for ((origin, _), mapping) in mapping_origins.iter().zip(serializable_mappings) {
+        let Some(path) = mapping_source_path(mapping) else {
+            continue;
+        };
+        let path_leaf = leaf(&path);
+        let route = if primary_key_leafs.contains(&path_leaf) {
+            RouteKey::Embedded(path)
+        } else if lookup_index_leafs.contains(&path_leaf) {
+            RouteKey::Lookup(path)
+        } else {
+            continue;
+        };
+        if !candidates.iter().any(|(existing, _)| *existing == route) {
+            candidates.push((route, origin.attr_span));
+        }
+    }
+
+    match candidates.len() {
+        0 => Ok(None),
+        1 => Ok(candidates.pop().map(|(route, _)| route)),
+        _ => Err(syn::Error::new(
+            candidates[1].1,
+            format!(
+                "'{}' has no `primary_key` mapping or `lookup_by`, and its mappings read \
+                 several key fields ({}); it cannot tell which entity instance to update. \
+                 Mark the key mapping `primary_key` or route the update with `lookup_by`.",
+                source_type,
+                candidates
+                    .iter()
+                    .map(|(route, _)| format!("`{}`", route.path()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+/// How one update of a source reaches its entity instance.
+#[derive(Debug, Clone, PartialEq)]
+enum RouteKey {
+    /// The dotted event path holds the primary key itself.
+    Embedded(String),
+    /// The dotted event path is resolved to the primary key via a lookup index.
+    Lookup(String),
+}
+
+impl RouteKey {
+    fn path(&self) -> &str {
+        match self {
+            RouteKey::Embedded(path) | RouteKey::Lookup(path) => path,
+        }
+    }
+
+    fn to_strategy(&self) -> KeyResolutionStrategy {
+        let segments: Vec<&str> = self.path().split('.').collect();
+        match self {
+            RouteKey::Embedded(_) => KeyResolutionStrategy::Embedded {
+                primary_field: FieldPath::new(&segments),
+            },
+            RouteKey::Lookup(_) => KeyResolutionStrategy::Lookup {
+                primary_field: FieldPath::new(&segments),
+            },
+        }
+    }
+}
+
+fn mapping_source_path(mapping: &SerializableFieldMapping) -> Option<String> {
+    match &mapping.source {
+        MappingSource::FromSource { path, .. } if !path.segments.is_empty() => {
+            Some(path.segments.join("."))
+        }
+        _ => None,
+    }
+}
+
+/// Split one source's mappings into one handler per declared routing key.
+///
+/// Mappings that declare no key of their own (for example the lookup-index
+/// mapping `id.first_position <- accounts.first_position`) follow the key that
+/// reads the same event field. A mapping that matches no key cannot be routed
+/// unambiguously and is rejected at compile time.
+#[allow(clippy::too_many_arguments)]
+fn split_source_handler_by_route(
+    source_type: &str,
+    routes: &[RouteKey],
+    mapping_origins: &[(&parse::MapAttribute, Option<String>)],
+    serializable_mappings: Vec<SerializableFieldMapping>,
+    honors_lookup_by: bool,
+    lookup_route: &dyn Fn(String) -> RouteKey,
+    lookup_by_path: &dyn Fn(&parse::FieldSpec) -> String,
+    source: SourceSpec,
+) -> syn::Result<Vec<SerializableHandlerSpec>> {
+    let key_list = routes
+        .iter()
+        .map(|route| format!("`{}`", route.path()))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut errors = crate::diagnostic::ErrorCollector::default();
+    let mut routed: Vec<Vec<SerializableFieldMapping>> = vec![Vec::new(); routes.len()];
+
+    for ((origin, primary_field), mapping) in mapping_origins.iter().zip(serializable_mappings) {
+        let declared = if let Some(field) = primary_field {
+            Some(RouteKey::Embedded(field.clone()))
+        } else if honors_lookup_by {
+            origin
+                .lookup_by
+                .as_ref()
+                .map(|fs| lookup_route(lookup_by_path(fs)))
+        } else {
+            None
+        };
+        let index = match declared {
+            Some(route) => routes.iter().position(|candidate| *candidate == route),
+            None => mapping_source_path(&mapping)
+                .and_then(|path| routes.iter().position(|route| route.path() == path)),
+        };
+        match index {
+            Some(index) => routed[index].push(mapping),
+            None => errors.push(syn::Error::new(
+                origin.attr_span,
+                format!(
+                    "`{}` from '{}' cannot be routed to one entity instance: this source \
+                     updates the entity through several keys ({}), and this mapping reads \
+                     none of them. Map it from one of those fields, or give it its own \
+                     `lookup_by`.",
+                    mapping.target_path, source_type, key_list
+                ),
+            )),
+        }
+    }
+
+    errors.finish()?;
+
+    Ok(routes
+        .iter()
+        .zip(routed)
+        .map(|(route, mappings)| SerializableHandlerSpec {
+            source: source.clone(),
+            key_resolution: route.to_strategy(),
+            mappings,
+            conditions: Vec::new(),
+            emit: true,
+        })
+        .collect())
 }
 
 fn span_for_map_lookup_error(
@@ -816,6 +1117,64 @@ fn span_for_event_lookup_error(
         }
         _ => field_spec.ident.span(),
     }
+}
+
+type EventMapping = (String, parse::EventAttribute, syn::Type);
+
+/// Split an `#[event]` group whose mappings name different `lookup_by`
+/// fields into one group per field, so each event capture is routed by its own
+/// key. Groups with at most one `lookup_by` field are returned unchanged. A
+/// mapping without `lookup_by` in a group that has several is ambiguous and
+/// rejected.
+fn split_event_mappings_by_lookup(
+    join_key: &Option<String>,
+    event_mappings: &[EventMapping],
+) -> syn::Result<Vec<Vec<EventMapping>>> {
+    let lookup_key = |attr: &parse::EventAttribute| {
+        attr.lookup_by.as_ref().map(|field_spec| {
+            let location = match field_spec.explicit_location {
+                Some(parse::FieldLocation::Account) => "accounts::",
+                Some(parse::FieldLocation::InstructionArg) => "data::",
+                None => "",
+            };
+            format!("{}{}", location, field_spec.ident)
+        })
+    };
+
+    let mut keys: Vec<String> = Vec::new();
+    for (_, attr, _) in event_mappings {
+        if let Some(key) = lookup_key(attr) {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    // `join_on` takes precedence over `lookup_by` when routing events.
+    if keys.len() <= 1 || join_key.is_some() {
+        return Ok(vec![event_mappings.to_vec()]);
+    }
+
+    let mut groups: Vec<Vec<EventMapping>> = vec![Vec::new(); keys.len()];
+    let mut errors = crate::diagnostic::ErrorCollector::default();
+    for event_mapping in event_mappings {
+        match lookup_key(&event_mapping.1)
+            .and_then(|key| keys.iter().position(|candidate| *candidate == key))
+        {
+            Some(index) => groups[index].push(event_mapping.clone()),
+            None => errors.push(syn::Error::new(
+                event_mapping.1.attr_span,
+                format!(
+                    "`{}` cannot be routed to one entity instance: other events from the same \
+                     instruction use different `lookup_by` fields ({}). Add `lookup_by` to \
+                     choose one.",
+                    event_mapping.0,
+                    keys.join(", ")
+                ),
+            )),
+        }
+    }
+    errors.finish()?;
+    Ok(groups)
 }
 
 fn build_event_handler(
@@ -1252,7 +1611,9 @@ fn build_instruction_hooks_ast(
     sources_by_type: &BTreeMap<String, Vec<parse::MapAttribute>>,
     idls: IdlLookup,
 ) -> Vec<InstructionHook> {
-    let mut instruction_hooks_map: BTreeMap<String, InstructionHook> = BTreeMap::new();
+    // Hooks per instruction type. Actions that route by different `lookup_by`
+    // fields get separate hooks so each lands on its own entity instance.
+    let mut instruction_hooks_map: BTreeMap<String, Vec<InstructionHook>> = BTreeMap::new();
 
     for registration in pda_registrations {
         let instr_type = path_to_string(&registration.instruction_path);
@@ -1269,13 +1630,7 @@ fn build_instruction_hooks_ast(
             lookup_name: registration.lookup_name.clone(),
         };
 
-        instruction_hooks_map
-            .entry(instr_type_state.clone())
-            .or_insert_with(|| InstructionHook {
-                instruction_type: instr_type_state,
-                actions: Vec::new(),
-                lookup_by: None,
-            })
+        hook_for_lookup(&mut instruction_hooks_map, &instr_type_state, None)
             .actions
             .push(action);
     }
@@ -1339,19 +1694,9 @@ fn build_instruction_hooks_ast(
                 FieldPath::new(&[lookup_by_prefix, &field_spec.ident.to_string()])
             });
 
-            let hook = instruction_hooks_map
-                .entry(instr_type_state.clone())
-                .or_insert_with(|| InstructionHook {
-                    instruction_type: instr_type_state.clone(),
-                    actions: Vec::new(),
-                    lookup_by: lookup_by.clone(),
-                });
-
-            hook.actions.push(action);
-
-            if hook.lookup_by.is_none() {
-                hook.lookup_by = lookup_by;
-            }
+            hook_for_lookup(&mut instruction_hooks_map, &instr_type_state, lookup_by)
+                .actions
+                .push(action);
         }
     }
 
@@ -1407,19 +1752,9 @@ fn build_instruction_hooks_ast(
                 condition: None,
             };
 
-            let hook = instruction_hooks_map
-                .entry(stop_type_state.clone())
-                .or_insert_with(|| InstructionHook {
-                    instruction_type: stop_type_state.clone(),
-                    actions: Vec::new(),
-                    lookup_by: lookup_by.clone(),
-                });
-
-            hook.actions.push(action);
-
-            if hook.lookup_by.is_none() {
-                hook.lookup_by = lookup_by;
-            }
+            hook_for_lookup(&mut instruction_hooks_map, &stop_type_state, lookup_by)
+                .actions
+                .push(action);
         }
     }
 
@@ -1453,13 +1788,7 @@ fn build_instruction_hooks_ast(
                             condition: Some(condition),
                         };
 
-                        instruction_hooks_map
-                            .entry(instr_type_state.clone())
-                            .or_insert_with(|| InstructionHook {
-                                instruction_type: instr_type_state,
-                                actions: Vec::new(),
-                                lookup_by: None,
-                            })
+                        hook_for_lookup(&mut instruction_hooks_map, &instr_type_state, None)
                             .actions
                             .push(action);
                     }
@@ -1468,5 +1797,43 @@ fn build_instruction_hooks_ast(
         }
     }
 
-    instruction_hooks_map.into_values().collect()
+    instruction_hooks_map.into_values().flatten().collect()
+}
+
+/// The hook that collects actions for `instruction_type` routed by
+/// `lookup_by`. Actions without `lookup_by` join the first hook; a hook
+/// without `lookup_by` adopts the first one offered; a different `lookup_by`
+/// starts a separate hook instead of being routed by another action's key.
+fn hook_for_lookup<'a>(
+    hooks_by_instruction: &'a mut BTreeMap<String, Vec<InstructionHook>>,
+    instruction_type: &str,
+    lookup_by: Option<FieldPath>,
+) -> &'a mut InstructionHook {
+    let hooks = hooks_by_instruction
+        .entry(instruction_type.to_string())
+        .or_default();
+    let index = match &lookup_by {
+        None => (!hooks.is_empty()).then_some(0),
+        Some(field) => hooks
+            .iter()
+            .position(|hook| hook.lookup_by.as_ref() == Some(field))
+            .or_else(|| hooks.iter().position(|hook| hook.lookup_by.is_none())),
+    };
+    let index = match index {
+        Some(index) => {
+            if hooks[index].lookup_by.is_none() {
+                hooks[index].lookup_by = lookup_by;
+            }
+            index
+        }
+        None => {
+            hooks.push(InstructionHook {
+                instruction_type: instruction_type.to_string(),
+                actions: Vec::new(),
+                lookup_by,
+            });
+            hooks.len() - 1
+        }
+    };
+    &mut hooks[index]
 }
