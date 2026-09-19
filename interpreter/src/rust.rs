@@ -1,7 +1,8 @@
 use crate::ast::*;
 use crate::identifiers::{rust as rust_ident, IdentifierCase, IdentifierScope};
 use crate::stack_types::{
-    entity_program_name, resolved_type_namespaces, ProgramTypeDefs, StackResolvedTypes,
+    entity_program_name, resolved_type_namespaces, AccountModels, ProgramTypeDefs,
+    StackResolvedTypes,
 };
 use crate::typescript_instructions::{
     dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
@@ -3487,13 +3488,13 @@ fn generate_stack_types_rs(
     entity_specs: &[SerializableStreamSpec],
     entity_names: &[String],
     idls: &[IdlSnapshot],
-) -> (String, BTreeMap<String, String>) {
+) -> (String, AccountModels) {
     let mut output = String::new();
     output.push_str("use serde::{Deserialize, Serialize};\n");
     output.push_str("use arete_sdk::serde_utils;\n\n");
 
     let mut generated = HashSet::new();
-    let mut account_structs: BTreeMap<String, String> = BTreeMap::new();
+    let mut account_structs = AccountModels::default();
     let mut used_builtins: BTreeSet<&'static str> = BTreeSet::new();
     let mut stack_types = StackResolvedTypes::default();
     stack_types.reserve(stack_entity_struct_names(entity_specs, entity_names));
@@ -3503,8 +3504,12 @@ fn generate_stack_types_rs(
         let compiler = RustCompiler::new(spec.clone(), entity_name.clone(), RustConfig::default());
         let resolved_name_map = compiler
             .build_stack_resolved_type_name_map(&stack_types, entity_program_name(spec, idls));
+        let program_name = entity_program_name(spec, idls);
         for (name, resolved) in emitted_resolved_types(spec, &resolved_name_map) {
             stack_types.declare(&name, resolved);
+            if resolved.is_account && !resolved.is_enum {
+                account_structs.record(program_name, &resolved.type_name, &name);
+            }
         }
         used_builtins.extend(compiler.used_builtin_resolver_types());
 
@@ -3528,7 +3533,7 @@ fn generate_stack_types_rs(
         let resolved = compiler.generate_resolved_types(
             &resolved_name_map,
             &mut generated,
-            Some(&mut account_structs),
+            Some(account_structs.first_mut()),
         );
         output.push_str(&resolved);
         while !output.ends_with("\n\n") {
@@ -4949,7 +4954,7 @@ fn generate_stack_programs_rs(
     pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
     program_ids: &[String],
     program_specs: &[arete_hash::ProgramSpecV1],
-    account_structs: &BTreeMap<String, String>,
+    account_structs: &AccountModels,
     module_mode: bool,
     reads: &[RustProgramReadConfig],
     include_idl_only_programs: bool,
@@ -5083,12 +5088,9 @@ fn generate_stack_programs_rs(
             used_method_names.insert("from_builder".to_string());
             let accounts = idl.map(|idl| idl.accounts.as_slice()).unwrap_or_default();
             for account in accounts {
-                let Some(struct_name) = account_structs.get(&account.name).or_else(|| {
-                    account_structs
-                        .iter()
-                        .find(|(name, _)| name.eq_ignore_ascii_case(&account.name))
-                        .map(|(_, emitted)| emitted)
-                }) else {
+                let Some(struct_name) =
+                    account_structs.get(idl.map(|idl| idl.name.as_str()), &account.name)
+                else {
                     // No generated struct for this account type; no reader.
                     continue;
                 };

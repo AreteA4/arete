@@ -175,20 +175,10 @@ export interface AlphaHeader {
   owner: string;
 }
 
-export interface Vault {
-  authority: string;
-  header: AlphaHeader;
-}
-
 export interface BetaHeader2 {
   version: number;
   owner: string;
   flags: number;
-}
-
-export interface BetaVault2 {
-  authority: string;
-  header: BetaHeader2;
 }
 
 export const AlphaHeaderSchema = z.object({
@@ -199,14 +189,6 @@ export const AlphaHeaderSchema = z.object({
   owner: value.owner,
 }));
 
-export const VaultSchema = z.object({
-  authority: z.string(),
-  header: z.lazy(() => AlphaHeaderSchema),
-}).transform((value) => ({
-  authority: value.authority,
-  header: value.header,
-}));
-
 export const BetaHeader2Schema = z.object({
   version: z.number(),
   owner: z.string(),
@@ -215,14 +197,6 @@ export const BetaHeader2Schema = z.object({
   version: value.version,
   owner: value.owner,
   flags: value.flags,
-}));
-
-export const BetaVault2Schema = z.object({
-  authority: z.string(),
-  header: z.lazy(() => BetaHeader2Schema),
-}).transform((value) => ({
-  authority: value.authority,
-  header: value.header,
 }));
 
 // ============================================================================
@@ -354,13 +328,11 @@ export const HEADER_STREAM_STACK_CORE = {
     AlphaVaultState: AlphaVaultStateSchema,
     BetaHeader2: BetaHeader2Schema,
     BetaHeader: BetaHeaderSchema,
-    BetaVault2: BetaVault2Schema,
     BetaVaultCompleted: BetaVaultCompletedSchema,
     BetaVaultId: BetaVaultIdSchema,
     BetaVault: BetaVaultSchema,
     BetaVaultState: BetaVaultStateSchema,
     Header: HeaderSchema,
-    Vault: VaultSchema,
   },
   patchSchemas: {
     AlphaVault: AlphaVaultPatchSchema,
@@ -370,12 +342,12 @@ export const HEADER_STREAM_STACK_CORE = {
     alpha: {
       name: 'alpha',
       programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:a4526828e289a52b3b16ca76f349d14d9f0f3d9aca49a61876407c7bca710ab9',
-      programSpecHash: 'arete:h1:program-spec:sha256:07ca57c38922e4521a86f57a079fc28eec26733af78a3bef1af19c69c65b88ab',
-      idlContentHash: 'arete:h1:idl-content:sha256:d4ea46182744c2e5a400d3e980ca3a3f667aa11b8d47c066aab9590cce12de34',
-      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:0424abdf515c78e92210c85712819d5919bde03a5ea2142ec2e3c40cfb385db2',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:64b24970e9209e0bdb1a33958061f08ce028f580b0a119efe97c2e93ea31487f',
+      programSpecHash: 'arete:h1:program-spec:sha256:2cfe95cf0c7d0085085dab5d3bbf8faed0a698519e740ceb126751f45fa9a2b4',
+      idlContentHash: 'arete:h1:idl-content:sha256:6e5dd6926c3f40fd2a5a546909c0c773cb9cd3349ac7c28227efbdc920f9e081',
+      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:9ed97cc808f1573ab3e5511f10deeaffea26dd2157815a393b0e8b7c68e4a6ea',
       accounts: {
-        Vault: programAccountRead<Vault>({ account: 'Vault', schema: VaultSchema }),
+        Header: programAccountRead<AlphaHeader>({ account: 'Header', schema: AlphaHeaderSchema }),
       },
       rawInstructions: {
         configure: alphaConfigureInstruction,
@@ -401,12 +373,12 @@ export const HEADER_STREAM_STACK_CORE = {
     beta: {
       name: 'beta',
       programId: 'Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:078f85b444e3804db236baa02662cfec8daed3ba87a4804c1c24705066d0526b',
-      programSpecHash: 'arete:h1:program-spec:sha256:5c21623087e4efea884fb1f00db5f302c5c4db81673a227ed95d09d42e02e809',
-      idlContentHash: 'arete:h1:idl-content:sha256:29bc5a57f90ad08bf39d13c82dd06eb3c31d671b3b0f0c1f96caa80eb287a091',
-      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:9cd71e207ad7a8d852c6cf643c37143a3ec5797b9b6aefac6e34436075f17640',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:d3ab2c3fc08ae86de35bd57e97a47a5db7801cf6290daf82cf43cca0f180aa7d',
+      programSpecHash: 'arete:h1:program-spec:sha256:7d8147800015e11cbcff4976c7a05ab11c4a21a0b0c48f530930e20fcf6c3834',
+      idlContentHash: 'arete:h1:idl-content:sha256:e4efcbe4e507599083453738cedd4458914f5f50ea03c0099ce777c5b1377b89',
+      normalizedIdlHash: 'arete:h1:idl-normalized:sha256:e5fa59e25754d764dcabc4fe1eb49c610379f1b63e93b368520e0031637bec6e',
       accounts: {
-        Vault: programAccountRead<BetaVault2>({ account: 'Vault', schema: BetaVault2Schema }),
+        Header: programAccountRead<BetaHeader2>({ account: 'Header', schema: BetaHeader2Schema }),
       },
       rawInstructions: {
         configure: betaConfigureInstruction,
@@ -432,11 +404,11 @@ export const HEADER_STREAM_STACK_CORE = {
   },
   programReads: {
     alpha: {
-      release: { programReleaseHash: "arete:h1:program-release:sha256:7ca2173db2139bb3009579d116fbd6a1bedf01b1885f0b08ecc52cacf8219b7c", programSpecHash: "arete:h1:program-spec:sha256:07ca57c38922e4521a86f57a079fc28eec26733af78a3bef1af19c69c65b88ab" },
+      release: { programReleaseHash: "arete:h1:program-release:sha256:ebac0e8bac3bd650c596de51e0bb2c7a355cf6169724de958b31ceed4eb3dda3", programSpecHash: "arete:h1:program-spec:sha256:2cfe95cf0c7d0085085dab5d3bbf8faed0a698519e740ceb126751f45fa9a2b4" },
       transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
     },
     beta: {
-      release: { programReleaseHash: "arete:h1:program-release:sha256:18231d9aaf7d096cbe46a1a171c98a935fe0984deb0301726520b86a4c656beb", programSpecHash: "arete:h1:program-spec:sha256:5c21623087e4efea884fb1f00db5f302c5c4db81673a227ed95d09d42e02e809" },
+      release: { programReleaseHash: "arete:h1:program-release:sha256:dd00373868c8b427c3207815a4ee5e0d66b8f9df5d034cf84a1a3b904fda554b", programSpecHash: "arete:h1:program-spec:sha256:7d8147800015e11cbcff4976c7a05ab11c4a21a0b0c48f530930e20fcf6c3834" },
       transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
     },
   },

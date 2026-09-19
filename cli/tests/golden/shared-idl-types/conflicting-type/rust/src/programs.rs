@@ -17,10 +17,10 @@ pub mod alpha {
     pub const PROGRAM_ID: &str = "2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM";
 
     /// Content hash of the exact program specification captured at generation time.
-    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:07ca57c38922e4521a86f57a079fc28eec26733af78a3bef1af19c69c65b88ab";
+    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:2cfe95cf0c7d0085085dab5d3bbf8faed0a698519e740ceb126751f45fa9a2b4";
 
     /// Release identity addressing hosted account reads for this program.
-    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:7ca2173db2139bb3009579d116fbd6a1bedf01b1885f0b08ecc52cacf8219b7c";
+    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:ebac0e8bac3bd650c596de51e0bb2c7a355cf6169724de958b31ceed4eb3dda3";
 
     /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
@@ -83,7 +83,6 @@ pub mod alpha {
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct AlphaProgram {
-        #[allow(dead_code)]
         builder: arete_sdk::ProgramBuilder,
     }
 
@@ -96,6 +95,14 @@ pub mod alpha {
         pub fn configure(&self, params: ConfigureParams) -> Result<BuiltInstruction, InstructionError> {
             configure(params)
         }
+
+        /// Typed reader for `Header` accounts (release-addressed HTTP reads).
+        pub fn header_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::Header>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Header",
+                std::sync::Arc::new(self.builder.account_transport("alpha", &read_descriptor())?),
+            ))
+        }
     }
 }
 
@@ -107,10 +114,10 @@ pub mod beta {
     pub const PROGRAM_ID: &str = "Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS";
 
     /// Content hash of the exact program specification captured at generation time.
-    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:5c21623087e4efea884fb1f00db5f302c5c4db81673a227ed95d09d42e02e809";
+    pub const PROGRAM_SPEC_HASH: &str = "arete:h1:program-spec:sha256:7d8147800015e11cbcff4976c7a05ab11c4a21a0b0c48f530930e20fcf6c3834";
 
     /// Release identity addressing hosted account reads for this program.
-    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:18231d9aaf7d096cbe46a1a171c98a935fe0984deb0301726520b86a4c656beb";
+    pub const PROGRAM_RELEASE_HASH: &str = "arete:h1:program-release:sha256:dd00373868c8b427c3207815a4ee5e0d66b8f9df5d034cf84a1a3b904fda554b";
 
     /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
@@ -173,7 +180,6 @@ pub mod beta {
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct BetaProgram {
-        #[allow(dead_code)]
         builder: arete_sdk::ProgramBuilder,
     }
 
@@ -185,6 +191,14 @@ pub mod beta {
 
         pub fn configure(&self, params: ConfigureParams) -> Result<BuiltInstruction, InstructionError> {
             configure(params)
+        }
+
+        /// Typed reader for `Header` accounts (release-addressed HTTP reads).
+        pub fn header_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::BetaHeader>, arete_sdk::AreteError> {
+            Ok(arete_sdk::AccountReader::new(
+                "Header",
+                std::sync::Arc::new(self.builder.account_transport("beta", &read_descriptor())?),
+            ))
         }
     }
 }

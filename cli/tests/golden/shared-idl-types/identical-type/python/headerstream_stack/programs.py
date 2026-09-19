@@ -65,10 +65,10 @@ __all__ = [
 ALPHA_PROGRAM_ID = "2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM"
 
 #: Content hash of the exact program specification captured at generation time.
-ALPHA_PROGRAM_SPEC_HASH = "arete:h1:program-spec:sha256:07ca57c38922e4521a86f57a079fc28eec26733af78a3bef1af19c69c65b88ab"
+ALPHA_PROGRAM_SPEC_HASH = "arete:h1:program-spec:sha256:2cfe95cf0c7d0085085dab5d3bbf8faed0a698519e740ceb126751f45fa9a2b4"
 
 #: Release identity addressing hosted account reads for this program.
-ALPHA_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:7ca2173db2139bb3009579d116fbd6a1bedf01b1885f0b08ecc52cacf8219b7c"
+ALPHA_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:ebac0e8bac3bd650c596de51e0bb2c7a355cf6169724de958b31ceed4eb3dda3"
 
 
 def alpha_read_descriptor() -> ProgramReadDescriptor:
@@ -151,6 +151,10 @@ def alpha_configure_handler() -> InstructionHandler:
         errors=[],
     )
 
+_ALPHA_ACCOUNTS: Dict[str, ProgramAccountReadDef] = {
+    "header": ProgramAccountReadDef(account="Header", parser=models.header_from_wire),
+}
+
 #: Portable program SDK definition consumed by `arete.stack`.
 ALPHA_PROGRAM = ProgramDef(
     name="alpha",
@@ -159,7 +163,7 @@ ALPHA_PROGRAM = ProgramDef(
         "configure": alpha_configure_handler(),
     },
     pdas={},
-    accounts={},
+    accounts=dict(_ALPHA_ACCOUNTS),
     errors=ALPHA_ERRORS,
     program_spec_hash=ALPHA_PROGRAM_SPEC_HASH,
 )
@@ -172,10 +176,10 @@ ALPHA_PROGRAM = ProgramDef(
 BETA_PROGRAM_ID = "Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS"
 
 #: Content hash of the exact program specification captured at generation time.
-BETA_PROGRAM_SPEC_HASH = "arete:h1:program-spec:sha256:4339c11f0c4e44ae7c5582bd54833b6d7fbcb48a428bdc0f1ecce4cbe3ee6fa3"
+BETA_PROGRAM_SPEC_HASH = "arete:h1:program-spec:sha256:09c1dbf3601259b356733fcca78684d5cfa7bb96d8455af06073d246cdf5819e"
 
 #: Release identity addressing hosted account reads for this program.
-BETA_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:eab0552764322dca3997f69a01aa37be1445df1d2a7f4d60be4ebfc88c026678"
+BETA_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:45fb1bcf8ea2fd7105059c892d798acdd26f455c1842161ad1324f1ef9f6c856"
 
 
 def beta_read_descriptor() -> ProgramReadDescriptor:
@@ -258,6 +262,10 @@ def beta_configure_handler() -> InstructionHandler:
         errors=[],
     )
 
+_BETA_ACCOUNTS: Dict[str, ProgramAccountReadDef] = {
+    "header": ProgramAccountReadDef(account="Header", parser=models.header_from_wire),
+}
+
 #: Portable program SDK definition consumed by `arete.stack`.
 BETA_PROGRAM = ProgramDef(
     name="beta",
@@ -266,7 +274,7 @@ BETA_PROGRAM = ProgramDef(
         "configure": beta_configure_handler(),
     },
     pdas={},
-    accounts={},
+    accounts=dict(_BETA_ACCOUNTS),
     errors=BETA_ERRORS,
     program_spec_hash=BETA_PROGRAM_SPEC_HASH,
 )

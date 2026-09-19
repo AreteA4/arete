@@ -49,8 +49,8 @@ const WIDER_HEADER: &[HeaderField] = &[
     ("flags", "u16", "Integer", Some("U16")),
 ];
 
-/// A program whose `Vault` account and `configure` instruction both use its
-/// `Header` type.
+/// A program whose `Header` account type is also its `configure`
+/// instruction's argument type.
 fn program(name: &str, program_id: &str, header: &[HeaderField]) -> ProgramSpecArtifact {
     let header_fields = header
         .iter()
@@ -71,15 +71,9 @@ fn program(name: &str, program_id: &str, header: &[HeaderField]) -> ProgramSpecA
             "args": [{ "name": "header", "type": { "defined": "Header" } }]
         }],
         "accounts": [{
-            "name": "Vault",
+            "name": "Header",
             "discriminator": [1, 0, 0, 0, 0, 0, 0, 0],
-            "type": {
-                "kind": "struct",
-                "fields": [
-                    { "name": "authority", "type": "publicKey" },
-                    { "name": "header", "type": { "defined": "Header" } }
-                ]
-            }
+            "type": { "kind": "struct", "fields": header_fields }
         }],
         "types": [{ "name": "Header", "type": { "kind": "struct", "fields": header_fields } }],
         "events": [],
@@ -90,7 +84,8 @@ fn program(name: &str, program_id: &str, header: &[HeaderField]) -> ProgramSpecA
     ProgramSpecArtifact::new(spec).expect("golden ProgramSpec artifact")
 }
 
-/// An entity of `program_id` whose `state.header` field maps its `Header`.
+/// An entity of `program_id` whose `state.header` field maps its `Header`
+/// account.
 fn entity(name: &str, program_id: &str, header: &[HeaderField]) -> PortableEntity {
     let resolved_fields = header
         .iter()
@@ -133,7 +128,7 @@ fn entity(name: &str, program_id: &str, header: &[HeaderField]) -> PortableEntit
                     "type_name": "Header",
                     "fields": resolved_fields,
                     "is_instruction": false,
-                    "is_account": false,
+                    "is_account": true,
                     "is_event": false,
                     "is_enum": false,
                     "enum_variants": []
@@ -290,6 +285,24 @@ fn shared_idl_types_golden_conflicting_type() {
     let models = "python/headerstream_stack/models.py";
     assert_eq!(count(&files, models, "class Header:"), 1);
     assert_eq!(count(&files, models, "class BetaHeader:"), 1);
+
+    // Each program's account reader parses into its own model.
+    assert_eq!(
+        count(
+            &files,
+            "rust/src/programs.rs",
+            "AccountReader<crate::types::BetaHeader>"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &files,
+            "python/headerstream_stack/programs.py",
+            "parser=models.beta_header_from_wire"
+        ),
+        1
+    );
 
     // Each program's `configure` encodes its own `Header` layout.
     for path in [

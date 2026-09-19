@@ -160,6 +160,59 @@ pub(crate) fn entity_program_name<'a>(
         .map(|idl| idl.name.as_str())
 }
 
+/// The generated models of IDL account types, for typed account readers.
+///
+/// A program's account type is read into the model the program's own
+/// entities map it to; that may be a renamed model when another program
+/// defines a different type with the same name. Account types none of the
+/// program's entities map fall back to the first model generated for the name.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AccountModels {
+    /// `(program, account type)` -> model the program's entities use.
+    by_program: BTreeMap<(String, String), String>,
+    /// Account type -> the first model generated for it.
+    first: BTreeMap<String, String>,
+}
+
+impl AccountModels {
+    /// The stack-wide account type -> first generated model map.
+    pub(crate) fn first_mut(&mut self) -> &mut BTreeMap<String, String> {
+        &mut self.first
+    }
+
+    /// Record that an entity of `program` maps `account_type` to `model`.
+    pub(crate) fn record(&mut self, program: Option<&str>, account_type: &str, model: &str) {
+        if let Some(program) = program {
+            self.by_program
+                .entry((program.to_string(), account_type.to_string()))
+                .or_insert_with(|| model.to_string());
+        }
+    }
+
+    /// The model `program`'s `account` accounts are read into (account
+    /// names match case-insensitively when no model has the exact name).
+    pub(crate) fn get(&self, program: Option<&str>, account: &str) -> Option<&String> {
+        let own = program.and_then(|program| {
+            self.by_program
+                .get(&(program.to_string(), account.to_string()))
+                .or_else(|| {
+                    self.by_program
+                        .iter()
+                        .find(|((owner, name), _)| {
+                            owner == program && name.eq_ignore_ascii_case(account)
+                        })
+                        .map(|(_, model)| model)
+                })
+        });
+        own.or_else(|| self.first.get(account)).or_else(|| {
+            self.first
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(account))
+                .map(|(_, model)| model)
+        })
+    }
+}
+
 /// The prefixes that disambiguate an entity's resolved type from a
 /// different, same-named type another entity declared: the entity's program
 /// name (`subscriptions` -> `Subscriptions`), then the entity name.
@@ -190,23 +243,41 @@ pub(crate) fn resolved_type_shape(resolved: &ResolvedStructType) -> String {
 /// program's point of view.
 ///
 /// Instruction codegen resolves the defined types an instruction's arguments
-/// reference by name. Across programs, the first program to define a name
-/// provides its stack-wide definition, which every program whose own
-/// definition is identical (including the types it references) shares. A
-/// program that defines the name differently resolves its own definition,
-/// so its instructions are never encoded with another program's layout.
+/// reference by name, and a name may be spelled with a different case than
+/// its definition. Across programs, the first program to define a name
+/// (compared case-insensitively) provides its stack-wide definition, which
+/// every program whose own definition is identical (including the types it
+/// references) shares. A program that defines the name differently resolves
+/// its own definition, so its instructions are never encoded with another
+/// program's layout.
 pub(crate) struct ProgramTypeDefs<'a> {
-    /// Each name's first definition across programs.
-    first: BTreeMap<String, &'a IdlTypeDefSnapshot>,
-    /// The program each name's first definition comes from.
-    first_program: BTreeMap<String, usize>,
-    /// Lowercase name -> first spelling, for case-insensitive lookups.
-    lower: BTreeMap<String, String>,
-    /// Program index -> names that program defines differently from their
-    /// first definition, with its own definition.
-    own: Vec<BTreeMap<String, &'a IdlTypeDefSnapshot>>,
+    /// Lowercase name -> the first definition across programs, and its program.
+    first: BTreeMap<String, (&'a IdlTypeDefSnapshot, usize)>,
+    /// Every spelling any program defines.
+    names: BTreeSet<String>,
+    programs: Vec<ProgramDefs<'a>>,
     program_names: Vec<String>,
     scope: Option<usize>,
+}
+
+/// One program's type definitions.
+struct ProgramDefs<'a> {
+    by_name: BTreeMap<&'a str, &'a IdlTypeDefSnapshot>,
+    /// Lowercase name -> the program's first spelling of it.
+    lower: BTreeMap<String, &'a str>,
+    /// Spellings the program defines differently from their first definition.
+    own: BTreeSet<&'a str>,
+}
+
+impl<'a> ProgramDefs<'a> {
+    /// The program's definition of `name`: exact spelling, then any case.
+    fn get(&self, name: &str) -> Option<&'a IdlTypeDefSnapshot> {
+        self.by_name.get(name).copied().or_else(|| {
+            self.lower
+                .get(&name.to_lowercase())
+                .map(|spelling| self.by_name[spelling])
+        })
+    }
 }
 
 /// A defined type as seen from the current program.
@@ -222,41 +293,51 @@ pub(crate) struct ProgramTypeDef<'a> {
 
 impl<'a> ProgramTypeDefs<'a> {
     pub(crate) fn new(idls: &'a [IdlSnapshot]) -> Self {
-        let mut first: BTreeMap<String, &'a IdlTypeDefSnapshot> = BTreeMap::new();
-        let mut first_program = BTreeMap::new();
-        let mut lower = BTreeMap::new();
+        let mut first = BTreeMap::new();
+        let mut names = BTreeSet::new();
         for (program, idl) in idls.iter().enumerate() {
             for def in &idl.types {
-                if !first.contains_key(&def.name) {
-                    first.insert(def.name.clone(), def);
-                    first_program.insert(def.name.clone(), program);
-                    lower.insert(def.name.to_lowercase(), def.name.clone());
-                }
+                names.insert(def.name.clone());
+                first
+                    .entry(def.name.to_lowercase())
+                    .or_insert((def, program));
             }
         }
-        let own = idls
+        let mut programs = idls
             .iter()
             .map(|idl| {
-                let defs = idl
-                    .types
-                    .iter()
-                    .map(|def| (def.name.as_str(), def))
-                    .collect::<BTreeMap<_, _>>();
-                let mut differs = BTreeMap::new();
-                idl.types
-                    .iter()
-                    .filter(|def| {
-                        definition_differs(&def.name, &defs, &first, &mut differs, &mut Vec::new())
-                    })
-                    .map(|def| (def.name.clone(), def))
-                    .collect()
+                let mut lower = BTreeMap::new();
+                for def in &idl.types {
+                    lower
+                        .entry(def.name.to_lowercase())
+                        .or_insert(def.name.as_str());
+                }
+                ProgramDefs {
+                    by_name: idl
+                        .types
+                        .iter()
+                        .map(|def| (def.name.as_str(), def))
+                        .collect(),
+                    lower,
+                    own: BTreeSet::new(),
+                }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        for program in &mut programs {
+            let mut differs = BTreeMap::new();
+            program.own = program
+                .by_name
+                .values()
+                .filter(|def| {
+                    definition_differs(def, program, &first, &mut differs, &mut Vec::new())
+                })
+                .map(|def| def.name.as_str())
+                .collect();
+        }
         Self {
             first,
-            first_program,
-            lower,
-            own,
+            names,
+            programs,
             program_names: idls.iter().map(|idl| idl.name.clone()).collect(),
             scope: None,
         }
@@ -271,49 +352,48 @@ impl<'a> ProgramTypeDefs<'a> {
         &self.program_names[program]
     }
 
-    /// Every defined type name in the stack.
+    /// Every defined type name in the stack, as the IDLs spell them.
     pub(crate) fn names(&self) -> impl Iterator<Item = &String> {
-        self.first.keys()
+        self.names.iter()
     }
 
-    /// The definition of `name` (matched case-insensitively when no program
-    /// spells it exactly so) for the current program.
+    /// The definition of `name` (in any case) for the current program: the
+    /// program's own when it defines the name differently, else the first.
     pub(crate) fn lookup(&self, name: &str) -> Option<ProgramTypeDef<'a>> {
-        let (name, def) = match self.first.get_key_value(name) {
-            Some((name, def)) => (name, *def),
-            None => {
-                let name = self.lower.get(&name.to_lowercase())?;
-                (name, self.first[name])
+        let scoped = self.scope.and_then(|program| {
+            let def = self.programs.get(program)?.get(name)?;
+            Some((program, def))
+        });
+        if let Some((program, def)) = scoped {
+            if self.programs[program].own.contains(def.name.as_str()) {
+                return Some(ProgramTypeDef {
+                    name: &def.name,
+                    def,
+                    program: Some(program),
+                });
             }
-        };
-        let own = self
-            .scope
-            .and_then(|program| Some((program, self.own.get(program)?.get(name)?)));
-        Some(match own {
-            Some((program, def)) => ProgramTypeDef {
-                name: &def.name,
-                def,
-                program: Some(program),
-            },
-            None => ProgramTypeDef {
-                name: &def.name,
-                def,
-                program: None,
-            },
+        }
+        let key = scoped.map_or(name, |(_, def)| def.name.as_str());
+        let (def, _) = self.first.get(&key.to_lowercase())?;
+        Some(ProgramTypeDef {
+            name: &def.name,
+            def,
+            program: None,
         })
     }
 
     /// `(type, first program, other program)` for every type a program
     /// defines differently from the program that defined it first.
     pub(crate) fn conflicts(&self) -> Vec<(String, String, String)> {
-        self.own
+        self.programs
             .iter()
             .enumerate()
-            .flat_map(|(program, own)| {
-                own.keys().map(move |name| {
+            .flat_map(|(program, defs)| {
+                defs.own.iter().map(move |name| {
+                    let (_, first_program) = self.first[&name.to_lowercase()];
                     (
-                        name.clone(),
-                        self.program_names[self.first_program[name]].clone(),
+                        name.to_string(),
+                        self.program_names[first_program].clone(),
                         self.program_names[program].clone(),
                     )
                 })
@@ -322,33 +402,36 @@ impl<'a> ProgramTypeDefs<'a> {
     }
 }
 
-/// Whether `name`, as `defs` (one program's types) defines it, differs from
-/// its first definition across programs, directly or through a type it
-/// references. Memoized in `differs`; a type already being compared counts as
-/// the same (recursive types only differ through their other parts).
-fn definition_differs(
-    name: &str,
-    defs: &BTreeMap<&str, &IdlTypeDefSnapshot>,
-    first: &BTreeMap<String, &IdlTypeDefSnapshot>,
+/// Whether `own`, one of `program`'s definitions, differs from the first
+/// definition of its name across programs, directly or through a type it
+/// references (as the program resolves that name). Memoized by spelling in
+/// `differs`; a type already being compared counts as the same (recursive
+/// types only differ through their other parts).
+fn definition_differs<'a>(
+    own: &'a IdlTypeDefSnapshot,
+    program: &ProgramDefs<'a>,
+    first: &BTreeMap<String, (&'a IdlTypeDefSnapshot, usize)>,
     differs: &mut BTreeMap<String, bool>,
     visiting: &mut Vec<String>,
 ) -> bool {
-    if let Some(known) = differs.get(name) {
+    if let Some(known) = differs.get(&own.name) {
         return *known;
     }
-    let (Some(own), Some(first_def)) = (defs.get(name), first.get(name)) else {
-        return false;
-    };
-    if visiting.iter().any(|visited| visited == name) {
+    if visiting.contains(&own.name) {
         return false;
     }
-    visiting.push(name.to_string());
+    let Some((first_def, _)) = first.get(&own.name.to_lowercase()) else {
+        return false;
+    };
+    visiting.push(own.name.clone());
     let result = definition_shape(own) != definition_shape(first_def)
-        || referenced_type_names(own)
-            .iter()
-            .any(|referenced| definition_differs(referenced, defs, first, differs, visiting));
+        || referenced_type_names(own).iter().any(|referenced| {
+            program.get(referenced).is_some_and(|referenced| {
+                definition_differs(referenced, program, first, differs, visiting)
+            })
+        });
     visiting.pop();
-    differs.insert(name.to_string(), result);
+    differs.insert(own.name.clone(), result);
     result
 }
 
@@ -596,6 +679,45 @@ mod tests {
                 ("Inner".to_string(), "alpha".to_string(), "beta".to_string()),
                 ("Outer".to_string(), "alpha".to_string(), "beta".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn program_type_defs_match_names_case_insensitively_across_programs() {
+        let struct_of = |ty: &str| serde_json::json!({ "kind": "struct", "fields": [{ "name": "a", "type": ty }] });
+        let idls = vec![
+            idl(
+                "alpha",
+                serde_json::json!([{ "name": "Header", "type": struct_of("u8") }]),
+            ),
+            idl(
+                "beta",
+                serde_json::json!([{ "name": "header", "type": struct_of("u16") }]),
+            ),
+            idl(
+                "gamma",
+                serde_json::json!([{ "name": "HEADER", "type": struct_of("u8") }]),
+            ),
+        ];
+        let mut defs = ProgramTypeDefs::new(&idls);
+
+        // `beta`'s differently shaped `header` is its own, whatever the spelling.
+        defs.set_scope(Some(1));
+        for spelling in ["Header", "header", "HEADER"] {
+            let found = defs.lookup(spelling).unwrap();
+            assert_eq!((found.name, found.program), ("header", Some(1)));
+        }
+        // `gamma`'s identical `HEADER` shares `alpha`'s first definition.
+        defs.set_scope(Some(2));
+        let found = defs.lookup("header").unwrap();
+        assert_eq!((found.name, found.program), ("Header", None));
+        assert_eq!(
+            defs.conflicts(),
+            vec![(
+                "header".to_string(),
+                "alpha".to_string(),
+                "beta".to_string()
+            )]
         );
     }
 }

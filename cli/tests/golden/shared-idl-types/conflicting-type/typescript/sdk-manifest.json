@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "input": {
     "kind": "stack-manifest",
-    "hash": "arete:h1:stack-manifest:sha256:d2e4ff01fc3d820debaf65d7eb1860d4a7b08cd1a502d99bdec69849500bd933"
+    "hash": "arete:h1:stack-manifest:sha256:77122b6ec69d7547b758be80fda2f715b9fa3f8f0393e0f4bad2b447fda46169"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:b094f878e91d09c5086bc35cd4c9adbf0d17a7bead8eeca5761e522d6961dc08",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:03f78bdb392c84a5da7c33b19c6a32c8cfdd874f4fa5a2da1169e5a606faab49",
   "extensions": null,
   "artifacts": [
     "HeaderStream-core.ts",

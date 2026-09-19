@@ -20,7 +20,8 @@
 use crate::ast::*;
 use crate::identifiers::python as python_ident;
 use crate::stack_types::{
-    entity_program_name, resolved_type_namespaces, ProgramTypeDefs, StackResolvedTypes,
+    entity_program_name, resolved_type_namespaces, AccountModels, ProgramTypeDefs,
+    StackResolvedTypes,
 };
 use crate::typescript_instructions::{
     dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
@@ -1321,11 +1322,11 @@ fn generate_stack_models_py(
     entity_specs: &[SerializableStreamSpec],
     entity_names: &[String],
     idls: &[IdlSnapshot],
-) -> (String, Vec<String>, BTreeMap<String, String>) {
+) -> (String, Vec<String>, AccountModels) {
     let mut exports: Vec<String> = Vec::new();
     let mut blocks: Vec<String> = Vec::new();
     let mut generated: HashSet<String> = HashSet::new();
-    let mut account_structs: BTreeMap<String, String> = BTreeMap::new();
+    let mut account_structs = AccountModels::default();
 
     // Runtime envelopes first: capture/event-fed fields annotate against them.
     blocks.push(MODELS_WRAPPERS.to_string());
@@ -1354,12 +1355,9 @@ fn generate_stack_models_py(
 
     for (index, spec) in entity_specs.iter().enumerate() {
         let entity_name = &entity_names[index];
-        let resolved_name_map = build_resolved_type_name_map(
-            spec,
-            entity_name,
-            &stack_types,
-            entity_program_name(spec, idls),
-        );
+        let program_name = entity_program_name(spec, idls);
+        let resolved_name_map =
+            build_resolved_type_name_map(spec, entity_name, &stack_types, program_name);
         for resolved in spec
             .sections
             .iter()
@@ -1372,6 +1370,9 @@ fn generate_stack_models_py(
                 .cloned()
                 .unwrap_or_else(|| to_pascal_case(&resolved.type_name));
             stack_types.declare(&name, resolved);
+            if resolved.is_account && !resolved.is_enum {
+                account_structs.record(program_name, &resolved.type_name, &name);
+            }
         }
         let capture_fields = capture_field_targets(spec);
 
@@ -1393,6 +1394,7 @@ fn generate_stack_models_py(
                 }
                 if resolved.is_account && !resolved.is_enum {
                     account_structs
+                        .first_mut()
                         .entry(resolved.type_name.clone())
                         .or_insert_with(|| emitted_name.clone());
                 }
@@ -2793,7 +2795,7 @@ fn generate_stack_programs_py(
     pdas: &BTreeMap<String, BTreeMap<String, PdaDefinition>>,
     program_ids: &[String],
     program_specs: &[arete_hash::ProgramSpecV1],
-    account_structs: &BTreeMap<String, String>,
+    account_structs: &AccountModels,
     reads: &[PythonProgramReadConfig],
     gateway: Option<&serde_json::Value>,
     include_idl_only_programs: bool,
@@ -2942,12 +2944,9 @@ fn generate_stack_programs_py(
             needs.reads = true;
             let accounts = idl.map(|idl| idl.accounts.as_slice()).unwrap_or_default();
             for account in accounts {
-                let Some(struct_name) = account_structs.get(&account.name).or_else(|| {
-                    account_structs
-                        .iter()
-                        .find(|(name, _)| name.eq_ignore_ascii_case(&account.name))
-                        .map(|(_, emitted)| emitted)
-                }) else {
+                let Some(struct_name) =
+                    account_structs.get(idl.map(|idl| idl.name.as_str()), &account.name)
+                else {
                     // No generated dataclass for this account type; no reader.
                     continue;
                 };
