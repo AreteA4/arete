@@ -8527,3 +8527,6 @@ mod tests {
 
 #[cfg(test)]
 mod stack_name_golden;
+
+#[cfg(test)]
+mod shared_idl_types_golden;

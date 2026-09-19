@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "stack-manifest",
+    "hash": "arete:h1:stack-manifest:sha256:d2e4ff01fc3d820debaf65d7eb1860d4a7b08cd1a502d99bdec69849500bd933"
+  },
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:b094f878e91d09c5086bc35cd4c9adbf0d17a7bead8eeca5761e522d6961dc08",
+  "extensions": null,
+  "artifacts": [
+    "HeaderStream-core.ts",
+    "HeaderStream.ts"
+  ]
+}

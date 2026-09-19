@@ -1,5 +1,8 @@
 use crate::ast::*;
 use crate::identifiers::{rust as rust_ident, IdentifierCase, IdentifierScope};
+use crate::stack_types::{
+    entity_program_name, resolved_type_namespaces, ProgramTypeDefs, StackResolvedTypes,
+};
 use crate::typescript_instructions::{
     dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
     split_generic,
@@ -1063,6 +1066,20 @@ impl {entity_name}EntityViews {{
     }
 
     fn build_resolved_type_name_map(&self) -> HashMap<String, String> {
+        self.build_stack_resolved_type_name_map(&StackResolvedTypes::default(), None)
+    }
+
+    /// Names this entity's resolved types, sharing or renaming around the
+    /// resolved types earlier entities of the stack declared in `types.rs`.
+    fn build_stack_resolved_type_name_map(
+        &self,
+        stack_types: &StackResolvedTypes,
+        program_name: Option<&str>,
+    ) -> HashMap<String, String> {
+        let namespaces = resolved_type_namespaces(
+            program_name.or(self.spec.idl.as_ref().map(|idl| idl.name.as_str())),
+            &self.entity_name,
+        );
         let mut reserved_names = HashSet::from([
             self.entity_name.clone(),
             "EventWrapper".to_string(),
@@ -1105,6 +1122,15 @@ impl {entity_name}EntityViews {{
                 }
 
                 let emitted_name = unique_resolved_type_name(resolved, &mut reserved_names);
+                let emitted_name = stack_types
+                    .claim(
+                        resolved,
+                        emitted_name,
+                        &to_pascal_case(&resolved.type_name),
+                        &namespaces,
+                        &mut reserved_names,
+                    )
+                    .into_name();
                 resolved_name_map.insert(resolved.type_name.clone(), emitted_name);
             }
         }
@@ -2983,7 +3009,8 @@ fn compile_stack_spec_with_view_selection(
         .map(|(_, name)| name.clone())
         .collect::<Vec<_>>();
 
-    let (types_rs, account_structs) = generate_stack_types_rs(&entity_specs, &entity_names);
+    let (types_rs, account_structs) =
+        generate_stack_types_rs(&entity_specs, &entity_names, &stack_spec.idls);
 
     let programs = generate_stack_programs_rs(
         stack_name,
@@ -3063,7 +3090,8 @@ pub fn compile_program_modules(
         .map(|entity| entity.state_name.clone())
         .collect::<Vec<_>>();
     validate_entity_identifiers(&entity_names)?;
-    let (types_rs, account_structs) = generate_stack_types_rs(&stack_spec.entities, &entity_names);
+    let (types_rs, account_structs) =
+        generate_stack_types_rs(&stack_spec.entities, &entity_names, &stack_spec.idls);
     let mut programs = generate_stack_programs_rs(
         &stack_spec.stack_name,
         &stack_spec.instructions,
@@ -3405,6 +3433,51 @@ fn append_rust_extension_exports(
     }
 }
 
+/// The struct names `types.rs` declares for entities, their sections and the
+/// runtime envelopes and builtin resolver outputs. A resolved type renamed
+/// around a same-named, different type never takes one of them.
+fn stack_entity_struct_names(
+    entity_specs: &[SerializableStreamSpec],
+    entity_names: &[String],
+) -> Vec<String> {
+    let mut names = vec!["EventWrapper".to_string(), "CaptureWrapper".to_string()];
+    names.extend(
+        BUILTIN_RESOLVER_STRUCTS
+            .iter()
+            .map(|(name, _)| name.to_string()),
+    );
+    for (spec, entity_name) in entity_specs.iter().zip(entity_names) {
+        names.push(entity_name.clone());
+        names.extend(
+            spec.sections
+                .iter()
+                .filter(|section| !RustCompiler::is_root_section(&section.name))
+                .map(|section| format!("{}{}", entity_name, to_pascal_case(&section.name))),
+        );
+    }
+    names
+}
+
+/// The resolved types an entity's emitted fields reference, by emitted name.
+fn emitted_resolved_types<'a>(
+    spec: &'a SerializableStreamSpec,
+    resolved_name_map: &HashMap<String, String>,
+) -> Vec<(String, &'a ResolvedStructType)> {
+    spec.sections
+        .iter()
+        .flat_map(|section| &section.fields)
+        .filter(|field| field.emit)
+        .filter_map(|field| field.resolved_type.as_ref())
+        .map(|resolved| {
+            let name = resolved_name_map
+                .get(&resolved.type_name)
+                .cloned()
+                .unwrap_or_else(|| to_pascal_case(&resolved.type_name));
+            (name, resolved)
+        })
+        .collect()
+}
+
 /// Generate types.rs containing structs for ALL entities in the stack.
 ///
 /// Also returns the map of emitted raw account structs (IDL account type name
@@ -3413,6 +3486,7 @@ fn append_rust_extension_exports(
 fn generate_stack_types_rs(
     entity_specs: &[SerializableStreamSpec],
     entity_names: &[String],
+    idls: &[IdlSnapshot],
 ) -> (String, BTreeMap<String, String>) {
     let mut output = String::new();
     output.push_str("use serde::{Deserialize, Serialize};\n");
@@ -3421,11 +3495,17 @@ fn generate_stack_types_rs(
     let mut generated = HashSet::new();
     let mut account_structs: BTreeMap<String, String> = BTreeMap::new();
     let mut used_builtins: BTreeSet<&'static str> = BTreeSet::new();
+    let mut stack_types = StackResolvedTypes::default();
+    stack_types.reserve(stack_entity_struct_names(entity_specs, entity_names));
 
     for (i, spec) in entity_specs.iter().enumerate() {
         let entity_name = &entity_names[i];
         let compiler = RustCompiler::new(spec.clone(), entity_name.clone(), RustConfig::default());
-        let resolved_name_map = compiler.build_resolved_type_name_map();
+        let resolved_name_map = compiler
+            .build_stack_resolved_type_name_map(&stack_types, entity_program_name(spec, idls));
+        for (name, resolved) in emitted_resolved_types(spec, &resolved_name_map) {
+            stack_types.declare(&name, resolved);
+        }
         used_builtins.extend(compiler.used_builtin_resolver_types());
 
         // Generate section structs (e.g., OreRoundId, OreRoundState)
@@ -3854,34 +3934,28 @@ fn rust_string_literal(value: &str) -> String {
 /// `ArgType::Enum` expressions; the typed params field for such args is
 /// `serde_json::Value`. Mirrors the TypeScript `DefinedTypes` parsing rules.
 struct RustDefinedTypes<'a> {
-    /// IDL type definitions by name, first-wins across programs.
-    defs: BTreeMap<String, &'a IdlTypeDefSnapshot>,
-    /// lowercase name -> canonical key, for case-insensitive fallback lookup.
-    lower: BTreeMap<String, String>,
-    /// Memoized resolutions by original IDL name (`None` = unsupported).
-    resolved: BTreeMap<String, Option<RustParsedArg>>,
-    /// Names currently being resolved (cycle guard).
-    visiting: HashSet<String>,
+    /// IDL type definitions by name, looked up from the current program.
+    types: ProgramTypeDefs<'a>,
+    /// Memoized resolutions by IDL name (`None` = unsupported); a program's
+    /// own definition of a name is keyed by `(program, name)`.
+    resolved: BTreeMap<(Option<usize>, String), Option<RustParsedArg>>,
+    /// Types currently being resolved (cycle guard).
+    visiting: HashSet<(Option<usize>, String)>,
 }
 
 impl<'a> RustDefinedTypes<'a> {
     fn new(idls: &'a [IdlSnapshot]) -> Self {
-        let mut defs: BTreeMap<String, &'a IdlTypeDefSnapshot> = BTreeMap::new();
-        let mut lower: BTreeMap<String, String> = BTreeMap::new();
-        for idl in idls {
-            for def in &idl.types {
-                if !defs.contains_key(def.name.as_str()) {
-                    defs.insert(def.name.clone(), def);
-                    lower.insert(def.name.to_lowercase(), def.name.clone());
-                }
-            }
-        }
         RustDefinedTypes {
-            defs,
-            lower,
+            types: ProgramTypeDefs::new(idls),
             resolved: BTreeMap::new(),
             visiting: HashSet::new(),
         }
+    }
+
+    /// Look defined types up from `program`'s point of view (the program
+    /// whose instructions are being generated).
+    fn set_program(&mut self, program: Option<usize>) {
+        self.types.set_scope(program);
     }
 
     /// Parse a stringified Rust-ish arg type (what `to_rust_type_string`
@@ -4055,44 +4129,23 @@ impl<'a> RustDefinedTypes<'a> {
     /// Resolve a bare type name against the IDL type definitions. Returns
     /// `None` when unsupported (unknown, recursive, tuple struct, …).
     fn resolve_defined(&mut self, name: &str) -> Option<RustParsedArg> {
-        if let Some(cached) = self.resolved.get(name) {
+        let found = self.types.lookup(name)?;
+        let key = (found.program, found.name.to_string());
+        if let Some(cached) = self.resolved.get(&key) {
             return cached.clone();
         }
-        if self.visiting.contains(name) {
+        if !self.visiting.insert(key.clone()) {
             // Recursive types are not supported by instruction codegen.
             return None;
         }
 
-        let key = if self.defs.contains_key(name) {
-            name.to_string()
-        } else {
-            match self.lower.get(&name.to_lowercase()) {
-                Some(canonical) => canonical.clone(),
-                None => {
-                    self.resolved.insert(name.to_string(), None);
-                    return None;
-                }
-            }
-        };
-
-        self.visiting.insert(key.clone());
-        let def = self.defs[&key];
-        let result = match &def.type_def {
-            IdlTypeDefKindSnapshot::Struct { fields, .. } => {
-                let fields = fields.clone();
-                self.resolve_struct(&fields)
-            }
+        let result = match &found.def.type_def {
+            IdlTypeDefKindSnapshot::Struct { fields, .. } => self.resolve_struct(fields),
             IdlTypeDefKindSnapshot::TupleStruct { .. } => None,
-            IdlTypeDefKindSnapshot::Enum { variants, .. } => {
-                let variants = variants.clone();
-                self.resolve_enum(&variants)
-            }
+            IdlTypeDefKindSnapshot::Enum { variants, .. } => self.resolve_enum(variants),
         };
         self.visiting.remove(&key);
-        self.resolved.insert(name.to_string(), result.clone());
-        if name != key {
-            self.resolved.insert(key, result.clone());
-        }
+        self.resolved.insert(key, result.clone());
         result
     }
 
@@ -4946,9 +4999,11 @@ fn generate_stack_programs_rs(
     let mut modules: Vec<ProgramModule> = Vec::new();
 
     for (index, (program_id, group)) in groups.iter().enumerate() {
-        let idl = idls
+        let idl_index = idls
             .iter()
-            .find(|idl| idl.program_id.as_deref() == Some(program_id.as_str()));
+            .position(|idl| idl.program_id.as_deref() == Some(program_id.as_str()));
+        let idl = idl_index.map(|idl_index| &idls[idl_index]);
+        parser.set_program(idl_index);
         let raw_name = match idl {
             Some(idl) => idl.name.clone(),
             None if index == 0 => stack_name.to_string(),

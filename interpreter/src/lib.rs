@@ -43,6 +43,7 @@ pub mod scheduler;
 pub mod slot_hash_cache;
 pub mod snapshot;
 pub mod spec_trait;
+mod stack_types;
 pub mod transaction_metadata;
 pub mod typescript;
 pub mod typescript_instructions;

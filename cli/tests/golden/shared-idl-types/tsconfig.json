@@ -1,0 +1,18 @@
+{
+  "//": "Type-checks the golden shared-IDL-type TypeScript SDKs against the local @usearete/sdk build (typescript/core: npm ci && npm run build).",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": [],
+    "baseUrl": ".",
+    "paths": {
+      "@usearete/sdk": ["../../../../typescript/core/dist/index.d.ts"],
+      "zod": ["../../../../typescript/core/node_modules/zod"]
+    }
+  },
+  "include": ["*/typescript/*.ts"]
+}
