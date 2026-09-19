@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "stack-manifest",
+    "hash": "arete:h1:stack-manifest:sha256:c999a1eb64d787a903b13fb632980dd7575a499aa3feae86b732129b92c72b54"
+  },
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:1d08eaebc284b67d67e0caab79bd44f0526672a1fa95eeba414a8d4203dab558",
+  "extensions": null,
+  "artifacts": [
+    "SubscriptionsStream-core.ts",
+    "SubscriptionsStream.ts"
+  ]
+}

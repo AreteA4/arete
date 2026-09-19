@@ -1,5 +1,8 @@
 use crate::ast::*;
 use crate::identifiers::{typescript as ts_ident, IdentifierCase};
+use crate::stack_types::{
+    entity_program_name, resolved_type_namespaces, ResolvedTypeClaim, StackResolvedTypes,
+};
 use arete_idl::utils::to_snake_case as idl_to_snake_case;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -68,6 +71,29 @@ pub struct TypeScriptCompiler<S> {
     handlers_json: Option<serde_json::Value>, // Raw handlers for event interface generation
     views: Vec<ViewDef>,            // View definitions for derived views
     already_emitted_types: HashSet<String>,
+    /// Resolved types earlier entities of the same stack module declared.
+    stack_types: StackResolvedTypes,
+    /// The program the entity's data comes from, when known.
+    program_name: Option<String>,
+}
+
+/// Emitted names of an entity's resolved types.
+struct ResolvedTypeNames {
+    /// Resolved type name -> emitted TypeScript name.
+    names: HashMap<String, String>,
+    /// Emitted names an earlier entity of the stack already declared
+    /// identically; referenced, never declared again.
+    shared: HashSet<String>,
+}
+
+impl ResolvedTypeNames {
+    fn record(&mut self, resolved: &ResolvedStructType, claim: ResolvedTypeClaim) {
+        if claim.is_shared() {
+            self.shared.insert(claim.name().to_string());
+        }
+        self.names
+            .insert(resolved.type_name.clone(), claim.into_name());
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +126,8 @@ impl<S> TypeScriptCompiler<S> {
             handlers_json: None,
             views: Vec::new(),
             already_emitted_types: HashSet::new(),
+            stack_types: StackResolvedTypes::default(),
+            program_name: None,
         }
     }
 
@@ -125,6 +153,16 @@ impl<S> TypeScriptCompiler<S> {
 
     pub fn with_already_emitted_types(mut self, types: HashSet<String>) -> Self {
         self.already_emitted_types = types;
+        self
+    }
+
+    fn with_stack_resolved_types(
+        mut self,
+        types: StackResolvedTypes,
+        program_name: Option<String>,
+    ) -> Self {
+        self.stack_types = types;
+        self.program_name = program_name;
         self
     }
 
@@ -374,27 +412,7 @@ impl<S> TypeScriptCompiler<S> {
     }
 
     fn section_interface_name(&self, name: &str) -> String {
-        if name == "Root" {
-            format!(
-                "{}{}",
-                self.config.interface_prefix,
-                to_pascal_case(&self.entity_name)
-            )
-        } else {
-            // Create compound names like GameEvents, GameStatus, etc.
-            // Extract the base name (e.g., "Game" from "TestGame" or "SettlementGame")
-            let base_name = if self.entity_name.contains("Game") {
-                "Game"
-            } else {
-                &self.entity_name
-            };
-            format!(
-                "{}{}{}",
-                self.config.interface_prefix,
-                base_name,
-                to_pascal_case(name)
-            )
-        }
+        section_interface_name(&self.config.interface_prefix, &self.entity_name, name)
     }
 
     fn generate_main_entity_interface(&self) -> String {
@@ -814,8 +832,10 @@ impl<S> TypeScriptCompiler<S> {
         patch_schema_types: &HashSet<String>,
     ) -> Vec<(String, String)> {
         let mut schemas = Vec::new();
-        let mut generated_types = HashSet::new();
-        let resolved_name_map = self.build_resolved_type_name_map();
+        let resolved_type_names = self.resolved_type_names();
+        // Types an earlier entity declared are referenced, not redeclared.
+        let mut generated_types = resolved_type_names.shared.clone();
+        let resolved_name_map = resolved_type_names.names;
 
         for section in &self.spec.sections {
             for field_info in &section.fields {
@@ -866,8 +886,10 @@ impl<S> TypeScriptCompiler<S> {
         patch_schema_types: &HashSet<String>,
     ) -> Vec<(String, String)> {
         let mut schemas = Vec::new();
-        let mut generated_types = HashSet::new();
-        let resolved_name_map = self.build_resolved_type_name_map();
+        let resolved_type_names = self.resolved_type_names();
+        // Types an earlier entity declared are referenced, not redeclared.
+        let mut generated_types = resolved_type_names.shared.clone();
+        let resolved_name_map = resolved_type_names.names;
 
         for section in &self.spec.sections {
             for field_info in &section.fields {
@@ -1373,8 +1395,11 @@ export default {};"#,
     /// Generate nested interfaces for all resolved types in the AST
     fn generate_nested_interfaces(&self) -> Vec<String> {
         let mut interfaces = Vec::new();
+        let resolved_type_names = self.resolved_type_names();
+        // Types an earlier entity declared are referenced, not redeclared.
         let mut generated_types = self.already_emitted_types.clone();
-        let resolved_name_map = self.build_resolved_type_name_map();
+        generated_types.extend(resolved_type_names.shared);
+        let resolved_name_map = resolved_type_names.names;
 
         // Collect all resolved types from all sections
         for section in &self.spec.sections {
@@ -1759,6 +1784,10 @@ export default {};"#,
     }
 
     fn build_resolved_type_name_map(&self) -> HashMap<String, String> {
+        self.resolved_type_names().names
+    }
+
+    fn resolved_type_names(&self) -> ResolvedTypeNames {
         let mut reserved_names = self.already_emitted_types.clone();
         reserved_names.insert(to_pascal_case(&self.entity_name));
 
@@ -1768,7 +1797,11 @@ export default {};"#,
             }
         }
 
-        let mut resolved_name_map = HashMap::new();
+        let namespaces = self.resolved_type_namespaces();
+        let mut plan = ResolvedTypeNames {
+            names: HashMap::new(),
+            shared: HashSet::new(),
+        };
 
         for section in &self.spec.sections {
             for field_info in &section.fields {
@@ -1780,16 +1813,78 @@ export default {};"#,
                     continue;
                 };
 
-                if resolved_name_map.contains_key(&resolved.type_name) {
+                if plan.names.contains_key(&resolved.type_name) {
                     continue;
                 }
 
                 let emitted_name = unique_resolved_type_name_ts(resolved, &mut reserved_names);
-                resolved_name_map.insert(resolved.type_name.clone(), emitted_name);
+                let claim = self.stack_types.claim(
+                    resolved,
+                    emitted_name,
+                    &to_pascal_case(&resolved.type_name),
+                    &namespaces,
+                    &mut reserved_names,
+                );
+                plan.record(resolved, claim);
             }
         }
 
-        resolved_name_map
+        // Types only hidden fields use keep their plain name without reserving
+        // it, unless an earlier entity of the stack already declared that name.
+        for section in &self.spec.sections {
+            for field_info in &section.fields {
+                let Some(resolved) = &field_info.resolved_type else {
+                    continue;
+                };
+                let plain_name = to_pascal_case(&resolved.type_name);
+                if field_info.emit
+                    || plan.names.contains_key(&resolved.type_name)
+                    || !self.stack_types.is_declared(&plain_name)
+                {
+                    continue;
+                }
+                let claim = self.stack_types.claim(
+                    resolved,
+                    plain_name.clone(),
+                    &plain_name,
+                    &namespaces,
+                    &mut reserved_names,
+                );
+                plan.record(resolved, claim);
+            }
+        }
+
+        plan
+    }
+
+    fn resolved_type_namespaces(&self) -> Vec<String> {
+        let program_name = self.program_name.as_deref().or_else(|| {
+            self.idl
+                .as_ref()
+                .and_then(|idl| idl.get("name"))
+                .and_then(|name| name.as_str())
+        });
+        resolved_type_namespaces(program_name, &self.entity_name)
+    }
+
+    /// The resolved types this entity declares (every one it emits that an
+    /// earlier entity of the stack did not already declare identically).
+    fn declared_resolved_types(&self) -> Vec<(String, ResolvedStructType)> {
+        let plan = self.resolved_type_names();
+        let mut declared = Vec::new();
+        let mut seen = HashSet::new();
+        for section in &self.spec.sections {
+            for field_info in &section.fields {
+                let Some(resolved) = &field_info.resolved_type else {
+                    continue;
+                };
+                let name = self.resolved_type_to_interface_name_with_map(resolved, &plan.names);
+                if !plan.shared.contains(&name) && seen.insert(name.clone()) {
+                    declared.push((name, resolved.clone()));
+                }
+            }
+        }
+        declared
     }
 
     fn resolved_type_to_interface_name_with_map(
@@ -2959,6 +3054,21 @@ fn unique_resolved_type_name_ts(
     }
 }
 
+fn section_interface_name(interface_prefix: &str, entity_name: &str, name: &str) -> String {
+    if name == "Root" {
+        format!("{}{}", interface_prefix, to_pascal_case(entity_name))
+    } else {
+        // Create compound names like GameEvents, GameStatus, etc.
+        // Extract the base name (e.g., "Game" from "TestGame" or "SettlementGame")
+        let base_name = if entity_name.contains("Game") {
+            "Game"
+        } else {
+            entity_name
+        };
+        format!("{}{}{}", interface_prefix, base_name, to_pascal_case(name))
+    }
+}
+
 /// Convert snake_case to PascalCase
 pub(crate) fn to_pascal_case(s: &str) -> String {
     s.split(['_', '-', '.', ':'])
@@ -3118,15 +3228,15 @@ pub fn compile_serializable_spec(
     entity_name: String,
     config: Option<TypeScriptConfig>,
 ) -> Result<TypeScriptOutput, String> {
-    compile_serializable_spec_with_emitted(spec, entity_name, config, HashSet::new())
+    entity_compiler(spec, entity_name, config, HashSet::new()).try_compile()
 }
 
-fn compile_serializable_spec_with_emitted(
+fn entity_compiler(
     spec: SerializableStreamSpec,
     entity_name: String,
     config: Option<TypeScriptConfig>,
     already_emitted_types: HashSet<String>,
-) -> Result<TypeScriptOutput, String> {
+) -> TypeScriptCompiler<()> {
     let idl = spec
         .idl
         .as_ref()
@@ -3137,14 +3247,49 @@ fn compile_serializable_spec_with_emitted(
 
     let typed_spec: TypedStreamSpec<()> = TypedStreamSpec::from_serializable(spec);
 
-    let compiler = TypeScriptCompiler::new(typed_spec, entity_name)
+    TypeScriptCompiler::new(typed_spec, entity_name)
         .with_idl(idl)
         .with_handlers_json(handlers)
         .with_views(views)
         .with_config(config.unwrap_or_default())
-        .with_already_emitted_types(already_emitted_types);
+        .with_already_emitted_types(already_emitted_types)
+}
 
-    compiler.try_compile()
+/// Names a stack module declares for its entities and their sections, and
+/// the runtime envelopes and builtin resolver types entities emit. A resolved
+/// type renamed around a same-named, different type never takes one of them.
+fn stack_entity_type_names(entities: &[SerializableStreamSpec]) -> Vec<String> {
+    let mut names = vec!["EventWrapper".to_string(), "CaptureWrapper".to_string()];
+    names.extend(
+        crate::resolvers::builtin_resolver_registry()
+            .definitions()
+            .map(|resolver| resolver.output_type().to_string()),
+    );
+    for entity in entities {
+        let entity_name = to_pascal_case(&entity.state_name);
+        names.push(format!("{entity_name}Completed"));
+        names.push(format!("{entity_name}Patch"));
+        let section_names = entity
+            .sections
+            .iter()
+            .map(|section| section.name.clone())
+            .chain(entity.handlers.iter().flat_map(|handler| {
+                handler
+                    .mappings
+                    .iter()
+                    .filter_map(|mapping| mapping.target_path.split_once('.'))
+                    .map(|(section, _)| section.to_string())
+            }))
+            .filter(|section| !is_root_section(section))
+            .collect::<BTreeSet<_>>();
+        for section in section_names {
+            let section_name = section_interface_name("", &entity.state_name, &section);
+            names.push(format!("{section_name}Patch"));
+            names.push(section_name);
+        }
+        names.push(entity_name);
+    }
+    names
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3513,9 +3658,12 @@ fn compile_stack_spec_with_view_selection(
     let mut entity_names = Vec::new();
     let mut schema_names: Vec<String> = Vec::new();
     let mut emitted_types: HashSet<String> = HashSet::new();
+    let mut stack_types = StackResolvedTypes::default();
+    stack_types.reserve(stack_entity_type_names(&stack_spec.entities));
 
     for entity_spec in &stack_spec.entities {
         let mut spec = entity_spec.clone();
+        let program_name = entity_program_name(entity_spec, &stack_spec.idls).map(str::to_string);
         // Inject stack-level IDL if entity doesn't have its own
         if spec.idl.is_none() {
             spec.idl = stack_spec.idls.first().cloned();
@@ -3536,12 +3684,17 @@ fn compile_stack_spec_with_view_selection(
         // Clone IDL before spec is moved so we can check which enums were emitted
         let idl_for_check = spec.idl.clone();
 
-        let output = compile_serializable_spec_with_emitted(
+        let compiler = entity_compiler(
             spec,
             entity_name,
             Some(per_entity_config),
             emitted_types.clone(),
-        )?;
+        )
+        .with_stack_resolved_types(stack_types.clone(), program_name);
+        let output = compiler.try_compile()?;
+        for (name, resolved) in compiler.declared_resolved_types() {
+            stack_types.declare(&name, &resolved);
+        }
 
         // Track shared types for cross-entity dedup
         // Only track enum types that were actually emitted (found in output.interfaces)

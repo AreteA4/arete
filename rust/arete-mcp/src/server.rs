@@ -211,7 +211,7 @@ pub struct SearchKnowledgeArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchCatalogArgs {
     /// Free-text intent (e.g. `monitor swaps`). Matched against concept
-    /// names and synonyms first, then reviewed knowledge via full-text
+    /// names and synonyms first, then curated knowledge via full-text
     /// search. At least one filter is required.
     #[serde(default)]
     pub query: Option<String>,
@@ -463,7 +463,7 @@ impl AreteMcp {
     #[tool(
         description = "Search the active public Arete catalog for installable programs \
                           and stacks by intent. Start here: every result is a catalog \
-                          entry with a verified SDK target, reviewed knowledge, and \
+                          entry with a verified SDK target, curated knowledge, and \
                           evidenced capabilities (`modes`: build/read/subscribe), plus \
                           the exact `packageReleaseHash` that `a4 install` will pin and a \
                           sanitized `delivery.health` (`ready` or `degraded`).\n\n\
@@ -499,7 +499,7 @@ impl AreteMcp {
     #[tool(
         description = "Fetch one active catalog entry by kind and slug: exact package \
                           version and `packageReleaseHash`, bundle and set identities, \
-                          the reviewed knowledge summary, verified SDK targets, \
+                          the curated knowledge summary, verified SDK targets, \
                           capabilities keyed by stable language-neutral `operationId` \
                           values (e.g. `program/<programId>/raw-instruction/deploy`), and \
                           sanitized delivery state. Use after `search_catalog`; install \
@@ -579,8 +579,8 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Fetch curated, human-reviewed annotations for one Solana program \
-                          by slug (e.g. `meteora-cp-amm`). `section` selects what comes \
+        description = "Fetch curated annotations for one Solana program by slug \
+                          (e.g. `meteora-cp-amm`). `section` selects what comes \
                           back:\n\
                           - `summary` (default) — program header, provenance, and counts\n\
                           - `instructions` — per-instruction semantics: what each \

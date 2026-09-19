@@ -14,6 +14,7 @@ use crate::ast::{
     PdaProgramDef, PdaSeedDef,
 };
 use crate::identifiers::{typescript as ts_ident, IdentifierCase};
+use crate::stack_types::ProgramTypeDefs;
 use crate::typescript::to_pascal_case;
 use arete_idl::{IdlAmountDecimalsSource, IdlAmountHint, IdlLengthPrefix};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -365,6 +366,7 @@ pub fn generate_instructions_code(
             }
         };
 
+        defined_types.set_program(program_index);
         let instruction_snapshot = find_instruction_snapshot(instr, idls, program_index);
 
         // --- Parse args; skip the whole instruction on unsupported types. ---
@@ -878,13 +880,13 @@ fn parse_arg_type(raw: &str) -> ParsedArgType {
 /// `{ struct: [...] }` / `{ enum: [...] }` literals, so the runtime needs no
 /// type registry.
 struct DefinedTypes<'a> {
-    /// IDL type definitions by name, first-wins across programs.
-    defs: BTreeMap<String, &'a IdlTypeDefSnapshot>,
-    /// lowercase name -> canonical key, for case-insensitive fallback lookup.
-    lower: BTreeMap<String, String>,
+    /// IDL type definitions by name, looked up from the current
+    /// instruction's program.
+    types: ProgramTypeDefs<'a>,
     /// Emitted TS declarations, in dependency order.
     decls: Vec<String>,
-    /// Memoized resolutions by original IDL name (None = unsupported).
+    /// Memoized resolutions by original IDL name (None = unsupported); a
+    /// program's own definition of a name is keyed by [`scoped_type_key`].
     resolved: BTreeMap<String, Option<ParsedArgType>>,
     /// TS identifiers already in use (entity interfaces + emitted types).
     taken_names: HashSet<String>,
@@ -895,27 +897,18 @@ struct DefinedTypes<'a> {
 
 impl<'a> DefinedTypes<'a> {
     fn new(idls: &'a [IdlSnapshot], reserved_type_names: &HashSet<String>) -> Self {
-        let mut defs: BTreeMap<String, &'a IdlTypeDefSnapshot> = BTreeMap::new();
-        let mut lower: BTreeMap<String, String> = BTreeMap::new();
-        let mut warnings: Vec<String> = Vec::new();
-        for idl in idls {
-            for def in &idl.types {
-                if let Some(existing) = defs.get(def.name.as_str()) {
-                    if format!("{:?}", existing.type_def) != format!("{:?}", def.type_def) {
-                        warnings.push(format!(
-                            "type '{}' is defined differently in multiple programs; using the first definition",
-                            def.name
-                        ));
-                    }
-                } else {
-                    defs.insert(def.name.clone(), def);
-                    lower.insert(def.name.to_lowercase(), def.name.clone());
-                }
-            }
-        }
+        let types = ProgramTypeDefs::new(idls);
+        let warnings = types
+            .conflicts()
+            .into_iter()
+            .map(|(name, first, other)| {
+                format!(
+                    "type '{name}' is defined differently in programs '{first}' and '{other}'; instructions of '{other}' use their own definition"
+                )
+            })
+            .collect();
         DefinedTypes {
-            defs,
-            lower,
+            types,
             decls: Vec::new(),
             resolved: BTreeMap::new(),
             taken_names: reserved_type_names.clone(),
@@ -931,8 +924,8 @@ impl<'a> DefinedTypes<'a> {
 
     fn claim_generated_ts_name(&mut self, preferred: &str, fallback: &str) -> String {
         let declared_names = self
-            .defs
-            .keys()
+            .types
+            .names()
             .map(|name| to_pascal_case(name))
             .collect::<HashSet<_>>();
         let available = |candidate: &str, taken: &HashSet<String>| {
@@ -1139,13 +1132,33 @@ impl<'a> DefinedTypes<'a> {
         }
     }
 
-    /// Resolve a bare type name against the IDL type definitions, emitting a
-    /// TS declaration on first use. Returns `None` when unsupported.
+    /// Resolve a bare type name against the IDL type definitions of the
+    /// current program, emitting a TS declaration on first use. Returns
+    /// `None` when unsupported.
     fn resolve_defined(&mut self, name: &str) -> Option<ParsedArgType> {
-        if let Some(cached) = self.resolved.get(name) {
+        // `to_rust_type_string` passes IDL names through verbatim, but the
+        // referencing spelling occasionally differs in case.
+        let found = self.types.lookup(name)?;
+        let (key, ts_base) = match found.program {
+            None => (found.name.to_string(), to_pascal_case(found.name)),
+            // A program's own definition of a name another program defines
+            // differently is declared under the program's name.
+            Some(program) => (
+                scoped_type_key(program, found.name),
+                format!(
+                    "{}{}",
+                    ts_ident::identifier_stem(
+                        self.types.program_name(program),
+                        IdentifierCase::Pascal
+                    ),
+                    to_pascal_case(found.name)
+                ),
+            ),
+        };
+        if let Some(cached) = self.resolved.get(&key) {
             return cached.clone();
         }
-        if self.visiting.contains(name) {
+        if self.visiting.contains(&key) {
             self.warnings.push(format!(
                 "type '{}' is recursive; recursive types are not supported by instruction codegen",
                 name
@@ -1153,59 +1166,41 @@ impl<'a> DefinedTypes<'a> {
             return None;
         }
 
-        let key = if self.defs.contains_key(name) {
-            name.to_string()
-        } else {
-            // `to_rust_type_string` passes IDL names through verbatim, but the
-            // referencing spelling occasionally differs in case.
-            match self.lower.get(&name.to_lowercase()) {
-                Some(canonical) => canonical.clone(),
-                None => {
-                    self.resolved.insert(name.to_string(), None);
-                    return None;
-                }
-            }
-        };
-
         self.visiting.insert(key.clone());
-        let def = self.defs[&key];
-        let result = match &def.type_def {
+        let result = match &found.def.type_def {
             IdlTypeDefKindSnapshot::Struct { fields, .. } => {
-                let fields = fields.clone();
-                self.resolve_struct(&key, &fields)
+                self.resolve_struct(found.name, &ts_base, fields)
             }
             IdlTypeDefKindSnapshot::TupleStruct { .. } => {
                 self.warnings.push(format!(
                     "type '{}' is a tuple struct, which instruction codegen does not support yet",
-                    key
+                    found.name
                 ));
                 None
             }
             IdlTypeDefKindSnapshot::Enum { variants, .. } => {
-                let variants = variants.clone();
-                self.resolve_enum(&key, &variants)
+                self.resolve_enum(found.name, &ts_base, variants)
             }
         };
         self.visiting.remove(&key);
-        self.resolved.insert(name.to_string(), result.clone());
-        if name != key {
-            self.resolved.insert(key, result.clone());
-        }
+        self.resolved.insert(key, result.clone());
         result
     }
 
+    /// Look defined types up from `program`'s point of view (the program of
+    /// the instruction being generated; `None` when it has none).
+    fn set_program(&mut self, program: Option<usize>) {
+        self.types.set_scope(program);
+    }
+
     fn find_definition(&self, name: &str) -> Option<&'a IdlTypeDefSnapshot> {
-        if let Some(def) = self.defs.get(name) {
-            return Some(*def);
-        }
-        self.lower
-            .get(&name.to_lowercase())
-            .and_then(|canonical| self.defs.get(canonical).copied())
+        self.types.lookup(name).map(|found| found.def)
     }
 
     fn resolve_struct(
         &mut self,
         name: &str,
+        ts_base: &str,
         fields: &[crate::ast::IdlFieldSnapshot],
     ) -> Option<ParsedArgType> {
         let mut schema_fields: Vec<String> = Vec::new();
@@ -1226,7 +1221,7 @@ impl<'a> DefinedTypes<'a> {
             ts_fields.push(format!("  {}: {};", field.name, parsed.ts_type));
         }
 
-        let ts_name = self.claim_ts_name(name);
+        let ts_name = self.claim_ts_name(name, ts_base);
         self.decls.push(format!(
             "export interface {} {{\n{}\n}}",
             ts_name,
@@ -1242,6 +1237,7 @@ impl<'a> DefinedTypes<'a> {
     fn resolve_enum(
         &mut self,
         name: &str,
+        ts_base: &str,
         variants: &[crate::ast::IdlEnumVariantSnapshot],
     ) -> Option<ParsedArgType> {
         use crate::ast::IdlEnumVariantFieldSnapshot;
@@ -1331,7 +1327,7 @@ impl<'a> DefinedTypes<'a> {
             }
         }
 
-        let ts_name = self.claim_ts_name(name);
+        let ts_name = self.claim_ts_name(name, ts_base);
         self.decls.push(format!(
             "export type {} =\n  | {};",
             ts_name,
@@ -1347,9 +1343,8 @@ impl<'a> DefinedTypes<'a> {
     /// Pick a unique TS identifier for a defined type, suffixing `Input` (then
     /// a counter) when the pascal-cased name collides with an entity interface
     /// or another emitted type.
-    fn claim_ts_name(&mut self, name: &str) -> String {
-        let base = to_pascal_case(name);
-        let mut candidate = base.clone();
+    fn claim_ts_name(&mut self, name: &str, base: &str) -> String {
+        let mut candidate = base.to_string();
         if self.taken_names.contains(&candidate) {
             candidate = format!("{}Input", base);
             let mut counter = 2;
@@ -1365,6 +1360,11 @@ impl<'a> DefinedTypes<'a> {
         self.taken_names.insert(candidate.clone());
         candidate
     }
+}
+
+/// Cache key of `program`'s own definition of `name`; never an IDL name.
+fn scoped_type_key(program: usize, name: &str) -> String {
+    format!("{program}\u{0}{name}")
 }
 
 fn prim(schema: &str, ts: &str) -> ParsedArgType {

@@ -108,7 +108,7 @@ Separately, `a4 explore --json` is camelCase throughout, so CLI field names do n
 
 ### Knowledge tools
 
-Read-only lookups against `/api/registry/knowledge/*` — the curated, human-reviewed layer that maps an intent to protocols, programs, stacks, and recipes. Unlike the discovery tools, **every knowledge tool requires an API key** (`ARETE_API_KEY`, or the file `a4 auth login` writes). Without one the call fails up front with an error pointing at `a4 auth login`; there is no public subset. The tool descriptions below are the ones the server publishes.
+Read-only lookups against `/api/registry/knowledge/*` — the curated knowledge layer that maps an intent to protocols, programs, stacks, and recipes. Unlike the discovery tools, **every knowledge tool requires an API key** (`ARETE_API_KEY`, or the file `a4 auth login` writes). Without one the call fails up front with an error pointing at `a4 auth login`; there is no public subset. The tool descriptions below are the ones the server publishes.
 
 **`search_knowledge`** `{ query?, concept?, category?, limit? }`
 
@@ -130,7 +130,7 @@ Read-only lookups against `/api/registry/knowledge/*` — the curated, human-rev
 
 **`get_program_knowledge`** `{ program, section? }`
 
-> Fetch curated, human-reviewed annotations for one Solana program by slug (e.g. `meteora-cp-amm`). `section` selects what comes back:
+> Fetch curated annotations for one Solana program by slug (e.g. `meteora-cp-amm`). `section` selects what comes back:
 >
 > - `summary` (default) — program header, provenance, and counts
 > - `instructions` — per-instruction semantics: what each instruction does, argument and account meanings, concepts

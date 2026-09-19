@@ -1,0 +1,9 @@
+[package]
+name = "HeaderStream-stack"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arete-sdk = { package = "arete-a4-sdk", version = "{{ARETE_VERSION}}" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

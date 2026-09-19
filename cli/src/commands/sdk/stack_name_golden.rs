@@ -90,7 +90,7 @@ fn entity(name: &str) -> PortableEntity {
     entity
 }
 
-fn selected_views(alias: &str, live: &LiveSpecArtifactV2) -> Vec<SelectedViewV2> {
+pub(super) fn selected_views(alias: &str, live: &LiveSpecArtifactV2) -> Vec<SelectedViewV2> {
     live.payload
         .entities
         .iter()
@@ -102,7 +102,7 @@ fn selected_views(alias: &str, live: &LiveSpecArtifactV2) -> Vec<SelectedViewV2>
         .collect()
 }
 
-fn local_stack(
+pub(super) fn local_stack(
     name: &str,
     programs: Vec<ProgramSpecArtifact>,
     lives: Vec<(String, LiveSpecArtifactV2)>,
@@ -225,7 +225,7 @@ fn generate_all(name: &str, output: &Path) -> Result<()> {
 /// Relative path -> contents for every generated file. Provenance manifests
 /// embed the compiler hash, which changes with every CLI build, so they are
 /// not part of the golden output.
-fn collect_files(root: &Path) -> BTreeMap<String, String> {
+pub(super) fn collect_files(root: &Path) -> BTreeMap<String, String> {
     fn walk(root: &Path, directory: &Path, files: &mut BTreeMap<String, String>) {
         let mut entries = fs::read_dir(directory)
             .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
@@ -254,7 +254,7 @@ fn collect_files(root: &Path) -> BTreeMap<String, String> {
 
 /// Every generated Rust file must parse and every Python file must compile.
 /// (TypeScript is type-checked with `tsc` in CI.)
-fn assert_syntax(name: &str, root: &Path, files: &BTreeMap<String, String>) {
+pub(super) fn assert_syntax(name: &str, root: &Path, files: &BTreeMap<String, String>) {
     for (relative, contents) in files {
         if relative.ends_with(".rs") {
             if let Err(error) = syn::parse_file(contents) {
@@ -314,7 +314,7 @@ fn without_versioned_tree_hash(path: &str, contents: String) -> String {
     )
 }
 
-fn without_release_version(files: BTreeMap<String, String>) -> BTreeMap<String, String> {
+pub(super) fn without_release_version(files: BTreeMap<String, String>) -> BTreeMap<String, String> {
     let version = env!("CARGO_PKG_VERSION");
     let pins = [
         (
@@ -350,11 +350,22 @@ fn assert_golden(name: &str) {
         .unwrap_or_else(|error| panic!("generate SDKs for stack '{name}': {error:#}"));
     let generated = collect_files(temp.path());
     assert_syntax(name, temp.path(), &generated);
-    let generated = without_release_version(generated);
-    let golden_dir = golden_root().join(name);
+    compare_with_golden(
+        name,
+        &golden_root().join(name),
+        without_release_version(generated),
+    );
+}
 
+/// Compare `generated` (relative path -> contents) with `golden_dir`, or
+/// rewrite `golden_dir` when `A4_UPDATE_GOLDEN` is set.
+pub(super) fn compare_with_golden(
+    name: &str,
+    golden_dir: &Path,
+    generated: BTreeMap<String, String>,
+) {
     if std::env::var_os("A4_UPDATE_GOLDEN").is_some() {
-        let _ = fs::remove_dir_all(&golden_dir);
+        let _ = fs::remove_dir_all(golden_dir);
         for (relative, contents) in &generated {
             let path = golden_dir.join(relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -363,7 +374,7 @@ fn assert_golden(name: &str) {
         return;
     }
 
-    let expected = collect_files(&golden_dir);
+    let expected = collect_files(golden_dir);
     assert_eq!(
         generated.keys().collect::<Vec<_>>(),
         expected.keys().collect::<Vec<_>>(),
