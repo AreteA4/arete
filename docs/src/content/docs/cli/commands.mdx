@@ -760,7 +760,8 @@ compatibility/direct-descriptor tool: it never writes `arete.toml` or
 
 A StackManifest `name` may contain any characters, for example
 `token-balances` or `my.stack`. Generated file names keep the name as written
-(`token-balances.ts`, `token-balances-core.ts`). Generated identifiers treat
+(`token-balances.ts`, `token-balances-core.ts`), so a name containing `/`,
+`\`, or `:`, or a name that is `.` or `..`, is rejected. Generated identifiers treat
 every character other than a letter, digit, or `_` as a word boundary:
 
 | Stack name       | TypeScript                                   | Rust                                               | Python                 |
