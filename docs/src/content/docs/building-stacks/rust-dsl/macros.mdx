@@ -199,6 +199,18 @@ pub total_volume: u64,
 | `rename`    | `string`          | No       | Custom target field name.                                                                                                              |
 | `join_on`   | `field`           | No       | Join field for multi-entity lookups.                                                                                                   |
 
+**One instruction, several entity instances.** Each aggregate is routed by its own `lookup_by`, even when another field routes the same instruction differently. For example, a split instruction can count on both the source and the child position:
+
+```rust
+#[aggregate(from = SplitPosition, strategy = Count, lookup_by = accounts::first_position)]
+pub split_source_count: Option<u64>,
+
+#[aggregate(from = SplitPosition, strategy = Count, lookup_by = accounts::second_position)]
+pub split_child_count: Option<u64>,
+```
+
+The instruction updates the `first_position` instance and the `second_position` instance separately. A `#[map]` from that instruction follows the key that reads the same field (for example `SplitPosition::first_position` follows `lookup_by = accounts::first_position`). A mapping that reads none of the instruction's keys is a compile error, because the macro cannot tell which instance it belongs to.
+
 ### `#[computed]`
 
 Defines a field derived from other fields in the same entity using a Rust-like expression.

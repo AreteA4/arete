@@ -649,3 +649,205 @@ fn main() {}
     );
     assert!(stderr.contains("amount"), "stderr was:\n{stderr}");
 }
+
+fn split_idl() -> &'static str {
+    r#"{
+  "address": "Test111111111111111111111111111111111111111",
+  "name": "fake",
+  "instructions": [
+    {
+      "name": "Split",
+      "accounts": [{ "name": "first_position" }, { "name": "second_position" }],
+      "args": [{ "name": "amount", "type": "u64" }]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Position",
+      "type": {
+        "kind": "struct",
+        "fields": [{ "name": "liquidity", "type": "u64" }]
+      }
+    }
+  ],
+  "types": [],
+  "events": [],
+  "errors": [],
+  "constants": []
+}"#
+}
+
+/// One instruction updates two instances of the same entity: the source
+/// position (`first_position`) and the child position (`second_position`).
+fn split_source(extra_activity_field: &str) -> String {
+    format!(
+        r#"use arete_macros::arete;
+
+#[arete(idl = "fixture/split.json")]
+mod split_stack {{
+    use arete::macros::Stream;
+    use serde::{{Deserialize, Serialize}};
+
+    #[entity(name = "Position")]
+    struct Position {{
+        id: PositionId,
+        activity: Activity,
+    }}
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Stream)]
+    struct PositionId {{
+        #[map([
+            fake_sdk::accounts::Position::__account_address,
+            fake_sdk::instructions::Split::first_position,
+            fake_sdk::instructions::Split::second_position
+        ], primary_key, strategy = SetOnce)]
+        address: String,
+    }}
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Stream)]
+    struct Activity {{
+        #[aggregate(from = fake_sdk::instructions::Split, strategy = Count, lookup_by = accounts::first_position)]
+        split_source_count: Option<u64>,
+
+        #[aggregate(from = fake_sdk::instructions::Split, strategy = Count, lookup_by = accounts::second_position)]
+        split_child_count: Option<u64>,
+        {extra_activity_field}
+    }}
+}}
+
+fn main() {{}}
+"#
+    )
+}
+
+#[test]
+fn instruction_feeding_two_keys_gets_one_handler_per_key() {
+    let name = "instruction_feeding_two_keys_gets_one_handler_per_key";
+    let temp_crate = TempCrate::new(
+        "key-resolution-dynamic",
+        name,
+        cargo_toml(
+            name,
+            &[
+                format!("arete = {{ path = \"{}\" }}", escape_path(&arete_dir())),
+                format!(
+                    "arete-macros = {{ path = \"{}\" }}",
+                    escape_path(&macro_manifest_dir())
+                ),
+                "borsh = { version = \"1.5\", features = [\"derive\"] }".to_string(),
+                "serde = { version = \"1\", features = [\"derive\"] }".to_string(),
+            ],
+        ),
+        &split_source(""),
+        &[("fixture/split.json", split_idl())],
+    );
+    let output = temp_crate.cargo_check();
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let live_spec_path = std::fs::read_dir(temp_crate.path().join(".arete"))
+        .expect("read .arete")
+        .map(|entry| entry.expect("dir entry").path())
+        .find(|path| path.to_string_lossy().ends_with(".live-spec.json"))
+        .expect("LiveSpec emitted");
+    let live_spec: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(live_spec_path).unwrap()).unwrap();
+    let handlers: Vec<&serde_json::Value> = live_spec["payload"]["entities"][0]["handlers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|handler| handler["source"]["Source"]["type_name"] == "fake::SplitIxState")
+        .collect();
+    assert_eq!(handlers.len(), 2, "handlers: {handlers:#?}");
+
+    let routed = |key_field: &str| -> Vec<String> {
+        let handler = handlers
+            .iter()
+            .find(|handler| {
+                handler["key_resolution"]["Embedded"]["primary_field"]["segments"]
+                    == serde_json::json!(["accounts", key_field])
+            })
+            .unwrap_or_else(|| panic!("no handler keyed by {key_field}: {handlers:#?}"));
+        handler["mappings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|mapping| mapping["target_path"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        routed("first_position"),
+        ["id.address", "activity.split_source_count"]
+    );
+    assert_eq!(
+        routed("second_position"),
+        ["id.address", "activity.split_child_count"]
+    );
+}
+
+#[test]
+fn mapping_that_matches_none_of_several_keys_is_rejected() {
+    let source = split_source(
+        "#[map(fake_sdk::instructions::Split::amount, strategy = LastWrite)]
+        last_split_amount: Option<u64>,",
+    );
+    let stderr = compile_failure_stderr_with_files(
+        "mapping_that_matches_none_of_several_keys_is_rejected",
+        &source,
+        &[("fixture/split.json", split_idl())],
+    );
+    assert!(
+        stderr.contains("`activity.last_split_amount` from 'fake_sdk::instructions::Split' cannot be routed to one entity instance"),
+        "stderr was:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("`accounts.first_position`, `accounts.second_position`"),
+        "stderr was:\n{stderr}"
+    );
+}
+
+#[test]
+fn keyless_instruction_reading_several_key_fields_is_rejected() {
+    let source = r#"use arete_macros::arete;
+
+#[arete(idl = "fixture/split.json")]
+mod split_stack {
+    use arete::macros::Stream;
+    use serde::{Deserialize, Serialize};
+
+    #[entity(name = "Position")]
+    struct Position {
+        id: PositionId,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize, Stream)]
+    struct PositionId {
+        #[map(fake_sdk::accounts::Position::__account_address, primary_key, strategy = SetOnce)]
+        address: String,
+
+        #[map([
+            fake_sdk::accounts::Position::__account_address,
+            fake_sdk::instructions::Split::first_position
+        ], lookup_index, strategy = SetOnce)]
+        first_position: String,
+
+        #[map(fake_sdk::instructions::Split::second_position, lookup_index, strategy = SetOnce)]
+        second_position: String,
+    }
+}
+
+fn main() {}
+"#;
+    let stderr = compile_failure_stderr_with_files(
+        "keyless_instruction_reading_several_key_fields_is_rejected",
+        source,
+        &[("fixture/split.json", split_idl())],
+    );
+    assert!(
+        stderr.contains("'fake_sdk::instructions::Split' has no `primary_key` mapping or `lookup_by`, and its mappings read several key fields (`accounts.first_position`, `accounts.second_position`)"),
+        "stderr was:\n{stderr}"
+    );
+}
