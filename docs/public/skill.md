@@ -201,7 +201,7 @@ returning a public subset.
 |------|---------|
 | `search_knowledge` | Search the curated knowledge layer by intent (`query`), or filter by `concept` / `category` slug. Results carry `read` / `build` / `subscribe` coverage flags |
 | `get_protocol` | One protocol: programs with roles, related protocols, public stacks streaming it, per-concept coverage |
-| `get_program_knowledge` | One program's reviewed annotations. `section` is `summary` (default), `instructions`, `accounts`, or `surface` (SDK operations with bindings) |
+| `get_program_knowledge` | One program's curated annotations. `section` is `summary` (default), `instructions`, `accounts`, or `surface` (SDK operations with bindings) |
 | `get_recipe` | One cross-protocol recipe with resolved surface refs and an example path (catalog is growing) |
 | `list_concepts` | Concept and category vocabularies — the slugs `search_knowledge` filters accept |
 

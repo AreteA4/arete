@@ -118,7 +118,7 @@ impl RegistryClient {
     // ── Catalog endpoints (public active set; no credential required) ───────
 
     /// Search the active public catalog. Every result is an installable
-    /// program or stack with a verified SDK target, reviewed knowledge, and
+    /// program or stack with a verified SDK target, curated knowledge, and
     /// evidenced capabilities; readiness is decided server-side.
     #[allow(clippy::too_many_arguments)]
     pub async fn catalog_search(

@@ -185,8 +185,8 @@ construction live in the CLI and the generated SDKs, not here.
 
 ### Knowledge layer
 
-Read-only lookups against `/api/registry/knowledge/*` — the curated,
-human-reviewed layer that maps an intent ("monitor swaps", "execute through a
+Read-only lookups against `/api/registry/knowledge/*` — the curated
+knowledge layer that maps an intent ("monitor swaps", "execute through a
 multisig") to protocols, programs, stacks, and recipes, and says what the
 platform can do for each: `read` (fetch on-chain account state), `build`
 (construct transactions), `subscribe` (stream live entities from a hosted
@@ -209,7 +209,7 @@ subset. The same HTTPS-origin rule as discovery applies: a key is only sent to
   (core/periphery/deprecated), related protocols, the public stacks streaming
   its entities, and per-concept coverage. Follow `programs[].slug` into
   `get_program_knowledge`.
-- `get_program_knowledge({ program, section? })` — reviewed annotations for one
+- `get_program_knowledge({ program, section? })` — curated annotations for one
   program by slug (e.g. `meteora-cp-amm`). `section` is `summary` (default),
   `instructions`, `accounts`, or `surface` — the ingested SDK extension surface
   (callable operations with bindings). Sections keep responses under the
