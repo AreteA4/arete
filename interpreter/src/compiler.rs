@@ -783,10 +783,25 @@ impl<S> TypedCompiler<S> {
             let segment_index = match segment_index {
                 Some(index) => index,
                 None => {
+                    // Next to handlers that route differently, resolve the
+                    // hook's own key the way a handler would: directly for a
+                    // primary-key field, through the lookup index otherwise.
+                    // A hook alone keeps the historical direct-key segment.
+                    let resolution = if event_segments.is_empty() {
+                        None
+                    } else {
+                        hook.lookup_by
+                            .as_ref()
+                            .and_then(|lookup_by| self.hook_key_resolution(lookup_by))
+                    };
+                    let ops = match resolution {
+                        Some(resolution) => self.compile_keyed_hook_segment(&resolution),
+                        None => self.compile_hook_segment(hook),
+                    };
                     event_segments.push(HandlerSegment {
                         key_identity: None,
                         route_field: hook.lookup_by.clone(),
-                        ops: self.compile_hook_segment(hook),
+                        ops,
                     });
                     event_segments.len() - 1
                 }
@@ -853,6 +868,55 @@ impl<S> TypedCompiler<S> {
         let key_reg = 20;
         let ops = self.compile_key_loading(&spec.key_resolution, key_reg, &spec.mappings);
         serde_json::to_value(&ops).unwrap_or(Value::Null)
+    }
+
+    /// How a hook's `lookup_by` field resolves the entity key: directly when
+    /// it names a primary-key field, through its lookup index when it names a
+    /// lookup-index field.
+    fn hook_key_resolution(&self, lookup_by: &FieldPath) -> Option<KeyResolutionStrategy> {
+        let leaf = lookup_by.segments.last()?;
+        let is_primary_key_field = self
+            .spec
+            .identity
+            .primary_keys
+            .iter()
+            .any(|pk| pk.rsplit('.').next() == Some(leaf.as_str()));
+        if is_primary_key_field {
+            Some(KeyResolutionStrategy::Embedded {
+                primary_field: lookup_by.clone(),
+            })
+        } else if self.find_lookup_index_for_field(lookup_by).is_some() {
+            Some(KeyResolutionStrategy::Lookup {
+                primary_field: lookup_by.clone(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Segment for an instruction hook that routes by its own resolved key:
+    /// key loading, state read and state write. Hook actions are inserted
+    /// before the state write by the caller.
+    fn compile_keyed_hook_segment(&self, resolution: &KeyResolutionStrategy) -> Vec<OpCode> {
+        let key_reg = 20;
+        let state_reg = 2;
+        let mut ops = self.compile_key_loading(resolution, key_reg, &[]);
+        ops.push(OpCode::AbortIfNullKey {
+            key: key_reg,
+            is_account_event: false,
+        });
+        ops.push(OpCode::ReadOrInitState {
+            state_id: self.state_id,
+            key: key_reg,
+            default: serde_json::json!({}),
+            dest: state_reg,
+        });
+        ops.push(OpCode::UpdateState {
+            state_id: self.state_id,
+            key: key_reg,
+            value: state_reg,
+        });
+        ops
     }
 
     /// Standalone segment for an instruction hook: key from the resolver or
@@ -2678,6 +2742,154 @@ mod tests {
         assert_eq!(source["activity"]["last_split_source_slot"], json!(77));
         let child = vm.get_entity_state(0, &json!("child_pos")).unwrap();
         assert_eq!(child["activity"].get("last_split_source_slot"), None);
+    }
+
+    /// Index positions by owner through a `PositionState` account handler.
+    fn add_owner_index(spec: &mut TypedStreamSpec<Value>) {
+        spec.identity.lookup_indexes.push(LookupIndexSpec {
+            field_name: "id.owner".to_string(),
+            temporal_field: None,
+        });
+        spec.handlers
+            .push(crate::ast::TypedHandlerSpec::from_serializable(
+                SerializableHandlerSpec {
+                    source: SourceSpec::Source {
+                        program_id: None,
+                        discriminator: None,
+                        type_name: "amm::PositionState".to_string(),
+                        serialization: None,
+                        is_account: true,
+                    },
+                    key_resolution: KeyResolutionStrategy::Embedded {
+                        primary_field: FieldPath::new(&["__account_address"]),
+                    },
+                    mappings: vec![
+                        mapping(
+                            "id.position_address",
+                            &["__account_address"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                        mapping("id.owner", &["owner"], PopulationStrategy::SetOnce),
+                    ],
+                    conditions: vec![],
+                    emit: true,
+                },
+            ));
+    }
+
+    fn index_owner(
+        vm: &mut VmContext,
+        bytecode: &MultiEntityBytecode,
+        position: &str,
+        owner: &str,
+    ) {
+        vm.process_event(
+            bytecode,
+            json!({ "__account_address": position, "owner": owner }),
+            "amm::PositionState",
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn unmatched_hook_next_to_other_keys_resolves_lookup_index_fields() {
+        let mut spec = split_position_spec();
+        spec.handlers.truncate(1);
+        spec.handlers[0].key_resolution = KeyResolutionStrategy::Embedded {
+            primary_field: FieldPath::new(&["accounts", "second_position"]),
+        };
+        spec.handlers[0].mappings[0] = crate::ast::TypedFieldMapping::from_serializable(mapping(
+            "id.position_address",
+            &["accounts", "second_position"],
+            PopulationStrategy::SetOnce,
+        ));
+        add_owner_index(&mut spec);
+        // The hook routes by the owner, a lookup-index field.
+        spec.instruction_hooks[0].lookup_by = Some(FieldPath::new(&["accounts", "owner"]));
+
+        let bytecode = MultiEntityBytecode::from_single("Position".to_string(), spec, 0);
+        let mut vm = VmContext::new();
+        index_owner(&mut vm, &bytecode, "source_pos", "owner_1");
+        vm.process_event(
+            &bytecode,
+            json!({
+                "accounts": {
+                    "first_position": "source_pos",
+                    "second_position": "child_pos",
+                    "owner": "owner_1",
+                },
+                "data": { "slot": 77 },
+            }),
+            "amm::SplitPositionIxState",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let source = vm.get_entity_state(0, &json!("source_pos")).unwrap();
+        assert_eq!(source["activity"]["last_split_source_slot"], json!(77));
+        assert!(vm.get_entity_state(0, &json!("owner_1")).is_none());
+    }
+
+    #[test]
+    fn a_segment_that_misses_its_key_is_replayed_alone() {
+        let mut spec = split_position_spec();
+        spec.instruction_hooks.clear();
+        // The child segment comes first. The source segment resolves its key
+        // through a PDA, registered later, that maps to the position's owner.
+        spec.handlers.swap(0, 1);
+        spec.handlers[1].key_resolution = KeyResolutionStrategy::Lookup {
+            primary_field: FieldPath::new(&["accounts", "source_pda"]),
+        };
+        spec.handlers[1].mappings.remove(0);
+        add_owner_index(&mut spec);
+        spec.instruction_hooks.push(InstructionHook {
+            instruction_type: "amm::RegisterIxState".to_string(),
+            actions: vec![HookAction::RegisterPdaMapping {
+                pda_field: FieldPath::new(&["accounts", "source_pda"]),
+                seed_field: FieldPath::new(&["accounts", "owner"]),
+                lookup_name: "default_pda_lookup".to_string(),
+            }],
+            lookup_by: None,
+        });
+        let bytecode = MultiEntityBytecode::from_single("Position".to_string(), spec, 0);
+        let mut vm = VmContext::new();
+        index_owner(&mut vm, &bytecode, "source_pos", "owner_1");
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({
+                    "accounts": { "source_pda": "pda_1", "second_position": "child_pos" },
+                    "data": {},
+                }),
+                "amm::SplitPositionIxState",
+                None,
+                None,
+            )
+            .unwrap();
+        // The child landed; the source is not resolvable yet.
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].key, json!("child_pos"));
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({ "accounts": { "source_pda": "pda_1", "owner": "owner_1" } }),
+                "amm::RegisterIxState",
+                None,
+                None,
+            )
+            .unwrap();
+        // Registering the PDA replays only the source segment.
+        assert_eq!(mutations.len(), 1, "mutations: {mutations:?}");
+        assert_eq!(mutations[0].key, json!("source_pos"));
+        let source = vm.get_entity_state(0, &json!("source_pos")).unwrap();
+        assert_eq!(source["activity"]["split_source_count"], json!(1));
+        let child = vm.get_entity_state(0, &json!("child_pos")).unwrap();
+        assert_eq!(child["activity"]["split_child_count"], json!(1));
     }
 
     mod fingerprint {
