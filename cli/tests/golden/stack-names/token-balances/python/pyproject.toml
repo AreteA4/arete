@@ -2,7 +2,7 @@
 name = "token-balances-stack"
 version = "0.1.0"
 requires-python = ">=3.9"
-dependencies = ["arete-sdk>=0.20.1"]
+dependencies = ["arete-sdk>={{ARETE_VERSION}}"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
