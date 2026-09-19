@@ -2834,6 +2834,46 @@ mod tests {
     }
 
     #[test]
+    fn unmatched_hook_replays_after_its_lookup_index_is_populated() {
+        let mut spec = split_position_spec();
+        spec.handlers.truncate(1);
+        spec.handlers[0].key_resolution = KeyResolutionStrategy::Embedded {
+            primary_field: FieldPath::new(&["accounts", "second_position"]),
+        };
+        spec.handlers[0].mappings[0] = crate::ast::TypedFieldMapping::from_serializable(mapping(
+            "id.position_address",
+            &["accounts", "second_position"],
+            PopulationStrategy::SetOnce,
+        ));
+        add_owner_index(&mut spec);
+        spec.instruction_hooks[0].lookup_by = Some(FieldPath::new(&["accounts", "owner"]));
+
+        let bytecode = MultiEntityBytecode::from_single("Position".to_string(), spec, 0);
+        let mut vm = VmContext::new();
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({
+                    "accounts": { "owner": "owner_1", "second_position": "child_pos" },
+                    "data": { "slot": 77 },
+                }),
+                "amm::SplitPositionIxState",
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].key, json!("child_pos"));
+
+        index_owner(&mut vm, &bytecode, "source_pos", "owner_1");
+
+        let source = vm.get_entity_state(0, &json!("source_pos")).unwrap();
+        assert_eq!(source["activity"]["last_split_source_slot"], json!(77));
+        let child = vm.get_entity_state(0, &json!("child_pos")).unwrap();
+        assert_eq!(child["activity"].get("last_split_source_slot"), None);
+    }
+
+    #[test]
     fn a_segment_that_misses_its_key_is_replayed_alone() {
         let mut spec = split_position_spec();
         spec.instruction_hooks.clear();

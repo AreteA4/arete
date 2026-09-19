@@ -2435,6 +2435,42 @@ impl VmContext {
                             );
                         }
                         for lookup_key in lookup_keys {
+                            let pending_events = self.flush_pending_instruction_events(
+                                entity_bytecode.state_id,
+                                &lookup_key,
+                            );
+                            let pending_count = pending_events.len();
+                            if pending_count > 0 {
+                                self.emit_debug(|| VmDebugEvent::FlushAction {
+                                    entity_name: entity_name.clone(),
+                                    event_type: event_type.to_string(),
+                                    flush_kind: "pending_instruction_events".to_string(),
+                                    trigger: lookup_key.clone(),
+                                    count: pending_count,
+                                });
+                            }
+                            for pending in pending_events {
+                                if let Some(pending_handler) =
+                                    entity_bytecode.handlers.get(&pending.event_type)
+                                {
+                                    let previous_context =
+                                        self.current_context.replace(pending.context.clone());
+                                    let reprocessed = self.execute_handler(
+                                        pending_handler,
+                                        &pending.event_data,
+                                        &pending.event_type,
+                                        entity_bytecode.state_id,
+                                        entity_name,
+                                        entity_bytecode.computed_fields_evaluator.as_ref(),
+                                        Some(&entity_bytecode.non_emitted_fields),
+                                    );
+                                    self.current_context = previous_context;
+                                    if let Ok(reprocessed_mutations) = reprocessed {
+                                        all_mutations.extend(reprocessed_mutations);
+                                    }
+                                }
+                            }
+
                             if let Ok(pending_updates) =
                                 self.flush_pending_updates(entity_bytecode.state_id, &lookup_key)
                             {
@@ -2625,7 +2661,28 @@ impl VmContext {
             }
         }
         if let Some(missed_lookup) = missed_lookup {
-            if !is_tx_event {
+            if is_tx_event {
+                let slot = context.and_then(|c| c.slot).unwrap_or(0);
+                let signature = context
+                    .and_then(|c| c.signature.clone())
+                    .unwrap_or_default();
+                let _ = self.queue_instruction_event(
+                    state_id,
+                    QueuedInstructionEvent {
+                        pda_address: missed_lookup.clone(),
+                        event_type: event_type.to_string(),
+                        event_data: event_value.clone(),
+                        slot,
+                        signature,
+                    },
+                );
+                self.emit_debug(|| VmDebugEvent::QueueAction {
+                    entity_name: entity_name.to_string(),
+                    event_type: event_type.to_string(),
+                    queue_kind: "instruction_lookup_index_miss".to_string(),
+                    lookup_value: missed_lookup,
+                });
+            } else {
                 let slot = context.and_then(|c| c.slot).unwrap_or(0);
                 let signature = context
                     .and_then(|c| c.signature.clone())
@@ -2648,11 +2705,6 @@ impl VmContext {
                         queue_kind: "account_lookup_index_miss".to_string(),
                         lookup_value: missed_lookup,
                     });
-                } else {
-                    tracing::trace!(
-                        event_type = %event_type,
-                        "Discarding lookup_index_miss for tx-scoped event (IxState/CpiEvent do not use lookup-index queuing)"
-                    );
                 }
             }
         }
