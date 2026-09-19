@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::identifiers::{rust as rust_ident, IdentifierCase, IdentifierScope};
 use crate::typescript_instructions::{
     dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
     split_generic,
@@ -2960,6 +2961,8 @@ fn compile_stack_spec_with_view_selection(
     let config = config.unwrap_or_default();
     let stack_name = &stack_spec.stack_name;
     let stack_kebab = to_kebab_case(stack_name);
+    // `{stack}Stack`, `{stack}StackViews`, `{stack}StackPrograms`.
+    let stack_ident = rust_ident::identifier_stem(stack_name, IdentifierCase::Preserve);
 
     let mut entity_names: Vec<String> = Vec::new();
     let mut entity_specs: Vec<SerializableStreamSpec> = Vec::new();
@@ -2971,6 +2974,7 @@ fn compile_stack_spec_with_view_selection(
         entity_names.push(spec.state_name.clone());
         entity_specs.push(spec);
     }
+    validate_entity_identifiers(&entity_names)?;
 
     let view_entity_names = entity_specs
         .iter()
@@ -2994,7 +2998,7 @@ fn compile_stack_spec_with_view_selection(
         false,
     );
     let entity_rs = generate_stack_entity_rs(
-        stack_name,
+        &stack_ident,
         &stack_kebab,
         &entity_specs,
         &entity_names,
@@ -3003,8 +3007,15 @@ fn compile_stack_spec_with_view_selection(
         programs.as_ref(),
     );
     validate_extension_modules(&config, programs.is_some())?;
-    let lib_rs = generate_stack_lib_rs(
+    check_stack_identifiers(
         stack_name,
+        &stack_ident,
+        &entity_names,
+        &types_rs,
+        programs.is_some(),
+    )?;
+    let lib_rs = generate_stack_lib_rs(
+        &stack_ident,
         &view_entity_names,
         config.module_mode,
         programs.is_some(),
@@ -3051,6 +3062,7 @@ pub fn compile_program_modules(
         .iter()
         .map(|entity| entity.state_name.clone())
         .collect::<Vec<_>>();
+    validate_entity_identifiers(&entity_names)?;
     let (types_rs, account_structs) = generate_stack_types_rs(&stack_spec.entities, &entity_names);
     let mut programs = generate_stack_programs_rs(
         &stack_spec.stack_name,
@@ -3072,7 +3084,10 @@ pub fn compile_program_modules(
     })?;
 
     validate_extension_modules(&config, true)?;
-    let aggregate_name = format!("{}Programs", to_pascal_case(&stack_spec.stack_name));
+    let aggregate_name = format!(
+        "{}Programs",
+        rust_ident::identifier_stem(&stack_spec.stack_name, IdentifierCase::Pascal)
+    );
     programs.code.push('\n');
     programs.code.push_str(&generate_programs_accessor_struct(
         &aggregate_name,
@@ -3248,6 +3263,61 @@ fn validate_extension_modules(config: &RustStackConfig, has_programs: bool) -> R
         )),
         None => unreachable!("checked above"),
     }
+}
+
+/// Entity names become Rust type names verbatim (and stay verbatim in view
+/// IDs), so they must already be identifiers. Both authoring paths guarantee
+/// this (Rust structs, and Stack Source entity names matching
+/// `[A-Za-z][A-Za-z0-9_]*`); report anything else instead of emitting code
+/// that does not compile.
+fn validate_entity_identifiers(entity_names: &[String]) -> Result<(), String> {
+    match entity_names
+        .iter()
+        .find(|name| !rust_ident::is_identifier(name))
+    {
+        Some(name) => Err(format!(
+            "entity '{name}' cannot be used as a Rust type name; entity names must be identifiers such as `TokenAccount`"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Report stack-level names that collide with entity or generated type names
+/// (a glob `pub use types::*` would otherwise be silently shadowed).
+fn check_stack_identifiers(
+    stack_name: &str,
+    stack_ident: &str,
+    entity_names: &[String],
+    types_rs: &str,
+    has_programs: bool,
+) -> Result<(), String> {
+    let mut scope = IdentifierScope::new("Rust");
+    for entity in entity_names {
+        let owner = format!("entity '{entity}'");
+        scope.claim(entity, &owner)?;
+        scope.claim(&format!("{entity}EntityViews"), &owner)?;
+    }
+    for line in types_rs.lines() {
+        let declared = ["pub struct ", "pub enum ", "pub type "]
+            .iter()
+            .find_map(|keyword| line.strip_prefix(keyword));
+        if let Some(declared) = declared {
+            let name: String = declared
+                .chars()
+                .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                .collect();
+            if !entity_names.contains(&name) {
+                scope.claim(&name, &format!("generated type `{name}`"))?;
+            }
+        }
+    }
+    let owner = format!("stack name '{stack_name}'");
+    scope.claim(&format!("{stack_ident}Stack"), &owner)?;
+    scope.claim(&format!("{stack_ident}StackViews"), &owner)?;
+    if has_programs {
+        scope.claim(&format!("{stack_ident}StackPrograms"), &owner)?;
+    }
+    Ok(())
 }
 
 fn generate_stack_lib_rs(
@@ -3582,7 +3652,7 @@ impl Stack for {stack}Stack {{
     {programs_assoc}
 
     fn name() -> &'static str {{
-        "{stack_kebab}"
+        {stack_kebab}
     }}
 
     {url_impl}{http_url_impl}{gateway_impl}
@@ -3602,7 +3672,7 @@ impl Views for {stack}StackViews {{
 {entity_views}{programs_struct}"#,
         types_use = types_use,
         stack = stack_name,
-        stack_kebab = stack_kebab,
+        stack_kebab = rust_string_literal(stack_kebab),
         programs_assoc = programs_assoc,
         url_impl = url_impl,
         http_url_impl = http_url_impl,
@@ -5174,58 +5244,5 @@ pub fn rust_module_name(value: &str) -> String {
 }
 
 fn is_rust_keyword(value: &str) -> bool {
-    matches!(
-        value,
-        "as" | "async"
-            | "await"
-            | "break"
-            | "const"
-            | "continue"
-            | "crate"
-            | "dyn"
-            | "else"
-            | "enum"
-            | "extern"
-            | "false"
-            | "fn"
-            | "for"
-            | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "pub"
-            | "ref"
-            | "return"
-            | "self"
-            | "Self"
-            | "static"
-            | "struct"
-            | "super"
-            | "trait"
-            | "true"
-            | "type"
-            | "union"
-            | "unsafe"
-            | "use"
-            | "where"
-            | "while"
-            | "abstract"
-            | "become"
-            | "box"
-            | "do"
-            | "final"
-            | "macro"
-            | "override"
-            | "priv"
-            | "typeof"
-            | "unsized"
-            | "virtual"
-            | "yield"
-            | "try"
-    )
+    rust_ident::is_keyword(value)
 }

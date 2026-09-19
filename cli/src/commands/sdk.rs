@@ -21,6 +21,7 @@ use crate::commands::public_artifacts::{
 };
 use crate::config::to_kebab_case;
 use crate::telemetry;
+use arete_interpreter::identifiers::{typescript as ts_ident, IdentifierCase};
 
 type AliasedLiveSpecs = Vec<(String, arete_artifacts::LiveSpecArtifactV2)>;
 
@@ -1616,6 +1617,12 @@ fn select_sdk_target(ts: bool, rust: bool, python: bool, prompt: &str) -> Result
     }
 }
 
+/// `<stack>-stack`, made a valid Cargo package name (`my.stack` ->
+/// `my-stack-stack`, `9lives` -> `a9lives-stack`).
+fn default_rust_crate_name(sdk_name: &str) -> String {
+    arete_interpreter::identifiers::rust::package_name(&format!("{sdk_name}-stack"))
+}
+
 fn default_typescript_dir_name(sdk_name: &str) -> String {
     sdk_name
         .strip_suffix("-stream")
@@ -1647,29 +1654,6 @@ fn idl_sdk_name_from_path(path: &Path) -> Result<String> {
         "Unable to derive SDK name from IDL path: {}",
         path.display()
     ))
-}
-
-fn to_pascal_case(input: &str) -> String {
-    input
-        .split(['-', '_', ' '])
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| {
-            let mut chars = segment.chars();
-            match chars.next() {
-                Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect()
-}
-
-fn to_camel_case(input: &str) -> String {
-    let pascal = to_pascal_case(input);
-    let mut chars = pascal.chars();
-    chars
-        .next()
-        .map(|first| first.to_ascii_lowercase().to_string() + chars.as_str())
-        .unwrap_or_default()
 }
 
 fn resolve_typescript_output_path_for_idl(
@@ -2937,7 +2921,7 @@ fn hosted_program_modules(
                 install.install_name
             );
         }
-        let program_key = to_camel_case(&idl.name);
+        let program_key = arete_interpreter::typescript::program_key(&idl.name);
         if !program_keys.insert(program_key.clone()) {
             anyhow::bail!(
                 "Hosted programs use duplicate generated key '{}'",
@@ -2945,8 +2929,11 @@ fn hosted_program_modules(
             );
         }
         hosted.push(HostedProgramModule {
-            import_name: format!("hosted{}Program", to_pascal_case(&program_key)),
-            program_const_name: to_screaming_snake_case(&idl.name),
+            import_name: format!(
+                "hosted{}Program",
+                ts_ident::identifier_stem(&program_key, IdentifierCase::Pascal)
+            ),
+            program_const_name: arete_interpreter::typescript::program_const_name(&idl.name),
             program_key,
             input_pin: ResolvedExtensionsInputPin {
                 kind: ExtensionsInputKind::ProgramSpec,
@@ -3147,7 +3134,7 @@ fn stage_hosted_program_modules(
             )?;
         }
         let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
-            to_pascal_case(&program.program_key),
+            ts_ident::identifier_stem(&program.program_key, IdentifierCase::Pascal),
             std::slice::from_ref(&program.program_spec),
         )
         .map_err(anyhow::Error::msg)?;
@@ -3365,17 +3352,6 @@ fn write_extensions_artifact_files(
     Ok(())
 }
 
-fn to_screaming_snake_case(input: &str) -> String {
-    let mut result = String::new();
-    for (index, ch) in input.chars().enumerate() {
-        if ch.is_ascii_uppercase() && index > 0 {
-            result.push('_');
-        }
-        result.push(ch.to_ascii_uppercase());
-    }
-    result
-}
-
 fn finish_typescript_module(module: String) -> String {
     if module.ends_with('\n') {
         module
@@ -3392,9 +3368,15 @@ fn render_typescript_stack_entry(
     program_extension_bindings: &[ProgramExtensionBinding],
     hosted_program_modules: &[HostedProgramModule],
 ) -> String {
-    let export_name = format!("{}_STACK", to_screaming_snake_case(stack_name));
+    let export_name = format!(
+        "{}_STACK",
+        ts_ident::identifier_stem(stack_name, IdentifierCase::ScreamingSnake)
+    );
     let core_export_name = format!("{}_CORE", export_name);
-    let type_name = format!("{}Stack", stack_name);
+    let type_name = format!(
+        "{}Stack",
+        ts_ident::identifier_stem(stack_name, IdentifierCase::Preserve)
+    );
     let core_import = format!("./{}-core.js", layout.base_name);
     if !hosted_program_modules.is_empty() {
         let mut sdk_imports = Vec::new();
@@ -3429,7 +3411,13 @@ fn render_typescript_stack_entry(
             .collect::<Vec<_>>();
         let hosted_program_lines = hosted_program_modules
             .iter()
-            .map(|extension| format!("    {}: {},", extension.program_key, extension.import_name))
+            .map(|extension| {
+                format!(
+                    "    {}: {},",
+                    arete_interpreter::typescript::typescript_property_key(&extension.program_key),
+                    extension.import_name
+                )
+            })
             .collect::<Vec<_>>();
         let stack_program_layer = if stack_program_lines.is_empty() {
             String::new()
@@ -3599,11 +3587,13 @@ fn public_program_export_name(base_name: &str) -> String {
         .trim_matches('_')
         .to_string();
 
-    if screaming.ends_with("_PROGRAM") {
+    let screaming = if screaming.ends_with("_PROGRAM") {
         screaming
     } else {
         format!("{}_PROGRAM", screaming)
-    }
+    };
+    // Already [A-Z0-9_]; only a leading digit needs fixing.
+    ts_ident::identifier_stem(&screaming, IdentifierCase::Preserve)
 }
 
 fn render_typescript_program_entry(
@@ -3611,13 +3601,16 @@ fn render_typescript_program_entry(
     program_name: &str,
     extension_entry: Option<&str>,
 ) -> String {
-    let core_const_name = to_screaming_snake_case(program_name);
+    let core_const_name = arete_interpreter::typescript::program_const_name(program_name);
     let export_name = public_program_export_name(&layout.base_name);
     let core_import_name = format!("{}_CORE", export_name);
     let core_read_const_name = format!("{}_READ", core_const_name);
     let read_export_name = format!("{}_READ", export_name);
     let core_read_import_name = format!("{}_CORE", read_export_name);
-    let type_name = format!("{}Program", to_pascal_case(&layout.base_name));
+    let type_name = format!(
+        "{}Program",
+        ts_ident::identifier_stem(&layout.base_name, IdentifierCase::Pascal)
+    );
     let core_import = format!("./{}-core.js", layout.base_name);
 
     if let Some(extension_entry) = extension_entry {
@@ -3686,9 +3679,15 @@ fn render_typescript_program_collection_entry(
     extension_entry: Option<&str>,
     hosted_program_modules: &[HostedProgramModule],
 ) -> String {
-    let export_name = format!("{}_PROGRAMS", to_screaming_snake_case(stack_name));
+    let export_name = format!(
+        "{}_PROGRAMS",
+        ts_ident::identifier_stem(stack_name, IdentifierCase::ScreamingSnake)
+    );
     let core_export_name = format!("{}_CORE", export_name);
-    let type_name = format!("{}Programs", stack_name);
+    let type_name = format!(
+        "{}Programs",
+        ts_ident::identifier_stem(stack_name, IdentifierCase::Preserve)
+    );
     let core_import = format!("./{}-core.js", layout.base_name);
 
     if !hosted_program_modules.is_empty() {
@@ -3710,7 +3709,13 @@ fn render_typescript_program_collection_entry(
             .join("\n");
         let hosted_lines = hosted_program_modules
             .iter()
-            .map(|extension| format!("  {}: {},", extension.program_key, extension.import_name))
+            .map(|extension| {
+                format!(
+                    "  {}: {},",
+                    arete_interpreter::typescript::typescript_property_key(&extension.program_key),
+                    extension.import_name
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let (explicit_import, base_expression) = extension_entry
@@ -3799,7 +3804,7 @@ fn generate_typescript_program_sdk_from_idl(
     )
     .map_err(|e| anyhow::anyhow!("Failed to parse IDL {}: {}", idl_path.display(), e))?;
     let sdk_name = idl_sdk_name_from_path(idl_path)?;
-    let stack_name = to_pascal_case(&sdk_name);
+    let stack_name = ts_ident::identifier_stem(&sdk_name, IdentifierCase::Pascal);
     let program_name = identity.program_spec.idl_snapshot.snapshot.name.clone();
     let input_pin = ResolvedExtensionsInputPin {
         kind: ExtensionsInputKind::ProgramSpec,
@@ -3836,7 +3841,7 @@ fn generate_typescript_program_sdk_from_artifact(
 ) -> Result<()> {
     let identity = arete_hash::OssProgramIdentityV1::new(program_spec.payload.clone())
         .map_err(anyhow::Error::msg)?;
-    let stack_name = to_pascal_case(sdk_name);
+    let stack_name = ts_ident::identifier_stem(sdk_name, IdentifierCase::Pascal);
     let program_name = program_spec.payload.idl_snapshot.snapshot.name.clone();
     let stack_spec = arete_interpreter::public_artifacts::stack_spec_from_program_artifacts(
         &stack_name,
@@ -3915,16 +3920,18 @@ fn write_typescript_program_sdk(
         extensions.hosted_artifact,
         OutputExtensionsFallback::Ignore,
     )?;
-    write_typescript_core_modules(&layout, &output.full_file(), artifact.as_ref())?;
-    if let Some(ref artifact) = artifact {
-        stage_extensions_artifact(artifact, &layout.output_dir, extensions.input_pin)?;
-    }
-
+    let core_contents = output.full_file();
     let entry_contents = render_typescript_program_entry(
         &layout,
         program_name,
         artifact.as_ref().map(|artifact| artifact.entry.as_str()),
     );
+    check_typescript_entry(&entry_contents, &core_contents, &layout)?;
+    write_typescript_core_modules(&layout, &core_contents, artifact.as_ref())?;
+    if let Some(ref artifact) = artifact {
+        stage_extensions_artifact(artifact, &layout.output_dir, extensions.input_pin)?;
+    }
+
     fs::write(&layout.entry_path, entry_contents).with_context(|| {
         format!(
             "Failed to write TypeScript entry module to {}",
@@ -3946,7 +3953,7 @@ fn generate_typescript_program_sdk_from_install(
 ) -> Result<()> {
     let program_spec = program_spec_artifact_from_registry(install)?;
     let program_name = program_spec.payload.idl_snapshot.snapshot.name.clone();
-    let stack_name = to_pascal_case(sdk_name);
+    let stack_name = ts_ident::identifier_stem(sdk_name, IdentifierCase::Pascal);
     let input_pin = ResolvedExtensionsInputPin {
         kind: ExtensionsInputKind::ProgramSpec,
         hash: install.definition.program_spec_hash.clone(),
@@ -4067,18 +4074,28 @@ fn generate_typescript_sdk_from_source(
             None,
             source.output_extensions_fallback(),
         )?;
-        write_typescript_core_modules(&layout, &output.full_file(), artifact.as_ref())?;
-        if let Some(ref artifact) = artifact {
-            stage_extensions_artifact(artifact, &layout.output_dir, &input_pin)?;
-        }
-        stage_hosted_program_modules(&hosted_program_modules, &layout, package_name)?;
-
+        let core_contents = output.full_file();
         let entry_contents = render_typescript_program_collection_entry(
             &layout,
             &stack_name,
             artifact.as_ref().map(|artifact| artifact.entry.as_str()),
             &hosted_program_modules,
         );
+        // The collection entry replaces the core's `<STACK>_PROGRAMS` export
+        // and its type on purpose, so only check it for duplicate bindings.
+        ts_ident::check_module_declarations(
+            &entry_contents,
+            &format!(
+                "The TypeScript entry module {}",
+                layout.entry_path.display()
+            ),
+        )
+        .map_err(anyhow::Error::msg)?;
+        write_typescript_core_modules(&layout, &core_contents, artifact.as_ref())?;
+        if let Some(ref artifact) = artifact {
+            stage_extensions_artifact(artifact, &layout.output_dir, &input_pin)?;
+        }
+        stage_hosted_program_modules(&hosted_program_modules, &layout, package_name)?;
 
         fs::write(&layout.entry_path, entry_contents).with_context(|| {
             format!(
@@ -4167,11 +4184,6 @@ fn generate_typescript_sdk_from_source(
             },
             source.output_extensions_fallback(),
         )?;
-        write_typescript_core_modules(&layout, &output.full_file(), artifact.as_ref())?;
-        if let Some(ref artifact) = artifact {
-            stage_extensions_artifact(artifact, &layout.output_dir, &input_pin)?;
-        }
-        stage_hosted_program_modules(&hosted_program_modules, &layout, package_name)?;
         let extension_files = artifact
             .as_ref()
             .map(|artifact| {
@@ -4194,6 +4206,13 @@ fn generate_typescript_sdk_from_source(
                 .unwrap_or(&[]),
             &hosted_program_modules,
         );
+        let core_contents = output.full_file();
+        check_typescript_entry(&entry_contents, &core_contents, &layout)?;
+        write_typescript_core_modules(&layout, &core_contents, artifact.as_ref())?;
+        if let Some(ref artifact) = artifact {
+            stage_extensions_artifact(artifact, &layout.output_dir, &input_pin)?;
+        }
+        stage_hosted_program_modules(&hosted_program_modules, &layout, package_name)?;
         fs::write(&layout.entry_path, entry_contents).with_context(|| {
             format!(
                 "Failed to write TypeScript entry module to {}",
@@ -4209,6 +4228,17 @@ fn generate_typescript_sdk_from_source(
     }
 
     Ok(())
+}
+
+/// Reject an entry module whose declarations collide with each other or
+/// would silently shadow a name the `export *`-ed core module exports.
+fn check_typescript_entry(entry: &str, core: &str, layout: &TypeScriptLayout) -> Result<()> {
+    let context = format!(
+        "The TypeScript entry module {}",
+        layout.entry_path.display()
+    );
+    ts_ident::check_module_declarations(entry, &context).map_err(anyhow::Error::msg)?;
+    ts_ident::check_star_reexport_shadowing(entry, core, &context).map_err(anyhow::Error::msg)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4334,8 +4364,12 @@ fn render_hosted_composition_bindings(
         "chain": stack.chain_binding,
         "transactions": stack.transaction_binding,
     });
-    let manifest_pascal = to_pascal_case(manifest_name);
-    let bindings_name = format!("{}_HOSTED_BINDINGS", to_screaming_snake_case(manifest_name));
+    // Must match the names the session module declares.
+    let manifest_pascal = arete_interpreter::typescript::safe_pascal_identifier(manifest_name);
+    let bindings_name = format!(
+        "{}_HOSTED_BINDINGS",
+        ts_ident::identifier_stem(manifest_name, IdentifierCase::ScreamingSnake)
+    );
     let mut rendered = format!(
         "export const {bindings_name} = {} as const;\n",
         serde_json::to_string_pretty(&value)
@@ -4391,7 +4425,7 @@ pub fn create_rust(
             &artifact_dirs,
         )?));
         let crate_name =
-            crate_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
+            crate_name_override.unwrap_or_else(|| default_rust_crate_name(source.sdk_name()));
         let output = output_override
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-stack", source.sdk_name())));
@@ -4407,7 +4441,7 @@ pub fn create_rust(
         let source =
             resolve_remote_stack_source(&client, stack_name, Some(EXTENSIONS_LANGUAGE_RUST))?;
         let crate_name =
-            crate_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
+            crate_name_override.unwrap_or_else(|| default_rust_crate_name(source.sdk_name()));
         let output = output_override
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(format!("./generated/{}-stack", source.sdk_name())));
@@ -5351,8 +5385,11 @@ mod tests {
             .unwrap_or_else(|| program_spec.artifact_hash.to_string());
         HostedProgramModule {
             program_key: program_key.to_string(),
-            program_const_name: to_screaming_snake_case(program_name),
-            import_name: format!("hosted{}Program", to_pascal_case(program_key)),
+            program_const_name: arete_interpreter::typescript::program_const_name(program_name),
+            import_name: format!(
+                "hosted{}Program",
+                ts_ident::identifier_stem(program_key, IdentifierCase::Pascal)
+            ),
             input_pin: ResolvedExtensionsInputPin {
                 kind: ExtensionsInputKind::ProgramSpec,
                 hash: input_hash,
@@ -7936,7 +7973,10 @@ mod tests {
             let live = arete_artifacts::live_spec_v2(
                 std::slice::from_ref(&program),
                 vec![arete_artifacts::PortableEntity::new(
-                    format!("{}State", to_pascal_case(alias)),
+                    format!(
+                        "{}State",
+                        ts_ident::identifier_stem(alias, IdentifierCase::Pascal)
+                    ),
                     "id.address",
                 )],
                 Vec::new(),

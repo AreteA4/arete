@@ -13,7 +13,8 @@ use crate::ast::{
     IdlTypeDefSnapshot, IdlTypeSnapshot, InstructionAccountDef, InstructionDef, PdaDefinition,
     PdaProgramDef, PdaSeedDef,
 };
-use crate::typescript::{to_pascal_case, to_screaming_snake_case};
+use crate::identifiers::{typescript as ts_ident, IdentifierCase};
+use crate::typescript::to_pascal_case;
 use arete_idl::{IdlAmountDecimalsSource, IdlAmountHint, IdlLengthPrefix};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -254,8 +255,8 @@ pub fn generate_instructions_code(
     let mut needs_build_options = false;
     let mut needs_operation_context = false;
 
-    let stack_screaming = to_screaming_snake_case(stack_name);
-    let stack_pascal = to_pascal_case(stack_name);
+    let stack_screaming = ts_ident::identifier_stem(stack_name, IdentifierCase::ScreamingSnake);
+    let stack_pascal = ts_ident::identifier_stem(stack_name, IdentifierCase::Pascal);
 
     // Per-program error scopes. The fallback scope (stack-level naming, all
     // errors flattened) serves single-program stacks, stacks without IDL
@@ -264,13 +265,14 @@ pub fn generate_instructions_code(
         .iter()
         .map(|idl| {
             let (const_name, type_name) = if multi_program {
+                let program_pascal = ts_ident::identifier_stem(&idl.name, IdentifierCase::Pascal);
                 (
                     format!(
                         "{}_{}_PROGRAM_ERRORS",
                         stack_screaming,
-                        to_screaming_snake_case(&to_pascal_case(&idl.name))
+                        ts_ident::identifier_stem(&program_pascal, IdentifierCase::ScreamingSnake)
                     ),
-                    format!("{}{}ProgramError", stack_pascal, to_pascal_case(&idl.name)),
+                    format!("{}{}ProgramError", stack_pascal, program_pascal),
                 )
             } else {
                 (
@@ -322,11 +324,15 @@ pub fn generate_instructions_code(
         let program_name = program_index.map(|i| idls[i].name.as_str());
         let (pascal, handler_const, program_key) = match program_name {
             Some(name) if multi_program => {
-                let program_pascal = to_pascal_case(name);
+                let program_pascal = ts_ident::identifier_stem(name, IdentifierCase::Pascal);
                 let instr_pascal = to_pascal_case(&instr.name);
                 (
                     format!("{}{}", program_pascal, instr_pascal),
-                    format!("{}{}Instruction", to_camel_case(name), instr_pascal),
+                    format!(
+                        "{}{}Instruction",
+                        ts_ident::identifier_stem(name, IdentifierCase::Camel),
+                        instr_pascal
+                    ),
                     Some(to_camel_case(name)),
                 )
             }

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "stack-manifest",
+    "hash": "arete:h1:stack-manifest:sha256:e787b5781dc27709378b7438282eb938cc9f256f67ab7f35dc2209f7d2f513cb"
+  },
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:7c6c6a705b94ca97771b08b2593a4abb81c49110f36133b7fdceef80b43c41bf",
+  "extensions": null,
+  "artifacts": [
+    "9lives-core.ts",
+    "9lives.ts"
+  ]
+}

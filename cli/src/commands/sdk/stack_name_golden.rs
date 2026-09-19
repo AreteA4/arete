@@ -185,7 +185,7 @@ fn generate_all(name: &str, output: &Path) -> Result<()> {
         &none,
         true,
     )?;
-    let crate_name = format!("{}-stack", source.sdk_name());
+    let crate_name = default_rust_crate_name(source.sdk_name());
     generate_rust_stack_sdk(
         &source,
         source.load_stack_spec(true)?,
@@ -335,4 +335,110 @@ fn stack_name_golden_snake_case() {
 #[test]
 fn stack_name_golden_lowercase() {
     assert_golden("vault");
+}
+
+// Names that used to produce invalid identifiers (`TOKEN-BALANCES_STACK_CORE`,
+// `my.stackStack`, `9LIVES_STACK`). File names keep the stack name as written.
+
+#[test]
+fn stack_name_golden_hyphenated() {
+    assert_golden("token-balances");
+}
+
+#[test]
+fn stack_name_golden_dotted() {
+    assert_golden("my.stack");
+}
+
+#[test]
+fn stack_name_golden_leading_digit() {
+    assert_golden("9lives");
+}
+
+fn expect_error(result: Result<()>) -> String {
+    format!(
+        "{:#}",
+        result.expect_err("generation must report the collision")
+    )
+}
+
+/// `my-vault` sanitizes to `MyVault`, so its `MyVaultStack` export collides
+/// with an entity named `MyVaultStack`. Generation must fail instead of
+/// letting one declaration shadow the other.
+#[test]
+fn stack_name_collision_after_sanitizing_is_reported() {
+    let source = ResolvedStackSource::LocalArtifacts(Box::new(single_live_stack(
+        "my-vault",
+        "MyVaultStack",
+    )));
+    let temp = tempfile::tempdir().unwrap();
+    let none = BTreeMap::new();
+
+    let typescript = temp.path().join("typescript");
+    let error = expect_error(generate_typescript_sdk_from_source(
+        &source,
+        &typescript,
+        "@usearete/sdk",
+        None,
+        None,
+        None,
+        &none,
+        &none,
+        false,
+    ));
+    assert!(error.contains("`MyVaultStack`"), "{error}");
+    assert!(
+        collect_files(&typescript).is_empty(),
+        "nothing may be written when a collision is reported"
+    );
+
+    let error = expect_error(generate_rust_stack_sdk(
+        &source,
+        source.load_stack_spec(true).unwrap(),
+        &temp.path().join("rust"),
+        "my-vault-stack",
+        false,
+        None,
+        None,
+    ));
+    assert!(error.contains("`MyVaultStack`"), "{error}");
+    assert!(error.contains("entity 'MyVaultStack'"), "{error}");
+    assert!(error.contains("stack name 'my-vault'"), "{error}");
+}
+
+/// Two programs whose names differ only by separators generate the same
+/// program key and constants.
+#[test]
+fn program_name_collision_after_sanitizing_is_reported() {
+    let first = program("token-2022", "EsLvpLQPuFfHUoXZQuni57bGRqTXQshLGicqA4UdP8sQ");
+    let second = program("token_2022", "Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS");
+    let live = live_spec_v2(
+        &[first.clone(), second.clone()],
+        vec![entity("Vault")],
+        Vec::new(),
+    )
+    .expect("LiveSpec");
+    let source = ResolvedStackSource::LocalArtifacts(Box::new(local_stack(
+        "token-balances",
+        vec![first, second],
+        vec![("live".to_string(), live)],
+    )));
+    let temp = tempfile::tempdir().unwrap();
+    let none = BTreeMap::new();
+    for program_only in [false, true] {
+        let error = expect_error(generate_typescript_sdk_from_source(
+            &source,
+            &temp.path().join(format!("typescript-{program_only}")),
+            "@usearete/sdk",
+            None,
+            None,
+            None,
+            &none,
+            &none,
+            program_only,
+        ));
+        assert!(error.contains("'token2022'"), "{error}");
+        assert!(error.contains("'token-2022'"), "{error}");
+        assert!(error.contains("'token_2022'"), "{error}");
+    }
 }
