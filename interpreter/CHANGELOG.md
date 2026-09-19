@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.20.3](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.20.2...arete-interpreter-v0.20.3) (2026-09-19)
+
+
+### Bug Fixes
+
+* declare IDL types shared by several entities once per stack SDK ([d1151f7](https://github.com/AreteA4/arete/commit/d1151f7dea1783588a525ee432621b56f20740b8))
+* declare IDL types shared by several entities once per stack SDK ([4ded176](https://github.com/AreteA4/arete/commit/4ded1766041694929f0d992edb9bd546d6c90817))
+* read each program's accounts into its own model and match type names case-insensitively ([310d144](https://github.com/AreteA4/arete/commit/310d14467bf3c92c9e470a7c149644907ef0c5f7))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.20.2 to 0.20.3
+
 ## [0.20.2](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.20.1...arete-interpreter-v0.20.2) (2026-09-19)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.3](https://github.com/AreteA4/arete/compare/arete-mcp-v0.20.2...arete-mcp-v0.20.3) (2026-09-19)
+
+
+### Bug Fixes
+
+* declare IDL types shared by several entities once per stack SDK ([d1151f7](https://github.com/AreteA4/arete/commit/d1151f7dea1783588a525ee432621b56f20740b8))
+
 ## [0.20.2](https://github.com/AreteA4/arete/compare/arete-mcp-v0.20.1...arete-mcp-v0.20.2) (2026-09-19)
 
 
