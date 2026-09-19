@@ -1617,6 +1617,18 @@ fn select_sdk_target(ts: bool, rust: bool, python: bool, prompt: &str) -> Result
     }
 }
 
+/// SDK names become file and directory names (`token-balances.ts`,
+/// `./generated/token-balances`). They are used as written, so reject names
+/// that would be read as a path instead of a single file name.
+fn ensure_file_stem(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', ':', '\0']) {
+        anyhow::bail!(
+            "stack name {name:?} cannot be used as a generated file name; it must not be empty, `.` or `..`, or contain `/`, `\\`, `:` or NUL"
+        );
+    }
+    Ok(())
+}
+
 /// `<stack>-stack`, made a valid Cargo package name (`my.stack` ->
 /// `my-stack-stack`, `9lives` -> `a9lives-stack`).
 fn default_rust_crate_name(sdk_name: &str) -> String {
@@ -3886,6 +3898,7 @@ fn write_typescript_program_sdk(
     package_name: &str,
     extensions: TypeScriptProgramSdkExtensions<'_>,
 ) -> Result<()> {
+    ensure_file_stem(sdk_name)?;
     let output = arete_interpreter::typescript::compile_program_modules(
         stack_spec,
         Some(arete_interpreter::typescript::TypeScriptStackConfig {
@@ -3996,6 +4009,7 @@ fn generate_typescript_sdk_from_source(
     program_module_imports: &BTreeMap<String, String>,
     program_only: bool,
 ) -> Result<()> {
+    ensure_file_stem(source.sdk_name())?;
     if let Some(composition) = source.composition_artifacts() {
         if !program_only {
             return generate_typescript_composition_sdk(
@@ -4255,6 +4269,7 @@ fn generate_typescript_composition_sdk(
     live_module_imports: &BTreeMap<String, String>,
     program_module_imports: &BTreeMap<String, String>,
 ) -> Result<()> {
+    ensure_file_stem(source.sdk_name())?;
     if websocket_url.is_some() || http_url.is_some() {
         anyhow::bail!(
             "multi-live generation requires per-alias endpoint configuration; a shared --url is not allowed"
@@ -4568,6 +4583,7 @@ fn generate_rust_stack_sdk(
     stack_url: Option<String>,
     extensions_path: Option<&Path>,
 ) -> Result<()> {
+    ensure_file_stem(source.sdk_name())?;
     let input_pin = stack_input_pin(source, &stack_spec)?;
     let module_dir = if as_module {
         output_dir.to_path_buf()
@@ -4862,6 +4878,7 @@ fn generate_python_stack_sdk(
     stack_url: Option<String>,
     extensions_path: Option<&Path>,
 ) -> Result<()> {
+    ensure_file_stem(source.sdk_name())?;
     let input_pin = stack_input_pin(source, &stack_spec)?;
     let import_module_name = arete_interpreter::python::python_module_name(package_name);
     let module_dir = if as_module {

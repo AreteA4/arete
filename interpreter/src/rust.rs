@@ -3088,6 +3088,14 @@ pub fn compile_program_modules(
         "{}Programs",
         rust_ident::identifier_stem(&stack_spec.stack_name, IdentifierCase::Pascal)
     );
+    // `pub use programs::<Aggregate>` would silently shadow a generated type
+    // of the same name re-exported through `pub use types::*`.
+    let mut scope = IdentifierScope::new("Rust");
+    claim_generated_types(&mut scope, &entity_names, &types_rs)?;
+    scope.claim(
+        &aggregate_name,
+        &format!("stack name '{}'", stack_spec.stack_name),
+    )?;
     programs.code.push('\n');
     programs.code.push_str(&generate_programs_accessor_struct(
         &aggregate_name,
@@ -3297,6 +3305,23 @@ fn check_stack_identifiers(
         scope.claim(entity, &owner)?;
         scope.claim(&format!("{entity}EntityViews"), &owner)?;
     }
+    claim_generated_types(&mut scope, entity_names, types_rs)?;
+    let owner = format!("stack name '{stack_name}'");
+    scope.claim(&format!("{stack_ident}Stack"), &owner)?;
+    scope.claim(&format!("{stack_ident}StackViews"), &owner)?;
+    if has_programs {
+        scope.claim(&format!("{stack_ident}StackPrograms"), &owner)?;
+    }
+    Ok(())
+}
+
+/// Claim every type `types.rs` declares (entity structs belong to their
+/// entity).
+fn claim_generated_types(
+    scope: &mut IdentifierScope,
+    entity_names: &[String],
+    types_rs: &str,
+) -> Result<(), String> {
     for line in types_rs.lines() {
         let declared = ["pub struct ", "pub enum ", "pub type "]
             .iter()
@@ -3306,16 +3331,13 @@ fn check_stack_identifiers(
                 .chars()
                 .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
                 .collect();
-            if !entity_names.contains(&name) {
-                scope.claim(&name, &format!("generated type `{name}`"))?;
-            }
+            let owner = if entity_names.contains(&name) {
+                format!("entity '{name}'")
+            } else {
+                format!("generated type `{name}`")
+            };
+            scope.claim(&name, &owner)?;
         }
-    }
-    let owner = format!("stack name '{stack_name}'");
-    scope.claim(&format!("{stack_ident}Stack"), &owner)?;
-    scope.claim(&format!("{stack_ident}StackViews"), &owner)?;
-    if has_programs {
-        scope.claim(&format!("{stack_ident}StackPrograms"), &owner)?;
     }
     Ok(())
 }

@@ -442,3 +442,62 @@ fn program_name_collision_after_sanitizing_is_reported() {
         assert!(error.contains("'token_2022'"), "{error}");
     }
 }
+
+/// Stack names are also file names; a name that is really a path must not
+/// write outside the output directory.
+#[test]
+fn stack_names_that_are_paths_are_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let none = BTreeMap::new();
+    for name in ["../escape", "/tmp/escape", "a\\b", "c:escape", ".."] {
+        let source =
+            ResolvedStackSource::LocalArtifacts(Box::new(single_live_stack(name, "Vault")));
+        let output = temp.path().join("out").join("typescript");
+        let error = expect_error(generate_typescript_sdk_from_source(
+            &source,
+            &output,
+            "@usearete/sdk",
+            None,
+            None,
+            None,
+            &none,
+            &none,
+            false,
+        ));
+        assert!(
+            error.contains("cannot be used as a generated file name"),
+            "{error}"
+        );
+        let error = expect_error(generate_rust_stack_sdk(
+            &source,
+            source.load_stack_spec(true).unwrap(),
+            &temp.path().join("out").join("rust"),
+            "escape-stack",
+            false,
+            None,
+            None,
+        ));
+        assert!(
+            error.contains("cannot be used as a generated file name"),
+            "{error}"
+        );
+    }
+    assert!(
+        collect_files(temp.path()).is_empty(),
+        "nothing may be written for a path-like stack name"
+    );
+}
+
+/// A program-only Rust crate re-exports its `<Stack>Programs` aggregate next
+/// to every generated model (`pub use types::*`); a model with that name must
+/// be reported instead of being silently shadowed.
+#[test]
+fn rust_program_aggregate_collision_is_reported() {
+    let source =
+        ResolvedStackSource::LocalArtifacts(Box::new(single_live_stack("vault", "VaultPrograms")));
+    let spec = source.load_stack_spec(false).unwrap();
+    let error = arete_interpreter::rust::compile_program_modules(spec, None).unwrap_err();
+    assert!(error.contains("`VaultPrograms`"), "{error}");
+    assert!(error.contains("entity 'VaultPrograms'"), "{error}");
+    assert!(error.contains("stack name 'vault'"), "{error}");
+}
