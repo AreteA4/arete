@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.20.2](https://github.com/AreteA4/arete/compare/arete-adapter-web3js-v0.20.1...arete-adapter-web3js-v0.20.2) (2026-09-19)
+
+
+### Miscellaneous Chores
+
+* **arete-adapter-web3js:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.20.1 to ^0.20.2
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.20.1 to ^0.20.2
+
 ## [0.20.1](https://github.com/AreteA4/arete/compare/arete-adapter-web3js-v0.20.0...arete-adapter-web3js-v0.20.1) (2026-09-17)
 
 

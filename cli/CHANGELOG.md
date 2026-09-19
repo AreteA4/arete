@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## [0.20.2](https://github.com/AreteA4/arete/compare/a4-cli-v0.20.1...a4-cli-v0.20.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* generate valid SDK identifiers for any stack name ([5de1808](https://github.com/AreteA4/arete/commit/5de18082b28bde388b6ed154f838dba9480507e4))
+* generate valid SDK identifiers for any stack name ([e10bd97](https://github.com/AreteA4/arete/commit/e10bd97dfe8c6d21f3af190e31ecf684449df675))
+* reject path-like stack names and program-only Rust export collisions ([b27fdb3](https://github.com/AreteA4/arete/commit/b27fdb317ae43cf6bc76bd53f1c9642846ae9f26))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.20.1 to 0.20.2
+    * arete-mcp bumped from 0.20.1 to 0.20.2
+
 ## [0.20.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.20.0...a4-cli-v0.20.1) (2026-09-17)
 
 
