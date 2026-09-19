@@ -4,7 +4,7 @@
     "kind": "stack-manifest",
     "hash": "arete:h1:stack-manifest:sha256:0b56e4f1682f5bf1751bdcf4ebc2fc1a0da215d8c2e77b0abc9ed2742328e50a"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:554ba8fd012e26853a5677f8d452fd821ef6c572951fbffb3ddecc2c2657add8",
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
   "extensions": null,
   "artifacts": [
     "Cargo.toml",

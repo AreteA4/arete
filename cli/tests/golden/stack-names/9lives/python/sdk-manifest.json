@@ -4,7 +4,7 @@
     "kind": "stack-manifest",
     "hash": "arete:h1:stack-manifest:sha256:e787b5781dc27709378b7438282eb938cc9f256f67ab7f35dc2209f7d2f513cb"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:98da0955acf7be01552ff5effc68f9618592e6ab5cd8100fcf3a8e5ba8c460f7",
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
   "extensions": null,
   "artifacts": [
     "live_9lives_stack/__init__.py",

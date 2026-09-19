@@ -4,7 +4,7 @@
     "kind": "stack-manifest",
     "hash": "arete:h1:stack-manifest:sha256:681aa6b5a7988bc97c6db1d0355a8a98c56b851753d1c280b3ae5782824df85c"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:2dd28166bfedd9041ba91adbb50a6954d569c49cda925cd6856a74e87dc04c04",
+  "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
   "extensions": null,
   "artifacts": [
     "pyproject.toml",
