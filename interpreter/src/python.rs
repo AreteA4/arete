@@ -18,6 +18,7 @@
 //!   metadata tables, and the `PROGRAMS` / `PROGRAM_READS` maps.
 
 use crate::ast::*;
+use crate::identifiers::python as python_ident;
 use crate::typescript_instructions::{
     dedupe_errors_by_code, disambiguate_instruction_account_names, normalize_seed_arg_type,
     split_generic,
@@ -181,6 +182,7 @@ pub fn compile_program_modules(
         .iter()
         .map(|entity| entity.state_name.clone())
         .collect::<Vec<_>>();
+    validate_entity_identifiers(&entity_names)?;
     let (models_py, _model_exports, account_structs) =
         generate_stack_models_py(&stack_spec.stack_name, &stack_spec.entities, &entity_names);
     let programs = generate_stack_programs_py(
@@ -384,6 +386,7 @@ fn compile_stack_spec_with_view_selection(
         entity_names.push(spec.state_name.clone());
         entity_specs.push(spec);
     }
+    validate_entity_identifiers(&entity_names)?;
 
     let (models_py, model_exports, account_structs) =
         generate_stack_models_py(&stack_name, &entity_specs, &entity_names);
@@ -486,6 +489,26 @@ fn validate_extension_modules(
     }
 }
 
+/// Entity names become Python class names verbatim (and stay verbatim in view
+/// IDs), so they must already be identifiers; both authoring paths guarantee
+/// this. Report anything else instead of emitting a module that won't import.
+fn validate_entity_identifiers(entity_names: &[String]) -> Result<(), String> {
+    let invalid = entity_names.iter().find(|name| {
+        let mut characters = name.chars();
+        !characters
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            || !characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+            || python_ident::is_keyword(name)
+    });
+    match invalid {
+        Some(name) => Err(format!(
+            "entity '{name}' cannot be used as a Python class name; entity names must be identifiers such as `TokenAccount`"
+        )),
+        None => Ok(()),
+    }
+}
+
 fn generate_stack_init_py(
     stack_name: &str,
     stack_kebab: &str,
@@ -570,7 +593,7 @@ __all__ = [
     {all_items},
 ]
 "#,
-        stack_name = stack_name,
+        stack_name = python_ident::docstring_text(stack_name),
         sdk = config.sdk_version,
         submodules = submodules,
         star_imports = star_imports,
@@ -590,6 +613,7 @@ __all__ = [
 }
 
 fn generate_program_init_py(stack_name: &str, config: &PythonStackConfig) -> String {
+    let stack_name = python_ident::docstring_text(stack_name);
     let mut output = format!(
         r#""""Generated standalone program SDK for `{stack_name}`.
 
@@ -1510,7 +1534,7 @@ __all__ = [
 {helpers}
 
 "#,
-        stack_name = stack_name,
+        stack_name = python_ident::docstring_text(stack_name),
         all_list = all_list,
         helpers = MODELS_HELPERS.trim_start_matches('\n'),
     );
@@ -1733,7 +1757,7 @@ __all__ = [
 {classes}
 
 {views_map}"#,
-        stack_name = stack_name,
+        stack_name = python_ident::docstring_text(stack_name),
         all_list = all_list,
         classes = class_blocks.join("\n\n"),
         views_map = views_map,
@@ -3213,7 +3237,7 @@ __all__ = [
 
 {programs_map}
 {reads_map}"#,
-        stack_name = stack_name,
+        stack_name = python_ident::docstring_text(stack_name),
         imports = import_lines.join("\n"),
         all_list = all_list,
         sections = sections.join("\n\n"),
@@ -3301,41 +3325,11 @@ fn to_pascal_case(s: &str) -> String {
 }
 
 fn to_snake_case(s: &str) -> String {
-    let mut result = String::new();
-    let mut separator = false;
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() {
-            if separator && !result.is_empty() {
-                result.push('_');
-            }
-            separator = false;
-            if ch.is_ascii_uppercase() {
-                if !result.is_empty() && !result.ends_with('_') {
-                    result.push('_');
-                }
-                result.push(ch.to_ascii_lowercase());
-            } else {
-                result.push(ch.to_ascii_lowercase());
-            }
-        } else {
-            separator = true;
-        }
-    }
-    if result
-        .chars()
-        .next()
-        .is_some_and(|character| character.is_ascii_digit())
-    {
-        result.insert_str(0, "value_");
-    }
-    if is_python_keyword(&result) {
-        result.push('_');
-    }
-    result
+    python_ident::snake_case(s)
 }
 
 fn to_screaming_snake(s: &str) -> String {
-    to_snake_case(s).to_uppercase()
+    python_ident::screaming_snake_case(s)
 }
 
 /// Derive a valid Python module name from an arbitrary alias or file stem
@@ -4981,42 +4975,5 @@ mod tests {
 }
 
 fn is_python_keyword(value: &str) -> bool {
-    matches!(
-        value,
-        "False"
-            | "None"
-            | "True"
-            | "and"
-            | "as"
-            | "assert"
-            | "async"
-            | "await"
-            | "break"
-            | "class"
-            | "continue"
-            | "def"
-            | "del"
-            | "elif"
-            | "else"
-            | "except"
-            | "finally"
-            | "for"
-            | "from"
-            | "global"
-            | "if"
-            | "import"
-            | "in"
-            | "is"
-            | "lambda"
-            | "nonlocal"
-            | "not"
-            | "or"
-            | "pass"
-            | "raise"
-            | "return"
-            | "try"
-            | "while"
-            | "with"
-            | "yield"
-    )
+    python_ident::is_keyword(value)
 }

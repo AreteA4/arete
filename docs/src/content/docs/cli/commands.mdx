@@ -758,6 +758,24 @@ Low-level `a4 sdk create` accepts explicit `--manifest` or
 compatibility/direct-descriptor tool: it never writes `arete.toml` or
 `arete.lock`, and `a4 install` never falls back to it.
 
+A StackManifest `name` may contain any characters, for example
+`token-balances` or `my.stack`. Generated file names keep the name as written
+(`token-balances.ts`, `token-balances-core.ts`), so a name containing `/`,
+`\`, or `:`, or a name that is `.` or `..`, is rejected. Generated identifiers treat
+every character other than a letter, digit, or `_` as a word boundary:
+
+| Stack name       | TypeScript                                   | Rust                                               | Python                 |
+| ---------------- | -------------------------------------------- | -------------------------------------------------- | ---------------------- |
+| `token-balances` | `TOKEN_BALANCES_STACK`, `TokenBalancesStack` | `TokenBalancesStack`, crate `token-balances-stack` | `TOKEN_BALANCES_STACK` |
+| `my.stack`       | `MY_STACK_STACK`, `MyStackStack`             | `MyStackStack`, crate `my-stack-stack`             | `MY_STACK_STACK`       |
+| `9lives`         | `A9LIVES_STACK`, `A9livesStack`              | `A9livesStack`, crate `a9lives-stack`              | `VALUE_9LIVES_STACK`   |
+
+Names that are already identifiers, such as `OreStream` or `token_balances`,
+keep generating exactly the names they always have. If two names generate the
+same identifier, for example a stack `my-vault` and an entity `MyVaultStack`,
+or programs `token-2022` and `token_2022`, generation fails with an error that
+names both. Rename one of them.
+
 ### Private programs and stacks
 
 Owner-private programs (`a4 program push`) and private production stacks

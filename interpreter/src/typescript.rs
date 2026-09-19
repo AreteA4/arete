@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::identifiers::{typescript as ts_ident, IdentifierCase};
 use arete_idl::utils::to_snake_case as idl_to_snake_case;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -2089,7 +2090,7 @@ fn generate_idl_account_artifacts(
 
     for idl in idls {
         let program_key = to_camel_case(&idl.name);
-        let program_prefix = to_pascal_case(&idl.name);
+        let program_prefix = ts_ident::identifier_stem(&idl.name, IdentifierCase::Pascal);
         let type_defs: BTreeMap<String, &IdlTypeDefSnapshot> = idl
             .types
             .iter()
@@ -3346,7 +3347,7 @@ fn resolve_program_configs(
     }
 
     let mut exact_definitions = Vec::with_capacity(expected);
-    let mut program_keys = BTreeSet::new();
+    let mut program_keys = BTreeMap::new();
     for (index, ((program_id, idl), program_spec)) in stack_spec
         .program_ids
         .iter()
@@ -3379,10 +3380,10 @@ fn resolve_program_configs(
             ));
         }
         let program_key = to_camel_case(&idl.name);
-        if !program_keys.insert(program_key.clone()) {
+        if let Some(existing) = program_keys.insert(program_key.clone(), idl.name.as_str()) {
             return Err(format!(
-                "Stack '{}' has an ambiguous duplicate generated program key '{}'",
-                stack_spec.stack_name, program_key
+                "Stack '{}' has an ambiguous duplicate generated program key '{}': programs '{}' and '{}' both generate it; rename one of them",
+                stack_spec.stack_name, program_key, existing, idl.name
             ));
         }
         exact_definitions.push(TypeScriptProgramDefinitionMetadata {
@@ -3505,6 +3506,7 @@ fn compile_stack_spec_with_view_selection(
     let program_configs = resolve_program_configs(&stack_spec, config.programs.as_deref(), true)?;
     let stack_name = &stack_spec.stack_name;
     let stack_kebab = to_kebab_case(stack_name);
+    validate_entity_identifiers(&stack_spec.entities)?;
 
     // 1. Compile each entity's interfaces using existing per-entity compiler
     let mut all_interfaces = Vec::new();
@@ -3649,13 +3651,37 @@ fn compile_stack_spec_with_view_selection(
         exact_views,
     )?;
 
-    Ok(TypeScriptStackOutput {
+    let output = TypeScriptStackOutput {
         imports,
         interfaces,
         stack_definition,
         warnings: instructions_codegen.warnings,
         pda_degradations: instructions_codegen.pda_degradations,
-    })
+    };
+    ts_ident::check_module_declarations(
+        &output.full_file(),
+        &format!("The TypeScript SDK for stack '{stack_name}'"),
+    )?;
+    Ok(output)
+}
+
+/// Entity names are the stems of every entity type (`TokenAccount`,
+/// `TokenAccountSchema`, ...) and stay verbatim in view IDs, so their
+/// PascalCase form must already be an identifier. Both authoring paths
+/// guarantee this (Rust structs, and Stack Source entity names matching
+/// `[A-Za-z][A-Za-z0-9_]*`); report anything else instead of emitting a module
+/// that does not parse.
+fn validate_entity_identifiers(entities: &[SerializableStreamSpec]) -> Result<(), String> {
+    match entities
+        .iter()
+        .find(|entity| !ts_ident::is_identifier(&to_pascal_case(&entity.state_name)))
+    {
+        Some(entity) => Err(format!(
+            "entity '{}' cannot be used as a TypeScript type name; entity names must be identifiers such as `TokenAccount`",
+            entity.state_name
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Compile a stack model whose `views` have already been projected by a
@@ -3735,13 +3761,19 @@ pub fn compile_composed_public_artifacts_v2(
         .filter(|program| !live_program_hashes.contains(&program.artifact_hash.to_string()))
         .cloned()
         .collect::<Vec<_>>();
-    let independent_program_keys = independent_programs
-        .iter()
-        .map(|program| {
-            let source = to_camel_case(&program.payload.idl_snapshot.snapshot.name);
-            composition_program_key(program, &source)
-        })
-        .collect::<BTreeSet<_>>();
+    // Session `programs` keys are sanitized program names; two programs that
+    // map to the same key would silently overwrite one another.
+    let mut program_key_owners = crate::identifiers::IdentifierScope::new("TypeScript");
+    let mut independent_program_keys = BTreeSet::new();
+    for program in &independent_programs {
+        let name = &program.payload.idl_snapshot.snapshot.name;
+        let public = composition_program_key(program, &to_camel_case(name));
+        program_key_owners.claim(
+            &public,
+            &format!("program '{name}' ({})", program.payload.program_id),
+        )?;
+        independent_program_keys.insert(public);
+    }
     if let Some(alias) = config
         .program_module_imports
         .keys()
@@ -3808,6 +3840,13 @@ pub fn compile_composed_public_artifacts_v2(
                 }
                 continue;
             }
+            program_key_owners.claim(
+                &source,
+                &format!(
+                    "program '{}' ({})",
+                    program.idl_snapshot.snapshot.name, program.program_id
+                ),
+            )?;
             promoted_hashes.insert(source.clone(), hash);
             promoted_programs.push((source.clone(), live.alias.clone(), source));
         }
@@ -3832,6 +3871,10 @@ pub fn compile_composed_public_artifacts_v2(
         &config.program_module_imports,
         config.stack.gateway.as_ref(),
     );
+    ts_ident::check_module_declarations(
+        &session_definition,
+        &format!("The TypeScript session for stack '{}'", composed.name),
+    )?;
     Ok(TypeScriptCompositionOutput {
         name: composed.name,
         live_stacks: outputs,
@@ -3884,10 +3927,9 @@ fn generate_session_definition(
     gateway: Option<&serde_json::Value>,
 ) -> String {
     let manifest_pascal = safe_pascal_identifier(manifest_name);
-    let definition_name = format!(
-        "{}_SESSION_DEFINITION",
-        to_screaming_snake_case(&manifest_pascal)
-    );
+    let manifest_screaming =
+        ts_ident::identifier_stem(&manifest_pascal, IdentifierCase::ScreamingSnake);
+    let definition_name = format!("{manifest_screaming}_SESSION_DEFINITION");
     let imports = live_stacks
         .iter()
         .map(|live| {
@@ -4038,27 +4080,20 @@ export function create{manifest_pascal}Session(
         members = members,
         program_members = program_members,
         manifest_pascal = manifest_pascal,
-        manifest_screaming = to_screaming_snake_case(&manifest_pascal),
+        manifest_screaming = manifest_screaming,
     )
 }
 
-fn safe_pascal_identifier(value: &str) -> String {
-    let mut output = value
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .filter(|segment| !segment.is_empty())
-        .map(to_pascal_case)
-        .collect::<String>();
-    if output.is_empty() {
-        output.push_str("Manifest");
-    }
-    if output
+/// PascalCase stem for composition manifest names and aliases; a name without
+/// any letter or digit falls back to `Manifest`.
+pub fn safe_pascal_identifier(value: &str) -> String {
+    if !value
         .chars()
-        .next()
-        .is_some_and(|character| character.is_ascii_digit())
+        .any(|character| character.is_ascii_alphanumeric())
     {
-        output.insert(0, 'A');
+        return "Manifest".to_string();
     }
-    output
+    ts_ident::identifier_stem(value, IdentifierCase::Pascal)
 }
 
 fn typescript_module_name(alias: &str) -> String {
@@ -4254,13 +4289,18 @@ pub fn compile_program_modules(
     let stack_definition =
         generate_program_definitions(stack_name, &stack_spec.idls, &program_context);
 
-    Ok(TypeScriptStackOutput {
+    let output = TypeScriptStackOutput {
         imports,
         interfaces,
         stack_definition,
         warnings: instructions_codegen.warnings,
         pda_degradations: instructions_codegen.pda_degradations,
-    })
+    };
+    ts_ident::check_module_declarations(
+        &output.full_file(),
+        &format!("The TypeScript program SDK for '{stack_name}'"),
+    )?;
+    Ok(output)
 }
 
 /// Compile standalone program SDK modules directly from ProgramSpec artifacts.
@@ -4322,10 +4362,11 @@ fn generate_stack_definition_multi(
 ) -> Result<String, String> {
     let export_name = format!(
         "{}_{}",
-        to_screaming_snake_case(stack_name),
+        ts_ident::identifier_stem(stack_name, IdentifierCase::ScreamingSnake),
         config.export_const_name
     );
     let core_export_name = format!("{}_CORE", export_name);
+    let stack_type_prefix = ts_ident::identifier_stem(stack_name, IdentifierCase::Preserve);
 
     let view_helpers = generate_view_helpers_static();
 
@@ -4473,14 +4514,14 @@ fn generate_stack_definition_multi(
 
     let stack_export = format!(
         r#"export const {core_export_name} = {{
-  name: '{stack_kebab}',
+  name: {stack_kebab},
 {endpoints_block}{gateway_block}
   views: {{
 {views_body}
   }},{schemas_section}{patch_schemas_section}{programs_section}{program_reads_section}{addresses_section}
 }} as const;"#,
         core_export_name = core_export_name,
-        stack_kebab = stack_kebab,
+        stack_kebab = ts_ident::single_quoted(stack_kebab),
         endpoints_block = endpoints_block,
         gateway_block = gateway_block,
         views_body = views_body,
@@ -4498,19 +4539,20 @@ fn generate_stack_definition_multi(
 // Stack Definition
 // ============================================================================
 
-/** Stack definition for {stack_name} with {entity_count} entities */
+/** Stack definition for {stack_comment} with {entity_count} entities */
 {stack_export}
 
 /** Type alias for the core stack */
-export type {stack_name}CoreStack = typeof {core_export_name};
+export type {stack_type_prefix}CoreStack = typeof {core_export_name};
 
 /** Entity types in this stack */
-export type {stack_name}Entity = {entity_union};
+export type {stack_type_prefix}Entity = {entity_union};
 
 /** Default export for convenience */
 export default {core_export_name};"#,
         view_helpers = view_helpers,
-        stack_name = stack_name,
+        stack_comment = ts_ident::comment_text(stack_name),
+        stack_type_prefix = stack_type_prefix,
         entity_count = entities.len(),
         core_export_name = core_export_name,
         stack_export = stack_export,
@@ -4522,7 +4564,9 @@ export default {core_export_name};"#,
     ))
 }
 
-fn typescript_property_key(value: &str) -> String {
+/// Render `value` as an object property key, quoting it when it is not an
+/// identifier.
+pub fn typescript_property_key(value: &str) -> String {
     let mut characters = value.chars();
     let valid = characters
         .next()
@@ -4752,7 +4796,7 @@ fn generate_programs_block(idls: &[IdlSnapshot], context: &ProgramGenerationCont
 
         program_blocks.push(format!(
             "    {}: {{\n{}\n    }},",
-            program_key,
+            typescript_property_key(&program_key),
             sections.join("\n")
         ));
     }
@@ -4803,7 +4847,7 @@ fn generate_program_reads_block(
         .map(|(idl, metadata)| {
             format!(
                 "    {}: {{\n{}\n    }},",
-                to_camel_case(&idl.name),
+                typescript_property_key(&to_camel_case(&idl.name)),
                 generate_program_read_sections(metadata, "      ").join("\n")
             )
         })
@@ -4846,11 +4890,12 @@ fn generate_program_definitions(
 
     for (index, idl) in idls.iter().enumerate() {
         let (program_key, sections) = generate_single_program_sections(idl, index, context);
-        let const_name = to_screaming_snake_case(&idl.name);
+        let const_name = program_const_name(&idl.name);
+        let program_key = typescript_property_key(&program_key);
         let body = dedent_lines(&sections.join("\n"), 4);
         program_consts.push(format!(
             "/** Standalone program SDK for '{name}' */\nexport const {const_name} = {{\n{body}\n}} as const;",
-            name = idl.name,
+            name = ts_ident::comment_text(&idl.name),
             const_name = const_name,
             body = body,
         ));
@@ -4862,14 +4907,18 @@ fn generate_program_definitions(
         );
         program_read_consts.push(format!(
             "/** Release and explicit read transport for '{name}' */\nexport const {read_const_name} = {{\n{read_body}\n}} as const;",
-            name = idl.name,
+            name = ts_ident::comment_text(&idl.name),
         ));
         read_map_entries.push(format!("  {}: {},", program_key, read_const_name));
     }
 
-    let map_name = format!("{}_PROGRAMS", to_screaming_snake_case(stack_name));
-    let reads_map_name = format!("{}_PROGRAM_READS", to_screaming_snake_case(stack_name));
-    let type_name = format!("{}Programs", to_pascal_case(stack_name));
+    let stack_screaming = ts_ident::identifier_stem(stack_name, IdentifierCase::ScreamingSnake);
+    let map_name = format!("{stack_screaming}_PROGRAMS");
+    let reads_map_name = format!("{stack_screaming}_PROGRAM_READS");
+    let type_name = format!(
+        "{}Programs",
+        ts_ident::identifier_stem(stack_name, IdentifierCase::Pascal)
+    );
 
     format!(
         r#"// ============================================================================
@@ -4880,7 +4929,7 @@ fn generate_program_definitions(
 
 {program_read_consts}
 
-/** All portable programs from the {stack_name} stack */
+/** All portable programs from the {stack_comment} stack */
 export const {map_name} = {{
 {map_entries}
 }} as const;
@@ -4895,7 +4944,7 @@ export type {type_name} = typeof {map_name};
 export default {map_name};"#,
         program_consts = program_consts.join("\n\n"),
         program_read_consts = program_read_consts.join("\n\n"),
-        stack_name = stack_name,
+        stack_comment = ts_ident::comment_text(stack_name),
         map_name = map_name,
         map_entries = map_entries.join("\n"),
         reads_map_name = reads_map_name,
@@ -5010,7 +5059,7 @@ fn generate_stack_addresses_block(
         }
         blocks.push(format!(
             "    {}: {{\n{}\n    }},",
-            to_camel_case(&idl.name),
+            typescript_property_key(&to_camel_case(&idl.name)),
             entries.join("\n")
         ));
     }
@@ -5179,16 +5228,16 @@ function listView<T>(view: string): ViewDef<T, 'list'> {
     .to_string()
 }
 
-/// Convert PascalCase to SCREAMING_SNAKE_CASE (e.g., "OreStream" -> "ORE_STREAM")
-pub(crate) fn to_screaming_snake_case(s: &str) -> String {
-    let mut result = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if ch.is_uppercase() && i > 0 {
-            result.push('_');
-        }
-        result.push(ch.to_uppercase().next().unwrap());
-    }
-    result
+/// Key a program is registered under in `programs` / `programReads`
+/// (`ore`, `pumpAmm`).
+pub fn program_key(idl_name: &str) -> String {
+    to_camel_case(idl_name)
+}
+
+/// Name of the per-program constant (`ORE`, `PUMP_AMM`) that program-only
+/// modules export and CLI entry modules import.
+pub fn program_const_name(idl_name: &str) -> String {
+    ts_ident::identifier(idl_name, IdentifierCase::ScreamingSnake)
 }
 
 #[cfg(test)]

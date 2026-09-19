@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "input": {
+    "kind": "stack-manifest",
+    "hash": "arete:h1:stack-manifest:sha256:0b56e4f1682f5bf1751bdcf4ebc2fc1a0da215d8c2e77b0abc9ed2742328e50a"
+  },
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:a906e922c4a711b66a8cc08f30687718bf83267f6136d43ef14f4fc7efff31dd",
+  "extensions": null,
+  "artifacts": [
+    "token-balances-core.ts",
+    "token-balances.ts"
+  ]
+}

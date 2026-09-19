@@ -29,6 +29,7 @@ pub mod canonical_log;
 pub mod compiler;
 pub mod debugger;
 pub mod event_type_helpers;
+pub mod identifiers;
 pub mod metrics_context;
 pub mod program_sdk;
 pub mod proto_router;
