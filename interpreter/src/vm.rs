@@ -488,8 +488,22 @@ pub struct VmContext {
     last_lookup_index_miss: Option<String>,
     last_pda_registered: Option<String>,
     last_lookup_index_keys: Vec<String>,
+    /// Key-lookup misses of individual handler segments from the last
+    /// multi-segment handler run; drained by `process_event`.
+    segment_misses: Vec<SegmentMiss>,
     pending_pda_reprocess_updates: Vec<PendingAccountUpdate>,
     scheduled_callbacks: Vec<(u64, ScheduledCallback)>,
+}
+
+/// Event field that restricts a replayed event to one handler segment.
+const HANDLER_SEGMENT_FIELD: &str = "__handler_segment";
+
+/// A handler segment that could not resolve its key.
+#[derive(Debug)]
+struct SegmentMiss {
+    segment: usize,
+    pda_miss: Option<String>,
+    lookup_miss: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1341,6 +1355,7 @@ impl VmContext {
             last_lookup_index_miss: None,
             last_pda_registered: None,
             last_lookup_index_keys: Vec::new(),
+            segment_misses: Vec::new(),
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
         };
@@ -1420,6 +1435,7 @@ impl VmContext {
             last_lookup_index_miss: None,
             last_pda_registered: None,
             last_lookup_index_keys: Vec::new(),
+            segment_misses: Vec::new(),
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
         }
@@ -1447,6 +1463,7 @@ impl VmContext {
             last_lookup_index_miss: None,
             last_pda_registered: None,
             last_lookup_index_keys: Vec::new(),
+            segment_misses: Vec::new(),
             pending_pda_reprocess_updates: Vec::new(),
             scheduled_callbacks: Vec::new(),
         };
@@ -2246,103 +2263,37 @@ impl VmContext {
                         }
 
                         if mutations.is_empty() {
-                            // CPI events (suffix "CpiEvent") are transaction-scoped like instructions
-                            // (suffix "IxState") and should be queued the same way when PDA lookup fails.
-                            let is_tx_event =
-                                event_type.ends_with("IxState") || event_type.ends_with("CpiEvent");
-                            if let Some(missed_pda) = self.take_last_pda_lookup_miss() {
-                                if is_tx_event {
-                                    let slot = context.and_then(|c| c.slot).unwrap_or(0);
-                                    let signature = context
-                                        .and_then(|c| c.signature.clone())
-                                        .unwrap_or_default();
-                                    let _ = self.queue_instruction_event(
-                                        entity_bytecode.state_id,
-                                        QueuedInstructionEvent {
-                                            pda_address: missed_pda.clone(),
-                                            event_type: event_type.to_string(),
-                                            event_data: event_value.clone(),
-                                            slot,
-                                            signature,
-                                        },
-                                    );
-                                    self.emit_debug(|| VmDebugEvent::QueueAction {
-                                        entity_name: entity_name.clone(),
-                                        event_type: event_type.to_string(),
-                                        queue_kind: "instruction_pda_lookup_miss".to_string(),
-                                        lookup_value: missed_pda,
-                                    });
-                                } else {
-                                    // Queue account updates (e.g. BondingCurve) when PDA
-                                    // reverse lookup fails. These will be flushed when an
-                                    // instruction registers the PDA mapping via
-                                    // UpdateLookupIndex.
-                                    let slot = context.and_then(|c| c.slot).unwrap_or(0);
-                                    let signature = context
-                                        .and_then(|c| c.signature.clone())
-                                        .unwrap_or_default();
-                                    if let Some(write_version) =
-                                        context.and_then(|c| c.write_version)
-                                    {
-                                        let _ = self.queue_account_update(
-                                            entity_bytecode.state_id,
-                                            QueuedAccountUpdate {
-                                                pda_address: missed_pda.clone(),
-                                                account_type: event_type.to_string(),
-                                                account_data: event_value.clone(),
-                                                slot,
-                                                write_version,
-                                                signature,
-                                            },
-                                        );
-                                        self.emit_debug(|| VmDebugEvent::QueueAction {
-                                            entity_name: entity_name.clone(),
-                                            event_type: event_type.to_string(),
-                                            queue_kind: "account_pda_lookup_miss".to_string(),
-                                            lookup_value: missed_pda,
-                                        });
-                                    } else {
-                                        tracing::warn!(
-                                            event_type = %event_type,
-                                            "Dropping queued account update: write_version missing from context"
-                                        );
-                                    }
-                                }
+                            let missed_pda = self.take_last_pda_lookup_miss();
+                            let missed_lookup = self.take_last_lookup_index_miss();
+                            self.queue_missed_event(
+                                entity_bytecode.state_id,
+                                entity_name,
+                                event_type,
+                                &event_value,
+                                context,
+                                missed_pda,
+                                missed_lookup,
+                            );
+                        }
+
+                        // Independently keyed segments that missed their key
+                        // lookup are queued on their own, tagged so a replay
+                        // runs only that segment and never re-applies the
+                        // segments that already landed.
+                        for miss in std::mem::take(&mut self.segment_misses) {
+                            let mut segment_event = event_value.clone();
+                            if let Some(obj) = segment_event.as_object_mut() {
+                                obj.insert(HANDLER_SEGMENT_FIELD.to_string(), json!(miss.segment));
                             }
-                            if let Some(missed_lookup) = self.take_last_lookup_index_miss() {
-                                if !is_tx_event {
-                                    let slot = context.and_then(|c| c.slot).unwrap_or(0);
-                                    let signature = context
-                                        .and_then(|c| c.signature.clone())
-                                        .unwrap_or_default();
-                                    if let Some(write_version) =
-                                        context.and_then(|c| c.write_version)
-                                    {
-                                        let _ = self.queue_account_update(
-                                            entity_bytecode.state_id,
-                                            QueuedAccountUpdate {
-                                                pda_address: missed_lookup.clone(),
-                                                account_type: event_type.to_string(),
-                                                account_data: event_value.clone(),
-                                                slot,
-                                                write_version,
-                                                signature,
-                                            },
-                                        );
-                                        self.emit_debug(|| VmDebugEvent::QueueAction {
-                                            entity_name: entity_name.clone(),
-                                            event_type: event_type.to_string(),
-                                            queue_kind: "account_lookup_index_miss".to_string(),
-                                            lookup_value: missed_lookup,
-                                        });
-                                    } else {
-                                        tracing::trace!(
-                                            event_type = %event_type,
-                                            "Discarding lookup_index_miss for tx-scoped event (IxState/CpiEvent do not use lookup-index queuing)"
-                                        );
-                                    }
-                                }
-                            }
+                            self.queue_missed_event(
+                                entity_bytecode.state_id,
+                                entity_name,
+                                event_type,
+                                &segment_event,
+                                context,
+                                miss.pda_miss,
+                                miss.lookup_miss,
+                            );
                         }
 
                         all_mutations.extend(mutations);
@@ -2484,6 +2435,42 @@ impl VmContext {
                             );
                         }
                         for lookup_key in lookup_keys {
+                            let pending_events = self.flush_pending_instruction_events(
+                                entity_bytecode.state_id,
+                                &lookup_key,
+                            );
+                            let pending_count = pending_events.len();
+                            if pending_count > 0 {
+                                self.emit_debug(|| VmDebugEvent::FlushAction {
+                                    entity_name: entity_name.clone(),
+                                    event_type: event_type.to_string(),
+                                    flush_kind: "pending_instruction_events".to_string(),
+                                    trigger: lookup_key.clone(),
+                                    count: pending_count,
+                                });
+                            }
+                            for pending in pending_events {
+                                if let Some(pending_handler) =
+                                    entity_bytecode.handlers.get(&pending.event_type)
+                                {
+                                    let previous_context =
+                                        self.current_context.replace(pending.context.clone());
+                                    let reprocessed = self.execute_handler(
+                                        pending_handler,
+                                        &pending.event_data,
+                                        &pending.event_type,
+                                        entity_bytecode.state_id,
+                                        entity_name,
+                                        entity_bytecode.computed_fields_evaluator.as_ref(),
+                                        Some(&entity_bytecode.non_emitted_fields),
+                                    );
+                                    self.current_context = previous_context;
+                                    if let Ok(reprocessed_mutations) = reprocessed {
+                                        all_mutations.extend(reprocessed_mutations);
+                                    }
+                                }
+                            }
+
                             if let Ok(pending_updates) =
                                 self.flush_pending_updates(entity_bytecode.state_id, &lookup_key)
                             {
@@ -2600,6 +2587,129 @@ impl VmContext {
         Ok(all_mutations)
     }
 
+    /// Queue an event whose handler could not resolve its key, so it can be
+    /// replayed once the missing PDA mapping or lookup index entry appears.
+    #[allow(clippy::too_many_arguments)]
+    fn queue_missed_event(
+        &mut self,
+        state_id: u32,
+        entity_name: &str,
+        event_type: &str,
+        event_value: &Value,
+        context: Option<&UpdateContext>,
+        missed_pda: Option<String>,
+        missed_lookup: Option<String>,
+    ) {
+        // CPI events (suffix "CpiEvent") are transaction-scoped like instructions
+        // (suffix "IxState") and should be queued the same way when PDA lookup fails.
+        let is_tx_event = event_type.ends_with("IxState") || event_type.ends_with("CpiEvent");
+        if let Some(missed_pda) = missed_pda {
+            if is_tx_event {
+                let slot = context.and_then(|c| c.slot).unwrap_or(0);
+                let signature = context
+                    .and_then(|c| c.signature.clone())
+                    .unwrap_or_default();
+                let _ = self.queue_instruction_event(
+                    state_id,
+                    QueuedInstructionEvent {
+                        pda_address: missed_pda.clone(),
+                        event_type: event_type.to_string(),
+                        event_data: event_value.clone(),
+                        slot,
+                        signature,
+                    },
+                );
+                self.emit_debug(|| VmDebugEvent::QueueAction {
+                    entity_name: entity_name.to_string(),
+                    event_type: event_type.to_string(),
+                    queue_kind: "instruction_pda_lookup_miss".to_string(),
+                    lookup_value: missed_pda,
+                });
+            } else {
+                // Queue account updates (e.g. BondingCurve) when PDA
+                // reverse lookup fails. These will be flushed when an
+                // instruction registers the PDA mapping via
+                // UpdateLookupIndex.
+                let slot = context.and_then(|c| c.slot).unwrap_or(0);
+                let signature = context
+                    .and_then(|c| c.signature.clone())
+                    .unwrap_or_default();
+                if let Some(write_version) = context.and_then(|c| c.write_version) {
+                    let _ = self.queue_account_update(
+                        state_id,
+                        QueuedAccountUpdate {
+                            pda_address: missed_pda.clone(),
+                            account_type: event_type.to_string(),
+                            account_data: event_value.clone(),
+                            slot,
+                            write_version,
+                            signature,
+                        },
+                    );
+                    self.emit_debug(|| VmDebugEvent::QueueAction {
+                        entity_name: entity_name.to_string(),
+                        event_type: event_type.to_string(),
+                        queue_kind: "account_pda_lookup_miss".to_string(),
+                        lookup_value: missed_pda,
+                    });
+                } else {
+                    tracing::warn!(
+                        event_type = %event_type,
+                        "Dropping queued account update: write_version missing from context"
+                    );
+                }
+            }
+        }
+        if let Some(missed_lookup) = missed_lookup {
+            if is_tx_event {
+                let slot = context.and_then(|c| c.slot).unwrap_or(0);
+                let signature = context
+                    .and_then(|c| c.signature.clone())
+                    .unwrap_or_default();
+                let _ = self.queue_instruction_event(
+                    state_id,
+                    QueuedInstructionEvent {
+                        pda_address: missed_lookup.clone(),
+                        event_type: event_type.to_string(),
+                        event_data: event_value.clone(),
+                        slot,
+                        signature,
+                    },
+                );
+                self.emit_debug(|| VmDebugEvent::QueueAction {
+                    entity_name: entity_name.to_string(),
+                    event_type: event_type.to_string(),
+                    queue_kind: "instruction_lookup_index_miss".to_string(),
+                    lookup_value: missed_lookup,
+                });
+            } else {
+                let slot = context.and_then(|c| c.slot).unwrap_or(0);
+                let signature = context
+                    .and_then(|c| c.signature.clone())
+                    .unwrap_or_default();
+                if let Some(write_version) = context.and_then(|c| c.write_version) {
+                    let _ = self.queue_account_update(
+                        state_id,
+                        QueuedAccountUpdate {
+                            pda_address: missed_lookup.clone(),
+                            account_type: event_type.to_string(),
+                            account_data: event_value.clone(),
+                            slot,
+                            write_version,
+                            signature,
+                        },
+                    );
+                    self.emit_debug(|| VmDebugEvent::QueueAction {
+                        entity_name: entity_name.to_string(),
+                        event_type: event_type.to_string(),
+                        queue_kind: "account_lookup_index_miss".to_string(),
+                        lookup_value: missed_lookup,
+                    });
+                }
+            }
+        }
+    }
+
     pub fn process_any(
         &mut self,
         bytecode: &MultiEntityBytecode,
@@ -2631,8 +2741,82 @@ impl VmContext {
         >,
         non_emitted_fields: Option<&HashSet<String>>,
     ) -> Result<Vec<Mutation>> {
-        self.reset_registers();
         self.last_pda_lookup_miss = None;
+        self.segment_misses.clear();
+
+        if !handler
+            .iter()
+            .any(|op| matches!(op, OpCode::SegmentBoundary))
+        {
+            return self.execute_handler_segment(
+                handler,
+                event_value,
+                event_type,
+                override_state_id,
+                entity_name,
+                entity_evaluator,
+                non_emitted_fields,
+            );
+        }
+
+        // One event feeds several independently keyed segments (for example an
+        // instruction that updates two instances of the same entity through two
+        // different accounts). Each segment resolves its own key, reads and
+        // writes its own entity instance, and emits its own mutation; an early
+        // exit in one segment (null key, stale or duplicate update) must not
+        // skip the others. A segment whose key lookup misses is recorded on
+        // its own so only that segment is queued and replayed.
+        let only_segment = event_value
+            .get(HANDLER_SEGMENT_FIELD)
+            .and_then(Value::as_u64)
+            .map(|segment| segment as usize);
+        let mut output = Vec::new();
+        let mut misses = Vec::new();
+        for (index, segment) in handler
+            .split(|op| matches!(op, OpCode::SegmentBoundary))
+            .enumerate()
+        {
+            if only_segment.is_some_and(|only| only != index) {
+                continue;
+            }
+            let mutations = self.execute_handler_segment(
+                segment,
+                event_value,
+                event_type,
+                override_state_id,
+                entity_name,
+                entity_evaluator,
+                non_emitted_fields,
+            )?;
+            let pda_miss = self.last_pda_lookup_miss.take();
+            let lookup_miss = self.last_lookup_index_miss.take();
+            if mutations.is_empty() && (pda_miss.is_some() || lookup_miss.is_some()) {
+                misses.push(SegmentMiss {
+                    segment: index,
+                    pda_miss,
+                    lookup_miss,
+                });
+            }
+            output.extend(mutations);
+        }
+        self.segment_misses = misses;
+        Ok(output)
+    }
+
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+    fn execute_handler_segment(
+        &mut self,
+        handler: &[OpCode],
+        event_value: &Value,
+        event_type: &str,
+        override_state_id: u32,
+        entity_name: &str,
+        entity_evaluator: Option<
+            &Box<dyn Fn(&mut Value, Option<u64>, i64) -> ComputedEvaluatorResult + Send + Sync>,
+        >,
+        non_emitted_fields: Option<&HashSet<String>>,
+    ) -> Result<Vec<Mutation>> {
+        self.reset_registers();
 
         let mut pc: usize = 0;
         let mut output = Vec::new();
@@ -3864,6 +4048,11 @@ impl VmContext {
                         }
                     }
 
+                    pc += 1;
+                }
+                OpCode::SegmentBoundary => {
+                    // `execute_handler` splits handlers at boundaries, so a
+                    // segment never contains one; treat it as a no-op.
                     pc += 1;
                 }
             }

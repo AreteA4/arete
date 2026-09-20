@@ -10,6 +10,87 @@ fn stop_field_path(target_path: &str) -> String {
     format!("__stop:{}", target_path)
 }
 
+/// One independently keyed handler program for an event type.
+struct HandlerSegment {
+    /// Canonical encoding of the key-loading opcodes of the handlers merged
+    /// into this segment. `None` for segments created from an instruction hook
+    /// alone.
+    key_identity: Option<Value>,
+    /// The event field this segment routes by, used to attach instruction
+    /// hooks to the segment that shares their `lookup_by`.
+    route_field: Option<FieldPath>,
+    ops: Vec<OpCode>,
+}
+
+/// The event field a key resolution strategy routes by, if any.
+fn route_field(resolution: &KeyResolutionStrategy) -> Option<FieldPath> {
+    let field = match resolution {
+        KeyResolutionStrategy::Embedded { primary_field }
+        | KeyResolutionStrategy::Lookup { primary_field }
+        | KeyResolutionStrategy::Computed { primary_field, .. } => primary_field,
+        KeyResolutionStrategy::TemporalLookup { lookup_field, .. } => lookup_field,
+    };
+    (!field.segments.is_empty()).then(|| field.clone())
+}
+
+/// Merge the mapping opcodes of `new` into `existing`, which resolve the same
+/// key: keep the setup (key loading and state read) of `existing`, append the
+/// mappings of both, and keep one teardown (state write and mutation).
+fn merge_handler_opcodes(existing: &mut Vec<OpCode>, new: &[OpCode]) {
+    // Split existing handler into: setup, mappings, teardown
+    let mut existing_setup = Vec::new();
+    let mut existing_mappings = Vec::new();
+    let mut existing_teardown = Vec::new();
+    let mut section = 0; // 0=setup, 1=mappings, 2=teardown
+
+    for opcode in existing.iter() {
+        match opcode {
+            OpCode::ReadOrInitState { .. } => {
+                existing_setup.push(opcode.clone());
+                section = 1; // Next opcodes are mappings
+            }
+            OpCode::UpdateState { .. } => {
+                existing_teardown.push(opcode.clone());
+                section = 2; // Next opcodes are teardown
+            }
+            OpCode::EmitMutation { .. } => {
+                existing_teardown.push(opcode.clone());
+            }
+            _ if section == 0 => existing_setup.push(opcode.clone()),
+            _ if section == 1 => existing_mappings.push(opcode.clone()),
+            _ => existing_teardown.push(opcode.clone()),
+        }
+    }
+
+    // Extract mappings from new handler (skip setup and teardown)
+    let mut new_mappings = Vec::new();
+    section = 0;
+
+    for opcode in new.iter() {
+        match opcode {
+            OpCode::ReadOrInitState { .. } => {
+                section = 1; // Start capturing mappings
+            }
+            OpCode::UpdateState { .. } | OpCode::EmitMutation { .. } => {
+                section = 2; // Stop capturing
+            }
+            _ if section == 1 => {
+                new_mappings.push(opcode.clone());
+            }
+            _ => {} // Skip setup and teardown from new handler
+        }
+    }
+
+    // Rebuild: setup + existing_mappings + new_mappings + teardown
+    let mut merged = Vec::new();
+    merged.extend(existing_setup);
+    merged.extend(existing_mappings);
+    merged.extend(new_mappings);
+    merged.extend(existing_teardown);
+
+    *existing = merged;
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum OpCode {
     /// Abort the handler with empty mutations when the key register is null
@@ -229,6 +310,15 @@ pub enum OpCode {
         pda_address: Register,
         primary_key: Register,
     },
+    /// Separates independently keyed handler segments for one event type.
+    ///
+    /// When one event updates the same entity through different keys (for
+    /// example `split_position` touching both its `first_position` and its
+    /// `second_position`), each key gets its own segment: its own key loading,
+    /// state read, mappings, state write and mutation. The VM runs segments in
+    /// order and isolates them, so an early exit in one segment never skips
+    /// another. Handlers with a single key never contain a boundary.
+    SegmentBoundary,
 }
 
 pub struct EntityBytecode {
@@ -602,7 +692,6 @@ impl<S> TypedCompiler<S> {
     }
 
     fn compile_entity(&self) -> EntityBytecode {
-        let mut handlers: HashMap<String, Vec<OpCode>> = HashMap::new();
         let mut when_events: HashSet<String> = HashSet::new();
         let mut emit_by_path: HashMap<String, bool> = HashMap::new();
 
@@ -633,6 +722,13 @@ impl<S> TypedCompiler<S> {
         //     }
         // }
 
+        // Handlers for one event type are grouped into independently keyed
+        // segments. Two handlers merge only when their key resolution compiles
+        // to identical opcodes; a handler that resolves its key differently
+        // (e.g. `split_position` via `first_position` vs `second_position`)
+        // gets its own segment so each update lands on its own entity.
+        let mut segments: HashMap<String, Vec<HandlerSegment>> = HashMap::new();
+
         for handler_spec in &self.spec.handlers {
             for mapping in &handler_spec.mappings {
                 if let Some(when) = &mapping.when {
@@ -650,131 +746,67 @@ impl<S> TypedCompiler<S> {
             }
             let opcodes = self.compile_handler(handler_spec);
             let event_type = self.get_event_type(&handler_spec.source);
+            let key_identity = self.key_identity(handler_spec);
 
-            if let Some(existing_opcodes) = handlers.get_mut(&event_type) {
-                // Merge strategy: Take ALL operations from BOTH handlers
-                // Keep setup from first, combine all mappings, keep one teardown
-
-                // Split existing handler into: setup, mappings, teardown
-                let mut existing_setup = Vec::new();
-                let mut existing_mappings = Vec::new();
-                let mut existing_teardown = Vec::new();
-                let mut section = 0; // 0=setup, 1=mappings, 2=teardown
-
-                for opcode in existing_opcodes.iter() {
-                    match opcode {
-                        OpCode::ReadOrInitState { .. } => {
-                            existing_setup.push(opcode.clone());
-                            section = 1; // Next opcodes are mappings
-                        }
-                        OpCode::UpdateState { .. } => {
-                            existing_teardown.push(opcode.clone());
-                            section = 2; // Next opcodes are teardown
-                        }
-                        OpCode::EmitMutation { .. } => {
-                            existing_teardown.push(opcode.clone());
-                        }
-                        _ if section == 0 => existing_setup.push(opcode.clone()),
-                        _ if section == 1 => existing_mappings.push(opcode.clone()),
-                        _ => existing_teardown.push(opcode.clone()),
-                    }
-                }
-
-                // Extract mappings from new handler (skip setup and teardown)
-                let mut new_mappings = Vec::new();
-                section = 0;
-
-                for opcode in opcodes.iter() {
-                    match opcode {
-                        OpCode::ReadOrInitState { .. } => {
-                            section = 1; // Start capturing mappings
-                        }
-                        OpCode::UpdateState { .. } | OpCode::EmitMutation { .. } => {
-                            section = 2; // Stop capturing
-                        }
-                        _ if section == 1 => {
-                            new_mappings.push(opcode.clone());
-                        }
-                        _ => {} // Skip setup and teardown from new handler
-                    }
-                }
-
-                // Rebuild: setup + existing_mappings + new_mappings + teardown
-                let mut merged = Vec::new();
-                merged.extend(existing_setup);
-                merged.extend(existing_mappings);
-                merged.extend(new_mappings.clone());
-                merged.extend(existing_teardown);
-
-                *existing_opcodes = merged;
+            let event_segments = segments.entry(event_type).or_default();
+            if let Some(existing) = event_segments
+                .iter_mut()
+                .find(|segment| segment.key_identity.as_ref() == Some(&key_identity))
+            {
+                merge_handler_opcodes(&mut existing.ops, &opcodes);
             } else {
-                handlers.insert(event_type, opcodes);
+                event_segments.push(HandlerSegment {
+                    key_identity: Some(key_identity),
+                    route_field: route_field(&handler_spec.key_resolution),
+                    ops: opcodes,
+                });
             }
         }
 
         // Process instruction_hooks to add SetField/IncrementField operations
         for hook in &self.spec.instruction_hooks {
             let event_type = hook.instruction_type.clone();
+            let event_segments = segments.entry(event_type).or_default();
 
-            let handler_opcodes = handlers.entry(event_type.clone()).or_insert_with(|| {
-                let key_reg = 20;
-                let state_reg = 2;
-                let resolved_key_reg = 19;
-                let temp_reg = 18;
-
-                let mut ops = Vec::new();
-
-                // First, try to load __resolved_primary_key from resolver
-                ops.push(OpCode::LoadEventField {
-                    path: FieldPath::new(&["__resolved_primary_key"]),
-                    dest: resolved_key_reg,
-                    default: Some(serde_json::json!(null)),
-                });
-
-                // Copy to key_reg (unconditionally, may be null)
-                ops.push(OpCode::CopyRegister {
-                    source: resolved_key_reg,
-                    dest: key_reg,
-                });
-
-                // If hook has lookup_by, use it to load primary key from instruction accounts
-                if let Some(lookup_path) = &hook.lookup_by {
-                    // Load the primary key from the instruction's lookup_by field (e.g., accounts.signer)
-                    ops.push(OpCode::LoadEventField {
-                        path: lookup_path.clone(),
-                        dest: temp_reg,
-                        default: None,
+            // A hook joins the segment that routes by its own `lookup_by` field.
+            // Hooks without `lookup_by` (PDA registrations, conditional
+            // aggregates) join the first segment. A hook whose `lookup_by`
+            // matches no segment gets its own segment keyed by that field
+            // instead of silently riding another segment's key.
+            let segment_index = match &hook.lookup_by {
+                None if !event_segments.is_empty() => Some(0),
+                None => None,
+                Some(lookup_by) => event_segments
+                    .iter()
+                    .position(|segment| segment.route_field.as_ref() == Some(lookup_by)),
+            };
+            let segment_index = match segment_index {
+                Some(index) => index,
+                None => {
+                    // Next to handlers that route differently, resolve the
+                    // hook's own key the way a handler would: directly for a
+                    // primary-key field, through the lookup index otherwise.
+                    // A hook alone keeps the historical direct-key segment.
+                    let resolution = if event_segments.is_empty() {
+                        None
+                    } else {
+                        hook.lookup_by
+                            .as_ref()
+                            .and_then(|lookup_by| self.hook_key_resolution(lookup_by))
+                    };
+                    let ops = match resolution {
+                        Some(resolution) => self.compile_keyed_hook_segment(&resolution),
+                        None => self.compile_hook_segment(hook),
+                    };
+                    event_segments.push(HandlerSegment {
+                        key_identity: None,
+                        route_field: hook.lookup_by.clone(),
+                        ops,
                     });
-
-                    // Apply HexEncode transformation (accounts are byte arrays)
-                    ops.push(OpCode::Transform {
-                        source: temp_reg,
-                        dest: temp_reg,
-                        transformation: Transformation::HexEncode,
-                    });
-
-                    // Use this as fallback if __resolved_primary_key was null
-                    ops.push(OpCode::CopyRegisterIfNull {
-                        source: temp_reg,
-                        dest: key_reg,
-                    });
+                    event_segments.len() - 1
                 }
-
-                ops.push(OpCode::ReadOrInitState {
-                    state_id: self.state_id,
-                    key: key_reg,
-                    default: serde_json::json!({}),
-                    dest: state_reg,
-                });
-
-                ops.push(OpCode::UpdateState {
-                    state_id: self.state_id,
-                    key: key_reg,
-                    value: state_reg,
-                });
-
-                ops
-            });
+            };
+            let handler_opcodes = &mut event_segments[segment_index].ops;
 
             // Generate opcodes for each action in the hook
             let hook_opcodes = self.compile_instruction_hook_actions(&hook.actions);
@@ -799,6 +831,20 @@ impl<S> TypedCompiler<S> {
             }
         }
 
+        let handlers: HashMap<String, Vec<OpCode>> = segments
+            .into_iter()
+            .map(|(event_type, event_segments)| {
+                let mut ops = Vec::new();
+                for (index, segment) in event_segments.into_iter().enumerate() {
+                    if index > 0 {
+                        ops.push(OpCode::SegmentBoundary);
+                    }
+                    ops.extend(segment.ops);
+                }
+                (event_type, ops)
+            })
+            .collect();
+
         let non_emitted_fields: HashSet<String> = emit_by_path
             .into_iter()
             .filter_map(|(path, emit)| if emit { None } else { Some(path) })
@@ -813,6 +859,127 @@ impl<S> TypedCompiler<S> {
             computed_paths: self.spec.computed_fields.clone(),
             computed_fields_evaluator: None,
         }
+    }
+
+    /// Canonical encoding of the opcodes that resolve a handler's key. Two
+    /// handlers for the same event may share one state read/write only when
+    /// these are identical.
+    fn key_identity(&self, spec: &TypedHandlerSpec<S>) -> Value {
+        let key_reg = 20;
+        let ops = self.compile_key_loading(&spec.key_resolution, key_reg, &spec.mappings);
+        serde_json::to_value(&ops).unwrap_or(Value::Null)
+    }
+
+    /// How a hook's `lookup_by` field resolves the entity key: directly when
+    /// it names a primary-key field, through its lookup index when it names a
+    /// lookup-index field.
+    fn hook_key_resolution(&self, lookup_by: &FieldPath) -> Option<KeyResolutionStrategy> {
+        let leaf = lookup_by.segments.last()?;
+        let is_primary_key_field = self
+            .spec
+            .identity
+            .primary_keys
+            .iter()
+            .any(|pk| pk.rsplit('.').next() == Some(leaf.as_str()));
+        if is_primary_key_field {
+            Some(KeyResolutionStrategy::Embedded {
+                primary_field: lookup_by.clone(),
+            })
+        } else if self.find_lookup_index_for_field(lookup_by).is_some() {
+            Some(KeyResolutionStrategy::Lookup {
+                primary_field: lookup_by.clone(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Segment for an instruction hook that routes by its own resolved key:
+    /// key loading, state read and state write. Hook actions are inserted
+    /// before the state write by the caller.
+    fn compile_keyed_hook_segment(&self, resolution: &KeyResolutionStrategy) -> Vec<OpCode> {
+        let key_reg = 20;
+        let state_reg = 2;
+        let mut ops = self.compile_key_loading(resolution, key_reg, &[]);
+        ops.push(OpCode::AbortIfNullKey {
+            key: key_reg,
+            is_account_event: false,
+        });
+        ops.push(OpCode::ReadOrInitState {
+            state_id: self.state_id,
+            key: key_reg,
+            default: serde_json::json!({}),
+            dest: state_reg,
+        });
+        ops.push(OpCode::UpdateState {
+            state_id: self.state_id,
+            key: key_reg,
+            value: state_reg,
+        });
+        ops
+    }
+
+    /// Standalone segment for an instruction hook: key from the resolver or
+    /// the hook's `lookup_by` field, then state read and write. Hook actions are
+    /// inserted before the state write by the caller.
+    fn compile_hook_segment(&self, hook: &InstructionHook) -> Vec<OpCode> {
+        let key_reg = 20;
+        let state_reg = 2;
+        let resolved_key_reg = 19;
+        let temp_reg = 18;
+
+        let mut ops = Vec::new();
+
+        // First, try to load __resolved_primary_key from resolver
+        ops.push(OpCode::LoadEventField {
+            path: FieldPath::new(&["__resolved_primary_key"]),
+            dest: resolved_key_reg,
+            default: Some(serde_json::json!(null)),
+        });
+
+        // Copy to key_reg (unconditionally, may be null)
+        ops.push(OpCode::CopyRegister {
+            source: resolved_key_reg,
+            dest: key_reg,
+        });
+
+        // If hook has lookup_by, use it to load primary key from instruction accounts
+        if let Some(lookup_path) = &hook.lookup_by {
+            // Load the primary key from the instruction's lookup_by field (e.g., accounts.signer)
+            ops.push(OpCode::LoadEventField {
+                path: lookup_path.clone(),
+                dest: temp_reg,
+                default: None,
+            });
+
+            // Apply HexEncode transformation (accounts are byte arrays)
+            ops.push(OpCode::Transform {
+                source: temp_reg,
+                dest: temp_reg,
+                transformation: Transformation::HexEncode,
+            });
+
+            // Use this as fallback if __resolved_primary_key was null
+            ops.push(OpCode::CopyRegisterIfNull {
+                source: temp_reg,
+                dest: key_reg,
+            });
+        }
+
+        ops.push(OpCode::ReadOrInitState {
+            state_id: self.state_id,
+            key: key_reg,
+            default: serde_json::json!({}),
+            dest: state_reg,
+        });
+
+        ops.push(OpCode::UpdateState {
+            state_id: self.state_id,
+            key: key_reg,
+            value: state_reg,
+        });
+
+        ops
     }
 
     fn compile_handler(&self, spec: &TypedHandlerSpec<S>) -> Vec<OpCode> {
@@ -2331,6 +2498,438 @@ mod tests {
         assert_eq!(mutations.len(), 1);
         assert_eq!(mutations[0].key, json!("treasury_pda"));
         assert_eq!(mutations[0].patch["id"]["address"], json!("treasury_pda"));
+    }
+
+    fn instruction_handler(
+        type_name: &str,
+        key_resolution: KeyResolutionStrategy,
+        mappings: Vec<SerializableFieldMapping>,
+    ) -> SerializableHandlerSpec {
+        SerializableHandlerSpec {
+            source: SourceSpec::Source {
+                program_id: None,
+                discriminator: None,
+                type_name: type_name.to_string(),
+                serialization: None,
+                is_account: false,
+            },
+            key_resolution,
+            mappings,
+            conditions: vec![],
+            emit: true,
+        }
+    }
+
+    /// `split_position` updates two positions: the source (`first_position`)
+    /// and the child (`second_position`). Mirrors the meteora-damm
+    /// `MeteoraPosition` shape: one Count per side plus a derive_from hook on
+    /// the source side.
+    fn split_position_spec() -> TypedStreamSpec<Value> {
+        let embedded = |field: &str| KeyResolutionStrategy::Embedded {
+            primary_field: FieldPath::new(&["accounts", field]),
+        };
+        TypedStreamSpec::from_serializable(SerializableStreamSpec {
+            ast_version: crate::ast::CURRENT_AST_VERSION.to_string(),
+            state_name: "Position".to_string(),
+            program_id: None,
+            idl: None,
+            identity: IdentitySpec {
+                primary_keys: vec!["id.position_address".to_string()],
+                lookup_indexes: vec![],
+            },
+            handlers: vec![
+                instruction_handler(
+                    "amm::SplitPositionIxState",
+                    embedded("first_position"),
+                    vec![
+                        mapping(
+                            "id.position_address",
+                            &["accounts", "first_position"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                        mapping(
+                            "activity.split_source_count",
+                            &["data"],
+                            PopulationStrategy::Count,
+                        ),
+                    ],
+                ),
+                instruction_handler(
+                    "amm::SplitPositionIxState",
+                    embedded("second_position"),
+                    vec![
+                        mapping(
+                            "id.position_address",
+                            &["accounts", "second_position"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                        mapping(
+                            "activity.split_child_count",
+                            &["data"],
+                            PopulationStrategy::Count,
+                        ),
+                    ],
+                ),
+            ],
+            sections: vec![],
+            field_mappings: BTreeMap::new(),
+            resolver_hooks: vec![],
+            instruction_hooks: vec![InstructionHook {
+                instruction_type: "amm::SplitPositionIxState".to_string(),
+                actions: vec![HookAction::SetField {
+                    target_field: "activity.last_split_source_slot".to_string(),
+                    source: MappingSource::FromSource {
+                        path: FieldPath::new(&["data", "slot"]),
+                        default: None,
+                        transform: None,
+                    },
+                    condition: None,
+                }],
+                lookup_by: Some(FieldPath::new(&["accounts", "first_position"])),
+            }],
+            resolver_specs: vec![],
+            computed_fields: vec![],
+            computed_field_specs: vec![],
+            content_hash: None,
+            views: vec![],
+        })
+    }
+
+    fn split_position_event(first: &str, second: &str) -> Value {
+        json!({
+            "accounts": { "first_position": first, "second_position": second },
+            "data": { "slot": 77 },
+        })
+    }
+
+    #[test]
+    fn one_instruction_routes_each_key_to_its_own_entity() {
+        let bytecode =
+            MultiEntityBytecode::from_single("Position".to_string(), split_position_spec(), 0);
+        let mut vm = VmContext::new();
+
+        for _ in 0..2 {
+            vm.process_event(
+                &bytecode,
+                split_position_event("source_pos", "child_pos"),
+                "amm::SplitPositionIxState",
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        vm.process_event(
+            &bytecode,
+            split_position_event("child_pos", "grandchild_pos"),
+            "amm::SplitPositionIxState",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let state = |key: &str| vm.get_entity_state(0, &json!(key)).unwrap();
+
+        let source = state("source_pos");
+        assert_eq!(source["id"]["position_address"], json!("source_pos"));
+        assert_eq!(source["activity"]["split_source_count"], json!(2));
+        assert_eq!(source["activity"].get("split_child_count"), None);
+        assert_eq!(source["activity"]["last_split_source_slot"], json!(77));
+
+        // The child was split into once and split from once.
+        let child = state("child_pos");
+        assert_eq!(child["id"]["position_address"], json!("child_pos"));
+        assert_eq!(child["activity"]["split_child_count"], json!(2));
+        assert_eq!(child["activity"]["split_source_count"], json!(1));
+        assert_eq!(child["activity"]["last_split_source_slot"], json!(77));
+
+        let grandchild = state("grandchild_pos");
+        assert_eq!(grandchild["activity"]["split_child_count"], json!(1));
+        assert_eq!(grandchild["activity"].get("split_source_count"), None);
+        assert_eq!(grandchild["activity"].get("last_split_source_slot"), None);
+    }
+
+    #[test]
+    fn one_instruction_emits_one_mutation_per_key() {
+        let bytecode =
+            MultiEntityBytecode::from_single("Position".to_string(), split_position_spec(), 0);
+        let mut vm = VmContext::new();
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                split_position_event("source_pos", "child_pos"),
+                "amm::SplitPositionIxState",
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(mutations.len(), 2);
+        assert_eq!(mutations[0].key, json!("source_pos"));
+        assert_eq!(
+            mutations[0].patch["activity"]["split_source_count"],
+            json!(1)
+        );
+        assert_eq!(
+            mutations[0].patch["activity"]["last_split_source_slot"],
+            json!(77)
+        );
+        assert_eq!(
+            mutations[0].patch["activity"].get("split_child_count"),
+            None
+        );
+        assert_eq!(mutations[1].key, json!("child_pos"));
+        assert_eq!(
+            mutations[1].patch["activity"]["split_child_count"],
+            json!(1)
+        );
+        assert_eq!(
+            mutations[1].patch["activity"].get("split_source_count"),
+            None
+        );
+    }
+
+    #[test]
+    fn handlers_with_identical_keys_still_merge_into_one_segment() {
+        let mut spec = split_position_spec();
+        spec.instruction_hooks.clear();
+        // Re-key the second handler by `first_position`: both now resolve the
+        // same key and must share a single state read/write.
+        spec.handlers[1].key_resolution = KeyResolutionStrategy::Embedded {
+            primary_field: FieldPath::new(&["accounts", "first_position"]),
+        };
+        let bytecode = MultiEntityBytecode::from_single("Position".to_string(), spec, 0);
+        let handler = &bytecode.entities["Position"].handlers["amm::SplitPositionIxState"];
+
+        assert!(!handler
+            .iter()
+            .any(|op| matches!(op, super::OpCode::SegmentBoundary)));
+        assert_eq!(
+            handler
+                .iter()
+                .filter(|op| matches!(op, super::OpCode::ReadOrInitState { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn hook_without_a_matching_key_gets_its_own_segment() {
+        let mut spec = split_position_spec();
+        spec.handlers.truncate(1);
+        spec.handlers[0].key_resolution = KeyResolutionStrategy::Embedded {
+            primary_field: FieldPath::new(&["accounts", "second_position"]),
+        };
+        spec.handlers[0].mappings[0] = crate::ast::TypedFieldMapping::from_serializable(mapping(
+            "id.position_address",
+            &["accounts", "second_position"],
+            PopulationStrategy::SetOnce,
+        ));
+        let bytecode = MultiEntityBytecode::from_single("Position".to_string(), spec, 0);
+        let mut vm = VmContext::new();
+
+        vm.process_event(
+            &bytecode,
+            split_position_event("source_pos", "child_pos"),
+            "amm::SplitPositionIxState",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // The hook routes by `first_position`, not by the handler's key.
+        let source = vm.get_entity_state(0, &json!("source_pos")).unwrap();
+        assert_eq!(source["activity"]["last_split_source_slot"], json!(77));
+        let child = vm.get_entity_state(0, &json!("child_pos")).unwrap();
+        assert_eq!(child["activity"].get("last_split_source_slot"), None);
+    }
+
+    /// Index positions by owner through a `PositionState` account handler.
+    fn add_owner_index(spec: &mut TypedStreamSpec<Value>) {
+        spec.identity.lookup_indexes.push(LookupIndexSpec {
+            field_name: "id.owner".to_string(),
+            temporal_field: None,
+        });
+        spec.handlers
+            .push(crate::ast::TypedHandlerSpec::from_serializable(
+                SerializableHandlerSpec {
+                    source: SourceSpec::Source {
+                        program_id: None,
+                        discriminator: None,
+                        type_name: "amm::PositionState".to_string(),
+                        serialization: None,
+                        is_account: true,
+                    },
+                    key_resolution: KeyResolutionStrategy::Embedded {
+                        primary_field: FieldPath::new(&["__account_address"]),
+                    },
+                    mappings: vec![
+                        mapping(
+                            "id.position_address",
+                            &["__account_address"],
+                            PopulationStrategy::SetOnce,
+                        ),
+                        mapping("id.owner", &["owner"], PopulationStrategy::SetOnce),
+                    ],
+                    conditions: vec![],
+                    emit: true,
+                },
+            ));
+    }
+
+    fn index_owner(
+        vm: &mut VmContext,
+        bytecode: &MultiEntityBytecode,
+        position: &str,
+        owner: &str,
+    ) {
+        vm.process_event(
+            bytecode,
+            json!({ "__account_address": position, "owner": owner }),
+            "amm::PositionState",
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn unmatched_hook_next_to_other_keys_resolves_lookup_index_fields() {
+        let mut spec = split_position_spec();
+        spec.handlers.truncate(1);
+        spec.handlers[0].key_resolution = KeyResolutionStrategy::Embedded {
+            primary_field: FieldPath::new(&["accounts", "second_position"]),
+        };
+        spec.handlers[0].mappings[0] = crate::ast::TypedFieldMapping::from_serializable(mapping(
+            "id.position_address",
+            &["accounts", "second_position"],
+            PopulationStrategy::SetOnce,
+        ));
+        add_owner_index(&mut spec);
+        // The hook routes by the owner, a lookup-index field.
+        spec.instruction_hooks[0].lookup_by = Some(FieldPath::new(&["accounts", "owner"]));
+
+        let bytecode = MultiEntityBytecode::from_single("Position".to_string(), spec, 0);
+        let mut vm = VmContext::new();
+        index_owner(&mut vm, &bytecode, "source_pos", "owner_1");
+        vm.process_event(
+            &bytecode,
+            json!({
+                "accounts": {
+                    "first_position": "source_pos",
+                    "second_position": "child_pos",
+                    "owner": "owner_1",
+                },
+                "data": { "slot": 77 },
+            }),
+            "amm::SplitPositionIxState",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let source = vm.get_entity_state(0, &json!("source_pos")).unwrap();
+        assert_eq!(source["activity"]["last_split_source_slot"], json!(77));
+        assert!(vm.get_entity_state(0, &json!("owner_1")).is_none());
+    }
+
+    #[test]
+    fn unmatched_hook_replays_after_its_lookup_index_is_populated() {
+        let mut spec = split_position_spec();
+        spec.handlers.truncate(1);
+        spec.handlers[0].key_resolution = KeyResolutionStrategy::Embedded {
+            primary_field: FieldPath::new(&["accounts", "second_position"]),
+        };
+        spec.handlers[0].mappings[0] = crate::ast::TypedFieldMapping::from_serializable(mapping(
+            "id.position_address",
+            &["accounts", "second_position"],
+            PopulationStrategy::SetOnce,
+        ));
+        add_owner_index(&mut spec);
+        spec.instruction_hooks[0].lookup_by = Some(FieldPath::new(&["accounts", "owner"]));
+
+        let bytecode = MultiEntityBytecode::from_single("Position".to_string(), spec, 0);
+        let mut vm = VmContext::new();
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({
+                    "accounts": { "owner": "owner_1", "second_position": "child_pos" },
+                    "data": { "slot": 77 },
+                }),
+                "amm::SplitPositionIxState",
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].key, json!("child_pos"));
+
+        index_owner(&mut vm, &bytecode, "source_pos", "owner_1");
+
+        let source = vm.get_entity_state(0, &json!("source_pos")).unwrap();
+        assert_eq!(source["activity"]["last_split_source_slot"], json!(77));
+        let child = vm.get_entity_state(0, &json!("child_pos")).unwrap();
+        assert_eq!(child["activity"].get("last_split_source_slot"), None);
+    }
+
+    #[test]
+    fn a_segment_that_misses_its_key_is_replayed_alone() {
+        let mut spec = split_position_spec();
+        spec.instruction_hooks.clear();
+        // The child segment comes first. The source segment resolves its key
+        // through a PDA, registered later, that maps to the position's owner.
+        spec.handlers.swap(0, 1);
+        spec.handlers[1].key_resolution = KeyResolutionStrategy::Lookup {
+            primary_field: FieldPath::new(&["accounts", "source_pda"]),
+        };
+        spec.handlers[1].mappings.remove(0);
+        add_owner_index(&mut spec);
+        spec.instruction_hooks.push(InstructionHook {
+            instruction_type: "amm::RegisterIxState".to_string(),
+            actions: vec![HookAction::RegisterPdaMapping {
+                pda_field: FieldPath::new(&["accounts", "source_pda"]),
+                seed_field: FieldPath::new(&["accounts", "owner"]),
+                lookup_name: "default_pda_lookup".to_string(),
+            }],
+            lookup_by: None,
+        });
+        let bytecode = MultiEntityBytecode::from_single("Position".to_string(), spec, 0);
+        let mut vm = VmContext::new();
+        index_owner(&mut vm, &bytecode, "source_pos", "owner_1");
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({
+                    "accounts": { "source_pda": "pda_1", "second_position": "child_pos" },
+                    "data": {},
+                }),
+                "amm::SplitPositionIxState",
+                None,
+                None,
+            )
+            .unwrap();
+        // The child landed; the source is not resolvable yet.
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].key, json!("child_pos"));
+
+        let mutations = vm
+            .process_event(
+                &bytecode,
+                json!({ "accounts": { "source_pda": "pda_1", "owner": "owner_1" } }),
+                "amm::RegisterIxState",
+                None,
+                None,
+            )
+            .unwrap();
+        // Registering the PDA replays only the source segment.
+        assert_eq!(mutations.len(), 1, "mutations: {mutations:?}");
+        assert_eq!(mutations[0].key, json!("source_pos"));
+        let source = vm.get_entity_state(0, &json!("source_pos")).unwrap();
+        assert_eq!(source["activity"]["split_source_count"], json!(1));
+        let child = vm.get_entity_state(0, &json!("child_pos")).unwrap();
+        assert_eq!(child["activity"]["split_child_count"], json!(1));
     }
 
     mod fingerprint {
