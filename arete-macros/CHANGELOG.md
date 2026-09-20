@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.20.4](https://github.com/AreteA4/arete/compare/arete-macros-v0.20.3...arete-macros-v0.20.4) (2026-09-20)
+
+
+### Bug Fixes
+
+* route each instruction key to its own entity instance ([6f78b9b](https://github.com/AreteA4/arete/commit/6f78b9b7b69e51a7b4d6353e278ffce06d4d73ee))
+* route each instruction key to its own entity instance ([625868d](https://github.com/AreteA4/arete/commit/625868de1d5301f474a96e0db31d4ec2eff88687))
+
 ## [0.20.3](https://github.com/AreteA4/arete/compare/arete-macros-v0.20.2...arete-macros-v0.20.3) (2026-09-19)
 
 

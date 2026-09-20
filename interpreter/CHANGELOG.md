@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.20.4](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.20.3...arete-interpreter-v0.20.4) (2026-09-20)
+
+
+### Bug Fixes
+
+* **interpreter:** replay transaction lookup misses ([3c619c3](https://github.com/AreteA4/arete/commit/3c619c3304b9a5e63f6eb9bda780d2de0359f2ea))
+* replay a missed handler segment alone and resolve unmatched hook keys ([98eef56](https://github.com/AreteA4/arete/commit/98eef56a6908c62523873f5067b46abd9900f08c))
+* route each instruction key to its own entity instance ([6f78b9b](https://github.com/AreteA4/arete/commit/6f78b9b7b69e51a7b4d6353e278ffce06d4d73ee))
+* route each instruction key to its own entity instance ([625868d](https://github.com/AreteA4/arete/commit/625868de1d5301f474a96e0db31d4ec2eff88687))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.20.3 to 0.20.4
+
 ## [0.20.3](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.20.2...arete-interpreter-v0.20.3) (2026-09-19)
 
 

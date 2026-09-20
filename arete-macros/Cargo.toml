@@ -1,6 +1,6 @@
 [package]
 name = "arete-macros"
-version = "0.20.3"
+version = "0.20.4"
 edition.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
