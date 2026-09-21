@@ -9,6 +9,21 @@ import CopyPrompt from "../../../components/CopyPrompt.astro";
 This quickstart prepares a project for both agent-led exploration and generated
 SDK development. It does not depend on a hard-coded hosted stack.
 
+## Fastest path: give your agent one URL
+
+Open the project in your coding agent and paste:
+
+<CopyPrompt>
+Read https://docs.arete.run/agent.md and follow it to set up Arete in this
+project. Verify the result, tell me if the agent needs to be restarted, then ask
+me what on-chain question or program I want to explore.
+</CopyPrompt>
+
+The agent installs the CLI, runs `a4 init -y`, checks the environment with
+`a4 doctor --json`, and tells you if the host must be reloaded to pick up its
+new skills or MCP configuration. The steps below are the manual equivalent and
+a reference for what the agent does.
+
 ## 1. Install the CLI
 
 <Tabs syncKey="installer">

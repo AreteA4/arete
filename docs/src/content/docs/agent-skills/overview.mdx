@@ -8,6 +8,19 @@ import CopyPrompt from "../../../components/CopyPrompt.astro";
 Arete is designed so an agent can move from a product question to exact,
 generated application code without guessing program schemas or infrastructure.
 
+## Start with one URL
+
+Open the project in your coding agent and paste:
+
+<CopyPrompt>
+Read https://docs.arete.run/agent.md and follow it to set up Arete in this
+project. Verify the result, tell me if the agent needs to be restarted, then ask
+me what on-chain question or program I want to explore.
+</CopyPrompt>
+
+The bootstrap page leads the agent through CLI installation, `a4 init`, and
+`a4 doctor`. The installed skills and current CLI output take over from there.
+
 ## The agent workflow
 
 ```text
@@ -22,7 +35,7 @@ Understand intent
 The human provides goals and authority. The agent handles discovery, exact
 schema lookup, dependency generation, and repetitive integration work.
 
-## Set up a project
+## Manual setup
 
 ```bash
 curl -fsSL https://arete.run/install.sh | sh
@@ -107,15 +120,5 @@ Agent-first does not mean authority-free:
 
 The deployment skill preserves the same distinction between planning,
 submission, and a resource reaching its ready state.
-
-## Start from a URL
-
-If a fresh agent has no project instructions yet, give it the bootstrap page:
-
-<CopyPrompt>
-Read https://docs.arete.run/agent.md and follow it to set up Arete in this
-project. Verify the result, then ask me what on-chain question or program I want
-to explore.
-</CopyPrompt>
 
 For manual configuration and exact tool contracts, see [MCP Servers](/agent-skills/mcp/).

@@ -61,21 +61,19 @@ account layout, view name, or endpoint first.
 
 ## Start with one prompt
 
-Run `a4 init` once in your project, then give your coding agent a goal:
+Open your project in a coding agent and paste this:
 
 <CopyPrompt>
-Set up Arete in this project. Find programs and live views that can help me
-understand recent token activity, connect to the most relevant deployed views,
-and summarize what data is available. Do not guess program, account, or view
-names; use the Arete catalog and exact descriptors.
+Read https://docs.arete.run/agent.md and follow it to set up Arete in this
+project. Verify the result, tell me if the agent needs to be restarted, then ask
+me what on-chain question or program I want to explore.
 </CopyPrompt>
 
-The agent uses the same surfaces you can inspect directly: the public catalog,
-generated descriptors, the Arete skills, and the local MCP server. If a suitable
-hosted view exists, it can connect and answer from that data. If one does not,
-it should explain the gap instead of inventing a query.
+That one URL gives the agent the supported CLI installer, project initialization
+command, health check, catalog workflow, and task routing. `a4 init` installs the
+skills and configures both MCP servers for the detected agent.
 
-[Install and initialize Arete →](/using-stacks/quickstart/)
+[See the manual equivalent →](/using-stacks/quickstart/)
 
 ## Programs are the foundation
 
