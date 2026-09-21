@@ -102,9 +102,15 @@ pub struct Mutation {
 ///   "timestamp": 1234567890,
 ///   "data": { /* event-specific data */ },
 ///   "slot": 381471241,
-///   "signature": "4xNEYTVL8DB28W87..."
+///   "signature": "4xNEYTVL8DB28W87...",
+///   "event_index": 3,
+///   "ix_path": "0.1"
 /// }
 /// ```
+///
+/// `(signature, event_index)` identifies one event occurrence: a single
+/// transaction can emit several events of the same type, and `ix_path` keeps
+/// them distinct even when log ranges are truncated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventWrapper<T = Value> {
     /// Unix timestamp when the event was processed
@@ -117,6 +123,12 @@ pub struct EventWrapper<T = Value> {
     /// Optional transaction signature from UpdateContext
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// Position of this occurrence within its transaction
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_index: Option<u64>,
+    /// 0-based instruction path within the transaction (e.g. `"0.1"`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ix_path: Option<String>,
 }
 
 /// Generic wrapper for account capture data that includes context metadata

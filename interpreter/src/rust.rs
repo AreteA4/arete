@@ -199,7 +199,7 @@ pub(crate) fn wrapper_kind_for(
 /// `EventWrapper<T>` / `CaptureWrapper<T>` interfaces: capture/event-fed fields
 /// arrive wrapped on the wire, so the generated field types name the envelope
 /// and expose the provenance (`timestamp`, `account_address`, `slot`,
-/// `signature`) alongside the decoded `data`.
+/// `signature`, `event_index`, `ix_path`) alongside the decoded `data`.
 const WRAPPER_TYPES: &str = r#"/// Wrapper for event data that includes context metadata.
 /// Events are automatically wrapped in this structure at runtime.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +215,12 @@ pub struct EventWrapper<T> {
     /// Optional transaction signature.
     #[serde(default)]
     pub signature: Option<String>,
+    /// Position of this event occurrence within its transaction.
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub event_index: Option<u64>,
+    /// 0-based instruction path within the transaction (e.g. `"0.1"`).
+    #[serde(default)]
+    pub ix_path: Option<String>,
 }
 
 impl<T: Default> Default for EventWrapper<T> {
@@ -224,6 +230,8 @@ impl<T: Default> Default for EventWrapper<T> {
             data: T::default(),
             slot: None,
             signature: None,
+            event_index: None,
+            ix_path: None,
         }
     }
 }

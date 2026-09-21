@@ -483,6 +483,35 @@ async fn run() {
             expected_names.extend(replay_names);
             expected_names.push("AccountState");
             assert_eq!(names, expected_names);
+            // Every transaction-sourced event carries occurrence provenance, and
+            // two events decoded from one instruction are distinguishable.
+            let mut occurrences = std::collections::HashSet::new();
+            for (event, context) in &events {
+                if event == "AccountState" {
+                    continue;
+                }
+                let context = context.as_ref().expect("transaction event has context");
+                let ix_path = context
+                    .get("ix_path")
+                    .and_then(|value| value.as_str())
+                    .expect("transaction event carries ix_path");
+                let event_index = context
+                    .get("event_index")
+                    .and_then(|value| value.as_u64())
+                    .expect("transaction event carries event_index");
+                occurrences.insert((event.clone(), ix_path.to_string(), event_index));
+            }
+            if variant {
+                let log_occurrences = occurrences
+                    .iter()
+                    .filter(|(event, _, _)| event == "LogCpiEvent")
+                    .count();
+                assert!(
+                    log_occurrences > 1,
+                    "several log events under one signature must get distinct \
+                     occurrence identities, got {occurrences:?}"
+                );
+            }
             for (event, context) in events {
                 let metadata = context.unwrap().get("solana_transaction").cloned();
                 assert_eq!(

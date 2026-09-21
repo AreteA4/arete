@@ -3,7 +3,7 @@
 use arete_interpreter::{
     SolanaTransactionConfig, SolanaTransactionMetadata, SolanaTransactionVersion, UpdateContext,
 };
-use shipstern_core::instruction::InstructionShared;
+use shipstern_core::instruction::{InstructionShared, InstructionUpdate, Path};
 
 /// Config presence identifies V1, including an empty config. Shipstern discards
 /// the source version flag, so absent config must remain unknown.
@@ -35,4 +35,26 @@ pub fn instruction_update_context(shared: &InstructionShared) -> UpdateContext {
         Some(metadata) => context.with_solana_transaction(metadata),
         None => context,
     }
+}
+
+/// Render an instruction's 0-based tree path as `"0"` / `"0.1"`.
+///
+/// `Path`'s own `Debug` renders 1-based, so this is spelled out to match the
+/// 0-based `ix_path` the runtime publishes.
+pub fn instruction_path(path: &Path) -> String {
+    path.as_slice()
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// One originating context located at this instruction's own occurrence.
+///
+/// `log_range.start` is the instruction's first log line, so it orders
+/// occurrences across the whole transaction; events decoded from this
+/// instruction's logs offset from it.
+pub fn instruction_occurrence_context(update: &InstructionUpdate) -> UpdateContext {
+    instruction_update_context(&update.shared)
+        .at_occurrence(instruction_path(&update.path), update.log_range.start as u64)
 }

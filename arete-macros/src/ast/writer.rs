@@ -89,6 +89,8 @@ pub fn context_field_name(source_field_name: &str) -> Option<&'static str> {
         "__signature" => Some("signature"),
         "__slot" => Some("slot"),
         "__timestamp" => Some("timestamp"),
+        "__event_index" => Some("event_index"),
+        "__ix_path" => Some("ix_path"),
         _ => None,
     }
 }
@@ -775,17 +777,11 @@ pub fn build_instruction_hooks(
 
         for derive_attr in derive_attrs {
             let source = if derive_attr.field.ident.to_string().starts_with("__") {
-                match derive_attr.field.ident.to_string().as_str() {
-                    "__timestamp" => MappingSource::FromContext {
-                        field: "timestamp".to_string(),
+                match context_field_name(&derive_attr.field.ident.to_string()) {
+                    Some(field) => MappingSource::FromContext {
+                        field: field.to_string(),
                     },
-                    "__slot" => MappingSource::FromContext {
-                        field: "slot".to_string(),
-                    },
-                    "__signature" => MappingSource::FromContext {
-                        field: "signature".to_string(),
-                    },
-                    _ => continue,
+                    None => continue,
                 }
             } else {
                 let path_prefix = match &derive_attr.field.explicit_location {

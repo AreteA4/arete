@@ -1647,17 +1647,13 @@ fn build_instruction_hooks_ast(
 
         for derive_attr in derive_attrs {
             let source = if derive_attr.field.ident.to_string().starts_with("__") {
-                match derive_attr.field.ident.to_string().as_str() {
-                    "__timestamp" => MappingSource::FromContext {
-                        field: "timestamp".to_string(),
+                match crate::ast::writer::context_field_name(
+                    &derive_attr.field.ident.to_string(),
+                ) {
+                    Some(field) => MappingSource::FromContext {
+                        field: field.to_string(),
                     },
-                    "__slot" => MappingSource::FromContext {
-                        field: "slot".to_string(),
-                    },
-                    "__signature" => MappingSource::FromContext {
-                        field: "signature".to_string(),
-                    },
-                    _ => continue,
+                    None => continue,
                 }
             } else {
                 let path_prefix = if is_cpi_event {

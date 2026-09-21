@@ -9,6 +9,7 @@ use dashmap::DashMap;
 use lru::LruCache;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -33,6 +34,13 @@ pub struct UpdateContext {
     /// Transaction index for instruction updates (orders transactions within a slot)
     /// Used for staleness detection to reject out-of-order updates
     pub txn_index: Option<u64>,
+    /// Position of this occurrence within its transaction, as an absolute index
+    /// into the transaction's log messages. Distinguishes several events decoded
+    /// from one transaction, which `txn_index` alone cannot do.
+    pub event_index: Option<u64>,
+    /// 0-based instruction path within the transaction (e.g. `"0"`, `"0.1"`).
+    /// Disambiguates occurrences when log ranges are absent or truncated.
+    pub ix_path: Option<String>,
     /// When true, immediate resolver execution is skipped during handler execution.
     /// Future scheduled callbacks are still registered after a PDA remap so fresh
     /// account data can resolve at its intended slot.
@@ -50,6 +58,8 @@ impl UpdateContext {
             timestamp: None,
             write_version: None,
             txn_index: None,
+            event_index: None,
+            ix_path: None,
             skip_resolvers: false,
             metadata: HashMap::new(),
         }
@@ -63,6 +73,8 @@ impl UpdateContext {
             timestamp: Some(timestamp),
             write_version: None,
             txn_index: None,
+            event_index: None,
+            ix_path: None,
             skip_resolvers: false,
             metadata: HashMap::new(),
         }
@@ -76,6 +88,8 @@ impl UpdateContext {
             timestamp: None,
             write_version: Some(write_version),
             txn_index: None,
+            event_index: None,
+            ix_path: None,
             skip_resolvers: false,
             metadata: HashMap::new(),
         }
@@ -89,6 +103,8 @@ impl UpdateContext {
             timestamp: None,
             write_version: None,
             txn_index: Some(txn_index),
+            event_index: None,
+            ix_path: None,
             skip_resolvers: false,
             metadata: HashMap::new(),
         }
@@ -104,9 +120,22 @@ impl UpdateContext {
             timestamp: None,
             write_version: Some(write_version),
             txn_index: None,
+            event_index: None,
+            ix_path: None,
             skip_resolvers: true,
             metadata: HashMap::new(),
         }
+    }
+
+    /// Locate this context at one event occurrence inside its transaction.
+    ///
+    /// `ix_path` is the instruction's 0-based tree path and `event_index` the
+    /// absolute index into the transaction's log messages. Together with the
+    /// signature they form the stable occurrence identity.
+    pub fn at_occurrence(mut self, ix_path: String, event_index: u64) -> Self {
+        self.ix_path = Some(ix_path);
+        self.event_index = Some(event_index);
+        self
     }
 
     /// Get the timestamp, falling back to current system time if not set
@@ -171,6 +200,12 @@ impl UpdateContext {
         }
         if let Some(ref sig) = self.signature {
             obj.insert("signature".to_string(), json!(sig));
+        }
+        if let Some(event_index) = self.event_index {
+            obj.insert("event_index".to_string(), json!(event_index));
+        }
+        if let Some(ix_path) = &self.ix_path {
+            obj.insert("ix_path".to_string(), json!(ix_path));
         }
         // Always include timestamp (use current time if not set)
         obj.insert("timestamp".to_string(), json!(self.timestamp()));
@@ -1168,17 +1203,27 @@ impl StateTable {
     /// Unlike account updates, instructions don't use recency checks - all
     /// unique instructions are processed. Only exact duplicates are skipped.
     /// Uses a smaller cache capacity for shorter effective TTL.
+    ///
+    /// `event_index` separates several occurrences decoded from one transaction:
+    /// they share `(slot, txn_index)`, so without it the second occurrence looks
+    /// like a re-delivery of the first and is dropped.
     pub fn is_duplicate_instruction(
         &self,
         primary_key: &Value,
         event_type: &str,
         slot: u64,
         txn_index: u64,
+        event_index: Option<u64>,
     ) -> bool {
-        // Check if we've seen this exact instruction before
+        let scope = match event_index {
+            Some(index) => Cow::Owned(format!("{event_type}#{index}")),
+            None => Cow::Borrowed(event_type),
+        };
+
+        // Check if we've seen this exact occurrence before
         let is_duplicate = self
             .instruction_dedup_cache
-            .get(primary_key, event_type)
+            .get(primary_key, &scope)
             .map(|(last_slot, last_txn_index)| slot == last_slot && txn_index == last_txn_index)
             .unwrap_or(false);
 
@@ -1186,9 +1231,9 @@ impl StateTable {
             return true;
         }
 
-        // Record this instruction for deduplication
+        // Record this occurrence for deduplication
         self.instruction_dedup_cache
-            .insert(primary_key, event_type, slot, txn_index);
+            .insert(primary_key, &scope, slot, txn_index);
         false
     }
 
@@ -3043,7 +3088,11 @@ impl VmContext {
                             else if ctx.is_instruction_update() {
                                 if let (Some(slot), Some(txn_index)) = (ctx.slot, ctx.txn_index) {
                                     if state.is_duplicate_instruction(
-                                        &key_value, event_type, slot, txn_index,
+                                        &key_value,
+                                        event_type,
+                                        slot,
+                                        txn_index,
+                                        ctx.event_index,
                                     ) {
                                         self.emit_debug(|| VmDebugEvent::ReadOrInitState {
                                             entity_name: entity_name.to_string(),
@@ -3056,8 +3105,8 @@ impl VmContext {
                                             ),
                                         });
                                         self.add_warning(format!(
-                                            "Duplicate instruction skipped: slot={}, txn_index={}",
-                                            slot, txn_index
+                                            "Duplicate instruction skipped: slot={}, txn_index={}, event_index={:?}",
+                                            slot, txn_index, ctx.event_index
                                         ));
                                         return Ok(Vec::new());
                                     }
@@ -3138,13 +3187,19 @@ impl VmContext {
                     event.insert("timestamp".to_string(), json!(timestamp));
                     event.insert("data".to_string(), event_data);
 
-                    // Add slot and signature if available from current context
-                    if let Some(ref ctx) = self.current_context {
+                    // Add provenance if available from current context
+                    if let Some(ctx) = &self.current_context {
                         if let Some(slot) = ctx.slot {
                             event.insert("slot".to_string(), json!(slot));
                         }
-                        if let Some(ref signature) = ctx.signature {
+                        if let Some(signature) = &ctx.signature {
                             event.insert("signature".to_string(), json!(signature));
+                        }
+                        if let Some(event_index) = ctx.event_index {
+                            event.insert("event_index".to_string(), json!(event_index));
+                        }
+                        if let Some(ix_path) = &ctx.ix_path {
+                            event.insert("ix_path".to_string(), json!(ix_path));
                         }
                     }
 
@@ -7429,7 +7484,7 @@ mod snapshot_tests {
         );
 
         assert!(table.is_fresh_update(&json!("mint1"), "TokenState", 100, 5));
-        assert!(!table.is_duplicate_instruction(&json!("mint1"), "BuyIx", 100, 3));
+        assert!(!table.is_duplicate_instruction(&json!("mint1"), "BuyIx", 100, 3, None));
 
         table
             .recent_tx_instructions
@@ -7525,8 +7580,37 @@ mod snapshot_tests {
         assert!(!table.is_fresh_update(&json!("mint1"), "TokenState", 100, 5));
         assert!(!table.is_fresh_update(&json!("mint1"), "TokenState", 99, 9));
         assert!(table.is_fresh_update(&json!("mint1"), "TokenState", 100, 6));
-        assert!(table.is_duplicate_instruction(&json!("mint1"), "BuyIx", 100, 3));
-        assert!(!table.is_duplicate_instruction(&json!("mint1"), "BuyIx", 100, 4));
+        assert!(table.is_duplicate_instruction(&json!("mint1"), "BuyIx", 100, 3, None));
+        assert!(!table.is_duplicate_instruction(&json!("mint1"), "BuyIx", 100, 4, None));
+    }
+
+    #[test]
+    fn occurrences_in_one_transaction_are_not_mistaken_for_duplicates() {
+        let mut vm = VmContext::new();
+        let table = vm.get_state_table_mut(0).expect("state 0 exists");
+        let key = json!("pool1");
+
+        // Two events of the same type in one transaction share (slot, txn_index)
+        // and differ only by occurrence.
+        assert!(!table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some(4)));
+        assert!(
+            !table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some(6)),
+            "a second occurrence under one signature must still be processed"
+        );
+
+        // Re-delivery of the same occurrence is still rejected.
+        assert!(table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some(4)));
+        assert!(table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some(6)));
+
+        // The same occurrence index in a later transaction is new data.
+        assert!(!table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 4, Some(4)));
+
+        // Contrast: with no occurrence index the two events are
+        // indistinguishable, which is what dropped the second event before
+        // `event_index` existed.
+        let unindexed = json!("pool2");
+        assert!(!table.is_duplicate_instruction(&unindexed, "BuyCpiEvent", 100, 3, None));
+        assert!(table.is_duplicate_instruction(&unindexed, "BuyCpiEvent", 100, 3, None));
     }
 
     #[test]
@@ -7602,10 +7686,10 @@ mod snapshot_tests {
         vm.cache_resolver_value(&resolver, &json!("mint1"), &json!({"symbol": "T"}));
         vm.cache_negative_resolver_value(&resolver, &json!("missing"));
         let table = vm.get_state_table_mut(0).expect("state 0 exists");
-        assert!(!table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0));
-        assert!(!table.is_duplicate_instruction(&json!("key-2"), "Buy", 10, 1));
+        assert!(!table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0, None));
+        assert!(!table.is_duplicate_instruction(&json!("key-2"), "Buy", 10, 1, None));
         // An exact duplicate is not recorded again.
-        assert!(table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0));
+        assert!(table.is_duplicate_instruction(&json!("key-1"), "Buy", 10, 0, None));
 
         let stats = vm.get_cache_stats(0);
         assert_eq!(stats.resolver_cache_entries, 2);
