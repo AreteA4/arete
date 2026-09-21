@@ -5,11 +5,15 @@
  * `Accept: text/markdown` never reaches the Astro `.md` endpoints in
  * production. Middleware runs before the static file, so agents that
  * send that Accept header get the markdown twin at the same URL.
+ *
+ * Extensionless `/.well-known/*` aliases (agent-skills, mcp) are JSON
+ * discovery documents with no `.md` twin. Leave them for `vercel.json`
+ * rewrites, matching the local score server's dotted-path skip.
  */
 
 export const config = {
   matcher: [
-    "/((?!_astro|api|ingest|a4/|.*\\.(?:css|js|mjs|map|svg|png|jpg|jpeg|gif|webp|json|xml|ico|md|txt|woff|woff2|sh|ps1)$).*)",
+    "/((?!_astro|api|ingest|a4/|\\.well-known|.*\\.(?:css|js|mjs|map|svg|png|jpg|jpeg|gif|webp|json|xml|ico|md|txt|woff|woff2|sh|ps1)$).*)",
   ],
 };
 
@@ -21,7 +25,11 @@ export default function middleware(request) {
 
   const url = new URL(request.url);
   const pathname = url.pathname;
-  if (pathname.endsWith(".md") || pathname.endsWith(".txt")) {
+  if (
+    pathname.startsWith("/.well-known/") ||
+    pathname.endsWith(".md") ||
+    pathname.endsWith(".txt")
+  ) {
     return;
   }
 
