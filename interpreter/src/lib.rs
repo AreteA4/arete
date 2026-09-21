@@ -108,9 +108,13 @@ pub struct Mutation {
 /// }
 /// ```
 ///
-/// `(signature, event_index)` identifies one event occurrence: a single
-/// transaction can emit several events of the same type, and `ix_path` keeps
-/// them distinct even when log ranges are truncated.
+/// `ix_path` is always present for a transaction-sourced event and identifies
+/// the instruction it came from, so two same-type events under one signature
+/// stay distinct. `event_index` is the absolute log-line index and appears
+/// only for events decoded from a log: it is what makes one log line decoded
+/// by both an outer instruction and its inner CPI resolve to a single
+/// occurrence. An `emit_cpi!` event arrives as its own instruction and is
+/// therefore identified by `ix_path` alone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventWrapper<T = Value> {
     /// Unix timestamp when the event was processed
@@ -123,7 +127,7 @@ pub struct EventWrapper<T = Value> {
     /// Optional transaction signature from UpdateContext
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
-    /// Position of this occurrence within its transaction
+    /// Absolute log-line index, for events decoded from a transaction log
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_index: Option<u64>,
     /// 0-based instruction path within the transaction (e.g. `"0.1"`)

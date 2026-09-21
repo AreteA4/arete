@@ -51,10 +51,10 @@ pub fn instruction_path(path: &Path) -> String {
 
 /// One originating context located at this instruction's own occurrence.
 ///
-/// `log_range.start` is the instruction's first log line, so it orders
-/// occurrences across the whole transaction; events decoded from this
-/// instruction's logs offset from it.
+/// The instruction's tree path identifies it. `log_range` is deliberately not
+/// used here: a provider that omits or truncates logs leaves it empty for
+/// every instruction in the transaction, which would collapse them all onto
+/// one identity.
 pub fn instruction_occurrence_context(update: &InstructionUpdate) -> UpdateContext {
-    instruction_update_context(&update.shared)
-        .at_occurrence(instruction_path(&update.path), update.log_range.start as u64)
+    instruction_update_context(&update.shared).at_instruction(instruction_path(&update.path))
 }

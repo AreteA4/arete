@@ -2719,7 +2719,7 @@ pub fn generate_instruction_handler_impl(
                             let event_index = (log_offset + log_position) as u64;
                             let event_context = context
                                 .clone()
-                                .at_occurrence(ix_path.clone(), event_index);
+                                .at_log_event(ix_path.clone(), event_index);
 
                             let mut program_log = arete::runtime::arete_interpreter::CanonicalLog::new();
                             program_log.set("phase", "vixen")

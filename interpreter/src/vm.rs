@@ -127,15 +127,39 @@ impl UpdateContext {
         }
     }
 
-    /// Locate this context at one event occurrence inside its transaction.
+    /// Locate this context at an instruction's own occurrence.
     ///
-    /// `ix_path` is the instruction's 0-based tree path and `event_index` the
-    /// absolute index into the transaction's log messages. Together with the
-    /// signature they form the stable occurrence identity.
-    pub fn at_occurrence(mut self, ix_path: String, event_index: u64) -> Self {
+    /// The instruction path is assigned from the CPI call tree, so it holds
+    /// even when the provider omits or truncates logs. No log index is
+    /// recorded: the instruction is not decoded from a log line.
+    pub fn at_instruction(mut self, ix_path: String) -> Self {
+        self.ix_path = Some(ix_path);
+        self.event_index = None;
+        self
+    }
+
+    /// Locate this context at one event decoded from a transaction log line.
+    ///
+    /// `event_index` is the line's absolute index, which is why the same line
+    /// decoded by both an outer instruction and its inner CPI resolves to one
+    /// occurrence rather than two.
+    pub fn at_log_event(mut self, ix_path: String, event_index: u64) -> Self {
         self.ix_path = Some(ix_path);
         self.event_index = Some(event_index);
         self
+    }
+
+    /// Identity of this occurrence within its transaction, for deduplication.
+    ///
+    /// Log-decoded events are identified by their log line and
+    /// instruction-sourced events by their instruction path. The two are
+    /// tagged apart so an instruction path can never read as a log index.
+    pub fn occurrence(&self) -> Option<String> {
+        match (self.event_index, &self.ix_path) {
+            (Some(event_index), _) => Some(format!("log:{event_index}")),
+            (None, Some(ix_path)) => Some(format!("ix:{ix_path}")),
+            (None, None) => None,
+        }
     }
 
     /// Get the timestamp, falling back to current system time if not set
@@ -1204,19 +1228,20 @@ impl StateTable {
     /// unique instructions are processed. Only exact duplicates are skipped.
     /// Uses a smaller cache capacity for shorter effective TTL.
     ///
-    /// `event_index` separates several occurrences decoded from one transaction:
-    /// they share `(slot, txn_index)`, so without it the second occurrence looks
-    /// like a re-delivery of the first and is dropped.
+    /// `occurrence` separates several occurrences decoded from one transaction:
+    /// they share `(slot, txn_index)`, so without it the second occurrence
+    /// looks like a re-delivery of the first and is dropped. See
+    /// [`UpdateContext::occurrence`] for how the two kinds are identified.
     pub fn is_duplicate_instruction(
         &self,
         primary_key: &Value,
         event_type: &str,
         slot: u64,
         txn_index: u64,
-        event_index: Option<u64>,
+        occurrence: Option<&str>,
     ) -> bool {
-        let scope = match event_index {
-            Some(index) => Cow::Owned(format!("{event_type}#{index}")),
+        let scope = match occurrence {
+            Some(occurrence) => Cow::Owned(format!("{event_type}#{occurrence}")),
             None => Cow::Borrowed(event_type),
         };
 
@@ -3087,12 +3112,13 @@ impl VmContext {
                             // Instruction updates: process all, but skip exact duplicates
                             else if ctx.is_instruction_update() {
                                 if let (Some(slot), Some(txn_index)) = (ctx.slot, ctx.txn_index) {
+                                    let occurrence = ctx.occurrence();
                                     if state.is_duplicate_instruction(
                                         &key_value,
                                         event_type,
                                         slot,
                                         txn_index,
-                                        ctx.event_index,
+                                        occurrence.as_deref(),
                                     ) {
                                         self.emit_debug(|| VmDebugEvent::ReadOrInitState {
                                             entity_name: entity_name.to_string(),
@@ -3105,8 +3131,8 @@ impl VmContext {
                                             ),
                                         });
                                         self.add_warning(format!(
-                                            "Duplicate instruction skipped: slot={}, txn_index={}, event_index={:?}",
-                                            slot, txn_index, ctx.event_index
+                                            "Duplicate instruction skipped: slot={}, txn_index={}, occurrence={:?}",
+                                            slot, txn_index, occurrence
                                         ));
                                         return Ok(Vec::new());
                                     }
@@ -6465,17 +6491,39 @@ mod tests {
     /// absent the mapping resolves to nothing and the target stays unset.
     #[test]
     fn update_context_publishes_occurrence_provenance_to_the_dsl() {
-        let context = UpdateContext::new_instruction(100, "sig".to_string(), 3)
-            .at_occurrence("0.1".to_string(), 7);
-        let envelope = context.to_value();
+        let log_event = UpdateContext::new_instruction(100, "sig".to_string(), 3)
+            .at_log_event("0.1".to_string(), 7)
+            .to_value();
+        assert_eq!(log_event.get("event_index"), Some(&json!(7)));
+        assert_eq!(log_event.get("ix_path"), Some(&json!("0.1")));
 
-        assert_eq!(envelope.get("event_index"), Some(&json!(7)));
-        assert_eq!(envelope.get("ix_path"), Some(&json!("0.1")));
+        // An instruction is identified by its path; it has no log line of its
+        // own, so it must not advertise one.
+        let instruction = UpdateContext::new_instruction(100, "sig".to_string(), 3)
+            .at_instruction("0.1".to_string())
+            .to_value();
+        assert_eq!(instruction.get("ix_path"), Some(&json!("0.1")));
+        assert_eq!(instruction.get("event_index"), None);
 
         // An account update has no occurrence, and must not invent one.
         let account = UpdateContext::new_account(100, "sig".to_string(), 1).to_value();
         assert_eq!(account.get("event_index"), None);
         assert_eq!(account.get("ix_path"), None);
+    }
+
+    /// The two kinds share a scope, so a path must never read as a log index.
+    #[test]
+    fn occurrence_tags_instruction_paths_apart_from_log_indexes() {
+        let instruction = UpdateContext::new_instruction(100, "sig".to_string(), 3)
+            .at_instruction("3".to_string());
+        let log_event = UpdateContext::new_instruction(100, "sig".to_string(), 3)
+            .at_log_event("0".to_string(), 3);
+
+        assert_eq!(instruction.occurrence().as_deref(), Some("ix:3"));
+        assert_eq!(log_event.occurrence().as_deref(), Some("log:3"));
+        assert_ne!(instruction.occurrence(), log_event.occurrence());
+
+        assert_eq!(UpdateContext::empty().occurrence(), None);
     }
 
     #[test]
@@ -7608,27 +7656,68 @@ mod snapshot_tests {
         let table = vm.get_state_table_mut(0).expect("state 0 exists");
         let key = json!("pool1");
 
-        // Two events of the same type in one transaction share (slot, txn_index)
-        // and differ only by occurrence.
-        assert!(!table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some(4)));
+        // Two log events in one transaction share (slot, txn_index) and differ
+        // only by log line.
+        assert!(!table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some("log:4")));
         assert!(
-            !table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some(6)),
+            !table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some("log:6")),
             "a second occurrence under one signature must still be processed"
         );
 
         // Re-delivery of the same occurrence is still rejected.
-        assert!(table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some(4)));
-        assert!(table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some(6)));
+        assert!(table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some("log:4")));
+        assert!(table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 3, Some("log:6")));
 
-        // The same occurrence index in a later transaction is new data.
-        assert!(!table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 4, Some(4)));
+        // The same occurrence in a later transaction is new data.
+        assert!(!table.is_duplicate_instruction(&key, "BuyCpiEvent", 100, 4, Some("log:4")));
 
-        // Contrast: with no occurrence index the two events are
-        // indistinguishable, which is what dropped the second event before
-        // `event_index` existed.
+        // Contrast: with no occurrence the two events are indistinguishable,
+        // which is what dropped the second event before occurrence identity
+        // existed.
         let unindexed = json!("pool2");
         assert!(!table.is_duplicate_instruction(&unindexed, "BuyCpiEvent", 100, 3, None));
         assert!(table.is_duplicate_instruction(&unindexed, "BuyCpiEvent", 100, 3, None));
+    }
+
+    /// A provider that omits or truncates logs leaves every instruction in the
+    /// transaction with an empty log range. Identifying instructions by log
+    /// position would collapse them onto one identity and drop all but the
+    /// first, so instruction identity comes from the CPI path instead.
+    #[test]
+    fn instructions_with_no_logs_stay_distinct_by_path() {
+        let mut vm = VmContext::new();
+        let table = vm.get_state_table_mut(0).expect("state 0 exists");
+        let key = json!("pool1");
+
+        let outer = UpdateContext::new_instruction(100, "sig".to_string(), 3)
+            .at_instruction("0".to_string());
+        let inner = UpdateContext::new_instruction(100, "sig".to_string(), 3)
+            .at_instruction("0.1".to_string());
+        let sibling = UpdateContext::new_instruction(100, "sig".to_string(), 3)
+            .at_instruction("1".to_string());
+
+        for context in [&outer, &inner, &sibling] {
+            assert!(
+                !table.is_duplicate_instruction(
+                    &key,
+                    "BuyCpiEvent",
+                    100,
+                    3,
+                    context.occurrence().as_deref()
+                ),
+                "instruction {:?} must not be mistaken for a sibling",
+                context.ix_path
+            );
+        }
+
+        // Each is still deduplicated against its own re-delivery.
+        assert!(table.is_duplicate_instruction(
+            &key,
+            "BuyCpiEvent",
+            100,
+            3,
+            outer.occurrence().as_deref()
+        ));
     }
 
     #[test]

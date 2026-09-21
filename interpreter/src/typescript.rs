@@ -1915,7 +1915,7 @@ export interface EventWrapper<T> {
   slot?: number;
   /** Optional transaction signature */
   signature?: string;
-  /** Position of this event occurrence within its transaction */
+  /** Absolute log-line index; set only for events decoded from a log */
   event_index?: number;
   /** 0-based instruction path within the transaction (e.g. "0.1") */
   ix_path?: string;

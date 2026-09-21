@@ -483,8 +483,8 @@ async fn run() {
             expected_names.extend(replay_names);
             expected_names.push("AccountState");
             assert_eq!(names, expected_names);
-            // Every transaction-sourced event carries occurrence provenance, and
-            // two events decoded from one instruction are distinguishable.
+            // Every transaction-sourced event carries occurrence provenance:
+            // `ix_path` always, and `event_index` only for log-decoded events.
             let mut occurrences = std::collections::HashSet::new();
             for (event, context) in &events {
                 if event == "AccountState" {
@@ -495,10 +495,18 @@ async fn run() {
                     .get("ix_path")
                     .and_then(|value| value.as_str())
                     .expect("transaction event carries ix_path");
-                let event_index = context
-                    .get("event_index")
-                    .and_then(|value| value.as_u64())
-                    .expect("transaction event carries event_index");
+                let event_index = context.get("event_index").and_then(|value| value.as_u64());
+                if event == "LogCpiEvent" {
+                    assert!(
+                        event_index.is_some(),
+                        "a log-decoded event carries its log index"
+                    );
+                } else {
+                    assert!(
+                        event_index.is_none(),
+                        "an instruction is identified by its path, not a log line"
+                    );
+                }
                 occurrences.insert((event.clone(), ix_path.to_string(), event_index));
             }
             if variant {
