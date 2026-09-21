@@ -110,7 +110,6 @@ export default defineConfig({
             { slug: "building-stacks/stack-definitions" },
             { slug: "building-stacks/installation" },
             { slug: "building-stacks/your-first-stack" },
-            { slug: "building-stacks/finding-idls" },
             {
               label: "Rust DSL",
               items: [

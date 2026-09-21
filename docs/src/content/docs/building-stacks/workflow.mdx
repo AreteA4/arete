@@ -12,6 +12,18 @@ Most applications should begin with published Program SDKs and existing live
 views. Use custom authoring only when the catalog does not provide the
 application-shaped read model you need.
 
+Search the registry and open the exact descriptor before starting custom work:
+
+```bash
+a4 explore catalog --query "<intent>" --json
+a4 explore catalog program <slug> --json
+```
+
+If a published package already provides the required capabilities, install it
+instead. The advanced Rust path below assumes you have the exact local IDL for
+the program. Inspect that file with `a4 idl summary`, `a4 idl search`, and the
+[IDL CLI reference](/cli/idl/) before mapping it.
+
 This page documents the advanced **Rust authoring path**: define a live model,
 compile portable artifacts, deploy an exact StackManifest, and install the
 resulting SDK.
