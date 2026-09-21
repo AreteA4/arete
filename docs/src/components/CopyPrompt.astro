@@ -86,10 +86,25 @@
   /* Reset paragraph margins inside prompt */
   .prompt-content :global(p) {
     margin: 0 0 0.5rem 0;
+    color: inherit;
   }
 
   .prompt-content :global(p:last-child) {
     margin-bottom: 0;
+  }
+
+  .prompt-content :global(strong),
+  .prompt-content :global(code) {
+    color: inherit;
+  }
+
+  .prompt-content :global(a) {
+    color: #9bc3f2;
+    text-decoration-color: rgba(155, 195, 242, 0.55);
+  }
+
+  .prompt-content :global(a:hover) {
+    color: #c1dcfa;
   }
 
   .copy-btn {

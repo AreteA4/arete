@@ -474,11 +474,37 @@ main pre,
   border: 1px solid var(--arete-line-strong) !important;
   border-radius: 0 !important;
   background: var(--arete-code-background) !important;
+  color: var(--arete-code-foreground);
   box-shadow: none !important;
 }
 
 .expressive-code .frame::before {
   display: none !important;
+}
+
+/* Code blocks intentionally stay ink-dark in light mode. Use Shiki's dark
+   token set on that surface instead of its low-contrast light-theme tokens. */
+:root[data-theme="light"] .expressive-code:not([data-theme="dark"]) {
+  --ec-codeFg: #d6deeb;
+  --ec-codeSelBg: #355f97;
+  --ec-gtrFg: #91a4b3;
+  --ec-gtrBrdCol: rgba(145, 164, 179, 0.24);
+  --ec-gtrHlFg: #d6deeb;
+}
+
+:root[data-theme="light"] .expressive-code:not([data-theme="dark"]) pre > code {
+  color: #d6deeb;
+}
+
+:root[data-theme="light"]
+  .expressive-code:not([data-theme="dark"])
+  .ec-line
+  :where(span[style^="--"]:not([class])) {
+  color: var(--0, var(--arete-code-foreground));
+  background-color: var(--0bg, transparent);
+  font-style: var(--0fs, inherit);
+  font-weight: var(--0fw, inherit);
+  text-decoration: var(--0td, inherit);
 }
 
 main table {
