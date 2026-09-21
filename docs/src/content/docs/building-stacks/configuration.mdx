@@ -1,15 +1,19 @@
 ---
 title: Project Dependencies
-description: Use arete.toml, arete.lock, and generated provenance to manage programs and stacks.
+description: How arete.toml, arete.lock, and generated code keep track of the programs and stacks your project uses.
 ---
 
-An Arete project has three related dependency records:
+An Arete project keeps three records of its dependencies:
 
-- `arete.toml` — human-authored intent;
-- `arete.lock` — exact immutable resolution; and
-- generated SDK provenance — which locked input produced each output.
+- `arete.toml` says what you want. You or your agent write it.
+- `arete.lock` says exactly what that resolved to, and stays put until you ask
+  for a change.
+- Provenance inside the generated SDK says which locked input produced each
+  output.
 
-Use `a4 install`, `a4 update`, and `a4 remove` to keep all three consistent.
+Use `a4 install`, `a4 update`, and `a4 remove` to keep all three in step. If
+you have used `package.json` with a lockfile, or `Cargo.toml` with `Cargo.lock`,
+the arrangement will feel familiar.
 
 ## Initialize
 
@@ -17,8 +21,8 @@ Use `a4 install`, `a4 update`, and `a4 remove` to keep all three consistent.
 a4 init -y
 ```
 
-Initialization creates a minimal manifest if one does not exist and configures
-the project's agents. It does not invent registry dependencies.
+Initialization creates a minimal manifest if there isn't one yet and configures
+the project's agents. It never adds registry dependencies on its own.
 
 ```toml
 manifest_version = 1
@@ -47,8 +51,9 @@ a4 explore catalog stack <slug> --json
 a4 install stack <slug> --ts
 ```
 
-The add command saves dependency intent and resolves the complete graph. Run
-plain `a4 install` later to restore every declared dependency.
+Adding a package saves what you asked for and resolves the complete set of
+dependencies. Run plain `a4 install` later to restore everything the project
+declares.
 
 ## Manifest structure
 
@@ -94,8 +99,9 @@ version = "^1.0.0"
 targets = ["typescript", "rust"]
 ```
 
-Do not copy illustrative package names or versions without checking the
-catalog. `a4 install` writes the correct table from the selected descriptor.
+The package names and versions above are illustrative, so check the catalog
+before copying any of them. Better still, let `a4 install` write the correct
+table from the descriptor you selected.
 
 ## Sources
 
@@ -107,8 +113,8 @@ A dependency has exactly one source:
 | `path`      | Use an exact local `ProgramSpec` or `StackManifest` artifact |
 | `workspace` | Refer to a same-kind entry under `[authoring]`               |
 
-Registry requirements are human intent. The lockfile records the exact package
-release and artifact identities that satisfied them.
+A registry requirement expresses what you want. The lockfile records the exact
+package release and artifact identities that satisfied it.
 
 Registry versions use
 [Arete's semantic versioning system](/concepts/program-versioning/). They
@@ -153,8 +159,10 @@ Important behaviors:
 - `a4 update` changes resolution; plain install does not silently replace an
   exact fresh lock.
 
-Generated directories are owned outputs. Do not hand-edit entry files,
-extensions, SDK manifests, or provenance records.
+Generated directories belong to the installer. Don't hand-edit entry files,
+extensions, SDK manifests, or provenance records. Your edits are replaced the
+next time the code is generated. And if you add files of your own to a generated
+directory, `a4 install` refuses to touch it until they are gone.
 
 ## Lockfile
 
@@ -199,10 +207,10 @@ a4 config validate
 a4 doctor --json
 ```
 
-Validation is offline. It checks strict keys, source and workspace kinds, local
-artifact closure, path policy, output collisions, and lock freshness. It does
-not prove that a hosted binding is healthy; inspect the exact descriptor and
-perform a bounded read when that matters.
+Validation runs offline. It checks strict keys, source and workspace kinds,
+local artifact closure, path policy, output collisions, and lock freshness. It
+can't tell you whether a hosted service is healthy. When that matters, inspect
+the exact descriptor and perform a small bounded read.
 
 ## Credentials and environment
 
@@ -221,5 +229,5 @@ secret environment through the CI secret manager.
 | `ARETE_API_URL` | Intentional API origin override |
 | `ARETE_API_KEY` | Headless authentication         |
 
-An API override changes the trust boundary. Do not send a production key to an
-untrusted origin.
+Overriding the API origin changes who you are trusting. Never send a production
+key to an origin you don't trust.

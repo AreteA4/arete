@@ -5,11 +5,13 @@ sidebar:
   order: 6
 ---
 
-Arete's transaction transport lets an application inspect, submit, and confirm
-transactions through the transaction descriptor embedded in a generated stack
-or Program SDK. It is independent of the live-view and Program Read endpoints.
-The wallet still compiles and signs locally. Arete never receives a private key
-and never signs on the user's behalf.
+This page covers how an application sends transactions with Arete. The
+transaction transport lets your app inspect, submit, and confirm transactions
+through the transaction descriptor embedded in a generated stack or Program SDK.
+It is independent of the live-view and Program Read endpoints.
+
+One thing never changes: the wallet compiles and signs locally. Arete never
+receives a private key and never signs on the user's behalf.
 
 The transaction transport is separate from the WebSocket transport used for streamed views:
 

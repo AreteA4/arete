@@ -1,27 +1,33 @@
 ---
 title: Quickstart
-description: Install Arete, configure your agent, explore the catalog, and install your first Program SDK.
+description: Install Arete, set up your agent, explore the catalog, and install your first Program SDK.
 ---
 
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-This quickstart prepares a project for both agent-led exploration and generated
-SDK development. It does not depend on a hard-coded hosted stack.
+This page gets a project ready for two things: asking your agent questions
+about on-chain data, and building with generated SDKs. Nothing here depends on
+one particular hosted stack being available.
 
 ## Fastest path: give your agent one URL
 
-Open the project in your coding agent and paste:
+If you work with a coding agent, this is all you need. Open the project in your
+agent and paste:
 
 <CopyPrompt>
 Read https://docs.arete.run/agent.md and follow it to set up Arete in this
 project. Verify the setup, and simply explain what Arete is capable of.
 </CopyPrompt>
 
-The agent installs the CLI, runs `a4 init -y`, checks the environment with
-`a4 doctor --json`, and tells you if the host must be reloaded to pick up its
-new skills or MCP configuration. The steps below are the manual equivalent and
-a reference for what the agent does.
+The agent installs the `a4` command-line tool, sets the project up with
+`a4 init -y`, and runs `a4 doctor --json` to check that everything is healthy.
+If your agent app has to be reloaded before it can see its new skills or MCP
+configuration, the agent tells you.
+
+The rest of this page is the same process done by hand. Read on if you would
+rather run the steps yourself, or if you want to understand what the agent just
+did.
 
 ## 1. Install the CLI
 
@@ -49,12 +55,14 @@ npx @usearete/a4 install
 </TabItem>
 </Tabs>
 
-The installer downloads the signed prebuilt binary and prints its absolute
-path. No Rust toolchain is required. Update it later with `a4 self update`.
+The installer downloads a signed, prebuilt binary and prints the full path
+where it put it. You don't need Rust or any other toolchain. To update later,
+run `a4 self update`.
 
 :::note[Two different installs]
-`npx @usearete/a4 install` installs the **CLI**. Once `a4` is available,
-`a4 install` resolves and generates the **project's Arete dependencies**.
+`npx @usearete/a4 install` installs the **CLI itself**. Once you have `a4`, the
+command `a4 install` does a different job: it resolves and generates your
+**project's Arete dependencies**.
 :::
 
 ## 2. Initialize the project
@@ -66,39 +74,44 @@ a4 init -y
 a4 doctor --json
 ```
 
-`a4 init` is idempotent. It configures the project for agents by writing or
-updating:
+`a4 init` is safe to run as many times as you like. It sets the project up for
+agents by writing or updating:
 
-- `arete.toml`;
-- the managed Arete instructions in `AGENTS.md`;
-- the bridge used by agents that read `CLAUDE.md`;
-- the five Arete skills; and
-- the Arete stream and documentation MCP servers.
+- `arete.toml`, your project's list of Arete dependencies;
+- a managed block of Arete instructions in `AGENTS.md`;
+- a bridge for agents that read `CLAUDE.md` instead;
+- the five Arete skills, which teach your agent how to work with Arete; and
+- two MCP servers, one for live data and one for searching these docs.
 
 `a4 doctor --json` checks the CLI, project manifest, lockfile, skills, and MCP
-configuration. Follow the reported `fix` command for any required failure.
+configuration. When a required check fails, doctor reports a `fix` command. Run
+it.
 
-There is no `a4 knit` command; `a4 init` is the project setup command.
+There is no `a4 knit` command. `a4 init` is the project setup command.
 
 ## 3. Explore by intent
 
-Ask the catalog for a capability rather than guessing a package:
+Describe what you're after and let the catalog suggest packages. That works
+better than guessing a name:
 
 ```bash
 a4 explore catalog --query "token account balances" --json
 a4 explore catalog --kind program --mode read --target typescript --json
 ```
 
-Inspect one exact result:
+Then look closely at one result:
 
 ```bash
 a4 explore catalog program spl-token --json
 ```
 
-The response reports the exact program identity, available modes, account and
-instruction surface, Program Read status, verified SDK targets, and install
-command. Catalog contents change independently of these docs, so current CLI
-output is the authority.
+What comes back is that program's **descriptor**, its exact spec sheet. It
+gives you the program's identity, the modes it supports, its accounts and
+instructions, whether hosted reads (Program Read) are available, which SDK
+languages are verified, and the command to install it.
+
+The catalog changes more often than these docs do. When the two disagree,
+trust what the CLI prints.
 
 ## 4. Install the Program SDK
 
@@ -106,16 +119,16 @@ output is the authority.
 a4 install program spl-token --ts
 ```
 
-The command:
+Behind that one command, `a4`:
 
 1. adds the dependency to `arete.toml`;
-2. resolves exact package and artifact identities;
-3. writes `arete.lock`; and
-4. generates the TypeScript SDK at the configured output location.
+2. resolves it to exact package and artifact identities;
+3. writes those to `arete.lock`; and
+4. generates the TypeScript SDK at your configured output location.
 
-Read the command's output for the exact import path. Generated files are owned
-by the installer; update the dependency or source and regenerate instead of
-editing them.
+The command's output tells you the exact import path to use. The generated
+files belong to the installer. If you need something different, change the
+dependency or its source and regenerate, rather than editing them.
 
 To reproduce the project later:
 
@@ -123,9 +136,13 @@ To reproduce the project later:
 a4 install --locked
 ```
 
-Use `--rust` or `--python` only if the exact descriptor verifies that target.
+Use `--rust` or `--python` only if the exact descriptor confirms that target is
+verified.
 
 ## 5. Ask your agent to inspect it
+
+You now have generated code in the project. Have your agent walk you through
+it:
 
 <CopyPrompt>
 Inspect the Arete dependency installed in this project. Explain the generated
@@ -137,13 +154,14 @@ generated types and exact descriptor as the source of truth; do not guess names.
 From here, continue with:
 
 - [Program Read](/using-programs/program-reads/) for typed accounts;
-- [Solana chain reads](/using-programs/chain-reads/) for generic state; and
-- [Transactions](/using-stacks/transactions/) for preparation, inspection,
-  local signing, and submission.
+- [Solana chain reads](/using-programs/chain-reads/) for general Solana state;
+  and
+- [Transactions](/using-stacks/transactions/) for preparing, inspecting,
+  signing locally, and submitting.
 
 ## 6. Ask an on-chain question through MCP
 
-The project is also ready for interactive exploration:
+The project is also ready for questions in plain language. Try this one:
 
 <CopyPrompt>
 Use Arete to find any currently deployed live views relevant to token activity.
@@ -153,33 +171,33 @@ suitable subscribe-ready view, say so and show me the nearest read-ready
 programs instead.
 </CopyPrompt>
 
-Hosted knowledge and live connections may require an account:
+Curated knowledge and live connections may require an account:
 
 ```bash
 a4 auth signup
 ```
 
-The agent should use catalog results dynamically. It should not rely on an ORE
-deployment or any other named stack being public forever.
+Your agent should treat the catalog as a live source and check it each time. No
+single stack, ORE or otherwise, is guaranteed to stay public forever.
 
 [Explore with MCP →](/agent-skills/explore-on-chain/)
 
 ## What is ready now?
 
-Arete distinguishes knowledge from delivery. A result may be cataloged while
-only some modes are ready:
+Arete knowing about a program is one thing. Being able to serve it to you is
+another. A catalog entry can exist while only some of its modes are ready:
 
 | Mode        | Use it for                               |
 | ----------- | ---------------------------------------- |
-| `read`      | Program accounts and generic chain state |
+| `read`      | Program accounts and general chain state |
 | `build`     | Instructions, transactions, and flows    |
 | `subscribe` | Hosted point-in-time and live views      |
 
-Always search for the mode you need and inspect the exact descriptor before
-writing application code.
+Search for the mode you need, and open the exact descriptor before writing
+application code.
 
 ## Next step
 
 Follow [From Question to Application](/getting-started/from-question-to-app/)
-to see how MCP exploration, custom read models, stack installation, and typed
+to see how MCP exploration, custom views, stack installation, and typed
 application code fit together.

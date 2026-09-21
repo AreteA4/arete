@@ -3,24 +3,26 @@ title: Program Read
 description: Fetch typed program accounts through an exact, release-pinned decoder.
 ---
 
-Program Read is the typed account-read surface attached to a published program
-release. The generated SDK knows the exact program identity, account schemas,
-and service descriptor, so callers do not copy decoders or send schemas with
-each request.
+Program Read is how you look up a program's on-chain accounts and get them back
+as typed data instead of raw bytes. It is attached to one published program
+release. The generated SDK already knows the exact program identity, the account
+schemas, and where the service lives, so you never copy a decoder around or send
+a schema with each request.
 
 ## Why release-pinned reads matter
 
-An address alone does not say which schema version should decode its bytes.
-The generated reader is tied to the exact Program Release selected in
-`arete.lock`. That gives the client a reproducible relationship between:
+An address on its own doesn't tell you which version of a schema should decode
+the bytes stored there. Programs get upgraded, and layouts change. The generated
+reader is tied to the exact Program Release chosen in `arete.lock`, which gives
+your client a reproducible link between:
 
 - the executable program identity;
 - the normalized schema used to decode it;
 - the generated TypeScript, Rust, or Python type; and
 - the hosted read capability.
 
-Do not replace a generated reader with an arbitrary RPC decoder unless you are
-deliberately leaving the installed contract.
+Don't swap a generated reader for some other RPC decoder unless you really do
+mean to step outside the installed contract.
 
 ## Check availability
 
