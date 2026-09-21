@@ -6460,6 +6460,24 @@ mod tests {
         BinaryOp, ComputedExpr, ComputedFieldSpec, HttpMethod, UrlResolverConfig, UrlSource,
     };
 
+    /// `#[map(...::__event_index)]` compiles to a read of
+    /// `__update_context.event_index`, which is this envelope. If the field is
+    /// absent the mapping resolves to nothing and the target stays unset.
+    #[test]
+    fn update_context_publishes_occurrence_provenance_to_the_dsl() {
+        let context = UpdateContext::new_instruction(100, "sig".to_string(), 3)
+            .at_occurrence("0.1".to_string(), 7);
+        let envelope = context.to_value();
+
+        assert_eq!(envelope.get("event_index"), Some(&json!(7)));
+        assert_eq!(envelope.get("ix_path"), Some(&json!("0.1")));
+
+        // An account update has no occurrence, and must not invent one.
+        let account = UpdateContext::new_account(100, "sig".to_string(), 1).to_value();
+        assert_eq!(account.get("event_index"), None);
+        assert_eq!(account.get("ix_path"), None);
+    }
+
     #[test]
     fn test_url_resolver_cache_key_uses_method_and_resolved_url() {
         let field_path_resolver = ResolverType::Url(UrlResolverConfig {

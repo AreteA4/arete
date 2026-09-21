@@ -1276,4 +1276,18 @@ impl<'a> InstructionContext<'a> {
     pub fn signature(&self) -> Option<&str> {
         self.signature.as_deref()
     }
+
+    /// Position of this occurrence within its transaction
+    pub fn event_index(&self) -> Option<u64> {
+        self.update_context
+            .as_ref()
+            .and_then(|context| context.event_index)
+    }
+
+    /// 0-based instruction path within the transaction (e.g. `"0.1"`)
+    pub fn ix_path(&self) -> Option<&str> {
+        self.update_context
+            .as_ref()
+            .and_then(|context| context.ix_path.as_deref())
+    }
 }
