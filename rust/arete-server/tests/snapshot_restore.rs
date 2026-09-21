@@ -580,7 +580,7 @@ async fn an_explicit_legacy_hash_allows_one_safe_live_start_migration() {
     let restored_service = SnapshotService::initialize(
         migration_config,
         &spec,
-        restored_cache,
+        restored_cache.clone(),
         &restored_view,
         restored_tx,
     )
@@ -591,6 +591,10 @@ async fn an_explicit_legacy_hash_allows_one_safe_live_start_migration() {
         .take_restored()
         .expect("approved legacy hash hydrates");
     assert_eq!(restored.resume_watermark, None);
+    assert!(
+        restored_cache.get_all("Token/list").await.is_empty(),
+        "legacy migration must discard unverifiable projection caches"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -787,7 +791,7 @@ fn snapshot_config_from_env_round_trip() {
     std::env::set_var("ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS", "9000");
     std::env::set_var(
         "ARETE_SNAPSHOT_LEGACY_BYTECODE_HASHES",
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     );
 
     let config = SnapshotConfig::from_env().unwrap();
@@ -799,6 +803,9 @@ fn snapshot_config_from_env_round_trip() {
     assert_eq!(config.min_mutations, 5);
     assert_eq!(config.max_resume_age_slots, 9_000);
     assert_eq!(config.legacy_bytecode_hashes.len(), 2);
+    assert!(config
+        .legacy_bytecode_hashes
+        .contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
 
     // Enabled without a URL is a configuration error.
     std::env::remove_var("ARETE_SNAPSHOT_URL");

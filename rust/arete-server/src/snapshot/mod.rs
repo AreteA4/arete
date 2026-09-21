@@ -143,7 +143,7 @@ impl SnapshotConfig {
                     .split(',')
                     .map(str::trim)
                     .filter(|hash| !hash.is_empty())
-                    .map(str::to_string)
+                    .map(str::to_ascii_lowercase)
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -565,6 +565,7 @@ impl SnapshotService {
             .config
             .legacy_bytecode_hashes
             .contains(&header.bytecode_hash);
+        let legacy_migration = approved_legacy && !exact_bytecode && !matching_contracts;
         if !exact_bytecode && !matching_contracts && !approved_legacy {
             warn!(
                 snapshot = %name,
@@ -589,6 +590,12 @@ impl SnapshotService {
         if !exact_bytecode {
             remap_snapshot_states(&mut payload.vm, &self.state_ids)
                 .with_context(|| format!("snapshot {name} state contract is incompatible"))?;
+        }
+        if legacy_migration {
+            // A pre-contract snapshot cannot prove that its materialized views
+            // still match the current projections. Preserve only durable VM
+            // state and let live input rebuild every projection cache.
+            payload.entity_cache.clear();
         }
 
         let cached_views = payload.entity_cache.len();
@@ -630,7 +637,8 @@ impl SnapshotService {
                     snapshot = %name,
                     matching_contracts,
                     approved_legacy,
-                    "Hydrated a compatible snapshot from different bytecode; starting live"
+                    legacy_state_only = legacy_migration,
+                    "Hydrated snapshot state from different bytecode; starting live"
                 );
             }
             None

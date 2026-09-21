@@ -234,8 +234,9 @@ Snapshots written before contract metadata existed remain fail-closed. For a
 reviewed one-time migration, set
 `ARETE_SNAPSHOT_LEGACY_BYTECODE_HASHES=<sha256>[,<sha256>...]`. Only those exact
 source hashes may hydrate; state tables are remapped by entity name and the
-stream always starts live. Remove the allowlist after the runtime writes a new
-contract-aware snapshot.
+stream always starts live. Legacy projection caches are discarded and rebuilt
+from live input because their structure cannot be verified. Remove the
+allowlist after the runtime writes a new contract-aware snapshot.
 
 ## Health Monitoring
 
