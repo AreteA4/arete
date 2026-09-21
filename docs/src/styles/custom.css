@@ -17,8 +17,13 @@
   --arete-panel-muted: rgba(31, 27, 22, 0.035);
   --arete-grid-fine: rgba(31, 27, 22, 0.035);
   --arete-grid-strong: rgba(31, 27, 22, 0.055);
-  --arete-code-background: #211d18;
-  --arete-code-foreground: #f3efe4;
+  --arete-code-background: #e9e2d6;
+  --arete-code-foreground: #29231d;
+  --arete-code-muted: #6a6154;
+  --arete-code-line: rgba(31, 27, 22, 0.18);
+  --arete-code-hover: rgba(31, 27, 22, 0.06);
+  --arete-code-link: #274f83;
+  --arete-code-link-hover: #183e70;
 
   --sl-font: var(--arete-font-sans);
   --sl-font-mono: var(--arete-font-mono);
@@ -76,6 +81,11 @@
   --arete-grid-strong: rgba(243, 239, 228, 0.045);
   --arete-code-background: #0d0b08;
   --arete-code-foreground: #f3efe4;
+  --arete-code-muted: #a89f91;
+  --arete-code-line: rgba(243, 239, 228, 0.18);
+  --arete-code-hover: rgba(243, 239, 228, 0.06);
+  --arete-code-link: #9bc3f2;
+  --arete-code-link-hover: #c1dcfa;
 
   --sl-color-white: var(--arete-foreground);
   --sl-color-black: var(--arete-background);
@@ -458,6 +468,29 @@ main a:hover {
 
 .sl-heading-wrapper {
   --sl-anchor-icon-gap: 0.7em;
+  --sl-anchor-icon-size: 0.65em;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h1 {
+  font-size: var(--sl-text-3xl);
+  line-height: 1.05;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h2 {
+  font-size: var(--sl-text-2xl);
+  line-height: 1.15;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h3 {
+  font-size: var(--sl-text-xl);
+  line-height: 1.25;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h4,
+.sl-markdown-content .sl-heading-wrapper.level-h5,
+.sl-markdown-content .sl-heading-wrapper.level-h6 {
+  font-size: var(--sl-text-lg);
+  line-height: 1.3;
 }
 
 main :not(pre) > code {
@@ -480,31 +513,6 @@ main pre,
 
 .expressive-code .frame::before {
   display: none !important;
-}
-
-/* Code blocks intentionally stay ink-dark in light mode. Use Shiki's dark
-   token set on that surface instead of its low-contrast light-theme tokens. */
-:root[data-theme="light"] .expressive-code:not([data-theme="dark"]) {
-  --ec-codeFg: #d6deeb;
-  --ec-codeSelBg: #355f97;
-  --ec-gtrFg: #91a4b3;
-  --ec-gtrBrdCol: rgba(145, 164, 179, 0.24);
-  --ec-gtrHlFg: #d6deeb;
-}
-
-:root[data-theme="light"] .expressive-code:not([data-theme="dark"]) pre > code {
-  color: #d6deeb;
-}
-
-:root[data-theme="light"]
-  .expressive-code:not([data-theme="dark"])
-  .ec-line
-  :where(span[style^="--"]:not([class])) {
-  color: var(--0, var(--arete-code-foreground));
-  background-color: var(--0bg, transparent);
-  font-style: var(--0fs, inherit);
-  font-weight: var(--0fw, inherit);
-  text-decoration: var(--0td, inherit);
 }
 
 main table {

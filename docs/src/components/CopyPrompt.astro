@@ -69,9 +69,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    border-bottom: 1px solid rgba(243, 239, 228, 0.16);
+    border-bottom: 1px solid var(--arete-code-line);
     padding: 0.62rem 3.25rem 0.62rem 0.9rem;
-    color: rgba(243, 239, 228, 0.56);
+    color: var(--arete-code-muted);
     font-size: 0.6rem;
     font-weight: 600;
     letter-spacing: 0.12em;
@@ -99,12 +99,16 @@
   }
 
   .prompt-content :global(a) {
-    color: #9bc3f2;
-    text-decoration-color: rgba(155, 195, 242, 0.55);
+    color: var(--arete-code-link);
+    text-decoration-color: color-mix(
+      in srgb,
+      var(--arete-code-link),
+      transparent 45%
+    );
   }
 
   .prompt-content :global(a:hover) {
-    color: #c1dcfa;
+    color: var(--arete-code-link-hover);
   }
 
   .copy-btn {
@@ -117,17 +121,17 @@
     width: 2rem;
     height: 2rem;
     padding: 0;
-    border: 1px solid rgba(243, 239, 228, 0.18);
+    border: 1px solid var(--arete-code-line);
     border-radius: 0;
     background: transparent;
-    color: rgba(243, 239, 228, 0.62);
+    color: var(--arete-code-muted);
     cursor: pointer;
     transition: all 0.15s ease;
   }
 
   .copy-btn:hover {
     border-color: var(--arete-accent);
-    background: rgba(243, 239, 228, 0.06);
+    background: var(--arete-code-hover);
     color: var(--arete-code-foreground);
   }
 
