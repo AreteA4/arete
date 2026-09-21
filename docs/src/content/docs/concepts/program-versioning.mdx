@@ -1,6 +1,6 @@
 ---
 title: Program Versioning
-description: How Arete assigns independent semantic versions to content-addressed program releases.
+description: How Arete assigns semantic versions to content-addressed program releases.
 ---
 
 Every program package in the Arete registry has an **Arete version**, such as
@@ -8,10 +8,8 @@ Every program package in the Arete registry has an **Arete version**, such as
 that Arete publishes: its normalized interface, generated SDK surface, and
 hosted Program Release.
 
-An Arete version is separate from any version, release name, or upgrade number
-maintained by the protocol itself. For example, `spl-token@1.0.2` means version
-`1.0.2` of Arete's `spl-token` package. It does not rename or replace the
-upstream SPL Token program's own release history.
+The Arete version is separate from any versioning system used by the original
+protocol.
 
 ## Why Arete has its own versions
 
@@ -114,20 +112,6 @@ The descriptor is the source of truth for what is currently available. Use
 `a4 install` to save a version requirement in `arete.toml`; use `a4 update` to
 advance within that requirement. Commit `arete.lock` to preserve the exact
 package and artifact identities selected for the project.
-
-## What an Arete version does not claim
-
-An Arete version does not assert that:
-
-- the protocol uses the same version number;
-- the protocol assigned semantic meaning to an on-chain upgrade;
-- Arete owns or governs the program;
-- the program has been audited or is safe to use; or
-- a higher version is preferable for every application.
-
-It tells you how Arete classified and packaged an observed program interface
-and the exact artifacts behind it. Use protocol-owned sources for upstream
-release policy, governance, and security information.
 
 ## Next steps
 
