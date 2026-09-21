@@ -6,7 +6,7 @@ use crate::ast::{
     ViewTransform,
 };
 use crate::diagnostic::{suggestion_or_available_suffix, ErrorCollector};
-use crate::event_type_helpers::{find_idl_for_type, IdlLookup};
+use crate::event_type_helpers::IdlLookup;
 use crate::parse;
 use crate::parse::idl as idl_parser;
 use crate::parse::pda_validation::PdaValidationContext;
@@ -559,10 +559,7 @@ fn resolve_mapping_source_once<'a>(
             syn::parse_str::<syn::Path>(source_type).map_err(|_| IdlSearchError::InvalidPath {
                 path: source_type.to_string(),
             })?;
-        let idl =
-            find_idl_for_type(source_type, idls).ok_or_else(|| IdlSearchError::InvalidPath {
-                path: source_type.to_string(),
-            })?;
+        let idl = idl_refs::resolve_source_idl(source_type, idls)?;
         let account_name = path
             .segments
             .last()

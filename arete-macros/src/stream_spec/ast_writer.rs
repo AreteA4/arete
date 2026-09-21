@@ -7,7 +7,7 @@
 //! The same AST is used for both inline code generation (via `codegen::generate_handlers_from_specs`)
 //! and internal compiler consumers, ensuring identical output.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::ast::writer::{
     context_field_name, convert_idl_to_snapshot, parse_population_strategy, parse_transformation,
@@ -21,7 +21,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{idl_error_to_syn, internal_codegen_error};
 use crate::event_type_helpers::{
-    find_idl_for_type, program_name_for_type, scoped_instruction_event_type,
+    find_idl_by_prefix, find_idl_for_type, program_name_for_type, scoped_instruction_event_type,
     scoped_instruction_or_cpi_event_type, IdlLookup,
 };
 use crate::parse;
@@ -40,6 +40,98 @@ use super::handlers::{find_field_in_instruction, get_join_on_field};
 // ============================================================================
 // AST Building
 // ============================================================================
+
+/// The program owning a declared source, accepting either spelling the macro
+/// produces: an sdk-prefixed type (`entropy_sdk::accounts::Var`) or a
+/// program-qualified event key (`entropy::Reveal`).
+fn source_program_name<'a>(source: &str, idls: IdlLookup<'a>) -> Option<&'a str> {
+    if let Some(idl) = find_idl_by_prefix(source, idls) {
+        return Some(idl.get_name());
+    }
+    let program = source.split("::").next()?.trim();
+    idls.iter()
+        .map(|(_, idl)| *idl)
+        .find(|idl| idl.get_name() == program)
+        .map(|idl| idl.get_name())
+}
+
+/// One entry per distinct declared source, so a source cannot be counted
+/// twice for being captured by several fields.
+///
+/// The tail keeps the kind segment, which separates an account from an
+/// instruction of the same name.
+fn source_identity<'a>(source: &str, idls: IdlLookup<'a>) -> Option<(&'a str, String)> {
+    let program = source_program_name(source, idls)?;
+    let tail = source.split("::").skip(1).collect::<Vec<_>>().join("::");
+    Some((program, tail))
+}
+
+/// Resolve the IDL that owns this entity, from the sources it declares.
+///
+/// A single-program entity resolves to its own program whatever order the
+/// stack declares its IDLs in, which picking `idls.first()` could not do: an
+/// entity sourced entirely from the second IDL used to advertise the first
+/// IDL's program id and be typed against the first IDL's schema.
+fn resolve_entity_idl<'a>(
+    sources_by_type: &BTreeMap<String, Vec<parse::MapAttribute>>,
+    events_by_instruction: &BTreeMap<String, Vec<(String, parse::EventAttribute, syn::Type)>>,
+    idls: IdlLookup<'a>,
+) -> Option<&'a idl_parser::IdlSpec> {
+    if idls.len() <= 1 {
+        return idls.first().map(|(_, idl)| *idl);
+    }
+
+    // ponytail: an entity spanning programs (ore's `OreRound` reads Entropy
+    // accounts) is attributed to whichever program owns most of the distinct
+    // sources it declares, tie-broken by program name so the result never
+    // depends on IDL declaration order. Per-section program attribution is the
+    // upgrade path if one entity ever needs two programs to own different
+    // sections.
+    let mut declared: BTreeSet<(&str, String)> = sources_by_type
+        .keys()
+        .filter_map(|source_type| source_identity(source_type, idls))
+        .collect();
+
+    // Every event names a source, including the legacy
+    // `event(instruction = "entropy::Reveal")` form, which keeps no path and so
+    // is never merged into `sources_by_type`. An event that *was* merged
+    // resolves to the identity already in the set, and several fields may
+    // capture one instruction, so the set collapses both to one vote.
+    for (instruction_key, event_mappings) in events_by_instruction {
+        for (_, event_attr, _) in event_mappings {
+            let instruction_path = event_attr
+                .from_instruction
+                .as_ref()
+                .or(event_attr.inferred_instruction.as_ref())
+                .map(path_to_string);
+            let identity = instruction_path
+                .as_deref()
+                .and_then(|path| source_identity(path, idls))
+                .or_else(|| source_identity(instruction_key, idls));
+            if let Some(identity) = identity {
+                declared.insert(identity);
+            }
+        }
+    }
+
+    let mut sources_per_program: BTreeMap<&str, usize> = BTreeMap::new();
+    for (program, _) in &declared {
+        *sources_per_program.entry(program).or_default() += 1;
+    }
+
+    let owner = sources_per_program
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(left.0)))
+        .map(|(program_name, _)| program_name);
+
+    owner
+        .and_then(|program_name| {
+            idls.iter()
+                .find(|(_, idl)| idl.get_name() == program_name)
+                .map(|(_, idl)| *idl)
+        })
+        .or_else(|| idls.first().map(|(_, idl)| *idl))
+}
 
 /// Build the complete AST from parsed macro attributes.
 ///
@@ -80,7 +172,7 @@ pub fn build_ast(
     idls: IdlLookup,
     views: Vec<crate::ast::ViewDef>,
 ) -> syn::Result<SerializableStreamSpec> {
-    let idl = idls.first().map(|(_, idl)| *idl);
+    let idl = resolve_entity_idl(sources_by_type, events_by_instruction, idls);
     let handlers = build_handlers(
         sources_by_type,
         events_by_instruction,
@@ -1198,10 +1290,17 @@ fn build_event_handler(
             find_idl_for_type(path_str, idls),
             program_name_for_type(path_str, idls),
         ),
-        None => (
-            idls.first().map(|(_, idl)| *idl),
-            idls.first().map(|(_, idl)| idl.get_name()),
-        ),
+        None => {
+            // The instruction is program-qualified ("pump::Trade"), so resolve
+            // from its own program instead of whichever IDL comes first.
+            let program = instruction.split("::").next().unwrap_or_default();
+            let owning = idls
+                .iter()
+                .find(|(_, idl)| idl.get_name() == program)
+                .map(|(_, idl)| *idl)
+                .or_else(|| idls.first().map(|(_, idl)| *idl));
+            (owning, owning.map(|idl| idl.get_name()))
+        }
     };
     let parts: Vec<&str> = instruction.split("::").collect();
     if parts.len() != 2 {
@@ -1832,4 +1931,211 @@ fn hook_for_lookup<'a>(
         }
     };
     &mut hooks[index]
+}
+
+#[cfg(test)]
+mod entity_ownership_tests {
+    use super::*;
+
+    fn idl(name: &str, address: &str) -> idl_parser::IdlSpec {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "address": address,
+            "instructions": [],
+        }))
+        .expect("minimal idl deserializes")
+    }
+
+    /// `path` is the resolved `from_instruction`. The legacy
+    /// `event(instruction = "...")` form has none, which is why it never
+    /// reaches `sources_by_type`.
+    fn event_attribute(
+        instruction: &str,
+        path: Option<&str>,
+        lookup_by: bool,
+    ) -> parse::EventAttribute {
+        parse::EventAttribute {
+            attr_span: proc_macro2::Span::call_site(),
+            instruction_span: None,
+            from_instruction: path.map(|path| syn::parse_str::<syn::Path>(path).unwrap()),
+            inferred_instruction: None,
+            capture_fields: Vec::new(),
+            field_transforms: std::collections::HashMap::new(),
+            instruction: instruction.to_string(),
+            capture_fields_legacy: Vec::new(),
+            field_transforms_legacy: std::collections::HashMap::new(),
+            strategy: "LastWrite".to_string(),
+            target_field_name: "field".to_string(),
+            join_on: None,
+            lookup_by: lookup_by.then(|| parse::FieldSpec {
+                ident: syn::parse_str::<syn::Ident>("anchor").unwrap(),
+                explicit_location: None,
+            }),
+        }
+    }
+
+    fn event_mapping(
+        instruction: &str,
+        path: Option<&str>,
+        lookup_by: bool,
+    ) -> (String, parse::EventAttribute, syn::Type) {
+        (
+            "field".to_string(),
+            event_attribute(instruction, path, lookup_by),
+            syn::parse_str::<syn::Type>("u64").unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_program_qualified_event_key_resolves_to_its_program() {
+        let pump = idl("pump", "PumpAddr");
+        let entropy = idl("entropy", "EntropyAddr");
+        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+
+        // The sdk-prefixed spelling the macro uses for map sources.
+        assert_eq!(
+            source_program_name("entropy_sdk::accounts::Var", &idls),
+            Some("entropy")
+        );
+        // The program-qualified spelling the macro uses for event keys, which
+        // an sdk-prefix match alone can never resolve.
+        assert_eq!(source_program_name("entropy::Reveal", &idls), Some("entropy"));
+        assert_eq!(source_program_name("token::Transfer", &idls), None);
+    }
+
+    #[test]
+    fn lookup_based_events_decide_ownership_when_they_outnumber_map_sources() {
+        let pump = idl("pump", "PumpAddr");
+        let entropy = idl("entropy", "EntropyAddr");
+        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+
+        let mut sources = BTreeMap::new();
+        sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
+
+        // `lookup_by` events never reach `sources_by_type`, so ownership has to
+        // count them here or the entity is attributed to the wrong program.
+        let mut events = BTreeMap::new();
+        events.insert(
+            "entropy::Reveal".to_string(),
+            vec![event_mapping(
+                "entropy::Reveal",
+                Some("entropy_sdk::instructions::Reveal"),
+                true,
+            )],
+        );
+        events.insert(
+            "entropy::Sample".to_string(),
+            vec![event_mapping(
+                "entropy::Sample",
+                Some("entropy_sdk::instructions::Sample"),
+                true,
+            )],
+        );
+
+        let resolved = resolve_entity_idl(&sources, &events, &idls);
+        assert_eq!(
+            resolved.and_then(|idl| idl.address.as_deref()),
+            Some("EntropyAddr")
+        );
+    }
+
+    /// The legacy `event(instruction = "entropy::Reveal")` form keeps no
+    /// instruction path, so `entity.rs` has nothing to merge into
+    /// `sources_by_type`. Skipping it here left the source with no vote at all.
+    #[test]
+    fn legacy_string_events_still_vote_for_their_program() {
+        let pump = idl("pump", "PumpAddr");
+        let entropy = idl("entropy", "EntropyAddr");
+        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+
+        let mut sources = BTreeMap::new();
+        sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
+
+        let mut events = BTreeMap::new();
+        events.insert(
+            "entropy::Reveal".to_string(),
+            vec![event_mapping("entropy::Reveal", None, false)],
+        );
+        events.insert(
+            "entropy::Sample".to_string(),
+            vec![event_mapping("entropy::Sample", None, false)],
+        );
+
+        let resolved = resolve_entity_idl(&sources, &events, &idls);
+        assert_eq!(
+            resolved.and_then(|idl| idl.address.as_deref()),
+            Some("EntropyAddr")
+        );
+    }
+
+    #[test]
+    fn an_event_already_merged_into_its_source_type_votes_once() {
+        let pump = idl("pump", "PumpAddr");
+        let entropy = idl("entropy", "EntropyAddr");
+        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+
+        let mut sources = BTreeMap::new();
+        sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
+        sources.insert("pump_sdk::accounts::Global".to_string(), Vec::new());
+        // A non-`lookup_by` event is merged under its instruction path.
+        sources.insert(
+            "entropy_sdk::instructions::Reveal".to_string(),
+            Vec::new(),
+        );
+
+        // Counting the same source again, once per capturing field, would let
+        // entropy outweigh pump's two distinct sources.
+        let mut events = BTreeMap::new();
+        events.insert(
+            "entropy::Reveal".to_string(),
+            vec![
+                event_mapping(
+                    "entropy::Reveal",
+                    Some("entropy_sdk::instructions::Reveal"),
+                    false,
+                ),
+                event_mapping(
+                    "entropy::Reveal",
+                    Some("entropy_sdk::instructions::Reveal"),
+                    false,
+                ),
+            ],
+        );
+
+        let resolved = resolve_entity_idl(&sources, &events, &idls);
+        assert_eq!(
+            resolved.and_then(|idl| idl.address.as_deref()),
+            Some("PumpAddr")
+        );
+    }
+
+    #[test]
+    fn several_fields_capturing_one_instruction_are_one_source() {
+        let pump = idl("pump", "PumpAddr");
+        let entropy = idl("entropy", "EntropyAddr");
+        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+
+        let mut sources = BTreeMap::new();
+        sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
+        sources.insert("pump_sdk::accounts::Global".to_string(), Vec::new());
+
+        // Three fields, one entropy instruction. Counting per field would let it
+        // outvote pump's two distinct sources, so adding a captured field would
+        // silently change the entity's program.
+        let mut events = BTreeMap::new();
+        events.insert(
+            "entropy::Reveal".to_string(),
+            vec![
+                event_mapping("entropy::Reveal", Some("entropy_sdk::instructions::Reveal"), true),
+                event_mapping("entropy::Reveal", Some("entropy_sdk::instructions::Reveal"), true),
+                event_mapping("entropy::Reveal", Some("entropy_sdk::instructions::Reveal"), true),
+            ],
+        );
+
+        let resolved = resolve_entity_idl(&sources, &events, &idls);
+        assert_eq!(
+            resolved.and_then(|idl| idl.address.as_deref()),
+            Some("PumpAddr")
+        );
+    }
 }

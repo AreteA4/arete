@@ -1,4 +1,4 @@
-use crate::event_type_helpers::{find_idl_for_type, IdlLookup};
+use crate::event_type_helpers::{find_idl_by_prefix, find_idl_for_type, IdlLookup};
 use crate::parse;
 use crate::utils::path_to_string;
 use arete_idl::error::IdlSearchError;
@@ -73,14 +73,42 @@ pub fn path_is_event_source(path: &syn::Path) -> bool {
         .any(|segment| segment.ident == "events")
 }
 
+/// Resolve a source path's owning IDL.
+///
+/// When the stack declares several IDLs, an unprefixed path is refused rather
+/// than bound to whichever program is declared first: the silent fallback made
+/// entity semantics depend on IDL declaration order.
+pub fn resolve_source_idl<'a>(
+    type_str: &str,
+    idls: IdlLookup<'a>,
+) -> Result<&'a IdlSpec, IdlSearchError> {
+    if let Some(idl) = find_idl_by_prefix(type_str, idls) {
+        return Ok(idl);
+    }
+    if idls.len() > 1 {
+        return Err(IdlSearchError::NotFound {
+            input: type_str.to_string(),
+            section: "the stack's programs".to_string(),
+            suggestions: Vec::new(),
+            available: idls
+                .iter()
+                .map(|(sdk_name, _)| sdk_name.clone())
+                .collect(),
+        });
+    }
+    idls.first()
+        .map(|(_, idl)| *idl)
+        .ok_or_else(|| IdlSearchError::InvalidPath {
+            path: type_str.to_string(),
+        })
+}
+
 pub fn resolve_source_lookup_from_path<'a>(
     source_path: &syn::Path,
     idls: IdlLookup<'a>,
 ) -> Result<ResolvedSourceLookup<'a>, IdlSearchError> {
     let type_str = path_to_string(source_path);
-    let idl = find_idl_for_type(&type_str, idls).ok_or_else(|| IdlSearchError::InvalidPath {
-        path: type_str.clone(),
-    })?;
+    let idl = resolve_source_idl(&type_str, idls)?;
     let source_name = source_path
         .segments
         .last()

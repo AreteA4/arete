@@ -97,15 +97,23 @@ use crate::parse::idl::IdlSpec;
 
 pub type IdlLookup<'a> = &'a [(String, &'a IdlSpec)];
 
-pub fn find_idl_for_type<'a>(type_str: &str, idls: IdlLookup<'a>) -> Option<&'a IdlSpec> {
-    if idls.is_empty() {
-        return None;
-    }
+/// Resolve the IDL that owns a type's sdk prefix, e.g. `entropy_sdk::…`.
+///
+/// `None` means no declared IDL claims the prefix, which is the signal a
+/// multi-IDL stack needs: [`find_idl_for_type`] would bind it to the first
+/// declared IDL instead.
+pub fn find_idl_by_prefix<'a>(type_str: &str, idls: IdlLookup<'a>) -> Option<&'a IdlSpec> {
     let first_segment = type_str.split("::").next()?.trim();
     idls.iter()
         .find(|(sdk_name, _)| sdk_name == first_segment)
         .map(|(_, idl)| *idl)
-        .or_else(|| Some(idls[0].1))
+}
+
+pub fn find_idl_for_type<'a>(type_str: &str, idls: IdlLookup<'a>) -> Option<&'a IdlSpec> {
+    if idls.is_empty() {
+        return None;
+    }
+    find_idl_by_prefix(type_str, idls).or_else(|| Some(idls[0].1))
 }
 
 pub fn program_name_for_type<'a>(type_str: &str, idls: IdlLookup<'a>) -> Option<&'a str> {
