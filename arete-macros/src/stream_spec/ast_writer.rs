@@ -92,14 +92,13 @@ fn resolve_entity_idl<'a>(
         .filter_map(|source_type| source_identity(source_type, idls))
         .collect();
 
-    // Only `lookup_by` events stay out of `sources_by_type`; the rest were
-    // merged there already and counting them again weights one source twice.
-    // Several fields may capture one instruction, which is still one source.
+    // Every event names a source, including the legacy
+    // `event(instruction = "entropy::Reveal")` form, which keeps no path and so
+    // is never merged into `sources_by_type`. An event that *was* merged
+    // resolves to the identity already in the set, and several fields may
+    // capture one instruction, so the set collapses both to one vote.
     for (instruction_key, event_mappings) in events_by_instruction {
         for (_, event_attr, _) in event_mappings {
-            if event_attr.lookup_by.is_none() {
-                continue;
-            }
             let instruction_path = event_attr
                 .from_instruction
                 .as_ref()
@@ -1951,11 +1950,18 @@ mod entity_ownership_tests {
         .expect("minimal idl deserializes")
     }
 
-    fn event_attribute(instruction: &str, lookup_by: bool) -> parse::EventAttribute {
+    /// `path` is the resolved `from_instruction`. The legacy
+    /// `event(instruction = "...")` form has none, which is why it never
+    /// reaches `sources_by_type`.
+    fn event_attribute(
+        instruction: &str,
+        path: Option<&str>,
+        lookup_by: bool,
+    ) -> parse::EventAttribute {
         parse::EventAttribute {
             attr_span: proc_macro2::Span::call_site(),
             instruction_span: None,
-            from_instruction: None,
+            from_instruction: path.map(|path| syn::parse_str::<syn::Path>(path).unwrap()),
             inferred_instruction: None,
             capture_fields: Vec::new(),
             field_transforms: std::collections::HashMap::new(),
@@ -1972,10 +1978,14 @@ mod entity_ownership_tests {
         }
     }
 
-    fn event_mapping(instruction: &str, lookup_by: bool) -> (String, parse::EventAttribute, syn::Type) {
+    fn event_mapping(
+        instruction: &str,
+        path: Option<&str>,
+        lookup_by: bool,
+    ) -> (String, parse::EventAttribute, syn::Type) {
         (
             "field".to_string(),
-            event_attribute(instruction, lookup_by),
+            event_attribute(instruction, path, lookup_by),
             syn::parse_str::<syn::Type>("u64").unwrap(),
         )
     }
@@ -2011,11 +2021,48 @@ mod entity_ownership_tests {
         let mut events = BTreeMap::new();
         events.insert(
             "entropy::Reveal".to_string(),
-            vec![event_mapping("entropy::Reveal", true)],
+            vec![event_mapping(
+                "entropy::Reveal",
+                Some("entropy_sdk::instructions::Reveal"),
+                true,
+            )],
         );
         events.insert(
             "entropy::Sample".to_string(),
-            vec![event_mapping("entropy::Sample", true)],
+            vec![event_mapping(
+                "entropy::Sample",
+                Some("entropy_sdk::instructions::Sample"),
+                true,
+            )],
+        );
+
+        let resolved = resolve_entity_idl(&sources, &events, &idls);
+        assert_eq!(
+            resolved.and_then(|idl| idl.address.as_deref()),
+            Some("EntropyAddr")
+        );
+    }
+
+    /// The legacy `event(instruction = "entropy::Reveal")` form keeps no
+    /// instruction path, so `entity.rs` has nothing to merge into
+    /// `sources_by_type`. Skipping it here left the source with no vote at all.
+    #[test]
+    fn legacy_string_events_still_vote_for_their_program() {
+        let pump = idl("pump", "PumpAddr");
+        let entropy = idl("entropy", "EntropyAddr");
+        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+
+        let mut sources = BTreeMap::new();
+        sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
+
+        let mut events = BTreeMap::new();
+        events.insert(
+            "entropy::Reveal".to_string(),
+            vec![event_mapping("entropy::Reveal", None, false)],
+        );
+        events.insert(
+            "entropy::Sample".to_string(),
+            vec![event_mapping("entropy::Sample", None, false)],
         );
 
         let resolved = resolve_entity_idl(&sources, &events, &idls);
@@ -2026,22 +2073,37 @@ mod entity_ownership_tests {
     }
 
     #[test]
-    fn merged_events_are_not_counted_twice() {
+    fn an_event_already_merged_into_its_source_type_votes_once() {
         let pump = idl("pump", "PumpAddr");
         let entropy = idl("entropy", "EntropyAddr");
         let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
 
         let mut sources = BTreeMap::new();
         sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
-        sources.insert("pump_sdk::events::Trade".to_string(), Vec::new());
+        sources.insert("pump_sdk::accounts::Global".to_string(), Vec::new());
+        // A non-`lookup_by` event is merged under its instruction path.
+        sources.insert(
+            "entropy_sdk::instructions::Reveal".to_string(),
+            Vec::new(),
+        );
 
-        // A non-`lookup_by` event is already merged into `sources_by_type`;
-        // counting its instruction key again would let one entropy declaration
-        // outweigh two pump sources.
+        // Counting the same source again, once per capturing field, would let
+        // entropy outweigh pump's two distinct sources.
         let mut events = BTreeMap::new();
         events.insert(
             "entropy::Reveal".to_string(),
-            vec![event_mapping("entropy::Reveal", false)],
+            vec![
+                event_mapping(
+                    "entropy::Reveal",
+                    Some("entropy_sdk::instructions::Reveal"),
+                    false,
+                ),
+                event_mapping(
+                    "entropy::Reveal",
+                    Some("entropy_sdk::instructions::Reveal"),
+                    false,
+                ),
+            ],
         );
 
         let resolved = resolve_entity_idl(&sources, &events, &idls);
@@ -2068,9 +2130,9 @@ mod entity_ownership_tests {
         events.insert(
             "entropy::Reveal".to_string(),
             vec![
-                event_mapping("entropy::Reveal", true),
-                event_mapping("entropy::Reveal", true),
-                event_mapping("entropy::Reveal", true),
+                event_mapping("entropy::Reveal", Some("entropy_sdk::instructions::Reveal"), true),
+                event_mapping("entropy::Reveal", Some("entropy_sdk::instructions::Reveal"), true),
+                event_mapping("entropy::Reveal", Some("entropy_sdk::instructions::Reveal"), true),
             ],
         );
 
