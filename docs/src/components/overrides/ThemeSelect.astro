@@ -1,0 +1,149 @@
+<button
+  type="button"
+  class="arete-theme-toggle"
+  data-theme-toggle
+  aria-label="Toggle color theme"
+  title="Toggle color theme"
+>
+  <svg
+    class="theme-icon theme-icon--moon"
+    aria-hidden="true"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path>
+  </svg>
+  <svg
+    class="theme-icon theme-icon--sun"
+    aria-hidden="true"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <circle cx="12" cy="12" r="4"></circle>
+    <path
+      d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
+    ></path>
+  </svg>
+</button>
+
+<style>
+  .arete-theme-toggle {
+    display: inline-flex;
+    width: 2.5rem;
+    height: 2.5rem;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    background: transparent;
+    color: var(--arete-muted);
+    transition: color 160ms ease;
+  }
+
+  .arete-theme-toggle:hover {
+    color: var(--arete-foreground);
+  }
+
+  .arete-theme-toggle:focus-visible {
+    outline: 2px solid var(--arete-accent);
+    outline-offset: 2px;
+  }
+
+  .theme-icon {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  .theme-icon--sun,
+  :root[data-theme="dark"] .theme-icon--moon {
+    display: none;
+  }
+
+  :root[data-theme="dark"] .theme-icon--sun {
+    display: block;
+  }
+</style>
+
+<script>
+  type Theme = "light" | "dark";
+
+  const cookieMaxAge = 60 * 60 * 24 * 365;
+
+  function cookieDomain() {
+    const host = location.hostname;
+    if (host === "localhost" || host === "127.0.0.1" || /^[0-9.]+$/.test(host))
+      return "";
+    const parts = host.split(".");
+    return parts.length >= 2 ? `.${parts.slice(-2).join(".")}` : "";
+  }
+
+  function currentTheme(): Theme {
+    return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  }
+
+  function persistTheme(theme: Theme) {
+    try {
+      localStorage.setItem("theme", theme);
+      localStorage.setItem("starlight-theme", theme);
+    } catch {
+      // Storage can be unavailable in hardened browser contexts.
+    }
+    const domain = cookieDomain();
+    const domainAttribute = domain ? `; Domain=${domain}` : "";
+    const secureAttribute = location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `theme=${theme}; Max-Age=${cookieMaxAge}; Path=/; SameSite=Lax${domainAttribute}${secureAttribute}`;
+  }
+
+  function applyTheme(theme: Theme) {
+    const root = document.documentElement;
+    root.dataset.theme = theme;
+    root.style.colorScheme = theme;
+    const themeColor = document.querySelector<HTMLMetaElement>(
+      'meta[name="theme-color"]',
+    );
+    themeColor?.setAttribute(
+      "content",
+      theme === "dark" ? "#17130e" : "#f3efe4",
+    );
+    document
+      .querySelectorAll<HTMLButtonElement>("[data-theme-toggle]")
+      .forEach((button) => {
+        const label = `Switch to ${theme === "dark" ? "light" : "dark"} mode`;
+        button.setAttribute("aria-label", label);
+        button.setAttribute("title", label);
+      });
+  }
+
+  function initializeThemeToggles() {
+    const theme = currentTheme();
+    applyTheme(theme);
+    document
+      .querySelectorAll<HTMLButtonElement>("[data-theme-toggle]")
+      .forEach((button) => {
+        if (button.dataset.themeReady === "true") return;
+        button.dataset.themeReady = "true";
+        button.addEventListener("click", () => {
+          const next = currentTheme() === "dark" ? "light" : "dark";
+          persistTheme(next);
+          applyTheme(next);
+        });
+      });
+  }
+
+  initializeThemeToggles();
+  document.addEventListener("astro:page-load", initializeThemeToggles);
+  window.addEventListener("storage", (event) => {
+    if (event.key !== "theme") return;
+    if (event.newValue === "light" || event.newValue === "dark") {
+      applyTheme(event.newValue);
+    }
+  });
+</script>

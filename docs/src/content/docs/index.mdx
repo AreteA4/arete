@@ -1,282 +1,147 @@
 ---
 title: Arete
-description: Build Solana apps with live blockchain data
+description: From an on-chain question to a typed Solana application
 ---
 
-import { Card, CardGrid, Tabs, TabItem } from "@astrojs/starlight/components";
+import { Card, CardGrid } from "@astrojs/starlight/components";
 import CopyPrompt from "../../components/CopyPrompt.astro";
 import Workflow from "../../components/Workflow.astro";
 
-**Programmable data streams for Solana.** No indexers. No polling. No infrastructure to manage.
+# From an on-chain question to a typed Solana application
 
-Arete streams real-time blockchain data directly to your app. Define what data you need and Arete transforms on-chain events into typed, live feeds — consumed via React hooks, TypeScript streams, or Rust clients.
+Arete is an **agent-first Solana application toolkit**. Your agent can discover
+programs from your intent, inspect and query deployed live views, and install
+the result as a fully typed SDK for reads, transactions, flows, and real-time
+data.
 
----
-
-## Choose Your Path
+You can start by asking a question. You do not need to know the program ID,
+account layout, view name, or endpoint first.
 
 <CardGrid>
-  <Card title="I'm New to Coding" icon="rocket">
-    **Start here if you've never built an app.** We'll walk you through setting up AI tools that write code for you.
+  <Card title="Explore with your agent" icon="star">
+    Ask what is happening on-chain. Your agent finds relevant programs and
+    views, connects through MCP, and queries live data.
 
-    No programming experience required.
-
-    [Get started →](/agent-skills/setup-tools/)
-
+    [Ask your first question →](/agent-skills/explore-on-chain/)
   </Card>
-  <Card title="I Use AI Coding Tools" icon="star">
-    **Already have Cursor, Claude Code, or similar?** Paste one prompt and your AI handles the rest.
 
-    Works with 30+ AI coding assistants.
+  <Card title="Build with a program" icon="laptop">
+    Install a generated Program SDK with typed account reads, PDA helpers,
+    transaction construction, and higher-level operations.
 
-    [Build with AI →](/agent-skills/overview/)
-
-  </Card>
-  <Card title="I'm a Developer" icon="laptop">
-    **Know React, TypeScript, or Rust?** Jump straight to the SDK and start streaming data in minutes.
-
-    Full API reference available.
-
-    [Quickstart →](/using-stacks/quickstart/)
-
+    [Use a Program SDK →](/using-programs/overview/)
   </Card>
 </CardGrid>
 
----
-
-## What is Arete?
-
-Arete connects your app to live Solana blockchain data. Instead of polling RPCs or building custom indexers, you define what data you want and Arete streams it to you as it happens on-chain.
+## Explore, shape, ship
 
 <Workflow steps={[
   {
-    title: "Solana",
-    description: "On-chain data"
+    title: "Explore",
+    description: "Ask an agent and query existing live views"
   },
   {
-    title: "Arete",
-    description: "Transforms + streams"
+    title: "Shape",
+    description: "Choose or define the exact read model you need"
   },
   {
-    title: "Your App",
-    description: "Live feed"
+    title: "Ship",
+    description: "Install typed programs and views into your application"
   }
 ]} />
 
-**Think of it like a live database query against the blockchain** — you subscribe once and get updates pushed to you automatically.
+1. **Explore** — the agent searches the catalog by intent, identifies suitable
+   programs and views, and uses MCP to inspect current or live state.
+2. **Shape** — reuse an existing view, or define a focused read model when the
+   catalog does not contain what the application needs.
+3. **Ship** — record the selected programs and stacks in `arete.toml`, lock
+   their exact identities, generate the SDK, and build against stable types.
 
----
+[Follow the complete journey →](/getting-started/from-question-to-app/)
 
-## See It In Action
+## Start with one prompt
 
-Connect to the hosted ORE mining stack — a live feed of blockchain mining activity. Browser access requires a publishable key, but read-only viewing does not require a wallet.
-
-<Tabs>
-<TabItem label="React">
-```tsx
-import { AreteProvider, useArete } from '@usearete/react';
-import { ORE_STREAM_STACK } from './generated/ore-stack';
-
-const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
-if (!publishableKey) throw new Error('VITE_ARETE_PUBLISHABLE_KEY is required');
-
-function App() {
-  return (
-    <AreteProvider stack={ORE_STREAM_STACK} auth={{ publishableKey }}>
-      <CurrentRound />
-    </AreteProvider>
-  );
-}
-
-function CurrentRound() {
-  const arete = useArete(ORE_STREAM_STACK);
-  const board = arete.views.OreBoard.state.use({
-    address: arete.addresses.board(),
-  });
-  const roundId = board.data?.state.roundId;
-  const round = arete.views.OreRound.state.use(
-    roundId == null ? undefined : { roundId },
-  );
-
-  if (arete.status === 'error') {
-    return <button onClick={() => void arete.retry()}>Reconnect</button>;
-  }
-  if (board.status !== 'ready' || round.status !== 'ready') {
-    return <div>Connecting...</div>;
-  }
-
-  return (
-    <div>
-      <p>{arete.status === 'connected' ? "🟢 Live" : arete.status}</p>
-      {arete.socketIssue && <p>{arete.socketIssue.message}</p>}
-      <p>
-        Round #{round.data?.id.roundId?.toString()} — Motherlode:{' '}
-        {round.data?.state.motherlode?.toString()}
-      </p>
-    </div>
-  );
-}
-```
-</TabItem>
-<TabItem label="TypeScript">
-```typescript
-import { Arete } from '@usearete/sdk';
-import { ORE_STREAM_STACK } from './generated/ore-stack';
-
-const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
-if (!publishableKey) throw new Error('VITE_ARETE_PUBLISHABLE_KEY is required');
-
-// Connect using the stack (URL is embedded in the stack definition)
-const a4 = await Arete.connect(ORE_STREAM_STACK, {
-  auth: { publishableKey },
-});
-
-for await (const update of a4.views.OreRound.latest.watch({ take: 1 })) {
-  if (update.type === 'upsert') {
-    console.log(`Round #${update.data.id.roundId}`);
-    console.log(`Motherlode: ${update.data.state?.motherlode}`);
-  }
-}
-```
-</TabItem>
-<TabItem label="Rust">
-```rust
-use a4_sdk::prelude::*;
-use a4_stacks::ore::{OreStack, OreRound};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let a4 = Arete::<OreStack>::connect().await?;
-
-    let mut stream = a4.views.ore_round.latest().listen().take(1);
-
-    while let Some(round) = stream.next().await {
-        println!("Round # {:?}", round.id.round_id);
-        println!("Motherlode: {:?}", round.state.motherlode);
-    }
-
-    Ok(())
-}
-```
-</TabItem>
-</Tabs>
-
-:::tip[Don't want to write code?]
-Paste the prompt below into your AI coding assistant — it handles everything.
-:::
-
----
-
-## How It Works
-
-Arete handles the full pipeline from chain to client:
-
-<Workflow steps={[
-  {
-    title: "Solana",
-    description: "On-chain data"
-  },
-  {
-    title: "Arete",
-    description: "Transform + stream"
-  },
-  {
-    title: "Your App",
-    description: "Live feed"
-  }
-]} />
-
-1. **Define** the data shape you need using a declarative Rust DSL
-2. **Deploy** your definition — Arete manages the infrastructure
-3. **Stream** live updates to any client via WebSocket
-
----
-
-## Capabilities
-
-| Feature             | Description                                                          |
-| ------------------- | -------------------------------------------------------------------- |
-| **Account state**   | Map fields directly from on-chain accounts                           |
-| **Instructions**    | Extract arguments and accounts from program instructions             |
-| **Aggregations**    | Compute Sum, Count, Max, Min, UniqueCount across events              |
-| **Computed fields** | Derive values from other fields                                      |
-| **PDA resolution**  | Automatically resolve related accounts                               |
-| **Live streaming**  | Updates pushed via WebSocket as they happen on-chain                 |
-| **Type-safe SDKs**  | Generated TypeScript and Rust SDKs — share with your team or publish |
-
----
-
-## For Developers
-
-Already comfortable with code? Here are the fastest paths:
-
-<CardGrid>
-  <Card title="Quickstart" icon="rocket">
-    **Scaffold a new app** — The CLI creates a complete working project in under 2 minutes.
-
-    Choose React, TypeScript, or Rust templates.
-
-    [Start here →](/using-stacks/quickstart/)
-
-  </Card>
-  <Card title="Connect to a Stack" icon="laptop">
-    **Add to existing project** — Install the SDK and start streaming with a few lines of code.
-
-    Works with any React, TypeScript, or Rust project.
-
-    [Connect now →](/using-stacks/connect/)
-
-  </Card>
-</CardGrid>
-
----
-
-## Build with AI
-
-Paste this into any AI coding assistant (Cursor, Claude Code, Windsurf, or any agent that can read URLs) and it will set up Arete and build an ORE mining dashboard for you:
+Open your project in a coding agent and paste this:
 
 <CopyPrompt>
-Read https://docs.arete.run/agent.md and follow the instructions to set up Arete in this project. Then build a React dashboard that shows live ORE mining round data with Tailwind CSS dark theme.
+Read https://docs.arete.run/agent.md and follow it to set up Arete in this
+project. Verify the setup, and simply explain what Arete is capable of.
 </CopyPrompt>
 
-Your AI will install the CLI, learn the SDK patterns, connect to live Solana data, and build the app — all from that one prompt.
+That one URL gives the agent the supported CLI installer, project initialization
+command, health check, catalog workflow, and task routing. `a4 init` installs the
+skills and configures both MCP servers for the detected agent.
+
+[See the manual equivalent →](/using-stacks/quickstart/)
+
+## Programs are the foundation
+
+Arete turns each supported Solana program into a generated Program SDK. The
+exact surface depends on the program and selected SDK target, but follows one
+model:
+
+| Surface | What it gives you |
+| --- | --- |
+| **Accounts** | Release-pinned, typed account reads |
+| **PDAs and addresses** | Deterministic derivation without copied seed logic |
+| **Raw instructions** | Pure builders matching the normalized program schema |
+| **Operations and flows** | Application-shaped preparation, including multi-instruction and multi-transaction work |
+| **Transactions** | Local signing, inspection, submission, confirmation, and safe failure outcomes |
+| **Chain** | Generic Solana reads for data outside a program account surface |
+
+[Understand Program SDKs →](/using-programs/overview/)
+
+## Add live views where they help
+
+Program accounts are the base data. **Live views** are optional application
+read models over one or more programs: current positions, active rounds,
+rankings, aggregates, filtered activity, or any other state that is useful to
+read together.
+
+A **stack** packages selected live views with the Program SDKs they depend on.
+Applications install stacks; they do not need to know how views are grouped or
+hosted internally.
+
+[Programs, views, and stacks →](/concepts/programs-views-stacks/)
+
+## Typed all the way into your application
+
+Generated stacks and standalone programs compose into one application session.
+Use TypeScript, React, Rust, or Python according to the targets verified by the
+package descriptor.
 
 <CardGrid>
-  <Card title="New to Coding?" icon="rocket">
-    **Never used AI coding tools?** We'll walk you through installing Cursor or similar from scratch.
+  <Card title="TypeScript" icon="seti:typescript">
+    Compose programs and stacks, read accounts, watch views, and execute
+    prepared operations.
 
-    [Set up your tools →](/agent-skills/setup-tools/)
-
+    [TypeScript SDK →](/sdks/typescript/)
   </Card>
-  <Card title="Prompt Cookbook" icon="document">
-    **Browse ready-made prompts** for dashboards, analytics, and custom data feeds.
+  <Card title="React" icon="seti:react">
+    Use typed read, view, and mutation hooks with explicit loading and recovery
+    states.
 
-    [View prompts →](/agent-skills/prompts/)
+    [React SDK →](/sdks/react/)
+  </Card>
+  <Card title="Rust" icon="seti:rust">
+    Build native services, bots, and high-performance data workflows with an
+    async Rust API.
 
+    [Rust SDK →](/sdks/rust/)
+  </Card>
+  <Card title="Python" icon="seti:python">
+    Build scripts, services, bots, and data workflows with a typed async Python
+    API.
+
+    [Python SDK →](/sdks/python/)
   </Card>
 </CardGrid>
 
----
+## Exact, inspectable dependencies
 
-## Build Custom Streams
+`arete.toml` records what the project intends to use. `arete.lock` records the
+exact program, stack, artifact, and generated-package identities selected by
+`a4 install`. Generated outputs include provenance and should be regenerated,
+not edited by hand.
 
-Want to create your own data feeds? Build stacks that transform on-chain events into structured, streaming data.
-
-<CardGrid>
-  <Card title="Your First Stack" icon="seti:rust">
-    **End-to-end tutorial** — Build, deploy, and connect to your own custom stack.
-
-    Define entities, write transformations, deploy to Arete Cloud.
-
-    [Build now →](/building-stacks/your-first-stack/)
-
-  </Card>
-  <Card title="How It Works" icon="information">
-    **Architecture & concepts** — Understand the full Arete system.
-
-    Learn about entities, mappings, aggregations, and deployment.
-
-    [Learn more →](/using-stacks/how-it-works/)
-
-  </Card>
-</CardGrid>
+[Project dependencies →](/building-stacks/configuration/) · [CLI reference →](/cli/commands/)

@@ -5,7 +5,11 @@ sidebar:
   order: 6
 ---
 
-Arete's transaction transport lets an application use the same authenticated stack endpoint for transaction inspection, submission, and confirmation. The wallet still compiles and signs locally. Arete never receives a private key and never signs on the user's behalf.
+Arete's transaction transport lets an application inspect, submit, and confirm
+transactions through the transaction descriptor embedded in a generated stack
+or Program SDK. It is independent of the live-view and Program Read endpoints.
+The wallet still compiles and signs locally. Arete never receives a private key
+and never signs on the user's behalf.
 
 The transaction transport is separate from the WebSocket transport used for streamed views:
 
@@ -51,7 +55,7 @@ There is no automatic Arete-to-direct fallback after an operation starts. In par
 
 ## Prepare and inspect
 
-Prepare a generated semantic operation, then inspect it without signing or prompting the wallet:
+Prepare a generated operation, then inspect it without signing or prompting the wallet:
 
 ```ts
 const prepared = await session.programs.myProgram.transactions.deposit.prepare({
@@ -102,7 +106,9 @@ The Web3.js adapter currently requires v0 wallet support and does not accept add
 
 ## React mutations and reconciliation
 
-Generated program operations exposed by `useArete` have `.useMutation()` hooks. A semantic mutation prepares the operation before wallet approval, so protocol-specific preparation can re-read authoritative accounts and reject stale input.
+Generated program operations exposed by `useArete` have `.useMutation()` hooks.
+A mutation prepares the operation before wallet approval, so program-specific
+preparation can re-read authoritative accounts and reject stale input.
 
 ```tsx
 const arete = useArete(MY_STACK);

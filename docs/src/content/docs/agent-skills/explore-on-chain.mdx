@@ -1,0 +1,149 @@
+---
+title: Explore On-chain with MCP
+description: Ask an agent a question, discover matching programs and views, and query live Solana data without writing application code.
+---
+
+import CopyPrompt from "../../../components/CopyPrompt.astro";
+
+The Arete MCP workflow is the fastest way to investigate on-chain state. Your
+agent can search by intent, inspect exact view schemas, connect to a deployed
+stack, and answer questions over current or live data.
+
+## Set up once
+
+Install the CLI and initialize the current project:
+
+```bash
+curl -fsSL https://arete.run/install.sh | sh
+a4 init -y
+a4 doctor --json
+```
+
+`a4 init` installs the Arete skills and configures two MCP servers for detected
+agents:
+
+- `arete` — catalog discovery, knowledge lookup, live connections, view
+  subscriptions, and bounded cached queries;
+- `arete-docs` — searches the current documentation.
+
+Restart a GUI-based agent after initialization if it does not reload MCP
+configuration automatically.
+
+Knowledge queries and hosted connections may require authentication:
+
+```bash
+a4 auth signup
+```
+
+Use `a4 auth login --key <key>` instead when you already have a human-issued
+key. Credentials stay in the CLI credential store; do not paste secret keys
+into MCP tool arguments or prompts.
+
+## Ask a question
+
+<CopyPrompt>
+Use Arete to find programs and currently deployed live views relevant to token
+activity. Inspect the exact schemas before connecting. Subscribe only long
+enough to gather a bounded sample, summarize what the data supports, name the
+programs and views used, and disconnect when finished. If no suitable hosted
+view exists, explain the gap instead of guessing.
+</CopyPrompt>
+
+Good prompts state:
+
+- the business or research question;
+- relevant protocols, assets, addresses, or time bounds;
+- whether current state or live updates are required; and
+- the shape of the answer you want.
+
+They do not need to state MCP tool names, program account names, or endpoints.
+The installed skills teach the agent to discover those from current metadata.
+
+## What the agent does
+
+### 1. Search by intent
+
+The agent starts with catalog or knowledge search, not a guessed stack name. It
+looks for results with the required modes:
+
+- `subscribe` for deployed live views;
+- `read` for typed program accounts or chain state; and
+- `build` when the eventual task includes a transaction.
+
+### 2. Inspect exact descriptors
+
+A search result is not enough to write code or connect. The agent opens the
+program or stack descriptor and reads the actual account names, selected views,
+keys, fields, bindings, and authentication requirements.
+
+### 3. Connect to a suitable view
+
+For a subscribe-ready stack, the agent uses the descriptor-provided URL,
+connects once, and subscribes to the smallest useful view and query window. It
+does not construct a URL from a package name.
+
+### 4. Query bounded state
+
+The local MCP server applies updates and keeps a bounded cache for active
+subscriptions. The agent can retrieve an entity, list entities, inspect recent
+updates, or filter the cached data to answer the question.
+
+The cache is not an unbounded historical database. Results reflect the selected
+view, its query window, and the period observed by the active connection.
+
+### 5. Explain provenance and limits
+
+A useful answer names the program, stack, and view used and distinguishes direct
+observations from inference. It should also state when the available view cannot
+support a requested conclusion.
+
+### 6. Disconnect
+
+Exploratory subscriptions should be bounded. The agent disconnects after the
+answer unless you explicitly asked it to monitor continuously.
+
+## From exploration to application code
+
+When a view proves useful, install its exact stack package:
+
+```bash
+a4 explore catalog stack <slug> --json
+a4 install stack <slug> --ts
+```
+
+This records the dependency and generates the typed view API. The application
+now uses the same contract that the agent explored through MCP.
+
+If the catalog has the right program but no suitable view, capture the missing
+read model explicitly: programs, entities, primary keys, field sources, update
+routes, and query windows. Use that specification with the advanced Rust
+authoring workflow, then return to MCP to validate the deployed view before
+installing its final stack SDK.
+
+## MCP is not the production SDK
+
+Use MCP for investigation, debugging, and agent reasoning. Use generated SDKs
+for shipped application code:
+
+| Need                                     | Use                                      |
+| ---------------------------------------- | ---------------------------------------- |
+| Ask an ad hoc question                   | MCP                                      |
+| Inspect a live view during development   | MCP or `a4 stream`                       |
+| Read program accounts in an application  | Generated Program SDK                    |
+| Maintain a live application subscription | Generated stack SDK                      |
+| Build or execute transactions            | Generated Program SDK and wallet adapter |
+
+The MCP server does not replace SDK generation or silently deploy custom
+infrastructure.
+
+## Troubleshooting
+
+| Symptom                         | What to check                                                                           |
+| ------------------------------- | --------------------------------------------------------------------------------------- |
+| Agent has no Arete tools        | Run `a4 doctor --json`, apply its fix, and restart the agent                            |
+| Search returns no hosted view   | Broaden the query and verify `subscribe` coverage; do not invent a stack                |
+| Connection needs authentication | Run `a4 auth signup` or log in with the intended key                                    |
+| Subscription has no data        | Check the view keys, filters, snapshot behavior, and whether matching activity occurred |
+| Answer needs historical data    | Confirm that the selected view retains it; MCP cache alone is not historical storage    |
+
+For exact tool contracts and manual configuration, see [MCP Servers](/agent-skills/mcp/).

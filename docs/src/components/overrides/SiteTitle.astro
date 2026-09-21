@@ -1,0 +1,65 @@
+---
+const { siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<a
+  href={siteTitleHref}
+  class="arete-site-title"
+  aria-label="Arete documentation"
+>
+  <svg class="arete-mark" viewBox="0 0 512 512" aria-hidden="true" fill="none">
+    <path
+      d="M223.424 69.101C242.852 32.943 295.59 34.651 312.487 72.367L358.382 174.812L398.752 94.548C405.965 80.207 426.939 82.416 431.186 97.639C432.069 99.09 432.597 100.841 432.597 102.85V300.528H475.173C479.292 300.528 482.631 303.867 482.631 307.985V354.584C482.631 358.703 479.292 362.041 475.173 362.041H432.597V448.056C432.597 453.547 428.145 457.998 422.654 457.998H388.65C383.159 457.998 378.707 453.547 378.707 448.056V362.041H195.305C191.187 362.041 187.848 358.703 187.848 354.584V348.997C187.848 347.807 188.133 346.634 188.679 345.576L209.857 304.565C211.137 302.086 213.693 300.528 216.483 300.528H378.707V199.453L367.208 219.442C364.299 225.764 359.178 231.101 352.33 234.169C337.314 240.896 319.689 234.176 312.962 219.161L274.993 134.413C271.584 126.805 260.889 126.518 257.077 133.932L93.797 451.478C92.093 454.791 88.68 456.874 84.955 456.874H38.68C33.689 456.874 29.285 453.107 30.097 448.182C30.59 445.199 31.548 442.24 33.006 439.406L222.971 69.961L223.424 69.101Z"
+      fill="currentColor"></path>
+  </svg>
+  <span class="arete-wordmark">Arete</span>
+  <span class="arete-docs-label">Docs</span>
+</a>
+
+<style>
+  .arete-site-title {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.8rem;
+    color: var(--arete-foreground);
+    text-decoration: none;
+  }
+
+  .arete-site-title:hover {
+    color: var(--arete-foreground);
+  }
+
+  .arete-mark {
+    width: 1.55rem;
+    height: 1.55rem;
+    flex: 0 0 auto;
+  }
+
+  .arete-wordmark,
+  .arete-docs-label {
+    font-family: var(--arete-font-mono);
+    text-transform: uppercase;
+  }
+
+  .arete-wordmark {
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.32em;
+  }
+
+  .arete-docs-label {
+    margin-left: 0.1rem;
+    border-left: 1px solid var(--arete-line-strong);
+    padding-left: 0.9rem;
+    color: var(--arete-muted);
+    font-size: 0.64rem;
+    letter-spacing: 0.2em;
+  }
+
+  @media (max-width: 24rem) {
+    .arete-docs-label {
+      display: none;
+    }
+  }
+</style>

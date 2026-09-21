@@ -4,7 +4,10 @@ sidebar:
   order: 2
 ---
 
-The `@usearete/sdk` package is a framework-agnostic client for consuming streaming data and preparing Solana operations with Arete. It uses `AsyncIterable`-based streaming and works in any JavaScript environment — Node.js, browsers, Deno, or Bun.
+The `@usearete/sdk` package is the framework-agnostic client for generated
+Program SDKs, live views, generic Solana reads, and transaction operations. It
+uses `AsyncIterable`-based streaming and works in Node.js, browsers, Deno, and
+Bun.
 
 :::tip[Using React?]
 If you're building a React application, use the [React SDK](/sdks/react/) instead. It provides hooks and providers built on top of this core SDK.
@@ -26,17 +29,20 @@ No peer dependencies. Works anywhere JavaScript runs.
 
 ```typescript
 import { createSession } from "@usearete/sdk";
-import { ORE_STREAM_STACK } from "./generated/ore-stack";
+import { MY_STACK } from "./generated/my-stack";
 
 const session = await createSession({
-  stacks: { ore: ORE_STREAM_STACK },
+  stacks: { app: MY_STACK },
 });
 
 // Stream entities with full type safety
-for await (const round of session.stacks.ore.views.OreRound.latest.use()) {
-  console.log("Round:", round.id.roundId);
+for await (const position of session.stacks.app.views.Position.list.use()) {
+  console.log(position);
 }
 ```
+
+`MY_STACK` and `Position` are placeholders. Install a subscribe-ready stack and
+use its generated import and view names.
 
 ---
 
@@ -60,15 +66,18 @@ A connected stack at `session.stacks.<name>` has these stable namespaces:
 
 Programs at `session.stacks.<name>.programs.<program>` and `session.programs.<name>` have these stable namespaces: `programId`, `schemas`, `pdas`, `addresses`, `accounts`, `queries`, `raw`, `instructions`, `transactions`, `flows`, `constants`, `defaults`, and `math`.
 
-Use `session.chain` for generic Solana reads and `session.execute(prepared)` for any prepared semantic instruction, transaction, or flow.
+Use `session.chain` for generic Solana reads and `session.execute(prepared)` for
+any prepared instruction, transaction, or flow.
 
 For transaction inspection and execution, connected sessions automatically use
 the authenticated Arete transaction transport. See [Transactions](/using-stacks/transactions/)
 for auto, direct, and custom transport modes, scopes, and safe failure handling.
 
-### Semantic Prepare vs. Raw IDL
+### Application Operations vs. Raw IDL
 
-Prefer semantic operations for application code. They accept normal camelCase objects, derive routine addresses, normalize values such as UI token amounts, and describe their cardinality through the namespace:
+Prefer generated application operations when they are available. They accept
+normal camelCase objects, derive routine addresses, normalize values such as UI
+token amounts, and describe their cardinality through the namespace:
 
 ```typescript
 const prepared = await session.stacks.presale.programs.presale.flows.permissionlessDeposit.prepare({
@@ -110,17 +119,17 @@ Each generated stack definition includes its endpoints, so inserting it into a s
 
 ```typescript
 import { createSession } from "@usearete/sdk";
-import { ORE_STREAM_STACK } from "./generated/ore-stack";
+import { MY_STACK } from "./generated/my-stack";
 
 const session = await createSession({
-  stacks: { ore: ORE_STREAM_STACK },
+  stacks: { app: MY_STACK },
 });
 
 // Now you have fully typed views
-const rounds = await session.stacks.ore.views.OreRound.latest.get();
+const positions = await session.stacks.app.views.Position.list.get({ take: 20 });
 
 // Generic chain reads belong to the session console
-const balance = await session.chain.balance({ owner, mint });
+const lamports = await session.chain.lamports(owner);
 ```
 
 ### Multiple Stacks and Programs
@@ -130,15 +139,15 @@ Name each inserted stack or standalone program. Stack names become properties un
 ```typescript
 const session = await createSession({
   stacks: {
-    ore: ORE_STREAM_STACK,
-    presale: METEORA_PRESALE_STREAM_STACK,
+    markets: MARKETS_STACK,
+    positions: POSITIONS_STACK,
   },
   programs: {
     splToken: SPL_TOKEN_PROGRAM,
   },
 });
 
-session.programs.presale;
+session.programs.market;
 session.programs.splToken;
 ```
 
@@ -151,7 +160,7 @@ Promotion reuses the stack's connected program object and endpoint. If multiple 
 ```typescript
 import { Arete } from "@usearete/sdk";
 
-const ore = await Arete.connect(ORE_STREAM_STACK, {
+const client = await Arete.connect(MY_STACK, {
   url: "wss://custom.endpoint.com",
 });
 ```
@@ -159,7 +168,7 @@ const ore = await Arete.connect(ORE_STREAM_STACK, {
 ### Connection Options
 
 ```typescript
-const ore = await Arete.connect(ORE_STREAM_STACK, {
+const client = await Arete.connect(MY_STACK, {
   maxEntriesPerView: 5000, // Limit entries per view (default: 10000)
   autoConnect: true,       // Start the initial connection
   autoReconnect: true,     // Recover after an established socket is lost
@@ -181,11 +190,11 @@ const ore = await Arete.connect(ORE_STREAM_STACK, {
 
 ```typescript
 // Check current state
-console.log(session.stacks.ore.connectionState);
+console.log(session.stacks.app.connectionState);
 // 'connected' | 'connecting' | 'disconnected' | 'reconnecting' | 'error'
 
 // Listen for changes
-const unsubscribe = session.stacks.ore.onConnectionStateChange((state) => {
+const unsubscribe = session.stacks.app.onConnectionStateChange((state) => {
   console.log("Connection state:", state);
 });
 
@@ -708,7 +717,8 @@ The session-wide generic Solana read surface.
 
 ### `session.execute(prepared, options?)`
 
-Executes a value returned by a semantic instruction, transaction, or flow's `.prepare(...)` method.
+Executes a value returned by a generated instruction, transaction, or flow's
+`.prepare(...)` method.
 
 ### `Arete.connect(stack, options?)`
 

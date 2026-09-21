@@ -30,15 +30,20 @@ export default [{
 }];
 ```
 
-An application also needs a generated stack definition. Install the deployed public ORE stack into your source tree with the CLI:
+An application also needs a generated stack definition. Discover a
+subscribe-ready package and install the target reported by its descriptor:
 
 ```bash
-a4 install ore --ts \
-  --output ./src/generated/ore-stack.ts \
+a4 explore catalog --query "<intent>" --kind stack --mode subscribe --json
+a4 explore catalog stack <slug> --json
+a4 install stack <slug> --ts \
+  --output ./src/generated/my-stack.ts \
   --package-name @usearete/react
 ```
 
-The generated entry point exports `ORE_STREAM_STACK`, entity types, schemas, program instructions, semantic transactions, addresses, reads, and ORE extensions. Commit generated output, but do not edit it by hand.
+The generated entry point exports the stack definition, entity types, schemas,
+program operations, addresses, reads, and package-specific helpers. Commit
+generated output, but do not edit it by hand.
 
 ## Minimal setup
 
@@ -46,58 +51,46 @@ Wrap the application once, then call `useArete` with the generated stack. The st
 
 ```tsx
 import { AreteProvider, useArete } from '@usearete/react';
-import { ORE_STREAM_STACK } from './generated/ore-stack';
+import { MY_STACK } from './generated/my-stack';
 
 const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
 if (!publishableKey) throw new Error('VITE_ARETE_PUBLISHABLE_KEY is required');
 
-function CurrentRound() {
-  const arete = useArete(ORE_STREAM_STACK);
-  const board = arete.views.OreBoard.state.use({
-    address: arete.addresses.board(),
-  });
-  const roundId = board.data?.state.roundId;
-  const round = arete.views.OreRound.state.use(
-    roundId == null ? undefined : { roundId },
-  );
+function Positions() {
+  const arete = useArete(MY_STACK);
+  const positions = arete.views.Position.list.use({ take: 20 });
 
   if (arete.status === 'error') {
     return <button onClick={() => void arete.retry()}>Reconnect</button>;
   }
-  if (board.status !== 'ready' || round.status !== 'ready') return <p>Connecting...</p>;
-  return <p>Round {round.data?.id.roundId?.toString() ?? 'unavailable'}</p>;
+  if (positions.status !== 'ready') return <p>Connecting...</p>;
+  if (positions.isEmpty) return <p>No matching positions.</p>;
+  return <pre>{JSON.stringify(positions.data, null, 2)}</pre>;
 }
 
 export default function App() {
   return (
-    <AreteProvider autoConnect stack={ORE_STREAM_STACK} auth={{ publishableKey }}>
-      <CurrentRound />
+    <AreteProvider autoConnect stack={MY_STACK} auth={{ publishableKey }}>
+      <Positions />
     </AreteProvider>
   );
 }
 ```
 
-For ORE, `OreBoard/state` is authoritative for the active `roundId`. `OreRound/latest` is a sorted recent-round list, not an active-round pointer. Following Board to keyed Round avoids showing a stale or future round during rollover.
+`MY_STACK`, `Position`, and the available query parameters are placeholders.
+Use the generated import, view names, keys, and fields for the package you
+installed.
 
 ## Generated names and keys
 
-Generated TypeScript uses camelCase even though stack JSON and raw view paths use snake_case:
-
-| Generated API        | Correct shape                     |
-| -------------------- | --------------------------------- |
-| Board state key      | `{ address: string }`             |
-| Round state key      | `{ roundId: bigint }`             |
-| Miner state key      | `{ authority: string }`           |
-| Round ID field       | `round.id.roundId`                |
-| Deployed SOL field   | `round.state.totalDeployed`       |
-| Per-square SOL field | `round.state.deployedPerSquareUi` |
-| Winning square field | `round.results.winningSquare`     |
-
-The server view identifiers remain `OreBoard/state`, `OreRound/state`, `OreRound/latest`, and `OreMiner/state`. Use the generated object paths rather than spelling those protocol identifiers in application code.
+Generated TypeScript uses language-native camelCase even when source schemas or
+wire view paths use another convention. Use generated object paths rather than
+spelling protocol view identifiers or translating fields yourself.
 
 Hosted Arete stacks require a publishable key for authentication and rate limiting. Local servers configured with `allow_all` may omit `auth`.
 
-Read-only ORE viewing does not require a wallet, but hosted browser access is still authenticated with `VITE_ARETE_PUBLISHABLE_KEY` as shown above.
+Read-only viewing does not require a wallet, but hosted browser access can still
+require a publishable key as shown above.
 
 ## Provider
 
@@ -192,7 +185,7 @@ export const {
 The hook returns:
 
 - `views`: generated state, list, and custom view hooks
-- `programs`: generated raw instructions and semantic operation hooks
+- `programs`: generated account, instruction, operation, flow, and mutation hooks
 - `queries`: stack-level HTTP queries
 - `read`: callable one-shot extension reads with `.use(...args, options?)` React hooks
 - `reads`: deprecated alias of `read`
@@ -301,7 +294,7 @@ ORE's `quoteManualDeployment` reads current raw Miner and Automation accounts an
 
 ## Mutations
 
-Generated raw instructions and semantic operations expose `.useMutation()`:
+Generated raw instructions and application operations expose `.useMutation()`:
 
 ```tsx
 const deploy = arete.programs.ore.transactions.mining
