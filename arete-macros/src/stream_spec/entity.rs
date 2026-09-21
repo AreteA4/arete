@@ -566,16 +566,8 @@ pub fn process_entity_struct_with_idl(
                 // Convert instruction path to string for sources_by_type key
                 let source_type_str = path_to_string(instr_path);
 
-                // The instruction path carries its own sdk prefix, so resolve
-                // its schema from the owning IDL rather than the stack's first.
-                let instruction_idl =
-                    crate::event_type_helpers::find_idl_by_prefix(&source_type_str, idls).or(idl);
-                let map_attrs = convert_event_to_map_attributes(
-                    target_field,
-                    event_attr,
-                    instr_path,
-                    instruction_idl,
-                );
+                let map_attrs =
+                    convert_event_to_map_attributes(target_field, event_attr, instr_path, idl);
 
                 // Merge into sources_by_type
                 sources_by_type
