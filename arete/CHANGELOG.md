@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.21.0](https://github.com/AreteA4/arete/compare/arete-v0.20.4...arete-v0.21.0) (2026-09-21)
+
+
+### Features
+
+* **interpreter:** give CPI events stable occurrence provenance ([#234](https://github.com/AreteA4/arete/issues/234)) ([22707f0](https://github.com/AreteA4/arete/commit/22707f086948211847c4b702dca0e387be098e6d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.20.4 to 0.21.0
+    * arete-macros bumped from 0.20.4 to 0.21.0
+    * arete-server bumped from 0.20.4 to 0.21.0
+
 ## [0.20.4](https://github.com/AreteA4/arete/compare/arete-v0.20.3...arete-v0.20.4) (2026-09-20)
 
 
