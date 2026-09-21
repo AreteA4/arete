@@ -4,6 +4,7 @@
 //! maintaining materialized results that update as source data changes.
 
 use crate::cache::EntityCache;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -25,14 +26,14 @@ pub enum ViewEffect {
 }
 
 /// Sort order for view evaluation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum SortOrder {
     Asc,
     Desc,
 }
 
 /// Comparison operators
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum CompareOp {
     Eq,
     Ne,
@@ -55,7 +56,7 @@ pub struct MaterializedView {
     pipeline: ViewPipeline,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ViewPipeline {
     /// Filter predicate (field path, op, value)
     pub filter: Option<FilterConfig>,
@@ -65,14 +66,14 @@ pub struct ViewPipeline {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FilterConfig {
     pub field_path: Vec<String>,
     pub op: CompareOp,
     pub value: Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SortConfig {
     pub field_path: Vec<String>,
     pub order: SortOrder,
