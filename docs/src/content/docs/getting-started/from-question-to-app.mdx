@@ -65,13 +65,14 @@ Sometimes the catalog has the right program but not the right view. The desired
 application model might need a different key, fields from several accounts, an
 instruction-derived metric, or a sorted and filtered window.
 
-The target workflow is to describe that model as an Arete Stack Source, compile
-it, deploy the resulting artifacts, and query it again through MCP. Hosted
-Stack Source compilation is not yet a generally available workflow; see the
-[Stack Source preview](/building-stacks/stack-source/) for the current boundary.
+Capture the missing read model explicitly: programs, entities, primary keys,
+field sources, update routes, and query windows. That specification makes the
+gap reviewable before custom infrastructure is created.
 
-Until it is enabled, use an existing hosted view or the advanced Rust authoring
-path for custom live data.
+Use an existing hosted view when possible. For custom live data, continue with
+the advanced [Rust authoring workflow](/building-stacks/workflow/), deploy the
+resulting exact artifacts, and validate the new view through MCP before adding
+it to application code.
 
 ## 5. Install the proven capability
 

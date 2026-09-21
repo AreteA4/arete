@@ -146,9 +146,7 @@ Arete keeps portable behavior separate from the infrastructure that serves it:
 | **Deployment** | A hosted runtime prepared for one exact StackManifest. Images, regions, replicas, and rollout state belong here rather than in portable artifacts. |
 | **Binding** | An operational endpoint and authentication attachment for a live deployment, Program Read release, chain reader, or transaction relay. Bindings can change without changing portable artifact hashes. |
 
-The Rust DSL writes authoritative artifacts directly during compilation. A
-strict declarative Stack Source YAML frontend is also under development; hosted
-user compilation is not yet generally enabled.
+The Rust DSL writes authoritative artifacts directly during compilation.
 
 ```bash
 cargo build

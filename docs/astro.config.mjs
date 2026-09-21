@@ -104,7 +104,6 @@ export default defineConfig({
         {
           label: "Create Live Data",
           items: [
-            { slug: "building-stacks/stack-source" },
             { slug: "building-stacks/workflow" },
             { slug: "building-stacks/stack-definitions" },
             { slug: "building-stacks/installation" },

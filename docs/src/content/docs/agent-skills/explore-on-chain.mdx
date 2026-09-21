@@ -115,9 +115,10 @@ This records the dependency and generates the typed view API. The application
 now uses the same contract that the agent explored through MCP.
 
 If the catalog has the right program but no suitable view, capture the missing
-read model explicitly. The planned Stack Source workflow lets an agent describe
-the required entities and views in YAML, compile and deploy them, then return to
-MCP for another iteration before installing the final stack.
+read model explicitly: programs, entities, primary keys, field sources, update
+routes, and query windows. Use that specification with the advanced Rust
+authoring workflow, then return to MCP to validate the deployed view before
+installing its final stack SDK.
 
 ## MCP is not the production SDK
 
