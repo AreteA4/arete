@@ -1,103 +1,105 @@
 ---
 title: Prompt Cookbook
-sidebar:
-  order: 4
-description: Copy-paste prompts for building with Arete using AI coding agents.
+description: Prompts for discovering programs, exploring live views, and graduating the result into application code.
 ---
 
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-Curated prompts to help your AI agent build with Arete. These are designed to be copied directly into your agent chat (Cursor, Claude Code, etc.) to automate discovery and implementation.
+These prompts assume `a4 init -y` and `a4 doctor --json` have completed. They
+state an outcome and let the installed skills discover current packages,
+schemas, and endpoints.
 
-:::note[Skills required]
-These prompts assume the Arete agent skills are installed. The skills teach your agent the SDK patterns, CLI commands, and when to run `a4 explore` — so you don't have to spell it out in every prompt.
-
-Not installed yet? See [Editor Setup](/agent-skills/setup/) to get started.
-:::
-
----
-
-## Consuming ORE (React)
-
-### Live ORE Mining Dashboard
+## Explore what is happening now
 
 <CopyPrompt>
-Build a React + Vite app that shows live ORE mining data. Display:
-- Current round number and motherlode amount
-- Total miners and total SOL deployed
-- Countdown to round expiration
-- Connection status indicator
-
-Install `@usearete/react @usearete/sdk zod` and do not install `zustand`. Generate the ORE stack, set `VITE_ARETE_PUBLISHABLE_KEY`, and pass the generated stack plus `auth={{ publishableKey }}` to `AreteProvider`. Read-only viewing needs authentication but no wallet. Follow `OreBoard.state` to keyed `OreRound.state` for the active round, use generated camelCase fields, and build recovery UI from connection `status`, `socketIssue`, and `retry()`. Use each view's full status fields for loading, empty, refreshing, and error states. Use Tailwind for styling.
-
+Use Arete to investigate current activity related to [TOPIC]. Search by intent,
+identify relevant programs and subscribe-ready stacks, inspect exact view
+schemas, and connect to the smallest useful view. Gather a bounded sample,
+answer the question with the program and view provenance, state any limitations,
+and disconnect. Do not invent a view when none is available.
 </CopyPrompt>
 
-**What you should get:** A React app with `AreteProvider`, `useArete` hook, live-updating round stats, and a connection badge.
-
-### ORE Round History Table
+## Survey a protocol
 
 <CopyPrompt>
-Build a React component that shows a table of historical ORE mining rounds from `OreRound.latest`. Use generated camelCase properties. Columns: Round #, Motherlode, Total Miners, Deploy Count, Top Miner (truncated address), and whether the motherlode was hit. Sort by round descending. Add a filter for minimum motherlode amount. This history view must not be used to choose the active Board round.
+Use the Arete catalog and knowledge layer to survey [PROTOCOL OR INTENT]. Tell
+me which programs are involved and which capabilities are currently available
+for each: typed reads, transaction building, and live subscriptions. Inspect
+exact descriptors for the best candidates and distinguish catalog knowledge
+from installable or hosted delivery.
 </CopyPrompt>
 
-**What you should get:** A paginated or scrollable table showing historical ORE rounds with real-time updates as new rounds complete.
-
-### Live ORE Grid Heatmap
+## Inspect a program before integrating it
 
 <CopyPrompt>
-Build a React component that visualizes the current ORE mining round as an interactive 5x5 grid heatmap. Use `OreBoard.state` with `{ address: arete.addresses.board() }`, read `const roundId = board.data?.state.roundId`, then subscribe to `OreRound.state` with `roundId == null ? undefined : { roundId }`. Do not use `OreRound.latest` to choose the active round. For each square, show the deployed SOL amount (`state.deployedPerSquareUi`) with color intensity based on the amount. Show miner counts per square (`state.countPerSquare`) on hover. Include a countdown to round expiration using `state.estimatedExpiresAtUnix`. Highlight the winning square (`results.winningSquare`) when the round completes.
+Find the Arete program package for [PROGRAM OR PROTOCOL]. Inspect its exact
+descriptor and summarize its account readers, PDA helpers, raw instructions,
+higher-level operations, flows, SDK targets, authentication, and installation
+command. Use current generated or descriptor names; do not infer them from an
+IDL example.
 </CopyPrompt>
 
-**What you should get:** A live-updating visual grid showing where miners are deploying SOL in the current round, with real-time countdown and win detection.
-
----
-
-## Consuming ORE (TypeScript CLI)
-
-### ORE Round Monitor CLI
+## Add a Program SDK
 
 <CopyPrompt>
-Build a TypeScript CLI tool that monitors ORE mining rounds in real-time. On each update, print: Round number, motherlode amount, total miners, total deployed, deploy count, and time until expiration. Exit cleanly on Ctrl+C.
+Find the read- and build-ready Arete program package that matches [INTENT]. Add
+it to this project for [TYPESCRIPT, RUST, OR PYTHON] using the descriptor's
+install command. Preserve arete.toml and arete.lock, inspect the generated
+surface, and implement [READ OR OPERATION] using generated types. Do not edit
+generated files.
 </CopyPrompt>
 
-**What you should get:** A terminal utility that prints a clean, live-updating summary of every ORE round.
-
-### ORE Treasury Tracker
+## Prepare without submitting
 
 <CopyPrompt>
-Build a TypeScript script that tracks the ORE treasury state in real-time. Log: treasury balance, motherlode, total staked, total refined, and total unclaimed. Calculate and display the percentage of ORE that is staked vs unclaimed.
+Using the installed Arete Program SDK, prepare and inspect a transaction for
+[ACTION]. Show the derived accounts, instructions, required signers, estimated
+fee, simulation result, and program error metadata. Do not request a wallet
+signature and do not submit anything.
 </CopyPrompt>
 
-**What you should get:** A script for monitoring treasury health and distribution metrics.
-
----
-
-## Building Custom Stacks
-
-### Build a custom stack for [Protocol X]
+## Build a live application
 
 <CopyPrompt>
-I want to build a Arete stack that tracks [describe the protocol and what data you want]. The program ID is [PROGRAM_ID]. Find the IDL and build a stack that defines entities for the account types I want to track.
+Find a currently subscribe-ready Arete stack for [INTENT], inspect its exact
+views, and install it into this [FRAMEWORK] project. Build a UI using the
+generated SDK. Handle connecting, ready-empty, ready-with-data, refreshing,
+validation-error, disconnected, and retry states. Resolve all view and field
+names from generated types rather than copying an unrelated example.
 </CopyPrompt>
 
-**What you should get:** The agent finds or guides you to the IDL, then scaffolds a new Arete project with entities, field mappings, and views.
-
-### Add a new entity to my stack
+## Turn an MCP exploration into code
 
 <CopyPrompt>
-I have an existing Arete stack and I want to add a new entity that tracks [describe account type]. The IDL is already at `idl/[program].json`. Add an entity for the [AccountName] account with appropriate sections and field mappings, following the same patterns as the existing entities.
+We used Arete MCP to validate [STACK AND VIEW] for [PURPOSE]. Inspect the same
+exact stack descriptor, add it as a project dependency, generate the [LANGUAGE]
+SDK, and implement the equivalent query or subscription in application code.
+Confirm that the installed view identity and fields match the explored surface.
 </CopyPrompt>
 
-**What you should get:** A new entity definition added to your `stack.rs` with correct type mappings from the IDL.
-
----
-
-## Exploring and Discovery
-
-### What data is available?
+## Identify a missing live view
 
 <CopyPrompt>
-Run `a4 explore --json` and tell me what Arete stacks are available. For each stack, run `a4 explore [stack-name] --json` to list the entities. Then for the most interesting entities, run `a4 explore [stack-name] [Entity] --json` to show me the fields and types. Summarize what data I can stream from each stack.
+I need to answer [QUESTION]. Search the Arete catalog and inspect relevant
+programs and live views. If no deployed view provides the required fields and
+keys, write a concise read-model specification describing the programs,
+entities, primary keys, sources, fields, and query windows that a custom view
+would need. Do not deploy anything.
 </CopyPrompt>
 
-**What you should get:** A comprehensive overview of all data you can currently access through your Arete installation.
+## Diagnose an integration
+
+<CopyPrompt>
+Run a4 doctor --json, validate arete.toml and arete.lock, inspect the exact
+installed descriptors, and reproduce [PROBLEM] with the smallest read or
+bounded subscription. Separate configuration, authentication, descriptor,
+transport, schema-validation, and application-state failures. Do not update
+dependencies or regenerate until you have identified the cause.
+</CopyPrompt>
+
+## Prompt-writing guidance
+
+Good prompts specify the result, scope, time window, and authority. Avoid
+embedding guessed technical details that the catalog can resolve. State
+explicitly whether the agent may only inspect, may edit code, may compile local
+artifacts, or may perform an external deployment or transaction.

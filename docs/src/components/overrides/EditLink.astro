@@ -26,25 +26,33 @@ const path = Astro.url.pathname.slice(1).replace(/\/$/, "") || "index";
 
 <style>
   .edit-link-wrapper {
-    margin-top: 2rem;
-    padding-top: 1rem;
+    margin-top: 3rem;
+    border-top: 1px solid var(--arete-line);
+    padding-top: 1.25rem;
   }
 
   .edit-link {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    color: var(--sl-color-text-accent);
+    gap: 0.45rem;
+    color: var(--arete-muted);
     text-decoration: none;
-    font-size: 0.9rem;
-    transition: color 0.2s ease;
+    font-family: var(--arete-font-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    transition: color 150ms ease;
   }
 
   .edit-link:hover {
-    text-decoration: underline;
+    color: var(--arete-accent);
+    text-decoration: none;
   }
 
   .edit-link svg {
+    width: 1rem;
+    height: 1rem;
     flex-shrink: 0;
   }
 </style>

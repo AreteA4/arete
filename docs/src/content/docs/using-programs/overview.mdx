@@ -1,0 +1,159 @@
+---
+title: Program SDKs
+description: Install one Solana program as a complete typed read and transaction interface.
+---
+
+A Program SDK is the base Arete capability. It turns one exact published
+Solana program release into a generated interface for reading accounts,
+deriving addresses, building instructions, preparing operations, and executing
+transactions.
+
+You can install a Program SDK without installing a live stack.
+
+## Find a program
+
+Search by what you want to do:
+
+```bash
+a4 explore catalog --query "token accounts" --kind program --json
+a4 explore catalog --query "multisig proposals" --mode build --json
+```
+
+Use the vocabulary when you want exact filters:
+
+```bash
+a4 explore catalog --vocabulary
+a4 explore catalog --concept <concept> --kind program --json
+```
+
+Then inspect the exact program descriptor:
+
+```bash
+a4 explore catalog program <slug> --json
+```
+
+The descriptor reports the program identity, accounts, instructions, types,
+available Program Read service, verified SDK targets, and exact install command.
+Do not infer target support from another program or an old example.
+
+Its semantic version describes compatibility for this published Arete
+integration. The descriptor's content hashes identify the exact artifacts
+behind it. See
+[Program Versioning](/concepts/program-versioning/) for the automatic bump rules
+and generated release notes.
+
+## Install it
+
+Initialize the project once, then add the program dependency:
+
+```bash
+a4 init -y
+a4 install program <slug> --ts
+```
+
+Use `--rust` or `--python` when the descriptor lists that target. A saved add:
+
+1. writes dependency intent to `arete.toml`;
+2. resolves the complete exact graph;
+3. generates the language output; and
+4. commits the generated output and `arete.lock` together.
+
+The CLI prints the generated location and import instructions. Prefer that
+reported output over a path copied from a different project.
+
+## The generated surface
+
+Program namespaces are stable even though individual members come from the
+program package:
+
+| Namespace                       | Purpose                                   |
+| ------------------------------- | ----------------------------------------- |
+| `programId`                     | Exact executable address                  |
+| `schemas`                       | Generated account and instruction schemas |
+| `pdas`                          | Typed PDA derivation                      |
+| `addresses`                     | Known or derived addresses                |
+| `accounts`                      | Typed, release-pinned account readers     |
+| `queries` / `read`              | Additional connected reads when defined   |
+| `raw`                           | Exact IDL-shaped instruction builders     |
+| `instructions`                  | Prepared single-instruction operations    |
+| `transactions`                  | Prepared transaction operations           |
+| `flows`                         | Multi-step or multi-transaction workflows |
+| `constants`, `defaults`, `math` | Generated domain helpers when available   |
+
+Inspect the generated types to learn the exact member names and arguments.
+
+## Choose the right level
+
+### Read an account
+
+Use `program.accounts.<account>.fetch(address)` or `fetchMany(addresses)` when
+you need a decoded account owned by the installed program.
+
+[Program Read →](/using-programs/program-reads/)
+
+### Read generic Solana state
+
+Use `session.chain` for lamports, rent, clock, raw accounts, mint state, token
+accounts, or other data that is not a generated program-account reader.
+
+[Chain reads →](/using-programs/chain-reads/)
+
+### Prepare an application operation
+
+Prefer generated operations and flows when they express the task. They can
+accept application-shaped values, derive routine accounts, perform required
+reads, and return a portable prepared result with signer and error metadata.
+
+```ts
+const prepared = await session.programs.myProgram.transactions.deposit.prepare({
+  owner,
+  amount: { ui: "10.5" },
+});
+```
+
+Preparation may read current state. A prepared quote is not a reservation;
+prepare again near execution when price, nonce, eligibility, or account state
+can become stale.
+
+### Build a raw instruction
+
+Use `raw.<instruction>.build(...)` when you intentionally need the normalized
+IDL wire shape or are composing instructions yourself:
+
+```ts
+const instruction = session.programs.myProgram.raw.deposit.build({
+  owner,
+  amount: 10_500_000n,
+});
+```
+
+Raw builders are pure and offline. They fail on unknown parameters and missing
+required values, but they do not perform application-level preparation.
+
+### Inspect and execute
+
+Inspection is read-only. Execution requires a wallet, signs locally, and uses
+the transaction capability selected by the generated descriptor or an explicit
+direct/custom transport.
+
+```ts
+const inspection = await session.stacks.app.inspectOperation(prepared);
+const receipt = await session.execute(prepared);
+```
+
+Inspection lives on the connected client that owns the operation; execution is
+also available through the composed session.
+
+Reading, building, preparing, inspecting, signing, and submitting are separate
+actions. An agent request to “show me the transaction” does not authorize it to
+sign or submit.
+
+[Transaction lifecycle →](/using-stacks/transactions/)
+
+## Add views only when the application needs them
+
+Program SDKs cover the program-facing read and transaction surfaces. Install a
+stack when the application also needs maintained, application-shaped views or
+stack-level operations.
+
+[Programs, views, and stacks →](/concepts/programs-views-stacks/)

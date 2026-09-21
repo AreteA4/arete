@@ -1,137 +1,127 @@
 ---
 title: What is Arete?
-sidebar:
-  order: 0
-description: A plain-English introduction to Arete and what you can build with it.
+description: The program-first, agent-first model behind Arete.
 ---
 
 import { Card, CardGrid } from "@astrojs/starlight/components";
-import Workflow from "../../../components/Workflow.astro";
 
-**Programmable data streams for Solana.** You declare what you want — which programs, which accounts, which fields — and Arete delivers a typed, live stream straight to your app. No polling, no backend plumbing, no data wrangling.
+Arete is a toolkit for discovering and using Solana programs without rebuilding
+the same decoding, RPC, transaction, and indexing infrastructure for every
+application.
 
----
+It is designed for agents first. A coding agent can translate a goal into exact
+programs and capabilities, inspect their current descriptors, explore deployed
+live data through MCP, and generate the SDK your application will use.
 
-## The Simple Version
+## Start from intent
 
-Here's the flow:
+A normal Arete workflow begins with what you want to accomplish:
 
-<Workflow steps={[
-  {
-    title: "Solana Blockchain",
-    description: "Someone trades a token, mines ORE, or stakes"
-  },
-  {
-    title: "Arete",
-    description: "Transforms the raw data into what you need"
-  },
-  {
-    title: "Your App",
-    description: "Your dashboard updates in real-time"
-  }
-]} />
+- “Show me active liquidity pools.”
+- “Watch new token launches and summarize them.”
+- “Read this multisig and prepare a proposal.”
+- “Build a deposit transaction for this position.”
 
-1. **Something happens on Solana** — a trade, a transfer, a vote, anything
-2. **Arete processes it** — turns raw blockchain data into clean, structured information
-3. **Your app gets it instantly** — no delay, no polling, no manual refreshing
+The catalog maps that intent to programs and reports which modes are available:
 
----
+| Mode        | What it means                                         |
+| ----------- | ----------------------------------------------------- |
+| `read`      | Typed program-account reads and generic Solana state  |
+| `build`     | Instructions, transactions, and higher-level flows    |
+| `subscribe` | Current-state and live views from a hosted deployment |
 
-## What Can You Build?
+Catalog results are discovery information. Before writing code, the agent opens
+the exact program or stack descriptor to learn the real account names, views,
+SDK targets, authentication requirements, and install command.
 
-Arete is especially good for apps that need **live data**:
+## Every program becomes an application interface
 
-- **Dashboards** — Show mining stats, token prices, or DeFi positions updating in real-time
-- **Real-time UIs** — Build interfaces that react instantly to on-chain state changes without a single refresh
-- **Trading tools** — Display live order flow, liquidity changes, or market metrics
-- **Portfolio trackers** — Track wallet balances and activity as they happen
-- **Analytics** — Aggregate on-chain events (totals, counts, trends) without building your own backend
-- **Monitoring** — Watch specific programs or accounts for activity
+The base unit in Arete is a **program**. A generated Program SDK can include:
 
----
+- typed account schemas and release-pinned account readers;
+- PDA and known-address helpers;
+- pure, offline instruction builders;
+- application-shaped operations and multi-step flows;
+- transaction inspection and execution through a locally signing wallet; and
+- generated constants, defaults, calculations, and error metadata where the
+  program package defines them.
 
-## How People Build With It
+You do not need a live stack to use a Program SDK. Programs can be installed
+and composed independently.
 
-Without Arete, getting live on-chain data means writing polling loops, handling RPC rate limits, and parsing raw account bytes. It's a lot of plumbing before you write a single line of actual product.
+## Views add application-shaped live data
 
-With Arete, you declare the stream — Arete handles the rest. The typed data flows to wherever you consume it:
+Program accounts are not always the shape an application wants to consume.
+A product might need a joined position, a sorted leaderboard, recent activity,
+or an aggregate assembled from several accounts and instructions.
 
-```tsx
-// React UI — component re-renders live as chain state changes
-const { data: round } = views.OreRound.latest.use();
-```
+A **view** is that application-facing read model. Views can provide a point-in-
+time result and, when hosted over WebSocket, continuous updates. They may use
+one program or combine data from several programs.
 
-```ts
-// TypeScript backend — process events as they arrive
-const stream = await stack.views.OreRound.latest.subscribe();
-for await (const round of stream) {
-  await db.upsert(round);
-}
-```
+Agents can inspect and query deployed views through MCP before any application
+code exists. This makes exploration part of the development loop rather than a
+separate indexing project.
 
-```rust
-// Rust service — zero-copy typed events at the edge
-let mut stream = stack.views().ore_round().latest().subscribe().await?;
-while let Some(round) = stream.next().await {
-    process(round?);
-}
-```
+## Stacks package a complete capability
 
-The data is fully typed regardless of how you consume it. It updates the moment the chain does.
+A **stack** is an installable composition of:
 
-### Two ways to get there
+- one or more Program SDKs;
+- selected live views;
+- generated application operations and helpers; and
+- the bindings required to use the available hosted capabilities.
 
-**AI-assisted** — Describe what you want in plain English. Your AI coding tool (Cursor, Claude Code, etc.) writes all the Arete code for you. Most people have something running in under 30 minutes — no prior coding experience needed.
+The fact that several views may share a hosted runtime is an operational
+detail. The application-facing model is the composition it installs.
 
-**Direct SDK** — Use the React, TypeScript, or Rust SDKs yourself. Full type safety, React hooks, streaming iterators for backends, and native Rust for high-performance services.
+For exact terminology, see [Programs, views, and stacks](/concepts/programs-views-stacks/).
 
----
+## One generated session
 
-## Key Ideas
+Applications can install several stacks and standalone programs into one
+session. The session provides stable access to:
 
-Arete is built around a simple contract: **you declare what you want, we deliver the stream.**
+- `session.stacks` for each installed stack;
+- `session.programs` for canonical program interfaces;
+- `session.chain` for generic Solana reads; and
+- transaction preparation and execution shared across the application.
 
-**Stacks** are your declaration. A Stack is a named collection of semantically related data — the accounts, fields, and programs needed for a specific feature or app. That data might come from one program or many. When you connect to a Stack, you're saying _"give me everything I need for this."_ Existing stacks (like ORE) are ready to use. You can also build your own.
+The generated code carries exact identities and connection descriptors. Your
+application should not construct hosted endpoints or guess schemas itself.
 
-**Entities** are the individual pieces of data a stack defines. Each entity represents a distinct concept in your app — a round, a miner, a treasury. You write them as Rust structs that declare exactly which on-chain fields you care about, across as many accounts and programs as needed. The ORE stack defines three:
+## Explore before you build
 
-| Entity        | What it represents                                         |
-| ------------- | ---------------------------------------------------------- |
-| `OreRound`    | A single mining round — state, results, grid data, entropy |
-| `OreTreasury` | The protocol-wide treasury account                         |
-| `OreMiner`    | A miner's rewards, state, and automation config            |
-
-**Views** are projections over an entity's data — they define what slice of the stream your app subscribes to. Every entity gets `list` (all items) and `state` (one item by key) by default. Custom views add sorted or filtered variants on top. The ORE stack exposes:
-
-| View                | Entity      | What it returns                      |
-| ------------------- | ----------- | ------------------------------------ |
-| `OreRound/state`    | OreRound    | A single round by key                |
-| `OreRound/list`     | OreRound    | All rounds                           |
-| `OreRound/latest`   | OreRound    | Rounds sorted by round_id descending |
-| `OreTreasury/state` | OreTreasury | The treasury account                 |
-| `OreTreasury/list`  | OreTreasury | All treasury records                 |
-| `OreMiner/state`    | OreMiner    | A single miner by wallet address     |
-| `OreMiner/list`     | OreMiner    | All miners                           |
-
-Note that views maintain a rolling cache — they're optimised for live data, not full historical queries. Full historical access is on the roadmap.
-
-**SDKs** are the wire. React hooks, a TypeScript client, and a Rust client all connect to the same streams. Use whichever fits your stack — or mix them across services in the same project.
-
----
-
-## Next Steps
+The fastest way to understand Arete is to ask an agent a real question. The
+agent can search the catalog, connect to an existing live view, and explain
+what the data contains. When the result becomes part of a product, install the
+same exact capability into the project and build against its generated types.
 
 <CardGrid>
-  <Card title="New to Coding?" icon="rocket">
-    Set up AI coding tools and build your first Arete app with zero programming experience.
+  <Card title="Ask an on-chain question" icon="star">
+    Use the configured MCP server to discover and query deployed views.
 
-    [Set up your tools →](/agent-skills/setup-tools/)
+    [Explore with an agent →](/agent-skills/explore-on-chain/)
 
   </Card>
-  <Card title="Already a Developer?" icon="laptop">
-    Jump straight to the SDK and start streaming live Solana data in minutes.
+  <Card title="Install a Program SDK" icon="laptop">
+    Start directly from typed program reads and transaction construction.
 
-    [Quickstart →](/using-stacks/quickstart/)
+    [Build with a program →](/using-programs/overview/)
 
   </Card>
 </CardGrid>
+
+## What Arete does not hide
+
+Arete removes repetitive integration work, but preserves important boundaries:
+
+- generated descriptors and types are the authority for the installed release;
+- reading, preparing, inspecting, signing, and submitting are different actions;
+- wallets sign locally and Arete never receives private keys;
+- Program Read, generic chain reads, live views, and transaction submission are
+  independent capabilities; and
+- a catalog entry may be known without every delivery mode being available.
+
+This lets agents automate the mechanical work without fabricating capabilities
+or crossing transaction and deployment boundaries silently.

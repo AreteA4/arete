@@ -38,7 +38,9 @@ npm install @usearete/react @usearete/sdk zod
 
 React is an application peer dependency. `zustand` is a normal dependency of `@usearete/react` and must not be installed separately. Generated stack files use the core SDK and Zod directly, so generated React consumers install all three packages shown above.
 
-For hosted ORE browser apps, set `VITE_ARETE_PUBLISHABLE_KEY` and pass it to `AreteProvider` as `auth={{ publishableKey }}`. Read-only viewing requires authentication but does not require a wallet.
+For a hosted browser stack, provide the publishable key required by its exact
+descriptor and pass it to `AreteProvider` as `auth={{ publishableKey }}`.
+Read-only viewing may require authentication but does not require a wallet.
 
 :::note[Which package?]
 

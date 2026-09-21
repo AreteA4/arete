@@ -12,6 +12,7 @@ import manifest from "../../../../.release-please-manifest.json";
 
 const { entry } = Astro.locals.starlightRoute;
 const { title } = entry.data;
+const isHome = Astro.url.pathname === "/";
 
 // TODO: Rename when packages are changed over
 // Get version from the imported manifest (resolved at build time by Vite)
@@ -23,19 +24,19 @@ const processedBody = rawBody.replaceAll("{{VERSION}}", version);
 const markdownContent = `# ${title}\n\n${processedBody}`;
 ---
 
-<div class="agent-directive sr-only">
-  <blockquote>
-    For the complete documentation index optimized for AI agents, see <a
-      href="/llms.txt">llms.txt</a
-    > or <a href="/llms-full.txt">llms-full.txt</a>. A markdown version of this
-    page is available by appending <code>.md</code> to the URL or sending <code
-      >Accept: text/markdown</code
-    >.
-  </blockquote>
-</div>
-
 <div class="page-title-wrapper">
-  <Default {...Astro.props}><slot /></Default>
+  <div class="page-title-copy">
+    <p class="page-eyebrow">
+      <span aria-hidden="true"></span>Arete documentation
+    </p>
+    {
+      !isHome && (
+        <Default {...Astro.props}>
+          <slot />
+        </Default>
+      )
+    }
+  </div>
   <div class="page-actions">
     <button
       class="copy-markdown-btn"
@@ -79,6 +80,17 @@ const markdownContent = `# ${title}\n\n${processedBody}`;
   </div>
 </div>
 
+<div class="agent-directive sr-only">
+  <blockquote>
+    For the complete documentation index optimized for AI agents, see <a
+      href="/llms.txt">llms.txt</a
+    > or <a href="/llms-full.txt">llms-full.txt</a>. A markdown version of this
+    page is available by appending <code>.md</code> to the URL or sending <code
+      >Accept: text/markdown</code
+    >.
+  </blockquote>
+</div>
+
 <style>
   .agent-directive.sr-only {
     position: absolute;
@@ -97,7 +109,35 @@ const markdownContent = `# ${title}\n\n${processedBody}`;
     flex-wrap: wrap;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 1rem;
+    gap: 1.25rem;
+    margin-bottom: 1.4rem;
+    border-bottom: 1px solid var(--arete-line);
+    padding-bottom: 1.35rem;
+  }
+
+  .page-title-copy {
+    min-width: 0;
+  }
+
+  .page-eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin: 0 0 0.8rem;
+    color: var(--arete-muted);
+    font-family: var(--arete-font-mono);
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .page-eyebrow span {
+    display: block;
+    width: 0.42rem;
+    height: 0.42rem;
+    background: var(--arete-accent);
   }
 
   .page-actions {
@@ -110,28 +150,31 @@ const markdownContent = `# ${title}\n\n${processedBody}`;
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.4rem 0.75rem;
-    font-size: 0.8rem;
-    font-weight: 500;
-    font-family: var(--sl-font);
-    color: var(--sl-color-gray-2);
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
+    min-height: 2.35rem;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--arete-line-strong);
+    border-radius: 0;
+    background: var(--arete-panel);
+    color: var(--arete-muted);
     cursor: pointer;
-    transition: all 0.15s ease;
+    font-family: var(--arete-font-mono);
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    transition:
+      border-color 150ms ease,
+      color 150ms ease;
   }
 
   .copy-markdown-btn:hover {
-    color: var(--sl-color-white);
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.15);
+    border-color: var(--arete-accent);
+    color: var(--arete-foreground);
   }
 
   .copy-markdown-btn.copied {
-    color: #10b981;
-    border-color: rgba(16, 185, 129, 0.3);
-    background: rgba(16, 185, 129, 0.1);
+    border-color: var(--arete-accent);
+    color: var(--arete-accent);
   }
 
   .copy-markdown-btn .icon-check {
@@ -146,27 +189,15 @@ const markdownContent = `# ${title}\n\n${processedBody}`;
     display: block;
   }
 
-  /* Light mode */
-  :root[data-theme="light"] .copy-markdown-btn {
-    color: var(--sl-color-gray-3);
-    background: rgba(0, 0, 0, 0.03);
-    border-color: rgba(0, 0, 0, 0.1);
-  }
-
-  :root[data-theme="light"] .copy-markdown-btn:hover {
-    color: var(--sl-color-gray-1);
-    background: rgba(0, 0, 0, 0.06);
-    border-color: rgba(0, 0, 0, 0.15);
-  }
-
-  /* Mobile */
   @media (max-width: 640px) {
     .copy-markdown-btn .btn-text {
       display: none;
     }
 
     .copy-markdown-btn {
-      padding: 0.4rem;
+      width: 2.35rem;
+      padding: 0;
+      justify-content: center;
     }
   }
 </style>
@@ -174,7 +205,8 @@ const markdownContent = `# ${title}\n\n${processedBody}`;
 <script>
   function setupCopyButton() {
     const btn = document.getElementById("copy-markdown") as HTMLButtonElement;
-    if (!btn) return;
+    if (!btn || btn.dataset.copyReady === "true") return;
+    btn.dataset.copyReady = "true";
 
     btn.addEventListener("click", async () => {
       const content = btn.dataset.content;

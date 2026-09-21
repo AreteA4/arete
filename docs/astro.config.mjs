@@ -18,16 +18,19 @@ export default defineConfig({
         starlightLlmsTxt({
           projectName: "Arete",
           description:
-            "Arete is a system for programmable real-time data feeds on Solana. Stream any on-chain data to your app via WebSocket. Define data shapes in a Rust DSL, deploy, and consume with typed TypeScript, React, or Rust SDKs.",
+            "Arete is an agent-first Solana application toolkit. Discover programs and live views, explore on-chain state through MCP, and install typed SDKs for reads, transactions, flows, and real-time data.",
           promote: [
             "getting-started/what-is-arete",
-            "agent-skills/setup-tools",
             "using-stacks/quickstart",
-            "using-stacks/connect",
-            "using-stacks/transactions",
+            "agent-skills/explore-on-chain",
+            "getting-started/from-question-to-app",
+            "concepts/programs-views-stacks",
+            "concepts/program-versioning",
+            "using-programs/overview",
+            "using-programs/program-reads",
+            "using-programs/chain-reads",
             "agent-skills/overview",
-            "agent-skills/prompts",
-            "agent-skills/tutorial-ore-dashboard",
+            "agent-skills/mcp",
             "sdks/typescript",
             "sdks/react",
           ],
@@ -45,6 +48,9 @@ export default defineConfig({
       // Component overrides for custom design and analytics
       components: {
         Sidebar: "./src/components/overrides/Sidebar.astro",
+        SiteTitle: "./src/components/overrides/SiteTitle.astro",
+        ThemeProvider: "./src/components/overrides/ThemeProvider.astro",
+        ThemeSelect: "./src/components/overrides/ThemeSelect.astro",
         EditLink: "./src/components/overrides/EditLink.astro",
         Head: "./src/components/overrides/Head.astro",
         Footer: "./src/components/overrides/Footer.astro",
@@ -56,26 +62,58 @@ export default defineConfig({
       // Contributors only need to add frontmatter to control ordering
       sidebar: [
         {
-          label: "Getting Started",
-          items: [{ slug: "getting-started/what-is-arete" }],
+          label: "Start Here",
+          items: [
+            { slug: "getting-started/what-is-arete" },
+            { slug: "using-stacks/quickstart" },
+            { slug: "agent-skills/explore-on-chain" },
+            { slug: "getting-started/from-question-to-app" },
+          ],
         },
         {
-          label: "For Developers",
-          autogenerate: { directory: "using-stacks" },
+          label: "Core Concepts",
+          items: [
+            { slug: "concepts/programs-views-stacks" },
+            { slug: "concepts/program-versioning" },
+            { slug: "using-stacks/how-it-works" },
+            { slug: "building-stacks/configuration" },
+          ],
         },
         {
-          label: "Build with AI",
-          autogenerate: { directory: "agent-skills" },
+          label: "Programs",
+          items: [
+            { slug: "using-programs/overview" },
+            { slug: "using-programs/program-reads" },
+            { slug: "using-programs/chain-reads" },
+            { slug: "using-stacks/transactions" },
+          ],
         },
         {
-          label: "Building Stacks",
+          label: "Live Views",
+          items: [
+            { slug: "using-stacks/connect" },
+            { slug: "using-stacks/filtering-feeds" },
+          ],
+        },
+        {
+          label: "Agents",
+          items: [
+            { slug: "agent-skills/overview" },
+            { slug: "agent-skills/explore" },
+            { slug: "agent-skills/mcp" },
+            { slug: "agent-skills/prompts" },
+            { slug: "agent-skills/setup" },
+            { slug: "agent-skills/setup-tools" },
+            { slug: "agent-skills/tutorial-ore-dashboard" },
+          ],
+        },
+        {
+          label: "Create Live Data",
           items: [
             { slug: "building-stacks/workflow" },
             { slug: "building-stacks/stack-definitions" },
             { slug: "building-stacks/installation" },
-            { slug: "building-stacks/configuration" },
             { slug: "building-stacks/your-first-stack" },
-            { slug: "building-stacks/finding-idls" },
             {
               label: "Rust DSL",
               items: [
@@ -91,6 +129,7 @@ export default defineConfig({
         {
           label: "SDK Reference",
           items: [
+            { slug: "using-stacks/installation" },
             {
               label: "TypeScript",
               link: "/sdks/typescript/",
@@ -104,6 +143,10 @@ export default defineConfig({
               link: "/sdks/rust/",
             },
             {
+              label: "Python",
+              link: "/sdks/python/",
+            },
+            {
               label: "Schema Validation",
               link: "/sdks/validation/",
             },
@@ -114,7 +157,7 @@ export default defineConfig({
           autogenerate: { directory: "cli" },
         },
         {
-          label: "Server",
+          label: "Self-hosting",
           autogenerate: { directory: "a4-server" },
         },
       ],

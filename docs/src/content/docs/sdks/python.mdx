@@ -1,0 +1,123 @@
+---
+title: Python SDK
+description: Current status and core patterns for the Arete Python SDK.
+---
+
+:::caution[Active development]
+The Python SDK exists in this repository but is not yet published to PyPI.
+Treat Python availability as package- and descriptor-specific. For production
+work, use a verified target reported by the exact program or stack descriptor.
+:::
+
+The Python SDK follows the same conceptual model as TypeScript and Rust:
+generated programs, generated stacks, typed account reads, live views, shared
+chain reads, local wallet signing, and application sessions.
+
+## Install for development
+
+From the repository checkout:
+
+```bash
+pip install -e ./python/arete-sdk
+```
+
+The base SDK supports Python 3.9+. The optional Solana adapter has its own
+Python and dependency requirements.
+
+## Generate a target
+
+Use dependency-backed installation when the descriptor verifies Python:
+
+```bash
+a4 explore catalog program <slug> --json
+a4 install program <slug> --python
+```
+
+For local artifact development, the lower-level SDK commands remain available.
+They do not replace `arete.toml` or `arete.lock` for normal project dependency
+management.
+
+## Connect to a generated stack
+
+```python
+import arete
+from my_generated_stack import MY_STACK
+
+async def main():
+    async with await arete.Arete.connect(
+        MY_STACK,
+        auth=arete.AuthConfig(publishable_key="a4_pk_..."),
+    ) as client:
+        rows = await client.views.position.list.get(take=10)
+        async for update in client.views.position.list.watch(take=10):
+            print(update.op, update.key)
+            break
+```
+
+Generated names depend on the installed stack. Inspect its package rather than
+copying identifiers from another example.
+
+## Program reads and builders
+
+```python
+program = client.programs.my_program
+
+account = await program.accounts.position.fetch(position_address)
+pda, bump = program.pdas.position.derive(owner=owner)
+
+instruction = program.raw.deposit.build(
+    owner=owner,
+    amount=1_000_000,
+)
+```
+
+Raw builders are pure and can also be exposed as standalone generated helpers.
+Connected account readers use the exact Program Read descriptor.
+
+## Operations and execution
+
+```python
+prepared = await program.transactions.deposit.prepare(
+    owner=owner,
+    amount={"ui": "10.5"},
+)
+
+inspection = await client.inspect_operation(prepared)
+receipt = await client.execute(prepared)
+```
+
+Wallets implement the SDK's wallet-adapter protocol. Signing remains local.
+Execution preserves the same conservative outcomes as the other SDKs:
+confirmed, definitely not submitted, submitted with unknown outcome, or failed
+on chain.
+
+## Generic chain reads
+
+```python
+clock = await client.chain.clock()
+lamports = await client.chain.lamports(address)
+accounts = await client.chain.accounts([address])
+```
+
+## Multi-stack sessions
+
+```python
+session = await arete.create_session(
+    stacks={"markets": MARKETS_STACK, "positions": POSITIONS_STACK},
+    programs={"token": SPL_TOKEN_PROGRAM},
+    auth=auth,
+)
+
+async for row in session.stacks.positions.views.position.list.use():
+    print(row)
+    break
+
+await session.close()
+```
+
+## Current recommendation
+
+Use Python for local development and verified generated targets, but confirm
+publication and compatibility requirements before choosing it for a production
+integration. The generated descriptor and install output take precedence over
+this overview.

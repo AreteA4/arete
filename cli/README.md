@@ -48,7 +48,7 @@ cargo install --path cli
 # agent skills, and MCP config for every detected coding agent
 a4 init -y
 
-# Verify (exit 0 = ready; each check carries a fix)
+# Verify (ready when the JSON status is "ok")
 a4 doctor --json
 
 # Discover live data (no account needed)

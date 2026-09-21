@@ -1,0 +1,139 @@
+---
+title: Program Read
+description: Fetch typed program accounts through an exact, release-pinned decoder.
+---
+
+Program Read is the typed account-read surface attached to a published program
+release. The generated SDK knows the exact program identity, account schemas,
+and service descriptor, so callers do not copy decoders or send schemas with
+each request.
+
+## Why release-pinned reads matter
+
+An address alone does not say which schema version should decode its bytes.
+The generated reader is tied to the exact Program Release selected in
+`arete.lock`. That gives the client a reproducible relationship between:
+
+- the executable program identity;
+- the normalized schema used to decode it;
+- the generated TypeScript, Rust, or Python type; and
+- the hosted read capability.
+
+Do not replace a generated reader with an arbitrary RPC decoder unless you are
+deliberately leaving the installed contract.
+
+## Check availability
+
+Inspect the descriptor before relying on hosted reads:
+
+```bash
+a4 explore catalog program <slug> --json
+```
+
+Look for `read` coverage, Program Read availability, the expected authentication
+policy, and a verified SDK target. A cataloged program may still be build-only.
+
+## TypeScript
+
+Generated account names and arguments come from the installed program:
+
+```ts
+const program = session.programs.myProgram;
+
+const account = await program.accounts.position.fetch(positionAddress);
+const many = await program.accounts.position.fetchMany(positionAddresses);
+const exists = await program.accounts.position.exists(positionAddress);
+```
+
+Use the generated types rather than substituting the placeholder names above.
+Batch results remain aligned with their input addresses, including missing
+accounts.
+
+## React
+
+The React surface exposes the same generated account readers on its connected
+program object. Account readers are asynchronous functions rather than React
+hooks, so call them from your application data layer, an effect, or a query
+library. Read-only calls do not require a wallet:
+
+```tsx
+import { useEffect, useState } from "react";
+
+const [position, setPosition] = useState<Position | null>();
+const arete = useArete(MY_STACK);
+
+useEffect(() => {
+  let active = true;
+  void arete.programs.myProgram.accounts.Position.fetch(positionAddress).then(
+    (value) => {
+      if (active) setPosition(value);
+    },
+  );
+  return () => {
+    active = false;
+  };
+}, [arete, positionAddress]);
+```
+
+Inspect the generated declarations for the exact account name and result type.
+Handle missing data separately from loading and errors.
+
+## Rust
+
+Generated Rust programs expose typed account clients on the connected client:
+
+```rust
+let position = a4
+    .programs
+    .my_program
+    .position_accounts()?
+    .fetch(&position_address)
+    .await?;
+```
+
+## Python
+
+```python
+position = await a4.programs.my_program.accounts.position.fetch(position_address)
+```
+
+Python package availability is descriptor-driven. See [Python SDK](/sdks/python/)
+for its current release status.
+
+## Program Read versus a live view
+
+Use Program Read when you know an account address and need its current decoded
+state. Use a live view when you need:
+
+- a collection discovered by application criteria;
+- state assembled from several accounts or instructions;
+- a sorted, filtered, or aggregated window; or
+- continuous updates as matching data changes.
+
+It is common to use both: subscribe to a view to discover or monitor entities,
+then refresh authoritative program accounts during operation preparation.
+
+## Program Read versus generic chain reads
+
+Use Program Read for generated program-owned account types. Use
+`session.chain` when the data is generic Solana state or when raw bytes are
+intentionally required.
+
+[Generic chain reads →](/using-programs/chain-reads/)
+
+## Authentication and errors
+
+Hosted Program Read may require the read scope associated with the installed
+package. Let the generated client resolve its own descriptor and credentials.
+Do not reuse a live WebSocket URL as a Program Read endpoint.
+
+Treat these outcomes differently:
+
+- the account does not exist;
+- the account exists but has the wrong owner or discriminator;
+- decoding failed for the pinned schema;
+- authentication or scope is missing; and
+- the hosted read service is unavailable.
+
+Preserve the structured error and request identifier in diagnostics rather
+than converting every failure into “account not found.”

@@ -39,7 +39,7 @@ Then, in a project:
 
 ```bash
 a4 init -y          # arete.toml, AGENTS.md block, CLAUDE.md import, skills, MCP config
-a4 doctor --json    # exit 0 = ready; each check carries a fix
+a4 doctor --json    # ready when the JSON status is "ok"
 a4 explore --json   # live data, no account needed
 ```
 
@@ -446,6 +446,37 @@ a4 auth whoami
 
 ## Schema Discovery
 
+### a4 explore catalog
+
+Search the public active catalog by intent and required delivery mode:
+
+```bash
+a4 explore catalog --query "monitor swaps" --json
+a4 explore catalog --concept <slug> --kind program --mode read --json
+a4 explore catalog --category <slug> --kind stack --mode subscribe --json
+a4 explore catalog --kind program --target typescript --json
+a4 explore catalog --vocabulary --json
+
+# Inspect one exact active entry
+a4 explore catalog program <slug> --json
+a4 explore catalog stack <slug> --json
+```
+
+| Option                              | Meaning                                 |
+| ----------------------------------- | --------------------------------------- |
+| `--query <text>`                    | Free-text intent search                 |
+| `--concept <slug>`                  | Require an exact concept                |
+| `--category <slug>`                 | Require an exact category               |
+| `--kind program\|stack`             | Restrict package kind                   |
+| `--mode read\|build\|subscribe`     | Require a delivery mode                 |
+| `--target typescript\|rust\|python` | Require a verified SDK target           |
+| `--limit`, `--cursor`               | Bounded pagination                      |
+| `--vocabulary`                      | List current concept and category slugs |
+
+Use catalog search when starting from intent. Open the exact result before
+installing or connecting; search summaries are not a substitute for the pinned
+descriptor.
+
 ### a4 explore
 
 Discover installable resources through the same deployment-pinned descriptors
@@ -456,23 +487,24 @@ also exposes global resources.
 # List all available stacks
 a4 explore
 
-# Show exact StackManifest, AST, LiveSpec, view, and Program Release identities
-a4 explore stack ore
+# Search by intent and inspect an exact stack descriptor
+a4 explore catalog --query "monitor swaps" --kind stack --mode subscribe
+a4 explore stack <stack-ref>
 
 # List and inspect standalone programs
 a4 explore programs
 a4 explore program spl-token
 
 # Legacy stack and entity forms remain supported
-a4 explore ore
-a4 explore ore OreRound
+a4 explore <stack-ref>
+a4 explore <stack-ref> <Entity>
 
 # JSON output (for agents and scripts)
 a4 explore --json
 a4 explore programs --json
-a4 explore stack ore --json
+a4 explore stack <stack-ref> --json
 a4 explore program spl-token --json
-a4 explore ore OreRound --json
+a4 explore <stack-ref> <Entity> --json
 ```
 
 **Arguments:**

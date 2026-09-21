@@ -1,0 +1,85 @@
+---
+title: Solana Chain Reads
+description: Read generic Solana state through the managed gateway or an explicit custom transport.
+---
+
+The chain surface handles generic Solana data that is not specific to one
+generated program-account schema. It is shared by the application session and
+uses the chain-read descriptor embedded in installed hosted packages.
+
+## What to read where
+
+| Need                                                          | Surface                                      |
+| ------------------------------------------------------------- | -------------------------------------------- |
+| Decode an installed program's account type                    | `program.accounts`                           |
+| Query a maintained application read model                     | `stack.views`                                |
+| Read lamports, clock, rent, mint, token account, or raw bytes | `session.chain`                              |
+| Build or submit a transaction                                 | Program operation plus transaction transport |
+
+Keeping these surfaces separate prevents a live query endpoint from becoming
+an accidental general-purpose RPC URL.
+
+## TypeScript
+
+```ts
+const exists = await session.chain.exists(address);
+const lamports = await session.chain.lamports(address);
+const nativeBalance = await session.chain.nativeBalance(address);
+const clock = await session.chain.clock();
+
+const raw = await session.chain.account(address);
+const batch = await session.chain.accounts(addresses);
+
+const mint = await session.chain.mint(mintAddress);
+const tokenAccount = await session.chain.tokenAccount(tokenAccountAddress);
+const balance = await session.chain.balance({ owner, mint: mintAddress });
+```
+
+The exact generated SDK version is authoritative for method names and return
+types. Prefer batching when reading several addresses; batch results preserve
+input order.
+
+## Python
+
+```python
+clock = await a4.chain.clock()
+lamports = await a4.chain.lamports(address)
+accounts = await a4.chain.accounts([address])
+```
+
+## Independent transport
+
+Hosted stack and program installs can carry independent descriptors for:
+
+- live queries and WebSocket subscriptions;
+- Program Read;
+- generic chain reads; and
+- transaction inspection and submission.
+
+Do not derive one endpoint from another. The generated client chooses the
+correct binding and authentication scope for each operation.
+
+Applications that intentionally own an RPC relationship can inject a supported
+custom or direct transport. That is an explicit choice: the client does not
+silently fall back from an uncertain hosted request to another provider.
+
+## Reads during transaction preparation
+
+A generated operation may use chain or program reads while preparing a
+transaction. Preparation can therefore fail because required current state is
+missing, stale, or unavailable even though pure raw instruction construction
+would succeed.
+
+Keep preparation close to execution when blockhashes, nonces, prices,
+eligibility, or account state can change. Inspection remains unsigned and
+non-submitting.
+
+## Security and diagnostics
+
+- Treat RPC-provider headers and Arete credentials as separate secrets.
+- Never place secret keys in browser source or generated descriptors.
+- Record structured request identifiers for hosted failures.
+- Do not retry writes because a chain read succeeded; transaction submission
+  has its own ambiguity rules.
+
+For signing and submission, continue with [Transactions](/using-stacks/transactions/).

@@ -1,0 +1,33 @@
+{/* This runs in the head so the selected palette is applied before paint. */}
+<script is:inline>
+  window.StarlightThemeProvider = (() => {
+    const readCookie = () => {
+      try {
+        const match = document.cookie.match(/(?:^|; )theme=([^;]*)/);
+        const value = match ? decodeURIComponent(match[1]) : null;
+        return value === "dark" || value === "light" ? value : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const readStorage = () => {
+      try {
+        const shared = localStorage.getItem("theme");
+        if (shared === "dark" || shared === "light") return shared;
+        const legacy = localStorage.getItem("starlight-theme");
+        return legacy === "dark" || legacy === "light" ? legacy : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const theme = readCookie() || readStorage() || "light";
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+
+    return {
+      updatePickers() {},
+    };
+  })();
+</script>

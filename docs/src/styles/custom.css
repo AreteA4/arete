@@ -1,460 +1,732 @@
-@import url("https://fonts.googleapis.com/css2?family=Geist+Sans:wght@100..900&display=swap");
-@import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap");
 
-/* ============================================
-   Arete Docs - Modern Clean Design
-   ============================================ */
-
+/* Keep the docs on the same visual system as arete.run: warm paper, ink,
+   blueprint lines, and a restrained technical accent. */
 :root {
-  /* Sizing & Spacing */
+  --arete-font-sans:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --arete-font-mono: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+  --arete-background: #f3efe4;
+  --arete-background-soft: #f8f4eb;
+  --arete-foreground: #1f1b16;
+  --arete-muted: #6a6154;
+  --arete-accent: #355f97;
+  --arete-line: rgba(31, 27, 22, 0.16);
+  --arete-line-strong: rgba(31, 27, 22, 0.34);
+  --arete-panel: rgba(248, 244, 235, 0.9);
+  --arete-panel-muted: rgba(31, 27, 22, 0.035);
+  --arete-grid-fine: rgba(31, 27, 22, 0.035);
+  --arete-grid-strong: rgba(31, 27, 22, 0.055);
+  --arete-code-background: #e9e2d6;
+  --arete-code-foreground: #29231d;
+  --arete-code-muted: #6a6154;
+  --arete-code-line: rgba(31, 27, 22, 0.18);
+  --arete-code-hover: rgba(31, 27, 22, 0.06);
+  --arete-code-link: #274f83;
+  --arete-code-link-hover: #183e70;
+
+  --sl-font: var(--arete-font-sans);
+  --sl-font-mono: var(--arete-font-mono);
+  --sl-nav-height: 5rem;
+  --sl-sidebar-width: 18.5rem;
+  --sl-content-width: 51rem;
+  --sl-mobile-toc-height: 3.5rem;
+
   --sl-text-xs: 0.75rem;
-  --sl-text-sm: 0.8125rem;
-  --sl-text-base: 0.875rem;
-  --sl-text-lg: 1rem;
-  --sl-text-xl: 1.125rem;
-  --sl-text-2xl: 1.5rem;
-  --sl-text-3xl: 2rem;
+  --sl-text-sm: 0.875rem;
+  --sl-text-base: 1rem;
+  --sl-text-lg: 1.125rem;
+  --sl-text-xl: 1.35rem;
+  --sl-text-2xl: 1.8rem;
+  --sl-text-3xl: clamp(2.2rem, 4vw, 3.25rem);
+  --sl-text-4xl: clamp(2.8rem, 6vw, 4.5rem);
 
-  /* Border Radius - Subtle, modern */
-  --sl-border-radius-sm: 4px;
-  --sl-border-radius-md: 6px;
-  --sl-border-radius-lg: 8px;
-
-  /* Sidebar compact sizing */
-  --sl-sidebar-item-padding-inline: 0.5rem;
-  --sl-sidebar-pad-x: 1rem;
-
-  /* Content width */
-  --sl-content-width: 50rem;
-  --sl-sidebar-width: 18rem;
+  --sl-color-white: var(--arete-foreground);
+  --sl-color-black: var(--arete-background);
+  --sl-color-gray-1: #29231d;
+  --sl-color-gray-2: #4c4439;
+  --sl-color-gray-3: #6a6154;
+  --sl-color-gray-4: #8e8577;
+  --sl-color-gray-5: #c3baac;
+  --sl-color-gray-6: #ddd5c8;
+  --sl-color-gray-7: #eae4d9;
+  --sl-color-accent: var(--arete-accent);
+  --sl-color-accent-low: rgba(53, 95, 151, 0.1);
+  --sl-color-accent-high: #274f83;
+  --sl-color-text: var(--arete-foreground);
+  --sl-color-text-accent: var(--arete-accent);
+  --sl-color-bg: var(--arete-background);
+  --sl-color-bg-nav: rgba(243, 239, 228, 0.94);
+  --sl-color-bg-sidebar: rgba(243, 239, 228, 0.94);
+  --sl-color-bg-inline-code: rgba(53, 95, 151, 0.09);
+  --sl-color-code-bg: var(--arete-code-background);
+  --sl-color-hairline: var(--arete-line);
+  --sl-color-hairline-light: rgba(31, 27, 22, 0.09);
+  --sl-shadow-sm: none;
+  --sl-shadow-md: none;
+  --sl-shadow-lg: none;
 }
 
-/* ============================================
-   Dark Mode - Slate/Purple Palette
-   ============================================ */
 :root[data-theme="dark"] {
-  /* Primary accent - soft indigo/purple instead of harsh cyan */
-  --sl-color-accent: #818cf8;
-  --sl-color-accent-low: rgba(99, 102, 241, 0.15);
-  --sl-color-accent-high: #a5b4fc;
+  --arete-background: #17130e;
+  --arete-background-soft: #1f1b16;
+  --arete-foreground: #f3efe4;
+  --arete-muted: #a89f91;
+  --arete-accent: #7aa7de;
+  --arete-line: rgba(243, 239, 228, 0.12);
+  --arete-line-strong: rgba(243, 239, 228, 0.26);
+  --arete-panel: rgba(31, 27, 22, 0.92);
+  --arete-panel-muted: rgba(243, 239, 228, 0.035);
+  --arete-grid-fine: rgba(243, 239, 228, 0.025);
+  --arete-grid-strong: rgba(243, 239, 228, 0.045);
+  --arete-code-background: #0d0b08;
+  --arete-code-foreground: #f3efe4;
+  --arete-code-muted: #a89f91;
+  --arete-code-line: rgba(243, 239, 228, 0.18);
+  --arete-code-hover: rgba(243, 239, 228, 0.06);
+  --arete-code-link: #9bc3f2;
+  --arete-code-link-hover: #c1dcfa;
 
-  /* Background layers */
-  --sl-color-bg: #0f0f14;
-  --sl-color-bg-nav: rgba(17, 17, 24, 0.85);
-  --sl-color-bg-sidebar: rgba(17, 17, 24, 0.6);
-  --sl-color-bg-inline-code: rgba(129, 140, 248, 0.12);
-
-  /* Text colors - high contrast but soft */
-  --sl-color-text: #e4e4eb;
-  --sl-color-text-accent: #a5b4fc;
-
-  /* Gray scale - slate tones */
-  --sl-color-gray-1: #f1f1f4;
-  --sl-color-gray-2: #c8c8d0;
-  --sl-color-gray-3: #9898a4;
-  --sl-color-gray-4: #6b6b78;
-  --sl-color-gray-5: #3d3d47;
-  --sl-color-gray-6: #26262e;
-  --sl-color-gray-7: #1a1a21;
-
-  /* Borders */
-  --sl-color-hairline: rgba(255, 255, 255, 0.08);
-  --sl-color-hairline-light: rgba(255, 255, 255, 0.04);
-
-  /* Code blocks */
-  --sl-color-code-bg: #16161e;
-
-  /* Sidebar active state */
-  --hs-sidebar-active-bg: rgba(129, 140, 248, 0.15);
-  --hs-sidebar-active-border: rgba(129, 140, 248, 0.3);
+  --sl-color-white: var(--arete-foreground);
+  --sl-color-black: var(--arete-background);
+  --sl-color-gray-1: #eee8dc;
+  --sl-color-gray-2: #d3cbbf;
+  --sl-color-gray-3: #a89f91;
+  --sl-color-gray-4: #7f766a;
+  --sl-color-gray-5: #4b443b;
+  --sl-color-gray-6: #302a23;
+  --sl-color-gray-7: #211d18;
+  --sl-color-accent: var(--arete-accent);
+  --sl-color-accent-low: rgba(122, 167, 222, 0.12);
+  --sl-color-accent-high: #a3c4ec;
+  --sl-color-text: var(--arete-foreground);
+  --sl-color-text-accent: var(--arete-accent);
+  --sl-color-bg: var(--arete-background);
+  --sl-color-bg-nav: rgba(23, 19, 14, 0.94);
+  --sl-color-bg-sidebar: rgba(23, 19, 14, 0.94);
+  --sl-color-bg-inline-code: rgba(122, 167, 222, 0.1);
+  --sl-color-code-bg: var(--arete-code-background);
+  --sl-color-hairline: var(--arete-line);
+  --sl-color-hairline-light: rgba(243, 239, 228, 0.07);
 }
 
-/* ============================================
-   Light Mode - Clean, Bright
-   ============================================ */
-:root[data-theme="light"] {
-  /* Primary accent - clear indigo */
-  --sl-color-accent: #4f46e5;
-  --sl-color-accent-low: rgba(79, 70, 229, 0.08);
-  --sl-color-accent-high: #4338ca;
-
-  /* Background layers */
-  --sl-color-bg: #ffffff;
-  --sl-color-bg-nav: rgba(255, 255, 255, 0.9);
-  --sl-color-bg-sidebar: rgba(249, 250, 251, 0.8);
-  --sl-color-bg-inline-code: rgba(79, 70, 229, 0.08);
-
-  /* Text colors */
-  --sl-color-text: #1f2937;
-  --sl-color-text-accent: #4338ca;
-
-  /* Gray scale - neutral */
-  --sl-color-gray-1: #111827;
-  --sl-color-gray-2: #374151;
-  --sl-color-gray-3: #6b7280;
-  --sl-color-gray-4: #9ca3af;
-  --sl-color-gray-5: #d1d5db;
-  --sl-color-gray-6: #e5e7eb;
-  --sl-color-gray-7: #f3f4f6;
-
-  /* Borders */
-  --sl-color-hairline: rgba(0, 0, 0, 0.08);
-  --sl-color-hairline-light: rgba(0, 0, 0, 0.04);
-
-  /* Code blocks */
-  --sl-color-code-bg: #f8fafc;
-
-  /* Sidebar active state */
-  --hs-sidebar-active-bg: rgba(79, 70, 229, 0.1);
-  --hs-sidebar-active-border: rgba(79, 70, 229, 0.25);
+html {
+  background: var(--arete-background);
+  scroll-padding-top: calc(var(--sl-nav-height) + 1rem);
 }
 
-/* ============================================
-   Typography
-   ============================================ */
 body {
-  font-family:
-    "Geist Sans",
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    system-ui,
-    sans-serif;
-  background: var(--sl-color-bg);
-  color: var(--sl-color-text);
+  min-height: 100vh;
+  background-color: var(--arete-background);
+  background-image:
+    linear-gradient(var(--arete-grid-strong) 1px, transparent 1px),
+    linear-gradient(90deg, var(--arete-grid-strong) 1px, transparent 1px),
+    linear-gradient(var(--arete-grid-fine) 1px, transparent 1px),
+    linear-gradient(90deg, var(--arete-grid-fine) 1px, transparent 1px),
+    radial-gradient(
+      circle at 78% 8%,
+      rgba(53, 95, 151, 0.09),
+      transparent 26rem
+    );
+  background-attachment: fixed;
+  background-position: -1px -1px;
+  background-size:
+    96px 96px,
+    96px 96px,
+    24px 24px,
+    24px 24px,
+    auto;
+  color: var(--arete-foreground);
+  font-family: var(--arete-font-sans);
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
 
 code,
 pre,
 kbd,
 samp {
-  font-family:
-    "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    monospace;
+  font-family: var(--arete-font-mono);
 }
 
-/* ============================================
-   Sidebar - Compact & Clean
-   ============================================ */
-
-/* Main sidebar navigation */
-nav[aria-label="Main"] {
-  font-size: var(--sl-text-sm);
-  padding: 0.75rem;
+::selection {
+  background: rgba(53, 95, 151, 0.22);
 }
 
-/* Sidebar group labels (cli, concepts, etc.) */
-nav[aria-label="Main"] ul > li > details > summary,
-nav[aria-label="Main"] ul > li > [role="group"] > span:first-child {
-  font-size: var(--sl-text-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--sl-color-gray-4);
-  padding: 0.375rem 0.5rem;
-  margin-top: 0.75rem;
-}
-
-/* Sidebar links */
-nav[aria-label="Main"] a {
-  font-size: var(--sl-text-sm);
-  font-weight: 400;
-  padding: 0.375rem 0.625rem;
-  border-radius: var(--sl-border-radius-md);
-  color: var(--sl-color-gray-3);
-  line-height: 1.4;
-  display: block;
-  transition:
-    color 0.15s ease,
-    background-color 0.15s ease;
-}
-
-nav[aria-label="Main"] a:hover {
-  color: var(--sl-color-text);
-  background-color: var(--sl-color-accent-low);
-}
-
-/* Active sidebar link */
-nav[aria-label="Main"] a[aria-current="page"],
-nav[aria-label="Main"] a[aria-current="true"] {
-  background: var(--hs-sidebar-active-bg);
-  color: var(--sl-color-accent-high);
-  font-weight: 500;
-  border-left: 2px solid var(--sl-color-accent);
-  border-radius: 0 var(--sl-border-radius-md) var(--sl-border-radius-md) 0;
-  padding-left: calc(0.625rem - 2px);
-}
-
-/* Nested sidebar items - tighter spacing */
-nav[aria-label="Main"] ul ul {
-  padding-left: 0.75rem;
-  margin: 0.125rem 0;
-}
-
-nav[aria-label="Main"] ul ul a {
-  font-size: var(--sl-text-sm);
-  padding: 0.25rem 0.625rem;
-}
-
-/* ============================================
-   Header / Navigation Bar
-   ============================================ */
-header {
+/* Shell */
+header.header {
+  border-bottom: 1px solid var(--arete-line-strong);
   background: var(--sl-color-bg-nav);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--sl-color-hairline);
+  backdrop-filter: blur(16px);
 }
 
-/* Site title */
-[data-sl-header] a[href="/"] {
-  font-weight: 600;
-  font-size: var(--sl-text-lg);
-  color: var(--sl-color-text);
+header.header::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--arete-accent),
+    transparent
+  );
+  content: "";
+  opacity: 0.28;
+  pointer-events: none;
 }
 
-/* ============================================
-   Table of Contents (Right Sidebar)
-   ============================================ */
-nav[aria-label="On this page"] {
+.sidebar-pane {
+  overflow-x: hidden;
+  border-inline-end: 1px solid var(--arete-line);
+  background: var(--sl-color-bg-sidebar);
+  scrollbar-color: var(--arete-line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.sidebar-pane::-webkit-scrollbar {
+  width: 7px;
+}
+
+.sidebar-pane::-webkit-scrollbar-thumb {
+  background: var(--arete-line-strong);
+}
+
+.sidebar-pane::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.main-pane {
+  background: transparent;
+}
+
+/* Primary navigation. The Starlight sidebar pane is the only scroll container. */
+.arete-sidebar {
+  min-height: 100%;
+  padding: 0.5rem 0.75rem 2rem;
+}
+
+.arete-sidebar nav[aria-label="Main"] {
+  padding: 0;
   font-size: var(--sl-text-sm);
 }
 
-nav[aria-label="On this page"] h2 {
-  font-size: var(--sl-text-xs);
+.arete-sidebar ul {
+  margin: 0;
+  padding: 0;
+}
+
+.arete-sidebar li {
+  margin: 0;
+}
+
+.arete-sidebar .top-level > li + li {
+  margin-top: 1.35rem;
+}
+
+.arete-sidebar .group-label,
+.arete-sidebar summary {
+  padding: 0.25rem 0.7rem 0.45rem;
+  color: var(--arete-muted);
+  font-family: var(--arete-font-mono);
+  font-size: 0.68rem;
   font-weight: 600;
+  letter-spacing: 0.13em;
+  line-height: 1.4;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--sl-color-gray-4);
-  margin-bottom: 0.75rem;
 }
 
-nav[aria-label="On this page"] a {
-  font-size: var(--sl-text-sm);
-  color: var(--sl-color-gray-3);
-  padding: 0.25rem 0;
-  display: block;
-  line-height: 1.5;
-  transition: color 0.15s ease;
+.arete-sidebar a {
+  border-inline-start: 2px solid transparent;
+  border-radius: 0;
+  color: var(--arete-muted);
+  font-size: 0.84rem;
+  line-height: 1.4;
+  padding-block: 0.42rem;
+  padding-inline: 0.7rem 0.55rem;
+  text-decoration: none;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
 }
 
-nav[aria-label="On this page"] a:hover {
-  color: var(--sl-color-text);
+.arete-sidebar a:hover {
+  border-inline-start-color: var(--arete-line-strong);
+  background: var(--arete-panel-muted);
+  color: var(--arete-foreground);
 }
 
-nav[aria-label="On this page"] a[aria-current="true"] {
-  color: var(--sl-color-accent-high);
-  font-weight: 500;
+.arete-sidebar a[aria-current="page"],
+.arete-sidebar a[aria-current="true"] {
+  border-inline-start-color: var(--arete-accent);
+  background: var(--sl-color-accent-low);
+  color: var(--arete-accent);
+  font-weight: 600;
 }
 
+.arete-sidebar ul ul {
+  margin-inline-start: 0.55rem;
+  border-inline-start: 1px solid var(--arete-line);
+  padding-inline-start: 0.3rem;
+}
+
+.arete-sidebar ul ul a {
+  font-size: 0.79rem;
+}
+
+.arete-sidebar .sl-badge {
+  border-radius: 0;
+  font-family: var(--arete-font-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
+}
+
+/* Header controls */
+site-search > button[data-open-modal] {
+  height: 2.5rem;
+  border: 1px solid var(--arete-line-strong);
+  border-radius: 0;
+  background: var(--arete-panel);
+  color: var(--arete-muted);
+  font-family: var(--arete-font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  box-shadow: none;
+}
+
+site-search > button[data-open-modal]:hover {
+  border-color: var(--arete-accent);
+  color: var(--arete-foreground);
+}
+
+site-search > button[data-open-modal] > kbd {
+  height: 1.15rem;
+  gap: 0.08rem;
+  border: 0;
+  border-inline-start: 1px solid var(--arete-line);
+  border-radius: 0;
+  padding: 0 0 0 0.55rem;
+  background: transparent;
+  box-shadow: none;
+  color: var(--arete-muted);
+  font-size: 0.65rem;
+}
+
+site-search > button[data-open-modal] > kbd > kbd {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+}
+
+.social-icons a {
+  color: var(--arete-muted);
+}
+
+.social-icons a:hover {
+  color: var(--arete-foreground);
+}
+
+/* Right rail */
 .right-sidebar-container,
 .right-sidebar {
+  border: 0 !important;
   background: transparent !important;
-  border: none !important;
   box-shadow: none !important;
 }
 
-nav[aria-label="On this page"] ul ul {
-  padding-left: 0.75rem;
-  border-left: 1px solid var(--sl-color-hairline);
-  margin-left: 0.25rem;
+.right-sidebar-panel {
+  border-inline-start: 1px solid var(--arete-line);
 }
 
-nav[aria-label="On this page"] ul ul a {
-  font-size: var(--sl-text-xs);
+nav[aria-label="On this page"] h2 {
+  color: var(--arete-muted);
+  font-family: var(--arete-font-mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
 }
 
-/* ============================================
-   Main Content Area
-   ============================================ */
+nav[aria-label="On this page"] a {
+  color: var(--arete-muted);
+  font-family: var(--arete-font-mono);
+  font-size: 0.71rem;
+  line-height: 1.5;
+  text-decoration: none;
+}
+
+nav[aria-label="On this page"] a:hover,
+nav[aria-label="On this page"] a[aria-current="true"] {
+  color: var(--arete-accent);
+}
+
+/* Reading surface */
 main {
-  line-height: 1.7;
+  line-height: 1.75;
 }
 
-/* Headings */
+.content-panel {
+  background: transparent;
+}
+
+.sl-markdown-content {
+  font-size: 1rem;
+}
+
+main h1,
+main h2,
+main h3,
+main h4,
+main h5,
+main h6 {
+  color: var(--arete-foreground);
+  font-family: var(--arete-font-mono);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+
 main h1 {
+  max-width: 18ch;
   font-size: var(--sl-text-3xl);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  margin-bottom: 1rem;
-  color: var(--sl-color-text);
+  line-height: 1.05;
 }
 
 main h2 {
+  margin-top: 3.5rem;
+  border-top: 1px solid var(--arete-line);
+  padding-top: 1.15rem;
   font-size: var(--sl-text-2xl);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  margin-top: 2.5rem;
-  margin-bottom: 0.75rem;
-  color: var(--sl-color-text);
+  line-height: 1.15;
+}
+
+main h2::before {
+  margin-inline-end: 0.65rem;
+  color: var(--arete-accent);
+  content: "//";
+  font-size: 0.72em;
+  font-weight: 400;
+  letter-spacing: -0.15em;
 }
 
 main h3 {
+  margin-top: 2.25rem;
   font-size: var(--sl-text-xl);
-  font-weight: 600;
-  margin-top: 2rem;
-  margin-bottom: 0.5rem;
+  line-height: 1.25;
 }
 
-/* Anchor link icon on headings - add spacing */
-main .sl-anchor-link {
-  margin-left: 0.35em;
-}
-
-/* Paragraphs */
-main p {
-  font-size: var(--sl-text-base);
-  color: var(--sl-color-gray-2);
-  margin-bottom: 1rem;
-}
-
-/* Lists */
-main ul,
-main ol {
-  font-size: var(--sl-text-base);
-  color: var(--sl-color-gray-2);
-  padding-left: 1.5rem;
-  margin-bottom: 1rem;
-}
-
+main p,
 main li {
-  margin-bottom: 0.375rem;
+  color: var(--sl-color-gray-2);
 }
 
-/* Inline code */
-main :not(pre) > code {
-  background: var(--sl-color-bg-inline-code);
-  padding: 0.125rem 0.375rem;
-  border-radius: var(--sl-border-radius-sm);
-  font-size: 0.875em;
-  color: var(--sl-color-accent-high);
-}
-
-/* Code blocks */
-main pre {
-  background: var(--sl-color-code-bg);
-  border: 1px solid var(--sl-color-hairline);
-  border-radius: var(--sl-border-radius-lg);
-  padding: 1rem;
-  overflow-x: auto;
-  font-size: var(--sl-text-sm);
-  line-height: 1.6;
-}
-
-/* Tables */
-main table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--sl-text-sm);
-  margin: 1.5rem 0;
-}
-
-main th {
-  text-align: left;
+main strong {
+  color: var(--arete-foreground);
   font-weight: 600;
-  padding: 0.75rem 1rem;
-  background: var(--sl-color-gray-7);
-  border-bottom: 1px solid var(--sl-color-hairline);
 }
 
-main td {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--sl-color-hairline-light);
-}
-
-/* ============================================
-   Links
-   ============================================ */
 main a {
-  color: var(--sl-color-accent-high);
-  text-decoration: none;
-  transition: color 0.15s ease;
+  color: var(--arete-accent);
+  text-decoration-color: rgba(53, 95, 151, 0.42);
+  text-underline-offset: 0.18em;
 }
 
 main a:hover {
-  color: var(--sl-color-text-accent);
-  text-decoration: underline;
+  color: var(--sl-color-accent-high);
+  text-decoration-thickness: 2px;
 }
 
-/* ============================================
-   Callouts / Asides
-   ============================================ */
-aside,
+.sl-markdown-content > .agent-docs-discovery + .sl-heading-wrapper.level-h1 {
+  --sl-anchor-icon-space: 0;
+  margin-top: 0;
+  max-width: 19ch;
+  font-size: var(--sl-text-4xl);
+  line-height: 0.98;
+  letter-spacing: -0.06em;
+}
+
+.sl-markdown-content
+  > .agent-docs-discovery
+  + .sl-heading-wrapper.level-h1
+  .sl-anchor-link {
+  display: none;
+}
+
+.sl-markdown-content > .agent-docs-discovery + .sl-heading-wrapper.level-h1 h1 {
+  max-width: none;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.sl-markdown-content
+  > .agent-docs-discovery
+  + .sl-heading-wrapper.level-h1
+  + p {
+  max-width: 43rem;
+  color: var(--arete-muted);
+  font-size: clamp(1.05rem, 2vw, 1.2rem);
+  line-height: 1.7;
+}
+
+.sl-heading-wrapper {
+  --sl-anchor-icon-gap: 0.7em;
+  --sl-anchor-icon-size: 0.65em;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h1 {
+  font-size: var(--sl-text-3xl);
+  line-height: 1.05;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h2 {
+  font-size: var(--sl-text-2xl);
+  line-height: 1.15;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h3 {
+  font-size: var(--sl-text-xl);
+  line-height: 1.25;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h4,
+.sl-markdown-content .sl-heading-wrapper.level-h5,
+.sl-markdown-content .sl-heading-wrapper.level-h6 {
+  font-size: var(--sl-text-lg);
+  line-height: 1.3;
+}
+
+main :not(pre) > code {
+  border: 1px solid var(--arete-line);
+  border-radius: 0;
+  background: var(--sl-color-bg-inline-code);
+  color: var(--sl-color-accent-high);
+  font-size: 0.86em;
+  padding: 0.12rem 0.32rem;
+}
+
+main pre,
+.expressive-code .frame {
+  border: 1px solid var(--arete-line-strong) !important;
+  border-radius: 0 !important;
+  background: var(--arete-code-background) !important;
+  color: var(--arete-code-foreground);
+  box-shadow: none !important;
+}
+
+.expressive-code .frame::before {
+  display: none !important;
+}
+
+main table {
+  width: 100%;
+  border: 1px solid var(--arete-line-strong);
+  border-collapse: collapse;
+  background: var(--arete-panel);
+  font-size: 0.875rem;
+}
+
+main th {
+  border: 1px solid var(--arete-line);
+  background: var(--arete-panel-muted);
+  color: var(--arete-foreground);
+  font-family: var(--arete-font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 0.7rem 0.85rem;
+  text-align: start;
+  text-transform: uppercase;
+}
+
+main td {
+  border: 1px solid var(--arete-line);
+  padding: 0.72rem 0.85rem;
+  vertical-align: top;
+}
+
+/* Content blocks */
+.card-grid .card,
+.sl-link-card,
+a.card {
+  border: 1px solid var(--arete-line-strong) !important;
+  border-radius: 0 !important;
+  background: var(--arete-panel) !important;
+  box-shadow: none !important;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease,
+    transform 150ms ease !important;
+}
+
+.card-grid .card:hover,
+.sl-link-card:hover,
+a.card:hover {
+  border-color: var(--arete-accent) !important;
+  background: var(--arete-background-soft) !important;
+  transform: translateY(-2px);
+}
+
+.card-grid .card .title,
+.card-grid .card .card-title,
+.sl-link-card .title {
+  color: var(--arete-foreground);
+  font-family: var(--arete-font-mono);
+  letter-spacing: -0.025em;
+}
+
+.card-grid .card .icon {
+  border: 1px solid var(--arete-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--arete-accent);
+}
+
 .starlight-aside {
-  border-radius: var(--sl-border-radius-lg);
-  padding: 1rem 1.25rem;
-  margin: 1.5rem 0;
-  border-left: 3px solid var(--sl-color-accent);
-  background: var(--sl-color-accent-low);
+  border: 1px solid var(--arete-line-strong);
+  border-inline-start: 3px solid var(--arete-accent);
+  border-radius: 0;
+  background: var(--arete-panel);
+  box-shadow: none;
 }
 
-/* ============================================
-   Tabs - Clean Tab Style
-   ============================================ */
+.starlight-aside__title {
+  font-family: var(--arete-font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
 
-/* Remove double border: tabs have individual borders, container shouldn't */
 starlight-tabs {
-  border-bottom: none !important;
+  border: 1px solid var(--arete-line-strong);
+  border-radius: 0;
+  background: var(--arete-panel);
 }
 
-/* Tab list container */
 starlight-tabs [role="tablist"] {
-  /* border-bottom: 1px solid var(--sl-color-hairline); */
-  border-bottom: none;
-  margin-bottom: 0;
+  border-bottom: 1px solid var(--arete-line);
   gap: 0;
 }
 
-/* Individual tabs */
 starlight-tabs [role="tab"] {
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  padding: 0.5rem 1rem;
-  font-size: var(--sl-text-sm);
-  color: var(--sl-color-gray-3);
-  transition:
-    color 0.15s ease,
-    border-color 0.15s ease;
-}
-
-starlight-tabs [role="tab"]:hover {
-  color: var(--sl-color-text);
+  border-inline-end: 1px solid var(--arete-line);
+  border-radius: 0;
+  color: var(--arete-muted);
+  font-family: var(--arete-font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 starlight-tabs [role="tab"][aria-selected="true"] {
-  color: var(--sl-color-accent-high);
-  border-bottom-color: var(--sl-color-accent);
+  background: var(--sl-color-accent-low);
+  color: var(--arete-accent);
 }
 
-/* ============================================
-   Mobile Responsive Adjustments
-   ============================================ */
+.pagination-links a {
+  border: 1px solid var(--arete-line-strong);
+  border-radius: 0;
+  background: var(--arete-panel);
+  box-shadow: none;
+}
+
+.pagination-links a:hover {
+  border-color: var(--arete-accent);
+}
+
+.pagination-links .link-title {
+  color: var(--arete-foreground);
+  font-family: var(--arete-font-mono);
+}
+
+details {
+  border-color: var(--arete-line);
+}
+
+/* Search modal */
+site-search dialog,
+.pagefind-ui__drawer {
+  border: 1px solid var(--arete-line-strong) !important;
+  border-radius: 0 !important;
+  background: var(--arete-background-soft) !important;
+  color: var(--arete-foreground) !important;
+  box-shadow: none !important;
+}
+
+site-search dialog::backdrop {
+  background: rgba(13, 11, 8, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.pagefind-ui__search-input,
+.pagefind-ui__result {
+  border-radius: 0 !important;
+}
+
+@media (max-width: 72rem) {
+  :root {
+    --sl-content-width: 47rem;
+  }
+}
+
 @media (max-width: 50rem) {
-  nav[aria-label="Main"] a {
-    font-size: var(--sl-text-base);
-    padding: 0.5rem 0.75rem;
+  :root {
+    --sl-nav-height: 4.25rem;
+  }
+
+  body {
+    background-size:
+      72px 72px,
+      72px 72px,
+      24px 24px,
+      24px 24px,
+      auto;
+  }
+
+  .sidebar-pane {
+    border-inline-end: 0;
+    background: var(--arete-background);
+  }
+
+  .arete-sidebar {
+    padding-inline: 0.55rem;
+  }
+
+  .arete-sidebar a {
+    padding-block: 0.55rem;
+    font-size: 0.9rem;
   }
 
   main h1 {
-    font-size: var(--sl-text-2xl);
+    font-size: clamp(2rem, 10vw, 2.85rem);
+  }
+
+  .sl-markdown-content > .agent-docs-discovery + .sl-heading-wrapper.level-h1 {
+    font-size: clamp(2.35rem, 12vw, 3.4rem);
   }
 
   main h2 {
-    font-size: var(--sl-text-xl);
+    margin-top: 2.75rem;
+    font-size: 1.55rem;
+  }
+
+  main table {
+    font-size: 0.8rem;
   }
 }
 
-/* ============================================
-   Heading Anchor Links - Fix Overlap
-   ============================================ */
-.sl-markdown-content .sl-heading-wrapper {
-  --sl-anchor-icon-gap: 0.75em;
-}
-
-/* Visually hidden; kept in DOM for agent doc crawlers (AFDocs / llms directive).
-   `clip` is deprecated in CSS Masking Level 1, kept for older browsers;
-   `clip-path: inset(50%)` is the modern equivalent. */
+/* Visually hidden; retained for agent doc crawlers. */
 .sr-only {
   position: absolute;
   width: 1px;
