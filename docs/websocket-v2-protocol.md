@@ -169,10 +169,26 @@ with `invalid-subscription`. `key`, `partition` and `filters` are honoured,
 on replayed and live records alike.
 
 If delivery falls behind the server's fan-out buffer, the gap is reported as
-`replay-lagged` rather than passed over silently. The subscription stays
-active and keeps delivering newer records, so a consumer that tolerates the
-gap can ignore it; a lossless consumer resubscribes with the last offset it
-received to recover the skipped records.
+`replay-lagged` and **delivery on that subscription stops**. The error
+carries `recoverFrom`: the last offset delivered *before* the gap.
+
+```json
+{
+  "type": "error",
+  "code": "replay-lagged",
+  "recoverFrom": 4180
+}
+```
+
+Unsubscribe, then resubscribe with `after` set to `recoverFrom` to replay
+the skipped records; they are recoverable as long as they are still
+retained. `recoverFrom` is absent when nothing had been delivered yet, in
+which case resubscribe without `after`.
+
+Delivery stops rather than continuing because frames from after the gap
+would advance the consumer's checkpoint past the skipped records, making
+them unrecoverable. The subscription stays registered until you unsubscribe,
+so reuse of the same `subscriptionId` requires unsubscribing first.
 
 Retention is bounded by count and age, and the retained tape is captured in
 the state snapshot, so the advertised window survives a normal restart.

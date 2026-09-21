@@ -1544,39 +1544,38 @@ async fn attach_journal_subscription(
                     received = receiver.recv() => {
                         let envelope = match received {
                             Ok(envelope) => envelope,
-                            // A lagged tape is a gap. Report it and keep
-                            // delivering: the consumer decides whether to
-                            // resubscribe from its cursor.
+                            // A lagged tape is a gap. Report it with the last
+                            // offset delivered *before* the gap and stop
+                            // delivering on this subscription.
                             //
-                            // The subscription deliberately stays registered.
-                            // Its lifecycle is owned by the connection loop,
+                            // Continuing would hand the consumer frames from
+                            // after the gap, advancing its checkpoint past
+                            // the skipped records so they could never be
+                            // replayed. Stopping is not a silent stall: the
+                            // consumer has an explicit error and a cursor
+                            // that recovers exactly what it missed.
+                            //
+                            // The registration is deliberately left alone.
+                            // Its lifecycle belongs to the connection loop,
                             // which holds the only handle to
-                            // `active_subscriptions`; tearing it down from
-                            // here can free the client-manager slot or leave
-                            // the connection-local entry, but never both, and
-                            // either half alone desynchronises unsubscribe,
-                            // the duplicate-ID gate and close-time usage.
+                            // `active_subscriptions`; releasing half of it
+                            // here would desynchronise unsubscribe, the
+                            // duplicate-ID gate and close-time usage.
                             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                                 warn!(
-                                    "Replay subscription {} lagged past {} records; signalling the gap",
+                                    "Replay subscription {} lagged past {} records; stopping with a recovery cursor",
                                     task_subscription_id, skipped
                                 );
-                                if send_control_frame(
+                                let _ = send_control_frame(
                                     &task_context,
-                                    &SocketIssueMessage::protocol(
+                                    &SocketIssueMessage::replay_lagged(
                                         Some(task_subscription_id.clone()),
-                                        "replay-lagged",
-                                        format!(
-                                            "delivery fell behind by {skipped} records; resubscribe with your last offset to recover them"
-                                        ),
+                                        skipped,
+                                        last_sent,
                                     ),
                                     &span_view,
-                                )
-                                .is_err()
-                                {
-                                    break;
-                                }
-                                continue;
+                                );
+                                break;
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
                         };
@@ -2284,5 +2283,28 @@ mod tests {
         };
         let garbage = Arc::new(Bytes::from_static(b"not json"));
         assert!(!live_frame_matches(&filtered, "pool1", &garbage));
+    }
+
+    /// The recovery cursor must be the last offset delivered *before* the
+    /// gap. Reporting the newest offset seen would step the consumer over
+    /// the skipped records permanently.
+    #[test]
+    fn replay_lagged_recovers_from_before_the_gap() {
+        let issue = SocketIssueMessage::replay_lagged(Some("trades".to_string()), 37, Some(4180));
+        assert_eq!(issue.code, "replay-lagged");
+        assert_eq!(issue.recover_from, Some(4180));
+        assert!(
+            issue.suggested_action.unwrap().contains("4180"),
+            "the consumer is told exactly which cursor recovers the gap"
+        );
+
+        // Nothing delivered yet: there is no pre-gap offset, so the whole
+        // retained window is the recovery.
+        let from_scratch = SocketIssueMessage::replay_lagged(Some("trades".to_string()), 9, None);
+        assert_eq!(from_scratch.recover_from, None);
+        assert!(from_scratch
+            .suggested_action
+            .unwrap()
+            .contains("without `after`"));
     }
 }

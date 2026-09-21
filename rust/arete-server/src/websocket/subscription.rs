@@ -53,9 +53,15 @@ pub struct SocketIssueMessage {
     pub suggested_action: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docs_url: Option<String>,
-    /// Present on `cursor-expired`: the offsets the view can still serve.
+    /// Present on `cursor-expired` and `invalid-cursor`: the offsets the view
+    /// can still serve.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replay_window: Option<crate::journal::ReplayWindow>,
+    /// Present on `replay-lagged`: the last offset delivered *before* the
+    /// gap. Resubscribing with `after` set to this replays the skipped
+    /// records, provided they are still retained.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recover_from: Option<u64>,
     pub fatal: bool,
 }
 
@@ -74,6 +80,7 @@ impl SocketIssueMessage {
             suggested_action: response.suggested_action,
             docs_url: response.docs_url,
             replay_window: None,
+            recover_from: None,
             fatal,
         }
     }
@@ -96,8 +103,38 @@ impl SocketIssueMessage {
             suggested_action: None,
             docs_url: None,
             replay_window: None,
+            recover_from: None,
             fatal: false,
         }
+    }
+
+    /// Delivery fell behind the server's fan-out buffer and records were
+    /// skipped.
+    ///
+    /// `recover_from` is the last offset delivered *before* the gap, not the
+    /// latest offset seen: resubscribing after the newest frame would step
+    /// over the skipped records permanently. Delivery on this subscription
+    /// stops here, so nothing arrives that could advance the consumer's
+    /// checkpoint past the gap.
+    pub fn replay_lagged(
+        subscription_id: Option<String>,
+        skipped: u64,
+        recover_from: Option<u64>,
+    ) -> Self {
+        let mut issue = Self::protocol(
+            subscription_id,
+            "replay-lagged",
+            format!("delivery fell behind by {skipped} records and this subscription has stopped"),
+        );
+        issue.suggested_action = Some(match recover_from {
+            Some(offset) => format!(
+                "unsubscribe, then resubscribe with after set to {offset} to replay the skipped records"
+            ),
+            None => "unsubscribe, then resubscribe without `after` to replay the retained window"
+                .to_string(),
+        });
+        issue.recover_from = recover_from;
+        issue
     }
 
     /// The requested cursor has fallen out of the retained replay window.
