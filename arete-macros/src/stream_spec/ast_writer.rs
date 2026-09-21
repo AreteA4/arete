@@ -7,7 +7,7 @@
 //! The same AST is used for both inline code generation (via `codegen::generate_handlers_from_specs`)
 //! and internal compiler consumers, ensuring identical output.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::ast::writer::{
     context_field_name, convert_idl_to_snapshot, parse_population_strategy, parse_transformation,
@@ -55,6 +55,17 @@ fn source_program_name<'a>(source: &str, idls: IdlLookup<'a>) -> Option<&'a str>
         .map(|idl| idl.get_name())
 }
 
+/// One entry per distinct declared source, so a source cannot be counted
+/// twice for being captured by several fields.
+///
+/// The tail keeps the kind segment, which separates an account from an
+/// instruction of the same name.
+fn source_identity<'a>(source: &str, idls: IdlLookup<'a>) -> Option<(&'a str, String)> {
+    let program = source_program_name(source, idls)?;
+    let tail = source.split("::").skip(1).collect::<Vec<_>>().join("::");
+    Some((program, tail))
+}
+
 /// Resolve the IDL that owns this entity, from the sources it declares.
 ///
 /// A single-program entity resolves to its own program whatever order the
@@ -71,20 +82,19 @@ fn resolve_entity_idl<'a>(
     }
 
     // ponytail: an entity spanning programs (ore's `OreRound` reads Entropy
-    // accounts) is attributed to whichever program owns most of its declared
-    // sources, tie-broken by program name so the result never depends on IDL
-    // declaration order. Per-section program attribution is the upgrade path
-    // if one entity ever needs two programs to own different sections.
-    let mut sources_per_program: BTreeMap<&str, usize> = BTreeMap::new();
-    for source_type in sources_by_type.keys() {
-        if let Some(program) = source_program_name(source_type, idls) {
-            *sources_per_program.entry(program).or_default() += 1;
-        }
-    }
+    // accounts) is attributed to whichever program owns most of the distinct
+    // sources it declares, tie-broken by program name so the result never
+    // depends on IDL declaration order. Per-section program attribution is the
+    // upgrade path if one entity ever needs two programs to own different
+    // sections.
+    let mut declared: BTreeSet<(&str, String)> = sources_by_type
+        .keys()
+        .filter_map(|source_type| source_identity(source_type, idls))
+        .collect();
 
     // Only `lookup_by` events stay out of `sources_by_type`; the rest were
-    // merged there already and counting them again weights one declaration
-    // twice.
+    // merged there already and counting them again weights one source twice.
+    // Several fields may capture one instruction, which is still one source.
     for (instruction_key, event_mappings) in events_by_instruction {
         for (_, event_attr, _) in event_mappings {
             if event_attr.lookup_by.is_none() {
@@ -95,14 +105,19 @@ fn resolve_entity_idl<'a>(
                 .as_ref()
                 .or(event_attr.inferred_instruction.as_ref())
                 .map(path_to_string);
-            let program = instruction_path
+            let identity = instruction_path
                 .as_deref()
-                .and_then(|path| source_program_name(path, idls))
-                .or_else(|| source_program_name(instruction_key, idls));
-            if let Some(program) = program {
-                *sources_per_program.entry(program).or_default() += 1;
+                .and_then(|path| source_identity(path, idls))
+                .or_else(|| source_identity(instruction_key, idls));
+            if let Some(identity) = identity {
+                declared.insert(identity);
             }
         }
+    }
+
+    let mut sources_per_program: BTreeMap<&str, usize> = BTreeMap::new();
+    for (program, _) in &declared {
+        *sources_per_program.entry(program).or_default() += 1;
     }
 
     let owner = sources_per_program
@@ -2027,6 +2042,36 @@ mod entity_ownership_tests {
         events.insert(
             "entropy::Reveal".to_string(),
             vec![event_mapping("entropy::Reveal", false)],
+        );
+
+        let resolved = resolve_entity_idl(&sources, &events, &idls);
+        assert_eq!(
+            resolved.and_then(|idl| idl.address.as_deref()),
+            Some("PumpAddr")
+        );
+    }
+
+    #[test]
+    fn several_fields_capturing_one_instruction_are_one_source() {
+        let pump = idl("pump", "PumpAddr");
+        let entropy = idl("entropy", "EntropyAddr");
+        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+
+        let mut sources = BTreeMap::new();
+        sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
+        sources.insert("pump_sdk::accounts::Global".to_string(), Vec::new());
+
+        // Three fields, one entropy instruction. Counting per field would let it
+        // outvote pump's two distinct sources, so adding a captured field would
+        // silently change the entity's program.
+        let mut events = BTreeMap::new();
+        events.insert(
+            "entropy::Reveal".to_string(),
+            vec![
+                event_mapping("entropy::Reveal", true),
+                event_mapping("entropy::Reveal", true),
+                event_mapping("entropy::Reveal", true),
+            ],
         );
 
         let resolved = resolve_entity_idl(&sources, &events, &idls);
