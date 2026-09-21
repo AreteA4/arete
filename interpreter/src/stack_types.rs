@@ -179,7 +179,7 @@ pub(crate) fn entity_idl<'a>(
                 .find(|idl| idl.program_id.as_deref() == Some(program_id))
         })
         .or(entity.idl.as_ref())
-        .or_else(|| match idls {
+        .or(match idls {
             [only] => Some(only),
             _ => None,
         })
