@@ -561,11 +561,14 @@ impl SnapshotService {
         let matching_contracts = self.state_contract.is_some()
             && header.state_contract == self.state_contract
             && header.projection_contract.as_ref() == Some(&self.projection_contract);
-        let approved_legacy = self
-            .config
-            .legacy_bytecode_hashes
-            .contains(&header.bytecode_hash);
-        let legacy_migration = approved_legacy && !exact_bytecode && !matching_contracts;
+        let approved_legacy = !exact_bytecode
+            && header.state_contract.is_none()
+            && header.projection_contract.is_none()
+            && self
+                .config
+                .legacy_bytecode_hashes
+                .contains(&header.bytecode_hash);
+        let legacy_migration = approved_legacy;
         if !exact_bytecode && !matching_contracts && !approved_legacy {
             warn!(
                 snapshot = %name,

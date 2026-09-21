@@ -425,12 +425,18 @@ async fn mismatched_bytecode_and_corrupt_blobs_cold_start() {
         .unwrap());
 
     // Restart with a different stack build (different bytecode fingerprint):
-    // the snapshot must be discarded.
+    // the contract-aware snapshot must be discarded even if an operator has
+    // mistakenly allowlisted its source hash. The allowlist is only valid for
+    // pre-contract snapshots.
+    let mut allowlisted_config = config.clone();
+    allowlisted_config
+        .legacy_bytecode_hashes
+        .insert(spec.bytecode.fingerprint());
     let entity_cache2 = EntityCache::new();
     let view_index2 = make_view_index();
     let (tx2, projector2) = make_projector(&view_index2, &entity_cache2);
     let service2 = SnapshotService::initialize(
-        config.clone(),
+        allowlisted_config,
         &make_spec("Renamed"),
         entity_cache2.clone(),
         &view_index2,
