@@ -13,42 +13,45 @@
 <copy-prompt class="not-content">
   <div class="prompt-label">
     <span>Agent prompt</span>
-    <span>Copy / paste</span>
+    <span class="prompt-actions">
+      <span>Copy / paste</span>
+      <button class="copy-btn" title="Copy prompt" aria-label="Copy prompt">
+        <svg
+          class="icon-copy"
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+          ></path>
+        </svg>
+        <svg
+          class="icon-check"
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      </button>
+    </span>
   </div>
   <div class="prompt-content">
     <slot />
   </div>
-  <button class="copy-btn" title="Copy prompt">
-    <svg
-      class="icon-copy"
-      xmlns="http://www.w3.org/2000/svg"
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    >
-      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-    </svg>
-    <svg
-      class="icon-check"
-      xmlns="http://www.w3.org/2000/svg"
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    >
-      <polyline points="20 6 9 17 4 12"></polyline>
-    </svg>
-  </button>
 </copy-prompt>
 
 <style>
@@ -67,15 +70,23 @@
 
   .prompt-label {
     display: flex;
+    height: 2.35rem;
     align-items: center;
     justify-content: space-between;
     border-bottom: 1px solid var(--arete-code-line);
-    padding: 0.62rem 3.25rem 0.62rem 0.9rem;
+    padding-inline-start: 0.9rem;
     color: var(--arete-code-muted);
     font-size: 0.6rem;
     font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
+  }
+
+  .prompt-actions {
+    display: flex;
+    height: 100%;
+    align-items: center;
+    gap: 0.75rem;
   }
 
   .prompt-content {
@@ -112,16 +123,14 @@
   }
 
   .copy-btn {
-    position: absolute;
-    top: 0.42rem;
-    right: 0.45rem;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 2rem;
-    height: 2rem;
+    width: 2.35rem;
+    height: 100%;
     padding: 0;
-    border: 1px solid var(--arete-code-line);
+    border: 0;
+    border-inline-start: 1px solid var(--arete-code-line);
     border-radius: 0;
     background: transparent;
     color: var(--arete-code-muted);
@@ -130,7 +139,7 @@
   }
 
   .copy-btn:hover {
-    border-color: var(--arete-accent);
+    border-inline-start-color: var(--arete-accent);
     background: var(--arete-code-hover);
     color: var(--arete-code-foreground);
   }
@@ -153,7 +162,7 @@
   }
 
   copy-prompt.copied .copy-btn {
-    border-color: var(--arete-accent);
+    border-inline-start-color: var(--arete-accent);
     background: rgba(122, 167, 222, 0.08);
   }
 </style>
