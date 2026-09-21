@@ -70,8 +70,11 @@ a4 install program spl-token --ts
 Update with `a4 self update`. Coding agents can do all of this from one prompt:
 
 > Read https://docs.arete.run/agent.md and follow it to set up Arete in this
-> project. Verify the setup, then help me discover the program or live data I
-> need.
+> project. Verify the setup, then find programs and live views that can help me
+> understand recent token activity. Inspect exact descriptors, query a bounded
+> live sample when available, and summarize what the data supports. If no
+> suitable hosted view exists, show me the closest program capabilities instead
+> of guessing.
 
 See [cli/README.md](cli/README.md) for the full command surface.
 
