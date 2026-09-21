@@ -168,9 +168,11 @@ apply to a tape; a replayable subscription requesting any of them is refused
 with `invalid-subscription`. `key`, `partition` and `filters` are honoured,
 on replayed and live records alike.
 
-If delivery falls behind the server's fan-out buffer the subscription is
-ended with `replay-lagged` rather than silently skipping records; resubscribe
-with the last offset received.
+If delivery falls behind the server's fan-out buffer, the gap is reported as
+`replay-lagged` rather than passed over silently. The subscription stays
+active and keeps delivering newer records, so a consumer that tolerates the
+gap can ignore it; a lossless consumer resubscribes with the last offset it
+received to recover the skipped records.
 
 Retention is bounded by count and age, and the retained tape is captured in
 the state snapshot, so the advertised window survives a normal restart.

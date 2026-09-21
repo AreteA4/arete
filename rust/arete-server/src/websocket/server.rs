@@ -1544,39 +1544,39 @@ async fn attach_journal_subscription(
                     received = receiver.recv() => {
                         let envelope = match received {
                             Ok(envelope) => envelope,
-                            // A lagged tape is a gap. Tell the consumer so it
-                            // resubscribes from its cursor; ending the task
-                            // silently would leave an apparently live
-                            // subscription that never delivers again.
+                            // A lagged tape is a gap. Report it and keep
+                            // delivering: the consumer decides whether to
+                            // resubscribe from its cursor.
+                            //
+                            // The subscription deliberately stays registered.
+                            // Its lifecycle is owned by the connection loop,
+                            // which holds the only handle to
+                            // `active_subscriptions`; tearing it down from
+                            // here can free the client-manager slot or leave
+                            // the connection-local entry, but never both, and
+                            // either half alone desynchronises unsubscribe,
+                            // the duplicate-ID gate and close-time usage.
                             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                                 warn!(
                                     "Replay subscription {} lagged past {} records; signalling the gap",
                                     task_subscription_id, skipped
                                 );
-                                let _ = send_control_frame(
+                                if send_control_frame(
                                     &task_context,
                                     &SocketIssueMessage::protocol(
                                         Some(task_subscription_id.clone()),
                                         "replay-lagged",
                                         format!(
-                                            "delivery fell behind by {skipped} records; resubscribe with your last offset"
+                                            "delivery fell behind by {skipped} records; resubscribe with your last offset to recover them"
                                         ),
                                     ),
                                     &span_view,
-                                );
-                                // Ending the task is not enough: the
-                                // registration gates duplicate IDs and counts
-                                // against the client's subscription limit, so
-                                // a consumer told to resubscribe would be
-                                // refused with `duplicate-subscription-id`.
-                                task_context
-                                    .client_manager
-                                    .remove_client_subscription(
-                                        task_context.client_id,
-                                        &task_subscription_id,
-                                    )
-                                    .await;
-                                break;
+                                )
+                                .is_err()
+                                {
+                                    break;
+                                }
+                                continue;
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
                         };
