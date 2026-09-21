@@ -1,15 +1,22 @@
 ---
 title: Prompt Cookbook
-description: Prompts for discovering programs, exploring live views, and graduating the result into application code.
+description: Copy-and-paste prompts for finding programs, exploring live data, and turning what you find into application code.
 ---
 
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-These prompts assume `a4 init -y` and `a4 doctor --json` have completed. They
-state an outcome and let the installed skills discover current packages,
-schemas, and endpoints.
+Copy a prompt, replace the parts in `[BRACKETS]` with your own details, and
+paste it into your agent. Each one describes the result you want and leaves the
+installed skills to look up current packages, schemas, and endpoints.
+
+These prompts assume setup is finished, meaning `a4 init -y` and
+`a4 doctor --json` have both completed. If not, start with
+[Choose and Set Up an Agent](/agent-skills/setup-tools/).
 
 ## Explore what is happening now
+
+Use this when you are curious about live activity and don't yet know which
+program or view holds the answer.
 
 <CopyPrompt>
 Use Arete to investigate current activity related to [TOPIC]. Search by intent,
@@ -21,6 +28,9 @@ and disconnect. Do not invent a view when none is available.
 
 ## Survey a protocol
 
+Use this to get the lay of the land for a protocol: which programs are
+involved, and what Arete can do with each today.
+
 <CopyPrompt>
 Use the Arete catalog and knowledge layer to survey [PROTOCOL OR INTENT]. Tell
 me which programs are involved and which capabilities are currently available
@@ -30,6 +40,9 @@ from installable or hosted delivery.
 </CopyPrompt>
 
 ## Inspect a program before integrating it
+
+Use this before you commit to a program, to see everything its SDK would give
+you.
 
 <CopyPrompt>
 Find the Arete program package for [PROGRAM OR PROTOCOL]. Inspect its exact
@@ -41,6 +54,9 @@ IDL example.
 
 ## Add a Program SDK
 
+Use this when you know what you want to do and are ready for the agent to
+install the SDK and write code against it.
+
 <CopyPrompt>
 Find the read- and build-ready Arete program package that matches [INTENT]. Add
 it to this project for [TYPESCRIPT, RUST, OR PYTHON] using the descriptor's
@@ -51,6 +67,9 @@ generated files.
 
 ## Prepare without submitting
 
+Use this to see exactly what a transaction would do. Nothing gets signed or
+sent.
+
 <CopyPrompt>
 Using the installed Arete Program SDK, prepare and inspect a transaction for
 [ACTION]. Show the derived accounts, instructions, required signers, estimated
@@ -59,6 +78,8 @@ signature and do not submit anything.
 </CopyPrompt>
 
 ## Build a live application
+
+Use this to go from an idea to a working interface on top of live data.
 
 <CopyPrompt>
 Find a currently subscribe-ready Arete stack for [INTENT], inspect its exact
@@ -70,6 +91,9 @@ names from generated types rather than copying an unrelated example.
 
 ## Turn an MCP exploration into code
 
+Use this after an exploration session, when you want your app to read the same
+data your agent just looked at.
+
 <CopyPrompt>
 We used Arete MCP to validate [STACK AND VIEW] for [PURPOSE]. Inspect the same
 exact stack descriptor, add it as a project dependency, generate the [LANGUAGE]
@@ -78,6 +102,9 @@ Confirm that the installed view identity and fields match the explored surface.
 </CopyPrompt>
 
 ## Identify a missing live view
+
+Use this when you suspect the data you need isn't available yet. You get a
+written spec of the gap, and nothing is deployed.
 
 <CopyPrompt>
 I need to answer [QUESTION]. Search the Arete catalog and inspect relevant
@@ -89,6 +116,9 @@ would need. Do not deploy anything.
 
 ## Diagnose an integration
 
+Use this when something that used to work has stopped, and you want the cause
+found before anything gets changed.
+
 <CopyPrompt>
 Run a4 doctor --json, validate arete.toml and arete.lock, inspect the exact
 installed descriptors, and reproduce [PROBLEM] with the smallest read or
@@ -97,9 +127,10 @@ transport, schema-validation, and application-state failures. Do not update
 dependencies or regenerate until you have identified the cause.
 </CopyPrompt>
 
-## Prompt-writing guidance
+## Writing your own prompts
 
-Good prompts specify the result, scope, time window, and authority. Avoid
-embedding guessed technical details that the catalog can resolve. State
+A good prompt covers four things: the result you want, the scope, the time
+window, and how much authority the agent has. Leave out technical details you
+would only be guessing at, since the catalog can resolve those. Do say
 explicitly whether the agent may only inspect, may edit code, may compile local
-artifacts, or may perform an external deployment or transaction.
+artifacts, or may carry out an external deployment or transaction.

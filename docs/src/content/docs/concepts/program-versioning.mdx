@@ -1,6 +1,6 @@
 ---
 title: Program Versioning
-description: How Arete assigns semantic versions to content-addressed program releases.
+description: How Arete gives every program release a version number you can reason about, and why nobody picks it by hand.
 ---
 
 Every program package in the Arete registry has an **Arete version**, such as
@@ -10,6 +10,11 @@ hosted Program Release.
 
 The Arete version is separate from any versioning system used by the original
 protocol.
+
+If you have met semantic versioning before, the numbers mean what you expect. A
+major bump can break existing code, a minor bump adds things, and a patch keeps
+the program's contract the same. The unusual part is that no person chooses the
+number. Arete works it out by comparing the new release with the last one.
 
 ## Why Arete has its own versions
 
@@ -28,9 +33,10 @@ Arete records exact identities at each layer:
 | Program Release hash | The ProgramSpec, IDL, decoder, and observed on-chain executable identity    |
 | Package Release hash | The installable package, including its SDK targets and generated extensions |
 
-These content addresses provide exact reproducibility. The Arete semantic
-version is the human-readable compatibility coordinate over that immutable
-history.
+These content addresses (hashes of the content itself) are what make a build
+exactly reproducible. The Arete semantic version sits on top of that immutable
+history as the part people can read: a quick signal of whether an update is safe
+to take.
 
 ## How a version is produced
 
@@ -99,8 +105,9 @@ version. They record:
 - a machine-readable contract diff with the affected path and compatibility
   effect.
 
-This keeps the changelog aligned with the version decision. It does not depend
-on a manually written summary being complete.
+Because the notes and the version come from the same comparison, the changelog
+always matches the version decision. Nothing depends on someone remembering to
+write a complete summary.
 
 Inspect the current version, identities, and release notes with:
 

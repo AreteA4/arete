@@ -1,14 +1,14 @@
 ---
 title: Program SDKs
-description: Install one Solana program as a complete typed read and transaction interface.
+description: Install one Solana program as a complete, typed interface for reading its data and sending it transactions.
 ---
 
-A Program SDK is the base Arete capability. It turns one exact published
-Solana program release into a generated interface for reading accounts,
-deriving addresses, building instructions, preparing operations, and executing
-transactions.
+A Program SDK is the basic thing you install with Arete. It takes one exact
+published release of a Solana program and turns it into generated code for
+reading accounts, working out addresses, building instructions, preparing
+operations, and executing transactions.
 
-You can install a Program SDK without installing a live stack.
+You can install a Program SDK on its own. No live stack is required.
 
 ## Find a program
 
@@ -19,52 +19,54 @@ a4 explore catalog --query "token accounts" --kind program --json
 a4 explore catalog --query "multisig proposals" --mode build --json
 ```
 
-Use the vocabulary when you want exact filters:
+When you want exact filters, list the vocabulary first:
 
 ```bash
 a4 explore catalog --vocabulary
 a4 explore catalog --concept <concept> --kind program --json
 ```
 
-Then inspect the exact program descriptor:
+Then open the exact descriptor for the program you picked:
 
 ```bash
 a4 explore catalog program <slug> --json
 ```
 
-The descriptor reports the program identity, accounts, instructions, types,
-available Program Read service, verified SDK targets, and exact install command.
-Do not infer target support from another program or an old example.
+The descriptor is the program's spec sheet. It reports the program identity,
+its accounts, instructions, and types, whether the hosted Program Read service
+is available, which SDK targets are verified, and the exact install command.
+Don't assume a language is supported because another program supports it, or
+because an old example used it.
 
-Its semantic version describes compatibility for this published Arete
-integration. The descriptor's content hashes identify the exact artifacts
-behind it. See
-[Program Versioning](/concepts/program-versioning/) for the automatic bump rules
-and generated release notes.
+The descriptor's semantic version tells you about compatibility for this
+published Arete integration. Its content hashes identify the exact artifacts
+behind it. See [Program Versioning](/concepts/program-versioning/) for the
+automatic bump rules and generated release notes.
 
 ## Install it
 
-Initialize the project once, then add the program dependency:
+Initialize the project once, then add the program as a dependency:
 
 ```bash
 a4 init -y
 a4 install program <slug> --ts
 ```
 
-Use `--rust` or `--python` when the descriptor lists that target. A saved add:
+Use `--rust` or `--python` when the descriptor lists that target. A saved
+install:
 
-1. writes dependency intent to `arete.toml`;
-2. resolves the complete exact graph;
-3. generates the language output; and
+1. writes what you asked for to `arete.toml`;
+2. resolves the complete, exact set of dependencies;
+3. generates the code for your language; and
 4. commits the generated output and `arete.lock` together.
 
-The CLI prints the generated location and import instructions. Prefer that
-reported output over a path copied from a different project.
+The CLI prints where the code was generated and how to import it. Go by that
+output, not a path copied from another project.
 
 ## The generated surface
 
-Program namespaces are stable even though individual members come from the
-program package:
+Every Program SDK is organized into the same namespaces. What you find inside
+each one comes from the program's own package:
 
 | Namespace                       | Purpose                                   |
 | ------------------------------- | ----------------------------------------- |
@@ -80,29 +82,35 @@ program package:
 | `flows`                         | Multi-step or multi-transaction workflows |
 | `constants`, `defaults`, `math` | Generated domain helpers when available   |
 
-Inspect the generated types to learn the exact member names and arguments.
+To learn the exact member names and arguments, inspect the generated types, or
+ask your agent to summarize them for you.
 
 ## Choose the right level
+
+A Program SDK lets you work at several levels, from "just read this account"
+up to "run this whole flow". Pick the highest level that does the job.
 
 ### Read an account
 
 Use `program.accounts.<account>.fetch(address)` or `fetchMany(addresses)` when
-you need a decoded account owned by the installed program.
+you need a decoded account that the installed program owns.
 
 [Program Read →](/using-programs/program-reads/)
 
 ### Read generic Solana state
 
 Use `session.chain` for lamports, rent, clock, raw accounts, mint state, token
-accounts, or other data that is not a generated program-account reader.
+accounts, or any other data that doesn't have a generated program-account
+reader.
 
 [Chain reads →](/using-programs/chain-reads/)
 
 ### Prepare an application operation
 
-Prefer generated operations and flows when they express the task. They can
-accept application-shaped values, derive routine accounts, perform required
-reads, and return a portable prepared result with signer and error metadata.
+When a generated operation or flow expresses your task, prefer it. Operations
+accept values in the form your app already has them, derive the routine
+accounts, perform whatever reads they need, and return a portable prepared
+result that includes signer and error metadata.
 
 ```ts
 const prepared = await session.programs.myProgram.transactions.deposit.prepare({
@@ -111,14 +119,14 @@ const prepared = await session.programs.myProgram.transactions.deposit.prepare({
 });
 ```
 
-Preparation may read current state. A prepared quote is not a reservation;
-prepare again near execution when price, nonce, eligibility, or account state
-can become stale.
+Preparation may read current state, and that state can move. A prepared quote
+is not a reservation. If price, nonce, eligibility, or account state could go
+stale, prepare again close to execution.
 
 ### Build a raw instruction
 
-Use `raw.<instruction>.build(...)` when you intentionally need the normalized
-IDL wire shape or are composing instructions yourself:
+Use `raw.<instruction>.build(...)` when you deliberately want the normalized
+IDL wire shape, or when you are composing instructions yourself:
 
 ```ts
 const instruction = session.programs.myProgram.raw.deposit.build({
@@ -127,33 +135,34 @@ const instruction = session.programs.myProgram.raw.deposit.build({
 });
 ```
 
-Raw builders are pure and offline. They fail on unknown parameters and missing
-required values, but they do not perform application-level preparation.
+Raw builders run offline and have no side effects. They fail on unknown
+parameters and on missing required values, but they don't do any
+application-level preparation for you.
 
 ### Inspect and execute
 
-Inspection is read-only. Execution requires a wallet, signs locally, and uses
-the transaction capability selected by the generated descriptor or an explicit
-direct/custom transport.
+Inspecting is read-only. Executing requires a wallet, signs locally, and uses
+either the transaction capability named in the generated descriptor or a
+direct or custom transport you chose explicitly.
 
 ```ts
 const inspection = await session.stacks.app.inspectOperation(prepared);
 const receipt = await session.execute(prepared);
 ```
 
-Inspection lives on the connected client that owns the operation; execution is
+Inspection lives on the connected client that owns the operation. Execution is
 also available through the composed session.
 
 Reading, building, preparing, inspecting, signing, and submitting are separate
-actions. An agent request to “show me the transaction” does not authorize it to
-sign or submit.
+actions. When you ask an agent to “show me the transaction,” you have not
+authorized it to sign or submit.
 
 [Transaction lifecycle →](/using-stacks/transactions/)
 
 ## Add views only when the application needs them
 
-Program SDKs cover the program-facing read and transaction surfaces. Install a
-stack when the application also needs maintained, application-shaped views or
+Program SDKs cover reading from a program and sending it transactions. Install
+a stack when your application also needs maintained, app-shaped views or
 stack-level operations.
 
 [Programs, views, and stacks →](/concepts/programs-views-stacks/)

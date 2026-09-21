@@ -1,15 +1,26 @@
 ---
 title: Catalog and Descriptors
-description: Discover capabilities by intent, then inspect the exact program or stack contract.
+description: Search the catalog by what you want to do, then open the exact spec sheet for a program or stack.
 ---
 
-Arete separates **search** from **exact inspection**:
+Finding something in Arete happens in two steps. First you **search**, to see
+what might fit. Then you **inspect** one exact result, to see what it really
+offers. Your agent normally does both for you. This page shows the commands
+behind each step, which is handy when you want to check the agent's work or
+script it yourself.
 
-- the catalog helps an agent find programs and stacks relevant to an intent;
-- a descriptor identifies the exact installable package and available delivery;
-- generated code supplies the final language-level names and types.
+Three things are involved:
+
+- the **catalog** helps an agent find programs and stacks that match what you
+  want to do;
+- a **descriptor** is the exact spec sheet for one installable package,
+  including how it can be delivered; and
+- **generated code** supplies the final names and types in your language.
 
 ## Search the catalog
+
+Describe the job in your own words with `--query`, then narrow the results
+with filters:
 
 ```bash
 a4 explore catalog --query "monitor swaps" --json
@@ -36,8 +47,8 @@ List canonical concept and category slugs before using exact filters:
 a4 explore catalog --vocabulary --json
 ```
 
-Catalog contents are live. Do not maintain a hand-written “available stacks”
-list in application instructions.
+The catalog is live and keeps changing. Don't keep a hand-written “available
+stacks” list in your application instructions, because it will go stale.
 
 ## Inspect an exact result
 
@@ -46,8 +57,8 @@ a4 explore catalog program <slug> --json
 a4 explore catalog stack <slug> --json
 ```
 
-The descriptor is pinned to the package that `a4 install` will consume. It
-should be treated as one contract rather than a bag of suggestions.
+The descriptor is pinned to the very package that `a4 install` will consume.
+Treat it as a single contract. It is not a menu to pick and mix from.
 
 A program descriptor can include:
 
@@ -66,9 +77,9 @@ A stack descriptor can include:
 - supported SDK targets; and
 - the exact install command.
 
-If a required identity or binding is missing, treat the package as unavailable
-for that operation. Do not fall back to “latest,” guess an endpoint, or combine
-parts from two descriptor versions.
+If an identity or connection detail you need is missing, treat the package as
+unavailable for that operation. Don't fall back to “latest,” guess an endpoint,
+or combine parts from two descriptor versions.
 
 ## Compatibility discovery commands
 
@@ -87,8 +98,10 @@ stack syntax in new automation.
 
 ## Curated knowledge
 
-The knowledge layer adds human-reviewed protocol context, program roles,
-concept coverage, and recipes. Where exposed by the installed CLI:
+The catalog tells you _what_ exists. The knowledge layer adds context that
+people have reviewed: background on each protocol, the role each program plays,
+which concepts are covered, and step-by-step recipes. Where your installed CLI
+exposes it:
 
 ```bash
 a4 know search --query "monitor swaps" --json
@@ -97,9 +110,10 @@ a4 know program <slug> --section surface --json
 a4 know recipe <slug> --json
 ```
 
-Use it to understand _why_ a program fits an intent. Return to the exact
-catalog descriptor before installing or connecting. A missing recipe means the
-workflow is not documented, not automatically that it is impossible.
+Use it to understand _why_ a program fits what you're trying to do. Then go
+back to the exact catalog descriptor before installing or connecting. A missing
+recipe means the workflow hasn't been documented yet. It doesn't automatically
+mean the workflow is impossible.
 
 Knowledge routes may require `a4 auth signup` or `a4 auth login`.
 
@@ -112,14 +126,15 @@ a4 install program <slug> --ts
 a4 install stack <slug> --ts
 ```
 
-A saved install updates `arete.toml`, resolves `arete.lock`, and generates the
-complete dependency graph. Use `--no-save` only for a deliberate one-off output.
+A saved install updates `arete.toml`, resolves `arete.lock`, and generates code
+for the complete set of dependencies. Use `--no-save` only when you deliberately
+want a one-off output.
 
 ## Machine-readable output
 
-Agents and scripts should pass `--json`. The response has a schema version and
-may gain fields over time. Read the fields you need and preserve unknown fields
-rather than reconstructing a response from examples in this page.
+Agents and scripts should pass `--json`. The response carries a schema version
+and may gain fields over time. Read the fields you need and leave unknown ones
+intact. Don't rebuild a response from the examples on this page.
 
 When CLI help and prose differ, current `a4 explore --help`, the JSON response,
 and generated types win.
