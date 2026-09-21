@@ -116,6 +116,10 @@ pub enum ReplayError {
     /// The cursor is older than the oldest retained record. Carries the
     /// window so the consumer can decide where to restart.
     CursorExpired(ReplayWindow),
+    /// The cursor is one this view has never issued. Refused rather than
+    /// treated as caught up, which would suppress delivery until the view's
+    /// offsets reached it.
+    CursorBeyondWindow(ReplayWindow),
 }
 
 /// Durable form of one view's retained tape.
@@ -170,11 +174,14 @@ impl ViewJournal {
     }
 
     fn prune(&mut self, config: &JournalConfig, now: i64) {
-        let cutoff = now.saturating_sub(config.max_age.as_secs() as i64);
+        // Timestamps are whole seconds, so a record that has reached exactly
+        // `max_age` is retired. Comparing against a `now - max_age` cutoff
+        // strictly would keep it for another whole second.
+        let max_age = config.max_age.as_secs() as i64;
         while self
             .records
             .front()
-            .is_some_and(|record| record.appended_at < cutoff)
+            .is_some_and(|record| record.appended_at.saturating_add(max_age) <= now)
         {
             self.records.pop_front();
         }
@@ -243,15 +250,23 @@ impl EventJournal {
             .unwrap_or(0)
     }
 
+    /// Offsets this view can currently serve.
+    ///
+    /// Prunes first: the age bound has to hold for a view that has gone
+    /// quiet, otherwise expired records stay advertised and replayable.
     pub async fn window(&self, view_id: &str) -> ReplayWindow {
-        let views = self.views.read().await;
-        views
-            .get(view_id)
-            .map(ViewJournal::window)
-            .unwrap_or(ReplayWindow {
+        let mut views = self.views.write().await;
+        let now = unix_now();
+        match views.get_mut(view_id) {
+            Some(journal) => {
+                journal.prune(&self.config, now);
+                journal.window()
+            }
+            None => ReplayWindow {
                 earliest: 0,
                 next: 0,
-            })
+            },
+        }
     }
 
     /// Every retained record strictly after `cursor`, in offset order.
@@ -263,20 +278,33 @@ impl EventJournal {
         view_id: &str,
         cursor: Option<u64>,
     ) -> Result<Vec<JournalRecord>, ReplayError> {
-        let views = self.views.read().await;
-        let Some(journal) = views.get(view_id) else {
+        let mut views = self.views.write().await;
+        let now = unix_now();
+        let Some(journal) = views.get_mut(view_id) else {
             return Ok(Vec::new());
         };
+        journal.prune(&self.config, now);
         let window = journal.window();
 
         if let Some(cursor) = cursor {
-            // A cursor at or beyond `next` is simply caught up, not expired.
-            if cursor + 1 < window.earliest {
+            // Below the window: the records are gone.
+            if cursor.saturating_add(1) < window.earliest {
                 return Err(ReplayError::CursorExpired(window));
+            }
+            // Above it: a cursor the view has never issued. Accepting it would
+            // silently suppress every later record until the offsets caught
+            // up, so refuse it rather than appear to work.
+            if cursor >= window.next && window.next > 0 {
+                return Err(ReplayError::CursorBeyondWindow(window));
+            }
+            if window.next == 0 {
+                return Err(ReplayError::CursorBeyondWindow(window));
             }
         }
 
-        let first_wanted = cursor.map(|cursor| cursor + 1).unwrap_or(window.earliest);
+        let first_wanted = cursor
+            .map(|cursor| cursor.saturating_add(1))
+            .unwrap_or(window.earliest);
         Ok(journal
             .records
             .iter()

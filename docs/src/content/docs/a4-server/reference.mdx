@@ -80,19 +80,19 @@ services, then supply independent chain and transaction transports.
 
 These environment variables are read by the generated runtime and server code:
 
-| Variable                     | Required               | Default | Description                                              |
-| ---------------------------- | ---------------------- | ------- | -------------------------------------------------------- |
-| `YELLOWSTONE_ENDPOINT`       | For live runtime       | —       | Yellowstone gRPC endpoint URL                            |
-| `YELLOWSTONE_X_TOKEN`        | Provider-specific      | —       | Authentication token for the endpoint                    |
-| `ARETE_READ_RPC_URL`         | For RPC-backed reads   | —       | Upstream used by Program Read and chain-read routes      |
-| `ARETE_TRANSACTION_RPC_URL`  | For transaction routes | —       | Independent transaction inspect/send upstream            |
-| `ARETE_TRANSACTIONS_ENABLED` | No                     | `false` | Explicitly enables fixed transaction routes              |
-| `ARETE_SNAPSHOT_ENABLED`     | No                     | `false` | Enables state snapshots for restart recovery             |
-| `ARETE_SNAPSHOT_URL`         | For snapshots          | —       | Snapshot store location (`file://...` or local path)     |
+| Variable                     | Required               | Default | Description                                               |
+| ---------------------------- | ---------------------- | ------- | --------------------------------------------------------- |
+| `YELLOWSTONE_ENDPOINT`       | For live runtime       | —       | Yellowstone gRPC endpoint URL                             |
+| `YELLOWSTONE_X_TOKEN`        | Provider-specific      | —       | Authentication token for the endpoint                     |
+| `ARETE_READ_RPC_URL`         | For RPC-backed reads   | —       | Upstream used by Program Read and chain-read routes       |
+| `ARETE_TRANSACTION_RPC_URL`  | For transaction routes | —       | Independent transaction inspect/send upstream             |
+| `ARETE_TRANSACTIONS_ENABLED` | No                     | `false` | Explicitly enables fixed transaction routes               |
+| `ARETE_SNAPSHOT_ENABLED`     | No                     | `false` | Enables state snapshots for restart recovery              |
+| `ARETE_SNAPSHOT_URL`         | For snapshots          | —       | Snapshot store location (`file://...` or local path)      |
 | `ARETE_JOURNAL_ENABLED`      | No                     | `false` | Retains published events so append views replay by cursor |
-| `ARETE_JOURNAL_MAX_RECORDS`  | No                     | `10000` | Retained events per view                                 |
-| `ARETE_JOURNAL_MAX_AGE_SECS` | No                     | `900`   | Age bound on retained events                             |
-| `RUST_LOG`                   | No                     | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`) |
+| `ARETE_JOURNAL_MAX_RECORDS`  | No                     | `10000` | Retained events per view                                  |
+| `ARETE_JOURNAL_MAX_AGE_SECS` | No                     | `900`   | Age bound on retained events                              |
+| `RUST_LOG`                   | No                     | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`)  |
 
 The full set of `ARETE_SNAPSHOT_*` variables is documented in
 [State Snapshots & Restore](/a4-server/state-snapshots/).

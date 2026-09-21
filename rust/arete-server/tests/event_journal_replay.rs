@@ -192,12 +192,73 @@ async fn a_cursor_evicted_by_retention_is_reported_with_the_window() {
         .expect_err("a cursor below the window cannot be served");
     assert_eq!(error, ReplayError::CursorExpired(window));
 
-    // A consumer that restarts at the advertised earliest cursor succeeds.
+    // The documented recovery is to resubscribe without a cursor, which
+    // replays the whole retained window. Passing `window.earliest` would skip
+    // that record, because `after` is exclusive.
     let recovered = journal
-        .replay_after("Trade/append", Some(window.earliest))
+        .replay_after("Trade/append", None)
         .await
-        .expect("the advertised cursor is serviceable");
-    assert_eq!(recovered.len(), 99);
+        .expect("no cursor replays the retained window");
+    assert_eq!(recovered.len(), 100, "recovery loses nothing still retained");
+    assert_eq!(recovered.first().unwrap().offset, window.earliest);
+
+    drop(tx);
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_cursor_this_view_never_issued_is_refused() {
+    let journal = journal_for(10_000);
+    let (_cache, tx, handle) = run_projector(journal.clone(), 10).await;
+
+    let window = journal.window("Trade/append").await;
+
+    // Accepting a future cursor would look like "caught up" and then suppress
+    // every later record until the offsets reached it.
+    for forged in [window.next, window.next + 500, u64::MAX] {
+        let error = journal
+            .replay_after("Trade/append", Some(forged))
+            .await
+            .expect_err("a cursor beyond the window is not caught up");
+        assert_eq!(error, ReplayError::CursorBeyondWindow(window));
+    }
+
+    // The newest issued offset is still serviceable, and is simply empty.
+    let caught_up = journal
+        .replay_after("Trade/append", Some(window.next - 1))
+        .await
+        .expect("the latest issued cursor is valid");
+    assert!(caught_up.is_empty());
+
+    drop(tx);
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_quiet_view_stops_advertising_records_the_age_bound_retired() {
+    // One second of retention, and no further appends to trigger pruning.
+    let journal = Arc::new(EventJournal::new(JournalConfig {
+        enabled: true,
+        max_records_per_view: 10_000,
+        max_age: Duration::from_secs(1),
+    }));
+    let (_cache, tx, handle) = run_projector(journal.clone(), 5).await;
+
+    assert_eq!(journal.window("Trade/append").await.next, 5);
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+    // Reading the window prunes, so a view that went quiet does not keep
+    // advertising and replaying expired records.
+    let window = journal.window("Trade/append").await;
+    assert!(
+        window.is_empty(),
+        "the age bound holds without further appends, got {window:?}"
+    );
+    assert!(journal
+        .replay_after("Trade/append", None)
+        .await
+        .unwrap()
+        .is_empty());
 
     drop(tx);
     handle.await.unwrap();

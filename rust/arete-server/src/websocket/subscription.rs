@@ -102,9 +102,12 @@ impl SocketIssueMessage {
 
     /// The requested cursor has fallen out of the retained replay window.
     ///
-    /// Carries the window so a consumer can restart deterministically rather
-    /// than guess; `retryable` is false because retrying the same cursor can
-    /// never succeed.
+    /// Carries the window so a consumer can see what it lost; `retryable` is
+    /// false because retrying the same cursor can never succeed.
+    ///
+    /// The recovery is to resubscribe *without* `after`, which replays the
+    /// whole retained window. `after` is exclusive, so passing
+    /// `replayWindow.earliest` would skip that record.
     pub fn cursor_expired(
         subscription_id: Option<String>,
         window: crate::journal::ReplayWindow,
@@ -113,12 +116,31 @@ impl SocketIssueMessage {
             subscription_id,
             "cursor-expired",
             format!(
-                "cursor is older than the retained replay window; earliest available cursor is {}",
+                "cursor is older than the retained replay window; the oldest retained record is at offset {}",
                 window.earliest
             ),
         );
         issue.suggested_action =
-            Some("resubscribe with after set to the earliest available cursor".to_string());
+            Some("resubscribe without `after` to replay the whole retained window".to_string());
+        issue.replay_window = Some(window);
+        issue
+    }
+
+    /// The requested cursor is beyond anything this view has issued.
+    pub fn cursor_beyond_window(
+        subscription_id: Option<String>,
+        window: crate::journal::ReplayWindow,
+    ) -> Self {
+        let mut issue = Self::protocol(
+            subscription_id,
+            "invalid-cursor",
+            format!(
+                "cursor is beyond this view's latest offset; the next record will be at offset {}",
+                window.next
+            ),
+        );
+        issue.suggested_action =
+            Some("resubscribe without `after`, or with a cursor this view has issued".to_string());
         issue.replay_window = Some(window);
         issue
     }

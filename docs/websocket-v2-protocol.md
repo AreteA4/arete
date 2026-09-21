@@ -139,10 +139,11 @@ The acknowledgement advertises the window the view can still serve:
 ```
 
 `earliest` is the oldest retained offset; `next` is the offset the next event
-will take, so a consumer holding `next - 1` is fully caught up. Subscribing
-with `after` set to an offset below `earliest` is refused with
-`cursor-expired`, which repeats the window so the consumer can restart
-deterministically:
+will take, so a consumer holding `next - 1` is fully caught up.
+
+`after` is exclusive. A cursor below `earliest` is refused with
+`cursor-expired`, which repeats the window so the consumer knows what it
+lost:
 
 ```json
 {
@@ -153,10 +154,26 @@ deterministically:
 }
 ```
 
-An `after` value that is not a replay offset is refused with
-`invalid-cursor`. Retention is bounded by count and age, and the retained
-tape is captured in the state snapshot, so the advertised window survives a
-normal restart.
+Recover by resubscribing **without** `after`, which replays the whole
+retained window. Do not resubscribe with `after` set to `earliest`: because
+`after` is exclusive that skips the oldest retained record.
+
+A cursor at or above `next` is refused with `invalid-cursor` rather than
+treated as caught up — accepting an offset the view has never issued would
+suppress delivery until its offsets reached that value. An `after` that is
+not a replay offset at all is refused the same way.
+
+`take`, `skip` and `snapshotLimit` describe a membership window and do not
+apply to a tape; a replayable subscription requesting any of them is refused
+with `invalid-subscription`. `key`, `partition` and `filters` are honoured,
+on replayed and live records alike.
+
+If delivery falls behind the server's fan-out buffer the subscription is
+ended with `replay-lagged` rather than silently skipping records; resubscribe
+with the last offset received.
+
+Retention is bounded by count and age, and the retained tape is captured in
+the state snapshot, so the advertised window survives a normal restart.
 
 ## Live Frames
 
@@ -295,7 +312,7 @@ Protocol and subscription errors are non-fatal unless explicitly marked otherwis
 }
 ```
 
-Stable protocol codes include `malformed-message`, `invalid-subscription`, `invalid-unsubscription`, `duplicate-subscription-id`, `unknown-subscription-id`, `subscription-rejected`, `cursor-expired`, and `invalid-cursor`. Authentication, quota, and rate-limit errors keep their existing codes and use the same v2 envelope.
+Stable protocol codes include `malformed-message`, `invalid-subscription`, `invalid-unsubscription`, `duplicate-subscription-id`, `unknown-subscription-id`, `subscription-rejected`, `cursor-expired`, `invalid-cursor`, and `replay-lagged`. Authentication, quota, and rate-limit errors keep their existing codes and use the same v2 envelope.
 
 ## Conformance Fixtures
 

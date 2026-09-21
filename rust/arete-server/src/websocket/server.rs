@@ -1440,6 +1440,26 @@ async fn attach_journal_subscription(
     let view_id = view_spec.id.clone();
     let subscription_id = subscription.subscription_id.clone();
 
+    // A tape has no membership window, so `take`/`skip` cannot mean what they
+    // mean on a list view. Refuse them rather than accept and ignore them.
+    if subscription.query.take.is_some()
+        || subscription.query.skip.is_some()
+        || subscription.query.snapshot_limit.is_some()
+    {
+        send_control_frame(
+            context,
+            &SocketIssueMessage::protocol(
+                Some(subscription_id),
+                "invalid-subscription",
+                format!(
+                    "take, skip and snapshotLimit are window options and do not apply to the replayable view {view_id}"
+                ),
+            ),
+            &view_id,
+        )?;
+        return Ok(());
+    }
+
     // Reject a malformed cursor rather than silently replaying from the start,
     // which would look like success and duplicate everything.
     let cursor = match subscription.query.after.as_deref() {
@@ -1475,6 +1495,14 @@ async fn attach_journal_subscription(
             )?;
             return Ok(());
         }
+        Err(crate::journal::ReplayError::CursorBeyondWindow(window)) => {
+            send_control_frame(
+                context,
+                &SocketIssueMessage::cursor_beyond_window(Some(subscription_id), window),
+                &view_id,
+            )?;
+            return Ok(());
+        }
     };
 
     let frame = SubscribedFrame::new(
@@ -1488,17 +1516,25 @@ async fn attach_journal_subscription(
 
     let mut last_sent = cursor;
     for record in replayed {
-        send_scoped_source_payload(
-            context,
-            &subscription.subscription_id,
-            &view_id,
-            record.payload,
-        )?;
+        // A replay can be far longer than the client's send queue, so it must
+        // apply backpressure instead of overflowing a responsive client off
+        // the connection.
+        if journal_record_matches(&subscription.query, &record) {
+            send_scoped_source_payload_async(
+                context,
+                &subscription.subscription_id,
+                &view_id,
+                record.payload,
+            )
+            .await?;
+        }
+        // Advance past filtered records too: they are delivered, just empty.
         last_sent = Some(record.offset);
     }
 
     let task_context = context.clone();
     let task_subscription_id = subscription.subscription_id.clone();
+    let task_query = subscription.query.clone();
     let span_view = view_id.clone();
     tokio::spawn(
         async move {
@@ -1508,25 +1544,44 @@ async fn attach_journal_subscription(
                     received = receiver.recv() => {
                         let envelope = match received {
                             Ok(envelope) => envelope,
-                            // A lagged tape is a gap, not a hiccup: the
-                            // consumer must resubscribe from its cursor rather
-                            // than silently skip records.
+                            // A lagged tape is a gap. Tell the consumer so it
+                            // resubscribes from its cursor; ending the task
+                            // silently would leave an apparently live
+                            // subscription that never delivers again.
                             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                                 warn!(
-                                    "Replay subscription {} lagged past {} records; closing so the consumer resumes from its cursor",
+                                    "Replay subscription {} lagged past {} records; signalling the gap",
                                     task_subscription_id, skipped
+                                );
+                                let _ = send_control_frame(
+                                    &task_context,
+                                    &SocketIssueMessage::protocol(
+                                        Some(task_subscription_id.clone()),
+                                        "replay-lagged",
+                                        format!(
+                                            "delivery fell behind by {skipped} records; resubscribe with your last offset"
+                                        ),
+                                    ),
+                                    &span_view,
                                 );
                                 break;
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
                         };
 
-                        let offset = source_frame_metadata(&envelope.payload).offset;
+                        let metadata = source_frame_metadata(&envelope.payload);
                         // Already delivered by the replay above.
-                        if let (Some(offset), Some(last)) = (offset, last_sent) {
+                        if let (Some(offset), Some(last)) = (metadata.offset, last_sent) {
                             if offset <= last {
                                 continue;
                             }
+                        }
+                        if metadata.offset.is_some() {
+                            last_sent = metadata.offset;
+                        }
+
+                        if !live_frame_matches(&task_query, &envelope.key, &envelope.payload) {
+                            continue;
                         }
 
                         if send_scoped_source_payload(
@@ -1539,9 +1594,6 @@ async fn attach_journal_subscription(
                         {
                             break;
                         }
-                        if offset.is_some() {
-                            last_sent = offset;
-                        }
                     }
                 }
             }
@@ -1551,6 +1603,75 @@ async fn attach_journal_subscription(
             client_id = %context.client_id,
             view = %view_id
         )),
+    );
+    Ok(())
+}
+
+/// Apply the subscription's `key`, `partition` and `filters` to a retained
+/// record. A replay must honour the same predicates a live subscription does.
+fn journal_record_matches(
+    query: &SubscriptionQuery,
+    record: &crate::journal::JournalRecord,
+) -> bool {
+    live_frame_matches(query, &record.key, &record.payload)
+}
+
+fn live_frame_matches(query: &SubscriptionQuery, key: &str, payload: &[u8]) -> bool {
+    if !query.matches_key(key) {
+        return false;
+    }
+    if query.partition.is_none() && query.filters.is_empty() {
+        return true;
+    }
+    let Ok(frame) = serde_json::from_slice::<Value>(payload) else {
+        return false;
+    };
+    let Some(data) = frame.get("data") else {
+        return false;
+    };
+    if let Some(partition) = &query.partition {
+        if value_at_dot_path(data, "_partition") != Some(&Value::String(partition.clone())) {
+            return false;
+        }
+    }
+    query
+        .filters
+        .iter()
+        .all(|(path, expected)| value_at_dot_path(data, path) == Some(expected))
+}
+
+/// Awaiting variant of [`send_scoped_source_payload`], for replays that can
+/// exceed the client's send queue.
+async fn send_scoped_source_payload_async(
+    context: &SubscriptionContext,
+    subscription_id: &str,
+    view_id: &str,
+    payload: Arc<Bytes>,
+) -> Result<()> {
+    let mut value: Value = serde_json::from_slice(&payload)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("source frame is not an object"))?;
+    object.insert("protocolVersion".to_string(), Value::from(PROTOCOL_VERSION));
+    object.insert(
+        "subscriptionId".to_string(),
+        Value::String(subscription_id.to_string()),
+    );
+    let json = serde_json::to_vec(&value)?;
+    let compressed = maybe_compress(&json);
+    let bytes = compressed.as_bytes().len();
+    context
+        .client_manager
+        .send_compressed_async(context.client_id, compressed)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to send replayed frame: {error}"))?;
+    context.metrics.message_sent();
+    emit_update_sent_for_client(
+        &context.usage_emitter,
+        &context.client_manager,
+        context.client_id,
+        view_id,
+        bytes,
     );
     Ok(())
 }
@@ -2088,5 +2209,68 @@ mod tests {
             let fixture: Value = serde_json::from_str(document).unwrap();
             assert!(fixture["name"].is_string());
         }
+    }
+
+    fn append_frame(key: &str, data: Value) -> Arc<Bytes> {
+        let frame = json!({
+            "entity": "Trade/append",
+            "op": "patch",
+            "key": key,
+            "offset": 7,
+            "data": data,
+        });
+        Arc::new(Bytes::from(serde_json::to_vec(&frame).unwrap()))
+    }
+
+    /// A replayable subscription must honour the same predicates a live
+    /// collection subscription does; otherwise a filtered consumer receives
+    /// events outside the query it asked for.
+    #[test]
+    fn replay_delivery_applies_key_partition_and_filters() {
+        let matching = append_frame("pool1", json!({"_partition": "us", "side": "buy"}));
+        let other_partition = append_frame("pool1", json!({"_partition": "eu", "side": "buy"}));
+        let other_side = append_frame("pool1", json!({"_partition": "us", "side": "sell"}));
+
+        let unfiltered = SubscriptionQuery {
+            view: "Trade/append".to_string(),
+            ..Default::default()
+        };
+        assert!(live_frame_matches(&unfiltered, "pool1", &matching));
+        assert!(live_frame_matches(&unfiltered, "pool9", &matching));
+
+        let keyed = SubscriptionQuery {
+            view: "Trade/append".to_string(),
+            key: Some("pool1".to_string()),
+            ..Default::default()
+        };
+        assert!(live_frame_matches(&keyed, "pool1", &matching));
+        assert!(!live_frame_matches(&keyed, "pool2", &matching));
+
+        let partitioned = SubscriptionQuery {
+            view: "Trade/append".to_string(),
+            partition: Some("us".to_string()),
+            ..Default::default()
+        };
+        assert!(live_frame_matches(&partitioned, "pool1", &matching));
+        assert!(!live_frame_matches(&partitioned, "pool1", &other_partition));
+
+        let filtered = SubscriptionQuery {
+            view: "Trade/append".to_string(),
+            filters: [("side".to_string(), json!("buy"))].into_iter().collect(),
+            ..Default::default()
+        };
+        assert!(live_frame_matches(&filtered, "pool1", &matching));
+        assert!(!live_frame_matches(&filtered, "pool1", &other_side));
+    }
+
+    #[test]
+    fn a_frame_without_decodable_data_does_not_satisfy_a_filter() {
+        let filtered = SubscriptionQuery {
+            view: "Trade/append".to_string(),
+            filters: [("side".to_string(), json!("buy"))].into_iter().collect(),
+            ..Default::default()
+        };
+        let garbage = Arc::new(Bytes::from_static(b"not json"));
+        assert!(!live_frame_matches(&filtered, "pool1", &garbage));
     }
 }
