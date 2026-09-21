@@ -176,6 +176,8 @@ class EventWrapper(Generic[_T]):
     data: Optional[_T] = None
     slot: Optional[int] = None
     signature: Optional[str] = None
+    event_index: Optional[int] = None
+    ix_path: Optional[str] = None
 
 
 def event_wrapper_from_wire(value: Any, converter: Any = None) -> EventWrapper:
@@ -191,6 +193,8 @@ def event_wrapper_from_wire(value: Any, converter: Any = None) -> EventWrapper:
         data=_convert(inner, converter) if converter is not None else inner,
         slot=_to_int(data.get("slot")),
         signature=data.get("signature"),
+        event_index=_to_int(data.get("event_index")),
+        ix_path=data.get("ix_path"),
     )
 
 

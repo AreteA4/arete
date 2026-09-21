@@ -113,7 +113,22 @@ pub fn generate_set_field_code(target_field: &str, source: &MappingSource) -> To
             "timestamp" => {
                 quote! { ctx.set(#target_field, arete::runtime::serde_json::json!(ctx.timestamp())); }
             }
-            _ => quote! {},
+            "event_index" => {
+                quote! { ctx.set(#target_field, arete::runtime::serde_json::json!(ctx.event_index())); }
+            }
+            "ix_path" => {
+                quote! { ctx.set(#target_field, arete::runtime::serde_json::json!(ctx.ix_path())); }
+            }
+            // `context_field_name` decides which reserved fields the DSL
+            // accepts. Anything it admits and this match misses would silently
+            // leave the target field unset, so say so at compile time.
+            other => {
+                let message = format!(
+                    "reserved context field `__{other}` has no instruction-hook codegen; \
+                     add a branch in generate_set_field_code"
+                );
+                quote! { compile_error!(#message); }
+            }
         },
         _ => quote! {},
     }

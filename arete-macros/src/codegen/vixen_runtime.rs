@@ -1357,7 +1357,8 @@ pub fn generate_vm_handler(
             ) -> arete::runtime::yellowstone_vixen::HandlerResult<()> {
                 let slot = raw_update.shared.slot;
                 let txn_index = raw_update.shared.txn_index;
-                let context = arete::transaction_metadata::instruction_update_context(&raw_update.shared);
+                let ix_path = arete::transaction_metadata::instruction_path(&raw_update.path);
+                let context = arete::transaction_metadata::instruction_occurrence_context(raw_update);
 
                 if let Some(ref health) = self.health_monitor {
                     health.record_event().await;
@@ -1386,6 +1387,7 @@ pub fn generate_vm_handler(
                     .set("event_type", event_type)
                     .set("slot", slot)
                     .set("txn_index", txn_index)
+                    .set("ix_path", ix_path.as_str())
                     .set("program", #entity_name_lit)
                     .set("accounts", account_keys);
                 let event_value = value.to_value_with_accounts(static_keys_vec);
@@ -2496,7 +2498,8 @@ pub fn generate_instruction_handler_impl(
             ) -> arete::runtime::yellowstone_vixen::HandlerResult<()> {
                 let slot = raw_update.shared.slot;
                 let txn_index = raw_update.shared.txn_index;
-                let context = arete::transaction_metadata::instruction_update_context(&raw_update.shared);
+                let ix_path = arete::transaction_metadata::instruction_path(&raw_update.path);
+                let context = arete::transaction_metadata::instruction_occurrence_context(raw_update);
 
                 if let Some(ref health) = self.health_monitor {
                     health.record_event().await;
@@ -2523,6 +2526,7 @@ pub fn generate_instruction_handler_impl(
                     .set("event_type", event_type)
                     .set("slot", slot)
                     .set("txn_index", txn_index)
+                    .set("ix_path", ix_path.as_str())
                     .set("program", #entity_name_lit)
                     .set("accounts_count", static_keys_vec.len());
                 let event_value = value.to_value_with_accounts(static_keys_vec);
@@ -2652,7 +2656,8 @@ pub fn generate_instruction_handler_impl(
                         }
 
                         use arete::runtime::base64::Engine as _;
-                        for log_line in raw_update.log_messages() {
+                        let log_offset = raw_update.log_range.start;
+                        for (log_position, log_line) in raw_update.log_messages().iter().enumerate() {
                             let Some(encoded) = log_line
                                 .strip_prefix("Program data: ")
                                 .or_else(|| log_line.strip_prefix("Program log: ray_log: "))
@@ -2708,12 +2713,21 @@ pub fn generate_instruction_handler_impl(
                                 }
                             }
 
+                            // Each decoded event is one occurrence: index it by its
+                            // absolute log position so several events under one
+                            // signature stay distinct across replay.
+                            let event_index = (log_offset + log_position) as u64;
+                            let event_context = context
+                                .clone()
+                                .at_log_event(ix_path.clone(), event_index);
+
                             let mut program_log = arete::runtime::arete_interpreter::CanonicalLog::new();
                             program_log.set("phase", "vixen")
                                 .set("event_kind", "program_event")
                                 .set("event_type", program_event_type)
                                 .set("slot", slot)
                                 .set("txn_index", txn_index)
+                                .set("event_index", event_index)
                                 .set("program", #entity_name_lit)
                                 .set("accounts_count", static_keys_vec.len());
 
@@ -2721,7 +2735,7 @@ pub fn generate_instruction_handler_impl(
                                 &bytecode,
                                 program_event_value,
                                 program_event_type,
-                                Some(&context),
+                                Some(&event_context),
                                 Some(&mut program_log),
                             ) {
                                 Ok(pending_mutations) => {

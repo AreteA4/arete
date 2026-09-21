@@ -67,6 +67,12 @@ pub struct EventWrapper<T> {
     /// Optional transaction signature.
     #[serde(default)]
     pub signature: Option<String>,
+    /// Absolute log-line index; set only for events decoded from a log.
+    #[serde(default, deserialize_with = "serde_utils::deserialize_option_u64")]
+    pub event_index: Option<u64>,
+    /// 0-based instruction path within the transaction (e.g. `"0.1"`).
+    #[serde(default)]
+    pub ix_path: Option<String>,
 }
 
 impl<T: Default> Default for EventWrapper<T> {
@@ -76,6 +82,8 @@ impl<T: Default> Default for EventWrapper<T> {
             data: T::default(),
             slot: None,
             signature: None,
+            event_index: None,
+            ix_path: None,
         }
     }
 }

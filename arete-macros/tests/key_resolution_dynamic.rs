@@ -326,6 +326,38 @@ fn main() {}
     );
 }
 
+/// The reserved occurrence fields must generate real hook code. `FromContext`
+/// mappings fall through to an empty `quote!` for any field the generator does
+/// not know, which leaves the target field silently unset rather than failing.
+#[test]
+fn derive_from_populates_the_reserved_occurrence_context_fields() {
+    let source = r#"use arete_macros::arete;
+
+#[arete(idl = "fixture/minimal.json")]
+mod valid {
+    #[entity(name = "Thing")]
+    struct Thing {
+        #[map(fake_sdk::accounts::Thing::id, primary_key, strategy = SetOnce)]
+        id: String,
+
+        #[derive_from(from = fake_sdk::instructions::Trade, field = __event_index, lookup_by = id, strategy = LastWrite)]
+        occurrence: Option<u64>,
+
+        #[derive_from(from = fake_sdk::instructions::Trade, field = __ix_path, lookup_by = id, strategy = LastWrite)]
+        instruction_path: Option<String>,
+    }
+}
+
+fn main() {}
+"#;
+
+    compile_success_with_files(
+        "derive_from_populates_the_reserved_occurrence_context_fields",
+        source,
+        &[("fixture/minimal.json", minimal_idl())],
+    );
+}
+
 #[test]
 fn derive_from_group_passes_when_any_field_resolves_key() {
     let source = r#"use arete_macros::arete;

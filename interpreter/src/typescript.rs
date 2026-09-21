@@ -554,6 +554,8 @@ impl<S> TypeScriptCompiler<S> {
   data,
   slot: z.number().optional(),
   signature: z.string().optional(),
+  event_index: z.number().optional(),
+  ix_path: z.string().optional(),
 });"#
             .to_string()
     }
@@ -1914,6 +1916,10 @@ export interface EventWrapper<T> {
   slot?: number;
   /** Optional transaction signature */
   signature?: string;
+  /** Absolute log-line index; set only for events decoded from a log */
+  event_index?: number;
+  /** 0-based instruction path within the transaction (e.g. "0.1") */
+  ix_path?: string;
 }"#
         .to_string()
     }
