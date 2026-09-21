@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.20.4...arete-macros-v0.21.0) (2026-09-21)
+
+
+### Features
+
+* **interpreter:** give CPI events stable occurrence provenance ([#234](https://github.com/AreteA4/arete/issues/234)) ([22707f0](https://github.com/AreteA4/arete/commit/22707f086948211847c4b702dca0e387be098e6d))
+
+
+### Bug Fixes
+
+* **macros:** attribute an entity to the program it actually reads ([#235](https://github.com/AreteA4/arete/issues/235)) ([70b13a3](https://github.com/AreteA4/arete/commit/70b13a38f8aade4b6c012f0898c95d63eda226ab))
+
 ## [0.20.4](https://github.com/AreteA4/arete/compare/arete-macros-v0.20.3...arete-macros-v0.20.4) (2026-09-20)
 
 

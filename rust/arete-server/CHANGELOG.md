@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.21.0](https://github.com/AreteA4/arete/compare/arete-server-v0.20.4...arete-server-v0.21.0) (2026-09-21)
+
+
+### Features
+
+* **server:** add versioned snapshot compatibility contracts ([311274b](https://github.com/AreteA4/arete/commit/311274bbf462da03b368367959988be06070a923))
+* **server:** version snapshot compatibility contracts ([845bd89](https://github.com/AreteA4/arete/commit/845bd897285f31b46dc7d119776266899e45ea95))
+
+
+### Bug Fixes
+
+* **server:** constrain legacy snapshot hydration ([835b1cc](https://github.com/AreteA4/arete/commit/835b1cc25b866677a06c91741a360049e8c5dd60))
+* **server:** keep contract mismatches fail-closed ([2a39c3f](https://github.com/AreteA4/arete/commit/2a39c3fc7635aeb59d279f92948af22b56aa82f0))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.20.4 to 0.21.0
+
 ## [0.20.4](https://github.com/AreteA4/arete/compare/arete-server-v0.20.3...arete-server-v0.20.4) (2026-09-20)
 
 
