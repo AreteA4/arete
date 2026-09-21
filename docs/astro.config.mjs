@@ -25,6 +25,7 @@ export default defineConfig({
             "agent-skills/explore-on-chain",
             "getting-started/from-question-to-app",
             "concepts/programs-views-stacks",
+            "concepts/program-versioning",
             "using-programs/overview",
             "using-programs/program-reads",
             "using-programs/chain-reads",
@@ -70,6 +71,7 @@ export default defineConfig({
           label: "Core Concepts",
           items: [
             { slug: "concepts/programs-views-stacks" },
+            { slug: "concepts/program-versioning" },
             { slug: "using-stacks/how-it-works" },
             { slug: "building-stacks/configuration" },
           ],

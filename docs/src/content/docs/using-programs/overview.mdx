@@ -36,6 +36,12 @@ The descriptor reports the program identity, accounts, instructions, types,
 available Program Read service, verified SDK targets, and exact install command.
 Do not infer target support from another program or an old example.
 
+Its semantic version is Arete's compatibility version for this published
+integration, not the protocol's own program version. The descriptor's content
+hashes identify the exact artifacts behind it. See
+[Program Versioning](/concepts/program-versioning/) for the automatic bump rules
+and generated release notes.
+
 ## Install it
 
 Initialize the project once, then add the program dependency:
