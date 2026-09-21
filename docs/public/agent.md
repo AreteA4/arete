@@ -39,15 +39,23 @@ Arete can:
 
         a4 doctor --json
 
-    Exit 0 means ready. Follow the exact `fix` attached to a required failure.
-    If `a4 init` changed skills or MCP configuration but the current agent does
-    not see them, tell the user to reload or restart the agent host. After the
-    restart, run `a4 doctor --json` again instead of repeatedly rewriting config.
+    The top-level JSON `status` must be `"ok"` before treating setup as ready.
+    Exit 0 can also mean `"warn"`: inspect every warning and follow its exact
+    `fix` when it affects this project or the current agent. If `a4 init` changed
+    skills or MCP configuration but the current agent does not see them, tell
+    the user to reload or restart the agent host. After the restart, run
+    `a4 doctor --json` again instead of repeatedly rewriting config.
 
-4.  Start from intent:
+4.  Continue from what the user actually asked. For the bootstrap prompt, which
+    asks only what Arete can do, summarize the capability list above and use the
+    catalog vocabulary for current discovery categories:
+
+        a4 explore catalog --vocabulary --json
+
+    Do not invent an on-chain intent or select a package. When the user has
+    supplied a concrete intent, search for it instead:
 
         a4 explore catalog --query "<user intent>" --json
-        a4 explore catalog --vocabulary
 
     Filter with `--kind program|stack`, `--mode read|build|subscribe`, and
     `--target typescript|rust|python` when useful. Then inspect an exact result:

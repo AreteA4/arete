@@ -101,6 +101,7 @@ export default defineConfig({
             { slug: "agent-skills/prompts" },
             { slug: "agent-skills/setup" },
             { slug: "agent-skills/setup-tools" },
+            { slug: "agent-skills/tutorial-ore-dashboard" },
           ],
         },
         {
@@ -125,6 +126,7 @@ export default defineConfig({
         {
           label: "SDK Reference",
           items: [
+            { slug: "using-stacks/installation" },
             {
               label: "TypeScript",
               link: "/sdks/typescript/",

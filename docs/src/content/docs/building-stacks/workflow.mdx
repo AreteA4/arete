@@ -24,6 +24,13 @@ instead. The advanced Rust path below assumes you have the exact local IDL for
 the program. Inspect that file with `a4 idl summary`, `a4 idl search`, and the
 [IDL CLI reference](/cli/idl/) before mapping it.
 
+For an uncataloged or private program, supply the canonical IDL from the
+program's own build or release artifacts, upstream repository, or published SDK
+package. An on-chain Anchor IDL is suitable only when the program intentionally
+publishes one and you verify its program address and provenance. If you cannot
+obtain a trustworthy IDL, ask the program owner rather than reconstructing one
+from explorer output.
+
 This page documents the advanced **Rust authoring path**: define a live model,
 compile portable artifacts, deploy an exact StackManifest, and install the
 resulting SDK.

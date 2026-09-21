@@ -61,7 +61,7 @@ Then, in your project:
 
 ```bash
 a4 init -y          # arete.toml, AGENTS.md block, agent skills, MCP config
-a4 doctor --json    # exit 0 = ready; each check carries a fix
+a4 doctor --json    # ready when the JSON status is "ok"
 a4 explore catalog --query "token accounts" --json
 a4 explore catalog program spl-token --json
 a4 install program spl-token --ts
