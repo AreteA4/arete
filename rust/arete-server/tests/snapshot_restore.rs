@@ -33,6 +33,10 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 fn make_spec(entity_name: &str) -> Spec {
+    make_spec_with_state_id(entity_name, 1)
+}
+
+fn make_spec_with_state_id(entity_name: &str, state_id: u32) -> Spec {
     use arete_interpreter::ast::{IdentitySpec, TypedStreamSpec};
 
     let entity_spec = TypedStreamSpec::<serde_json::Value>::new(
@@ -43,10 +47,32 @@ fn make_spec(entity_name: &str) -> Spec {
         },
         Vec::new(),
     );
+    let serializable = entity_spec.to_serializable();
     let bytecode = arete_interpreter::compiler::MultiEntityBytecode::new()
-        .add_entity(entity_name.to_string(), entity_spec, 1)
+        .add_entity(entity_name.to_string(), entity_spec, state_id)
         .build();
-    Spec::new(bytecode, "Program111")
+    Spec::new(bytecode, "Program111").with_entity_specs(vec![serializable])
+}
+
+fn named_vm(entity_name: &str, state_id: u32, key: &str) -> VmContext {
+    use arete_interpreter::snapshot::{StateTableSnapshot, VmSnapshot};
+    use std::collections::HashMap;
+
+    let mut states = HashMap::new();
+    states.insert(
+        state_id,
+        StateTableSnapshot {
+            entity_name: entity_name.to_string(),
+            data: vec![(json!(key), json!({"id": key, "price": 10}))],
+            ..StateTableSnapshot::default()
+        },
+    );
+    let mut vm = VmContext::new_multi_entity();
+    vm.hydrate(VmSnapshot {
+        states,
+        ..VmSnapshot::default()
+    });
+    vm
 }
 
 /// A canonical `Token/list` view plus a derived, price-sorted `Token/top`.
@@ -440,6 +466,136 @@ async fn mismatched_bytecode_and_corrupt_blobs_cold_start() {
 }
 
 #[tokio::test]
+async fn matching_state_and_projection_contracts_hydrate_without_resuming() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("contract-compatible");
+    let config = config_for(&dir);
+    let source_spec = make_spec_with_state_id("Token", 1);
+    let view_index = make_view_index();
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &source_spec,
+        entity_cache,
+        &view_index,
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(projector.with_snapshot_runtime(service.runtime()).run());
+    service.runtime().register_runtime(
+        Arc::new(StdMutex::new(named_vm("Token", 1, "mint1"))),
+        SlotTracker::new(),
+    );
+    tx.send(token_batch("mint1", 10, 100)).await.unwrap();
+    flush_projector(&tx).await;
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Shutdown)
+        .await
+        .unwrap());
+
+    // A state-id change alters raw bytecode but not the persisted entity or
+    // projection contracts. Restore remaps by entity name and starts live.
+    let target_spec = make_spec_with_state_id("Token", 2);
+    let restored_view = make_view_index();
+    let restored_cache = EntityCache::new();
+    let (restored_tx, _) = make_projector(&restored_view, &restored_cache);
+    let restored_service = SnapshotService::initialize(
+        config,
+        &target_spec,
+        restored_cache.clone(),
+        &restored_view,
+        restored_tx,
+    )
+    .await
+    .unwrap();
+    let restored = restored_service
+        .runtime()
+        .take_restored()
+        .expect("compatible state contract hydrates");
+    assert_eq!(restored.resume_watermark, None);
+    let mut vm = VmContext::new_multi_entity();
+    vm.hydrate(restored.vm);
+    assert_eq!(
+        vm.get_entity_state(2, &json!("mint1")).unwrap()["price"],
+        10
+    );
+    assert_eq!(restored_cache.get_all("Token/list").await.len(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_explicit_legacy_hash_allows_one_safe_live_start_migration() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("legacy-approved");
+    let config = config_for(&dir);
+    let spec = make_spec_with_state_id("Token", 1);
+    let view_index = make_view_index();
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let service =
+        SnapshotService::initialize(config.clone(), &spec, entity_cache, &view_index, tx.clone())
+            .await
+            .unwrap();
+    tokio::spawn(projector.with_snapshot_runtime(service.runtime()).run());
+    service.runtime().register_runtime(
+        Arc::new(StdMutex::new(named_vm("Token", 1, "mint1"))),
+        SlotTracker::new(),
+    );
+    tx.send(token_batch("mint1", 10, 100)).await.unwrap();
+    flush_projector(&tx).await;
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Shutdown)
+        .await
+        .unwrap());
+
+    let snapshot_path = std::fs::read_dir(&dir)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let bytes = std::fs::read(&snapshot_path).unwrap();
+    let mut header = snapshot::envelope::decode_header(&bytes).unwrap();
+    let payload = snapshot::envelope::decode_payload(&bytes).unwrap();
+    let legacy_hash = "a".repeat(64);
+    header.bytecode_hash = legacy_hash.clone();
+    header.state_contract = None;
+    header.projection_contract = None;
+    std::fs::write(
+        &snapshot_path,
+        snapshot::envelope::encode(&header, &payload).unwrap(),
+    )
+    .unwrap();
+
+    let mut migration_config = config;
+    migration_config.legacy_bytecode_hashes.insert(legacy_hash);
+    let restored_view = make_view_index();
+    let restored_cache = EntityCache::new();
+    let (restored_tx, _) = make_projector(&restored_view, &restored_cache);
+    let restored_service = SnapshotService::initialize(
+        migration_config,
+        &spec,
+        restored_cache,
+        &restored_view,
+        restored_tx,
+    )
+    .await
+    .unwrap();
+    let restored = restored_service
+        .runtime()
+        .take_restored()
+        .expect("approved legacy hash hydrates");
+    assert_eq!(restored.resume_watermark, None);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn stale_snapshot_hydrates_but_starts_live() {
     let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -629,6 +785,10 @@ fn snapshot_config_from_env_round_trip() {
     std::env::set_var("ARETE_SNAPSHOT_ON_SHUTDOWN", "false");
     std::env::set_var("ARETE_SNAPSHOT_MIN_MUTATIONS", "5");
     std::env::set_var("ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS", "9000");
+    std::env::set_var(
+        "ARETE_SNAPSHOT_LEGACY_BYTECODE_HASHES",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
 
     let config = SnapshotConfig::from_env().unwrap();
     assert!(config.enabled);
@@ -638,6 +798,7 @@ fn snapshot_config_from_env_round_trip() {
     assert!(!config.snapshot_on_shutdown);
     assert_eq!(config.min_mutations, 5);
     assert_eq!(config.max_resume_age_slots, 9_000);
+    assert_eq!(config.legacy_bytecode_hashes.len(), 2);
 
     // Enabled without a URL is a configuration error.
     std::env::remove_var("ARETE_SNAPSHOT_URL");
@@ -650,6 +811,7 @@ fn snapshot_config_from_env_round_trip() {
         "ARETE_SNAPSHOT_ON_SHUTDOWN",
         "ARETE_SNAPSHOT_MIN_MUTATIONS",
         "ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS",
+        "ARETE_SNAPSHOT_LEGACY_BYTECODE_HASHES",
     ] {
         std::env::remove_var(key);
     }

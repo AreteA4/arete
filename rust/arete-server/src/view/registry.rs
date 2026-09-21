@@ -64,6 +64,13 @@ impl ViewIndex {
         self.by_id.get(id)
     }
 
+    /// Stable view order for snapshot compatibility contracts.
+    pub(crate) fn snapshot_specs(&self) -> Vec<&ViewSpec> {
+        let mut specs = self.by_id.values().collect::<Vec<_>>();
+        specs.sort_by(|left, right| left.id.cmp(&right.id));
+        specs
+    }
+
     pub fn get_derived_views(&self) -> Vec<&ViewSpec> {
         self.by_id.values().filter(|s| s.is_derived()).collect()
     }

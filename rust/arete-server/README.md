@@ -215,6 +215,27 @@ Server::builder()
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `otel` | No | OpenTelemetry integration for metrics and distributed tracing |
+| `snapshot-object-store` | No | S3, GCS, and Azure snapshot stores |
+
+## State Snapshots
+
+Snapshots are disabled by default. Set `ARETE_SNAPSHOT_ENABLED=true` and
+`ARETE_SNAPSHOT_URL` to a filesystem path or, with `snapshot-object-store`, an
+object-store URL. A snapshot records both the exact bytecode fingerprint and
+versioned normalized contracts for persisted entity state and projection
+caches.
+
+Exact-bytecode restores may resume from the recorded watermark. A restore with
+matching state and projection contracts but different bytecode hydrates the
+state and starts from live data, so compiler-only changes do not discard
+compatible history or replay old slots through new logic.
+
+Snapshots written before contract metadata existed remain fail-closed. For a
+reviewed one-time migration, set
+`ARETE_SNAPSHOT_LEGACY_BYTECODE_HASHES=<sha256>[,<sha256>...]`. Only those exact
+source hashes may hydrate; state tables are remapped by entity name and the
+stream always starts live. Remove the allowlist after the runtime writes a new
+contract-aware snapshot.
 
 ## Health Monitoring
 

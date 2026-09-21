@@ -14,6 +14,13 @@ const ZSTD_LEVEL: i32 = 3;
 /// Guards against decompression bombs from a corrupted or hostile store.
 const MAX_PAYLOAD_BYTES: usize = 1 << 30;
 
+/// A versioned, normalized description of data that a snapshot persists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotContract {
+    pub schema: String,
+    pub hash: String,
+}
+
 /// Plain-JSON metadata used to validate a snapshot before decompressing it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotHeader {
@@ -22,6 +29,14 @@ pub struct SnapshotHeader {
     /// Fingerprint of the compiled `MultiEntityBytecode`. A mismatch means the
     /// stack's logic changed; the snapshot is discarded (cold start).
     pub bytecode_hash: String,
+    /// Durable entity structure, independent of handler opcode ordering.
+    /// Absent on snapshots written before contract-aware restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_contract: Option<SnapshotContract>,
+    /// Runtime view/cache structure. Kept separate so a future migration can
+    /// make an explicit decision about rebuilding projections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_contract: Option<SnapshotContract>,
     pub program_ids: Vec<String>,
     /// Highest slot among mutation batches the projector had applied when the
     /// VM was dumped. Safe `from_slot` resume point.
@@ -101,6 +116,14 @@ mod tests {
         let header = SnapshotHeader {
             format_version: arete_interpreter::snapshot::SNAPSHOT_FORMAT_VERSION,
             bytecode_hash: "abc123".to_string(),
+            state_contract: Some(SnapshotContract {
+                schema: "arete.snapshot-state-contract/v1".to_string(),
+                hash: "state123".to_string(),
+            }),
+            projection_contract: Some(SnapshotContract {
+                schema: "arete.snapshot-projection-contract/v1".to_string(),
+                hash: "projection123".to_string(),
+            }),
             program_ids: vec!["Program111".to_string()],
             resume_watermark: 42,
             observed_slot: 50,
