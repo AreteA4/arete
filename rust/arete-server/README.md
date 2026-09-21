@@ -238,6 +238,12 @@ stream always starts live. Legacy projection caches are discarded and rebuilt
 from live input because their structure cannot be verified. Remove the
 allowlist after the runtime writes a new contract-aware snapshot.
 
+If a reviewed legacy table has no entity name, also set
+`ARETE_SNAPSHOT_LEGACY_STATE_NAMES=<source-state-id>=<entity-name>[,...]`.
+This mapping is explicit because generated numeric state IDs can move when
+entity declaration order changes; an ID is never mapped to the current entity
+at that ID implicitly.
+
 ## Health Monitoring
 
 Built-in health monitoring tracks stream connectivity and detects issues:

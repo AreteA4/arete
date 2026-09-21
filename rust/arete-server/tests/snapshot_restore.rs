@@ -567,11 +567,12 @@ async fn an_explicit_legacy_hash_allows_one_safe_live_start_migration() {
         .path();
     let bytes = std::fs::read(&snapshot_path).unwrap();
     let mut header = snapshot::envelope::decode_header(&bytes).unwrap();
-    let payload = snapshot::envelope::decode_payload(&bytes).unwrap();
+    let mut payload = snapshot::envelope::decode_payload(&bytes).unwrap();
     let legacy_hash = "a".repeat(64);
     header.bytecode_hash = legacy_hash.clone();
     header.state_contract = None;
     header.projection_contract = None;
+    payload.vm.states.get_mut(&1).unwrap().entity_name.clear();
     std::fs::write(
         &snapshot_path,
         snapshot::envelope::encode(&header, &payload).unwrap(),
@@ -580,6 +581,9 @@ async fn an_explicit_legacy_hash_allows_one_safe_live_start_migration() {
 
     let mut migration_config = config;
     migration_config.legacy_bytecode_hashes.insert(legacy_hash);
+    migration_config
+        .legacy_state_names
+        .insert(1, "Token".to_string());
     let restored_view = make_view_index();
     let restored_cache = EntityCache::new();
     let (restored_tx, _) = make_projector(&restored_view, &restored_cache);
@@ -597,6 +601,13 @@ async fn an_explicit_legacy_hash_allows_one_safe_live_start_migration() {
         .take_restored()
         .expect("approved legacy hash hydrates");
     assert_eq!(restored.resume_watermark, None);
+    let mut restored_vm = VmContext::new_multi_entity();
+    restored_vm.hydrate(restored.vm);
+    assert_eq!(
+        restored_vm.get_entity_state(1, &json!("mint1")).unwrap()["price"],
+        10,
+        "an operator-approved unnamed legacy state maps to its declared entity"
+    );
     assert!(
         restored_cache.get_all("Token/list").await.is_empty(),
         "legacy migration must discard unverifiable projection caches"
@@ -799,6 +810,7 @@ fn snapshot_config_from_env_round_trip() {
         "ARETE_SNAPSHOT_LEGACY_BYTECODE_HASHES",
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     );
+    std::env::set_var("ARETE_SNAPSHOT_LEGACY_STATE_NAMES", "7=Token,9=Position");
 
     let config = SnapshotConfig::from_env().unwrap();
     assert!(config.enabled);
@@ -812,6 +824,14 @@ fn snapshot_config_from_env_round_trip() {
     assert!(config
         .legacy_bytecode_hashes
         .contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    assert_eq!(
+        config.legacy_state_names.get(&7),
+        Some(&"Token".to_string())
+    );
+    assert_eq!(
+        config.legacy_state_names.get(&9),
+        Some(&"Position".to_string())
+    );
 
     // Enabled without a URL is a configuration error.
     std::env::remove_var("ARETE_SNAPSHOT_URL");
@@ -825,6 +845,7 @@ fn snapshot_config_from_env_round_trip() {
         "ARETE_SNAPSHOT_MIN_MUTATIONS",
         "ARETE_SNAPSHOT_MAX_RESUME_AGE_SLOTS",
         "ARETE_SNAPSHOT_LEGACY_BYTECODE_HASHES",
+        "ARETE_SNAPSHOT_LEGACY_STATE_NAMES",
     ] {
         std::env::remove_var(key);
     }

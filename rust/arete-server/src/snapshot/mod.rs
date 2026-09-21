@@ -85,6 +85,10 @@ pub struct SnapshotConfig {
     /// explicitly approved for one state-only migration. These snapshots are
     /// hydrated after structural state-id remapping and always start live.
     pub legacy_bytecode_hashes: BTreeSet<String>,
+    /// Explicit source-state-id to entity-name mappings for unnamed tables in
+    /// approved pre-contract snapshots. Numeric ids alone are not stable
+    /// across entity declaration changes, so no implicit mapping is safe.
+    pub legacy_state_names: BTreeMap<u32, String>,
 }
 
 impl Default for SnapshotConfig {
@@ -103,6 +107,7 @@ impl Default for SnapshotConfig {
             ready_max_lag_slots: 50,
             ready_max_hold: Duration::from_secs(60),
             legacy_bytecode_hashes: BTreeSet::new(),
+            legacy_state_names: BTreeMap::new(),
         }
     }
 }
@@ -147,6 +152,36 @@ impl SnapshotConfig {
                     .collect::<Vec<_>>()
             })
             .collect();
+        if let Ok(value) = std::env::var("ARETE_SNAPSHOT_LEGACY_STATE_NAMES") {
+            for mapping in value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+            {
+                let (state_id, entity_name) = mapping.split_once('=').with_context(|| {
+                    format!(
+                        "ARETE_SNAPSHOT_LEGACY_STATE_NAMES entry '{mapping}' must be <state-id>=<entity-name>"
+                    )
+                })?;
+                let state_id = state_id.trim().parse::<u32>().with_context(|| {
+                    format!(
+                        "ARETE_SNAPSHOT_LEGACY_STATE_NAMES entry '{mapping}' has an invalid state id"
+                    )
+                })?;
+                let entity_name = entity_name.trim();
+                anyhow::ensure!(
+                    !entity_name.is_empty(),
+                    "ARETE_SNAPSHOT_LEGACY_STATE_NAMES entry '{mapping}' has an empty entity name"
+                );
+                anyhow::ensure!(
+                    config
+                        .legacy_state_names
+                        .insert(state_id, entity_name.to_string())
+                        .is_none(),
+                    "ARETE_SNAPSHOT_LEGACY_STATE_NAMES contains duplicate state id {state_id}"
+                );
+            }
+        }
         config.validate()?;
         Ok(config)
     }
@@ -237,17 +272,39 @@ fn state_ids_by_entity(spec: &crate::Spec) -> HashMap<String, u32> {
         .collect()
 }
 
-fn remap_snapshot_states(vm: &mut VmSnapshot, state_ids: &HashMap<String, u32>) -> Result<()> {
+fn remap_snapshot_states(
+    vm: &mut VmSnapshot,
+    state_ids: &HashMap<String, u32>,
+    legacy_state_names: Option<&BTreeMap<u32, String>>,
+) -> Result<usize> {
     let states = std::mem::take(&mut vm.states);
-    for (_, table) in states {
-        let state_id = state_ids
-            .get(&table.entity_name)
-            .with_context(|| format!("snapshot contains unknown entity '{}'", table.entity_name))?;
-        if vm.states.insert(*state_id, table).is_some() {
+    let mut unnamed_states_remapped = 0;
+    for (source_state_id, mut table) in states {
+        let state_id = if table.entity_name.is_empty() {
+            let entity_name = legacy_state_names
+                .and_then(|names| names.get(&source_state_id))
+                .with_context(|| {
+                    format!(
+                        "snapshot contains unnamed entity at state id {source_state_id} without an explicit legacy state-name mapping"
+                    )
+                })?;
+            table.entity_name = entity_name.clone();
+            unnamed_states_remapped += 1;
+            *state_ids.get(entity_name).with_context(|| {
+                format!(
+                    "legacy state id {source_state_id} maps to unknown current entity '{entity_name}'"
+                )
+            })?
+        } else {
+            *state_ids.get(&table.entity_name).with_context(|| {
+                format!("snapshot contains unknown entity '{}'", table.entity_name)
+            })?
+        };
+        if vm.states.insert(state_id, table).is_some() {
             anyhow::bail!("snapshot contains duplicate entity state for id {state_id}");
         }
     }
-    Ok(())
+    Ok(unnamed_states_remapped)
 }
 
 /// VM state handed from the restore path to the generated runtime, consumed
@@ -591,8 +648,17 @@ impl SnapshotService {
             .context("snapshot decode task panicked")?
             .with_context(|| format!("snapshot {name} has an unreadable payload"))?;
         if !exact_bytecode {
-            remap_snapshot_states(&mut payload.vm, &self.state_ids)
-                .with_context(|| format!("snapshot {name} state contract is incompatible"))?;
+            let legacy_state_names = approved_legacy.then_some(&self.config.legacy_state_names);
+            let unnamed_states_remapped =
+                remap_snapshot_states(&mut payload.vm, &self.state_ids, legacy_state_names)
+                    .with_context(|| format!("snapshot {name} state contract is incompatible"))?;
+            if unnamed_states_remapped > 0 {
+                warn!(
+                    snapshot = %name,
+                    unnamed_states_remapped,
+                    "Mapped unnamed legacy snapshot states using explicit entity names"
+                );
+            }
         }
         if legacy_migration {
             // A pre-contract snapshot cannot prove that its materialized views
@@ -814,5 +880,77 @@ async fn rebuild_sorted_caches(view_index: &ViewIndex, entity_cache: &EntityCach
             cache.trim_to_max_entries(max_entries);
             debug!(view_id = %spec.id, count, "Rebuilt sorted cache from snapshot");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arete_interpreter::snapshot::StateTableSnapshot;
+
+    fn snapshot_with_table(state_id: u32, entity_name: &str) -> VmSnapshot {
+        let mut snapshot = VmSnapshot::default();
+        snapshot.states.insert(
+            state_id,
+            StateTableSnapshot {
+                entity_name: entity_name.to_string(),
+                ..StateTableSnapshot::default()
+            },
+        );
+        snapshot
+    }
+
+    #[test]
+    fn explicit_legacy_state_name_maps_to_current_entity_id() {
+        let mut snapshot = snapshot_with_table(7, "");
+        let state_ids = HashMap::from([("Token".to_string(), 2)]);
+        let legacy_names = BTreeMap::from([(7, "Token".to_string())]);
+
+        let remapped =
+            remap_snapshot_states(&mut snapshot, &state_ids, Some(&legacy_names)).unwrap();
+
+        assert_eq!(remapped, 1);
+        assert!(!snapshot.states.contains_key(&7));
+        assert_eq!(snapshot.states[&2].entity_name, "Token");
+    }
+
+    #[test]
+    fn contract_aware_unnamed_state_without_legacy_mapping_is_rejected() {
+        let mut snapshot = snapshot_with_table(7, "");
+        let state_ids = HashMap::from([("Token".to_string(), 7)]);
+
+        let error = remap_snapshot_states(&mut snapshot, &state_ids, None).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("without an explicit legacy state-name mapping"));
+    }
+
+    #[test]
+    fn named_unknown_entity_is_rejected_even_with_legacy_mapping() {
+        let mut snapshot = snapshot_with_table(7, "Unknown");
+        let state_ids = HashMap::from([("Token".to_string(), 2)]);
+        let legacy_names = BTreeMap::from([(7, "Token".to_string())]);
+
+        let error =
+            remap_snapshot_states(&mut snapshot, &state_ids, Some(&legacy_names)).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("snapshot contains unknown entity 'Unknown'"));
+    }
+
+    #[test]
+    fn legacy_mapping_to_unknown_current_entity_is_rejected() {
+        let mut snapshot = snapshot_with_table(7, "");
+        let state_ids = HashMap::from([("Token".to_string(), 2)]);
+        let legacy_names = BTreeMap::from([(7, "Missing".to_string())]);
+
+        let error =
+            remap_snapshot_states(&mut snapshot, &state_ids, Some(&legacy_names)).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("maps to unknown current entity 'Missing'"));
     }
 }
