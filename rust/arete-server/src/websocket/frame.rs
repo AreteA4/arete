@@ -23,7 +23,7 @@ pub struct SortConfig {
     pub order: SortOrder,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct WireFormat {
     pub wide_int_paths: Vec<Vec<String>>,
 }

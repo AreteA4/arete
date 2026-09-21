@@ -1,6 +1,7 @@
 use crate::materialized_view::{CompareOp, FilterConfig, SortConfig, SortOrder, ViewPipeline};
 use crate::websocket::frame::{Mode, WireFormat};
 use arete_interpreter::ast::{FieldTypeInfo, ResolvedField, SerializableStreamSpec};
+use serde::Serialize;
 use std::collections::BTreeSet;
 
 // # View System Architecture
@@ -25,7 +26,7 @@ use std::collections::BTreeSet;
 // - `SettlementGame/list/user/123` - Games for specific user
 // - `SettlementGame/list/recent` - Recently created games only
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ViewSpec {
     pub id: String,
     pub export: String,
@@ -40,7 +41,7 @@ pub struct ViewSpec {
     pub source_view: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Projection {
     pub fields: Option<Vec<String>>,
 }
@@ -60,7 +61,7 @@ impl Projection {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Filters {
     pub keys: Option<Vec<String>>,
 }
@@ -78,7 +79,7 @@ impl Filters {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Delivery {
     pub coalesce_ms: Option<u64>,
 }

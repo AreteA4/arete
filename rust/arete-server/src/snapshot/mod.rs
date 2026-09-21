@@ -23,7 +23,7 @@ pub mod envelope;
 pub mod object;
 pub mod store;
 
-pub use envelope::{SnapshotHeader, SnapshotPayload};
+pub use envelope::{SnapshotContract, SnapshotHeader, SnapshotPayload};
 #[cfg(feature = "snapshot-object-store")]
 pub use object::ObjectSnapshotStore;
 pub use store::{FsStore, SnapshotStore};
@@ -35,6 +35,9 @@ use crate::view::ViewIndex;
 use anyhow::{Context, Result};
 use arete_interpreter::snapshot::{VmSnapshot, SNAPSHOT_FORMAT_VERSION};
 use arete_interpreter::vm::VmContext;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -48,6 +51,8 @@ const ESTIMATED_SLOT_MILLIS: u64 = 400;
 /// How long a snapshot cycle waits for in-flight VM updates and their queued
 /// projection batches to finish.
 const CONSISTENCY_CUT_TIMEOUT: Duration = Duration::from_secs(10);
+const STATE_CONTRACT_SCHEMA_V1: &str = "arete.snapshot-state-contract/v1";
+const PROJECTION_CONTRACT_SCHEMA_V1: &str = "arete.snapshot-projection-contract/v1";
 
 /// Configuration for state snapshots. Disabled by default; enable via
 /// `ServerBuilder::snapshots(...)` or `ARETE_SNAPSHOT_*` env vars.
@@ -76,6 +81,10 @@ pub struct SnapshotConfig {
     /// ...or until this much time has passed (guards quiet stacks, where the
     /// watermark never advances because nothing happens on-chain).
     pub ready_max_hold: Duration,
+    /// Bytecode hashes from pre-contract snapshots that an operator has
+    /// explicitly approved for one state-only migration. These snapshots are
+    /// hydrated after structural state-id remapping and always start live.
+    pub legacy_bytecode_hashes: BTreeSet<String>,
 }
 
 impl Default for SnapshotConfig {
@@ -93,6 +102,7 @@ impl Default for SnapshotConfig {
             max_resume_age_slots: 1_500,
             ready_max_lag_slots: 50,
             ready_max_hold: Duration::from_secs(60),
+            legacy_bytecode_hashes: BTreeSet::new(),
         }
     }
 }
@@ -125,6 +135,18 @@ impl SnapshotConfig {
             crate::config::env_parse("ARETE_SNAPSHOT_READY_MAX_HOLD_SECS")?
                 .unwrap_or(config.ready_max_hold.as_secs()),
         );
+        config.legacy_bytecode_hashes = std::env::var("ARETE_SNAPSHOT_LEGACY_BYTECODE_HASHES")
+            .ok()
+            .into_iter()
+            .flat_map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|hash| !hash.is_empty())
+                    .map(str::to_ascii_lowercase)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         config.validate()?;
         Ok(config)
     }
@@ -136,8 +158,96 @@ impl SnapshotConfig {
         if self.enabled && (self.interval.is_zero() || self.keep == 0) {
             anyhow::bail!("snapshot interval and keep count must be greater than zero");
         }
+        for hash in &self.legacy_bytecode_hashes {
+            if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                anyhow::bail!(
+                    "ARETE_SNAPSHOT_LEGACY_BYTECODE_HASHES contains invalid SHA-256 hash '{hash}'"
+                );
+            }
+        }
         Ok(())
     }
+}
+
+fn contract_hash<T: Serialize>(schema: &str, value: &T) -> SnapshotContract {
+    let canonical = arete_hash::canonicalize_jcs(value)
+        .expect("snapshot contracts contain only canonical JSON values");
+    let hash = hex::encode(Sha256::digest(canonical));
+    SnapshotContract {
+        schema: schema.to_string(),
+        hash,
+    }
+}
+
+fn state_contract(spec: &crate::Spec) -> Option<SnapshotContract> {
+    if spec.entity_specs.is_empty() {
+        return None;
+    }
+    let mut entities = Vec::with_capacity(spec.entity_specs.len());
+    for entity in &spec.entity_specs {
+        let mut indexes = entity
+            .identity
+            .lookup_indexes
+            .iter()
+            .map(|index| (&index.field_name, &index.temporal_field))
+            .collect::<Vec<_>>();
+        indexes.sort();
+        indexes.dedup();
+        let fields = entity
+            .field_mappings
+            .iter()
+            .map(|(path, field)| {
+                (
+                    path,
+                    serde_json::json!({
+                        "baseType": field.base_type,
+                        "integerKind": field.integer_kind,
+                        "isOptional": field.is_optional,
+                        "isArray": field.is_array,
+                        "innerType": field.inner_type,
+                        "resolvedType": field.resolved_type,
+                        "emit": field.emit,
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        entities.push(serde_json::json!({
+            "name": entity.state_name,
+            "primaryKeys": entity.identity.primary_keys,
+            "lookupIndexes": indexes,
+            "fields": fields,
+        }));
+    }
+    entities.sort_by_key(|entity| entity["name"].as_str().unwrap_or_default().to_string());
+    Some(contract_hash(
+        STATE_CONTRACT_SCHEMA_V1,
+        &serde_json::json!({"entities": entities}),
+    ))
+}
+
+fn projection_contract(view_index: &ViewIndex) -> SnapshotContract {
+    contract_hash(PROJECTION_CONTRACT_SCHEMA_V1, &view_index.snapshot_specs())
+}
+
+fn state_ids_by_entity(spec: &crate::Spec) -> HashMap<String, u32> {
+    spec.bytecode
+        .entities
+        .iter()
+        .map(|(name, entity)| (name.clone(), entity.state_id))
+        .collect()
+}
+
+fn remap_snapshot_states(vm: &mut VmSnapshot, state_ids: &HashMap<String, u32>) -> Result<()> {
+    let states = std::mem::take(&mut vm.states);
+    for (_, table) in states {
+        let state_id = state_ids
+            .get(&table.entity_name)
+            .with_context(|| format!("snapshot contains unknown entity '{}'", table.entity_name))?;
+        if vm.states.insert(*state_id, table).is_some() {
+            anyhow::bail!("snapshot contains duplicate entity state for id {state_id}");
+        }
+    }
+    Ok(())
 }
 
 /// VM state handed from the restore path to the generated runtime, consumed
@@ -358,6 +468,9 @@ pub struct SnapshotService {
     store: Arc<dyn SnapshotStore>,
     runtime: SnapshotRuntime,
     bytecode_hash: String,
+    state_contract: Option<SnapshotContract>,
+    projection_contract: SnapshotContract,
+    state_ids: HashMap<String, u32>,
     program_ids: Vec<String>,
     entity_cache: EntityCache,
     journal: Arc<crate::journal::EventJournal>,
@@ -390,6 +503,9 @@ impl SnapshotService {
             store,
             runtime: SnapshotRuntime::default(),
             bytecode_hash: spec.bytecode.fingerprint(),
+            state_contract: state_contract(spec),
+            projection_contract: projection_contract(view_index),
+            state_ids: state_ids_by_entity(spec),
             program_ids,
             entity_cache,
             journal,
@@ -444,11 +560,22 @@ impl SnapshotService {
             );
             return Ok(false);
         }
-        if header.bytecode_hash != self.bytecode_hash {
+        let exact_bytecode = header.bytecode_hash == self.bytecode_hash;
+        let matching_contracts = self.state_contract.is_some()
+            && header.state_contract == self.state_contract
+            && header.projection_contract.as_ref() == Some(&self.projection_contract);
+        let approved_legacy = !exact_bytecode
+            && header.state_contract.is_none()
+            && header.projection_contract.is_none()
+            && self
+                .config
+                .legacy_bytecode_hashes
+                .contains(&header.bytecode_hash);
+        let legacy_migration = approved_legacy;
+        if !exact_bytecode && !matching_contracts && !approved_legacy {
             warn!(
                 snapshot = %name,
-                "Snapshot was taken by a different stack build (bytecode hash \
-                 mismatch); discarding (cold start)"
+                "Snapshot was taken by an incompatible stack build; discarding (cold start)"
             );
             return Ok(false);
         }
@@ -462,10 +589,20 @@ impl SnapshotService {
             return Ok(false);
         }
 
-        let payload = tokio::task::spawn_blocking(move || envelope::decode_payload(&bytes))
+        let mut payload = tokio::task::spawn_blocking(move || envelope::decode_payload(&bytes))
             .await
             .context("snapshot decode task panicked")?
             .with_context(|| format!("snapshot {name} has an unreadable payload"))?;
+        if !exact_bytecode {
+            remap_snapshot_states(&mut payload.vm, &self.state_ids)
+                .with_context(|| format!("snapshot {name} state contract is incompatible"))?;
+        }
+        if legacy_migration {
+            // A pre-contract snapshot cannot prove that its materialized views
+            // still match the current projections. Preserve only durable VM
+            // state and let live input rebuild every projection cache.
+            payload.entity_cache.clear();
+        }
 
         let cached_views = payload.entity_cache.len();
         let cached_entities: usize = payload
@@ -492,12 +629,13 @@ impl SnapshotService {
 
         let age_ms = now_epoch_ms().saturating_sub(header.created_at_epoch_ms);
         let estimated_age_slots = age_ms / ESTIMATED_SLOT_MILLIS;
-        let resume_watermark = if header.resume_watermark > 0
+        let resume_watermark = if exact_bytecode
+            && header.resume_watermark > 0
             && estimated_age_slots <= self.config.max_resume_age_slots
         {
             Some(header.resume_watermark)
         } else {
-            if header.resume_watermark > 0 {
+            if header.resume_watermark > 0 && exact_bytecode {
                 warn!(
                     resume_watermark = header.resume_watermark,
                     estimated_age_slots,
@@ -505,6 +643,15 @@ impl SnapshotService {
                     "Snapshot is older than the resume window; hydrating state but \
                      starting the stream live. Account-derived state self-heals from \
                      full account writes; only instruction events in the gap are missed."
+                );
+            }
+            if !exact_bytecode {
+                warn!(
+                    snapshot = %name,
+                    matching_contracts,
+                    approved_legacy,
+                    legacy_state_only = legacy_migration,
+                    "Hydrated snapshot state from different bytecode; starting live"
                 );
             }
             None
@@ -620,6 +767,8 @@ impl SnapshotService {
         let header = SnapshotHeader {
             format_version: SNAPSHOT_FORMAT_VERSION,
             bytecode_hash: self.bytecode_hash.clone(),
+            state_contract: self.state_contract.clone(),
+            projection_contract: Some(self.projection_contract.clone()),
             program_ids: self.program_ids.clone(),
             resume_watermark,
             observed_slot,
