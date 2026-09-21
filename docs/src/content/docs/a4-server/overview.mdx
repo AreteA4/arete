@@ -5,6 +5,12 @@ sidebar:
   order: 1
 ---
 
+:::note[Self-hosting is optional]
+If you use Arete's hosted catalog and stacks, you can skip this whole section.
+It is for teams who want to run live views or typed reads on servers they
+control.
+:::
+
 `a4-server` is a Rust crate that runs generated Arete behavior in your own
 infrastructure. A live server can connect to Yellowstone gRPC, process Solana
 data through projections, and stream results to clients. The same builder can
