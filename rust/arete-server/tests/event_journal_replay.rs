@@ -71,7 +71,11 @@ fn journal_for(max_records: usize) -> Arc<EventJournal> {
 async fn run_projector(
     journal: Arc<EventJournal>,
     events: u64,
-) -> (EntityCache, mpsc::Sender<MutationBatch>, tokio::task::JoinHandle<()>) {
+) -> (
+    EntityCache,
+    mpsc::Sender<MutationBatch>,
+    tokio::task::JoinHandle<()>,
+) {
     let entity_cache = EntityCache::with_config(EntityCacheConfig {
         max_entities_per_view: CACHE_CAP,
         ..Default::default()
@@ -199,7 +203,11 @@ async fn a_cursor_evicted_by_retention_is_reported_with_the_window() {
         .replay_after("Trade/append", None)
         .await
         .expect("no cursor replays the retained window");
-    assert_eq!(recovered.len(), 100, "recovery loses nothing still retained");
+    assert_eq!(
+        recovered.len(),
+        100,
+        "recovery loses nothing still retained"
+    );
     assert_eq!(recovered.first().unwrap().offset, window.earliest);
 
     drop(tx);

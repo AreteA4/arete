@@ -510,6 +510,7 @@ async fn matching_state_and_projection_contracts_hydrate_without_resuming() {
         &source_spec,
         entity_cache,
         &view_index,
+        test_journal(),
         tx.clone(),
     )
     .await
@@ -537,6 +538,7 @@ async fn matching_state_and_projection_contracts_hydrate_without_resuming() {
         &target_spec,
         restored_cache.clone(),
         &restored_view,
+        test_journal(),
         restored_tx,
     )
     .await
@@ -567,10 +569,16 @@ async fn an_explicit_legacy_hash_allows_one_safe_live_start_migration() {
     let view_index = make_view_index();
     let entity_cache = EntityCache::new();
     let (tx, projector) = make_projector(&view_index, &entity_cache);
-    let service =
-        SnapshotService::initialize(config.clone(), &spec, entity_cache, &view_index, tx.clone())
-            .await
-            .unwrap();
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache,
+        &view_index,
+        test_journal(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
     tokio::spawn(projector.with_snapshot_runtime(service.runtime()).run());
     service.runtime().register_runtime(
         Arc::new(StdMutex::new(named_vm("Token", 1, "mint1"))),
@@ -612,6 +620,7 @@ async fn an_explicit_legacy_hash_allows_one_safe_live_start_migration() {
         &spec,
         restored_cache.clone(),
         &restored_view,
+        test_journal(),
         restored_tx,
     )
     .await
@@ -975,9 +984,13 @@ async fn restore_preserves_the_advertised_replay_window() {
     // More events than the entity cache would keep per key, so the window is
     // the only thing that can answer a resume.
     for index in 0..600u64 {
-        tx.send(token_batch(&format!("mint{}", index % 5), index, 100 + index))
-            .await
-            .unwrap();
+        tx.send(token_batch(
+            &format!("mint{}", index % 5),
+            index,
+            100 + index,
+        ))
+        .await
+        .unwrap();
     }
     flush_projector(&tx).await;
 
@@ -1029,7 +1042,9 @@ async fn restore_preserves_the_advertised_replay_window() {
 
     // Offsets continue from the restored tape rather than restarting at zero,
     // so a restart cannot make an old cursor ambiguous.
-    let next = journal2.append("Token/append", "mint0", replayed[0].payload.clone()).await;
+    let next = journal2
+        .append("Token/append", "mint0", replayed[0].payload.clone())
+        .await;
     assert_eq!(next, 600);
 
     let _ = std::fs::remove_dir_all(&dir);

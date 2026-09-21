@@ -449,7 +449,10 @@ mod tests {
                 .await;
         }
 
-        let replayed = journal.replay_after("Trade/append", Some(499)).await.unwrap();
+        let replayed = journal
+            .replay_after("Trade/append", Some(499))
+            .await
+            .unwrap();
         assert_eq!(replayed.len(), 700, "every event after the cursor replays");
         assert_eq!(replayed.first().unwrap().offset, 500);
         assert_eq!(replayed.last().unwrap().offset, 1_199);
