@@ -1,828 +1,247 @@
 ---
 title: Rust SDK
-sidebar:
-  order: 3
+description: Use generated programs, live views, chain reads, and transactions from async Rust.
 ---
 
-The Arete Rust SDK is an asynchronous client for consuming streaming data from Arete. It is designed for backend services, trading bots, and CLI tools that require type-safe access to Solana state projections.
+The `arete-a4-sdk` crate is the Rust client for generated Program SDKs and
+stacks. It mirrors the core TypeScript model with native Rust idioms: generated
+structs, builder chains, and `Stream` implementations.
 
----
-
-## Installation
-
-Add to your `Cargo.toml`:
+## Install the runtime
 
 ```toml
 [dependencies]
-a4-sdk = "{{VERSION}}"
-a4-stacks = { version = "{{VERSION}}", optional = true }
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
-futures = "0.3"
-```
-
-The `a4-stacks` crate provides pre-built stack definitions for popular Solana protocols (optional but recommended).
-
-### TLS Options
-
-By default, the SDK uses `rustls` for TLS. You can switch to native TLS:
-
-```toml
-[dependencies]
-a4-sdk = { version = "{{VERSION}}", default-features = false, features = ["native-tls"] }
-```
-
-### Tokio Runtime
-
-The SDK requires the [Tokio](https://tokio.rs/) runtime. Ensure you have it enabled in your project (specifically the `rt-multi-thread`, `macros`, and `time` features).
-
----
-
-## Quick Start
-
-### Connect and Stream
-
-```rust
-use a4_sdk::prelude::*;
-use a4_stacks::ore::{OreStack, OreRound};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Connect to the ORE stack (URL is defined in OreStack)
-    let a4 = Arete::<OreStack>::connect().await?;
-
-    println!("Connected! Streaming ORE rounds...\n");
-
-    // Access views directly
-    let mut stream = a4.views.ore_round.latest().listen();
-
-    // Stream updates
-    while let Some(round) = stream.next().await {
-        println!("Round # {:?}", round.id.round_id);
-        println!("  Motherlode: {:?}", round.state.motherlode);
-        println!("  Total difficulty: {:?}\n", round.state.total_difficulty);
-    }
-
-    Ok(())
-}
-```
-
-Run with:
-
-```bash
-cargo run
-```
-
----
-
-## Project Setup
-
-### 1. Create a New Project
-
-```bash
-cargo new my-arete-app
-cd my-arete-app
-```
-
-### 2. Add Dependencies
-
-```toml
-[dependencies]
-a4-sdk = "{{VERSION}}"
-a4-stacks = "{{VERSION}}"
+arete-sdk = { package = "arete-a4-sdk", version = "{{VERSION}}" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-anyhow = "1"
 futures = "0.3"
+anyhow = "1"
 ```
 
-### 3. Basic Structure
+The default TLS backend is `rustls`. To use native TLS:
+
+```toml
+arete-sdk = { package = "arete-a4-sdk", version = "{{VERSION}}", default-features = false, features = ["native-tls"] }
+```
+
+## Generate the application package
+
+Find a Rust-ready program or stack and install it into the project:
+
+```bash
+a4 explore catalog --query "<intent>" --target rust --json
+a4 explore catalog stack <slug> --json
+a4 install stack <slug> --rust
+```
+
+Use `a4 install program <slug> --rust` for a standalone Program SDK. Read the
+CLI output for the generated crate name and path; those depend on the project
+configuration and dependency alias.
+
+## Connect to a generated stack
 
 ```rust
-// src/main.rs
-use a4_sdk::prelude::*;
-use a4_stacks::ore::{OreStack, OreRound};
+use arete_sdk::prelude::*;
+use my_stack::MyStack;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let a4 = Arete::<OreStack>::connect().await?;
+    let client = Arete::<MyStack>::builder()
+        .publishable_key(std::env::var("ARETE_PUBLISHABLE_KEY")?)
+        .connect()
+        .await?;
 
-    let mut stream = a4.views.ore_round.latest().listen();
+    let positions = client.views.position.list().get().await;
+    println!("{positions:?}");
 
-    while let Some(round) = stream.next().await {
-        println!("Round: {:?}", round.id.round_id);
-    }
-
+    client.disconnect().await;
     Ok(())
 }
 ```
 
----
+`MyStack`, `position`, and the generated crate path are placeholders. Use the
+types and view accessors emitted for the installed package.
 
-## Connection Management
+## Live views
 
-### Basic Connection
+Every generated entity has its declared keyed and collection views. Derived
+views can add package-specific filters, sorting, and bounded windows.
 
-Each stack defines its own URL, so connection is simple:
+### Merged entities
 
-```rust
-let a4 = Arete::<OreStack>::connect().await?;
-```
-
-### With Custom URL
-
-Override the default URL if needed:
+`listen()` yields current entity values with patches applied and removals
+filtered out:
 
 ```rust
-let a4 = Arete::<OreStack>::connect_url("wss://custom.endpoint.com").await?;
-```
+let mut positions = client.views.position.list()
+    .listen()
+    .take(10);
 
-### Builder Pattern
-
-Configure the client with custom reconnection logic and intervals:
-
-```rust
-use std::time::Duration;
-
-let a4 = Arete::<OreStack>::builder()
-    .url("wss://custom.endpoint.com")  // Optional: override default
-    .auto_reconnect(true)
-    .max_reconnect_attempts(10)
-    .reconnect_intervals(vec![
-        Duration::from_secs(1),
-        Duration::from_secs(2),
-        Duration::from_secs(5),
-    ])
-    .ping_interval(Duration::from_secs(30))
-    .initial_data_timeout(Duration::from_secs(5))
-    .max_entries_per_view(5000)
-    .connect()
-    .await?;
-```
-
-### Connection State
-
-```rust
-// Check current state
-match a4.connection_state().await {
-    ConnectionState::Connected => println!("Connected!"),
-    ConnectionState::Connecting => println!("Connecting..."),
-    ConnectionState::Disconnected => println!("Disconnected"),
-    ConnectionState::Reconnecting { attempt } => println!("Reconnecting (attempt {})...", attempt),
-    ConnectionState::Error => println!("Error"),
+while let Some(position) = positions.next().await {
+    println!("{position:?}");
 }
 ```
 
-### Disconnect
+### Full update taxonomy
+
+Use `watch()` when the application must distinguish a row changing, leaving
+one query, or being deleted globally:
 
 ```rust
-// Graceful disconnect
-a4.disconnect().await;
-```
-
----
-
-## Store Size Limits
-
-By default, each view is limited to 10,000 entries to prevent memory issues on long-running clients. When the limit is reached, oldest entries are evicted (LRU).
-
-```rust
-// Custom limit
-let a4 = Arete::<OreStack>::builder()
-    .max_entries_per_view(5000)
-    .connect()
-    .await?;
-
-// Unlimited (not recommended for long-running clients)
-let a4 = Arete::<OreStack>::builder()
-    .unlimited_entries()
-    .connect()
-    .await?;
-```
-
----
-
-## Views
-
-Views provide typed access to your stack's data. Access them directly through `a4.views`:
-
-```rust
-// Direct field access
-let rounds = a4.views.ore_round.latest().get().await;
-let all_rounds = a4.views.ore_round.list().get().await;
-let specific = a4.views.ore_round.state().get("round_key").await;
-```
-
-### Pre-Built Stacks
-
-The `a4-stacks` crate includes view definitions for popular protocols:
-
-```rust
-use a4_stacks::ore::OreStack;
-
-let ore = Arete::<OreStack>::connect().await?;
-```
-
-### Building Your Own Stack
-
-To create views for your own Solana programs, you'll need to [build a stack](/building-stacks/workflow/). The CLI then generates typed view accessors for you automatically.
-
----
-
-## Streaming Data
-
-The SDK provides three streaming methods with different levels of detail:
-
-| Method          | Returns         | Description                                           |
-| --------------- | --------------- | ----------------------------------------------------- |
-| `.listen()`     | `T`             | Merged entity directly (filters out removals/deletes) |
-| `.watch()`      | `Update<T>`     | Upsert/Patch/Remove/Delete events                     |
-| `.watch_rich()` | `RichUpdate<T>` | Before/after diffs for tracking changes               |
-
-### Simple Streaming with `.listen()`
-
-The simplest API - emits merged entities directly, filtering out removals and deletes:
-
-```rust
-let mut stream = a4.views.ore_round.latest().listen();
-
-while let Some(round) = stream.next().await {
-    println!("Round: {:?}", round.id.round_id);
-}
-```
-
-### Watch with Event Types
-
-Stream all update types (upsert, patch, remove, delete):
-
-```rust
-let mut stream = a4.views.ore_round.latest().watch();
-
-while let Some(update) = stream.next().await {
-    match update {
-        Update::Upsert { data, .. } => {
-            println!("New/Updated round: {:?}", data.id.round_id);
-        }
-        Update::Patch { data, .. } => {
-            println!("Patched round: {:?}", data.id.round_id);
-        }
-        Update::Remove { key } => {
-            println!("Round left this query: {:?}", key);
-        }
-        Update::Delete { key } => {
-            println!("Deleted round: {:?}", key);
-        }
-    }
-}
-```
-
-### Rich Streaming with Before/After
-
-Track changes over time with before/after diffs:
-
-```rust
-let mut stream = a4.views.ore_round.latest().watch_rich();
-
-while let Some(update) = stream.next().await {
-    match update {
-        RichUpdate::Created { data, .. } => {
-            println!("Created: {:?}", data.id.round_id);
-        }
-        RichUpdate::Updated { before, after, .. } => {
-            println!("Updated from {:?} to {:?}",
-                before.state.motherlode,
-                after.state.motherlode);
-        }
-        RichUpdate::Removed { key, .. } => {
-            println!("Left this query: {:?}", key);
-        }
-        RichUpdate::Deleted { key, .. } => {
-            println!("Deleted: {:?}", key);
-        }
-    }
-}
-```
-
-### Watch a Specific Entity
-
-Stream updates for a specific key using state views:
-
-```rust
-let specific_round = "some-round-key";
-let mut stream = a4.views.ore_round.state().watch(specific_round);
-
-while let Some(update) = stream.next().await {
-    println!("Round updated: {:?}", update);
-}
-```
-
-### Chainable Options
-
-All stream builders support server-side options:
-
-```rust
-// Limit to top 10 items
-let mut stream = a4.views.ore_round.list().watch().take(10);
-
-// Skip first 5, take next 10
-let mut stream = a4.views.ore_round.list().watch().skip(5).take(10);
-
-// Filter by field
-let mut stream = a4.views.ore_round.list().watch().filter("status", "active");
-
-// Select a partition and cap only the initial snapshot
-let mut stream = a4.views.ore_round.list()
+let mut updates = client.views.position.list()
     .watch()
-    .partition("solana-mainnet")
+    .filter("state.status", "open")
+    .take(20)
     .with_snapshot_limit(100);
 
-// Resume incrementally after an _seq cursor
-let mut stream = a4.views.ore_round.list()
-    .watch()
-    .after("1234:000000000010");
-```
-
-Each builder defines exact protocol v2 query membership. Different windows and filters on the same view coexist independently. Equivalent normalized queries share one wire subscription, and dropping the final equivalent stream sends `unsubscribe`.
-
-The SDK keeps a stable opaque subscription ID across reconnects. A complete authoritative snapshot atomically replaces only that query's membership; an `after` snapshot is incremental and merges without pruning.
-
-### Client-Side Filtering
-
-Use standard stream adapters for client-side filtering:
-
-```rust
-use futures::StreamExt;
-
-let mut stream = a4.views.ore_round.latest().watch().filter(|update| {
-    futures::future::ready(matches!(update, Update::Upsert { .. }))
-});
-
-// Only receives upsert events
-while let Some(update) = stream.next().await {
-    println!("Upsert: {:?}", update);
-}
-```
-
-### Lazy Streams
-
-Streams are **lazy** - calling `watch()` returns immediately without subscribing. The subscription happens automatically on first poll. This enables ergonomic method chaining:
-
-```rust
-use std::collections::HashSet;
-
-let watchlist: HashSet<String> = /* tokens to watch */;
-
-let mut price_alerts = a4.views.ore_round.list()
-    .watch_rich()
-    .filter(move |u| watchlist.contains(u.key()))
-    .filter_map(|update| match update {
-        RichUpdate::Updated { before, after, .. } => {
-            let prev = before.trading.last_trade_price.flatten().unwrap_or(0.0);
-            let curr = after.trading.last_trade_price.flatten().unwrap_or(0.0);
-            if prev > 0.0 {
-                let pct = (curr - prev) / prev * 100.0;
-                if pct.abs() > 0.1 {
-                    return Some((after.info.name.clone(), pct));
-                }
-            }
-            None
-        }
-        _ => None,
-    });
-
-while let Some((name, pct)) = price_alerts.next().await {
-    println!("[PRICE] {:?} changed by {:.2}%", name, pct);
-}
-```
-
----
-
-## One-Shot Queries
-
-Fetch current state without streaming:
-
-```rust
-// Get all items from a view
-let rounds: Vec<OreRound> = a4.views.ore_round.latest().get().await;
-println!("Found {} rounds", rounds.len());
-
-// Get a specific entity by key
-let round: Option<OreRound> = a4.views.ore_round.state().get("round-key").await;
-if let Some(r) = round {
-    println!("Round: {:?}", r.id.round_id);
-}
-```
-
-### Synchronous Cache Access
-
-For hot paths where you can't await, use sync methods to read from cache:
-
-```rust
-// Synchronous - returns cached data immediately
-let cached_rounds = a4.views.ore_round.latest().get_sync();
-let cached_round = a4.views.ore_round.state().get_sync("round-key");
-```
-
-Note: Sync methods return empty/None if data hasn't been loaded yet.
-
----
-
-## Core Methods Reference
-
-### ViewHandle Methods (list/derived views)
-
-| Method                 | Returns                 | Description                         |
-| ---------------------- | ----------------------- | ----------------------------------- |
-| `.get().await`         | `Vec<T>`                | Get all items                       |
-| `.get_sync()`          | `Vec<T>`                | Synchronous cache read              |
-| `.listen()`            | `Stream<T>`             | Stream merged entities (no deletes) |
-| `.watch()`             | `Stream<Update<T>>`     | Stream all update types             |
-| `.watch_rich()`        | `Stream<RichUpdate<T>>` | Stream with before/after diffs      |
-| `.watch_keys(&[keys])` | `Stream<Update<T>>`     | Stream updates for specific keys    |
-
-### StateView Methods (keyed access)
-
-| Method             | Returns                 | Description                 |
-| ------------------ | ----------------------- | --------------------------- |
-| `.get(key).await`  | `Option<T>`             | Get entity by key           |
-| `.get_sync(key)`   | `Option<T>`             | Synchronous cache read      |
-| `.listen(key)`     | `Stream<T>`             | Stream merged entity values |
-| `.watch(key)`      | `Stream<Update<T>>`     | Stream updates for key      |
-| `.watch_rich(key)` | `Stream<RichUpdate<T>>` | Stream with diffs for key   |
-
-### Stream Builder Options
-
-| Method                    | Description                  |
-| ------------------------- | ---------------------------- |
-| `.take(n)`                | Server-side limit to N items |
-| `.skip(n)`                | Server-side offset           |
-| `.filter(key, value)`     | Server-side filter           |
-| `.partition(value)`       | Exact `_partition` match     |
-| `.with_snapshot(bool)`    | Enable the initial snapshot  |
-| `.after(cursor)`          | Incremental `_seq` cursor    |
-| `.with_snapshot_limit(n)` | Cap initial snapshot rows    |
-
----
-
-## Update Types
-
-When streaming with `watch()`, you receive `Update<T>` variants:
-
-```rust
-pub enum Update<T> {
-    Upsert { key: String, data: T },  // Full entity update
-    Patch { key: String, data: T },   // Partial update (merged)
-    Remove { key: String },           // Left this query's membership
-    Delete { key: String },           // Deleted from the source view
-}
-```
-
-Helper methods: `key()`, `data()`, `is_remove()`, `is_delete()`, `has_data()`, `into_data()`, `into_key()`, `map(f)`
-
-### Rich Updates (Before/After Diffs)
-
-For tracking changes over time, use `watch_rich()`:
-
-```rust
-pub enum RichUpdate<T> {
-    Created { key: String, data: T },
-    Updated { key: String, before: T, after: T, patch: Option<Value> },
-    Removed { key: String, last_known: Option<T> },
-    Deleted { key: String, last_known: Option<T> },
-}
-```
-
-`Remove`/`Removed` is query-local: the entity still exists and may remain in another active query. `Delete`/`Deleted` is global to the source view.
-
-The `Updated` variant includes `patch` - the raw JSON of changed fields, useful for checking what specifically changed:
-
-```rust
-if update.has_patch_field("trading") {
-    // The trading field was modified
-}
-```
-
----
-
-## Understanding `Option<Option<T>>` Fields
-
-Generated entity types often have fields typed as `Option<Option<T>>`. This represents the **patch semantics** of Arete updates:
-
-| Value               | Meaning                                               |
-| ------------------- | ----------------------------------------------------- |
-| `None`              | Field was **not included** in this update (no change) |
-| `Some(None)`        | Field was **explicitly set to null**                  |
-| `Some(Some(value))` | Field has a **concrete value**                        |
-
-This distinction matters for partial updates (patches). When the server sends a patch, only changed fields are included. An absent field means "keep the previous value", while an explicit `null` means "clear this field".
-
-### Working with `Option<Option<T>>`
-
-```rust
-// Access a nested optional field
-let price = token.trading.last_trade_price.flatten().unwrap_or(0.0);
-
-// Check if field was explicitly set (vs absent from patch)
-match &token.reserves.current_price_sol {
-    None => println!("Price not in this update"),
-    Some(None) => println!("Price explicitly cleared"),
-    Some(Some(price)) => println!("Price: {}", price),
-}
-
-// Compare values in before/after
-if before.trading.last_trade_price != after.trading.last_trade_price {
-    println!("Price changed!");
-}
-```
-
----
-
-## Generating a Rust SDK
-
-Use the Arete CLI to generate a typed Rust SDK from an exact StackManifest. See [CLI Commands](/cli/commands/) for the full reference and [Configuration](/building-stacks/configuration/) for `arete.toml` options.
-
-```bash
-# Generate SDK crate
-a4 sdk create --manifest .arete/SettlementGame.stack-manifest.json --rust
-
-# With custom output directory
-a4 sdk create --manifest .arete/SettlementGame.stack-manifest.json --rust \
-  --output ./crates/game-sdk
-
-# With custom crate name
-a4 sdk create --manifest .arete/SettlementGame.stack-manifest.json --rust \
-  --crate-name game-sdk
-
-# Generate as a module instead of a standalone crate
-a4 sdk create --manifest .arete/SettlementGame.stack-manifest.json --rust \
-  --module --output ./src/stacks/game
-```
-
-### Crate vs Module Output
-
-By default, the CLI generates a **standalone crate** with its own `Cargo.toml`:
-
-```
-generated/settlement-game-stack/
-├── Cargo.toml
-└── src/
-    ├── lib.rs      # Re-exports
-    ├── types.rs    # Data structs (with Option<Option<T>> for patchable fields)
-    └── entity.rs   # Stack and Views implementations
-```
-
-With the `--module` flag, the CLI generates a **module** that can be embedded in an existing crate:
-
-```
-src/stacks/game/
-├── mod.rs      # Re-exports
-├── types.rs    # Data structs
-└── entity.rs   # Stack and Views implementations
-```
-
-### Using the Generated Code
-
-Add the generated crate to your `Cargo.toml`:
-
-```toml
-[dependencies]
-a4-sdk = "{{VERSION}}"
-settlement-game-stack = { path = "./generated/settlement-game-stack" }
-```
-
-Then use it:
-
-```rust
-use a4_sdk::prelude::*;
-use settlement_game_stack::{SettlementStack, GameState};
-
-let a4 = Arete::<SettlementStack>::connect().await?;
-let scores = a4.views.player_score.leaderboard().get().await;
-let game = a4.views.game_state.state().get("game-key").await;
-```
-
-Or if using module mode, add to your `lib.rs`:
-
-```rust
-pub mod game;  // Points to src/game/mod.rs
-```
-
----
-
-## Error Handling
-
-```rust
-use a4_sdk::AreteError;
-
-match Arete::<OreStack>::connect().await {
-    Ok(a4) => println!("Connected!"),
-    Err(AreteError::Connection(e)) => {
-        eprintln!("Connection failed: {}", e);
-    }
-    Err(AreteError::Authentication(e)) => {
-        eprintln!("Auth failed: {}", e);
-    }
-    Err(e) => {
-        eprintln!("Unexpected error: {:?}", e);
+while let Some(update) = updates.next().await {
+    match update {
+        Update::Upsert { key, data } => println!("upserted {key}: {data:?}"),
+        Update::Patch { key, data } => println!("patched {key}: {data:?}"),
+        Update::Remove { key } => println!("{key} left this query"),
+        Update::Delete { key } => println!("{key} was deleted globally"),
     }
 }
 ```
 
----
+Use `watch_rich()` when the generated view supports before/after diffs.
 
-## Auto-Reconnection
+Subscriptions are lazy and reference-counted. Equivalent normalized queries
+share a wire subscription and unsubscribe when the final stream is dropped.
 
-The SDK automatically reconnects on connection loss with configurable backoff:
+## Program SDK
+
+Generated program modules expose pure instruction builders and PDA helpers.
+The output is an Arete `BuiltInstruction`; no wallet or network is required:
 
 ```rust
-let a4 = Arete::<OreStack>::builder()
-    .auto_reconnect(true)
-    .reconnect_intervals(vec![
-        Duration::from_secs(1),
-        Duration::from_secs(2),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-    ])
-    .max_reconnect_attempts(20)
-    .connect()
+use my_program::{self, DepositParams};
+
+let instruction = my_program::deposit(DepositParams {
+    owner: owner.clone(),
+    amount: 1_000_000,
+    ..Default::default()
+})?;
+
+let (position, bump) = my_program::pdas::position(&owner)?;
+```
+
+Connected stack clients expose the same generated program under
+`client.programs`. Exact method and parameter names come from the generated
+crate.
+
+PDA derivation fills supported literal, argument, and account-reference seeds.
+Unknown parameters and missing required values fail closed.
+
+## Program Read
+
+Generated program clients expose account readers tied to the exact installed
+release:
+
+```rust
+let position = client
+    .programs
+    .my_program
+    .position_accounts()?
+    .fetch(&position_address)
     .await?;
 ```
 
----
+Use the generated reader method rather than the placeholder above. Program
+Read is independent of the live view endpoint.
 
-## Complete Example
-
-A full command-line app that streams ORE mining rounds:
-
-```rust
-// src/main.rs
-use a4_sdk::prelude::*;
-use a4_stacks::ore::{OreStack, OreRound};
-use std::time::Duration;
-use tokio::time::timeout;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    println!("-----------------------------------");
-    println!("  Arete ORE Round Monitor     ");
-    println!("-----------------------------------\n");
-
-    // Connect with 10 second timeout
-    let a4 = match timeout(
-        Duration::from_secs(10),
-        Arete::<OreStack>::connect()
-    ).await {
-        Ok(Ok(a4)) => {
-            println!("Connected to ORE stack\n");
-            a4
-        }
-        Ok(Err(e)) => {
-            eprintln!("Connection error: {}", e);
-            return Err(e.into());
-        }
-        Err(_) => {
-            eprintln!("Connection timeout");
-            return Err(anyhow::anyhow!("Connection timeout"));
-        }
-    };
-
-    // Stream with stats
-    let mut round_count = 0;
-    let mut update_count = 0;
-    let mut stream = a4.views.ore_round.latest().watch();
-
-    println!("Streaming live ORE rounds (press Ctrl+C to exit)...\n");
-
-    while let Some(update) = stream.next().await {
-        update_count += 1;
-
-        match update {
-            Update::Upsert { data, .. } => {
-                round_count += 1;
-                println!(
-                    "[#{:03}] Round #{} - Motherlode: {} SOL",
-                    update_count,
-                    data.id.round_id,
-                    data.state.motherlode as f64 / 1_000_000_000.0
-                );
-            }
-            Update::Patch { data, .. } => {
-                println!(
-                    "[#{:03}] Updated Round #{} - Difficulty: {}",
-                    update_count,
-                    data.id.round_id,
-                    data.state.total_difficulty
-                );
-            }
-            Update::Remove { key } => {
-                println!("[#{:03}] Round left this query: {:?}", update_count, key);
-            }
-            Update::Delete { key } => {
-                println!("[#{:03}] Deleted round: {:?}", update_count, key);
-            }
-        }
-
-        // Print stats every 10 updates
-        if update_count % 10 == 0 {
-            println!("\n--- Stats: {} rounds tracked, {} updates received ---\n",
-                round_count, update_count);
-        }
-    }
-
-    Ok(())
-}
-```
-
-Run it:
-
-```bash
-cargo run
-```
-
----
-
-## Advanced Patterns
-
-### Multiple Concurrent Streams
+## Generic chain reads
 
 ```rust
-use futures::future::join;
-
-// Watch multiple views concurrently
-let latest_stream = a4.views.ore_round.latest().watch();
-let list_stream = a4.views.ore_round.list().watch();
-
-let (latest_result, list_result) = join(
-    process_stream(latest_stream),
-    process_stream(list_stream)
-).await;
+let clock = client.chain().clock().await?;
+let balance = client
+    .chain()
+    .native_balance(&address, Default::default())
+    .await?;
 ```
 
-### Reconnection Handling
+Use the chain surface for generic Solana state and the generated program reader
+for typed program accounts.
+
+## Transactions
+
+The core SDK builds portable instructions but does not choose a Solana signing
+implementation. Attach a wallet adapter, then execute instructions or prepared
+operations:
 
 ```rust
-loop {
-    match Arete::<OreStack>::connect().await {
-        Ok(a4) => {
-            println!("Connected!");
+let client = Arete::<MyStack>::builder()
+    .publishable_key(publishable_key)
+    .wallet(wallet)
+    .connect()
+    .await?;
 
-            let mut stream = a4.views.ore_round.latest().watch();
+let receipt = client
+    .transaction(&[instruction], TransactionOptions::default())
+    .await?;
 
-            while let Some(update) = stream.next().await {
-                process_update(update);
-            }
-
-            // Stream ended - connection lost
-            println!("Connection lost, reconnecting...");
-        }
-        Err(e) => {
-            eprintln!("Connection failed: {}, retrying in 5s...", e);
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-    }
-}
+let receipt = client
+    .execute(&prepared, ExecuteOptions::default())
+    .await?;
 ```
 
-### Graceful Shutdown
+The wallet compiles and signs locally. Execution classifies outcomes as
+confirmed, definitely not submitted, submitted with unknown outcome, or failed
+on chain. Do not automatically resend a `submitted-unknown` transaction.
+
+### Optional Solana adapter
+
+Enable the first-party adapter only when the application wants the SDK to build
+legacy, v0, or transaction-V1 messages:
+
+```toml
+arete-sdk = { package = "arete-a4-sdk", version = "{{VERSION}}", features = ["solana-adapter"] }
+```
+
+The adapter submits a signed transaction at most once. One deadline covers
+submission and confirmation. Direct RPC is an explicit transport selection;
+there is no silent hosted-to-direct fallback after an operation begins.
+
+## Sessions
+
+Use a session when an application composes several generated stacks:
 
 ```rust
-use tokio::signal;
+let session = Session::builder()
+    .stack::<MarketsStack>("markets")
+    .stack::<PositionsStack>("positions")
+    .wallet(wallet)
+    .connect()
+    .await?;
 
-let a4 = Arete::<OreStack>::connect().await?;
-let mut stream = a4.views.ore_round.latest().watch();
-
-loop {
-    tokio::select! {
-        Some(update) = stream.next() => {
-            process_update(update);
-        }
-        _ = signal::ctrl_c() => {
-            println!("\nShutting down gracefully...");
-            a4.disconnect().await;
-            break;
-        }
-    }
-}
+let positions = session.stack::<PositionsStack>("positions")?;
+session.execute(&prepared, Default::default()).await?;
+session.close().await;
 ```
 
----
+Sessions share wallet and execution configuration while keeping each stack's
+exact programs, views, and hosted bindings explicit.
 
-## Examples
+## HTTP-only mode
 
-Scaffold a complete Rust example that streams ORE mining rounds:
+HTTP-only transport keeps Program Read, chain reads, point-in-time stack
+queries, and transaction execution available. Live view subscriptions fail
+fast because they require WebSocket transport.
 
-```bash
-a4 create my-ore-app --template rust-ore
-cd my-ore-app
-cargo run
+## Connection lifecycle
+
+```rust
+client.connection_state().await;
+let mut issues = client.subscribe_socket_issues();
+client.disconnect().await;
 ```
 
-Or run `a4 create` interactively and select the `rust-ore` template.
+Reconnects replay active subscriptions and apply an authoritative snapshot to
+replace local state. Preserve socket and schema-validation diagnostics in
+application logs.
 
----
+## Continue
 
-## Next Steps
-
-- [TypeScript SDK](/sdks/typescript/) - Use Arete in Node.js or browsers
-- [React SDK](/sdks/react/) - Build web apps with React hooks
-- [Build Your Own Stack](/building-stacks/workflow) - Create custom data streams for any Solana program
-- [CLI Reference](/cli/commands) - Deployment and management commands
+- [Program SDKs](/using-programs/overview/)
+- [Program Read](/using-programs/program-reads/)
+- [Live view queries](/using-stacks/connect/)
+- [Transaction safety](/using-stacks/transactions/)

@@ -1,0 +1,126 @@
+---
+title: From Question to Application
+description: Explore on-chain data, refine the read model, and graduate it into a typed application dependency.
+---
+
+This is the complete Arete workflow: begin with a question, prove the required
+data interactively, then install the same capability into application code.
+
+## 1. Ask the question
+
+Give the agent the outcome and relevant constraints, not guessed implementation
+details:
+
+> Find live data that can show recent token launches and their current activity.
+> Explain which programs and views you use, then summarize what is happening.
+
+The agent should search the catalog by intent and capability mode. It should not
+begin by guessing a program ID, account name, or stack endpoint.
+
+## 2. Resolve programs and coverage
+
+Catalog results answer which known programs or stacks may match the intent and
+whether they cover `read`, `build`, or `subscribe`.
+
+```bash
+a4 explore catalog --query "recent token launches" --json
+a4 explore catalog --concept token-launch --json
+```
+
+Concept names evolve with the catalog. Run `a4 explore catalog --vocabulary`
+instead of inventing a slug.
+
+For each candidate, inspect its exact descriptor:
+
+```bash
+a4 explore catalog program <slug> --json
+a4 explore catalog stack <slug> --json
+```
+
+The descriptor is the contract: exact identities, available modes, views,
+accounts, SDK targets, authentication, and install commands.
+
+## 3. Explore deployed views through MCP
+
+When a candidate stack is subscribe-ready, the agent can:
+
+1. inspect its view schema;
+2. connect to the descriptor-provided WebSocket URL;
+3. subscribe to a relevant view;
+4. query the bounded in-memory cache; and
+5. disconnect when the investigation is complete.
+
+This is an exploratory loop. It is useful for understanding data shape,
+freshness, keys, and whether the view actually answers the product question.
+
+An agent must not claim more than the selected view contains. A missing hosted
+view means the question is not currently answerable through that surface, not
+that the underlying program lacks the information.
+
+[Run the MCP workflow →](/agent-skills/explore-on-chain/)
+
+## 4. Refine the read model
+
+Sometimes the catalog has the right program but not the right view. The desired
+application model might need a different key, fields from several accounts, an
+instruction-derived metric, or a sorted and filtered window.
+
+The target workflow is to describe that model as an Arete Stack Source, compile
+it, deploy the resulting artifacts, and query it again through MCP. Hosted
+Stack Source compilation is not yet a generally available workflow; see the
+[Stack Source preview](/building-stacks/stack-source/) for the current boundary.
+
+Until it is enabled, use an existing hosted view or the advanced Rust authoring
+path for custom live data.
+
+## 5. Install the proven capability
+
+Once the programs and views are correct, add them to the project rather than
+copying exploratory JSON or hand-writing clients:
+
+```bash
+a4 install program <program-slug> --ts
+a4 install stack <stack-slug> --ts
+```
+
+The CLI records dependency intent in `arete.toml`, resolves exact identities
+into `arete.lock`, and generates provenance-owned SDK output. Re-run plain
+`a4 install` to restore the locked project graph.
+
+Use `--rust` or `--python` only when the exact descriptor advertises that target.
+
+## 6. Build against the generated session
+
+Use standalone programs for account reads and actions. Add stacks when the
+application needs selected live views or stack-level flows. Compose both in one
+session rather than creating unrelated transport clients.
+
+The generated surface is the authority for names and argument shapes. Typical
+application code moves through:
+
+```text
+read or subscribe
+    → derive or prepare
+    → inspect
+    → request wallet approval
+    → submit once
+    → confirm
+    → reconcile affected reads and views
+```
+
+Reading or preparing does not authorize signing. Signing does not authorize an
+agent to retry an ambiguous submission.
+
+## 7. Keep exploration and production linked
+
+The MCP and generated SDK use the same catalog identities and view contracts.
+When the application behaves unexpectedly, return to the exploratory loop:
+
+- inspect the installed descriptor and lockfile;
+- query the view directly through MCP or `a4 stream`;
+- compare the view watermark and application state;
+- update the dependency deliberately when a newer package is required; and
+- regenerate instead of editing generated files.
+
+This keeps the zero-code investigation and the shipped application on the same
+underlying capability instead of becoming two independent integrations.

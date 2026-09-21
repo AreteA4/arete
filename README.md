@@ -1,6 +1,8 @@
 # Arete
 
-Real-time streaming data pipelines for Solana - transform on-chain events into typed state projections.
+An agent-first Solana application toolkit: discover programs and live views,
+explore on-chain state through MCP, and generate typed SDKs for reads,
+transactions, flows, and real-time data.
 
 [![CI](https://github.com/AreteA4/arete/actions/workflows/ci.yml/badge.svg)](https://github.com/AreteA4/arete/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%2FMIT-blue.svg)](#license)
@@ -14,7 +16,7 @@ Real-time streaming data pipelines for Solana - transform on-chain events into t
 | arete-macros | Rust | crates.io | Proc-macros for stream definitions |
 | arete-server | Rust | crates.io | WebSocket server and projection handlers |
 | arete-sdk | Rust | crates.io | Rust client SDK |
-| a4-cli | Rust | crates.io | CLI tool for SDK generation |
+| a4-cli | Rust | crates.io | Project setup, catalog discovery, dependency management, SDK generation, and deployment |
 | arete-idl | Rust | crates.io | IDL parsing and type system |
 | arete-hash | Rust | crates.io | Typed artifact identity and canonical hashing protocol |
 | arete-artifacts | Rust | crates.io | Versioned public artifact schemas and legacy normalization |
@@ -25,7 +27,25 @@ Real-time streaming data pipelines for Solana - transform on-chain events into t
 | @usearete/adapter-web3js | TypeScript | npm | Wallet adapter for `@solana/web3.js` |
 | arete-sdk | Python | PyPI | Python client SDK *(work in progress - not yet published)* |
 
-## Quick Start
+## Product model
+
+Programs are the foundation. A generated Program SDK can provide typed account
+reads, PDA derivation, instruction construction, application operations,
+multi-step flows, and safe transaction execution. Live views add maintained,
+application-shaped state over one or more programs. Stacks package selected
+views and Program SDKs into an installable application composition.
+
+```text
+Intent
+  → catalog and exact descriptors
+  → MCP exploration or generated SDK installation
+  → program reads, chain reads, live views, and transactions
+```
+
+See [docs.arete.run](https://docs.arete.run) for the complete product and SDK
+documentation.
+
+## Quick start
 
 ### CLI
 
@@ -42,18 +62,34 @@ Then, in your project:
 ```bash
 a4 init -y          # arete.toml, AGENTS.md block, agent skills, MCP config
 a4 doctor --json    # exit 0 = ready; each check carries a fix
-a4 explore --json   # live data available, no account needed
+a4 explore catalog --query "token accounts" --json
+a4 explore catalog program spl-token --json
+a4 install program spl-token --ts
 ```
 
 Update with `a4 self update`. Coding agents can do all of this from one prompt:
-`Read https://docs.arete.run/agent.md and follow it to set up Arete in this project, then tell me what live data is available.`
+
+> Read https://docs.arete.run/agent.md and follow it to set up Arete in this
+> project. Verify the setup, then help me discover the program or live data I
+> need.
+
 See [cli/README.md](cli/README.md) for the full command surface.
 
+### Explore on-chain through MCP
+
+`a4 init` configures the local Arete MCP server. An agent can search the
+catalog and knowledge layer, inspect exact view schemas, connect to a deployed
+stack, subscribe to a bounded live view, and query its local cache while
+answering a question. Use MCP for investigation; use generated SDKs in shipped
+application code.
+
+Hosted knowledge and connections may require `a4 auth signup` or
+`a4 auth login --key <key>`.
+
 ### Rust
-Add to your `Cargo.toml`:
-```toml
-[dependencies]
-arete = "0.5"
+
+```bash
+cargo add arete
 ```
 
 ### TypeScript (Core)
@@ -68,17 +104,36 @@ npm install @usearete/react @usearete/sdk zod
 
 Generated React consumers use the React hooks, core SDK types, and generated Zod schemas. `zustand` is a normal dependency of `@usearete/react`; applications do not install it separately.
 
-Hosted browser stacks require authentication. For the hosted ORE stack, set `VITE_ARETE_PUBLISHABLE_KEY` and pass it to the provider as `auth={{ publishableKey }}`. Read-only viewing does not require a wallet, but it does require the publishable key.
+Hosted browser stacks can require authentication. Use the publishable-key name
+reported by the selected stack descriptor and pass it to the provider as
+`auth={{ publishableKey }}`. Read-only viewing does not require a wallet.
 
 ### Python
-> **Note:** The Python SDK is a work in progress and has not yet been published to PyPI.
+
+> **Note:** The Python SDK is a work in progress and has not yet been published
+> to PyPI. Treat Python availability as descriptor-specific.
 
 ```bash
 # Coming soon
 pip install arete-sdk
 ```
 
-## Artifact and Runtime Model
+## Capabilities
+
+| Capability | Application surface |
+| --- | --- |
+| Program accounts | Generated `program.accounts` readers, pinned to an exact release |
+| Generic Solana state | Shared chain reader for raw accounts, balances, mints, rent, and clock |
+| Transaction construction | Generated raw builders, operations, transactions, and flows |
+| Transaction execution | Local wallet signing with explicit inspect and submit phases |
+| Live data | Generated point-in-time queries and WebSocket view subscriptions |
+| Agent exploration | Catalog, knowledge, live connections, and bounded cached queries through MCP |
+
+The exact package descriptor reports which modes (`read`, `build`, or
+`subscribe`) and SDK targets are ready. Catalog knowledge alone does not imply
+that every delivery mode is available.
+
+## Artifact and runtime model
 
 Arete keeps portable behavior separate from the infrastructure that serves it:
 
@@ -91,7 +146,9 @@ Arete keeps portable behavior separate from the infrastructure that serves it:
 | **Deployment** | A hosted runtime prepared for one exact StackManifest. Images, regions, replicas, and rollout state belong here rather than in portable artifacts. |
 | **Binding** | An operational endpoint and authentication attachment for a live deployment, Program Read release, chain reader, or transaction relay. Bindings can change without changing portable artifact hashes. |
 
-The Rust DSL writes authoritative artifacts directly during compilation:
+The Rust DSL writes authoritative artifacts directly during compilation. A
+strict declarative Stack Source YAML frontend is also under development; hosted
+user compilation is not yet generally enabled.
 
 ```bash
 cargo build
@@ -146,10 +203,9 @@ a4 program push ./idl/my_program.json --program-id <PUBKEY> --alias my-program -
 a4 install program my-program --ts
 a4 install program upr_... --ts
 
-# Inspect the same deployment-pinned descriptors before installing.
-a4 explore stack ore --json
-a4 explore programs --json
-a4 explore program spl-token --json
+# Discover by intent, then inspect the same pinned descriptor before installing.
+a4 explore catalog --query "token accounts" --kind program --json
+a4 explore catalog program spl-token --json
 ```
 
 Owner-private install lookups use the credentials saved by `a4 auth login` and
@@ -157,10 +213,9 @@ are intentionally absent from registry discovery. A managed catalog name wins
 an alias collision; the returned `upr_...` ID always identifies the owner's
 registration unambiguously.
 
-A composed client keeps each aliased LiveSpec's live transport and each
-program's Program Read transport independent. Chain reads and transaction
-submission are separate transports as well; do not infer one endpoint from
-another.
+A composed client keeps live queries, each program's Program Read transport,
+generic chain reads, and transaction submission independent. Do not infer one
+endpoint from another.
 
 `a4 sdk create` writes local source only. Publishing generated packages to npm
 or crates.io is an explicit operator action. Likewise, deployment produces
@@ -299,10 +354,12 @@ arete/
 
 ## Documentation
 
-- [Concepts Overview](docs/concepts/overview.mdx) - Architecture and core concepts
-- [Stack API](docs/concepts/stack-api.mdx) - Client-side API reference
-- [CLI Commands](docs/cli/commands.mdx) - CLI usage guide
-- [React SDK](docs/src/content/docs/sdks/react.mdx) - Getting started with React
+- [What is Arete?](docs/src/content/docs/getting-started/what-is-arete.mdx)
+- [From Question to Application](docs/src/content/docs/getting-started/from-question-to-app.mdx)
+- [Programs, Views, and Stacks](docs/src/content/docs/concepts/programs-views-stacks.mdx)
+- [Program SDKs](docs/src/content/docs/using-programs/overview.mdx)
+- [CLI Commands](docs/src/content/docs/cli/commands.mdx)
+- [React SDK](docs/src/content/docs/sdks/react.mdx)
 
 ## Contributing
 

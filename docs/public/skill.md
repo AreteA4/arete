@@ -17,10 +17,10 @@ API base URL: `https://api.arete.run`. Agent endpoints live under
 | `agent.md` | `https://docs.arete.run/agent.md` | Bootstraps the `a4` CLI + skill files locally on your machine |
 | `arete` skill | https://github.com/AreteA4/skills/blob/main/skills/arete/SKILL.md | Capability discovery, exact descriptors, and project dependencies |
 | `arete-streams` skill | https://github.com/AreteA4/skills/blob/main/skills/arete-streams/SKILL.md | Typed view reads and subscriptions in TypeScript, React, Rust, and Python |
-| `arete-programs` skill | https://github.com/AreteA4/skills/blob/main/skills/arete-programs/SKILL.md | Program reads, PDAs, instructions, semantic operations, and transaction safety |
+| `arete-programs` skill | https://github.com/AreteA4/skills/blob/main/skills/arete-programs/SKILL.md | Program reads, PDAs, instructions, application operations, flows, and transaction safety |
 | `arete-stack-authoring` skill | https://github.com/AreteA4/skills/blob/main/skills/arete-stack-authoring/SKILL.md | Read-model design, join proof, Rust DSL, and portable artifacts |
 | `arete-deploy` skill | https://github.com/AreteA4/skills/blob/main/skills/arete-deploy/SKILL.md | Program publication and hosted deployment lifecycle |
-| Registry | https://arete.run/registry | Browseable catalog of public stacks |
+| Registry | https://arete.run/registry | Browseable catalog of public programs and stacks |
 | Docs MCP server | `https://docs.arete.run/mcp` | HTTP MCP — `search_docs`, `fetch_page` over these docs |
 | Stream MCP server | `a4 mcp` | stdio MCP — connect/subscribe/query live stack entities |
 | CLI installer | `https://arete.run/install.sh` / `https://arete.run/install.ps1` | Prebuilt, signed `a4` binary; no Rust needed |

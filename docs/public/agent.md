@@ -1,41 +1,79 @@
 # Set up Arete
 
-You are a coding agent setting up Arete (typed Solana views and program operations).
-Run these in order. Nothing here needs Rust or an account.
+You are a coding agent setting up Arete, an agent-first Solana application
+toolkit. Use current CLI output and exact descriptors rather than guessing
+program, account, view, operation, or endpoint names.
 
-1. Install the CLI (prebuilt, signed binary):
+1. Install the signed CLI binary. No Rust toolchain is required:
 
        curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
        irm https://arete.run/install.ps1 | iex             # Windows PowerShell
-       npx @usearete/a4 install                            # if you prefer npm
+       npx @usearete/a4 install                            # npm bootstrap
 
-   The installer prints `A4_BIN=<absolute path>`. If `a4` is not found
-   afterwards, your shell captured PATH before the install: use that absolute
-   path, or run `export PATH="$HOME/.local/bin:$PATH"`.
+   The installer prints `A4_BIN=<absolute path>`. If `a4` is not found in the
+   current shell, use that path or refresh PATH. Update later with
+   `a4 self update`. Do not substitute a Cargo install from memory.
 
-2. In the project directory:
+2. In the project root:
 
        a4 init -y
 
-   This writes `arete.toml`, an Arete section in `AGENTS.md` (and a
-   `CLAUDE.md` import), installs the Arete skills for every coding agent it
-   detects, and configures the `arete` (stream) and `arete-docs` MCP servers.
-   Add `--global` to install skills and MCP config for your user instead of
-   the project.
+   This writes `arete.toml`, managed project instructions, the five Arete
+   skills, and the Arete stream and documentation MCP configuration. It is
+   idempotent. Use `--global` only when user-scoped setup was requested.
 
-3. Verify:
+3. Verify the environment:
 
-       a4 doctor --json        # exit 0 = ready; each check carries a fix
+       a4 doctor --json
 
-4. Discover data (no account needed):
+   Exit 0 means ready. Follow the exact `fix` attached to a required failure.
 
-       a4 explore --json
-       a4 explore stack ore --json
+4. Start from intent:
 
-Need an account (deploying, knowledge layer)? `a4 auth signup` registers you
-as an agent and stores the key. Have a human-issued key? `a4 auth login --key <a4_ak_…>`.
-Update later with `a4 self update`. Never `cargo install a4-cli`.
+       a4 explore catalog --query "<user intent>" --json
+       a4 explore catalog --vocabulary
 
-Everything else is in the five installed workflow skills: discovery, streams,
-programs, stack authoring, and deployment.
-Platform API reference: https://docs.arete.run/skill.md
+   Filter with `--kind program|stack`, `--mode read|build|subscribe`, and
+   `--target typescript|rust|python` when useful. Then inspect an exact result:
+
+       a4 explore catalog program <slug> --json
+       a4 explore catalog stack <slug> --json
+
+   A catalog result is not permission to invent missing delivery. Respect its
+   reported modes, SDK targets, authentication, bindings, and install command.
+
+5. Route the task:
+
+   - Use the `arete` skill for discovery and project dependencies.
+   - Use `arete-streams` for deployed views and live subscriptions.
+   - Use `arete-programs` for account reads, PDAs, operations, and transactions.
+   - Use `arete-stack-authoring` for custom read models and portable artifacts.
+   - Use `arete-deploy` only for an explicitly authorized publication or
+     hosted deployment task.
+
+6. Use MCP for exploration and generated SDKs for shipped code. For a hosted
+   view, inspect the exact schema, connect with its descriptor, take a bounded
+   sample, answer with provenance, and disconnect. If no suitable view exists,
+   explain the gap. Do not construct endpoints.
+
+7. Add proven capabilities to the project:
+
+       a4 install program <slug> --ts
+       a4 install stack <slug> --ts
+       a4 install --locked
+
+   Use another target only when the exact descriptor verifies it. Do not edit
+   generated output. `arete.toml` records intent; `arete.lock` records exact
+   resolution.
+
+Authentication may be required for the knowledge layer or hosted connections:
+
+       a4 auth signup
+       a4 auth login --key <a4_ak_...>   # when a key was supplied by a human
+
+Never put a secret key in source, a prompt, or an MCP tool argument.
+
+Preserve authority boundaries: reading, building, preparing, inspecting,
+signing, submitting, compiling, publishing, and deploying are separate actions.
+
+Full agent reference: https://docs.arete.run/skill.md

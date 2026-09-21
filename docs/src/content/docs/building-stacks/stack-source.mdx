@@ -1,0 +1,132 @@
+---
+title: Stack Source YAML
+description: Preview of the declarative path for creating application-shaped live views.
+---
+
+:::caution[Preview, not generally available]
+The Stack Source format and local compiler exist, but hosted user compilation
+and the complete compile-and-deploy workflow are not yet generally enabled.
+Expect the source contract and commands to change until the public workflow is
+announced. Do not build a production process around internal endpoints.
+:::
+
+An **Arete Stack Source** is a strict `.stack.yaml` document that describes:
+
+- which Solana programs supply the data;
+- the application entities to maintain;
+- how accounts and instructions update those entities; and
+- which keyed, filtered, sorted, or bounded views to expose.
+
+It is intended to make the common live-data authoring loop accessible to an
+agent without requiring Rust syntax, procedural macros, or Cargo compilation.
+
+## The intended workflow
+
+```text
+Question
+  → inspect programs and existing views
+  → describe the missing read model in YAML
+  → compile and review diagnostics
+  → deploy the exact generated artifacts
+  → query the new views through MCP
+  → refine
+  → install the final stack SDK
+```
+
+Compilation and deployment are separate operations. Compilation is a
+deterministic transformation of source into portable artifacts. It does not by
+itself publish, deploy, or start a live service.
+
+## Example shape
+
+The following illustrates the source model; it is not a promise that the
+preview compiler accepts every future field unchanged:
+
+```yaml
+schema: arete.stack-source/v1
+name: token-balances
+
+programs:
+  token:
+    source:
+      registry: spl-token
+    version: "=1.0.0"
+
+entities:
+  TokenAccount:
+    primary_key: id.address
+    fields:
+      id:
+        fields:
+          address:
+            from: token.accounts.Account.__account_address
+            strategy: set_once
+          owner: token.accounts.Account.owner
+          mint: token.accounts.Account.mint
+      balance:
+        fields:
+          amount: token.accounts.Account.amount
+    views:
+      largest:
+        pipeline:
+          - sort:
+              by: balance.amount
+              order: desc
+          - take: 25
+        output: collection
+```
+
+This declares a maintained `TokenAccount` entity and a bounded view ordered by
+balance. The compiled output uses the same portable artifact model as advanced
+Rust-authored stacks.
+
+## Output model
+
+A successful compilation produces an exact artifact closure:
+
+- one `ProgramSpec` for each local program input not already resolved from the
+  catalog;
+- one `LiveSpec` describing entities, update behavior, and views;
+- one `StackManifest` composing the exact programs and selected views; and
+- a receipt identifying the compiler contract, inputs, resolutions, and output
+  hashes.
+
+The application installs the resulting stack composition. It does not consume
+the YAML file directly at runtime.
+
+## What agents should optimize for
+
+A good live read model is small and question-shaped. It should:
+
+- start from what the application must read together;
+- use a durable primary key that every contributing update can resolve;
+- include only fields needed by the product or query;
+- keep collections and history windows deliberately bounded; and
+- prefer an existing catalog Program SDK over copying a public IDL.
+
+An entity is not an automatic mirror of every account in an IDL. Joining data
+without a provable key path creates a model that may compile but cannot update
+correctly.
+
+## Preview boundaries
+
+The first public release is expected to focus on deterministic mappings,
+instruction and account sources, computed fields, bounded aggregations, and
+views. The Rust authoring path remains appropriate for capabilities that the
+declarative source cannot express.
+
+Until hosted compilation is enabled:
+
+- use MCP to explore existing deployed views;
+- install published stacks when they already cover the use case;
+- use the Rust DSL for custom production deployments; and
+- treat locally compiled Stack Source output as experimental.
+
+When the hosted workflow becomes available, this page will be replaced with an
+exact command reference, schema reference, diagnostics, and a complete
+compile → deploy → MCP validation tutorial.
+
+## Advanced path
+
+For current custom authoring, continue with [Building Stacks](/building-stacks/workflow/)
+and the [Rust DSL overview](/building-stacks/rust-dsl/overview/).

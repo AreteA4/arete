@@ -1,296 +1,131 @@
 ---
-title: Explore Stacks
-sidebar:
-  order: 3
-description: How agents use a4 explore to discover stacks and get live schema information.
+title: Catalog and Descriptors
+description: Discover capabilities by intent, then inspect the exact program or stack contract.
 ---
 
-The `a4 explore` command is how agents (and humans) discover installable resources and introspect their schemas. Agent skills instruct the AI to run this command before writing any Arete code, so it always has accurate entity names, field paths, and types.
+Arete separates **search** from **exact inspection**:
 
-Exploration is **descriptor-backed**: it reads the same pinned install descriptors that `a4 install` consumes, so what you explore is exactly what you will install. It never selects a "latest" AST on its own, and it never falls back when an install descriptor is incomplete — it fails instead. Treat a refusal as "this resource is not installable", not as something to work around.
+- the catalog helps an agent find programs and stacks relevant to an intent;
+- a descriptor identifies the exact installable package and available delivery;
+- generated code supplies the final language-level names and types.
 
----
-
-## Usage
+## Search the catalog
 
 ```bash
-# List installable stacks
-a4 explore
-
-# Inspect an exact stack install descriptor
-a4 explore stack <stack-ref>
-
-# List installable standalone programs
-a4 explore programs
-
-# Inspect an exact program install descriptor
-a4 explore program <program-ref>
-
-# Legacy forms — routed through the same stack descriptor
-a4 explore <stack-name>
-a4 explore <stack-name> <EntityName>
+a4 explore catalog --query "monitor swaps" --json
+a4 explore catalog --query "manage a multisig" --kind program --json
+a4 explore catalog --category defi --mode subscribe --json
+a4 explore catalog --kind program --mode read --target typescript --json
 ```
 
-Add `--json` to any command for machine-readable output (this is what agents use):
+Available filters:
+
+| Filter                | Meaning                                               |
+| --------------------- | ----------------------------------------------------- |
+| `--query`             | Free-text intent                                      |
+| `--concept`           | Exact catalog concept slug                            |
+| `--category`          | Exact category slug                                   |
+| `--kind`              | `program` or `stack`                                  |
+| `--mode`              | `read`, `build`, or `subscribe`                       |
+| `--target`            | Verified `typescript`, `rust`, or `python` SDK output |
+| `--limit`, `--cursor` | Bounded pagination                                    |
+
+List canonical concept and category slugs before using exact filters:
+
+```bash
+a4 explore catalog --vocabulary --json
+```
+
+Catalog contents are live. Do not maintain a hand-written “available stacks”
+list in application instructions.
+
+## Inspect an exact result
+
+```bash
+a4 explore catalog program <slug> --json
+a4 explore catalog stack <slug> --json
+```
+
+The descriptor is pinned to the package that `a4 install` will consume. It
+should be treated as one contract rather than a bag of suggestions.
+
+A program descriptor can include:
+
+- program and release identities;
+- accounts, instructions, events, and types;
+- hosted Program Read availability;
+- supported SDK targets; and
+- the exact install command.
+
+A stack descriptor can include:
+
+- its exact composition identity;
+- selected live views and their programs;
+- independent live, Program Read, chain, and transaction bindings;
+- authentication requirements;
+- supported SDK targets; and
+- the exact install command.
+
+If a required identity or binding is missing, treat the package as unavailable
+for that operation. Do not fall back to “latest,” guess an endpoint, or combine
+parts from two descriptor versions.
+
+## Compatibility discovery commands
+
+These commands remain useful for direct surveys and scripts:
 
 ```bash
 a4 explore --json
-a4 explore stack ore --json
 a4 explore programs --json
-a4 explore program spl-token --json
-a4 explore ore OreRound --json
+a4 explore stack <ref> --json
+a4 explore program <ref> --json
 ```
 
-Every JSON response carries a `schemaVersion` field. Read it before parsing — it tells you which output contract you got.
+Prefer `a4 explore catalog` when starting from intent or filtering by capability
+mode. Prefer the explicit `stack` and `program` forms over legacy positional
+stack syntax in new automation.
 
-**What each level shows:**
+## Curated knowledge
 
-| Command                       | Shows                                                                                       |
-| ----------------------------- | ------------------------------------------------------------------------------------------- |
-| `a4 explore`                  | Available stacks                                                                            |
-| `a4 explore programs`         | Complete promoted Program Release + Program Read installations                              |
-| `a4 explore stack <ref>`      | Exact identities, aliases, selected views, programs, auth, SDK targets, and install command |
-| `a4 explore program <ref>`    | Program identity, accounts, instructions, events, types, Program Read, and install command  |
-| `a4 explore <stack> [entity]` | Legacy syntax routed through descriptor-backed stack exploration                            |
-
-For a diagnostic view of a stack you own, use `a4 stack show <ref>` instead — that is an ownership view, not an install descriptor.
-
----
-
-## Start With Intent: The Knowledge Layer
-
-`a4 explore` answers "what is installable and what shape does it have". It does not answer "which protocol should I use for this". That is what the curated knowledge layer is for, and agent skills run it **before** surveying IDLs or choosing a stack.
+The knowledge layer adds human-reviewed protocol context, program roles,
+concept coverage, and recipes. Where exposed by the installed CLI:
 
 ```bash
-a4 know search --query "<intent>" [--concept <slug>] [--category <slug>] [--limit <n>]
-a4 know protocol <slug>
-a4 know program <slug> --section summary|instructions|accounts|surface
-a4 know recipe <slug>
-a4 know concepts
-```
-
-All `a4 know` commands accept `--json` and require an API key saved by `a4 auth login`. Without one they fail before sending a request — the `a4 explore` workflow on this page needs no key and remains the fallback.
-
-### Walkthrough: "monitor swaps"
-
-```bash
-# 1. Search by intent. Free text matches concept names and synonyms first,
-#    then protocols/programs/recipes via full-text search.
 a4 know search --query "monitor swaps" --json
+a4 know protocol <slug> --json
+a4 know program <slug> --section surface --json
+a4 know recipe <slug> --json
 ```
 
-Each result carries **coverage flags** that tell you how the platform can serve the concept for that protocol:
+Use it to understand _why_ a program fits an intent. Return to the exact
+catalog descriptor before installing or connecting. A missing recipe means the
+workflow is not documented, not automatically that it is impossible.
 
-| Flag        | Meaning                                                |
-| ----------- | ------------------------------------------------------ |
-| `read`      | Fetch on-chain account state through the generated SDK |
-| `build`     | Construct transactions through the generated SDK       |
-| `subscribe` | Stream live entities from a hosted stack               |
+Knowledge routes may require `a4 auth signup` or `a4 auth login`.
+
+## Install exactly what you inspected
+
+Prefer the descriptor's reported command:
 
 ```bash
-# 2. Pick a protocol and read its coverage, programs, and live stacks
-a4 know protocol meteora-damm --json
-
-# 3a. subscribe: the protocol entry names the stack and its entities —
-#     continue with `a4 explore stack <ref>` below to get exact view ids
-# 3b. read / build: list the typed SDK operations (with per-language bindings)
-a4 know program meteora-cp-amm --section surface --json
-
-# 4. Curated instruction- and account-level semantics
-a4 know program meteora-cp-amm --section instructions --json
-a4 know program meteora-cp-amm --section accounts --json
+a4 install program <slug> --ts
+a4 install stack <slug> --ts
 ```
 
-The `surface` section is the authoritative list of callable operations for a program. Agents should read it instead of reading SDK source to find method names. Recipes (`a4 know recipe <slug>`) describe multi-protocol sequences step by step; the catalog is growing, so treat a missing recipe or protocol as "not yet documented", not "unsupported".
+A saved install updates `arete.toml`, resolves `arete.lock`, and generates the
+complete dependency graph. Use `--no-save` only for a deliberate one-off output.
 
----
+## Machine-readable output
 
-## From Exploration to Code
+Agents and scripts should pass `--json`. The response has a schema version and
+may gain fields over time. Read the fields you need and preserve unknown fields
+rather than reconstructing a response from examples in this page.
 
-Exploration is step one; the descriptor it prints is the input to `a4 install`.
+When CLI help and prose differ, current `a4 explore --help`, the JSON response,
+and generated types win.
 
-```bash
-# 1. Find something to build against
-a4 explore --json
+## Next steps
 
-# 2. Read its exact install descriptor
-a4 explore stack ore --json
-
-# 3. Generate a typed client from that same descriptor
-a4 install ore --ts      # or --rust
-```
-
-Standalone programs follow the same path:
-
-```bash
-a4 explore programs --json
-a4 explore program spl-token --json
-a4 install program spl-token --ts
-```
-
-Rust and TypeScript both generate program clients: `a4 install ore --rust` emits typed program modules alongside the stack — instruction building, PDA resolution, account readers, and program reads. Packaging a program SDK on its own (`a4 install program`) is TypeScript today.
-
-Generated SDKs are not read-only. They expose PDA derivation, account resolution, instruction building, and transaction execution for the programs in scope — see `arete-programs`; use `arete-streams` for stack views and subscriptions.
-
----
-
-## Listing Stacks
-
-```bash
-$ a4 explore
-
-Public Registry
-────────────────────────────────────────────────────────
-  ore    wss://ore.stack.arete.run
-    Entities: OreRound, OreTreasury, OreMiner
-
-Your Stacks
-────────────────────────────────────────────────────────
-  my-game    wss://my-game-abc123.stack.arete.run  [active]
-```
-
-Without authentication, you see public registry stacks only. When logged in (`a4 auth login`), you also see your own stacks.
-
----
-
-## Exploring a Stack
-
-The legacy `a4 explore <stack-name>` form is still supported and resolves through the same descriptor as `a4 explore stack <ref>`. Prefer the explicit form in new agent code — it makes the descriptor identities visible.
-
-```bash
-$ a4 explore stack ore
-
-Stack: ore (OreStream)
-  URL: wss://ore.stack.arete.run
-
-Entities
-────────────────────────────────────────────────────────
-  OreRound     3 views  (state, list, latest)
-    Primary key: id.round_id
-    Fields: 15
-
-  OreTreasury  2 views  (state, list)
-    Primary key: id.treasury_address
-    Fields: 8
-
-  OreMiner     2 views  (state, list)
-    Primary key: id.miner_address
-    Fields: 12
-
-Tip: Run `a4 explore ore OreRound` for field details
-```
-
----
-
-## Entity Fields
-
-```bash
-$ a4 explore ore OreRound
-
-Entity: OreRound
-  Primary key: id.round_id
-
-Fields
-──────────────────────────────────────────────────────────────────
-  ● id
-    id.round_id                              u64
-    id.round_address                         Pubkey?
-
-  ● state
-    state.motherlode                         u64?
-    state.total_miners                       u64?
-    state.total_deployed                     u64?
-    state.expires_at                         i64?
-
-  ● metrics
-    metrics.deploy_count                     u64?
-    metrics.checkpoint_count                 u64?
-
-  ● results
-    results.top_miner                        Pubkey?
-    results.top_miner_reward                 u64?
-
-Views
-──────────────────────────────────────────────────────────────────
-  state                State
-  list                 List
-  latest               List    (sort by id.round_id desc)
-```
-
-Field types with `?` are nullable (wrapped in `Option` on the Rust side, optional in TypeScript).
-
----
-
-## JSON Output
-
-Agents use the `--json` flag to get structured output they can parse:
-
-```bash
-$ a4 explore ore OreRound --json
-```
-
-Keys are **camelCase**. Every response opens with `schemaVersion` and `kind`.
-
-```json
-{
-  "schemaVersion": 1,
-  "kind": "stackEntity",
-  "stack": "ore",
-  "identity": {
-    "stackManifestHash": "...",
-    "astContentHash": "...",
-    "portableAstHash": "...",
-    "specVersionId": 42
-  },
-  "liveAlias": "ore",
-  "name": "OreRound",
-  "programId": "...",
-  "primaryKeys": ["id.round_id"],
-  "fields": [
-    { "section": "id", "path": "id.round_id", "rustType": "u64", "nullable": false },
-    { "section": "id", "path": "id.round_address", "rustType": "Pubkey", "nullable": true },
-    { "section": "state", "path": "state.motherlode", "rustType": "u64", "nullable": true }
-  ],
-  "views": [
-    { "liveAlias": "ore", "viewId": "OreRound/state", "entity": "OreRound", "pipelineSteps": 0 }
-  ]
-}
-```
-
-A program response is shaped differently — `a4 explore program <ref> --json` returns `installName`, `displayName`, an `identity` block (`programId`, `programSpecHash`, `programReleaseHash`, `idlContentHash`, `normalizedIdlHash`), plus `accounts`, `instructions`, `events`, `types`, `programRead`, `sdkTargets`, and `installCommand`.
-
-This is what the agent skills instruct the AI to call. The AI then uses the field paths, types, and pinned hashes to write correct SDK code against the exact artifact it will install.
-
----
-
-## How Authentication Affects Results
-
-| State         | What you see                                    |
-| ------------- | ----------------------------------------------- |
-| Not logged in | Public stacks only                              |
-| Logged in     | Public stacks + global stacks + your own stacks |
-
-Public stacks like `ore` are always available to everyone. Global stacks are available to all authenticated users. Your own deployed stacks are only visible when logged in.
-
-```bash
-# Log in to see all stacks
-a4 auth login
-
-# Now explore shows everything
-a4 explore
-```
-
----
-
-## Why This Matters for Agents
-
-The core problem with AI coding tools is stale context. If an agent has outdated schema information, it writes code with wrong field names or missing types.
-
-`a4 explore` solves this because:
-
-- It queries the live Arete API, not static files
-- It reflects the exact schema of the deployed stack
-- The CLI version you have installed determines the API compatibility
-- Agent skills tell the AI to always run it before writing code
-
-This means you never need to update the skill files when a stack changes. The agent gets fresh data every time.
+- [Explore deployed views through MCP](/agent-skills/explore-on-chain/)
+- [Install a Program SDK](/using-programs/overview/)
+- [Connect application code to live views](/using-stacks/connect/)

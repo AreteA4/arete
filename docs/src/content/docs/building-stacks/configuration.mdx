@@ -1,27 +1,24 @@
 ---
-title: Configuration
-sidebar:
-  order: 4
-description: Complete reference for the versioned arete.toml project manifest.
+title: Project Dependencies
+description: Use arete.toml, arete.lock, and generated provenance to manage programs and stacks.
 ---
 
-`arete.toml` is the strict, reviewable project manifest. It declares authored
-artifacts, dependency intent, SDK targets, and output locations. `arete.lock`
-records the exact immutable registry and artifact identities selected by
-`a4 install`.
+An Arete project has three related dependency records:
 
-## Create a Manifest
+- `arete.toml` — human-authored intent;
+- `arete.lock` — exact immutable resolution; and
+- generated SDK provenance — which locked input produced each output.
+
+Use `a4 install`, `a4 update`, and `a4 remove` to keep all three consistent.
+
+## Initialize
 
 ```bash
-a4 init
+a4 init -y
 ```
 
-Initialization writes `manifest_version = 1` and may discover exact
-StackManifest and ProgramSpec artifacts. It never infers dependency edges:
-add a workspace dependency explicitly when an authored artifact should also
-produce an SDK.
-
-## Minimal Manifest
+Initialization creates a minimal manifest if one does not exist and configures
+the project's agents. It does not invent registry dependencies.
 
 ```toml
 manifest_version = 1
@@ -31,7 +28,29 @@ name = "my-project"
 private = true
 ```
 
-## Dependency Example
+## Add dependencies through the CLI
+
+Start with the catalog, inspect the exact descriptor, and prefer its install
+command:
+
+```bash
+a4 explore catalog --query "token accounts" --json
+a4 explore catalog program spl-token --json
+a4 install program spl-token --ts
+```
+
+For a hosted stack:
+
+```bash
+a4 explore catalog --query "<intent>" --kind stack --mode subscribe --json
+a4 explore catalog stack <slug> --json
+a4 install stack <slug> --ts
+```
+
+The add command saves dependency intent and resolves the complete graph. Run
+plain `a4 install` later to restore every declared dependency.
+
+## Manifest structure
 
 ```toml
 manifest_version = 1
@@ -60,18 +79,98 @@ output_dir = "./python/generated"
 module_mode = false
 package_prefix = "my_app"
 
-[dependencies.stacks.ore]
-source = { registry = "ore" }
-version = "^1.4.0"
-
-[dependencies.programs.spl-token]
+[dependencies.programs.token]
 source = { registry = "spl-token" }
-version = "^4.0.0"
+version = "^1.0.0" # use the requirement saved by the current install command
 targets = ["typescript"]
 
-[dependencies.programs.spl-token.outputs]
-typescript = "./src/generated/spl-token"
+[dependencies.programs.token.outputs]
+typescript = "./src/generated/programs/token"
 
+# Illustrative: replace with a stack slug and version returned by its descriptor.
+[dependencies.stacks.market-data]
+source = { registry = "market-data" }
+version = "^1.0.0"
+targets = ["typescript", "rust"]
+```
+
+Do not copy illustrative package names or versions without checking the
+catalog. `a4 install` writes the correct table from the selected descriptor.
+
+## Sources
+
+A dependency has exactly one source:
+
+| Source      | Meaning                                                      |
+| ----------- | ------------------------------------------------------------ |
+| `registry`  | Resolve a published package by slug and version requirement  |
+| `path`      | Use an exact local `ProgramSpec` or `StackManifest` artifact |
+| `workspace` | Refer to a same-kind entry under `[authoring]`               |
+
+Registry requirements are human intent. The lockfile records the exact package
+release and artifact identities that satisfied them.
+
+## Output layout
+
+Without dependency-specific overrides, outputs are namespaced by kind:
+
+- TypeScript: `<output_dir>/stacks/<alias>` and
+  `<output_dir>/programs/<alias>`;
+- Rust: `<output_dir>/stacks/<prefix>-<alias>-stack` and
+  `<output_dir>/programs/<prefix>-<alias>-program`;
+- Python: `<output_dir>/stacks/<prefix>-<alias>-stack` and
+  `<output_dir>/programs/<prefix>-<alias>-program`.
+
+This permits a stack and standalone program to share an alias. Aliases must be
+unique within their own kind.
+
+A dependency-level output is an exact override and does not receive the
+automatic kind directory.
+
+## Install and update
+
+```bash
+a4 install
+a4 install --locked
+a4 install --dry-run
+a4 update
+a4 update program token
+a4 remove program token
+```
+
+Important behaviors:
+
+- `a4 install` resolves the complete declared graph.
+- `--locked` requires a fresh existing lock and never changes resolution.
+- `--dry-run` validates and prints the plan without writing.
+- a package add saves intent unless `--no-save` is explicit.
+- generated output and `arete.lock` are committed only after successful
+  generation of the complete graph.
+- `a4 update` changes resolution; plain install does not silently replace an
+  exact fresh lock.
+
+Generated directories are owned outputs. Do not hand-edit entry files,
+extensions, SDK manifests, or provenance records.
+
+## Lockfile
+
+Commit `arete.lock` for applications and services that need reproducible
+generation. It pins exact package and artifact identities, not only semantic
+versions.
+
+After merging dependency changes, CI should run:
+
+```bash
+a4 install --locked
+```
+
+A stale lock is a project health warning reported by `a4 doctor`.
+
+## Local authoring
+
+Authored artifacts have stable project names under `[authoring]`:
+
+```toml
 [authoring.stacks.local-indexer]
 manifest = "./.arete/LocalIndexer.stack-manifest.json"
 artifact_roots = ["./.arete"]
@@ -81,121 +180,42 @@ deployment_name = "local-indexer"
 source = { workspace = "local-indexer" }
 ```
 
-Registry dependencies require a SemVer requirement. A source has exactly one
-of `registry`, `path`, or `workspace`; path dependencies select an exact
-ProgramSpec or StackManifest. Workspace sources refer to a same-kind key under
-`[authoring]`.
+`artifact_roots` grants explicit access to the related content-addressed files.
+Workspace dependencies make local authored content part of normal project SDK
+generation.
 
-Default outputs are namespaced by dependency kind:
+The lower-level `a4 sdk create` command is useful for direct artifact work. It
+does not write `arete.toml` or `arete.lock` and should not replace dependency-
+backed installation for application projects.
 
-- TypeScript: `<output_dir>/stacks/<alias>` and
-  `<output_dir>/programs/<alias>`
-- Rust: `<output_dir>/stacks/<prefix>-<alias>-stack` and
-  `<output_dir>/programs/<prefix>-<alias>-program`
-- Python: `<output_dir>/stacks/<prefix>-<alias>-stack` and
-  `<output_dir>/programs/<prefix>-<alias>-program`
-
-This permits a stack and standalone program to share an alias. Aliases remain
-unique within each kind. A dependency-level `outputs` value is an exact path
-override and does not receive the automatic kind directory.
-
-## Install and Update
-
-```bash
-a4 install
-a4 install --locked
-a4 install --dry-run
-a4 install stack ore@^1.4.0
-a4 install program spl-token@=4.0.2 --ts
-a4 update
-a4 update stack ore
-```
-
-A saved package add updates `arete.toml`, resolves the complete graph, stages
-all outputs, and commits outputs plus `arete.lock` together. Use `--no-save`
-for deliberate one-off generation through the same exact registry resolver.
-
-## Authoring and Deployment
-
-Rust DSL compilation produces ProgramSpec, LiveSpec, and StackManifest
-artifacts. Authoring declarations give those exact artifacts stable project
-names:
-
-```bash
-a4 up local-indexer
-a4 up ./.arete/LocalIndexer.stack-manifest.json
-a4 sdk create --manifest ./.arete/LocalIndexer.stack-manifest.json --ts
-```
-
-Artifact roots are explicit read capabilities for files referenced by a local
-StackManifest. Paths are resolved relative to the manifest, and output paths
-stay within the project unless both the manifest and CLI opt in.
-
-## Validation
+## Validate
 
 ```bash
 a4 config validate
+a4 doctor --json
 ```
 
-Validation is offline. It checks strict keys, source and workspace types, local
-artifact closure, output collisions, path policy, and lock freshness.
+Validation is offline. It checks strict keys, source and workspace kinds, local
+artifact closure, path policy, output collisions, and lock freshness. It does
+not prove that a hosted binding is healthy; inspect the exact descriptor and
+perform a bounded read when that matters.
 
-## Environment Variables
+## Credentials and environment
 
-Environment variables override configuration file values:
-
-| Variable        | Description                | Overrides          |
-| --------------- | -------------------------- | ------------------ |
-| `ARETE_API_URL` | Override the API endpoint  | Default API URL    |
-| `ARETE_API_KEY` | API key for authentication | (no file override) |
-
----
-
-## Credentials File
-
-Authentication credentials are stored separately from your project configuration in:
-
-```
-~/.arete/credentials.toml
-```
-
-This file contains your API key for accessing Arete Cloud:
-
-```toml
-api_key = "your-api-key-here"
-```
-
-The credentials file is created automatically when you authenticate via the CLI. Since this file contains sensitive information, it is stored in your home directory and should never be committed to version control.
-
-:::tip[Closed Beta]
-During closed beta, you need an API key to deploy. [Contact us on X](https://x.com/usearete) to request access.
-:::
-
----
-
-## Validation
-
-Validate your configuration:
+Authentication is stored separately from the project manifest. Use:
 
 ```bash
-a4 config validate
+a4 auth signup
+a4 auth login --key <a4_ak_...>
 ```
 
-This checks:
+Never commit credentials. In headless environments, configure the supported
+secret environment through the CI secret manager.
 
-- Required fields are present
-- File paths are valid
-- Legacy stack references resolve to supported composite input files
-- No conflicting settings
+| Variable        | Purpose                         |
+| --------------- | ------------------------------- |
+| `ARETE_API_URL` | Intentional API origin override |
+| `ARETE_API_KEY` | Headless authentication         |
 
-Validation does not deploy, bind endpoints, publish generated packages, or
-configure DNS. Package publication and provider-neutral DNS/CDN handoff remain
-operator responsibilities.
-
----
-
-## Next Steps
-
-- [CLI Commands](/cli/commands) — Full CLI reference
-- [Your First Stack](/building-stacks/your-first-stack) — Complete tutorial
-- [SDK Reference: Rust](/sdks/rust) — Rust SDK usage and module mode
+An API override changes the trust boundary. Do not send a production key to an
+untrusted origin.

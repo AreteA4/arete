@@ -1,0 +1,148 @@
+---
+title: Programs, Views, and Stacks
+description: The public mental model for program capabilities, live read models, and application composition.
+---
+
+Arete has three application-facing layers. Keeping them separate makes both
+discovery and generated code easier to understand.
+
+## 1. Programs are the base unit
+
+A Solana program defines accounts and instructions. Arete normalizes that
+interface and generates a **Program SDK** with the capabilities available for
+the exact published release.
+
+```text
+Program
+├── accounts and schemas
+├── account reads
+├── PDAs and known addresses
+├── raw instruction builders
+├── application operations
+├── transactions and flows
+└── errors, constants, defaults, and calculations
+```
+
+A Program SDK is useful on its own. It does not require a live deployment or a
+stack. Install one when the application needs to read or act through a program.
+
+The exact descriptor is authoritative. It says which account readers,
+operations, hosted bindings, and SDK targets are available for that release.
+
+## 2. Views are optional live read models
+
+Account layouts rarely match the final product screen. A **view** maintains an
+application-shaped projection such as:
+
+- one position assembled from several accounts;
+- a filtered collection of active pools;
+- a leaderboard ordered by an aggregate;
+- recent activity derived from instructions; or
+- a model combining several programs around one durable key.
+
+Views support point-in-time queries and, when a WebSocket binding is available,
+live subscriptions. They are optimized for current application state and
+bounded live windows, not arbitrary historical SQL.
+
+An agent can query and subscribe to deployed views through MCP without first
+generating application code.
+
+## 3. Stacks are installable compositions
+
+A **stack** packages a useful domain capability:
+
+```text
+Stack
+├── selected live views
+├── one or more Program SDKs
+├── stack-level reads and flows, when defined
+├── typed addresses, constants, defaults, and math
+└── descriptors for the hosted capabilities it can use
+```
+
+Installing a stack gives the application the programs and views selected by
+that package. A project can also install standalone programs beside it.
+
+Several live views may happen to run in one hosted deployment. That is not an
+application-level relationship. Client code should depend on the generated
+stack and its selected views rather than infer runtime topology or construct
+endpoints.
+
+## Application sessions compose everything
+
+In TypeScript, a session can hold many stacks and standalone programs:
+
+```ts
+const session = await createSession({
+  stacks: {
+    markets: MARKETS_STACK,
+    positions: POSITIONS_STACK,
+  },
+  programs: {
+    token: SPL_TOKEN_PROGRAM,
+  },
+});
+
+session.stacks.markets.views;
+session.stacks.positions.views;
+session.programs.token.accounts;
+session.chain;
+```
+
+Programs packaged by a stack are also exposed through the canonical program
+surface where identities permit it. The generated types handle disambiguation;
+do not merge program clients manually.
+
+## Portable definitions and hosted capabilities
+
+The definitions of programs, live behavior, and composition are portable and
+content-addressed. Hosting attaches operational capabilities to those exact
+definitions:
+
+| Capability            | What it provides                                                       |
+| --------------------- | ---------------------------------------------------------------------- |
+| Program Read          | Typed decoding and reads for an exact program release                  |
+| Chain read            | Generic Solana state such as lamports, clocks, mints, and raw accounts |
+| Live query and stream | Point-in-time and subscribed view access                               |
+| Transaction           | Inspection and submission of locally signed transactions               |
+
+These bindings are independent. A stack may support live views while one of
+its programs lacks a hosted account reader, or a Program SDK may support reads
+and transactions without any live views. Use the descriptor instead of
+assuming one endpoint implies another.
+
+## Artifact names
+
+Most application developers do not need the artifact layer. It matters when
+authoring, validating, or deploying custom live data:
+
+| Artifact        | Role                                                                   |
+| --------------- | ---------------------------------------------------------------------- |
+| `ProgramSpec`   | Portable normalized program identity and interface                     |
+| `LiveSpec`      | Entity, mapping, resolver, and view behavior over exact programs       |
+| `StackManifest` | Exact composition of programs, live specifications, and selected views |
+
+A `StackManifest` does not contain a deployment URL. Generated hosted packages
+attach bindings separately so portable content does not silently change when
+infrastructure changes.
+
+## Availability is not binary
+
+A program or stack can be known before every delivery mode is ready. Catalog
+results therefore report capabilities explicitly:
+
+- **cataloged** — Arete has reviewed knowledge about the subject;
+- **installable** — an exact package and SDK target can be resolved;
+- **read-ready** — hosted typed account reads are available;
+- **build-ready** — generated transaction construction is available; and
+- **subscribe-ready** — a hosted live deployment serves the selected views.
+
+Always filter for the mode the task needs and open the exact descriptor before
+writing code.
+
+## Next steps
+
+- [Explore on-chain with MCP](/agent-skills/explore-on-chain/)
+- [Build with a Program SDK](/using-programs/overview/)
+- [Connect to live views](/using-stacks/connect/)
+- [Manage project dependencies](/building-stacks/configuration/)

@@ -1,11 +1,17 @@
 ---
-title: MCP Server
+title: MCP Servers
 sidebar:
   order: 5
 description: Connect AI tools to the Arete documentation and stream MCP servers.
 ---
 
 Arete ships **two** MCP servers. They serve different purposes and can be run together.
+
+:::tip[Looking for the agent workflow?]
+Start with [Explore On-chain with MCP](/agent-skills/explore-on-chain/) for the
+question → discovery → connection → bounded query flow. This page is the exact
+server and tool reference.
+:::
 
 | Server                                 | Transport                           | What it gives your agent                                                                     |
 | -------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -19,7 +25,9 @@ a4 init -y
 a4 doctor --json
 ```
 
-Neither server covers SDK generation (`a4 install`) or transaction construction. Those are CLI and SDK operations.
+Neither server replaces SDK generation (`a4 install`) or the generated Program
+SDK transaction surface. Use MCP to investigate; use generated dependencies in
+shipped application code.
 
 ---
 

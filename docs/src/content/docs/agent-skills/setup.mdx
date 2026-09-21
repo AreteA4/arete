@@ -146,7 +146,13 @@ Ask your agent:
 What stacks are available on Arete? Show me the entities and fields for the ore stack.
 </CopyPrompt>
 
-The agent should run `a4 explore --json`, then `a4 explore ore --json`, and present the entity names, field paths, and types. If it doesn't recognise Arete commands, run `a4 doctor` — the `agents.<id>.skills` check names the missing skill directory and the exact install command — or check that the skill files are in the correct directory for your editor.
+The agent should start with
+`a4 explore catalog --query "<your intent>" --json`, then inspect the exact
+program or stack result and present its available modes, SDK targets, accounts,
+or views. If it doesn't recognise Arete commands, run `a4 doctor` — the
+`agents.<id>.skills` check names the missing skill directory and the exact
+install command — or check that the skill files are in the correct directory
+for your editor.
 
 ---
 
