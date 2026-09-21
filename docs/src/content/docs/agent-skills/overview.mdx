@@ -1,12 +1,13 @@
 ---
 title: Agents and Arete
-description: How the CLI, skills, catalog, generated SDKs, and MCP servers work together.
+description: How your agent, the a4 CLI, skills, the catalog, generated SDKs, and MCP servers work together.
 ---
 
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-Arete is designed so an agent can move from a product question to exact,
-generated application code without guessing program schemas or infrastructure.
+Arete is built so that an agent can take you from a product question to exact,
+generated application code, without guessing at program schemas or
+infrastructure along the way. This page explains who does what.
 
 ## Start with one URL
 
@@ -17,11 +18,11 @@ Read https://docs.arete.run/agent.md and follow it to set up Arete in this
 project. Verify the setup, and simply explain what Arete is capable of.
 </CopyPrompt>
 
-The bootstrap page leads the agent through CLI installation, `a4 init`, and
-`a4 doctor`, then asks it for a concise capability summary. You do not need to
-invent an on-chain question to complete setup; give the agent a concrete intent
-only when you are ready to explore one. The installed skills and current CLI
-output take over from there.
+That bootstrap page walks the agent through installing the CLI, running
+`a4 init`, and running `a4 doctor`, then asks it to summarize what Arete can do.
+You don't need an on-chain question ready just to finish setup. Bring one when
+you're ready to explore. From that point on, the installed skills and the
+CLI's current output guide the agent.
 
 ## The agent workflow
 
@@ -34,10 +35,13 @@ Understand intent
   → build against generated types
 ```
 
-The human provides goals and authority. The agent handles discovery, exact
-schema lookup, dependency generation, and repetitive integration work.
+You bring the goals and the authority to approve things. The agent handles
+discovery, exact schema lookup, dependency generation, and the repetitive
+integration work.
 
 ## Manual setup
+
+Prefer to run the setup yourself? It is three commands:
 
 ```bash
 curl -fsSL https://arete.run/install.sh | sh
@@ -45,7 +49,7 @@ a4 init -y
 a4 doctor --json
 ```
 
-`a4 init` detects supported coding agents and configures:
+`a4 init` detects the coding agents you have and configures:
 
 - `arete.toml` for project dependencies;
 - managed Arete instructions in `AGENTS.md`;
@@ -53,10 +57,13 @@ a4 doctor --json
 - the local `arete` MCP server; and
 - the remote `arete-docs` MCP server.
 
-It is safe to run again. Use `a4 doctor --fix` when doctor reports repairable
-configuration drift.
+It is safe to run again. If doctor reports configuration that has drifted and
+can be repaired, run `a4 doctor --fix`.
 
 ## The five skills
+
+A skill is a set of instructions your agent loads when a task calls for it.
+Arete installs five:
 
 | Skill                   | When the agent uses it                                                               |
 | ----------------------- | ------------------------------------------------------------------------------------ |
@@ -66,14 +73,16 @@ configuration drift.
 | `arete-stack-authoring` | Designing custom application read models and compiling portable artifacts            |
 | `arete-deploy`          | Publication and permission-aware hosted deployment operations                        |
 
-Skills contain workflow guidance. They do not freeze program schemas. The
-agent must still inspect the current descriptor and generated code.
+Skills teach the agent how to work. They don't hard-code any program's schema,
+so the agent still has to inspect the current descriptor and the generated
+code.
 
 ## MCP for exploration
 
-The `arete` MCP server lets an agent search known capabilities, inspect view
+The `arete` MCP server lets an agent search what Arete knows, inspect view
 schemas, connect to hosted stacks, subscribe, and query a bounded local cache.
-This makes a natural-language question a useful first interaction with Arete.
+This is why a plain-language question works so well as your first interaction
+with Arete.
 
 <CopyPrompt>
 Find Arete programs and hosted views that can answer my question about recent
@@ -86,41 +95,42 @@ program names, view names, or endpoints.
 
 ## Generated SDKs for shipped code
 
-MCP is an exploratory client, not the production application API. Once a
-program or view is part of the product, the agent adds the dependency and uses
-generated types:
+MCP is for exploring. It is not the API your production application should
+call. Once a program or view becomes part of the product, the agent adds it as a
+dependency and works from generated types:
 
 ```bash
 a4 install program <slug> --ts
 a4 install stack <slug> --ts
 ```
 
-`arete.toml` records intent and `arete.lock` pins exact content. The generated
-surface, descriptor, and current CLI output take precedence over prose examples.
+`arete.toml` records what you asked for, and `arete.lock` pins the exact
+content. When prose examples disagree with the generated code, the descriptor,
+or current CLI output, the examples lose.
 
 ## Sources of truth
 
-Agents should resolve conflicts in this order:
+When sources conflict, agents should trust them in this order:
 
 1. Generated types and exact installed descriptors
 2. Current `a4 <command> --help` and machine-readable JSON
 3. Current Arete documentation
 4. General skill guidance
 
-This prevents copied prompts or old examples from overriding the capability
-actually installed in the project.
+This stops a copied prompt or an old example from overriding what is really
+installed in the project.
 
 ## Authority boundaries
 
-Agent-first does not mean authority-free:
+Agent-first does not mean the agent can do anything it likes:
 
 - discovery, reads, local generation, and transaction inspection are read-only;
-- preparing a transaction does not authorize signing;
-- signing or submitting requires the user's intended wallet action;
-- an ambiguous submission must not be blindly retried; and
+- preparing a transaction does not authorize signing it;
+- signing or submitting requires a wallet action you intended;
+- a submission whose outcome is unclear must not be blindly retried; and
 - compiling an artifact does not authorize publishing or deploying it.
 
-The deployment skill preserves the same distinction between planning,
-submission, and a resource reaching its ready state.
+The deployment skill draws the same lines between planning a deployment,
+submitting it, and a resource reaching its ready state.
 
 For manual configuration and exact tool contracts, see [MCP Servers](/agent-skills/mcp/).

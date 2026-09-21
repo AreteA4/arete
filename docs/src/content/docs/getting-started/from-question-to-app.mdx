@@ -1,103 +1,107 @@
 ---
 title: From Question to Application
-description: Explore on-chain data, refine the read model, and graduate it into a typed application dependency.
+description: Follow one idea from a plain-language question, through live exploration, to a typed dependency in your app.
 ---
 
-This is the complete Arete workflow: begin with a question, prove the required
-data interactively, then install the same capability into application code.
+This page follows one idea the whole way through. You start with a question,
+use live data to confirm it can be answered, then install that same capability
+into your application. Each step links to the page that covers it in depth.
 
 ## 1. Ask the question
 
-Give the agent the outcome and relevant constraints, not guessed implementation
-details:
+Tell the agent the outcome you want and any limits that matter. Leave out
+implementation details you would only be guessing at:
 
 > Find live data that can show recent token launches and their current activity.
 > Explain which programs and views you use, then summarize what is happening.
 
-The agent should search the catalog by intent and capability mode. It should not
-begin by guessing a program ID, account name, or stack endpoint.
+From there, the agent searches the catalog by intent and by mode. It shouldn't
+open by guessing a program ID, an account name, or a stack endpoint.
 
-## 2. Resolve programs and coverage
+## 2. Find the programs and check what they cover
 
-Catalog results answer which known programs or stacks may match the intent and
-whether they cover `read`, `build`, or `subscribe`.
+Catalog results tell you which known programs or stacks might match, and
+whether each one covers `read`, `build`, or `subscribe`.
 
 ```bash
 a4 explore catalog --query "recent token launches" --json
 a4 explore catalog --concept token-launch --json
 ```
 
-Concept names evolve with the catalog. Run `a4 explore catalog --vocabulary`
-instead of inventing a slug.
+Concept names change as the catalog grows. Run
+`a4 explore catalog --vocabulary` to list the real ones instead of inventing a
+slug.
 
-For each candidate, inspect its exact descriptor:
+For each candidate, open its exact descriptor:
 
 ```bash
 a4 explore catalog program <slug> --json
 a4 explore catalog stack <slug> --json
 ```
 
-The descriptor is the contract: exact identities, available modes, views,
-accounts, SDK targets, authentication, and install commands.
+The descriptor is the contract. It spells out exact identities, available
+modes, views, accounts, SDK targets, sign-in requirements, and install commands.
 
 ## 3. Explore deployed views through MCP
 
 When a candidate stack is subscribe-ready, the agent can:
 
 1. inspect its view schema;
-2. connect to the descriptor-provided WebSocket URL;
+2. connect to the WebSocket URL given in the descriptor;
 3. subscribe to a relevant view;
-4. query the bounded in-memory cache; and
-5. disconnect when the investigation is complete.
+4. query the small in-memory cache that builds up; and
+5. disconnect once the investigation is done.
 
-This is an exploratory loop. It is useful for understanding data shape,
-freshness, keys, and whether the view actually answers the product question.
+Think of this as a test drive. It shows you the shape of the data, how fresh it
+is, how it is keyed, and whether the view really answers your product question.
 
-An agent must not claim more than the selected view contains. A missing hosted
-view means the question is not currently answerable through that surface, not
-that the underlying program lacks the information.
+An agent must not claim more than the view it chose contains. If no hosted view
+exists, the question can't be answered through that route today. It does not
+mean the underlying program lacks the information.
 
 [Run the MCP workflow →](/agent-skills/explore-on-chain/)
 
-## 4. Refine the read model
+## 4. Refine the view
 
-Sometimes the catalog has the right program but not the right view. The desired
-application model might need a different key, fields from several accounts, an
-instruction-derived metric, or a sorted and filtered window.
+Sometimes the catalog has the right program but not the right view. Your app
+might need a different key, fields pulled from several accounts, a metric
+derived from instructions, or a sorted and filtered window.
 
-Capture the missing read model explicitly: programs, entities, primary keys,
-field sources, update routes, and query windows. That specification makes the
-gap reviewable before custom infrastructure is created.
+Write the missing view down precisely: the programs, entities, primary keys,
+field sources, update routes, and query windows. With that specification in
+hand, the gap can be reviewed before anyone builds custom infrastructure.
 
-Use an existing hosted view when possible. For custom live data, continue with
-the advanced [Rust authoring workflow](/building-stacks/workflow/), deploy the
-resulting exact artifacts, and validate the new view through MCP before adding
-it to application code.
+Use an existing hosted view whenever one fits. For custom live data, continue
+with the advanced [Rust authoring workflow](/building-stacks/workflow/), deploy
+the exact artifacts it produces, and check the new view through MCP before
+adding it to application code.
 
-## 5. Install the proven capability
+## 5. Install what you proved
 
-Once the programs and views are correct, add them to the project rather than
-copying exploratory JSON or hand-writing clients:
+Once the programs and views are right, add them to the project. Don't copy JSON
+out of an exploration session or hand-write a client:
 
 ```bash
 a4 install program <program-slug> --ts
 a4 install stack <stack-slug> --ts
 ```
 
-The CLI records dependency intent in `arete.toml`, resolves exact identities
-into `arete.lock`, and generates provenance-owned SDK output. Re-run plain
-`a4 install` to restore the locked project graph.
+The CLI records what you asked for in `arete.toml`, resolves it to exact
+identities in `arete.lock`, and generates SDK output stamped with where it came
+from. Run plain `a4 install` again at any time to restore the locked set of
+dependencies.
 
-Use `--rust` or `--python` only when the exact descriptor advertises that target.
+Use `--rust` or `--python` only when the exact descriptor advertises that
+target.
 
 ## 6. Build against the generated session
 
-Use standalone programs for account reads and actions. Add stacks when the
-application needs selected live views or stack-level flows. Compose both in one
-session rather than creating unrelated transport clients.
+Use standalone programs for account reads and actions. Add stacks when your app
+needs live views or stack-level flows. Bring both together in one session
+instead of creating separate, unrelated clients.
 
-The generated surface is the authority for names and argument shapes. Typical
-application code moves through:
+The generated code is the authority on names and argument shapes. A typical
+piece of application code moves through these stages:
 
 ```text
 read or subscribe
@@ -110,18 +114,18 @@ read or subscribe
 ```
 
 Reading or preparing does not authorize signing. Signing does not authorize an
-agent to retry an ambiguous submission.
+agent to retry a submission whose outcome is unclear.
 
 ## 7. Keep exploration and production linked
 
-The MCP and generated SDK use the same catalog identities and view contracts.
-When the application behaves unexpectedly, return to the exploratory loop:
+MCP and the generated SDK share the same catalog identities and view contracts.
+So when your app behaves in a way you didn't expect, go back to exploring:
 
 - inspect the installed descriptor and lockfile;
 - query the view directly through MCP or `a4 stream`;
-- compare the view watermark and application state;
-- update the dependency deliberately when a newer package is required; and
+- compare the view's watermark with your application state;
+- update the dependency on purpose when you need a newer package; and
 - regenerate instead of editing generated files.
 
-This keeps the zero-code investigation and the shipped application on the same
-underlying capability instead of becoming two independent integrations.
+This keeps the no-code investigation and the shipped application running on the
+same underlying capability, so they never drift into two separate integrations.

@@ -1,30 +1,33 @@
 ---
 title: Connect to Live Views
-description: Find a subscribe-ready stack and use its generated SDK for point-in-time queries and live updates.
+description: Find a stack with live data, then use its generated SDK to fetch current results and stream updates.
 ---
 
-Live views are maintained, application-shaped state over one or more programs.
-Use them when account-by-address reads are not enough: collections, joins,
-aggregates, rankings, recent activity, or continuous updates.
+A live view is data from one or more programs, arranged the way your app wants
+it and kept current for you. Reach for one when reading accounts by address
+stops being enough, because you need collections, joins, totals, rankings,
+recent activity, or a continuous stream of updates.
 
 ## Find a subscribe-ready stack
 
-Search dynamically instead of relying on a fixed example deployment:
+Search the catalog each time. Example deployments come and go, so don't build
+on a fixed one:
 
 ```bash
 a4 explore catalog --query "<intent>" --kind stack --mode subscribe --json
 a4 explore catalog stack <slug> --json
 ```
 
-The exact descriptor identifies selected views, programs, authentication,
-bindings, verified SDK targets, and the install command. If search returns no
-subscribe-ready result, do not construct a URL from a package name.
+The exact descriptor lists the stack's views, programs, sign-in requirements,
+connection details, verified SDK targets, and install command. If the search
+returns nothing that is subscribe-ready, stop there. Don't construct a URL from
+a package name.
 
 ## Explore it before writing code
 
-The quickest validation is through MCP. Ask your agent to inspect the view
-schema, connect, take a bounded sample, and explain whether the data answers the
-application question.
+The quickest way to check a view is through MCP. Ask your agent to inspect the
+view schema, connect, take a small bounded sample, and tell you whether the data
+answers your application's question.
 
 [Explore on-chain with MCP →](/agent-skills/explore-on-chain/)
 
@@ -34,9 +37,9 @@ application question.
 a4 install stack <slug> --ts
 ```
 
-Use the descriptor's target and command. The saved dependency is recorded in
-`arete.toml`; exact composition and package identities are recorded in
-`arete.lock`.
+Use the target and command the descriptor gives you. The dependency you asked
+for is saved in `arete.toml`, and the exact composition and package identities
+go into `arete.lock`.
 
 Install the TypeScript runtime when needed:
 
@@ -76,11 +79,11 @@ for await (const update of session.stacks.app.views.Position.list.watch({
 }
 ```
 
-`MY_STACK`, `Position`, and the available query options are placeholders. Use
-the generated declarations for the installed package.
+`MY_STACK`, `Position`, and the query options shown here are placeholders. The
+generated declarations in your installed package have the real names.
 
-The stack embeds its default endpoints. Override them only when intentionally
-connecting to a local or alternate binding.
+The stack already contains its default endpoints. Override them only when you
+deliberately want a local or alternate connection.
 
 ## React
 
@@ -113,9 +116,9 @@ export default function App() {
 }
 ```
 
-Read-only hosted access may require authentication but does not require a
-wallet. Treat connecting, ready-empty, ready-with-data, refreshing, validation
-failure, and connection failure as different UI states.
+Reading hosted data may require you to sign in, but it never requires a
+wallet. In your interface, treat connecting, ready but empty, ready with data,
+refreshing, validation failure, and connection failure as different states.
 
 ## Point-in-time versus live
 
@@ -130,17 +133,20 @@ Generated view clients commonly expose:
 | `.watchRich(...)` | Consume updates with before/after information where supported |
 | `.getSync(...)`   | Read the already-active local subscription state              |
 
-Exact methods vary by language and view. A point-in-time request is not a live
-subscription, and `getSync` does not perform a network fetch.
+The exact methods vary by language and by view. Two things to remember: a
+point-in-time request is not a live subscription, and `getSync` never makes a
+network request.
 
 ## Query semantics
 
-Keys, filters, partitions, pagination, and bounded snapshot windows are part of
-the subscription identity. Equivalent normalized queries can share one
-connection; different windows remain independent.
+Keys, filters, partitions, pagination, and bounded snapshot windows all count
+as part of a subscription's identity. Two queries that normalize to the same
+thing can share one connection. Queries with different windows stay
+independent.
 
-An entity leaving one filtered query is not necessarily deleted globally.
-Preserve the generated update taxonomy so application state remains correct.
+When an entity drops out of one filtered query, it hasn't necessarily been
+deleted everywhere. Keep the update types the generated SDK gives you, so your
+application state stays correct.
 
 [Filtering and query windows →](/using-stacks/filtering-feeds/)
 
@@ -154,14 +160,15 @@ session.stacks.app.programs.myProgram;
 session.programs.myProgram;
 ```
 
-Use those program clients for authoritative account reads and transaction
-construction. Use views for maintained application read models.
+Use those program clients when you need the authoritative account data or want
+to build a transaction. Use views when you want data that is already shaped and
+maintained for your app.
 
 ## Independent hosted capabilities
 
-Live queries, Program Read, generic chain reads, and transactions have separate
-descriptors and authentication scopes. Do not reuse a WebSocket or HTTP query
-URL as a program, chain, or transaction endpoint.
+Live queries, Program Read, generic chain reads, and transactions each have
+their own descriptor and their own authentication scope. Don't reuse a WebSocket
+or HTTP query URL as a program, chain, or transaction endpoint.
 
 For transaction execution, the wallet signs locally and the connected client
 selects the correct transaction transport per invocation.

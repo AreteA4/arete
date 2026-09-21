@@ -5,13 +5,13 @@ sidebar:
 description: Introduction to the Arete Rust DSL for defining streaming data specifications.
 ---
 
-Arete uses a declarative Rust DSL (Domain Specific Language) to define how on-chain Solana data should be transformed, aggregated, and streamed to your application. Instead of writing complex ETL pipelines, you simply declare the final state you want, and Arete handles the rest.
+When you build your own live view, you describe it in a small Rust-based language (a DSL, or domain-specific language). You say how on-chain Solana data should be transformed, aggregated, and streamed to your application. You don't write the pipeline that does the work. You declare the final state you want, and Arete handles the rest.
 
 ---
 
 ## Why Declarative?
 
-Building data pipelines for Solana typically involves manual account parsing, complex event handling, and managing state synchronization. Arete replaces this imperative approach with a declarative model:
+Building a data pipeline for Solana usually means parsing accounts by hand, handling a tangle of events, and keeping state in sync yourself. That is the imperative approach: you spell out every step. Arete's model is declarative: you describe the result.
 
 | Imperative Approach (Traditional)             | Declarative Approach (Arete)                  |
 | --------------------------------------------- | --------------------------------------------- |

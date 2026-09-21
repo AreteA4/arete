@@ -1,33 +1,34 @@
 ---
 title: Arete
-description: From an on-chain question to a typed Solana application
+description: Go from a question about Solana to a working, fully typed application, with your agent doing the legwork.
 ---
 
 import { Card, CardGrid } from "@astrojs/starlight/components";
 import CopyPrompt from "../../components/CopyPrompt.astro";
 import Workflow from "../../components/Workflow.astro";
 
-# From an on-chain question to a typed Solana application
+# From an on-chain question to a working Solana app
 
-Arete is an **agent-first Solana application toolkit**. Your agent can discover
-programs from your intent, inspect and query deployed live views, and install
-the result as a fully typed SDK for reads, transactions, flows, and real-time
-data.
+Arete is a toolkit for building on Solana **with an AI agent**. You describe
+what you want to know or build. Your agent finds the right on-chain programs,
+checks live data to confirm it has what you need, and installs ready-made,
+fully typed code into your project.
 
-You can start by asking a question. You do not need to know the program ID,
-account layout, view name, or endpoint first.
+You can start with nothing but a question. You don't need to know a program ID,
+an account layout, a view name, or an endpoint first. Finding those is the
+agent's job.
 
 <CardGrid>
   <Card title="Explore with your agent" icon="star">
-    Ask what is happening on-chain. Your agent finds relevant programs and
-    views, connects through MCP, and queries live data.
+    Ask what is happening on-chain. Your agent finds the programs and live data
+    that can answer, connects to them, and reports back. No code required.
 
     [Ask your first question →](/agent-skills/explore-on-chain/)
   </Card>
 
   <Card title="Build with a program" icon="laptop">
-    Install a generated Program SDK with typed account reads, PDA helpers,
-    transaction construction, and higher-level operations.
+    Already know which program you need? Install its generated SDK and get
+    typed reads, address helpers, and transaction building from day one.
 
     [Use a Program SDK →](/using-programs/overview/)
   </Card>
@@ -38,24 +39,26 @@ account layout, view name, or endpoint first.
 <Workflow steps={[
   {
     title: "Explore",
-    description: "Ask an agent and query existing live views"
+    description: "Ask a question and look at real, live data"
   },
   {
     title: "Shape",
-    description: "Choose or define the exact read model you need"
+    description: "Pick the data your app needs, or define it"
   },
   {
     title: "Ship",
-    description: "Install typed programs and views into your application"
+    description: "Install it as typed code and build"
   }
 ]} />
 
-1. **Explore** — the agent searches the catalog by intent, identifies suitable
-   programs and views, and uses MCP to inspect current or live state.
-2. **Shape** — reuse an existing view, or define a focused read model when the
-   catalog does not contain what the application needs.
-3. **Ship** — record the selected programs and stacks in `arete.toml`, lock
-   their exact identities, generate the SDK, and build against stable types.
+1. **Explore.** Your agent searches the Arete catalog for programs and live
+   views that match what you asked, then connects and looks at real data. It
+   does this through MCP, the standard way agents plug into outside tools.
+2. **Shape.** If an existing view already has the data your app needs, use it.
+   If the catalog doesn't have one, define a focused view that does.
+3. **Ship.** Your choices are written to `arete.toml`, pinned to exact versions
+   in `arete.lock`, and turned into generated code with stable types your app
+   can build on.
 
 [Follow the complete journey →](/getting-started/from-question-to-app/)
 
@@ -68,58 +71,65 @@ Read https://docs.arete.run/agent.md and follow it to set up Arete in this
 project. Verify the setup, and simply explain what Arete is capable of.
 </CopyPrompt>
 
-That one URL gives the agent the supported CLI installer, project initialization
-command, health check, catalog workflow, and task routing. `a4 init` installs the
-skills and configures both MCP servers for the detected agent.
+That one page tells the agent everything it needs: how to install the `a4`
+command-line tool, set up your project, check that everything works, and find
+its way around the catalog. Behind the scenes, `a4 init` installs the Arete
+skills and connects both MCP servers for whichever agent you're using.
 
 [See the manual equivalent →](/using-stacks/quickstart/)
 
 ## Programs are the foundation
 
-Arete turns each supported Solana program into a generated Program SDK. The
-exact surface depends on the program and selected SDK target, but follows one
-model:
+A Solana **program** is an app that lives on-chain. Other chains call these
+smart contracts. For every program it supports, Arete generates a **Program
+SDK**: code your app (or your agent) uses to read that program's data and send
+it transactions, without anyone decoding bytes by hand.
+
+What's inside depends on the program and the language you pick, but the layout
+is always the same:
 
 | Surface | What it gives you |
 | --- | --- |
-| **Accounts** | Release-pinned, typed account reads |
-| **PDAs and addresses** | Deterministic derivation without copied seed logic |
-| **Raw instructions** | Pure builders matching the normalized program schema |
-| **Operations and flows** | Application-shaped preparation, including multi-instruction and multi-transaction work |
-| **Transactions** | Local signing, inspection, submission, confirmation, and safe failure outcomes |
-| **Chain** | Generic Solana reads for data outside a program account surface |
+| **Accounts** | The program's on-chain data as typed objects, matched to the exact release you installed |
+| **PDAs and addresses** | The addresses the program uses, worked out for you instead of copied seed logic |
+| **Raw instructions** | Low-level builders that mirror the program's own interface one-to-one |
+| **Operations and flows** | Higher-level actions shaped like what your app does, including ones that span several instructions or transactions |
+| **Transactions** | Local signing, inspection before sending, submission, confirmation, and clear outcomes when something fails |
+| **Chain** | General Solana reads for anything outside the program's own accounts |
 
 [Understand Program SDKs →](/using-programs/overview/)
 
 ## Add live views where they help
 
-Program accounts are the base data. **Live views** are optional application
-read models over one or more programs: current positions, active rounds,
-rankings, aggregates, filtered activity, or any other state that is useful to
-read together.
+A program's accounts are the raw material. A **live view** is that data
+arranged the way an app wants to read it, and kept current as the chain
+changes: open positions, active rounds, rankings, totals, filtered activity. A
+view can draw on one program or several. Views are optional. Add them when
+reading accounts one by one stops being enough.
 
-A **stack** packages selected live views with the Program SDKs they depend on.
-Applications install stacks; they do not need to know how views are grouped or
-hosted internally.
+A **stack** is the installable bundle: a set of live views plus the Program
+SDKs they depend on. Your app installs the stack. How those views are grouped
+or hosted behind the scenes is not something it needs to know.
 
 [Programs, views, and stacks →](/concepts/programs-views-stacks/)
 
 ## Typed all the way into your application
 
-Generated stacks and standalone programs compose into one application session.
-Use TypeScript, React, Rust, or Python according to the targets verified by the
-package descriptor.
+Everything you install, stacks and standalone programs alike, comes together in
+one session object inside your app. Each package lists the languages it has
+been verified for, so choose from TypeScript, React, Rust, or Python
+accordingly.
 
 <CardGrid>
   <Card title="TypeScript" icon="seti:typescript">
-    Compose programs and stacks, read accounts, watch views, and execute
-    prepared operations.
+    Combine programs and stacks, read accounts, watch views, and run prepared
+    operations.
 
     [TypeScript SDK →](/sdks/typescript/)
   </Card>
   <Card title="React" icon="seti:react">
-    Use typed read, view, and mutation hooks with explicit loading and recovery
-    states.
+    Typed hooks for reads, views, and mutations, with loading and recovery
+    states you can see and handle.
 
     [React SDK →](/sdks/react/)
   </Card>
@@ -139,9 +149,12 @@ package descriptor.
 
 ## Exact, inspectable dependencies
 
-`arete.toml` records what the project intends to use. `arete.lock` records the
-exact program, stack, artifact, and generated-package identities selected by
-`a4 install`. Generated outputs include provenance and should be regenerated,
-not edited by hand.
+`arete.toml` lists what your project wants to use. `arete.lock` records exactly
+what `a4 install` resolved that to: the precise program, stack, artifact, and
+generated-package identities. Between them, anyone (or any agent) can rebuild
+the same project later.
+
+Generated files are stamped with where they came from. When something needs to
+change, regenerate them instead of editing them by hand.
 
 [Project dependencies →](/building-stacks/configuration/) · [CLI reference →](/cli/commands/)
