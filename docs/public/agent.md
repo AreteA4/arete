@@ -4,6 +4,19 @@ You are a coding agent setting up Arete, an agent-first Solana application
 toolkit. Use current CLI output and exact descriptors rather than guessing
 program, account, view, operation, or endpoint names.
 
+## Capabilities
+
+Arete can:
+
+- discover relevant programs and stacks from intent through the public catalog;
+- explore deployed live views through MCP or `a4 stream`;
+- generate typed TypeScript, React, Rust, or Python SDKs when supported;
+- read typed program accounts and generic Solana chain state;
+- derive addresses and build instructions, transactions, and multi-step flows;
+- inspect and submit locally signed transactions through application wallets;
+- compose Program SDKs and selected live views into application stacks; and
+- author and deploy custom live read models when existing views are not enough.
+
 1.  Install the signed CLI binary. No Rust toolchain is required:
 
         curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
