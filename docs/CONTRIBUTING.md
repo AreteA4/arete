@@ -56,6 +56,41 @@ description: A brief overview of what this page covers.
 ---
 ```
 
+### Voice and audience
+
+Many readers are not Solana engineers. They are people building with a coding
+agent, and the agent does most of the typing. Write so they can follow along,
+without losing the precision an engineer (or an agent) needs.
+
+- **Say what the reader gets before how it works.** Open each page with one or
+  two plain sentences on what it is for and who needs it.
+- **Talk to the reader as "you".** Describe what "your agent" does for them.
+  Rules addressed to agents ("the agent must not...") belong in
+  `public/agent.md` and the skills. In human-facing pages, explain what the
+  agent does and why it matters to the reader.
+- **Explain a term the first time it appears on a page**, in a clause, not a
+  detour: "the descriptor (its exact spec sheet)". The full list lives in the
+  [glossary](/getting-started/what-is-arete/#quick-glossary). Add new terms
+  there.
+- **Give a concrete example before the abstraction.** "A leaderboard sorted by
+  score" lands faster than "an application-shaped read model".
+- **Prefer short sentences and verbs** over stacked nouns. "Release-pinned,
+  typed account reads" becomes "reads the program's accounts as typed data,
+  matched to the release you installed".
+- **Rephrase, never remove.** Safety boundaries (signing, submitting,
+  deploying), caveats, commands, flags, and identifiers stay. If a sentence is
+  hard to read, rewrite it. Do not cut the fact.
+- **Do not add facts while simplifying.** A friendlier sentence must still be
+  true. If a gloss describes behavior ("the next install replaces your edits"),
+  check it against the code or CLI first.
+- **Signpost depth.** Mark advanced sections so newcomers know they can skip
+  them, for example with a `:::note[Going deeper]` aside.
+- **Leave copy-and-paste prompts and reference tables precise.** Prompts are
+  read by agents. Add a plain sentence above them saying when to use each one.
+
+Reference pages (CLI, SDKs, Rust DSL, self-hosting) can stay technical in the
+body. They still need a plain opening.
+
 ### Formatting
 
 - Use clear and concise language.

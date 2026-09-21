@@ -1,11 +1,17 @@
 ---
 title: How Arete Works
-description: How discovery, generated SDKs, hosted capabilities, and live views fit together.
+description: A tour of the moving parts, from searching the catalog to generated SDKs, hosted services, and live views.
 ---
 
-Arete separates portable program and view definitions from the hosted services
-that deliver them. This gives applications exact generated interfaces without
-making infrastructure topology part of the public API.
+Arete keeps two things apart. On one side are portable definitions: what a
+program's interface is, and what a view contains. On the other are the hosted
+services that deliver them. Your application gets exact, generated interfaces
+either way, and never has to care how the infrastructure behind them is laid
+out.
+
+This page walks through each part in order. You don't need all of it to get
+started. If your agent is doing the building, skim the path below and come back
+when you want to know what a particular step involves.
 
 ## The complete path
 
@@ -27,94 +33,97 @@ Application session
   └── Transaction inspection and submission
 ```
 
-Each boundary is inspectable. Agents use the catalog for discovery, exact
-descriptors for capability truth, and generated code for application APIs.
+You can look inside every step on that path. Agents use the catalog to find
+things, exact descriptors to learn what is truly available, and generated code
+as the API your application calls.
 
 ## Discovery: find capabilities from intent
 
-The catalog records programs and stacks together with concepts, categories,
-verified SDK targets, and delivery modes:
+The catalog lists programs and stacks along with their concepts, categories,
+verified SDK targets, and the modes each one supports:
 
-- `read` — typed program accounts and generic chain state;
-- `build` — instructions, transactions, and flows; and
-- `subscribe` — hosted current-state and live views.
+- `read` for typed program accounts and general chain state;
+- `build` for instructions, transactions, and flows; and
+- `subscribe` for hosted current-state and live views.
 
-Search results are not SDK schemas. After finding a candidate, `a4 explore`
-opens its pinned descriptor. That descriptor is the source of truth for the
-specific version an application can install.
+A search result is not an SDK schema. Once the agent has a candidate,
+`a4 explore` opens its pinned descriptor. That descriptor is the source of
+truth for the specific version your application can install.
 
 ## Installation: turn discovery into a project dependency
 
-`a4 install` records human-readable intent in `arete.toml` and exact resolution
-in `arete.lock`. It then generates language-specific code and provenance for
-the whole dependency graph.
+`a4 install` records what you asked for, in readable form, in `arete.toml`. It
+records exactly what that resolved to in `arete.lock`. Then it generates code
+for your language, plus a record of where that code came from, for the whole
+set of dependencies.
 
-This means a project can express:
+A project can declare:
 
 - standalone Program SDKs;
 - stacks containing live views and their programs;
-- multiple SDK targets; and
-- local or workspace-authored artifacts where appropriate.
+- more than one SDK target; and
+- local or workspace-authored artifacts where that makes sense.
 
-Generation is transactional: outputs and the lockfile are committed together
-after the complete graph validates.
+Generation is all-or-nothing. The outputs and the lockfile are committed
+together, and only after the complete set of dependencies validates.
 
 ## Program Read: exact decoded accounts
 
-Program Read fetches and decodes accounts for an exact published program
-release. The generated client already knows the schema and release identity.
-Use this surface when you have an address and want current program-owned state.
+Program Read fetches and decodes accounts for one exact published program
+release. The generated client already knows the schema and the release
+identity. Reach for it when you have an address and want the current state that
+program owns.
 
-It is independent of live views. A standalone Program SDK can be read-ready
-without any deployed stack.
+It works independently of live views. A standalone Program SDK can be
+read-ready with no deployed stack anywhere.
 
 ## Chain gateway: generic state and transactions
 
-The Solana gateway provides capabilities that are not tied to one program
-account schema:
+Some things aren't tied to any one program's account schema. The Solana gateway
+covers those:
 
-- generic account, balance, mint, rent, and clock reads;
+- general account, balance, mint, rent, and clock reads;
 - transaction blockhash, fee, and simulation support; and
 - submission and confirmation for locally signed transactions.
 
-Read and transaction scopes are independent. The wallet compiles and signs
-locally; Arete never receives the private key.
+Read access and transaction access are granted separately. The wallet compiles
+and signs on your machine, and Arete never receives the private key.
 
-Hosted packages carry explicit gateway descriptors. Clients do not derive the
-gateway from a stack's WebSocket URL.
+Hosted packages carry explicit gateway descriptors. Clients don't work out the
+gateway address from a stack's WebSocket URL.
 
 ## Live views: maintained application state
 
-Live views transform account and instruction updates into application-facing
-entities. A view can provide keyed state, a collection, or a bounded filtered
-and sorted window.
+Live views turn a stream of account and instruction updates into entities your
+application can use directly. A view can offer keyed state, a collection, or a
+bounded window that is filtered and sorted.
 
 Clients can:
 
 - fetch a point-in-time result over HTTP;
 - subscribe to updates over WebSocket;
-- apply server-side keys, filters, partitions, and limits; and
-- reconcile application state after a confirmed transaction.
+- apply keys, filters, partitions, and limits on the server side; and
+- bring application state back in line after a confirmed transaction.
 
-View subscriptions use an explicit update taxonomy. A row can be added or
-changed, leave one query while continuing to exist, or be deleted globally.
-Use the generated SDK rather than reducing every update to an upsert/delete
-pair.
+View subscriptions distinguish between kinds of update. A row can be added or
+changed, it can drop out of one query while still existing, or it can be
+deleted everywhere. The generated SDK handles those cases for you, so use it
+instead of flattening every update into an upsert/delete pair.
 
 ## MCP: the exploratory client
 
-The local Arete MCP server exposes catalog discovery and live-view operations
-to an agent. It can connect to a deployed stack, maintain a bounded cache for
-active subscriptions, and query that cache while answering a question.
+The local Arete MCP server gives an agent access to catalog search and
+live-view operations. It can connect to a deployed stack, keep a bounded cache
+for active subscriptions, and query that cache while it answers your question.
 
-MCP is ideal for exploration and debugging. Once the capability belongs in a
+MCP is ideal for exploring and debugging. Once a capability belongs in a
 product, install its exact package and use the generated SDK.
 
 ## Sessions: application composition
 
-A session composes several stacks and programs while sharing authentication,
-chain reads, wallet access, and transaction transports. Generated packages
-retain their own exact identities and bindings.
+A session brings several stacks and programs together and lets them share
+authentication, chain reads, wallet access, and transaction transports. Each
+generated package still keeps its own exact identities and connection details.
 
 ```ts
 const session = await createSession({
@@ -129,12 +138,12 @@ session.chain;
 
 ## Custom views
 
-When an existing view does not answer the application question, define a new
-read model with the advanced Rust authoring path.
+When no existing view answers your application's question, you can define a new
+one using the advanced Rust authoring path.
 
-Compilation produces definitions; deployment attaches hosted capabilities.
+Compiling produces definitions. Deploying attaches hosted capabilities to them.
 After deployment, query the result through MCP, refine it, and install the
-finished stack into the application.
+finished stack into your application.
 
 ## Public contracts versus implementation
 
@@ -146,8 +155,9 @@ Applications should depend on:
 - documented query and transaction semantics; and
 - explicit authentication scopes.
 
-They should not depend on internal service names, deployment grouping, storage
-layout, compiler processes, or inferred endpoint conventions.
+They should not depend on internal service names, how deployments are grouped,
+storage layout, compiler processes, or endpoint conventions they have inferred.
+Those are implementation details, not part of the public contract.
 
 ## Continue
 

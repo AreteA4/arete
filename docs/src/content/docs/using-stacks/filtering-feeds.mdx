@@ -7,7 +7,7 @@ description: Control what data streams to your client with pagination, sorting, 
 
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 
-When streaming data from views, you can control what the server sends to reduce bandwidth and improve performance.
+A view can hold far more data than any one screen needs. When you subscribe, you can tell the server exactly which slice to send: how many items, starting where, and matching which key. Asking for less saves bandwidth and keeps your app fast.
 
 ---
 

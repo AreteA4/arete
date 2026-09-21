@@ -3,9 +3,11 @@ title: Solana Chain Reads
 description: Read generic Solana state through the managed gateway or an explicit custom transport.
 ---
 
-The chain surface handles generic Solana data that is not specific to one
-generated program-account schema. It is shared by the application session and
-uses the chain-read descriptor embedded in installed hosted packages.
+Some data belongs to Solana itself and not to any one program: a wallet's SOL
+balance, the current clock, a token mint, the raw bytes of an account. The chain
+surface, `session.chain`, is where you read those. It is shared across the whole
+application session and uses the chain-read descriptor embedded in your
+installed hosted packages.
 
 ## What to read where
 
@@ -16,7 +18,7 @@ uses the chain-read descriptor embedded in installed hosted packages.
 | Read lamports, clock, rent, mint, token account, or raw bytes | `session.chain`                              |
 | Build or submit a transaction                                 | Program operation plus transaction transport |
 
-Keeping these surfaces separate prevents a live query endpoint from becoming
+Keeping these surfaces separate stops a live query endpoint from turning into
 an accidental general-purpose RPC URL.
 
 ## TypeScript

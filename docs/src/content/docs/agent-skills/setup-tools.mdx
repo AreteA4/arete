@@ -1,19 +1,28 @@
 ---
 title: Choose and Set Up an Agent
-description: Prepare a coding agent to discover programs, query live views, and build with generated Arete SDKs.
+description: Get a coding agent ready to discover programs, query live views, and build with generated Arete SDKs.
 ---
 
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-Arete works with coding agents that can run commands and use MCP tools. You can
-use Cursor, Claude Code, Codex, OpenCode, VS Code agents, or another supported
-client. The Arete workflow does not depend on one editor.
+Arete works with any coding agent that can run commands and use MCP tools.
+Cursor, Claude Code, Codex, OpenCode, VS Code agents, and other supported
+clients all work. Nothing in the Arete workflow depends on one editor, so use
+the one you already like.
+
+:::tip[New to coding agents?]
+A coding agent is an AI assistant that works inside a folder on your computer.
+It can read and write files there and run commands on your behalf. Whenever
+this page shows a command, you can type it into a terminal yourself or ask the
+agent to run it for you.
+:::
 
 ## 1. Open a project folder
 
-Create or open the directory where you want the agent to work. Project-scoped
-setup is recommended because dependencies, instructions, skills, and MCP
-configuration can be reviewed with the rest of the project.
+Create or open the folder where you want the agent to work. We recommend
+setting Arete up per project. That way its dependencies, instructions, skills,
+and MCP configuration sit alongside everything else and can be reviewed with
+it.
 
 ```bash
 mkdir my-arete-project
@@ -30,37 +39,39 @@ Read https://docs.arete.run/agent.md and follow it to set up Arete in this
 project. Verify the setup, and simply explain what Arete is capable of.
 </CopyPrompt>
 
-The agent should:
+The agent will:
 
 1. install the signed `a4` CLI binary;
 2. run `a4 init -y`;
 3. run `a4 doctor --json`; and
-4. follow exact repair commands for required failures.
+4. follow the exact repair commands for any required check that fails.
 
-No Rust toolchain or Arete account is required for basic setup and public
-catalog discovery.
+You don't need a Rust toolchain or an Arete account for basic setup and for
+searching the public catalog.
 
 ## 3. Reload the agent
 
-`a4 init` writes MCP configuration for detected agents. Terminal agents often
-pick this up immediately; GUI applications may need a full restart so they
-reload configuration and the updated PATH.
+`a4 init` writes MCP configuration for the agents it detects. Agents that run
+in a terminal often pick this up straight away. Desktop apps may need a full
+restart before they reload their configuration and the updated PATH.
 
 Ask the agent to confirm that it can see:
 
-- the `arete` MCP server for discovery and live views; and
-- the `arete-docs` MCP server for documentation search.
+- the `arete` MCP server, for discovery and live views; and
+- the `arete-docs` MCP server, for documentation search.
 
-If either is missing:
+If either one is missing:
 
 ```bash
 a4 doctor --json
 a4 doctor --fix
 ```
 
-Review the reported changes and restart the agent again.
+Review the changes it reports and restart the agent once more.
 
 ## 4. Ask an on-chain question
+
+Swap your own question into the brackets:
 
 <CopyPrompt>
 Use Arete to find programs and currently deployed views related to [YOUR
@@ -70,8 +81,8 @@ finished. If no suitable hosted view exists, tell me which program capabilities
 are closest instead of guessing.
 </CopyPrompt>
 
-Knowledge lookup and hosted connections may require authentication. When the
-agent reports that requirement, run:
+Knowledge lookups and hosted connections may require you to sign in. When the
+agent tells you so, run:
 
 ```bash
 a4 auth signup
@@ -83,12 +94,12 @@ or log in with a key you already control:
 a4 auth login --key <a4_ak_...>
 ```
 
-Do not paste credentials into chat or source code.
+Don't paste credentials into chat or into source code.
 
 ## 5. Turn the result into code
 
-Once exploration identifies the correct capability, ask the agent to install
-it and build against the generated types:
+Once exploring has pinned down the right capability, ask the agent to install
+it and build on the generated types:
 
 <CopyPrompt>
 Install the exact Arete program or stack we just validated into this project
@@ -97,13 +108,13 @@ and implement [FEATURE] using generated names and types. Do not edit generated
 files or reuse MCP cache data as an application dependency.
 </CopyPrompt>
 
-The agent should use `a4 install program ...` for standalone program reads and
-transactions, or `a4 install stack ...` when the application needs the selected
-live views.
+The agent uses `a4 install program ...` when you need standalone program reads
+and transactions, or `a4 install stack ...` when the application needs live
+views as well.
 
 ## What the setup writes
 
-Depending on the detected agent, `a4 init` may create or update:
+Depending on which agent it detects, `a4 init` may create or update:
 
 - `arete.toml`;
 - an Arete-managed block in `AGENTS.md`;
@@ -112,14 +123,15 @@ Depending on the detected agent, `a4 init` may create or update:
 - project MCP configuration; and
 - `skills-lock.json`.
 
-Re-running `a4 init` updates managed sections without replacing unrelated
-project instructions.
+Running `a4 init` again updates the sections it manages and leaves the rest of
+your project instructions alone.
 
 ## Safety expectations
 
-An agent can search, read, generate local code, and inspect transactions without
-transaction or deployment authority. Signing, submitting, publishing, and
-deploying are separate actions and require an explicit request.
+An agent can search, read, generate local code, and inspect transactions
+without holding any authority over your transactions or deployments. Signing,
+submitting, publishing, and deploying are separate actions, and each needs an
+explicit request from you.
 
 Continue with [Explore On-chain with MCP](/agent-skills/explore-on-chain/) or
 the [Prompt Cookbook](/agent-skills/prompts/).

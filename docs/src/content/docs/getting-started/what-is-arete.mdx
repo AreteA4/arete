@@ -1,127 +1,167 @@
 ---
 title: What is Arete?
-description: The program-first, agent-first model behind Arete.
+description: What Arete does, who it is for, and the handful of ideas you need to follow the rest of the docs.
 ---
 
 import { Card, CardGrid } from "@astrojs/starlight/components";
 
-Arete is a toolkit for discovering and using Solana programs without rebuilding
-the same decoding, RPC, transaction, and indexing infrastructure for every
-application.
+Building on Solana usually starts with plumbing. Before an app can show a
+balance or send a transaction, someone has to decode the program's data, wire
+up RPC calls, assemble transactions, and often run an indexer to keep it all
+current. Most teams end up rebuilding the same machinery.
 
-It is designed for agents first. A coding agent can translate a goal into exact
-programs and capabilities, inspect their current descriptors, explore deployed
-live data through MCP, and generate the SDK your application will use.
+Arete does that work once per program and hands you the result as ready-to-use
+code and live data.
 
-## Start from intent
+It is designed for agents first. You tell a coding agent such as Claude Code,
+Cursor, or Codex what you're trying to do. The agent uses Arete to find the
+right programs, check what they support today, look at live data, and generate
+the SDK your app will use. You stay in charge of the goal, and of anything that
+needs your approval, like signing a transaction.
 
-A normal Arete workflow begins with what you want to accomplish:
+## Start from what you want
+
+You don't begin with a program ID. You begin with a sentence:
 
 - “Show me active liquidity pools.”
 - “Watch new token launches and summarize them.”
 - “Read this multisig and prepare a proposal.”
 - “Build a deposit transaction for this position.”
 
-The catalog maps that intent to programs and reports which modes are available:
+Arete's **catalog** is a searchable directory of the programs and data it knows
+about. It matches your sentence to programs and reports which **modes** each
+one supports right now:
 
-| Mode        | What it means                                         |
-| ----------- | ----------------------------------------------------- |
-| `read`      | Typed program-account reads and generic Solana state  |
-| `build`     | Instructions, transactions, and higher-level flows    |
-| `subscribe` | Current-state and live views from a hosted deployment |
+| Mode        | In plain terms                                                                 |
+| ----------- | ------------------------------------------------------------------------------ |
+| `read`      | Look up current on-chain data: typed program accounts and general Solana state |
+| `build`     | Put together instructions, transactions, and multi-step flows                  |
+| `subscribe` | Get current state and live updates from a hosted deployment                    |
 
-Catalog results are discovery information. Before writing code, the agent opens
-the exact program or stack descriptor to learn the real account names, views,
-SDK targets, authentication requirements, and install command.
+Treat a catalog result as a lead. Before writing any code, the agent opens the
+**descriptor** for the exact program or stack. Think of it as a spec sheet: it
+lists the real account names, views, supported SDK languages, sign-in
+requirements, and the command that installs it.
 
-## Every program becomes an application interface
+## Every program becomes something your app can call
 
-The base unit in Arete is a **program**. A generated Program SDK can include:
+The basic building block in Arete is a **program**: an app deployed on Solana,
+which other chains would call a smart contract. For each one, Arete can
+generate a **Program SDK** that may include:
 
-- typed account schemas and release-pinned account readers;
-- PDA and known-address helpers;
-- pure, offline instruction builders;
-- application-shaped operations and multi-step flows;
-- transaction inspection and execution through a locally signing wallet; and
-- generated constants, defaults, calculations, and error metadata where the
-  program package defines them.
+- typed schemas for the program's accounts, with readers matched to the exact
+  release you installed;
+- helpers for PDAs (addresses a program derives for itself) and other known
+  addresses;
+- instruction builders that run offline and have no side effects;
+- higher-level operations and multi-step flows, shaped like the things an app
+  does;
+- transaction inspection, plus execution through a wallet that signs on your
+  machine; and
+- constants, defaults, calculations, and error details, wherever the program's
+  package defines them.
 
-You do not need a live stack to use a Program SDK. Programs can be installed
-and composed independently.
+A Program SDK stands on its own. You don't need a live stack to use one, and
+you can install and combine as many as you like.
 
-## Views add application-shaped live data
+## Views give you data in the shape your app wants
 
-Program accounts are not always the shape an application wants to consume.
-A product might need a joined position, a sorted leaderboard, recent activity,
-or an aggregate assembled from several accounts and instructions.
+The way a program stores data on-chain is rarely the way an app wants to show
+it. A product might need one position stitched together from several accounts,
+a leaderboard sorted by score, a feed of recent activity, or a total computed
+across many accounts and instructions.
 
-A **view** is that application-facing read model. Views can provide a point-in-
-time result and, when hosted over WebSocket, continuous updates. They may use
-one program or combine data from several programs.
+A **view** is that app-friendly version. You can ask a view for its state right
+now and, when it is hosted over WebSocket, receive updates as they happen. A
+view can draw on one program or combine several.
 
-Agents can inspect and query deployed views through MCP before any application
-code exists. This makes exploration part of the development loop rather than a
-separate indexing project.
+Your agent can look inside deployed views through MCP (Model Context Protocol,
+the standard way agents connect to outside tools) before a single line of your
+app exists. Exploring the data becomes part of building, rather than a separate
+indexing project you have to finish first.
 
-## Stacks package a complete capability
+## Stacks bundle it all up
 
-A **stack** is an installable composition of:
+A **stack** is what you install when you want live data. It bundles:
 
 - one or more Program SDKs;
-- selected live views;
-- generated application operations and helpers; and
-- the bindings required to use the available hosted capabilities.
+- a chosen set of live views;
+- generated operations and helpers for your app; and
+- the connection details for whichever hosted services are available.
 
-The fact that several views may share a hosted runtime is an operational
-detail. The application-facing model is the composition it installs.
+Several views might share one server behind the scenes. That is an operational
+detail you can ignore. What matters to your app is the bundle it installed.
 
 For exact terminology, see [Programs, views, and stacks](/concepts/programs-views-stacks/).
 
-## One generated session
+## One session for everything
 
-Applications can install several stacks and standalone programs into one
-session. The session provides stable access to:
+An app can install several stacks and standalone programs, then reach all of
+them through a single **session**:
 
 - `session.stacks` for each installed stack;
-- `session.programs` for canonical program interfaces;
-- `session.chain` for generic Solana reads; and
-- transaction preparation and execution shared across the application.
+- `session.programs` for each program, under its canonical interface;
+- `session.chain` for general Solana reads; and
+- transaction preparation and execution, shared across the whole app.
 
-The generated code carries exact identities and connection descriptors. Your
-application should not construct hosted endpoints or guess schemas itself.
+The generated code already carries the exact identities and connection details.
+Your app never has to build a hosted endpoint URL or guess at a schema.
 
 ## Explore before you build
 
-The fastest way to understand Arete is to ask an agent a real question. The
-agent can search the catalog, connect to an existing live view, and explain
-what the data contains. When the result becomes part of a product, install the
-same exact capability into the project and build against its generated types.
+The quickest way to understand Arete is to ask your agent a real question. It
+searches the catalog, connects to a live view, and tells you what the data
+contains. If the answer turns into something you want in a product, install
+that same capability into your project and build on its generated types.
 
 <CardGrid>
   <Card title="Ask an on-chain question" icon="star">
-    Use the configured MCP server to discover and query deployed views.
+    Let your agent discover and query deployed views through MCP.
 
     [Explore with an agent →](/agent-skills/explore-on-chain/)
 
   </Card>
   <Card title="Install a Program SDK" icon="laptop">
-    Start directly from typed program reads and transaction construction.
+    Go straight to typed program reads and transaction building.
 
     [Build with a program →](/using-programs/overview/)
 
   </Card>
 </CardGrid>
 
-## What Arete does not hide
+## What Arete keeps in plain sight
 
-Arete removes repetitive integration work, but preserves important boundaries:
+Arete takes away repetitive integration work. It deliberately leaves a few
+lines visible:
 
-- generated descriptors and types are the authority for the installed release;
-- reading, preparing, inspecting, signing, and submitting are different actions;
-- wallets sign locally and Arete never receives private keys;
-- Program Read, generic chain reads, live views, and transaction submission are
-  independent capabilities; and
-- a catalog entry may be known without every delivery mode being available.
+- The generated descriptors and types are the final word on what an installed
+  release can do.
+- Reading, preparing, inspecting, signing, and submitting are separate steps.
+  Doing one never implies permission for the next.
+- Wallets sign on your machine. Arete never receives a private key.
+- Program Read, general chain reads, live views, and transaction submission are
+  independent services. Having one doesn't guarantee another.
+- A program can appear in the catalog before every mode is available for it.
 
-This lets agents automate the mechanical work without fabricating capabilities
-or crossing transaction and deployment boundaries silently.
+Those lines are what let an agent automate the tedious parts without inventing
+capabilities that don't exist, or quietly sending a transaction or deploying
+something you never asked for.
+
+## Quick glossary
+
+A few words show up everywhere in these docs. Here they are in one place.
+
+| Term        | What it means                                                                                                            |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Agent       | An AI coding assistant that can run commands and edit files in your project, such as Claude Code, Cursor, or Codex       |
+| `a4`        | Arete's command-line tool (CLI). Your agent usually runs it for you, and you can run it yourself                         |
+| Program     | An app deployed on Solana; a smart contract                                                                              |
+| Program SDK | Generated code for reading one program's data and sending it transactions                                                |
+| View        | App-shaped data built from one or more programs and kept current                                                         |
+| Stack       | An installable bundle of views and the Program SDKs they depend on                                                       |
+| Catalog     | The searchable directory of programs and stacks Arete knows about                                                        |
+| Mode        | What a catalog entry supports today: `read`, `build`, or `subscribe`                                                     |
+| Descriptor  | The exact spec sheet for one program or stack release                                                                    |
+| MCP         | Model Context Protocol, the standard way agents connect to tools. Arete's MCP server is how your agent queries live data |
+| Typed       | The code knows the shape of every piece of data, so mistakes show up in your editor instead of in production             |
+| PDA         | Program-derived address: an address a program calculates for itself from known inputs                                    |

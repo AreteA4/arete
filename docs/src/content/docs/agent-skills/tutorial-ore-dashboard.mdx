@@ -7,20 +7,20 @@ description: Build a live ORE mining dashboard by prompting your AI agent step b
 
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-:::caution[Example availability]
-This is a package-specific example retained for projects that already have
-access to the ORE hosted stack. Before starting, run
-`a4 explore catalog stack ore --json`. If the descriptor is unavailable or not
-subscribe-ready for your identity, use the current
-[Quickstart](/using-stacks/quickstart/) and choose a stack returned by the
-catalog instead. Do not use the endpoint or generated names on this page with a
-different package.
+:::caution[Check that ORE is available to you first]
+This tutorial is written for one specific package, the ORE hosted stack, and it
+only works for projects that have access to it. Before you start, run
+`a4 explore catalog stack ore --json`. If the descriptor is unavailable, or it
+isn't subscribe-ready for your account, follow the
+[Quickstart](/using-stacks/quickstart/) instead and pick a stack the catalog
+returns for you. The endpoint and generated names on this page belong to ORE, so
+don't reuse them with a different package.
 :::
 
-This tutorial shows you how to build a real-time ORE mining dashboard without writing any code. You will use your AI agent to discover the data, set up the project, and implement the UI.
+In this tutorial you build a real-time ORE mining dashboard without writing any code yourself. You work through seven prompts. Your AI agent discovers the data, sets up the project, and builds the interface, and you watch it take shape one step at a time.
 
 :::tip[New to coding?]
-If you haven't set up a coding tool yet, start with the [Setup Guide](/agent-skills/setup-tools/) first — it takes about 5 minutes.
+If you haven't set up a coding agent yet, start with [Choose and Set Up an Agent](/agent-skills/setup-tools/). It takes about 5 minutes.
 :::
 
 ---
@@ -35,7 +35,7 @@ If you haven't set up a coding tool yet, start with the [Setup Guide](/agent-ski
 
 ## Step 1: Scaffold the Project
 
-Start by creating the basic project structure and installing dependencies.
+Start by having the agent create the project and install what it needs. This prompt is long because it pins down the details an agent would otherwise have to guess.
 
 **Prompt:**
 
@@ -47,7 +47,7 @@ Create a new React + Vite + TypeScript project. Install `@usearete/react`, `@use
 
 ## Step 2: Discover the ORE Schema
 
-Ask your agent to look at the available ORE data to understand what you can build.
+Before building anything, ask your agent to look at the ORE data that is available, so you both know what there is to work with.
 
 **Prompt:**
 
@@ -59,7 +59,7 @@ Run `a4 explore ore --json` and `a4 explore ore OreRound --json` to understand t
 
 ## Step 3: Build the Main Layout
 
-Set up the application shell with a connection status indicator.
+Next comes the frame of the app, including an indicator that shows whether it is connected to live data.
 
 **Prompt:**
 
@@ -71,7 +71,7 @@ Create the main `App.tsx` with `AreteProvider` from `@usearete/react`. Import `O
 
 ## Step 4: Add Live Round Data
 
-Connect to the live round view to show the current mining status.
+Now connect to the live round view, so the dashboard shows what is happening in the current mining round.
 
 **Prompt:**
 
@@ -83,7 +83,7 @@ In `OreDashboard`, import `ORE_STREAM_STACK` from `./generated/ore-stack` and ca
 
 ## Step 5: Add Treasury Data
 
-Include high-level stats about the ORE treasury.
+Add a few headline numbers about the ORE treasury.
 
 **Prompt:**
 
@@ -95,7 +95,7 @@ Add a section that shows ORE treasury state. Subscribe to `OreTreasury.state` wi
 
 ## Step 6: Add Round History
 
-List previous rounds to show historical mining activity.
+List recent rounds in a table, so you can see how mining has gone lately.
 
 **Prompt:**
 
@@ -107,7 +107,7 @@ Add a section below the stats that shows recent rounds in a table. Use `OreRound
 
 ## Step 7: Polish the UI
 
-Make the dashboard look professional and responsive.
+Finish by making the dashboard look polished and work well on a phone.
 
 **Prompt:**
 
@@ -119,6 +119,6 @@ Clean up the layout. Add subtle animations for when data updates like a brief hi
 
 ## The Result
 
-Once your agent finishes the final step, you will have a fully functional, real-time dashboard. The app connects to the Arete ORE stream and updates automatically as new data hits the Solana blockchain.
+Once your agent finishes the last step, you have a working, real-time dashboard. The app connects to the Arete ORE stream and updates on its own as new data lands on Solana.
 
-You built a complex, data-heavy application in minutes without writing a single line of manual code.
+You built a data-heavy application by describing it, one prompt at a time. To take the same approach to your own idea, browse the [Prompt Cookbook](/agent-skills/prompts/) or read [From Question to Application](/getting-started/from-question-to-app/).
