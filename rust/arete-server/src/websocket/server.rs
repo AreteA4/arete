@@ -1564,6 +1564,18 @@ async fn attach_journal_subscription(
                                     ),
                                     &span_view,
                                 );
+                                // Ending the task is not enough: the
+                                // registration gates duplicate IDs and counts
+                                // against the client's subscription limit, so
+                                // a consumer told to resubscribe would be
+                                // refused with `duplicate-subscription-id`.
+                                task_context
+                                    .client_manager
+                                    .remove_client_subscription(
+                                        task_context.client_id,
+                                        &task_subscription_id,
+                                    )
+                                    .await;
                                 break;
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
