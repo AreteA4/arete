@@ -1,0 +1,71 @@
+---
+title: Arete developer portal
+description: "Arete developer portal for API keys, documentation, quickstart, OpenAPI, MCP, and SDK generation. There is no separate sandbox hostname; verify with a4 doctor and the live catalog."
+sidebar:
+  hidden: true
+---
+
+This is the **Arete developer portal**. Use it when you need keys, docs, the
+HTTP API, or a first working project. Humans and agents should start here
+rather than scraping the marketing site.
+
+## API keys and authentication
+
+Hosted catalog, Program Read, and live views use origin-bound publishable keys
+and account API keys. They are not interchangeable.
+
+1. Create or inspect a key at [https://arete.run/keys](https://arete.run/keys).
+2. In a project, prefer `a4 auth login --key <a4_ak_…>` or `a4 auth signup`
+   when the user asked for an agent account.
+3. Browser apps take `auth={{ publishableKey }}` on the generated client.
+   Never put an account API key in frontend code, logs, or git.
+
+`a4 doctor --json` reports the current identity and the exact `fix` command
+when a required check is not ready.
+
+## Documentation and quickstart
+
+| Resource              | URL                                                                | Use it for                                        |
+| --------------------- | ------------------------------------------------------------------ | ------------------------------------------------- |
+| Quickstart            | [/using-stacks/quickstart/](/using-stacks/quickstart/)             | Install the CLI and run `a4 init`                 |
+| Agent bootstrap       | [/agent.md](/agent.md)                                             | One-page setup for coding agents                  |
+| What is Arete         | [/getting-started/what-is-arete/](/getting-started/what-is-arete/) | Product model                                     |
+| Catalog + descriptors | [/agent-skills/explore/](/agent-skills/explore/)                   | Find programs and stacks by intent                |
+| MCP servers           | [/agent-skills/mcp/](/agent-skills/mcp/)                           | Docs MCP and stream MCP                           |
+| TypeScript SDK        | [/sdks/typescript/](/sdks/typescript/)                             | Generated clients                                 |
+| OpenAPI spec          | [/openapi.json](/openapi.json)                                     | Function-calling description of the docs HTTP API |
+
+The documentation index for agents is [llms.txt](/llms.txt). Append `.md` to
+any docs URL, or send `Accept: text/markdown`.
+
+## HTTP API and MCP
+
+The documentation HTTP API is the MCP server at
+`https://docs.arete.run/mcp`.
+
+- `GET /mcp` returns the descriptor (`search_docs`, `fetch_page`).
+- `POST /mcp` is JSON-RPC 2.0 Streamable HTTP.
+- Errors are JSON objects `{ "error": { "code", "message", "hint" } }`.
+- The OpenAPI document is at [`/openapi.json`](/openapi.json).
+
+This API searches and fetches **these docs**. It does not submit Solana
+transactions or mint hosted deployments. Those stay on the `a4` CLI and
+generated SDKs.
+
+## Sandbox
+
+There is no separate sandbox hostname. Agents verify the local toolchain with
+`a4 doctor --json`, then explore the live catalog:
+
+```bash
+a4 explore catalog --query "<intent>" --json
+```
+
+Use `--no-save` only for disposable generation. Do not treat a failed
+descriptor as permission to guess a program ID or endpoint.
+
+## Skills
+
+Install product skills with `a4 init` (runs `npx skills add AreteA4/skills`)
+or read the well-known index at
+[/.well-known/agent-skills](/.well-known/agent-skills).

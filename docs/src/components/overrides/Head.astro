@@ -10,10 +10,47 @@
  */
 const { head } = Astro.locals.starlightRoute;
 const site = Astro.site?.href?.replace(/\/$/, "") ?? "https://docs.arete.run";
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      name: "Arete",
+      applicationCategory: "DeveloperApplication",
+      operatingSystem: "Solana",
+      url: "https://arete.run",
+      description:
+        "Agent-first Solana application toolkit: discover programs and live views, explore on-chain state through MCP, and install typed SDKs.",
+      documentation: site,
+    },
+    {
+      "@type": "WebSite",
+      name: "Arete documentation",
+      url: site,
+      description:
+        "Documentation, OpenAPI, and MCP for the Arete agent-first Solana toolkit.",
+    },
+    {
+      "@type": "Organization",
+      name: "Arete",
+      url: "https://arete.run",
+      sameAs: ["https://github.com/AreteA4/arete", site],
+      contactPoint: {
+        "@type": "ContactPoint",
+        contactType: "developer support",
+        url: `${site}/contact`,
+      },
+    },
+  ],
+};
 ---
 
 <meta name="color-scheme" content="light dark" />
 <meta name="theme-color" content="#f3efe4" />
+<meta name="is-agentic-site-type" content="documentation" />
+<meta property="og:image" content={`${site}/og.png`} />
+<meta name="twitter:image" content={`${site}/og.png`} />
+<script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
 <link
   rel="alternate"
   type="text/plain"
@@ -25,6 +62,7 @@ const site = Astro.site?.href?.replace(/\/$/, "") ?? "https://docs.arete.run";
 <link rel="mcp-server-card" href={`${site}/.well-known/mcp/server-card.json`} />
 <link rel="agent-card" href={`${site}/.well-known/agent-card.json`} />
 <link rel="agent-skills" href={`${site}/.well-known/agent-skills`} />
+<link rel="describedby" href={`${site}/openapi.json`} />
 
 {
   head.map(({ tag: Tag, attrs, content }) => (

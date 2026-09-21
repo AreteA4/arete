@@ -37,6 +37,7 @@ export function markdownResponse(body: string): Response {
     headers: {
       "content-type": "text/markdown; charset=utf-8",
       "cache-control": "public, max-age=0, must-revalidate",
+      vary: "Accept",
       "x-llms-txt": `${SITE}/llms.txt`,
     },
   });
