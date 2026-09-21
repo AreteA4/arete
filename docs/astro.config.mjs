@@ -48,6 +48,9 @@ export default defineConfig({
       // Component overrides for custom design and analytics
       components: {
         Sidebar: "./src/components/overrides/Sidebar.astro",
+        SiteTitle: "./src/components/overrides/SiteTitle.astro",
+        ThemeProvider: "./src/components/overrides/ThemeProvider.astro",
+        ThemeSelect: "./src/components/overrides/ThemeSelect.astro",
         EditLink: "./src/components/overrides/EditLink.astro",
         Head: "./src/components/overrides/Head.astro",
         Footer: "./src/components/overrides/Footer.astro",
