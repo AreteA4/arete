@@ -160,6 +160,31 @@ pub(crate) fn entity_program_name<'a>(
         .map(|idl| idl.name.as_str())
 }
 
+/// The IDL an entity's types resolve against: the one whose program id is the
+/// entity's, else the snapshot the entity embeds, else the stack's only IDL.
+///
+/// A multi-IDL stack never falls back, because `idls.first()` types every
+/// entity against whichever program happens to be declared first. A
+/// single-program stack is unambiguous, so an entity that names no program
+/// still resolves against it.
+pub(crate) fn entity_idl<'a>(
+    entity: &'a SerializableStreamSpec,
+    idls: &'a [IdlSnapshot],
+) -> Option<&'a IdlSnapshot> {
+    entity
+        .program_id
+        .as_deref()
+        .and_then(|program_id| {
+            idls.iter()
+                .find(|idl| idl.program_id.as_deref() == Some(program_id))
+        })
+        .or(entity.idl.as_ref())
+        .or_else(|| match idls {
+            [only] => Some(only),
+            _ => None,
+        })
+}
+
 /// The generated models of IDL account types, for typed account readers.
 ///
 /// A program's account type is read into the model the program's own

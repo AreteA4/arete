@@ -2996,7 +2996,7 @@ fn compile_stack_spec_with_view_selection(
 
     for mut spec in stack_spec.entities {
         if spec.idl.is_none() {
-            spec.idl = stack_spec.idls.first().cloned();
+            spec.idl = crate::stack_types::entity_idl(&spec, &stack_spec.idls).cloned();
         }
         entity_names.push(spec.state_name.clone());
         entity_specs.push(spec);

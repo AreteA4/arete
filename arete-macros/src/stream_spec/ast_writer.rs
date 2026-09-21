@@ -21,7 +21,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{idl_error_to_syn, internal_codegen_error};
 use crate::event_type_helpers::{
-    find_idl_for_type, program_name_for_type, scoped_instruction_event_type,
+    find_idl_by_prefix, find_idl_for_type, program_name_for_type, scoped_instruction_event_type,
     scoped_instruction_or_cpi_event_type, IdlLookup,
 };
 use crate::parse;
@@ -40,6 +40,47 @@ use super::handlers::{find_field_in_instruction, get_join_on_field};
 // ============================================================================
 // AST Building
 // ============================================================================
+
+/// Resolve the IDL that owns this entity, from the sources it declares.
+///
+/// A single-program entity resolves to its own program whatever order the
+/// stack declares its IDLs in, which picking `idls.first()` could not do: an
+/// entity sourced entirely from the second IDL used to advertise the first
+/// IDL's program id and be typed against the first IDL's schema.
+fn resolve_entity_idl<'a>(
+    sources_by_type: &BTreeMap<String, Vec<parse::MapAttribute>>,
+    events_by_instruction: &BTreeMap<String, Vec<(String, parse::EventAttribute, syn::Type)>>,
+    idls: IdlLookup<'a>,
+) -> Option<&'a idl_parser::IdlSpec> {
+    if idls.len() <= 1 {
+        return idls.first().map(|(_, idl)| *idl);
+    }
+
+    // ponytail: an entity spanning programs (ore's `OreRound` reads Entropy
+    // accounts) is attributed to whichever program owns most of its declared
+    // sources, tie-broken by program name so the result never depends on IDL
+    // declaration order. Per-section program attribution is the upgrade path
+    // if one entity ever needs two programs to own different sections.
+    let mut sources_per_program: BTreeMap<&str, usize> = BTreeMap::new();
+    for source_type in sources_by_type.keys().chain(events_by_instruction.keys()) {
+        if let Some(idl) = find_idl_by_prefix(source_type, idls) {
+            *sources_per_program.entry(idl.get_name()).or_default() += 1;
+        }
+    }
+
+    let owner = sources_per_program
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(left.0)))
+        .map(|(program_name, _)| program_name);
+
+    owner
+        .and_then(|program_name| {
+            idls.iter()
+                .find(|(_, idl)| idl.get_name() == program_name)
+                .map(|(_, idl)| *idl)
+        })
+        .or_else(|| idls.first().map(|(_, idl)| *idl))
+}
 
 /// Build the complete AST from parsed macro attributes.
 ///
@@ -80,7 +121,7 @@ pub fn build_ast(
     idls: IdlLookup,
     views: Vec<crate::ast::ViewDef>,
 ) -> syn::Result<SerializableStreamSpec> {
-    let idl = idls.first().map(|(_, idl)| *idl);
+    let idl = resolve_entity_idl(sources_by_type, events_by_instruction, idls);
     let handlers = build_handlers(
         sources_by_type,
         events_by_instruction,
@@ -1198,10 +1239,17 @@ fn build_event_handler(
             find_idl_for_type(path_str, idls),
             program_name_for_type(path_str, idls),
         ),
-        None => (
-            idls.first().map(|(_, idl)| *idl),
-            idls.first().map(|(_, idl)| idl.get_name()),
-        ),
+        None => {
+            // The instruction is program-qualified ("pump::Trade"), so resolve
+            // from its own program instead of whichever IDL comes first.
+            let program = instruction.split("::").next().unwrap_or_default();
+            let owning = idls
+                .iter()
+                .find(|(_, idl)| idl.get_name() == program)
+                .map(|(_, idl)| *idl)
+                .or_else(|| idls.first().map(|(_, idl)| *idl));
+            (owning, owning.map(|idl| idl.get_name()))
+        }
     };
     let parts: Vec<&str> = instruction.split("::").collect();
     if parts.len() != 2 {
