@@ -20,6 +20,7 @@ pub struct Projector {
     entity_cache: EntityCache,
     mutations_rx: mpsc::Receiver<MutationBatch>,
     snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
+    journal: Option<Arc<crate::journal::EventJournal>>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -39,6 +40,7 @@ impl Projector {
             entity_cache,
             mutations_rx,
             snapshot_runtime: None,
+            journal: None,
             metrics,
         }
     }
@@ -56,6 +58,7 @@ impl Projector {
             entity_cache,
             mutations_rx,
             snapshot_runtime: None,
+            journal: None,
         }
     }
 
@@ -65,6 +68,12 @@ impl Projector {
         snapshot_runtime: crate::snapshot::SnapshotRuntime,
     ) -> Self {
         self.snapshot_runtime = Some(snapshot_runtime);
+        self
+    }
+
+    /// Retain published events for replayable append subscriptions.
+    pub fn with_journal(mut self, journal: Arc<crate::journal::EventJournal>) -> Self {
+        self.journal = Some(journal);
         self
     }
 
@@ -211,6 +220,18 @@ impl Projector {
             // Extract _seq from the patch data to include in the frame
             let seq = slot_context.map(|ctx| ctx.to_seq_string());
 
+            // Replayable append views carry the offset the record is about to
+            // take, so a live subscriber can checkpoint the same cursor a
+            // replay would hand it.
+            let journal = self
+                .journal
+                .as_ref()
+                .filter(|journal| journal.is_enabled() && spec.mode == Mode::Append);
+            let offset = match journal {
+                Some(journal) => Some(journal.next_offset(&spec.id).await),
+                None => None,
+            };
+
             let frame = SourceFrame {
                 mode: spec.mode,
                 export: spec.id.clone(),
@@ -219,11 +240,21 @@ impl Projector {
                 data: wire_data,
                 append: append.clone(),
                 seq,
+                offset,
             };
 
             json_buffer.clear();
             serde_json::to_writer(&mut *json_buffer, &frame)?;
             let payload = Arc::new(Bytes::copy_from_slice(json_buffer));
+
+            if let Some(journal) = journal {
+                let appended = journal.append(&spec.id, &key, payload.clone()).await;
+                debug_assert_eq!(
+                    Some(appended),
+                    offset,
+                    "the reserved offset must be the one the record takes"
+                );
+            }
 
             self.entity_cache
                 .upsert_with_append(&spec.id, &key, projected, &frame.append)

@@ -293,6 +293,7 @@ struct SubscriptionContext {
     entity_cache: EntityCache,
     view_index: Arc<ViewIndex>,
     usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    journal: Option<Arc<crate::journal::EventJournal>>,
     metrics: WsMetrics,
     /// Cancelled when the server stops; every session ends through its normal
     /// cleanup path rather than being dropped mid-flight.
@@ -309,6 +310,7 @@ pub struct WebSocketServer {
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     rate_limit_config: Option<RateLimitConfig>,
+    journal: Option<Arc<crate::journal::EventJournal>>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -332,6 +334,7 @@ impl WebSocketServer {
             auth_plugin: Arc::new(crate::websocket::auth::AllowAllAuthPlugin),
             usage_emitter: None,
             rate_limit_config: None,
+            journal: None,
             metrics,
         }
     }
@@ -353,6 +356,7 @@ impl WebSocketServer {
             auth_plugin: Arc::new(crate::websocket::auth::AllowAllAuthPlugin),
             usage_emitter: None,
             rate_limit_config: None,
+            journal: None,
         }
     }
 
@@ -368,6 +372,12 @@ impl WebSocketServer {
 
     pub fn with_usage_emitter(mut self, usage_emitter: Arc<dyn WebSocketUsageEmitter>) -> Self {
         self.usage_emitter = Some(usage_emitter);
+        self
+    }
+
+    /// Serve replayable append subscriptions from the retained event journal.
+    pub fn with_journal(mut self, journal: Arc<crate::journal::EventJournal>) -> Self {
+        self.journal = Some(journal);
         self
     }
 
@@ -414,6 +424,7 @@ impl WebSocketServer {
             max_clients: self.max_clients,
             auth_plugin: self.auth_plugin,
             usage_emitter: self.usage_emitter,
+            journal: self.journal,
             metrics,
             shutdown: CancellationToken::new(),
             sessions: TaskTracker::new(),
@@ -438,6 +449,7 @@ pub(crate) struct ConnectionAcceptor {
     max_clients: usize,
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    journal: Option<Arc<crate::journal::EventJournal>>,
     metrics: WsMetrics,
     shutdown: CancellationToken,
     /// Sessions spawned by [`serve_listener`](Self::serve_listener), so a
@@ -489,6 +501,7 @@ impl ConnectionAcceptor {
             entity_cache: self.entity_cache.clone(),
             view_index: self.view_index.clone(),
             usage_emitter: self.usage_emitter.clone(),
+            journal: self.journal.clone(),
             metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
         };
@@ -1155,6 +1168,24 @@ async fn attach_client_to_bus(
             .and_then(|pipeline| pipeline.limit);
     }
 
+    // A retained tape takes precedence for append views: it is the only
+    // delivery that can honour a cursor. Without one, fall through to the
+    // previous latest-state behaviour.
+    let journal = context
+        .journal
+        .clone()
+        .filter(|journal| journal.is_enabled() && view_spec.mode == Mode::Append);
+    if let Some(journal) = journal {
+        return attach_journal_subscription(
+            context,
+            subscription,
+            view_spec,
+            journal,
+            cancel_token,
+        )
+        .await;
+    }
+
     if view_spec.mode == Mode::State && !view_spec.is_derived() {
         attach_state_subscription(context, subscription, view_spec, cancel_token).await
     } else {
@@ -1392,10 +1423,143 @@ async fn attach_collection_subscription(
     Ok(())
 }
 
+/// Deliver an append view as an event tape: replay the retained records after
+/// the cursor, then forward live frames.
+///
+/// This deliberately does not recompute membership from the entity cache the
+/// way [`attach_collection_subscription`] does. The cache folds each patch
+/// into the resident entity, so a membership diff cannot express "these three
+/// events happened"; the retained records can.
+async fn attach_journal_subscription(
+    context: &SubscriptionContext,
+    subscription: Subscription,
+    view_spec: ViewSpec,
+    journal: Arc<crate::journal::EventJournal>,
+    cancel_token: CancellationToken,
+) -> Result<()> {
+    let view_id = view_spec.id.clone();
+    let subscription_id = subscription.subscription_id.clone();
+
+    // Reject a malformed cursor rather than silently replaying from the start,
+    // which would look like success and duplicate everything.
+    let cursor = match subscription.query.after.as_deref() {
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(offset) => Some(offset),
+            Err(_) => {
+                send_control_frame(
+                    context,
+                    &SocketIssueMessage::protocol(
+                        Some(subscription_id),
+                        "invalid-cursor",
+                        format!("`after` must be a replay offset for view {view_id}, got {raw:?}"),
+                    ),
+                    &view_id,
+                )?;
+                return Ok(());
+            }
+        },
+        None => None,
+    };
+
+    // Subscribe before reading the journal so anything published during the
+    // replay is still delivered; the offset filter below drops the overlap.
+    let mut receiver = context.bus_manager.get_or_create_list_bus(&view_id).await;
+
+    let replayed = match journal.replay_after(&view_id, cursor).await {
+        Ok(records) => records,
+        Err(crate::journal::ReplayError::CursorExpired(window)) => {
+            send_control_frame(
+                context,
+                &SocketIssueMessage::cursor_expired(Some(subscription_id), window),
+                &view_id,
+            )?;
+            return Ok(());
+        }
+    };
+
+    let frame = SubscribedFrame::new(
+        subscription.subscription_id.clone(),
+        subscription.query.clone(),
+        view_spec.mode,
+        extract_sort_config(&view_spec),
+    )
+    .with_replay_window(journal.window(&view_id).await);
+    send_control_frame(context, &frame, &view_id)?;
+
+    let mut last_sent = cursor;
+    for record in replayed {
+        send_scoped_source_payload(
+            context,
+            &subscription.subscription_id,
+            &view_id,
+            record.payload,
+        )?;
+        last_sent = Some(record.offset);
+    }
+
+    let task_context = context.clone();
+    let task_subscription_id = subscription.subscription_id.clone();
+    let span_view = view_id.clone();
+    tokio::spawn(
+        async move {
+            loop {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => break,
+                    received = receiver.recv() => {
+                        let envelope = match received {
+                            Ok(envelope) => envelope,
+                            // A lagged tape is a gap, not a hiccup: the
+                            // consumer must resubscribe from its cursor rather
+                            // than silently skip records.
+                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                warn!(
+                                    "Replay subscription {} lagged past {} records; closing so the consumer resumes from its cursor",
+                                    task_subscription_id, skipped
+                                );
+                                break;
+                            }
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        };
+
+                        let offset = source_frame_metadata(&envelope.payload).offset;
+                        // Already delivered by the replay above.
+                        if let (Some(offset), Some(last)) = (offset, last_sent) {
+                            if offset <= last {
+                                continue;
+                            }
+                        }
+
+                        if send_scoped_source_payload(
+                            &task_context,
+                            &task_subscription_id,
+                            &span_view,
+                            envelope.payload.clone(),
+                        )
+                        .is_err()
+                        {
+                            break;
+                        }
+                        if offset.is_some() {
+                            last_sent = offset;
+                        }
+                    }
+                }
+            }
+        }
+        .instrument(info_span!(
+            "ws.subscribe.replay",
+            client_id = %context.client_id,
+            view = %view_id
+        )),
+    );
+    Ok(())
+}
+
 #[derive(Default)]
 struct SourceFrameMetadata {
     op: String,
     seq: Option<String>,
+    offset: Option<u64>,
 }
 
 fn source_frame_metadata(payload: &[u8]) -> SourceFrameMetadata {
@@ -1408,6 +1572,7 @@ fn source_frame_metadata(payload: &[u8]) -> SourceFrameMetadata {
                 .unwrap_or_default()
                 .to_string(),
             seq: value.get("seq").and_then(Value::as_str).map(str::to_string),
+            offset: value.get("offset").and_then(Value::as_u64),
         })
         .unwrap_or_default()
 }

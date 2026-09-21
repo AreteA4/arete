@@ -53,6 +53,9 @@ pub struct SocketIssueMessage {
     pub suggested_action: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docs_url: Option<String>,
+    /// Present on `cursor-expired`: the offsets the view can still serve.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_window: Option<crate::journal::ReplayWindow>,
     pub fatal: bool,
 }
 
@@ -70,6 +73,7 @@ impl SocketIssueMessage {
             retry_after: response.retry_after,
             suggested_action: response.suggested_action,
             docs_url: response.docs_url,
+            replay_window: None,
             fatal,
         }
     }
@@ -91,8 +95,32 @@ impl SocketIssueMessage {
             retry_after: None,
             suggested_action: None,
             docs_url: None,
+            replay_window: None,
             fatal: false,
         }
+    }
+
+    /// The requested cursor has fallen out of the retained replay window.
+    ///
+    /// Carries the window so a consumer can restart deterministically rather
+    /// than guess; `retryable` is false because retrying the same cursor can
+    /// never succeed.
+    pub fn cursor_expired(
+        subscription_id: Option<String>,
+        window: crate::journal::ReplayWindow,
+    ) -> Self {
+        let mut issue = Self::protocol(
+            subscription_id,
+            "cursor-expired",
+            format!(
+                "cursor is older than the retained replay window; earliest available cursor is {}",
+                window.earliest
+            ),
+        );
+        issue.suggested_action =
+            Some("resubscribe with after set to the earliest available cursor".to_string());
+        issue.replay_window = Some(window);
+        issue
     }
 }
 

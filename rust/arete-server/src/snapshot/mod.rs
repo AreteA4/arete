@@ -360,6 +360,7 @@ pub struct SnapshotService {
     bytecode_hash: String,
     program_ids: Vec<String>,
     entity_cache: EntityCache,
+    journal: Arc<crate::journal::EventJournal>,
     batches_at_last_snapshot: AtomicU64,
     warned_missing_vm: AtomicBool,
 }
@@ -372,6 +373,7 @@ impl SnapshotService {
         spec: &crate::Spec,
         entity_cache: EntityCache,
         view_index: &ViewIndex,
+        journal: Arc<crate::journal::EventJournal>,
         _mutations_tx: mpsc::Sender<MutationBatch>,
     ) -> Result<Arc<Self>> {
         let url = config
@@ -390,6 +392,7 @@ impl SnapshotService {
             bytecode_hash: spec.bytecode.fingerprint(),
             program_ids,
             entity_cache,
+            journal,
             batches_at_last_snapshot: AtomicU64::new(0),
             warned_missing_vm: AtomicBool::new(false),
         });
@@ -470,7 +473,14 @@ impl SnapshotService {
             .iter()
             .map(|(_, entries)| entries.len())
             .sum();
+        let retained_events: usize = payload
+            .journal
+            .views
+            .values()
+            .map(|view| view.records.len())
+            .sum();
         self.entity_cache.hydrate(payload.entity_cache).await;
+        self.journal.hydrate(payload.journal).await;
         rebuild_sorted_caches(view_index, &self.entity_cache).await;
 
         // Even when the stream starts live, the watermark seeds the applied
@@ -513,6 +523,7 @@ impl SnapshotService {
             vm_entities = payload.vm.total_entries(),
             cached_views,
             cached_entities,
+            retained_events,
             resume_watermark = header.resume_watermark,
             resuming = resume_watermark.is_some(),
             age_secs = age_ms / 1_000,
@@ -599,6 +610,9 @@ impl SnapshotService {
         let vm_lock_held = dump_started.elapsed();
         let observed_slot = registration.slot_tracker.get();
         let entity_cache_dump = self.entity_cache.dump().await;
+        // Dumped inside the same consistency guard as the cache, so a restore
+        // can never leave the cache ahead of the tape.
+        let journal_dump = self.journal.dump().await;
         let applied_batches = self.runtime.state.applied_batches.load(Ordering::Relaxed);
         drop(consistency_guard);
 
@@ -615,6 +629,7 @@ impl SnapshotService {
         let payload = SnapshotPayload {
             vm: vm_snapshot,
             entity_cache: entity_cache_dump,
+            journal: journal_dump,
         };
         let bytes = tokio::task::spawn_blocking(move || envelope::encode(&header, &payload))
             .await

@@ -41,7 +41,7 @@ Unknown fields are rejected. The canonical query fields are exactly:
 - `filters`: JSON exact-match predicates keyed by dot path. Matching is case-sensitive and type-sensitive. Missing paths do not match.
 - `take`: positive size of the live query window.
 - `skip`: number of matching ordered entities omitted before `take`.
-- `after`: exclusive `_seq` cursor. Its initial snapshot is incremental.
+- `after`: resume cursor. On an append view backed by the event journal this is a replay offset (see [Replayable append views](#replayable-append-views)); on every other view it is an exclusive `_seq` cursor whose initial snapshot is incremental.
 - `snapshotLimit`: positive cap applied only to initial snapshot rows. It does not alter live `take`/`skip` membership.
 
 For ordinary list and append views, full snapshots are ordered by `_seq` descending and incremental snapshots by `_seq` ascending. Entity key is the deterministic tie breaker. Derived views retain their declared sort order. Filters run before `skip` and `take`; the same filtered window determines both snapshot rows and live membership.
@@ -97,6 +97,66 @@ All batches for one snapshot share `snapshotId`, `subscriptionId`, and `authorit
 - `key` is present on keyed snapshots, including a completed empty state snapshot.
 
 Receiver registration happens before snapshot capture for state, list, append, and derived-source subscriptions. Updates published while a snapshot is being built or sent remain pending for live delivery after the snapshot. The implementation does not use timing sleeps for this handoff.
+
+## Replayable append views
+
+When the server runs with an event journal (`ARETE_JOURNAL_ENABLED=true`), an
+append view is delivered as an event tape rather than a membership
+projection. Every retained event is replayed in order, exactly once per
+replay request, instead of one row per surviving entity.
+
+Each live frame on such a view carries an `offset`: a dense, monotonic,
+per-view cursor assigned when the event is retained.
+
+```json
+{
+  "protocolVersion": 2,
+  "subscriptionId": "trades",
+  "entity": "Trade/append",
+  "op": "patch",
+  "key": "pool1",
+  "offset": 4211,
+  "seq": "381471241:000000000007",
+  "data": { "amount": 125 }
+}
+```
+
+`offset` is the value to persist and send back as `after`. `seq` is not
+usable as a replay cursor: its second component is the transaction index, so
+every event decoded from one transaction shares a `seq`. Offsets are scoped
+to one view and are not comparable across views.
+
+The acknowledgement advertises the window the view can still serve:
+
+```json
+{
+  "protocolVersion": 2,
+  "subscriptionId": "trades",
+  "op": "subscribed",
+  "mode": "append",
+  "replayWindow": { "earliest": 3200, "next": 4212 }
+}
+```
+
+`earliest` is the oldest retained offset; `next` is the offset the next event
+will take, so a consumer holding `next - 1` is fully caught up. Subscribing
+with `after` set to an offset below `earliest` is refused with
+`cursor-expired`, which repeats the window so the consumer can restart
+deterministically:
+
+```json
+{
+  "type": "error",
+  "code": "cursor-expired",
+  "retryable": false,
+  "replayWindow": { "earliest": 3200, "next": 4212 }
+}
+```
+
+An `after` value that is not a replay offset is refused with
+`invalid-cursor`. Retention is bounded by count and age, and the retained
+tape is captured in the state snapshot, so the advertised window survives a
+normal restart.
 
 ## Live Frames
 
@@ -235,7 +295,7 @@ Protocol and subscription errors are non-fatal unless explicitly marked otherwis
 }
 ```
 
-Stable protocol codes include `malformed-message`, `invalid-subscription`, `invalid-unsubscription`, `duplicate-subscription-id`, `unknown-subscription-id`, and `subscription-rejected`. Authentication, quota, and rate-limit errors keep their existing codes and use the same v2 envelope.
+Stable protocol codes include `malformed-message`, `invalid-subscription`, `invalid-unsubscription`, `duplicate-subscription-id`, `unknown-subscription-id`, `subscription-rejected`, `cursor-expired`, and `invalid-cursor`. Authentication, quota, and rate-limit errors keep their existing codes and use the same v2 envelope.
 
 ## Conformance Fixtures
 

@@ -9,6 +9,7 @@
 
 use arete_interpreter::vm::VmContext;
 use arete_interpreter::Mutation;
+use arete_server::journal::{EventJournal, JournalConfig};
 use arete_server::materialized_view::{SortConfig, SortOrder, ViewPipeline};
 use arete_server::snapshot::{self, SnapshotConfig, SnapshotService, SnapshotTrigger};
 use arete_server::{
@@ -20,6 +21,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+/// Snapshot tests do not exercise event replay; each service gets its own
+/// disabled journal so the retained tape is empty.
+fn test_journal() -> Arc<EventJournal> {
+    Arc::new(EventJournal::new(JournalConfig::default()))
+}
 
 static GLOBAL_LOCK: StdMutex<()> = StdMutex::new(());
 
@@ -152,6 +159,7 @@ async fn snapshot_then_restore_recovers_vm_and_caches() {
         &spec,
         entity_cache.clone(),
         &view_index,
+        test_journal(),
         tx.clone(),
     )
     .await
@@ -208,6 +216,7 @@ async fn snapshot_then_restore_recovers_vm_and_caches() {
         &spec,
         entity_cache2.clone(),
         &view_index2,
+        test_journal(),
         tx2,
     )
     .await
@@ -287,10 +296,16 @@ async fn snapshot_waits_for_vm_updates_to_reach_the_projector() {
     let view_index = make_view_index();
     let entity_cache = EntityCache::new();
     let (tx, projector) = make_projector(&view_index, &entity_cache);
-    let service =
-        SnapshotService::initialize(config.clone(), &spec, entity_cache, &view_index, tx.clone())
-            .await
-            .unwrap();
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache,
+        &view_index,
+        test_journal(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
 
     let vm = Arc::new(StdMutex::new(VmContext::new()));
     let barrier = service
@@ -337,6 +352,7 @@ async fn snapshot_waits_for_vm_updates_to_reach_the_projector() {
         &spec,
         restored_cache.clone(),
         &restored_view,
+        test_journal(),
         restored_tx,
     )
     .await
@@ -378,6 +394,7 @@ async fn mismatched_bytecode_and_corrupt_blobs_cold_start() {
         &spec,
         entity_cache.clone(),
         &view_index,
+        test_journal(),
         tx.clone(),
     )
     .await
@@ -408,6 +425,7 @@ async fn mismatched_bytecode_and_corrupt_blobs_cold_start() {
         &make_spec("Renamed"),
         entity_cache2.clone(),
         &view_index2,
+        test_journal(),
         tx2,
     )
     .await
@@ -429,10 +447,16 @@ async fn mismatched_bytecode_and_corrupt_blobs_cold_start() {
     let entity_cache3 = EntityCache::new();
     let view_index3 = make_view_index();
     let (tx3, projector3) = make_projector(&view_index3, &entity_cache3);
-    let service3 =
-        SnapshotService::initialize(config, &spec, entity_cache3.clone(), &view_index3, tx3)
-            .await
-            .unwrap();
+    let service3 = SnapshotService::initialize(
+        config,
+        &spec,
+        entity_cache3.clone(),
+        &view_index3,
+        test_journal(),
+        tx3,
+    )
+    .await
+    .unwrap();
     tokio::spawn(projector3.with_snapshot_runtime(service3.runtime()).run());
     assert!(service3.runtime().take_restored().is_none());
 
@@ -457,6 +481,7 @@ async fn stale_snapshot_hydrates_but_starts_live() {
         &spec,
         entity_cache.clone(),
         &view_index,
+        test_journal(),
         tx.clone(),
     )
     .await
@@ -482,10 +507,16 @@ async fn stale_snapshot_hydrates_but_starts_live() {
     let entity_cache2 = EntityCache::new();
     let view_index2 = make_view_index();
     let (tx2, projector2) = make_projector(&view_index2, &entity_cache2);
-    let service2 =
-        SnapshotService::initialize(config, &spec, entity_cache2.clone(), &view_index2, tx2)
-            .await
-            .unwrap();
+    let service2 = SnapshotService::initialize(
+        config,
+        &spec,
+        entity_cache2.clone(),
+        &view_index2,
+        test_journal(),
+        tx2,
+    )
+    .await
+    .unwrap();
     tokio::spawn(projector2.with_snapshot_runtime(service2.runtime()).run());
 
     let restored = service2
@@ -518,19 +549,31 @@ async fn generated_snapshot_hooks_are_isolated_per_runtime() {
     let view_index_a = make_view_index();
     let cache_a = EntityCache::new();
     let (tx_a, projector_a) = make_projector(&view_index_a, &cache_a);
-    let service_a =
-        SnapshotService::initialize(config_a.clone(), &spec, cache_a, &view_index_a, tx_a)
-            .await
-            .unwrap();
+    let service_a = SnapshotService::initialize(
+        config_a.clone(),
+        &spec,
+        cache_a,
+        &view_index_a,
+        test_journal(),
+        tx_a,
+    )
+    .await
+    .unwrap();
     tokio::spawn(projector_a.with_snapshot_runtime(service_a.runtime()).run());
 
     let view_index_b = make_view_index();
     let cache_b = EntityCache::new();
     let (tx_b, projector_b) = make_projector(&view_index_b, &cache_b);
-    let service_b =
-        SnapshotService::initialize(config_b.clone(), &spec, cache_b, &view_index_b, tx_b)
-            .await
-            .unwrap();
+    let service_b = SnapshotService::initialize(
+        config_b.clone(),
+        &spec,
+        cache_b,
+        &view_index_b,
+        test_journal(),
+        tx_b,
+    )
+    .await
+    .unwrap();
     tokio::spawn(projector_b.with_snapshot_runtime(service_b.runtime()).run());
 
     let vm_a = Arc::new(StdMutex::new(VmContext::new()));
@@ -574,6 +617,7 @@ async fn generated_snapshot_hooks_are_isolated_per_runtime() {
         &spec,
         restored_cache_a,
         &restored_view_a,
+        test_journal(),
         restored_tx_a,
     )
     .await
@@ -587,6 +631,7 @@ async fn generated_snapshot_hooks_are_isolated_per_runtime() {
         &spec,
         restored_cache_b,
         &restored_view_b,
+        test_journal(),
         restored_tx_b,
     )
     .await
@@ -687,4 +732,130 @@ fn restored_reconnects_keep_a_safe_replay_checkpoint() {
         snapshot::select_reconnect_from_slot(None, 140, 3, FALLBACK_ATTEMPTS),
         None
     );
+}
+
+/// A `Token/append` view, so the projector retains events in the journal.
+fn make_append_view_index() -> ViewIndex {
+    let mut index = ViewIndex::new();
+    index.add_spec(ViewSpec {
+        id: "Token/append".to_string(),
+        export: "Token".to_string(),
+        mode: Mode::Append,
+        wire_format: Default::default(),
+        projection: Projection::all(),
+        filters: Filters::all(),
+        delivery: Delivery::default(),
+        pipeline: None,
+        source_view: None,
+    });
+    index
+}
+
+fn enabled_journal() -> Arc<EventJournal> {
+    Arc::new(EventJournal::new(JournalConfig {
+        enabled: true,
+        max_records_per_view: 10_000,
+        max_age: Duration::from_secs(3_600),
+    }))
+}
+
+/// The advertised replay window has to survive a restart, otherwise a
+/// consumer's stored cursor becomes unusable every time the server restarts.
+#[tokio::test]
+async fn restore_preserves_the_advertised_replay_window() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("journal-window");
+    let config = config_for(&dir);
+    let spec = make_spec("Token");
+
+    // --- First server lifetime ---
+    let view_index = make_append_view_index();
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let journal = enabled_journal();
+
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache.clone(),
+        &view_index,
+        journal.clone(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(
+        projector
+            .with_snapshot_runtime(service.runtime())
+            .with_journal(journal.clone())
+            .run(),
+    );
+
+    let vm = Arc::new(StdMutex::new(VmContext::new()));
+    let slot_tracker = SlotTracker::new();
+    slot_tracker.record(120);
+    service.runtime().register_runtime(vm, slot_tracker);
+
+    // More events than the entity cache would keep per key, so the window is
+    // the only thing that can answer a resume.
+    for index in 0..600u64 {
+        tx.send(token_batch(&format!("mint{}", index % 5), index, 100 + index))
+            .await
+            .unwrap();
+    }
+    flush_projector(&tx).await;
+
+    let window_before = journal.window("Token/append").await;
+    assert_eq!(window_before.next, 600);
+    assert_eq!(window_before.earliest, 0);
+
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Shutdown)
+        .await
+        .unwrap());
+
+    // --- Simulated restart ---
+    let view_index2 = make_append_view_index();
+    let entity_cache2 = EntityCache::new();
+    let (tx2, _projector2) = make_projector(&view_index2, &entity_cache2);
+    let journal2 = enabled_journal();
+    assert!(
+        journal2.window("Token/append").await.is_empty(),
+        "a fresh journal starts empty"
+    );
+
+    let _service2 = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache2.clone(),
+        &view_index2,
+        journal2.clone(),
+        tx2.clone(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        journal2.window("Token/append").await,
+        window_before,
+        "the restored window is the one the previous lifetime advertised"
+    );
+
+    // A cursor held across the restart still replays, in order, from the
+    // right place.
+    let replayed = journal2
+        .replay_after("Token/append", Some(549))
+        .await
+        .expect("a cursor inside the restored window is serviceable");
+    assert_eq!(replayed.len(), 50);
+    assert_eq!(replayed.first().unwrap().offset, 550);
+    assert_eq!(replayed.last().unwrap().offset, 599);
+
+    // Offsets continue from the restored tape rather than restarting at zero,
+    // so a restart cannot make an old cursor ambiguous.
+    let next = journal2.append("Token/append", "mint0", replayed[0].payload.clone()).await;
+    assert_eq!(next, 600);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

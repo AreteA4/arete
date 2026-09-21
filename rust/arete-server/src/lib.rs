@@ -39,6 +39,7 @@ pub mod health;
 mod http;
 pub mod http_health;
 pub mod http_server;
+pub mod journal;
 pub mod materialized_view;
 #[cfg(feature = "otel")]
 pub mod metrics;
@@ -66,6 +67,7 @@ pub use config::{
 pub use health::{HealthMonitor, SlotTracker, StreamStatus};
 pub use http_health::HttpHealthServer;
 pub use http_server::HttpServer;
+pub use journal::{EventJournal, JournalConfig, ReplayWindow};
 pub use materialized_view::{MaterializedView, MaterializedViewRegistry, ViewEffect};
 #[cfg(feature = "otel")]
 pub use metrics::Metrics;

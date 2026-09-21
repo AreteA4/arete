@@ -40,6 +40,10 @@ pub struct SnapshotPayload {
     pub vm: VmSnapshot,
     /// Per view id: `(entity_key, entity)` pairs, most-recently-used first.
     pub entity_cache: Vec<(String, Vec<(String, Value)>)>,
+    /// Retained event tape per view. Absent in snapshots written before
+    /// replayable subscriptions existed, which restore with an empty tape.
+    #[serde(default)]
+    pub journal: crate::journal::JournalSnapshot,
 }
 
 pub fn encode(header: &SnapshotHeader, payload: &SnapshotPayload) -> Result<Vec<u8>> {
@@ -113,6 +117,7 @@ mod tests {
                 "tokens/list".to_string(),
                 vec![("key1".to_string(), serde_json::json!({"id": 1}))],
             )],
+            journal: crate::journal::JournalSnapshot::default(),
         };
         (header, payload)
     }
