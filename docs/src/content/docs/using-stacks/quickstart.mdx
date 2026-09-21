@@ -1,57 +1,46 @@
 ---
 title: Quickstart
-sidebar:
-  order: 1
-description: Run the ORE demo and see live Solana data streaming in minutes.
+description: Install Arete, configure your agent, explore the catalog, and install your first Program SDK.
 ---
 
 import { Tabs, TabItem } from "@astrojs/starlight/components";
-import Workflow from "../../../components/Workflow.astro";
+import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-This quickstart gets you streaming live Solana data in a few minutes using the ORE demo — a real, deployed Arete stack for the ORE mining program. It's the fastest way to see Arete in action.
+This quickstart prepares a project for both agent-led exploration and generated
+SDK development. It does not depend on a hard-coded hosted stack.
 
-:::note[What this covers]
-This guide walks through the ORE demo only. It's a good starting point to understand how Arete feels, but it doesn't cover building your own stacks or integrating with your own on-chain programs. For those paths, see the [Next Steps](#next-steps) section below.
-:::
+## Fastest path: give your agent one URL
 
-:::tip[Prefer AI-assisted development?]
-If you're using Cursor, Claude Code, or another AI coding tool, check out [Build with AI](/agent-skills/overview/) — paste one prompt and your AI sets everything up.
-:::
+Open the project in your coding agent and paste:
 
----
+<CopyPrompt>
+Read https://docs.arete.run/agent.md and follow it to set up Arete in this
+project. Verify the setup, and simply explain what Arete is capable of.
+</CopyPrompt>
 
-## Prerequisites
+The agent installs the CLI, runs `a4 init -y`, checks the environment with
+`a4 doctor --json`, and tells you if the host must be reloaded to pick up its
+new skills or MCP configuration. The steps below are the manual equivalent and
+a reference for what the agent does.
 
-Choose how you want to run the CLI:
-
-### Step 1: Install the CLI
+## 1. Install the CLI
 
 <Tabs syncKey="installer">
-<TabItem label="Installer">
-
-Install the prebuilt, signed binary (no Rust toolchain needed):
+<TabItem label="macOS / Linux">
 
 ```bash
-curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
-irm https://arete.run/install.ps1 | iex             # Windows PowerShell
-```
-
-The binary lands in `~/.local/bin/a4` and the installer prints `A4_BIN=<absolute path>`. If `a4` is not found in an already-open terminal, run `export PATH="$HOME/.local/bin:$PATH"`. Then check it:
-
-```bash
-a4 doctor --json
+curl -fsSL https://arete.run/install.sh | sh
 ```
 
 </TabItem>
-<TabItem label="npx">
+<TabItem label="Windows PowerShell">
 
-No separate install step — the npm package downloads the same binary on first use:
-
-```bash
-npx @usearete/a4 create my-app
+```powershell
+irm https://arete.run/install.ps1 | iex
 ```
 
-To install it explicitly (equivalent to `npm install -g @usearete/a4`):
+</TabItem>
+<TabItem label="npm">
 
 ```bash
 npx @usearete/a4 install
@@ -60,271 +49,137 @@ npx @usearete/a4 install
 </TabItem>
 </Tabs>
 
-Update later with `a4 self update`. Full installer options: [CLI Command Reference → Installation](/cli/commands/#installation).
+The installer downloads the signed prebuilt binary and prints its absolute
+path. No Rust toolchain is required. Update it later with `a4 self update`.
 
----
-
-## Create Your App
-
-### Step 2: Scaffold the project
-
-<Tabs syncKey="installer">
-<TabItem label="Installer">
-
-```bash
-a4 create my-app
-```
-
-</TabItem>
-<TabItem label="npx">
-
-```bash
-npx @usearete/a4 create my-app
-```
-
-</TabItem>
-</Tabs>
-
-You'll be prompted to select a template:
-
-| Template         | Description            | Run Command                                                  |
-| ---------------- | ---------------------- | ------------------------------------------------------------ |
-| `react-ore`      | React + Vite dashboard | `npm run dev` → open [localhost:5173](http://localhost:5173) |
-| `typescript-ore` | TypeScript CLI client  | `npm start`                                                  |
-| `rust-ore`       | Rust + Tokio client    | `cargo run`                                                  |
-
-:::note[About the ORE demo]
-All templates use the same example: **ORE mining rounds** — a real, live Solana program. The templates differ only in language/framework. Each connects to the same public ORE stack and streams identical data.
+:::note[Two different installs]
+`npx @usearete/a4 install` installs the **CLI**. Once `a4` is available,
+`a4 install` resolves and generates the **project's Arete dependencies**.
 :::
 
-### Step 3: Or specify the template directly
+## 2. Initialize the project
 
-<Tabs syncKey="installer">
-<TabItem label="Installer">
-
-```bash
-a4 create my-app --template react-ore  # or typescript-ore, rust-ore
-```
-
-</TabItem>
-<TabItem label="npx">
+Run this from the project root:
 
 ```bash
-npx @usearete/a4 create my-app --template react-ore  # or typescript-ore, rust-ore
+a4 init -y
+a4 doctor --json
 ```
 
-</TabItem>
-</Tabs>
+`a4 init` is idempotent. It configures the project for agents by writing or
+updating:
 
-One final step is required for the browser template: configure hosted authentication.
+- `arete.toml`;
+- the managed Arete instructions in `AGENTS.md`;
+- the bridge used by agents that read `CLAUDE.md`;
+- the five Arete skills; and
+- the Arete stream and documentation MCP servers.
 
-### Step 4: Add browser authentication
+`a4 doctor --json` checks the CLI, project manifest, lockfile, skills, and MCP
+configuration. Follow the reported `fix` command for any required failure.
 
-The React template connects to the hosted ORE stack. Add a publishable key to `my-app/.env.local`:
+There is no `a4 knit` command; `a4 init` is the project setup command.
+
+## 3. Explore by intent
+
+Ask the catalog for a capability rather than guessing a package:
 
 ```bash
-VITE_ARETE_PUBLISHABLE_KEY=hspk_...
+a4 explore catalog --query "token account balances" --json
+a4 explore catalog --kind program --mode read --target typescript --json
 ```
 
-The template passes this value to `AreteProvider` as `auth={{ publishableKey }}`. Authentication is required for hosted read-only viewing; a wallet is not.
-
----
-
-## What You Just Built
-
-The scaffolded app connects to a deployed **Arete Stack** — a streaming data pipeline that:
-
-1. **Watches Solana** for ORE mining program activity
-2. **Transforms raw transactions** into structured round data (round ID, motherlode, deployment totals)
-3. **Streams updates** to your app via WebSocket as they happen on-chain
-
-<Workflow steps={[
-  {
-    title: "Solana",
-    description: "ORE program"
-  },
-  {
-    title: "Arete",
-    description: "ORE stack"
-  },
-  {
-    title: "Your App",
-    description: "Live feed"
-  }
-]} />
-
-No RPC calls. No polling. No custom indexer. Just streaming data.
-
-In the TypeScript SDK mental model, the generated ORE stack is a **cartridge** and the Arete session is the **console**. The cartridge keeps its existing generated stack object and types; inserting it as `ore` makes it available at `session.stacks.ore`. The same console provides `session.programs.<name>` for standalone programs, `session.chain` for generic Solana reads, and `session.execute(...)` for prepared semantic operations.
-
----
-
-## Available Templates
-
-| Template           | Command                          | What You Get                                          |
-| ------------------ | -------------------------------- | ----------------------------------------------------- |
-| **react-ore**      | `npx @usearete/a4 create my-app` | React + Vite dashboard showing live ORE mining rounds |
-| **typescript-ore** | `npx @usearete/a4 create my-app` | TypeScript CLI that streams ORE data to your terminal |
-| **rust-ore**       | `npx @usearete/a4 create my-app` | Rust + Tokio client streaming ORE round updates       |
-
-All templates connect to the hosted ORE stack at `wss://ore.stack.arete.run`. Hosted connections are authenticated even when the data is read-only.
-
-You can also specify the template directly:
+Inspect one exact result:
 
 ```bash
-npx @usearete/a4 create my-app --template react-ore
+a4 explore catalog program spl-token --json
 ```
 
----
+The response reports the exact program identity, available modes, account and
+instruction surface, Program Read status, verified SDK targets, and install
+command. Catalog contents change independently of these docs, so current CLI
+output is the authority.
 
-## What's Inside
-
-<Tabs>
-<TabItem label="React Template">
-
-The React template uses `@usearete/react` with a generated stack definition:
-
-```tsx
-// App.tsx
-import { AreteProvider } from "@usearete/react";
-import { OreDashboard } from "./components/OreDashboard";
-import { ORE_STREAM_STACK } from "./generated/ore-stack";
-
-const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
-if (!publishableKey) throw new Error("VITE_ARETE_PUBLISHABLE_KEY is required");
-
-export default function App() {
-  return (
-    <AreteProvider stack={ORE_STREAM_STACK} auth={{ publishableKey }}>
-      <OreDashboard />
-    </AreteProvider>
-  );
-}
-```
-
-```tsx
-// components/OreDashboard.tsx
-import { useArete } from "@usearete/react";
-import { ORE_STREAM_STACK } from "../generated/ore-stack";
-
-export function OreDashboard() {
-  const arete = useArete(ORE_STREAM_STACK);
-  const board = arete.views.OreBoard.state.use({
-    address: arete.addresses.board(),
-  });
-  const roundId = board.data?.state.roundId;
-  const round = arete.views.OreRound.state.use(
-    roundId == null ? undefined : { roundId },
-  );
-
-  return (
-    <div>
-      <p>{arete.status === "connected" ? "Live" : arete.status}</p>
-      {arete.socketIssue && <p>{arete.socketIssue.message}</p>}
-      <p>
-        Round #{round.data?.id.roundId?.toString() ?? "..."} - Motherlode:{" "}
-        {round.data?.state.motherlode?.toString() ?? "..."}
-      </p>
-    </div>
-  );
-}
-```
-
-ORE's Board account is the authority for the active round. `OreRound.latest` remains available for recent-round history, but the live board follows `OreBoard/state` to keyed `OreRound/state` during rollover.
-
-`autoConnect` is omitted because it defaults to `true` and controls only this initial connection. `autoReconnect` also defaults to `true`, independently, and controls recovery only after an established connection is lost.
-
-</TabItem>
-<TabItem label="TypeScript Template">
-
-The TypeScript template uses `@usearete/sdk` with a generated stack and typed views:
-
-```typescript
-// main.ts
-import { createSession } from "@usearete/sdk";
-import { ORE_STREAM_STACK } from "./generated/ore-stack";
-
-const session = await createSession({
-  stacks: { ore: ORE_STREAM_STACK },
-});
-
-for await (const update of session.stacks.ore.views.OreRound.latest.watch({ take: 1 })) {
-  if (update.type === "upsert" || update.type === "patch") {
-    console.log(`Round #${update.data.id.roundId}`);
-    console.log(`Motherlode: ${update.data.state.motherlode}`);
-  }
-}
-```
-
-Connected stacks expose stable `views`, `queries`, `programs`, `addresses`, `constants`, `defaults`, `math`, `read`, and `flows` namespaces when present. Each connected program exposes `programId`, `schemas`, `pdas`, `addresses`, `accounts`, `queries`, `raw`, `instructions`, `transactions`, `flows`, `constants`, `defaults`, and `math`.
-
-For write-enabled cartridges, semantic `.prepare(...)` methods take normal camelCase objects; pass the result to `session.execute(...)`. The `program.raw` namespace is the exact IDL escape hatch and preserves IDL names and nested shapes, including snake_case.
-
-</TabItem>
-<TabItem label="Rust Template">
-
-The Rust template uses `a4-sdk` with typed views:
-
-```rust
-// main.rs
-use a4_sdk::prelude::*;
-use a4_stacks::ore::{OreStack, OreRound};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let a4 = Arete::<OreStack>::connect().await?;
-
-    let mut stream = a4.views.ore_round.latest().listen();
-
-    while let Some(round) = stream.next().await {
-        println!("Round # {:?}", round.id.round_id);
-        println!("Motherlode: {:?}", round.state.motherlode);
-    }
-    Ok(())
-}
-```
-
-</TabItem>
-</Tabs>
-
----
-
-## Using an AI Coding Agent?
-
-Install Arete agent skills and MCP config so your AI can write correct code without you looking up docs:
+## 4. Install the Program SDK
 
 ```bash
-a4 init -y          # skills for every detected agent + MCP servers + AGENTS.md
-a4 doctor --json    # exit 0 = ready
+a4 install program spl-token --ts
 ```
 
-Skills only, without the rest: `npx skills add AreteA4/skills`.
+The command:
 
-Now try asking your agent: "Show me the ORE mining round data in a table with live updates."
+1. adds the dependency to `arete.toml`;
+2. resolves exact package and artifact identities;
+3. writes `arete.lock`; and
+4. generates the TypeScript SDK at the configured output location.
 
-See [Build with AI](/agent-skills/overview/) for the full guide and prompt cookbook.
+Read the command's output for the exact import path. Generated files are owned
+by the installer; update the dependency or source and regenerate instead of
+editing them.
 
----
+To reproduce the project later:
 
-## Next Steps
+```bash
+a4 install --locked
+```
 
-Now that you've seen Arete in action, where you go next depends on what you're building:
+Use `--rust` or `--python` only if the exact descriptor verifies that target.
 
-**Using an existing on-chain program that has a Arete stack?**
+## 5. Ask your agent to inspect it
 
-- [Connect to a Stack](/using-stacks/connect/) — Add Arete to an existing project
-- [React SDK](/sdks/react/) — Build a full React app against a deployed stack
-- [TypeScript SDK](/sdks/typescript/) — Use Arete in Node.js, Vue, Svelte, or vanilla JS
-- [Rust SDK](/sdks/rust/) — Native Rust client
+<CopyPrompt>
+Inspect the Arete dependency installed in this project. Explain the generated
+Program SDK surface for SPL Token, including available account readers, PDA or
+address helpers, raw instruction builders, and higher-level operations. Use the
+generated types and exact descriptor as the source of truth; do not guess names.
+</CopyPrompt>
 
-**Have your own on-chain program and want to stream its data?**
+From here, continue with:
 
-- [Build Your Own Stack](/building-stacks/workflow/) — Create a custom data stream for any Solana program
+- [Program Read](/using-programs/program-reads/) for typed accounts;
+- [Solana chain reads](/using-programs/chain-reads/) for generic state; and
+- [Transactions](/using-stacks/transactions/) for preparation, inspection,
+  local signing, and submission.
 
-**Want to understand what's happening under the hood?**
+## 6. Ask an on-chain question through MCP
 
-- [How It Works](/using-stacks/how-it-works/) — Stacks, Views, and how live data flows
+The project is also ready for interactive exploration:
 
-**Using an AI coding tool?**
+<CopyPrompt>
+Use Arete to find any currently deployed live views relevant to token activity.
+Inspect their exact schemas, connect to the most useful view, gather a bounded
+sample, summarize what the data supports, and disconnect. If there is no
+suitable subscribe-ready view, say so and show me the nearest read-ready
+programs instead.
+</CopyPrompt>
 
-- [Build with AI](/agent-skills/overview/) — Let your agent write Arete code with the right context
+Hosted knowledge and live connections may require an account:
+
+```bash
+a4 auth signup
+```
+
+The agent should use catalog results dynamically. It should not rely on an ORE
+deployment or any other named stack being public forever.
+
+[Explore with MCP →](/agent-skills/explore-on-chain/)
+
+## What is ready now?
+
+Arete distinguishes knowledge from delivery. A result may be cataloged while
+only some modes are ready:
+
+| Mode        | Use it for                               |
+| ----------- | ---------------------------------------- |
+| `read`      | Program accounts and generic chain state |
+| `build`     | Instructions, transactions, and flows    |
+| `subscribe` | Hosted point-in-time and live views      |
+
+Always search for the mode you need and inspect the exact descriptor before
+writing application code.
+
+## Next step
+
+Follow [From Question to Application](/getting-started/from-question-to-app/)
+to see how MCP exploration, custom read models, stack installation, and typed
+application code fit together.

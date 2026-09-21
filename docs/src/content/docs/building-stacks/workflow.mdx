@@ -8,7 +8,32 @@ description: The end-to-end process of building and deploying an Arete data pipe
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 import Workflow from "../../../components/Workflow.astro";
 
-Building a stack follows a straightforward four-step workflow: define your data model in Rust, compile portable artifacts, deploy an exact StackManifest, and connect from your application.
+Most applications should begin with published Program SDKs and existing live
+views. Use custom authoring only when the catalog does not provide the
+application-shaped read model you need.
+
+Search the registry and open the exact descriptor before starting custom work:
+
+```bash
+a4 explore catalog --query "<intent>" --json
+a4 explore catalog program <slug> --json
+```
+
+If a published package already provides the required capabilities, install it
+instead. The advanced Rust path below assumes you have the exact local IDL for
+the program. Inspect that file with `a4 idl summary`, `a4 idl search`, and the
+[IDL CLI reference](/cli/idl/) before mapping it.
+
+For an uncataloged or private program, supply the canonical IDL from the
+program's own build or release artifacts, upstream repository, or published SDK
+package. An on-chain Anchor IDL is suitable only when the program intentionally
+publishes one and you verify its program address and provenance. If you cannot
+obtain a trustworthy IDL, ask the program owner rather than reconstructing one
+from explorer output.
+
+This page documents the advanced **Rust authoring path**: define a live model,
+compile portable artifacts, deploy an exact StackManifest, and install the
+resulting SDK.
 
 <Workflow steps={[
   {

@@ -108,7 +108,7 @@ const RESOURCE_DEFINITIONS = [
     uri: "https://docs.arete.run/skill.md",
     name: "arete-platform",
     description:
-      "Official Arete agent skill for onboarding, API keys, registry access, CLI setup, SDK usage, and stack-building workflows.",
+      "Official CLI-first field guide for discovering, inspecting, and installing Arete capabilities.",
     mimeType: "text/markdown",
   },
 ];
@@ -216,7 +216,7 @@ function buildServer(): McpServer {
     {
       mimeType: "text/markdown",
       description:
-        "Official Arete agent skill for onboarding, API keys, registry access, CLI setup, SDK usage, and stack-building workflows.",
+        "Official CLI-first field guide for discovering, inspecting, and installing Arete capabilities.",
     },
     async (uri) => {
       const r = await fetch(uri.href, {

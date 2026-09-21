@@ -1,0 +1,120 @@
+---
+title: Program Versioning
+description: How Arete assigns semantic versions to content-addressed program releases.
+---
+
+Every program package in the Arete registry has an **Arete version**, such as
+`1.2.3`. This version tracks the compatibility of the exact program integration
+that Arete publishes: its normalized interface, generated SDK surface, and
+hosted Program Release.
+
+The Arete version is separate from any versioning system used by the original
+protocol.
+
+## Why Arete has its own versions
+
+A Solana program address can stay the same while its executable changes. IDLs
+and SDK helpers can also change independently. A program address alone
+therefore cannot identify the interface and implementation an application was
+built against.
+
+Arete records exact identities at each layer:
+
+| Identity             | What it fixes                                                               |
+| -------------------- | --------------------------------------------------------------------------- |
+| Program ID           | The on-chain address                                                        |
+| Normalized IDL hash  | The canonical callable and decodable interface                              |
+| `ProgramSpec` hash   | The exact portable program definition                                       |
+| Program Release hash | The ProgramSpec, IDL, decoder, and observed on-chain executable identity    |
+| Package Release hash | The installable package, including its SDK targets and generated extensions |
+
+These content addresses provide exact reproducibility. The Arete semantic
+version is the human-readable compatibility coordinate over that immutable
+history.
+
+## How a version is produced
+
+The catalog publication pipeline derives versions from artifacts and recorded
+history:
+
+```text
+canonical IDL + SDK surface
+            │
+            ▼
+ content-addressed program definition
+            │
+            ▼
+structural diff against the last sealed version
+            │
+            ├── Arete semantic version
+            └── generated release notes
+                        │
+                        ▼
+          immutable catalog package
+                        │
+                        ▼
+     exact resolution in arete.lock
+```
+
+When a new hosted Program Release is required, the platform also captures the
+finalized on-chain executable. Its identity includes the Solana network, loader
+kind, and executable payload hash. Arete verifies that the finalized snapshot
+stays stable while the release is prepared and refuses publication if it
+drifts. The resulting Program Release permanently binds that executable
+identity to the exact ProgramSpec and IDL.
+
+No maintainer chooses a bump in a commit message or edits a version to describe
+the change. CI compares the proposed package with the last version recorded in
+published catalog history, classifies the structural difference, and derives
+the next version. Once a version is published, it is never rebound to different
+content.
+
+## Version rules
+
+| Classification | Version effect | Meaning                                                                 |
+| -------------- | -------------- | ----------------------------------------------------------------------- |
+| Unchanged      | No new version | The exact package identity is already published                         |
+| Rebuild        | Patch          | The package changed without changing the callable or decodable contract |
+| Additive       | Minor          | The contract gained compatible declarations or output fields            |
+| Breaking       | Major          | Existing callers or decoders may no longer be compatible                |
+
+A patch can cover an implementation rebuild, an SDK extension change, a new
+SDK target, or another packaging change that preserves the program contract. A
+minor release can add a new instruction, account type, event, error, or
+compatible trailing output field.
+
+Removals, renames, reordering, and type changes are breaking. Adding a required
+instruction account or argument is also breaking because every existing caller
+must supply or encode it. The classifier works from the normalized structure,
+not from source-code text or an IDL's own metadata version.
+
+## Generated release notes
+
+The release notes come from the same structural comparison that decides the
+version. They record:
+
+- the classification (`rebuild`, `additive`, or `breaking`);
+- the previous Arete version;
+- the identities or SDK surfaces that caused the release; and
+- a machine-readable contract diff with the affected path and compatibility
+  effect.
+
+This keeps the changelog aligned with the version decision. It does not depend
+on a manually written summary being complete.
+
+Inspect the current version, identities, and release notes with:
+
+```bash
+a4 explore catalog program <slug> --json
+```
+
+The descriptor is the source of truth for what is currently available. Use
+`a4 install` to save a version requirement in `arete.toml`; use `a4 update` to
+advance within that requirement. Commit `arete.lock` to preserve the exact
+package and artifact identities selected for the project.
+
+## Next steps
+
+- [Install and use a Program SDK](/using-programs/overview/)
+- [Manage version requirements and lockfiles](/building-stacks/configuration/)
+- [Understand programs, views, and stacks](/concepts/programs-views-stacks/)

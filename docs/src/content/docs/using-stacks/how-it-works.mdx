@@ -1,276 +1,157 @@
 ---
-title: How It Works
-sidebar:
-  order: 3
-description: Architecture, core concepts, and data flow in Arete.
+title: How Arete Works
+description: How discovery, generated SDKs, hosted capabilities, and live views fit together.
 ---
 
-Arete is a declarative data layer for Solana. You define the data shape you need, and Arete handles all the infrastructure to stream it to your app.
+Arete separates portable program and view definitions from the hosted services
+that deliver them. This gives applications exact generated interfaces without
+making infrastructure topology part of the public API.
 
-:::tip[Prefer AI-assisted development?]
-You don't need to understand all of this to build with Arete. Check out the [Build with AI](/agent-skills/overview/) path to get started with prompts instead of code.
-:::
+## The complete path
 
----
-
-## The Problem
-
-Building data pipelines for Solana apps is painful:
-
-1. **Manual parsing** - You write custom code to decode accounts and instructions
-2. **ETL complexity** - You build pipelines to transform, aggregate, and store data
-3. **RPC overhead** - You manage websocket connections, retries, and state sync
-4. **Type mismatches** - On-chain types don't match your app types
-
-Most teams spend weeks on infrastructure before shipping features.
-
----
-
-## The Arete Solution
-
-Instead of building infrastructure, you **declare what data you need**:
-
-```rust
-#[entity(name = "Token")]
-pub struct Token {
-    #[from_instruction(Create::mint, primary_key)]
-    pub mint: String,
-
-    #[map(BondingCurve::virtual_sol_reserves)]
-    pub sol_reserves: u64,
-
-    #[aggregate(from = Buy, field = amount, strategy = Sum)]
-    pub total_volume: u64,
-}
+```text
+Intent
+  ↓
+Catalog and knowledge
+  ↓
+Exact program or stack descriptor
+  ↓
+arete.toml + arete.lock
+  ↓
+Generated SDK
+  ↓
+Application session
+  ├── Program Read
+  ├── Generic chain reads
+  ├── Live view queries and subscriptions
+  └── Transaction inspection and submission
 ```
 
-Arete then:
+Each boundary is inspectable. Agents use the catalog for discovery, exact
+descriptors for capability truth, and generated code for application APIs.
 
-- Subscribes to the relevant on-chain events
-- Transforms raw data into your entity shape
-- Streams updates to your app as they happen on-chain
-- Generates type-safe SDKs for your frontend
+## Discovery: find capabilities from intent
 
----
+The catalog records programs and stacks together with concepts, categories,
+verified SDK targets, and delivery modes:
 
-## Architecture Overview
+- `read` — typed program accounts and generic chain state;
+- `build` — instructions, transactions, and flows; and
+- `subscribe` — hosted current-state and live views.
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  YOUR APP                                                    │
-│  React hooks, TypeScript streams, or raw WebSocket           │
-└──────────────────────────────────────────────────────────────┘
-                              ▲
-                              │ WebSocket (live updates)
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│  ARETE CLOUD                                            │
-│                                                              │
-│   ┌────────────┐    ┌────────────┐    ┌────────────┐         │
-│   │  Compiler  │ -> │     VM     │ -> │  Streamer  │         │
-│   └────────────┘    └────────────┘    └────────────┘         │
-│         ^                 ^                  │               │
-│    AST Bytecode     State Tables      WebSocket              │
-│                                                              │
-│   ┌────────────────────────────────────────────────────┐    │
-│   │              Yellowstone gRPC                       │    │
-│   │         (Live Solana data feed)                     │    │
-│   └────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────┘
-                              ▲
-                              │ Yellowstone gRPC (raw transactions)
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│  SOLANA                                                      │
-│  On-chain programs emitting transactions and state changes   │
-└──────────────────────────────────────────────────────────────┘
-```
+Search results are not SDK schemas. After finding a candidate, `a4 explore`
+opens its pinned descriptor. That descriptor is the source of truth for the
+specific version an application can install.
 
----
+## Installation: turn discovery into a project dependency
 
-## Key Concepts
+`a4 install` records human-readable intent in `arete.toml` and exact resolution
+in `arete.lock`. It then generates language-specific code and provenance for
+the whole dependency graph.
 
-### Stacks
+This means a project can express:
 
-A **Stack** is a deployed data pipeline that:
+- standalone Program SDKs;
+- stacks containing live views and their programs;
+- multiple SDK targets; and
+- local or workspace-authored artifacts where appropriate.
 
-1. **Declares** one or more Solana programs it cares about — each with its own IDL
-2. **Subscribes** to on-chain events across all of those programs
-3. **Transforms** raw transaction data into structured entities
-4. **Aggregates** values over time (sums, counts, etc.)
-5. **Streams** updates to connected clients as they happen
+Generation is transactional: outputs and the lockfile are committed together
+after the complete graph validates.
 
-A stack isn't limited to a single program. You can pull data from multiple programs into a single unified set of entities — as long as you provide an IDL for each. For example, a DeFi stack might combine instructions from a DEX program, a token program, and a rewards program into one coherent stream.
+## Program Read: exact decoded accounts
 
-Think of it as a "live query" across Solana — you declare the programs and data shape you need, and Arete keeps it updated.
+Program Read fetches and decodes accounts for an exact published program
+release. The generated client already knows the schema and release identity.
+Use this surface when you have an address and want current program-owned state.
 
-### Entities
+It is independent of live views. A standalone Program SDK can be read-ready
+without any deployed stack.
 
-An **Entity** is a structured object representing on-chain state. A stack can contain multiple entities — for example, a DeFi stack might have separate entities for pools, positions, and trades. Each entity has:
+## Chain gateway: generic state and transactions
 
-- **Primary key** - Unique identifier (usually a pubkey)
-- **Fields** - Data attributes with population strategies
-- **Sections** - Logical groupings of fields
+The Solana gateway provides capabilities that are not tied to one program
+account schema:
 
-```rust
-#[entity(name = "Token")]
-pub struct Token {
-    pub id: TokenId,       // Primary key section
-    pub info: TokenInfo,   // Metadata section
-    pub trading: Trading,  // Metrics section
-}
-```
+- generic account, balance, mint, rent, and clock reads;
+- transaction blockhash, fee, and simulation support; and
+- submission and confirmation for locally signed transactions.
 
-### Mappings
+Read and transaction scopes are independent. The wallet compiles and signs
+locally; Arete never receives the private key.
 
-**Mappings** define how on-chain data flows into entity fields:
+Hosted packages carry explicit gateway descriptors. Clients do not derive the
+gateway from a stack's WebSocket URL.
 
-| Mapping Type          | Source                  | Example                                    |
-| --------------------- | ----------------------- | ------------------------------------------ |
-| `#[map]`              | Account field           | `#[map(BondingCurve::reserves)]`           |
-| `#[from_instruction]` | Instruction arg/account | `#[from_instruction(Create::mint)]`        |
-| `#[snapshot]`         | Account snapshot        | `#[snapshot(from = Account)]`              |
-| `#[derive_from]`      | Derive from instruction | `#[derive_from(from = Buy, field = user)]` |
-| `#[aggregate]`        | Computed from events    | `#[aggregate(from = Buy, strategy = Sum)]` |
-| `#[event]`            | Captured instruction    | `#[event(strategy = Append)]`              |
-| `#[computed]`         | Derived from fields     | `#[computed(field_a + field_b)]`           |
+## Live views: maintained application state
 
-### Population Strategies
+Live views transform account and instruction updates into application-facing
+entities. A view can provide keyed state, a collection, or a bounded filtered
+and sorted window.
 
-**Strategies** control how field values are updated:
+Clients can:
 
-| Strategy      | Behavior                  |
-| ------------- | ------------------------- |
-| `SetOnce`     | Set once, never overwrite |
-| `LastWrite`   | Always use latest value   |
-| `Append`      | Collect into array        |
-| `Sum`         | Running total             |
-| `Count`       | Event counter             |
-| `UniqueCount` | Count unique values       |
-| `Max` / `Min` | Track extremes            |
+- fetch a point-in-time result over HTTP;
+- subscribe to updates over WebSocket;
+- apply server-side keys, filters, partitions, and limits; and
+- reconcile application state after a confirmed transaction.
 
-### Views
+View subscriptions use an explicit update taxonomy. A row can be added or
+changed, leave one query while continuing to exist, or be deleted globally.
+Use the generated SDK rather than reducing every update to an upsert/delete
+pair.
 
-**Views** are how you access data from a stack. By default, every entity gets two built-in views:
+## MCP: the exploratory client
 
-| Mode    | Path           | Returns           | Use Case     |
-| ------- | -------------- | ----------------- | ------------ |
-| `list`  | `Entity/list`  | Array of entities | All entities |
-| `state` | `Entity/state` | Single entity     | Get by key   |
+The local Arete MCP server exposes catalog discovery and live-view operations
+to an agent. It can connect to a deployed stack, maintain a bounded cache for
+active subscriptions, and query that cache while answering a question.
 
-```typescript
-// List - all tokens as array
-const { data: tokens } = stack.views.Token.list.use();
+MCP is ideal for exploration and debugging. Once the capability belongs in a
+product, install its exact package and use the generated SDK.
 
-// State - generated key object, with fields determined by the entity primary key
-const { data: token } = stack.views.Token.state.use({ mint: mintAddress });
+## Sessions: application composition
+
+A session composes several stacks and programs while sharing authentication,
+chain reads, wallet access, and transaction transports. Generated packages
+retain their own exact identities and bindings.
+
+```ts
+const session = await createSession({
+  stacks: { markets: MARKETS_STACK },
+  programs: { token: SPL_TOKEN_PROGRAM },
+});
+
+session.stacks.markets.views;
+session.programs.token.accounts;
+session.chain;
 ```
 
-**Custom Views:** If you need different sorting, filtering, or aggregation logic, you can define custom views using the `#[view]` macro in your stack specification. This lets you create specialized access patterns beyond the default list and state views.
+## Custom views
 
-### Stack SDKs
+When an existing view does not answer the application question, define a new
+read model with the advanced Rust authoring path.
 
-A **Stack SDK** is a generated package that tells the Arete client how to interact with a specific feed. It contains:
+Compilation produces definitions; deployment attaches hosted capabilities.
+After deployment, query the result through MCP, refine it, and install the
+finished stack into the application.
 
-- **Entity types** — The shape of your data
-- **View definitions** — How to access entities (list, state, etc.)
-- **Helpers** — Shared formatting and transformation logic
+## Public contracts versus implementation
 
-You can share generated SDKs with your team or publish them to npm/crates.io.
-Package publication is a separate, manual operator action.
+Applications should depend on:
 
----
+- catalog capability metadata;
+- exact descriptors and artifact identities;
+- generated SDK types;
+- documented query and transaction semantics; and
+- explicit authentication scopes.
 
-## Data Flow
+They should not depend on internal service names, deployment grouping, storage
+layout, compiler processes, or inferred endpoint conventions.
 
-### Specification Time
+## Continue
 
-1. Write a stream definition using Rust macros
-2. Build generates ProgramSpec, LiveSpec, and StackManifest artifacts
-3. Review the selected views and run `a4 up <path.stack-manifest.json>`
-4. The hosted control plane resolves immutable Program Releases and creates deployment bindings
-
-### Client
-
-1. Connect to WebSocket
-2. Subscribe to views
-3. Receive live updates
-4. React components re-render automatically
-
----
-
-## Live Updates
-
-Unlike traditional APIs where you poll for changes, Arete **pushes** updates to you.
-
-### Update Types
-
-| Type     | Meaning                       |
-| -------- | ----------------------------- |
-| `upsert` | Entity was created or updated |
-| `delete` | Entity was removed            |
-
-```typescript
-for await (const update of a4.views.token.list.watch()) {
-  if (update.type === "upsert") {
-    console.log("Token changed:", update.data);
-  } else if (update.type === "delete") {
-    console.log("Token removed:", update.key);
-  }
-}
-```
-
----
-
-## Connection Lifecycle
-
-```
-disconnected → connecting → connected → (reconnecting) → connected
-                                     ↘ error
-```
-
-| State          | Meaning                                |
-| -------------- | -------------------------------------- |
-| `disconnected` | Not connected                          |
-| `connecting`   | Establishing WebSocket connection      |
-| `connected`    | Active and receiving updates           |
-| `reconnecting` | Connection lost, attempting to restore |
-| `error`        | Failed to connect (check URL, network) |
-
-The SDK handles reconnection automatically. Your subscriptions resume when the connection is restored.
-
-Two similarly named options control different phases:
-
-- React `autoConnect` defaults to `true` and controls only whether `AreteProvider` starts the initial connection.
-- `autoReconnect` defaults to `true` in React and the core TypeScript SDK and controls only recovery after an established connection is lost.
-
-Disabling `autoConnect` does not disable later recovery for a connection your app establishes. Disabling `autoReconnect` does not suppress the initial connection.
-
----
-
-## Type Safety
-
-Arete provides end-to-end type safety:
-
-1. **Spec types** - Rust ensures valid mappings at compile time
-2. **Generated types** - SDK types match your entity definitions
-3. **Runtime types** - Data arrives pre-shaped, no parsing needed
-
-```typescript
-// TypeScript knows token.mint is string, token.volume is bigint
-const { data: token } = stack.views.Token.state.use({ mint });
-console.log(token.mint); // string
-console.log(token.volume); // bigint
-```
-
----
-
-## Next Steps
-
-- [Quickstart](/using-stacks/quickstart) - Scaffold a working app in under 2 minutes
-- [Connect to a Stack](/using-stacks/connect/) - Add Arete to your existing project
-- [React SDK](/sdks/react/) - Build a complete React app
-- [TypeScript SDK](/sdks/typescript/) - Framework-agnostic SDK
-- [Rust SDK](/sdks/rust/) - Native Rust client
-- [Building Stacks](/building-stacks/workflow) - Create custom data streams
-- [CLI Commands](/cli/commands) - Deployment and management
+- [Programs, views, and stacks](/concepts/programs-views-stacks/)
+- [Explore with MCP](/agent-skills/explore-on-chain/)
+- [Program SDKs](/using-programs/overview/)
+- [Connect to live views](/using-stacks/connect/)

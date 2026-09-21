@@ -1,142 +1,125 @@
 ---
-title: AI Tooling Setup
-sidebar:
-  order: 0
-description: Get started with Arete by setting up an AI coding assistant that writes code for you.
+title: Choose and Set Up an Agent
+description: Prepare a coding agent to discover programs, query live views, and build with generated Arete SDKs.
 ---
 
-import { Card, CardGrid } from "@astrojs/starlight/components";
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-You don't need to know how to code to build with Arete. AI coding tools can write all the code for you — you just tell them what you want in plain English.
+Arete works with coding agents that can run commands and use MCP tools. You can
+use Cursor, Claude Code, Codex, OpenCode, VS Code agents, or another supported
+client. The Arete workflow does not depend on one editor.
 
-Arete works with any AI coding agent. This guide uses **Cursor** as the example, but the same steps apply to Claude Code, Windsurf, OpenCode, or any other agent you prefer.
+## 1. Open a project folder
 
----
-
-## What You'll Need
-
-- A computer (Mac, Windows, or Linux)
-- An internet connection
-- About 10 minutes
-
-That's it. No programming experience required.
-
----
-
-## Step 1: Install Cursor
-
-[Cursor](https://cursor.sh) is an AI-powered code editor — a good starting point if you don't already have a tool you prefer.
-
-1. Go to [cursor.sh](https://cursor.sh) and download the version for your OS
-2. Open the downloaded file and follow the installation prompts
-3. Launch Cursor and create a free account
-
-:::tip[Already have an AI coding tool?]
-If you're already using Claude Code, Windsurf, OpenCode, or another agent, skip to [Step 2](#step-2-create-a-project-folder). Arete works with all of them.
-:::
-
-:::tip[Cursor is free to start]
-Cursor offers a free tier with limited AI queries per month — plenty for getting started.
-:::
-
----
-
-## Step 2: Create a Project Folder
-
-Create a folder for your project and open it in your AI tool.
-
-**On Mac:** Open Finder, navigate to Documents (or wherever you keep projects), right-click → **New Folder**, name it `my-arete-app`, then open it in Cursor via **File → Open Folder**.
-
-**On Windows:** Open File Explorer, navigate to Documents, right-click → **New → Folder**, name it `my-arete-app`, then open it in Cursor via **File → Open Folder**.
-
-**On Linux / terminal-based tools:**
+Create or open the directory where you want the agent to work. Project-scoped
+setup is recommended because dependencies, instructions, skills, and MCP
+configuration can be reviewed with the rest of the project.
 
 ```bash
-mkdir ~/my-arete-app
-cd ~/my-arete-app
+mkdir my-arete-project
+cd my-arete-project
+git init
 ```
 
-Then open the folder in your editor, or start your agent in that directory.
+## 2. Give the agent the bootstrap page
 
----
-
-## Step 3: Let Your AI Set Up Arete
-
-Paste this prompt into your AI assistant's chat:
+Paste this prompt into the agent:
 
 <CopyPrompt>
-Read https://docs.arete.run/agent.md and follow it to set up Arete in this project, then tell me what live data is available.
+Read https://docs.arete.run/agent.md and follow it to set up Arete in this
+project. Verify the setup, and simply explain what Arete is capable of.
 </CopyPrompt>
 
-In Cursor, press `Cmd+L` (Mac) or `Ctrl+L` (Windows) to open the AI chat sidebar, paste the prompt, and press Enter. Approve any commands it asks to run.
+The agent should:
 
-For terminal-based agents (Claude Code, OpenCode, etc.), just paste it directly and press Enter.
+1. install the signed `a4` CLI binary;
+2. run `a4 init -y`;
+3. run `a4 doctor --json`; and
+4. follow exact repair commands for required failures.
 
-### What happens next
+No Rust toolchain or Arete account is required for basic setup and public
+catalog discovery.
 
-Your AI will:
+## 3. Reload the agent
 
-1. **Install the Arete CLI** — a prebuilt binary via `curl -fsSL https://arete.run/install.sh | sh` (or `irm https://arete.run/install.ps1 | iex` on Windows). No Rust, no account.
-2. **Run `a4 init -y`** — installs the agent skills (teaching itself how to use Arete correctly) and configures the Arete MCP servers for your editor
-3. **Run `a4 doctor --json`** — verifies everything is in place
-4. **Discover available data** — `a4 explore --json` lists what blockchain data you can access
-5. **Tell you what it found** — and wait for your next instruction
+`a4 init` writes MCP configuration for detected agents. Terminal agents often
+pick this up immediately; GUI applications may need a full restart so they
+reload configuration and the updated PATH.
 
-This takes about 1–2 minutes.
+Ask the agent to confirm that it can see:
 
----
+- the `arete` MCP server for discovery and live views; and
+- the `arete-docs` MCP server for documentation search.
 
-## Step 4: Scaffold the ORE Template
-
-Run this in your terminal to create a working ORE dashboard:
+If either is missing:
 
 ```bash
-npx @usearete/a4 create my-ore-app --template react-ore
-cd my-ore-app
-npm install
-npm run dev
+a4 doctor --json
+a4 doctor --fix
 ```
 
-Open [localhost:5173](http://localhost:5173) and you'll see live ORE mining data streaming from Solana.
+Review the reported changes and restart the agent again.
 
----
-
-## Step 5: Customise It With Your AI
-
-Now open the project in Cursor and try this prompt:
+## 4. Ask an on-chain question
 
 <CopyPrompt>
-I have a Arete ORE dashboard running using the react-ore template. Update the mining grid so each square is coloured as a heatmap based on the amount of SOL deployed to that square — more SOL should glow brighter. Keep the existing dark theme.
+Use Arete to find programs and currently deployed views related to [YOUR
+QUESTION]. Inspect exact descriptors, gather only a bounded live sample,
+explain which programs and views support the answer, and disconnect when
+finished. If no suitable hosted view exists, tell me which program capabilities
+are closest instead of guessing.
 </CopyPrompt>
 
-Your AI already knows how to use Arete from Step 3 — it will find the right views and update the component for you.
+Knowledge lookup and hosted connections may require authentication. When the
+agent reports that requirement, run:
 
----
+```bash
+a4 auth signup
+```
 
-## Troubleshooting
+or log in with a key you already control:
 
-**`a4: command not found`** — The installer put `a4` in `~/.local/bin` and printed `A4_BIN=<path>`; your terminal captured PATH before that. Open a new terminal, or run `export PATH="$HOME/.local/bin:$PATH"`. `a4 doctor` reports this as the `cli.path` check.
+```bash
+a4 auth login --key <a4_ak_...>
+```
 
-**`npx: command not found` or `skills: skipped`** — Skills need Node.js. Download the LTS version from [nodejs.org](https://nodejs.org), install it, then run `a4 doctor --fix` (or re-paste the setup prompt).
+Do not paste credentials into chat or source code.
 
-**The AI seems confused** — Make sure it completed Step 3. You can re-paste the setup prompt to re-run it.
+## 5. Turn the result into code
 
----
+Once exploration identifies the correct capability, ask the agent to install
+it and build against the generated types:
 
-## Next Steps
+<CopyPrompt>
+Install the exact Arete program or stack we just validated into this project
+for [LANGUAGE]. Preserve arete.toml and arete.lock, inspect the generated SDK,
+and implement [FEATURE] using generated names and types. Do not edit generated
+files or reuse MCP cache data as an application dependency.
+</CopyPrompt>
 
-<CardGrid>
-  <Card title="Build a Dashboard" icon="rocket">
-    Follow our step-by-step tutorial to build a complete ORE mining dashboard.
+The agent should use `a4 install program ...` for standalone program reads and
+transactions, or `a4 install stack ...` when the application needs the selected
+live views.
 
-    [Start tutorial →](/agent-skills/tutorial-ore-dashboard/)
+## What the setup writes
 
-  </Card>
-  <Card title="Copy-Paste Prompts" icon="document">
-    Browse our cookbook of ready-to-use prompts for common tasks.
+Depending on the detected agent, `a4 init` may create or update:
 
-    [View prompts →](/agent-skills/prompts/)
+- `arete.toml`;
+- an Arete-managed block in `AGENTS.md`;
+- a `CLAUDE.md` bridge;
+- `.agents/skills` or an agent-specific skill directory;
+- project MCP configuration; and
+- `skills-lock.json`.
 
-  </Card>
-</CardGrid>
+Re-running `a4 init` updates managed sections without replacing unrelated
+project instructions.
+
+## Safety expectations
+
+An agent can search, read, generate local code, and inspect transactions without
+transaction or deployment authority. Signing, submitting, publishing, and
+deploying are separate actions and require an explicit request.
+
+Continue with [Explore On-chain with MCP](/agent-skills/explore-on-chain/) or
+the [Prompt Cookbook](/agent-skills/prompts/).
