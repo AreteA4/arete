@@ -1,12 +1,17 @@
 import type { APIRoute, GetStaticPaths } from "astro";
 import { getCollection } from "astro:content";
-import { stripMdx } from "../lib/strip-mdx";
+import {
+  markdownResponse,
+  markdownSlug,
+  renderMarkdownPage,
+} from "../lib/markdown-page";
 
 // Serves the raw markdown source of every doc page at <path>.md.
-// Pairs with the Vercel rewrite that maps `Accept: text/markdown` requests
-// to these routes, so agents can fetch markdown without HTML conversion.
-// MDX-only syntax (imports, JSX tags) is stripped so the output is valid
-// CommonMark for consumers that can't parse MDX.
+// Pairs with Vercel Edge middleware that maps `Accept: text/markdown`
+// requests to these routes, so agents can fetch markdown without HTML
+// conversion. MDX-only syntax (imports, JSX tags) is stripped so the
+// output is valid CommonMark. A Mintlify-style llms.txt blockquote is
+// prepended so converted or fetched markdown has a first-hop index.
 
 export const getStaticPaths: GetStaticPaths = async () => {
   const docs = await getCollection("docs");
@@ -29,14 +34,6 @@ export const GET: APIRoute = ({ props }) => {
       data: Record<string, unknown>;
     };
   };
-  const fm = Object.entries(entry.data)
-    .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
-    .join("\n");
-  const body = `---\n${fm}\n---\n\n${stripMdx(entry.body ?? "")}\n`;
-  return new Response(body, {
-    headers: {
-      "content-type": "text/markdown; charset=utf-8",
-      "cache-control": "public, max-age=0, must-revalidate",
-    },
-  });
+  const slug = markdownSlug(entry.id);
+  return markdownResponse(renderMarkdownPage(entry, slug));
 };

@@ -5,6 +5,19 @@
   "outputDirectory": "dist",
   "headers": [
     {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Link",
+          "value": "</llms.txt>; rel=\"llms-txt\", </llms-full.txt>; rel=\"llms-full-txt\", </.well-known/mcp/server-card.json>; rel=\"mcp-server-card\", </.well-known/agent-card.json>; rel=\"agent-card\", </.well-known/agent-skills>; rel=\"agent-skills\""
+        },
+        {
+          "key": "X-Llms-Txt",
+          "value": "https://docs.arete.run/llms.txt"
+        }
+      ]
+    },
+    {
       "source": "/a4/latest.json",
       "headers": [
         { "key": "Content-Type", "value": "application/json; charset=utf-8" },
@@ -52,6 +65,33 @@
         { "key": "Access-Control-Allow-Origin", "value": "*" },
         { "key": "X-Content-Type-Options", "value": "nosniff" }
       ]
+    },
+    {
+      "source": "/.well-known/agent-card.json",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" }
+      ]
+    },
+    {
+      "source": "/.well-known/agent-skills",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" }
+      ]
+    },
+    {
+      "source": "/.well-known/agent-skills/index.json",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" }
+      ]
     }
   ],
   "rewrites": [
@@ -66,6 +106,14 @@
     {
       "source": "/.well-known/mcp",
       "destination": "/.well-known/mcp.json"
+    },
+    {
+      "source": "/.well-known/agent-skills",
+      "destination": "/.well-known/agent-skills/index.json"
+    },
+    {
+      "source": "/.well-known/llms.txt",
+      "destination": "/llms.txt"
     },
     {
       "source": "/ingest/static/:path*",
