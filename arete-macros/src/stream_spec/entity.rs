@@ -566,7 +566,6 @@ pub fn process_entity_struct_with_idl(
                 // Convert instruction path to string for sources_by_type key
                 let source_type_str = path_to_string(instr_path);
 
-                // Convert event to map attributes
                 let map_attrs =
                     convert_event_to_map_attributes(target_field, event_attr, instr_path, idl);
 

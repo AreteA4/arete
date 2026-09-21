@@ -1,7 +1,8 @@
 use crate::ast::*;
 use crate::identifiers::{typescript as ts_ident, IdentifierCase};
 use crate::stack_types::{
-    entity_program_name, resolved_type_namespaces, ResolvedTypeClaim, StackResolvedTypes,
+    entity_idl, entity_program_name, resolved_type_namespaces, ResolvedTypeClaim,
+    StackResolvedTypes,
 };
 use arete_idl::utils::to_snake_case as idl_to_snake_case;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -3664,9 +3665,9 @@ fn compile_stack_spec_with_view_selection(
     for entity_spec in &stack_spec.entities {
         let mut spec = entity_spec.clone();
         let program_name = entity_program_name(entity_spec, &stack_spec.idls).map(str::to_string);
-        // Inject stack-level IDL if entity doesn't have its own
+        // Type the entity against its own program's IDL, not the stack's first.
         if spec.idl.is_none() {
-            spec.idl = stack_spec.idls.first().cloned();
+            spec.idl = entity_idl(entity_spec, &stack_spec.idls).cloned();
         }
         let entity_name = spec.state_name.clone();
         entity_names.push(entity_name.clone());

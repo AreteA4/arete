@@ -383,3 +383,125 @@ fn main() {}
         "unexpected compiler error:\n{stderr}"
     );
 }
+
+const PUMP_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+const ENTROPY_PROGRAM_ID: &str = "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X";
+
+/// Build a two-IDL stack whose only entity reads the entropy program, and
+/// report the program id the entity ends up advertising.
+fn entropy_entity_attribution(idl_order: &str, case_name: &str) -> Option<String> {
+    let fixture_dir = macro_manifest_dir()
+        .parent()
+        .unwrap()
+        .join("arete-idl/tests/fixtures");
+    let pump = fs::read_to_string(fixture_dir.join("pump.json")).unwrap();
+    let entropy = fs::read_to_string(fixture_dir.join("entropy.json")).unwrap();
+    let source = format!(
+        r#"use arete_macros::arete;
+
+#[arete(idl = {idl_order})]
+mod stream {{
+    #[entity(name = "EntropyVar")]
+    struct EntropyVar {{
+        #[map(entropy_sdk::accounts::Var::__account_address, primary_key, strategy = SetOnce)]
+        address: String,
+
+        #[map(entropy_sdk::accounts::Var::samples, strategy = LastWrite)]
+        samples: Option<u64>,
+    }}
+}}
+
+fn main() {{
+    let _ = stream::create_multi_entity_bytecode();
+}}
+"#
+    );
+    let temp = TempCrate::new(
+        "artifact-native-v2",
+        case_name,
+        cargo_toml(case_name, &dependencies()),
+        &source,
+        &[("idl/pump.json", &pump), ("idl/entropy.json", &entropy)],
+    );
+    let output = temp.cargo_check();
+    assert!(
+        output.status.success(),
+        "two-IDL stack failed to build:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let live =
+        load_live_spec_v2(&fs::read(temp.path().join(".arete/Stream.live-spec.json")).unwrap())
+            .unwrap()
+            .artifact;
+    live
+        .payload
+        .entities
+        .iter()
+        .find(|entity| entity.state_name == "EntropyVar")
+        .expect("EntropyVar entity")
+        .program_id
+        .clone()
+}
+
+#[test]
+fn an_entity_is_attributed_to_the_program_it_reads_whatever_the_idl_order() {
+    let declared_second = entropy_entity_attribution(
+        r#"["idl/pump.json", "idl/entropy.json"]"#,
+        "entity-program-second-idl",
+    );
+    assert_eq!(
+        declared_second.as_deref(),
+        Some(ENTROPY_PROGRAM_ID),
+        "an entity reading only entropy must not advertise pump ({PUMP_PROGRAM_ID})"
+    );
+
+    // Reversing the declaration order must not change what the entity is.
+    let declared_first = entropy_entity_attribution(
+        r#"["idl/entropy.json", "idl/pump.json"]"#,
+        "entity-program-first-idl",
+    );
+    assert_eq!(declared_first, declared_second);
+}
+
+#[test]
+fn a_source_naming_no_declared_program_is_a_compile_error() {
+    let fixture_dir = macro_manifest_dir()
+        .parent()
+        .unwrap()
+        .join("arete-idl/tests/fixtures");
+    let pump = fs::read_to_string(fixture_dir.join("pump.json")).unwrap();
+    let entropy = fs::read_to_string(fixture_dir.join("entropy.json")).unwrap();
+    let source = r#"use arete_macros::arete;
+
+#[arete(idl = ["idl/pump.json", "idl/entropy.json"])]
+mod stream {
+    #[entity(name = "Ambiguous")]
+    struct Ambiguous {
+        #[map(token_sdk::accounts::Var::__account_address, primary_key, strategy = SetOnce)]
+        address: String,
+    }
+}
+
+fn main() {
+    let _ = stream::create_multi_entity_bytecode();
+}
+"#;
+    let temp = TempCrate::new(
+        "artifact-native-v2",
+        "entity-program-ambiguous",
+        cargo_toml("entity-program-ambiguous", &dependencies()),
+        source,
+        &[("idl/pump.json", &pump), ("idl/entropy.json", &entropy)],
+    );
+    let output = temp.cargo_check();
+    assert!(
+        !output.status.success(),
+        "a source naming no declared program must not silently bind to the first IDL"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pump_sdk") && stderr.contains("entropy_sdk"),
+        "the diagnostic must name the stack's programs:\n{stderr}"
+    );
+}
