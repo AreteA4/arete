@@ -3,7 +3,8 @@
 // and mirror llms.txt under /.well-known/llms.txt.
 //
 // starlight-llms-txt still generates llms-full.txt / llms-small.txt.
-// This script only replaces the sparse dump-pointer llms.txt.
+// This script only replaces the sparse dump-pointer llms.txt. It never
+// deletes dumps, HTML pages, per-page .md twins, agent.md, or skill.md.
 
 import {
   copyFile,

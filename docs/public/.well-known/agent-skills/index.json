@@ -3,27 +3,52 @@
     {
       "name": "arete",
       "description": "Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between read/build/subscribe coverage, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions use arete-stack-authoring; for hosted publication or deployment use arete-deploy.",
-      "files": ["skill.md"]
+      "files": ["skill.md", "references/project-dependencies.md"]
     },
     {
       "name": "arete-streams",
       "description": "Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server. Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.",
-      "files": ["skill.md"]
+      "files": [
+        "skill.md",
+        "references/view-semantics.md",
+        "references/typescript.md",
+        "references/react.md",
+        "references/rust.md",
+        "references/python.md"
+      ]
     },
     {
       "name": "arete-programs",
       "description": "Use generated Arete program SDKs to read accounts, derive PDAs, build instructions, prepare semantic operations, inspect transactions, or execute them through a wallet. Use for Solana protocol integrations and transaction workflows. Do not use for stack views or subscriptions; use arete-streams. Do not publish a program or deploy a stack; use arete-deploy.",
-      "files": ["skill.md"]
+      "files": [
+        "skill.md",
+        "references/operation-lifecycle.md",
+        "references/transaction-safety.md",
+        "references/typescript.md",
+        "references/react.md",
+        "references/rust.md",
+        "references/python.md"
+      ]
     },
     {
       "name": "arete-stack-authoring",
       "description": "Design and compile custom Arete stack artifacts from Solana program IDLs using the Rust DSL. Use for app-facing read models, entity keys, cross-account join proof, mappings, aggregations, views, resolvers, and ProgramSpec/LiveSpec/StackManifest generation. Do not deploy or mutate hosted resources; use arete-deploy for that.",
-      "files": ["skill.md"]
+      "files": [
+        "skill.md",
+        "references/idl-analysis.md",
+        "references/read-models-and-joins.md",
+        "references/dsl.md",
+        "references/artifacts.md"
+      ]
     },
     {
       "name": "arete-deploy",
       "description": "Publish Solana ProgramSpecs and plan, deploy, inspect, stop, archive, promote, or delete hosted Arete resources. Use for a4 program lifecycle, a4 up, deployment branches/previews, and hosted stack operations. This skill performs external mutations only when the user's request authorizes them; use arete-stack-authoring for local DSL and artifact work.",
-      "files": ["skill.md"]
+      "files": [
+        "skill.md",
+        "references/program-publication.md",
+        "references/deployment-lifecycle.md"
+      ]
     }
   ]
 }

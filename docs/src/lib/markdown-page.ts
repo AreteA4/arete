@@ -11,7 +11,8 @@ export function markdownPath(slug: string): string {
   return slug ? `/${slug}.md` : "/index.md";
 }
 
-/** Mintlify-style first-hop directive prepended to every per-page markdown twin. */
+/** Mintlify-style first-hop directive prepended to every per-page markdown twin.
+ *  Prepend only: the page body is unchanged. */
 export function markdownDirective(slug: string): string {
   const path = markdownPath(slug);
   return [
