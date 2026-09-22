@@ -23,6 +23,7 @@ async function* walkMarkdown(dir) {
   for (const e of entries) {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
+      if (e.name === ".well-known" || e.name === "_astro") continue;
       yield* walkMarkdown(p);
     } else if (e.isFile() && p.endsWith(".md") && !SKIP_NAMES.has(e.name)) {
       yield p;
