@@ -723,10 +723,16 @@ async fn freshly_written_snapshot_with_a_stale_watermark_starts_live() {
     let entity_cache = EntityCache::new();
     let (tx, projector) = make_projector(&view_index, &entity_cache);
     let spec = make_spec("Token");
-    let service =
-        SnapshotService::initialize(config.clone(), &spec, entity_cache, &view_index, tx.clone())
-            .await
-            .unwrap();
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache,
+        &view_index,
+        test_journal(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
     tokio::spawn(projector.with_snapshot_runtime(service.runtime()).run());
 
     let vm = Arc::new(StdMutex::new(VmContext::new()));
@@ -755,6 +761,7 @@ async fn freshly_written_snapshot_with_a_stale_watermark_starts_live() {
         &spec,
         restored_cache.clone(),
         &restored_view,
+        test_journal(),
         restored_tx,
     )
     .await
