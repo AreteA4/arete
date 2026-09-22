@@ -209,7 +209,10 @@ async fn a_handle_reports_what_its_own_entity_cache_holds() {
                 .entity_cache_stats()
                 .await
                 .expect("a live runtime has an entity cache");
-            if stats.total_entities > 0 {
+            // One mutation fans out to three views, but the cache is written
+            // per view: waiting for the first entity can observe the batch
+            // half-applied. Wait for what the assertions below actually need.
+            if stats.view_count == 3 && stats.total_entities == 3 {
                 break stats;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
