@@ -295,12 +295,14 @@ impl Runtime {
                 None => projector,
             };
 
-            projector_handle = Some(tokio::spawn(
-                async move {
-                    projector.run().await;
-                }
-                .instrument(info_span!("projector")),
-            ));
+            // The projector runs for the lifetime of the server. Giving the
+            // task a span would make that span the parent of every batch
+            // whose producer does not carry an explicit context, creating an
+            // unbounded trace. `Projector::run` instead enters the bounded
+            // batch span before it processes and logs each batch.
+            projector_handle = Some(tokio::spawn(async move {
+                projector.run().await;
+            }));
 
             // The connection-serving half of the WebSocket server exists
             // whenever there is a live runtime, so a caller that owns its own
