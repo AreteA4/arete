@@ -137,6 +137,42 @@ impl SocketIssueMessage {
         issue
     }
 
+    /// A latest-state collection subscription fell behind and cannot recover
+    /// because the client disabled authoritative snapshots.
+    pub fn subscription_lagged(subscription_id: String, skipped: u64) -> Self {
+        let mut issue = Self::protocol(
+            Some(subscription_id),
+            "subscription-lagged",
+            format!("delivery fell behind by {skipped} updates and this subscription has stopped"),
+        );
+        issue.retryable = true;
+        issue.suggested_action = Some(
+            "unsubscribe, then resubscribe with snapshots enabled so delivery can recover"
+                .to_string(),
+        );
+        issue.fatal = true;
+        issue
+    }
+
+    /// A non-replayable append subscription cannot reconstruct records lost
+    /// after falling behind its bounded live bus.
+    pub fn append_subscription_lagged(subscription_id: String, skipped: u64) -> Self {
+        let mut issue = Self::protocol(
+            Some(subscription_id),
+            "subscription-lagged",
+            format!(
+                "delivery fell behind by {skipped} events and this append subscription has stopped"
+            ),
+        );
+        issue.retryable = true;
+        issue.suggested_action = Some(
+            "reconnect to continue live; enable retained replay on the view for lossless recovery"
+                .to_string(),
+        );
+        issue.fatal = true;
+        issue
+    }
+
     /// A replay the journal refused, rendered for the client.
     ///
     /// Each reason gets its own code: they have different remediations, and

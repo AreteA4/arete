@@ -62,7 +62,7 @@ pub use bus::{BusManager, BusMessage};
 pub use cache::{EntityCache, EntityCacheConfig};
 pub use config::{
     HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, RuntimePlan,
-    ServerConfig, TransactionConfig, WebSocketConfig, YellowstoneConfig,
+    ServerConfig, TransactionConfig, WebSocketConfig, WebSocketDeliveryConfig, YellowstoneConfig,
 };
 pub use health::{HealthMonitor, SlotTracker, StreamStatus};
 pub use http_health::HttpHealthServer;
@@ -350,6 +350,13 @@ impl ServerBuilder {
         config: crate::websocket::client_manager::RateLimitConfig,
     ) -> Self {
         self.websocket_rate_limit_config = Some(config);
+        self
+    }
+
+    /// Configure list-view buffering and latest-state collection delivery.
+    pub fn websocket_delivery_config(mut self, config: WebSocketDeliveryConfig) -> Self {
+        self.config.websocket_delivery = Some(config);
+        self.config.runtime_plan.live_runtime = true;
         self
     }
 
