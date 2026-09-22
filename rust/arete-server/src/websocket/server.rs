@@ -1032,6 +1032,24 @@ struct SnapshotMetadata<'a> {
     key: Option<&'a str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotPurpose {
+    Initial,
+    Recovery,
+}
+
+impl SnapshotPurpose {
+    fn authoritative(self, subscription: &Subscription) -> bool {
+        match self {
+            Self::Initial => subscription.query.after.is_none(),
+            // Recovery replaces the exact query membership even when `after`
+            // made the initial snapshot incremental. A merge-only snapshot
+            // cannot remove members whose delete frames were skipped.
+            Self::Recovery => true,
+        }
+    }
+}
+
 fn create_snapshot_batches(
     entities: &[SnapshotEntity],
     metadata: SnapshotMetadata<'_>,
@@ -1083,10 +1101,11 @@ async fn send_snapshot_batches(
     subscription: &Subscription,
     entities: &[SnapshotEntity],
     mode: Mode,
+    purpose: SnapshotPurpose,
     batch_config: &SnapshotBatchConfig,
 ) -> Result<()> {
     let snapshot_id = Uuid::new_v4().to_string();
-    let authoritative = subscription.query.after.is_none();
+    let authoritative = purpose.authoritative(subscription);
     let frames = create_snapshot_batches(
         entities,
         SnapshotMetadata {
@@ -1300,6 +1319,7 @@ async fn attach_state_subscription(
             &subscription,
             &to_wire_snapshot_entities(snapshot_entities, &view_spec),
             view_spec.mode,
+            SnapshotPurpose::Initial,
             &context.entity_cache.snapshot_config(),
         )
         .await?;
@@ -1422,6 +1442,7 @@ async fn attach_collection_subscription(
             &subscription,
             &to_wire_snapshot_entities(snapshot_entities, &view_spec),
             view_spec.mode,
+            SnapshotPurpose::Initial,
             &context.entity_cache.snapshot_config(),
         )
         .await?;
@@ -1639,16 +1660,17 @@ async fn recover_collection_subscription(
     let (receiver, membership) =
         subscribe_collection_then_snapshot(context, source_view_id, view_spec, &subscription.query)
             .await;
-    let mut snapshot_entities = membership.clone();
-    if let Some(limit) = subscription.query.snapshot_limit {
-        snapshot_entities.truncate(limit);
-    }
-    enforce_snapshot_limit(context, snapshot_entities.len())?;
+    // `snapshotLimit` caps only the initial transfer. Recovery has to replace
+    // the complete live membership; truncating it would make the replacement
+    // authoritative while immediately omitting members the server still
+    // considers current.
+    enforce_snapshot_limit(context, membership.len())?;
     send_snapshot_batches(
         context,
         subscription,
-        &to_wire_snapshot_entities(snapshot_entities, view_spec),
+        &to_wire_snapshot_entities(membership.clone(), view_spec),
         view_spec.mode,
+        SnapshotPurpose::Recovery,
         &context.entity_cache.snapshot_config(),
     )
     .await?;
@@ -1669,7 +1691,10 @@ async fn apply_collection_source_event(
     // A slow subscription can observe an old delete after the projector has
     // already recreated the key. Never let subscriber-local lag erase newer
     // shared cache state.
-    let current = context.entity_cache.get(source_view_id, &envelope.key).await;
+    let current = context
+        .entity_cache
+        .get(source_view_id, &envelope.key)
+        .await;
     if source_delete_is_stale(current.as_ref(), metadata.seq.as_deref()) {
         return;
     }
@@ -2704,14 +2729,8 @@ mod tests {
     #[test]
     fn a_delayed_delete_cannot_erase_a_newer_recreated_entity() {
         let recreated = json!({"balance": 2, "_seq": "10:000004"});
-        assert!(source_delete_is_stale(
-            Some(&recreated),
-            Some("10:000002")
-        ));
-        assert!(!source_delete_is_stale(
-            Some(&recreated),
-            Some("10:000004")
-        ));
+        assert!(source_delete_is_stale(Some(&recreated), Some("10:000002")));
+        assert!(!source_delete_is_stale(Some(&recreated), Some("10:000004")));
         assert!(!source_delete_is_stale(Some(&recreated), None));
     }
 
@@ -2784,6 +2803,23 @@ mod tests {
         assert!(!batches[0].authoritative);
         assert!(batches[0].complete);
         assert_eq!(batches[0].key.as_deref(), Some("missing"));
+    }
+
+    #[test]
+    fn lag_recovery_is_authoritative_for_an_after_query() {
+        let subscription = Subscription {
+            protocol_version: PROTOCOL_VERSION,
+            subscription_id: "sub-1".to_string(),
+            query: SubscriptionQuery {
+                view: "Thing/list".to_string(),
+                after: Some("40:000000000010".to_string()),
+                ..Default::default()
+            },
+            snapshot: Default::default(),
+        };
+
+        assert!(!SnapshotPurpose::Initial.authoritative(&subscription));
+        assert!(SnapshotPurpose::Recovery.authoritative(&subscription));
     }
 
     #[test]

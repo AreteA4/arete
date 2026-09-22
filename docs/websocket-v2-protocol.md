@@ -93,8 +93,15 @@ Every snapshot batch includes its subscription and snapshot identities:
 All batches for one snapshot share `snapshotId`, `subscriptionId`, and `authoritative`. `complete: false` means another batch follows. Exactly one final batch has `complete: true`, including an empty snapshot.
 
 - `authoritative: true` means the completed snapshot replaces all local state for this subscription.
-- `authoritative: false` means the snapshot is incremental and must be merged. A query containing `after` produces this form.
+- `authoritative: false` means the snapshot is incremental and must be merged. The initial snapshot for a query containing `after` produces this form.
 - `key` is present on keyed snapshots, including a completed empty state snapshot.
+
+If a latest-state subscription falls behind the server's bounded live bus, the
+server re-registers its receiver and sends a full authoritative recovery
+snapshot. Recovery is authoritative even when the original query contains
+`after`, so deletions skipped during the gap prune stale client membership.
+Because `snapshotLimit` applies only to the initial transfer, it does not
+truncate this recovery snapshot.
 
 Receiver registration happens before snapshot capture for state, list, append, and derived-source subscriptions. Updates published while a snapshot is being built or sent remain pending for live delivery after the snapshot. The implementation does not use timing sleeps for this handoff.
 
