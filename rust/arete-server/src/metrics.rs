@@ -46,6 +46,12 @@ pub struct Metrics {
     pub ws_connection_duration: Histogram<f64>,
     pub ws_subscriptions_active: UpDownCounter<i64>,
     pub ws_protocol_errors: Counter<u64>,
+    pub ws_subscription_lagged: Counter<u64>,
+    pub ws_subscription_dropped_updates: Counter<u64>,
+    pub ws_subscription_resnapshots: Counter<u64>,
+    pub ws_collection_coalesced_updates: Counter<u64>,
+    pub ws_collection_coalesced_flushes: Counter<u64>,
+    pub ws_delivery_stopped: Counter<u64>,
 
     // Transaction HTTP metrics. Labels are restricted to fixed operations/outcomes.
     pub transaction_requests_total: Counter<u64>,
@@ -161,6 +167,36 @@ impl Metrics {
         let ws_protocol_errors = meter
             .u64_counter("arete.ws.protocol.errors")
             .with_description("WebSocket protocol v2 errors by stable error code")
+            .init();
+
+        let ws_subscription_lagged = meter
+            .u64_counter("arete.ws.subscription.lagged")
+            .with_description("List subscriptions that fell behind the view broadcast bus")
+            .init();
+
+        let ws_subscription_dropped_updates = meter
+            .u64_counter("arete.ws.subscription.dropped_updates")
+            .with_description("Source updates skipped when list subscriptions fell behind")
+            .init();
+
+        let ws_subscription_resnapshots = meter
+            .u64_counter("arete.ws.subscription.resnapshots")
+            .with_description("Authoritative snapshots sent to recover lagged list subscriptions")
+            .init();
+
+        let ws_collection_coalesced_updates = meter
+            .u64_counter("arete.ws.collection.coalesced_updates")
+            .with_description("Source updates absorbed by timed collection delivery")
+            .init();
+
+        let ws_collection_coalesced_flushes = meter
+            .u64_counter("arete.ws.collection.coalesced_flushes")
+            .with_description("Timed collection delivery flushes")
+            .init();
+
+        let ws_delivery_stopped = meter
+            .u64_counter("arete.ws.delivery.stopped")
+            .with_description("Subscription delivery tasks stopped by bounded transport failures")
             .init();
 
         let transaction_requests_total = meter
@@ -394,6 +430,12 @@ impl Metrics {
             ws_connection_duration,
             ws_subscriptions_active,
             ws_protocol_errors,
+            ws_subscription_lagged,
+            ws_subscription_dropped_updates,
+            ws_subscription_resnapshots,
+            ws_collection_coalesced_updates,
+            ws_collection_coalesced_flushes,
+            ws_delivery_stopped,
             transaction_requests_total,
             transaction_request_latency,
             transaction_request_bytes,
@@ -571,6 +613,31 @@ impl Metrics {
     pub fn record_ws_protocol_error(&self, code: &str) {
         let attrs = self.attributes([KeyValue::new("code", code.to_string())]);
         self.ws_protocol_errors.add(1, &attrs);
+    }
+
+    pub fn record_ws_subscription_lagged(&self, view_id: &str, skipped: u64) {
+        let attrs = self.attributes([KeyValue::new("view_id", view_id.to_string())]);
+        self.ws_subscription_lagged.add(1, &attrs);
+        self.ws_subscription_dropped_updates.add(skipped, &attrs);
+    }
+
+    pub fn record_ws_subscription_resnapshot(&self, view_id: &str) {
+        let attrs = self.attributes([KeyValue::new("view_id", view_id.to_string())]);
+        self.ws_subscription_resnapshots.add(1, &attrs);
+    }
+
+    pub fn record_ws_collection_coalesced(&self, view_id: &str, updates: u64) {
+        let attrs = self.attributes([KeyValue::new("view_id", view_id.to_string())]);
+        self.ws_collection_coalesced_updates.add(updates, &attrs);
+        self.ws_collection_coalesced_flushes.add(1, &attrs);
+    }
+
+    pub fn record_ws_delivery_stopped(&self, view_id: &str, reason: &'static str) {
+        let attrs = self.attributes([
+            KeyValue::new("view_id", view_id.to_string()),
+            KeyValue::new("reason", reason),
+        ]);
+        self.ws_delivery_stopped.add(1, &attrs);
     }
 
     // ==================== Projector Helpers ====================

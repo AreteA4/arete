@@ -15,6 +15,7 @@ use crate::websocket::subscription::{
     SubscriptionQuery, Unsubscription, PROTOCOL_VERSION,
 };
 use crate::websocket::usage::{WebSocketUsageEmitter, WebSocketUsageEvent};
+use crate::WebSocketDeliveryConfig;
 use anyhow::Result;
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -24,7 +25,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, watch};
 use tokio_tungstenite::{
@@ -133,6 +134,42 @@ impl WsMetrics {
         #[cfg(feature = "otel")]
         if let Some(metrics) = &self.inner {
             metrics.record_ws_protocol_error(code);
+        }
+    }
+
+    fn subscription_lagged(&self, view: &str, skipped: u64) {
+        #[cfg(not(feature = "otel"))]
+        let _ = (view, skipped);
+        #[cfg(feature = "otel")]
+        if let Some(metrics) = &self.inner {
+            metrics.record_ws_subscription_lagged(view, skipped);
+        }
+    }
+
+    fn subscription_resnapshot(&self, view: &str) {
+        #[cfg(not(feature = "otel"))]
+        let _ = view;
+        #[cfg(feature = "otel")]
+        if let Some(metrics) = &self.inner {
+            metrics.record_ws_subscription_resnapshot(view);
+        }
+    }
+
+    fn collection_coalesced(&self, view: &str, updates: u64) {
+        #[cfg(not(feature = "otel"))]
+        let _ = (view, updates);
+        #[cfg(feature = "otel")]
+        if let Some(metrics) = &self.inner {
+            metrics.record_ws_collection_coalesced(view, updates);
+        }
+    }
+
+    fn delivery_stopped(&self, view: &str, reason: &'static str) {
+        #[cfg(not(feature = "otel"))]
+        let _ = (view, reason);
+        #[cfg(feature = "otel")]
+        if let Some(metrics) = &self.inner {
+            metrics.record_ws_delivery_stopped(view, reason);
         }
     }
 }
@@ -308,6 +345,7 @@ struct SubscriptionContext {
     usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     metrics: WsMetrics,
+    delivery: WebSocketDeliveryConfig,
     /// Cancelled when the server stops; every session ends through its normal
     /// cleanup path rather than being dropped mid-flight.
     shutdown: CancellationToken,
@@ -324,6 +362,7 @@ pub struct WebSocketServer {
     usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     rate_limit_config: Option<RateLimitConfig>,
     journal: Option<Arc<crate::journal::EventJournal>>,
+    delivery: WebSocketDeliveryConfig,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -348,6 +387,7 @@ impl WebSocketServer {
             usage_emitter: None,
             rate_limit_config: None,
             journal: None,
+            delivery: WebSocketDeliveryConfig::default(),
             metrics,
         }
     }
@@ -370,6 +410,7 @@ impl WebSocketServer {
             usage_emitter: None,
             rate_limit_config: None,
             journal: None,
+            delivery: WebSocketDeliveryConfig::default(),
         }
     }
 
@@ -396,6 +437,11 @@ impl WebSocketServer {
 
     pub fn with_rate_limit_config(mut self, config: RateLimitConfig) -> Self {
         self.rate_limit_config = Some(config);
+        self
+    }
+
+    pub fn with_delivery_config(mut self, config: WebSocketDeliveryConfig) -> Self {
+        self.delivery = config;
         self
     }
 
@@ -438,6 +484,7 @@ impl WebSocketServer {
             auth_plugin: self.auth_plugin,
             usage_emitter: self.usage_emitter,
             journal: self.journal,
+            delivery: self.delivery,
             metrics,
             shutdown: CancellationToken::new(),
             sessions: TaskTracker::new(),
@@ -463,6 +510,7 @@ pub(crate) struct ConnectionAcceptor {
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     journal: Option<Arc<crate::journal::EventJournal>>,
+    delivery: WebSocketDeliveryConfig,
     metrics: WsMetrics,
     shutdown: CancellationToken,
     /// Sessions spawned by [`serve_listener`](Self::serve_listener), so a
@@ -515,6 +563,7 @@ impl ConnectionAcceptor {
             view_index: self.view_index.clone(),
             usage_emitter: self.usage_emitter.clone(),
             journal: self.journal.clone(),
+            delivery: self.delivery.clone(),
             metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
         };
@@ -1353,24 +1402,13 @@ async fn attach_collection_subscription(
         .source_view
         .clone()
         .unwrap_or_else(|| view_id.clone());
-    let query = subscription.query.clone();
-    let cache = context.entity_cache.clone();
-    let sorted_caches = view_spec
-        .is_derived()
-        .then(|| context.view_index.sorted_caches());
-    let view_spec_for_snapshot = view_spec.clone();
-    let (mut receiver, initial_membership) =
-        subscribe_list_then_snapshot(&context.bus_manager, &source_view_id, move || async move {
-            load_query_entities(
-                &cache,
-                sorted_caches,
-                &view_spec_for_snapshot,
-                &query,
-                false,
-            )
-            .await
-        })
-        .await;
+    let (mut receiver, initial_membership) = subscribe_collection_then_snapshot(
+        context,
+        &source_view_id,
+        &view_spec,
+        &subscription.query,
+    )
+    .await;
 
     let mut snapshot_entities = initial_membership.clone();
     if let Some(limit) = subscription.query.snapshot_limit {
@@ -1390,6 +1428,7 @@ async fn attach_collection_subscription(
     }
 
     let task_context = context.clone();
+    let task_subscription = subscription.clone();
     let subscription_id = subscription.subscription_id.clone();
     let query = subscription.query.clone();
     let view_spec_task = view_spec.clone();
@@ -1397,30 +1436,150 @@ async fn attach_collection_subscription(
     tokio::spawn(
         async move {
             let mut current = initial_membership;
+            // Append views are event tapes: collapsing two records would lose
+            // observable history. Coalescing is only valid for latest-state
+            // list membership, where a full final entity preserves meaning.
+            let coalesce_ms = (view_spec_task.mode == Mode::List)
+                .then(|| {
+                    view_spec_task
+                        .delivery
+                        .coalesce_ms
+                        .or(task_context.delivery.collection_coalesce_ms)
+                        .filter(|milliseconds| *milliseconds > 0)
+                })
+                .flatten();
+            let mut flush_interval = coalesce_ms.map(|milliseconds| {
+                let period = Duration::from_millis(milliseconds);
+                let mut interval = tokio::time::interval_at(
+                    tokio::time::Instant::now() + period,
+                    period,
+                );
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                interval
+            });
+            let mut pending = HashMap::<String, Arc<BusMessage>>::new();
+            let mut pending_updates = 0_u64;
+
             loop {
                 tokio::select! {
                     _ = cancel_token.cancelled() => break,
+                    _ = async {
+                        flush_interval
+                            .as_mut()
+                            .expect("coalescing interval is guarded")
+                            .tick()
+                            .await;
+                    }, if flush_interval.is_some() => {
+                        if pending.is_empty() {
+                            continue;
+                        }
+                        let sorted_caches = view_spec_task
+                            .is_derived()
+                            .then(|| task_context.view_index.sorted_caches());
+                        let next = load_query_entities(
+                            &task_context.entity_cache,
+                            sorted_caches,
+                            &view_spec_task,
+                            &query,
+                            false,
+                        ).await;
+                        if emit_coalesced_collection_delta(
+                            &task_context,
+                            &subscription_id,
+                            &view_spec_task,
+                            &current,
+                            &next,
+                            &pending,
+                        ).is_err() {
+                            task_context.metrics.delivery_stopped(&view_id, "send-failed");
+                            break;
+                        }
+                        task_context
+                            .metrics
+                            .collection_coalesced(&view_id, pending_updates);
+                        current = next;
+                        pending.clear();
+                        pending_updates = 0;
+                    }
                     received = receiver.recv() => {
                         let envelope = match received {
                             Ok(envelope) => envelope,
-                            Err(broadcast::error::RecvError::Lagged(_)) => {
-                                warn!("Subscription {} lagged; closing to preserve membership correctness", subscription_id);
-                                break;
+                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                task_context.metrics.subscription_lagged(&view_id, skipped);
+                                warn!(
+                                    "Subscription {} lagged by {} updates",
+                                    subscription_id, skipped
+                                );
+                                if view_spec_task.mode == Mode::Append {
+                                    let _ = send_control_frame(
+                                        &task_context,
+                                        &SocketIssueMessage::append_subscription_lagged(
+                                            subscription_id.clone(),
+                                            skipped,
+                                        ),
+                                        &view_id,
+                                    );
+                                    task_context.metrics.delivery_stopped(&view_id, "append-lagged-without-replay");
+                                    break;
+                                }
+                                if !task_subscription.snapshot.enabled {
+                                    let _ = send_control_frame(
+                                        &task_context,
+                                        &SocketIssueMessage::subscription_lagged(
+                                            subscription_id.clone(),
+                                            skipped,
+                                        ),
+                                        &view_id,
+                                    );
+                                    task_context.metrics.delivery_stopped(&view_id, "lagged-without-snapshot");
+                                    break;
+                                }
+                                info!(
+                                    "Subscription {} is recovering from an authoritative snapshot",
+                                    subscription_id
+                                );
+                                match recover_collection_subscription(
+                                    &task_context,
+                                    &task_subscription,
+                                    &view_spec_task,
+                                    &source_view_id,
+                                ).await {
+                                    Ok((next_receiver, recovered)) => {
+                                        receiver = next_receiver;
+                                        current = recovered;
+                                        pending.clear();
+                                        pending_updates = 0;
+                                        task_context.metrics.subscription_resnapshot(&view_id);
+                                        continue;
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            "Subscription {} failed to recover from lag: {error:#}",
+                                            subscription_id
+                                        );
+                                        task_context.metrics.delivery_stopped(&view_id, "resnapshot-failed");
+                                        break;
+                                    }
+                                }
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
                         };
-                        let metadata = source_frame_metadata(&envelope.payload);
-                        if metadata.op == "delete" {
-                            task_context.entity_cache.remove(&source_view_id, &envelope.key).await;
-                            if view_spec_task.is_derived() {
-                                let caches = task_context.view_index.sorted_caches();
-                                let mut guard = caches.write().await;
-                                if let Some(cache) = guard.get_mut(&query.view) {
-                                    cache.remove(&envelope.key);
-                                }
-                            }
+
+                        apply_collection_source_event(
+                            &task_context,
+                            &source_view_id,
+                            &view_spec_task,
+                            &query,
+                            &envelope,
+                        ).await;
+
+                        if flush_interval.is_some() {
+                            pending_updates = pending_updates.saturating_add(1);
+                            pending.insert(envelope.key.clone(), envelope);
+                            continue;
                         }
 
+                        let metadata = source_frame_metadata(&envelope.payload);
                         let sorted_caches = view_spec_task
                             .is_derived()
                             .then(|| task_context.view_index.sorted_caches());
@@ -1440,6 +1599,7 @@ async fn attach_collection_subscription(
                             &envelope,
                             &metadata,
                         ).is_err() {
+                            task_context.metrics.delivery_stopped(&view_id, "send-failed");
                             break;
                         }
                         current = next;
@@ -1450,6 +1610,92 @@ async fn attach_collection_subscription(
         .instrument(info_span!("ws.subscribe.collection", client_id = %context.client_id, view = %span_view)),
     );
     Ok(())
+}
+
+async fn subscribe_collection_then_snapshot(
+    context: &SubscriptionContext,
+    source_view_id: &str,
+    view_spec: &ViewSpec,
+    query: &SubscriptionQuery,
+) -> (broadcast::Receiver<Arc<BusMessage>>, Vec<(String, Value)>) {
+    let cache = context.entity_cache.clone();
+    let sorted_caches = view_spec
+        .is_derived()
+        .then(|| context.view_index.sorted_caches());
+    let view_spec = view_spec.clone();
+    let query = query.clone();
+    subscribe_list_then_snapshot(&context.bus_manager, source_view_id, move || async move {
+        load_query_entities(&cache, sorted_caches, &view_spec, &query, false).await
+    })
+    .await
+}
+
+async fn recover_collection_subscription(
+    context: &SubscriptionContext,
+    subscription: &Subscription,
+    view_spec: &ViewSpec,
+    source_view_id: &str,
+) -> Result<(broadcast::Receiver<Arc<BusMessage>>, Vec<(String, Value)>)> {
+    let (receiver, membership) =
+        subscribe_collection_then_snapshot(context, source_view_id, view_spec, &subscription.query)
+            .await;
+    let mut snapshot_entities = membership.clone();
+    if let Some(limit) = subscription.query.snapshot_limit {
+        snapshot_entities.truncate(limit);
+    }
+    enforce_snapshot_limit(context, snapshot_entities.len())?;
+    send_snapshot_batches(
+        context,
+        subscription,
+        &to_wire_snapshot_entities(snapshot_entities, view_spec),
+        view_spec.mode,
+        &context.entity_cache.snapshot_config(),
+    )
+    .await?;
+    Ok((receiver, membership))
+}
+
+async fn apply_collection_source_event(
+    context: &SubscriptionContext,
+    source_view_id: &str,
+    view_spec: &ViewSpec,
+    query: &SubscriptionQuery,
+    envelope: &BusMessage,
+) {
+    let metadata = source_frame_metadata(&envelope.payload);
+    if metadata.op != "delete" {
+        return;
+    }
+    // A slow subscription can observe an old delete after the projector has
+    // already recreated the key. Never let subscriber-local lag erase newer
+    // shared cache state.
+    let current = context.entity_cache.get(source_view_id, &envelope.key).await;
+    if source_delete_is_stale(current.as_ref(), metadata.seq.as_deref()) {
+        return;
+    }
+    context
+        .entity_cache
+        .remove(source_view_id, &envelope.key)
+        .await;
+    if view_spec.is_derived() {
+        let caches = context.view_index.sorted_caches();
+        let mut guard = caches.write().await;
+        if let Some(cache) = guard.get_mut(&query.view) {
+            cache.remove(&envelope.key);
+        }
+    }
+}
+
+fn source_delete_is_stale(current: Option<&Value>, delete_seq: Option<&str>) -> bool {
+    match (current, delete_seq) {
+        (Some(current), Some(delete_seq)) => current
+            .get("_seq")
+            .and_then(Value::as_str)
+            .is_some_and(|current_seq| {
+                cmp_seq(current_seq, delete_seq) == std::cmp::Ordering::Greater
+            }),
+        _ => false,
+    }
 }
 
 /// A subscription refused for a reason the client needs spelled out.
@@ -2012,6 +2258,109 @@ fn emit_collection_delta(
     Ok(())
 }
 
+/// Emit the net effect of every source mutation seen during one coalescing
+/// interval. Full entities are used for changed members because intermediate
+/// sparse patches were intentionally discarded and can no longer be merged
+/// safely by a client.
+fn emit_coalesced_collection_delta(
+    context: &SubscriptionContext,
+    subscription_id: &str,
+    view_spec: &ViewSpec,
+    current: &[(String, Value)],
+    next: &[(String, Value)],
+    pending: &HashMap<String, Arc<BusMessage>>,
+) -> Result<()> {
+    for change in plan_coalesced_collection_delta(current, next, pending) {
+        send_membership_frame(
+            context,
+            subscription_id,
+            view_spec,
+            change.op,
+            &change.key,
+            change.data,
+            change.seq,
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+struct CollectionChange {
+    op: &'static str,
+    key: String,
+    data: Value,
+    seq: Option<String>,
+}
+
+fn plan_coalesced_collection_delta(
+    current: &[(String, Value)],
+    next: &[(String, Value)],
+    pending: &HashMap<String, Arc<BusMessage>>,
+) -> Vec<CollectionChange> {
+    let current_by_key: HashMap<&str, &Value> = current
+        .iter()
+        .map(|(key, data)| (key.as_str(), data))
+        .collect();
+    let next_keys: HashSet<&str> = next.iter().map(|(key, _)| key.as_str()).collect();
+    let latest_seq = pending
+        .values()
+        .filter_map(|envelope| source_frame_metadata(&envelope.payload).seq)
+        .max_by(|left, right| cmp_seq(left, right));
+    let mut changes = Vec::new();
+
+    for (key, _) in current
+        .iter()
+        .filter(|(key, _)| !next_keys.contains(key.as_str()))
+    {
+        let metadata = pending
+            .get(key)
+            .map(|envelope| source_frame_metadata(&envelope.payload));
+        let op = if metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.op == "delete")
+        {
+            "delete"
+        } else {
+            "remove"
+        };
+        let seq = metadata
+            .and_then(|metadata| metadata.seq)
+            .or_else(|| latest_seq.clone());
+        changes.push(CollectionChange {
+            op,
+            key: key.clone(),
+            data: Value::Null,
+            seq,
+        });
+    }
+
+    for (key, data) in next {
+        let changed = current_by_key
+            .get(key.as_str())
+            .is_none_or(|previous| *previous != data);
+        if !changed && !pending.contains_key(key) {
+            continue;
+        }
+        let seq = data
+            .get("_seq")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                pending
+                    .get(key)
+                    .and_then(|envelope| source_frame_metadata(&envelope.payload).seq)
+            })
+            .or_else(|| latest_seq.clone());
+        changes.push(CollectionChange {
+            op: "upsert",
+            key: key.clone(),
+            data: data.clone(),
+            seq,
+        });
+    }
+    changes
+}
+
 /// What one in-window key owes a subscriber after a source mutation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MemberAction {
@@ -2284,6 +2633,103 @@ mod tests {
             .count();
         assert_eq!(sent, 1);
         assert_eq!(plan[250].1, MemberAction::ForwardPatch);
+    }
+
+    fn list_message(key: &str, op: &str, seq: &str) -> Arc<BusMessage> {
+        Arc::new(BusMessage {
+            key: key.to_string(),
+            entity: "Thing/list".to_string(),
+            payload: Arc::new(Bytes::from(
+                serde_json::to_vec(&json!({
+                    "entity": "Thing/list",
+                    "op": op,
+                    "key": key,
+                    "seq": seq,
+                    "data": {},
+                }))
+                .unwrap(),
+            )),
+        })
+    }
+
+    #[test]
+    fn coalescing_emits_only_the_final_full_state_per_changed_key() {
+        let current = vec![
+            ("a".to_string(), json!({"count": 1, "_seq": "10:000001"})),
+            ("b".to_string(), json!({"count": 1, "_seq": "10:000001"})),
+            (
+                "stable".to_string(),
+                json!({"count": 1, "_seq": "10:000001"}),
+            ),
+        ];
+        let next = vec![
+            ("a".to_string(), json!({"count": 3, "_seq": "10:000004"})),
+            ("c".to_string(), json!({"count": 1, "_seq": "10:000003"})),
+            (
+                "stable".to_string(),
+                json!({"count": 1, "_seq": "10:000001"}),
+            ),
+        ];
+        let pending = HashMap::from([
+            ("a".to_string(), list_message("a", "patch", "10:000004")),
+            ("b".to_string(), list_message("b", "delete", "10:000002")),
+            ("c".to_string(), list_message("c", "patch", "10:000003")),
+        ]);
+
+        assert_eq!(
+            plan_coalesced_collection_delta(&current, &next, &pending),
+            vec![
+                CollectionChange {
+                    op: "delete",
+                    key: "b".to_string(),
+                    data: Value::Null,
+                    seq: Some("10:000002".to_string()),
+                },
+                CollectionChange {
+                    op: "upsert",
+                    key: "a".to_string(),
+                    data: json!({"count": 3, "_seq": "10:000004"}),
+                    seq: Some("10:000004".to_string()),
+                },
+                CollectionChange {
+                    op: "upsert",
+                    key: "c".to_string(),
+                    data: json!({"count": 1, "_seq": "10:000003"}),
+                    seq: Some("10:000003".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_delayed_delete_cannot_erase_a_newer_recreated_entity() {
+        let recreated = json!({"balance": 2, "_seq": "10:000004"});
+        assert!(source_delete_is_stale(
+            Some(&recreated),
+            Some("10:000002")
+        ));
+        assert!(!source_delete_is_stale(
+            Some(&recreated),
+            Some("10:000004")
+        ));
+        assert!(!source_delete_is_stale(Some(&recreated), None));
+    }
+
+    #[test]
+    fn a_lagged_snapshotless_subscription_gets_a_fatal_retryable_error() {
+        let issue = SocketIssueMessage::subscription_lagged("balances".to_string(), 42);
+        assert_eq!(issue.code, "subscription-lagged");
+        assert!(issue.retryable);
+        assert!(issue.fatal);
+        assert!(issue.message.contains("42"));
+        assert!(issue
+            .suggested_action
+            .unwrap()
+            .contains("snapshots enabled"));
+
+        let append = SocketIssueMessage::append_subscription_lagged("trades".to_string(), 9);
+        assert!(append.fatal);
+        assert!(append.suggested_action.unwrap().contains("retained replay"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ use crate::bus::BusManager;
 use crate::cache::EntityCache;
 use crate::config::ServerConfig;
 use crate::config::TransactionConfig;
+use crate::config::WebSocketDeliveryConfig;
 use crate::health::HealthMonitor;
 use crate::http_server::HttpServer;
 use crate::materialized_view::MaterializedViewRegistry;
@@ -234,7 +235,19 @@ impl Runtime {
         if plan.live_runtime_enabled() {
             let (mutations_tx, mutations_rx) = mpsc::channel::<MutationBatch>(1024);
             mutations_tx_guard = Some(mutations_tx.clone());
-            let bus_manager = BusManager::new();
+            let websocket_delivery = match self.config.websocket_delivery.clone() {
+                Some(config) => {
+                    config.validate()?;
+                    config
+                }
+                None => WebSocketDeliveryConfig::from_env()?,
+            };
+            info!(
+                list_bus_capacity = websocket_delivery.list_bus_capacity,
+                collection_coalesce_ms = ?websocket_delivery.collection_coalesce_ms,
+                "WebSocket delivery configured"
+            );
+            let bus_manager = BusManager::with_capacity(websocket_delivery.list_bus_capacity);
             let entity_cache = EntityCache::new();
             entity_cache_handle = Some(entity_cache.clone());
 
@@ -358,6 +371,7 @@ impl Runtime {
             );
 
             ws_server = ws_server.with_journal(journal.clone());
+            ws_server = ws_server.with_delivery_config(websocket_delivery);
             if let Some(max_clients) = self.websocket_max_clients {
                 ws_server = ws_server.with_max_clients(max_clients);
             }

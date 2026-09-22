@@ -301,6 +301,61 @@ pub struct WebSocketConfig {
     pub bind_address: SocketAddr,
 }
 
+/// Buffering and latest-state delivery controls for WebSocket subscriptions.
+///
+/// These settings are separate from [`WebSocketConfig`] because embedded hosts
+/// serve accepted connections without binding a listener of their own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebSocketDeliveryConfig {
+    /// Source frames retained for each active list-view broadcast bus.
+    pub list_bus_capacity: usize,
+    /// Default fixed flush cadence for latest-state collection subscriptions.
+    /// `None` preserves immediate delivery unless a view overrides it.
+    pub collection_coalesce_ms: Option<u64>,
+}
+
+impl Default for WebSocketDeliveryConfig {
+    fn default() -> Self {
+        Self {
+            // Shared per active view rather than allocated per client.
+            list_bus_capacity: 8 * 1024,
+            collection_coalesce_ms: None,
+        }
+    }
+}
+
+impl WebSocketDeliveryConfig {
+    pub fn from_env() -> anyhow::Result<Self> {
+        let mut config = Self::default();
+        if let Ok(value) = std::env::var("ARETE_WS_LIST_BUS_CAPACITY") {
+            config.list_bus_capacity = value.parse().map_err(|_| {
+                anyhow::anyhow!("ARETE_WS_LIST_BUS_CAPACITY must be a positive integer")
+            })?;
+        }
+        if let Ok(value) = std::env::var("ARETE_WS_COLLECTION_COALESCE_MS") {
+            let milliseconds: u64 = value.parse().map_err(|_| {
+                anyhow::anyhow!("ARETE_WS_COLLECTION_COALESCE_MS must be a non-negative integer")
+            })?;
+            config.collection_coalesce_ms = (milliseconds > 0).then_some(milliseconds);
+        }
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.list_bus_capacity > 0,
+            "WebSocket list bus capacity must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.collection_coalesce_ms
+                .is_none_or(|milliseconds| milliseconds <= 60_000),
+            "WebSocket collection coalescing must not exceed 60000ms"
+        );
+        Ok(())
+    }
+}
+
 /// The only wire protocol accepted by the WebSocket server.
 pub const WEBSOCKET_PROTOCOL_VERSION: u8 = crate::websocket::subscription::PROTOCOL_VERSION;
 
@@ -361,6 +416,9 @@ pub struct ServerConfig {
     /// env vars are process-wide, so they cannot enable replay for one stack
     /// or size a busy stack differently from a quiet one.
     pub journal: Option<crate::journal::JournalConfig>,
+    /// WebSocket buffering and latest-state delivery settings. `None` falls
+    /// back to [`WebSocketDeliveryConfig::from_env`].
+    pub websocket_delivery: Option<WebSocketDeliveryConfig>,
 }
 
 impl ServerConfig {
@@ -371,6 +429,12 @@ impl ServerConfig {
     pub fn with_websocket(mut self, config: WebSocketConfig) -> Self {
         self.websocket = Some(config);
         self.runtime_plan.websocket = true;
+        self.runtime_plan.live_runtime = true;
+        self
+    }
+
+    pub fn with_websocket_delivery(mut self, config: WebSocketDeliveryConfig) -> Self {
+        self.websocket_delivery = Some(config);
         self.runtime_plan.live_runtime = true;
         self
     }
