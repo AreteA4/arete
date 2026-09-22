@@ -3,8 +3,9 @@
  *
  * Static HTML on Vercel is served before `vercel.json` rewrites, so
  * `Accept: text/markdown` never reaches the Astro `.md` endpoints in
- * production. Middleware runs before the static file, so agents that
- * send that Accept header get the markdown twin at the same URL.
+ * production. Middleware runs before the static file. Successful twins
+ * are rewritten to the `.md` path so Vercel can serve the cached file;
+ * only missing pages construct a response body.
  *
  * Missing pages keep HTTP 404. Markdown and JSON Accept headers get an
  * agent-parseable error body; HTML keeps the existing Starlight 404 page.
@@ -21,8 +22,8 @@ import {
   json404,
   prefersJson,
   prefersMarkdown,
+  rewriteTo,
   toFetchResponse,
-  withMarkdownHeaders,
 } from "./lib/agent-http.mjs";
 
 export const config = {
@@ -43,9 +44,9 @@ export default async function middleware(request) {
   if (prefersMarkdown(accept)) {
     const mdUrl = new URL(request.url);
     mdUrl.pathname = markdownTwinPath(pathname);
-    const res = await fetch(mdUrl, request);
-    if (res.ok) {
-      return withMarkdownHeaders(res);
+    const probe = await fetch(mdUrl, { method: "HEAD" });
+    if (probe.ok) {
+      return rewriteTo(mdUrl);
     }
     return toFetchResponse(markdown404(pathname));
   }
@@ -53,10 +54,7 @@ export default async function middleware(request) {
   if (prefersJson(accept)) {
     const mdUrl = new URL(request.url);
     mdUrl.pathname = markdownTwinPath(pathname);
-    const probe = await fetch(mdUrl, {
-      method: "GET",
-      headers: { accept: "text/markdown" },
-    });
+    const probe = await fetch(mdUrl, { method: "HEAD" });
     if (probe.ok) {
       return;
     }

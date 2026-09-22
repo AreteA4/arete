@@ -5,11 +5,11 @@
   "outputDirectory": "dist",
   "headers": [
     {
-      "source": "/(.*)",
+      "source": "/((?!_astro/|ingest/)(?!.*\\.(?:css|js|mjs|map|svg|png|jpg|jpeg|gif|webp|json|xml|ico|woff|woff2|sh|ps1|gz)$).*)",
       "headers": [
         {
           "key": "Link",
-          "value": "</llms.txt>; rel=\"llms-txt\", </llms-full.txt>; rel=\"llms-full-txt\", </.well-known/mcp/server-card.json>; rel=\"mcp-server-card\", </.well-known/agent-card.json>; rel=\"agent-card\", </.well-known/agent-skills>; rel=\"agent-skills\", </openapi.json>; rel=\"describedby\""
+          "value": "</llms.txt>; rel=\"llms-txt\", </llms-full.txt>; rel=\"llms-full-txt\", </.well-known/mcp/server-card.json>; rel=\"mcp-server-card\", </.well-known/agent-skills>; rel=\"agent-skills\", </openapi.json>; rel=\"describedby\""
         },
         {
           "key": "X-Llms-Txt",
@@ -128,23 +128,49 @@
       ]
     },
     {
-      "source": "/.well-known/agent-card.json",
+      "source": "/.well-known/agent-skills/(.*)",
       "headers": [
         {
-          "key": "Content-Type",
-          "value": "application/json; charset=utf-8"
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, HEAD, OPTIONS"
         },
         {
           "key": "Cache-Control",
           "value": "public, max-age=3600"
         },
         {
-          "key": "Access-Control-Allow-Origin",
-          "value": "*"
-        },
-        {
           "key": "X-Content-Type-Options",
           "value": "nosniff"
+        }
+      ]
+    },
+    {
+      "source": "/.well-known/agent-skills/:skill/SKILL.md",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/markdown; charset=utf-8"
+        },
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        }
+      ]
+    },
+    {
+      "source": "/.well-known/agent-skills/:skill.tar.gz",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/gzip"
+        },
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
         }
       ]
     },

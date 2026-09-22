@@ -7,14 +7,52 @@ export const SITE = "https://docs.arete.run";
 const MARKDOWN_TYPE = "text/markdown; charset=utf-8";
 const JSON_TYPE = "application/json; charset=utf-8";
 
+function parseAccept(accept) {
+  if (!accept) return [];
+  return accept.split(",").flatMap((part) => {
+    const pieces = part
+      .trim()
+      .split(";")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (!pieces.length) return [];
+    const range = pieces[0].toLowerCase();
+    let q = 1;
+    for (const param of pieces.slice(1)) {
+      const eq = param.indexOf("=");
+      if (eq === -1) continue;
+      if (param.slice(0, eq).trim().toLowerCase() !== "q") continue;
+      const value = Number(param.slice(eq + 1).trim());
+      if (Number.isFinite(value)) q = Math.min(1, Math.max(0, value));
+    }
+    return [{ range, q }];
+  });
+}
+
+/** Quality for an exact type. Ignores star-slash-star so browsers stay on HTML. */
+export function mediaQuality(accept, type) {
+  const wanted = type.toLowerCase();
+  let best = 0;
+  let matched = false;
+  for (const { range, q } of parseAccept(accept)) {
+    if (range === wanted) {
+      matched = true;
+      if (q > best) best = q;
+    }
+  }
+  return matched ? best : 0;
+}
+
 export function prefersMarkdown(accept) {
-  return /\btext\/markdown\b/i.test(accept ?? "");
+  return mediaQuality(accept, "text/markdown") > 0;
 }
 
 /** JSON without HTML, so browsers still get the HTML docs page. */
 export function prefersJson(accept) {
-  const a = accept ?? "";
-  return /\bapplication\/json\b/i.test(a) && !/\btext\/html\b/i.test(a);
+  return (
+    mediaQuality(accept, "application/json") > 0 &&
+    mediaQuality(accept, "text/html") === 0
+  );
 }
 
 export function isDiscoveryPath(pathname) {
@@ -117,4 +155,13 @@ export function withMarkdownHeaders(res) {
   headers.set("vary", "Accept");
   headers.set("x-llms-txt", `${SITE}/llms.txt`);
   return new Response(res.body, { status: res.status, headers });
+}
+
+/** Vercel Routing Middleware rewrite: serve the static twin from cache. */
+export function rewriteTo(url) {
+  return new Response(null, {
+    headers: {
+      "x-middleware-rewrite": url.toString(),
+    },
+  });
 }

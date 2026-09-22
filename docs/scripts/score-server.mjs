@@ -3,7 +3,7 @@
 // Used only for AFDocs / is-agentic scoring of the built dist/. Not deployed.
 
 import { createServer } from "node:http";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import {
@@ -30,6 +30,7 @@ const TYPES = {
   ".png": "image/png",
   ".woff2": "font/woff2",
   ".ico": "image/x-icon",
+  ".gz": "application/gzip",
 };
 
 function isFile(path) {
@@ -40,6 +41,21 @@ function isFile(path) {
   }
 }
 
+function resolveExact(base, parts) {
+  let current = base;
+  for (const part of parts) {
+    let names;
+    try {
+      names = readdirSync(current);
+    } catch {
+      return null;
+    }
+    if (!names.includes(part)) return null;
+    current = join(current, part);
+  }
+  return current;
+}
+
 function resolve(pathname) {
   if (pathname === "/.well-known/agent-skills") {
     pathname = "/.well-known/agent-skills/index.json";
@@ -48,15 +64,19 @@ function resolve(pathname) {
     pathname = "/.well-known/mcp.json";
   }
   const rel = normalize(pathname).replace(/^(\.\.[/\\])+/, "");
-  const candidate = join(DIST, rel);
-  if (isFile(candidate)) {
+  const parts = rel.split("/").filter(Boolean);
+  const candidate = resolveExact(DIST, parts);
+  if (candidate && isFile(candidate)) {
     return candidate;
   }
-  if (isFile(join(candidate, "index.html"))) {
-    return join(candidate, "index.html");
+  const asIndex = candidate && resolveExact(candidate, ["index.html"]);
+  if (asIndex && isFile(asIndex)) {
+    return asIndex;
   }
-  if (isFile(candidate + ".html")) {
-    return candidate + ".html";
+  if (parts.length) {
+    const last = `${parts[parts.length - 1]}.html`;
+    const html = resolveExact(DIST, [...parts.slice(0, -1), last]);
+    if (html && isFile(html)) return html;
   }
   return null;
 }
@@ -125,10 +145,19 @@ createServer(async (req, res) => {
       "cache-control": "public, max-age=0, must-revalidate",
       vary: "Accept",
       "x-llms-txt": "https://docs.arete.run/llms.txt",
-      link: '</llms.txt>; rel="llms-txt", </llms-full.txt>; rel="llms-full-txt", </.well-known/mcp/server-card.json>; rel="mcp-server-card", </.well-known/agent-card.json>; rel="agent-card", </.well-known/agent-skills>; rel="agent-skills", </openapi.json>; rel="describedby"',
+      link: '</llms.txt>; rel="llms-txt", </llms-full.txt>; rel="llms-full-txt", </.well-known/mcp/server-card.json>; rel="mcp-server-card", </.well-known/agent-skills>; rel="agent-skills", </openapi.json>; rel="describedby"',
     };
     if (extname(file) === ".md") {
       Object.assign(headers, markdownHeaders());
+    }
+    if (pathname.startsWith("/.well-known/agent-skills")) {
+      headers["access-control-allow-origin"] = "*";
+      headers["access-control-allow-methods"] = "GET, HEAD, OPTIONS";
+    }
+    if (req.method === "HEAD") {
+      res.writeHead(200, headers);
+      res.end();
+      return;
     }
     send(res, 200, headers, body);
   } catch (err) {

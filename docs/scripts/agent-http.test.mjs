@@ -17,10 +17,17 @@ test("prefersMarkdown matches Accept: text/markdown", () => {
   assert.equal(prefersMarkdown("text/html"), false);
 });
 
-test("prefersJson ignores browser HTML Accept lists", () => {
+test("prefersMarkdown rejects an explicit q=0", () => {
+  assert.equal(prefersMarkdown("text/markdown;q=0, text/html;q=1"), false);
+  assert.equal(prefersMarkdown("text/markdown;q=0.0"), false);
+  assert.equal(prefersMarkdown("text/html,application/xhtml+xml,*/*;q=0.8"), false);
+});
+
+test("prefersJson ignores browser HTML Accept lists and q=0", () => {
   assert.equal(prefersJson("application/json"), true);
   assert.equal(prefersJson("application/json, text/html"), false);
   assert.equal(prefersJson("text/html,application/xhtml+xml"), false);
+  assert.equal(prefersJson("application/json;q=0"), false);
 });
 
 test("markdown twin of homepage is /index.md", () => {

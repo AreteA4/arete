@@ -4,12 +4,12 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build && node scripts/fix-llms-full.mjs && node scripts/build-docs-index.mjs && node scripts/postbuild-agent-discovery.mjs",
+    "build": "node scripts/pack-agent-skills.mjs && astro build && node scripts/fix-llms-full.mjs && node scripts/build-docs-index.mjs && node scripts/postbuild-agent-discovery.mjs",
     "preview": "astro preview",
     "check": "astro check",
     "lint": "prettier --check \"src/**/*.{astro,md,mdx,ts,js}\" \"*.{json,mjs}\"",
     "lint:fix": "prettier --write \"src/**/*.{astro,md,mdx,ts,js}\" \"*.{json,mjs}\"",
-    "test": "node --test scripts/agent-http.test.mjs",
+    "test": "node --test scripts/agent-http.test.mjs scripts/agent-skills.test.mjs",
     "verify:agent": "node scripts/verify-agent-readiness.mjs"
   },
   "dependencies": {

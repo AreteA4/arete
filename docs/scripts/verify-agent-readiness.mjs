@@ -169,6 +169,62 @@ async function main() {
     else if (!/json/i.test(header(skills, "content-type"))) {
       fail("well-known skills stayed JSON", header(skills, "content-type"));
     } else ok("well-known skills ignore markdown Accept");
+
+    let skillIndex;
+    try {
+      skillIndex = JSON.parse(skills.body);
+    } catch (e) {
+      fail("well-known skills parse", e.message);
+    }
+    if (skillIndex) {
+      if (
+        skillIndex.$schema !==
+        "https://schemas.agentskills.io/discovery/0.2.0/schema.json"
+      ) {
+        fail("well-known skills schema", skillIndex.$schema || "missing");
+      } else if (!Array.isArray(skillIndex.skills) || skillIndex.skills.length !== 5) {
+        fail("well-known skills count", String(skillIndex.skills?.length));
+      } else ok("well-known skills v0.2 index", `${skillIndex.skills.length} archives`);
+
+      for (const entry of skillIndex.skills || []) {
+        const canonical = await req(`/.well-known/agent-skills/${entry.name}/SKILL.md`);
+        const lower = await req(`/.well-known/agent-skills/${entry.name}/skill.md`);
+        const archive = await req(`/.well-known/agent-skills/${entry.name}.tar.gz`);
+        if (canonical.status !== 200) {
+          fail(`${entry.name} SKILL.md`, canonical.status);
+        } else if (lower.status !== 404) {
+          fail(
+            `${entry.name} lowercase skill.md must 404`,
+            `${lower.status} ${header(lower, "content-type")}`,
+          );
+        } else if (archive.status !== 200) {
+          fail(`${entry.name} archive`, archive.status);
+        } else if (!/gzip|octet-stream/i.test(header(archive, "content-type"))) {
+          fail(`${entry.name} archive type`, header(archive, "content-type"));
+        } else if (!header(canonical, "access-control-allow-origin").includes("*")) {
+          fail(`${entry.name} SKILL.md CORS`, header(canonical, "access-control-allow-origin"));
+        } else if (!header(archive, "access-control-allow-origin").includes("*")) {
+          fail(`${entry.name} archive CORS`, header(archive, "access-control-allow-origin"));
+        } else {
+          const { createHash } = await import("node:crypto");
+          const digest = `sha256:${createHash("sha256").update(archive.buf).digest("hex")}`;
+          if (digest !== entry.digest) fail(`${entry.name} digest`, digest);
+          else ok(`${entry.name} SKILL.md + archive`);
+        }
+      }
+    }
+
+    const card = await req("/.well-known/agent-card.json");
+    if (card.status !== 404) fail("agent-card removed", card.status);
+    else ok("agent-card absent");
+
+    const q0 = await req("/", {
+      accept: "text/markdown;q=0, text/html;q=1",
+    });
+    if (q0.status !== 200) fail("q=0 homepage status", q0.status);
+    else if (!/text\/html/i.test(header(q0, "content-type"))) {
+      fail("q=0 homepage stayed HTML", header(q0, "content-type"));
+    } else ok("Accept q=0 does not select markdown");
   } finally {
     child.kill("SIGTERM");
   }
