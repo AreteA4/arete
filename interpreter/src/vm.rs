@@ -3295,11 +3295,12 @@ impl VmContext {
                     let dirty_fields: Vec<String> =
                         dirty_tracker.dirty_paths().into_iter().collect();
 
-                    if primary_key.is_null() || dirty_tracker.is_empty() {
-                        let reason = if dirty_tracker.is_empty() {
-                            "no_fields_modified"
-                        } else {
+                    let null_key = primary_key.is_null();
+                    if null_key || dirty_tracker.is_empty() {
+                        let reason = if null_key {
                             "null_primary_key"
+                        } else {
+                            "no_fields_modified"
                         };
                         self.emit_debug(|| VmDebugEvent::EmitMutation {
                             entity_name: entity_name.clone(),
@@ -3316,7 +3317,7 @@ impl VmContext {
                         // compared before it counts as dirty. Warning here would
                         // raise the canonical log line to WARN for the common
                         // case, and WARN is never sampled.
-                        if !dirty_tracker.is_empty() {
+                        if null_key {
                             self.add_warning(format!(
                                 "Skipping mutation for entity '{}': {} (dirty_fields={})",
                                 entity_name,
@@ -6539,6 +6540,84 @@ mod tests {
             .extract_partial_state_with_tracker(STATE, &tracker)
             .unwrap();
         assert_eq!(patch, json!({"active_id": -780}));
+    }
+
+    /// A null primary key is a configuration or extraction fault, and it can
+    /// arise on an event that moved no mapped field — key resolution does not
+    /// depend on whether values changed. Selecting the skip reason from the
+    /// dirty tracker first hid exactly that case behind `no_fields_modified`.
+    #[test]
+    fn a_null_key_warns_even_when_no_field_moved() {
+        const KEY: Register = 1;
+        const STATE: Register = 2;
+        let mut vm = VmContext::new();
+
+        // Registers reset to null, so KEY is a null key and nothing is dirty.
+        let handler = vec![OpCode::EmitMutation {
+            entity_name: "pool".to_string(),
+            key: KEY,
+            state: STATE,
+        }];
+        let mutations = vm
+            .execute_handler_segment(
+                &handler,
+                &json!({}),
+                "account_update",
+                0,
+                "pool",
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(mutations.is_empty(), "a null key must not emit a mutation");
+        let warnings = vm.take_warnings();
+        assert_eq!(warnings.len(), 1, "expected one warning, got {warnings:?}");
+        assert!(
+            warnings[0].contains("null_primary_key"),
+            "warning should name the null key, got {:?}",
+            warnings[0]
+        );
+    }
+
+    /// The quiet case stays quiet: accounts are rewritten for reasons an entity
+    /// does not map, so an event that moved nothing is routine. Warning here
+    /// would raise the canonical log line to WARN for the common case.
+    #[test]
+    fn an_event_that_moved_nothing_skips_without_warning() {
+        const KEY: Register = 1;
+        const STATE: Register = 2;
+        let mut vm = VmContext::new();
+
+        let handler = vec![
+            OpCode::LoadConstant {
+                value: json!("8sLbNZoA1cfnvMJLPfp98ZLAnFSYCFApfJKMbiXNLwxj"),
+                dest: KEY,
+            },
+            OpCode::EmitMutation {
+                entity_name: "pool".to_string(),
+                key: KEY,
+                state: STATE,
+            },
+        ];
+        let mutations = vm
+            .execute_handler_segment(
+                &handler,
+                &json!({}),
+                "account_update",
+                0,
+                "pool",
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(mutations.is_empty(), "an empty patch must not emit");
+        assert!(
+            !vm.has_warnings(),
+            "a no-op event must not warn: {:?}",
+            vm.take_warnings()
+        );
     }
 
     /// Nested targets resolve through auto-vivified parents, and a re-write of
