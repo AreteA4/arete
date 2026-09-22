@@ -47,7 +47,7 @@ use tracing::{debug, info, info_span, warn, Instrument};
 
 /// Rough Solana slot duration, used only to convert snapshot age into an
 /// estimated slot distance for the staleness clamp.
-const ESTIMATED_SLOT_MILLIS: u64 = 400;
+const ESTIMATED_SLOT_MILLIS: u64 = 200;
 /// How long a snapshot cycle waits for in-flight VM updates and their queued
 /// projection batches to finish.
 const CONSISTENCY_CUT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -72,8 +72,9 @@ pub struct SnapshotConfig {
     /// Skip a periodic cycle when fewer batches were applied since the last
     /// snapshot (quiet stacks snapshot rarely).
     pub min_mutations: u64,
-    /// If the snapshot is older than this many (estimated) slots, hydrate
-    /// state but start the stream live instead of resuming from the watermark.
+    /// If the watermark's estimated lag is greater than this many slots,
+    /// including lag at snapshot time plus file age, hydrate state but start
+    /// the stream live instead of resuming from the watermark.
     pub max_resume_age_slots: u64,
     /// `/ready` stays 503 after a watermark resume until the projector is
     /// within this many slots of the observed tip...
@@ -633,18 +634,28 @@ impl SnapshotService {
 
         let age_ms = now_epoch_ms().saturating_sub(header.created_at_epoch_ms);
         let estimated_age_slots = age_ms / ESTIMATED_SLOT_MILLIS;
+        // File age alone is insufficient: a shutdown checkpoint is freshly
+        // written even when a quiet program's last applied update is already
+        // far behind the observed chain tip. Account for both the lag already
+        // present at the consistency cut and the time elapsed since it.
+        let watermark_lag_at_snapshot =
+            header.observed_slot.saturating_sub(header.resume_watermark);
+        let estimated_resume_lag = watermark_lag_at_snapshot.saturating_add(estimated_age_slots);
         let resume_watermark = if exact_bytecode
             && header.resume_watermark > 0
-            && estimated_age_slots <= self.config.max_resume_age_slots
+            && estimated_resume_lag <= self.config.max_resume_age_slots
         {
             Some(header.resume_watermark)
         } else {
             if header.resume_watermark > 0 && exact_bytecode {
                 warn!(
                     resume_watermark = header.resume_watermark,
+                    observed_slot = header.observed_slot,
+                    watermark_lag_at_snapshot,
                     estimated_age_slots,
+                    estimated_resume_lag,
                     max_resume_age_slots = self.config.max_resume_age_slots,
-                    "Snapshot is older than the resume window; hydrating state but \
+                    "Snapshot watermark is outside the resume window; hydrating state but \
                      starting the stream live. Account-derived state self-heals from \
                      full account writes; only instruction events in the gap are missed."
                 );
