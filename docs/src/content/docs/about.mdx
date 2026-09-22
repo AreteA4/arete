@@ -1,0 +1,44 @@
+---
+title: About Arete
+description: "About Arete, the agent-first Solana application toolkit, and this documentation site at docs.arete.run."
+sidebar:
+  hidden: true
+---
+
+Arete is an agent-first toolkit for building on Solana. You describe what you
+want to know or build. A coding agent finds matching on-chain programs and
+hosted live views, checks real data, and installs typed SDKs into the project.
+
+This website, [docs.arete.run](https://docs.arete.run/), is the documentation
+and developer surface for that toolkit. It is not a consumer app and it is
+not a generic Solana RPC. The marketing homepage lives at
+[arete.run](https://arete.run/).
+
+## What Arete is for
+
+- Discover programs and stacks from a product question, without guessing
+  program IDs, account layouts, or endpoints.
+- Explore live views through MCP or `a4 stream`.
+- Generate TypeScript, React, Rust, or Python clients bound to an exact
+  catalog descriptor.
+- Read typed program accounts and construct instructions through generated
+  SDKs. Signing and submission stay under user authority.
+- Author a custom stack in the Rust DSL only when the catalog does not already
+  expose the required read model.
+
+## Who maintains it
+
+The open-source repository is
+[AreteA4/arete](https://github.com/AreteA4/arete). Documentation lives in the
+`docs/` directory of that repository and deploys to this origin. Product
+skills live in [AreteA4/skills](https://github.com/AreteA4/skills).
+
+## How to start
+
+1. Read the [quickstart](/using-stacks/quickstart/) or paste the prompt on
+   the [home page](/) into a coding agent.
+2. Install the CLI from [arete.run/install.sh](https://arete.run/install.sh).
+3. Run `a4 init -y` and `a4 doctor --json`.
+
+For contact paths, see [Contact](/contact/). For how this docs site handles
+telemetry, see [Privacy](/privacy/).

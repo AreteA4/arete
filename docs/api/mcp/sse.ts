@@ -337,7 +337,10 @@ function sendJson(
   // otherwise; tell shared caches to key on Accept so SSE clients never get
   // a stale JSON descriptor and vice versa.
   res.setHeader("Vary", "Accept");
-  res.setHeader("Cache-Control", "public, max-age=300");
+  res.setHeader(
+    "Cache-Control",
+    statusCode >= 400 ? "no-store" : "public, max-age=300",
+  );
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader(
@@ -346,6 +349,16 @@ function sendJson(
   );
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.end(JSON.stringify(body, null, 2));
+}
+
+function sendApiError(
+  res: import("node:http").ServerResponse,
+  statusCode: number,
+  code: string,
+  message: string,
+  hint: string,
+) {
+  sendJson(res, { error: { code, message, hint } }, statusCode);
 }
 
 function sendCorsNoContent(res: import("node:http").ServerResponse) {
@@ -371,6 +384,35 @@ export default async function handler(
   if (req.method === "OPTIONS") {
     sendCorsNoContent(res);
     return;
+  }
+
+  if (
+    req.method !== "GET" &&
+    req.method !== "POST" &&
+    req.method !== "HEAD"
+  ) {
+    sendApiError(
+      res,
+      405,
+      "method_not_allowed",
+      `${req.method ?? "UNKNOWN"} is not supported on the Arete documentation MCP endpoint.`,
+      "Use GET /mcp for the descriptor or POST JSON-RPC to https://docs.arete.run/mcp. See https://docs.arete.run/openapi.json",
+    );
+    return;
+  }
+
+  if (req.method === "POST") {
+    const contentType = String(req.headers["content-type"] ?? "");
+    if (!/application\/json/i.test(contentType)) {
+      sendApiError(
+        res,
+        415,
+        "unsupported_media_type",
+        "POST /mcp requires Content-Type: application/json.",
+        "Send a JSON-RPC 2.0 body. See https://docs.arete.run/openapi.json and https://docs.arete.run/agent-skills/mcp/",
+      );
+      return;
+    }
   }
 
   if (req.method === "GET" && !acceptsEventStream(req.headers.accept)) {

@@ -1,0 +1,44 @@
+---
+title: Privacy on docs.arete.run
+description: "Privacy notice for the Arete documentation site: PostHog analytics through an EU proxy, no account cookies on this origin, and where hosted keys live."
+sidebar:
+  hidden: true
+---
+
+This notice covers **docs.arete.run**, the Arete documentation site. It does
+not replace any hosted-platform terms that apply when you use API keys,
+catalog access, or deployments on arete.run.
+
+## What this site stores
+
+The documentation origin is a static Starlight site plus a documentation MCP
+function. It does not create Arete user accounts and it does not store wallet
+keys.
+
+- **Pages and markdown twins** are public. Fetching `/llms.txt`, `*.md`, or
+  sending `Accept: text/markdown` reads the same published content a browser
+  would see.
+- **MCP search** (`POST /mcp`) looks up a build-time `docs-index.json`. Query
+  strings are used to rank snippets; they are not an Arete account login.
+
+## Analytics
+
+The HTML docs load PostHog for page views, autocapture, and session replay.
+Requests go through this origin's `/ingest` reverse proxy to PostHog's EU
+endpoint so the project key is not called from the public tracker host
+directly. If you block the script, documentation still works.
+
+The MCP descriptor, OpenAPI document, and markdown twins do not include the
+analytics snippet.
+
+## API keys and credentials
+
+Account API keys and publishable keys are issued on the hosted product
+([arete.run/keys](https://arete.run/keys)) and stored by the CLI under
+`~/.arete/` on your machine. Do not paste secrets into GitHub issues, this
+docs site, or MCP tool arguments.
+
+## Contact
+
+Questions about this docs-site notice: [Contact](/contact/) or
+[AreteA4/arete issues](https://github.com/AreteA4/arete/issues).
