@@ -392,6 +392,11 @@ struct ViewJournal {
     retained_bytes: u64,
     /// Set when records after this offset were lost; see [`ReplayWindow`].
     gap_after: Option<u64>,
+    /// How many re-deliveries of each identity the current resume window has
+    /// already matched, so the Nth re-delivery matches the Nth retained
+    /// record rather than all of them matching the first. Cleared when the
+    /// window disarms.
+    resume_matched: HashMap<(u64, String, String), usize>,
 }
 
 impl ViewJournal {
@@ -402,7 +407,7 @@ impl ViewJournal {
     /// record from an earlier slot means the overlap is behind us and nothing
     /// before it can be re-delivered.
     fn duplicates_resume_overlap(
-        &self,
+        &mut self,
         overlap_slot: Option<u64>,
         key: &str,
         origin: &EventOrigin,
@@ -417,15 +422,16 @@ impl ViewJournal {
         let Some(occurrence) = origin.occurrence.as_deref() else {
             return false;
         };
+        let mut retained_matches = 0usize;
         for record in self.records.iter().rev() {
             let Some(retained) = record.origin.as_ref() else {
                 // No position at all: nothing to compare and nothing to say
                 // about where the overlap ends.
-                return false;
+                break;
             };
             if retained.slot != origin.slot {
                 // Left the resumed slot; nothing before it can repeat.
-                return false;
+                break;
             }
             // Account-driven records have no decode site. They are suppressed
             // upstream by version dominance, and they sit between instruction
@@ -434,10 +440,30 @@ impl ViewJournal {
                 && retained.occurrence.as_deref() == Some(occurrence)
                 && record.key == key
             {
-                return true;
+                retained_matches += 1;
             }
         }
+        if retained_matches == 0 {
+            return false;
+        }
+
+        // Match multiplicity, not just identity. Two events can share an
+        // identity and only one of them be on the tape — a seal landing
+        // between them leaves the second untracked — and suppressing both
+        // re-deliveries would drop the one that was never retained.
+        let matched = self
+            .resume_matched
+            .entry((origin.index, occurrence.to_string(), key.to_string()))
+            .or_insert(0);
+        if *matched < retained_matches {
+            *matched += 1;
+            return true;
+        }
         false
+    }
+
+    fn forget_resume_matches(&mut self) {
+        self.resume_matched.clear();
     }
 
     fn window(&self, epoch: &JournalEpoch) -> ReplayWindow {
@@ -597,6 +623,7 @@ impl EventJournal {
                     // repeat until the next resume arms a new window.
                     self.resume_overlap
                         .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+                    journal.forget_resume_matches();
                 }
                 Some(overlap) if journal.duplicates_resume_overlap(Some(overlap), key, origin) => {
                     return Ok(Append::Duplicate);
@@ -675,12 +702,10 @@ impl EventJournal {
     /// subscribers; they simply carry no cursor, so a consumer's last position
     /// stays at the cut and the resume after restart replays them.
     ///
-    /// One narrow consequence: the seal is observed per append, so it can land
-    /// between two events of the same batch, retaining one and leaving the
-    /// other untracked. Resume deduplication matches identity rather than
-    /// multiplicity, so both re-deliveries then match the single retained
-    /// record and the untracked event is dropped. It needs a seal to land
-    /// inside one batch, on two events sharing a key and a decode site.
+    /// The seal is observed per append, so it can land between two events of
+    /// one batch and leave the second untracked. Resume deduplication counts
+    /// how many records it has matched per identity rather than matching on
+    /// identity alone, so the untracked event is still recognised as new.
     pub fn seal(&self) {
         self.sealed
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -864,6 +889,7 @@ impl EventJournal {
                 records,
                 retained_bytes,
                 gap_after: persisted.gap_after,
+                resume_matched: HashMap::new(),
             };
             journal.prune(&self.config, now);
             views.insert(view_id, journal);
@@ -1440,6 +1466,94 @@ mod tests {
             journal.resume_overlap_slot(),
             None,
             "a record from a later slot ends the window"
+        );
+    }
+
+    /// Two events can share an identity with only one of them on the tape: a
+    /// seal landing between them retains the first and leaves the second
+    /// untracked. Matching on identity alone would suppress both
+    /// re-deliveries, dropping the one that was never retained.
+    #[tokio::test]
+    async fn a_second_event_sharing_an_identity_still_lands() {
+        let journal = EventJournal::new(config(100, 3_600));
+        let origin = EventOrigin {
+            slot: 7,
+            index: 0,
+            occurrence: Some("ix:0".to_string()),
+        };
+
+        // Only the first of the pair was retained before the tape sealed.
+        journal
+            .append_with("Trade/append", "pool1", Some(origin.clone()), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("first"))
+            })
+            .await
+            .unwrap();
+
+        journal.arm_resume_overlap(7);
+
+        let first = journal
+            .append_with("Trade/append", "pool1", Some(origin.clone()), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("first"))
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(first, Append::Duplicate),
+            "the re-delivery of the retained event is a duplicate"
+        );
+
+        let second = journal
+            .append_with("Trade/append", "pool1", Some(origin), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("second"))
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(second, Append::Retained { .. }),
+            "the event that was never retained is not a duplicate of the one \
+             that was: {second:?}"
+        );
+    }
+
+    /// The match counts are keyed by decode site, not by slot, so carrying
+    /// them past a window would make the next resume think it had already
+    /// matched an event it has not seen — and retain the duplicate.
+    #[tokio::test]
+    async fn resume_matches_do_not_outlive_their_window() {
+        let journal = EventJournal::new(config(100, 3_600));
+        let site = |slot: u64| EventOrigin {
+            slot,
+            index: 0,
+            occurrence: Some("ix:0".to_string()),
+        };
+        let append = |origin: EventOrigin| {
+            let journal = &journal;
+            async move {
+                journal
+                    .append_with("Trade/append", "pool1", Some(origin), |_offset| {
+                        Ok::<_, std::convert::Infallible>(frame("body"))
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        append(site(7)).await;
+        journal.arm_resume_overlap(7);
+        assert!(matches!(append(site(7)).await, Append::Duplicate));
+
+        // Slot 8 carries the same decode site, and appending it disarms the
+        // window.
+        append(site(8)).await;
+        assert_eq!(journal.resume_overlap_slot(), None);
+
+        // A reconnect now resumes at 8. Its re-delivery must be recognised,
+        // which it cannot be if the count from slot 7's window survived.
+        journal.arm_resume_overlap(8);
+        assert!(
+            matches!(append(site(8)).await, Append::Duplicate),
+            "the new window starts its counting from zero"
         );
     }
 
