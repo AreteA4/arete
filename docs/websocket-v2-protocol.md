@@ -20,7 +20,7 @@ Every subscribe request has a client-selected opaque `subscriptionId`, the fixed
     },
     "take": 10,
     "skip": 0,
-    "after": "1234:000000000010",
+    "after": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:4211",
     "snapshotLimit": 100
   },
   "snapshot": {

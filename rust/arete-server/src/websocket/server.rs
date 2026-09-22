@@ -1710,6 +1710,24 @@ fn drain_available(
     }
 }
 
+/// Whether a live frame was already delivered by the replay that preceded it.
+///
+/// The bus is subscribed before the tape is read, so a record published in
+/// between appears on both paths; without this the consumer sees it twice.
+/// Advances the high-water mark as a side effect.
+fn already_delivered(offset: Option<u64>, last_sent: &mut Option<u64>) -> bool {
+    let Some(offset) = offset else {
+        // A frame with no offset predates the tape, so it cannot have been
+        // replayed and must not move the mark.
+        return false;
+    };
+    if last_sent.is_some_and(|last| offset <= last) {
+        return true;
+    }
+    *last_sent = Some(offset);
+    false
+}
+
 /// Deliver one live frame, skipping anything the replay already sent.
 ///
 /// Returns false when the subscription should end.
@@ -1722,13 +1740,8 @@ async fn forward_live_frame(
     last_sent: &mut Option<u64>,
 ) -> bool {
     let metadata = source_frame_metadata(&envelope.payload);
-    if let (Some(offset), Some(last)) = (metadata.offset, *last_sent) {
-        if offset <= last {
-            return true;
-        }
-    }
-    if metadata.offset.is_some() {
-        *last_sent = metadata.offset;
+    if already_delivered(metadata.offset, last_sent) {
+        return true;
     }
     if !live_frame_matches(query, &envelope.key, &envelope.payload) {
         return true;
@@ -2505,5 +2518,337 @@ mod tests {
             lagged.is_some(),
             "overflowing the bus is a gap, not silent truncation"
         );
+    }
+    /// The bus is subscribed before the tape is read, so a record published
+    /// in that window arrives on both paths.
+    #[test]
+    fn the_seam_between_replay_and_live_neither_repeats_nor_skips() {
+        let mut last_sent = Some(4211);
+
+        assert!(
+            already_delivered(Some(4211), &mut last_sent),
+            "the record the replay ended on must not be sent twice"
+        );
+        assert!(already_delivered(Some(4100), &mut last_sent));
+        assert_eq!(last_sent, Some(4211), "a duplicate never moves the mark");
+
+        assert!(
+            !already_delivered(Some(4212), &mut last_sent),
+            "the next record is new"
+        );
+        assert_eq!(last_sent, Some(4212));
+
+        // A frame with no offset comes from a view with no tape; it cannot
+        // have been replayed, and must not disturb the mark.
+        assert!(!already_delivered(None, &mut last_sent));
+        assert_eq!(last_sent, Some(4212));
+    }
+
+    /// A subscription with no cursor has delivered nothing, so the first live
+    /// frame is not a duplicate.
+    #[test]
+    fn a_fresh_subscription_delivers_its_first_live_frame() {
+        let mut last_sent = None;
+        assert!(!already_delivered(Some(0), &mut last_sent));
+        assert_eq!(last_sent, Some(0));
+    }
+
+    /// End-to-end over a real socket: the pieces above are unit-tested
+    /// individually, but the thing a consumer actually does — reconnect with
+    /// a stored cursor and keep reading — only exists once a subscription is
+    /// attached to a connection.
+    mod over_a_socket {
+        use super::*;
+        use crate::journal::{EventJournal, JournalConfig};
+        use crate::projector::Projector;
+        use crate::{MutationBatch, SlotContext};
+        use arete_interpreter::Mutation;
+        use futures_util::{SinkExt, StreamExt};
+        use std::time::Duration;
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio::sync::mpsc;
+        use tokio_tungstenite::tungstenite::Message;
+        use tokio_tungstenite::{client_async, WebSocketStream};
+
+        const RETAINED: u64 = 600;
+
+        fn append_index() -> ViewIndex {
+            let mut index = ViewIndex::new();
+            index.add_spec(ViewSpec {
+                id: "Trade/append".to_string(),
+                export: "Trade".to_string(),
+                mode: Mode::Append,
+                wire_format: Default::default(),
+                projection: Projection::all(),
+                filters: Filters::all(),
+                delivery: Delivery::default(),
+                pipeline: None,
+                source_view: None,
+            });
+            index
+        }
+
+        fn trade(index: u64) -> MutationBatch {
+            MutationBatch::with_slot_context(
+                vec![Mutation {
+                    export: "Trade".to_string(),
+                    key: json!(format!("pool{}", index % 4)),
+                    patch: json!({"trade": index}),
+                    append: vec![],
+                }]
+                .into_iter()
+                .collect(),
+                SlotContext::new(100 + index / 3, index % 3),
+            )
+        }
+
+        struct Harness {
+            addr: SocketAddr,
+            journal: Arc<EventJournal>,
+            tx: mpsc::Sender<MutationBatch>,
+        }
+
+        impl Harness {
+            async fn start() -> Self {
+                let view_index = Arc::new(append_index());
+                let entity_cache = EntityCache::new();
+                let bus_manager = BusManager::new();
+                let journal = Arc::new(EventJournal::new(JournalConfig {
+                    enabled: true,
+                    max_bytes_per_view: u64::MAX,
+                    max_records_per_view: 10_000,
+                    max_age: Duration::from_secs(3_600),
+                }));
+
+                let (tx, rx) = mpsc::channel::<MutationBatch>(256);
+                tokio::spawn(
+                    Projector::new(
+                        view_index.clone(),
+                        bus_manager.clone(),
+                        entity_cache.clone(),
+                        rx,
+                        #[cfg(feature = "otel")]
+                        None,
+                    )
+                    .with_journal(journal.clone())
+                    .run(),
+                );
+
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = WebSocketServer::new(
+                    addr,
+                    bus_manager,
+                    entity_cache,
+                    view_index,
+                    #[cfg(feature = "otel")]
+                    None,
+                )
+                .with_journal(journal.clone());
+                let (acceptor, _cleanup) = server.into_acceptor();
+                tokio::spawn(async move { acceptor.serve_listener(listener).await });
+
+                Self { addr, journal, tx }
+            }
+
+            async fn publish(&self, range: std::ops::Range<u64>) {
+                for index in range {
+                    self.tx.send(trade(index)).await.unwrap();
+                }
+                let (ack, wait) = oneshot::channel();
+                self.tx
+                    .send(MutationBatch::flush_marker(ack))
+                    .await
+                    .unwrap();
+                wait.await.unwrap();
+            }
+
+            async fn connect(&self) -> WebSocketStream<TcpStream> {
+                let stream = TcpStream::connect(self.addr).await.unwrap();
+                client_async(format!("ws://{}/", self.addr), stream)
+                    .await
+                    .unwrap()
+                    .0
+            }
+        }
+
+        async fn next_frame(socket: &mut WebSocketStream<TcpStream>) -> Value {
+            loop {
+                let message = tokio::time::timeout(Duration::from_secs(10), socket.next())
+                    .await
+                    .expect("the server answers within the timeout")
+                    .expect("the stream stays open")
+                    .expect("a readable frame");
+                // Control and data frames arrive as binary; issue frames as
+                // text. Both are JSON.
+                let bytes = match &message {
+                    Message::Text(text) => text.as_bytes(),
+                    Message::Binary(bytes) => bytes.as_ref(),
+                    _ => continue,
+                };
+                return serde_json::from_slice(bytes).expect("frames are JSON");
+            }
+        }
+
+        /// Collect `count` event frames, ignoring anything else on the wire.
+        async fn collect_trades(socket: &mut WebSocketStream<TcpStream>, count: usize) -> Vec<u64> {
+            let mut offsets = Vec::with_capacity(count);
+            while offsets.len() < count {
+                let frame = next_frame(socket).await;
+                assert_ne!(
+                    frame["type"], "error",
+                    "no error frame should interrupt delivery: {frame}"
+                );
+                if let Some(offset) = frame["offset"].as_u64() {
+                    offsets.push(offset);
+                }
+            }
+            offsets
+        }
+
+        /// The headline claim: reconnecting with a stored cursor delivers every
+        /// event published since it, in order, and then continues live without
+        /// a duplicate or a hole at the seam.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn a_reconnect_replays_from_a_cursor_and_continues_live() {
+            let harness = Harness::start().await;
+            harness.publish(0..RETAINED).await;
+
+            let cursor = harness.journal.window("Trade/append").await;
+            let stored = format!("{}:{}", cursor.epoch, 99);
+
+            let mut socket = harness.connect().await;
+            socket
+                .send(Message::Text(
+                    json!({
+                        "type": "subscribe",
+                        "protocolVersion": 2,
+                        "subscriptionId": "trades",
+                        "query": {"view": "Trade/append", "after": stored},
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+
+            let ack = next_frame(&mut socket).await;
+            assert_eq!(ack["op"], "subscribed", "unexpected ack: {ack}");
+            assert_eq!(ack["replayWindow"]["next"], json!(RETAINED));
+
+            // Well over the 500 a single read or buffer would cover.
+            let replayed = collect_trades(&mut socket, (RETAINED - 100) as usize).await;
+            assert_eq!(
+                replayed,
+                (100..RETAINED).collect::<Vec<_>>(),
+                "every event after the cursor, in order, exactly once"
+            );
+
+            // Published only now, so these can only arrive over the live path.
+            harness.publish(RETAINED..RETAINED + 40).await;
+            let live = collect_trades(&mut socket, 40).await;
+            assert_eq!(
+                live,
+                (RETAINED..RETAINED + 40).collect::<Vec<_>>(),
+                "the live stream resumes exactly where the replay stopped"
+            );
+
+            socket.close(None).await.ok();
+        }
+
+        /// Events published *during* the replay must still arrive. The replay
+        /// and the live subscription are separate reads of the same tape, and
+        /// the seam between them is where a naive implementation drops or
+        /// repeats.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn events_published_during_a_replay_are_not_lost() {
+            let harness = Harness::start().await;
+            harness.publish(0..RETAINED).await;
+
+            let epoch = harness.journal.window("Trade/append").await.epoch;
+            let mut socket = harness.connect().await;
+            socket
+                .send(Message::Text(
+                    json!({
+                        "type": "subscribe",
+                        "protocolVersion": 2,
+                        "subscriptionId": "trades",
+                        "query": {"view": "Trade/append", "after": format!("{epoch}:0")},
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let ack = next_frame(&mut socket).await;
+            assert_eq!(ack["op"], "subscribed", "unexpected ack: {ack}");
+
+            // Keep publishing while the replay is still draining.
+            harness.publish(RETAINED..RETAINED + 200).await;
+
+            let total = (RETAINED + 200 - 1) as usize;
+            let delivered = collect_trades(&mut socket, total).await;
+            assert_eq!(
+                delivered,
+                (1..RETAINED + 200).collect::<Vec<_>>(),
+                "replay and live output join without a gap or a repeat"
+            );
+
+            socket.close(None).await.ok();
+        }
+
+        /// A cursor from another tape lifetime is refused rather than served
+        /// as a continuation, and the refusal releases the subscription id.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_stale_epoch_is_refused_and_frees_the_subscription_id() {
+            let harness = Harness::start().await;
+            harness.publish(0..50).await;
+
+            let mut socket = harness.connect().await;
+            socket
+                .send(Message::Text(
+                    json!({
+                        "type": "subscribe",
+                        "protocolVersion": 2,
+                        "subscriptionId": "trades",
+                        "query": {
+                            "view": "Trade/append",
+                            "after": format!("{}:10", crate::journal::JournalEpoch::new()),
+                        },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+
+            let error = next_frame(&mut socket).await;
+            assert_eq!(error["type"], "error", "unexpected frame: {error}");
+            assert_eq!(error["code"], "cursor-epoch-changed");
+
+            // The documented recovery is to resubscribe without a cursor. That
+            // only works if the refused attempt released the id.
+            socket
+                .send(Message::Text(
+                    json!({
+                        "type": "subscribe",
+                        "protocolVersion": 2,
+                        "subscriptionId": "trades",
+                        "query": {"view": "Trade/append"},
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let ack = next_frame(&mut socket).await;
+            assert_eq!(
+                ack["op"], "subscribed",
+                "the refused id must be reusable: {ack}"
+            );
+
+            assert_eq!(collect_trades(&mut socket, 50).await.len(), 50);
+            socket.close(None).await.ok();
+        }
     }
 }
