@@ -1689,6 +1689,13 @@ fn drain_available(
     pending: &mut VecDeque<Arc<BusMessage>>,
     lagged: &mut Option<u64>,
 ) {
+    // Once a gap is known, everything still on the bus is on the far side of
+    // it. Buffering it would put post-gap frames in front of the lag report,
+    // advancing `last_sent` past the hole and making `recoverFrom` point
+    // after the very records it is supposed to recover.
+    if lagged.is_some() {
+        return;
+    }
     // Bounded so a view publishing faster than the client drains cannot turn
     // the buffer into an unbounded queue; overflowing is the same gap the
     // broadcast would have reported.
@@ -2518,6 +2525,39 @@ mod tests {
             lagged.is_some(),
             "overflowing the bus is a gap, not silent truncation"
         );
+    }
+
+    /// Everything still on the bus after a gap is on the far side of it.
+    /// Buffering it would put those frames in front of the lag report and
+    /// advance the recovery cursor past the records it is meant to recover.
+    #[tokio::test]
+    async fn nothing_after_a_gap_is_buffered_ahead_of_the_report() {
+        let (sender, mut receiver) = broadcast::channel::<Arc<BusMessage>>(8);
+        let mut pending = VecDeque::new();
+        let mut lagged = None;
+
+        // Delivered and buffered normally.
+        sender.send(bus_message("before")).unwrap();
+        drain_available(&mut receiver, &mut pending, &mut lagged);
+        assert_eq!(pending.len(), 1);
+
+        // Overflow the bus: everything published from here is past the gap.
+        for index in 0..32 {
+            sender.send(bus_message(&format!("lost{index}"))).unwrap();
+        }
+        drain_available(&mut receiver, &mut pending, &mut lagged);
+        assert!(lagged.is_some());
+
+        // The bus still holds what survived the overflow, all of it past the
+        // gap. A later iteration of the replay loop drains again.
+        let buffered_at_gap = pending.len();
+        drain_available(&mut receiver, &mut pending, &mut lagged);
+        assert_eq!(
+            pending.len(),
+            buffered_at_gap,
+            "post-gap frames must not join the pre-gap flush"
+        );
+        assert_eq!(pending.front().unwrap().key, "before");
     }
     /// The bus is subscribed before the tape is read, so a record published
     /// in that window arrives on both paths.
