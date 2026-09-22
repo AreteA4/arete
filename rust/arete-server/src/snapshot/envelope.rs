@@ -47,6 +47,13 @@ pub struct SnapshotHeader {
     /// Entity-name -> row count, for logging and debugging.
     #[serde(default)]
     pub entry_counts: BTreeMap<String, u64>,
+    /// What wrote this snapshot. A shutdown snapshot is taken at a consistency
+    /// cut with nothing in flight, so its offsets are exactly what was
+    /// published; a periodic one can be behind by up to the write interval.
+    /// Absent in snapshots written before the distinction mattered, which are
+    /// treated as the unclean case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<crate::snapshot::SnapshotTrigger>,
 }
 
 /// The compressed body of a snapshot.
@@ -132,6 +139,7 @@ mod tests {
             resume_watermark: 42,
             observed_slot: 50,
             created_at_epoch_ms: 1_000,
+            trigger: Some(crate::snapshot::SnapshotTrigger::Shutdown),
             entry_counts: BTreeMap::new(),
         };
         let payload = SnapshotPayload {

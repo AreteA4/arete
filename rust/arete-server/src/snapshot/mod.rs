@@ -456,7 +456,8 @@ fn now_epoch_ms() -> u64 {
 }
 
 /// What kicked off a snapshot cycle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SnapshotTrigger {
     Periodic,
     Shutdown,
@@ -622,7 +623,9 @@ impl SnapshotService {
             .map(|view| view.records.len())
             .sum();
         self.entity_cache.hydrate(payload.entity_cache).await;
-        self.journal.hydrate(payload.journal).await;
+        // Only a shutdown snapshot is exact; see `EventJournal::hydrate`.
+        let exact_offsets = header.trigger == Some(SnapshotTrigger::Shutdown);
+        self.journal.hydrate(payload.journal, exact_offsets).await;
         rebuild_sorted_caches(view_index, &self.entity_cache).await;
 
         // Even when the stream starts live, the watermark seeds the applied
@@ -783,7 +786,6 @@ impl SnapshotService {
         // Dumped inside the same consistency guard as the cache, so a restore
         // can never leave the cache ahead of the tape.
         let journal_dump = self.journal.dump().await;
-        let journal_counts = self.journal.entry_counts().await;
         let applied_batches = self.runtime.state.applied_batches.load(Ordering::Relaxed);
         drop(consistency_guard);
 
@@ -797,15 +799,18 @@ impl SnapshotService {
             resume_watermark,
             observed_slot,
             created_at_epoch_ms,
+            trigger: Some(trigger),
             entry_counts: vm_snapshot
                 .entry_counts()
                 .into_iter()
                 .chain(
                     // Retained record counts are otherwise invisible after the
                     // restore log line.
-                    journal_counts
-                        .into_iter()
-                        .map(|(view_id, count)| (format!("journal:{view_id}"), count)),
+                    // Derived from the dump rather than a second trip
+                    // through the journal's lock inside the cut.
+                    journal_dump.views.iter().map(|(view_id, view)| {
+                        (format!("journal:{view_id}"), view.records.len() as u64)
+                    }),
                 )
                 .collect(),
         };

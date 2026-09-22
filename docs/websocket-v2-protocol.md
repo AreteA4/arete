@@ -230,6 +230,20 @@ so a record count cannot be reasoned about against a memory limit. The
 retained tape is captured in the state snapshot, so the advertised window
 survives a normal restart.
 
+The tape is not the only journal-related allocation. While a replay is
+draining, the server buffers live frames for that subscription so a busy view
+cannot lap it — bounded, but per replaying subscription rather than per view,
+so it scales with client count. Payload bytes are shared with the retained
+records; the overhead is the envelopes. A restart that has every client
+reconnect at once is where that peaks.
+
+A restart that was not clean retires cursors. A snapshot taken at shutdown is
+exact, so cursors held across it stay valid; a periodic snapshot is behind
+what was published, and restoring one rewinds the tape below offsets that
+already went out. Those offsets get re-issued for different records, so the
+restore mints a new epoch and every cursor from before it is refused with
+`cursor-epoch-changed` rather than silently served at the wrong place.
+
 One duplication case remains. A restart that resumes the stream from the
 snapshot's watermark re-decodes the transactions in the overlap, and those
 events are appended to the tape a second time under fresh offsets. A

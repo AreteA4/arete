@@ -1697,12 +1697,13 @@ fn drain_available(
         return;
     }
     // Bounded so a view publishing faster than the client drains cannot turn
-    // the buffer into an unbounded queue; overflowing is the same gap the
-    // broadcast would have reported.
+    // the buffer into an unbounded queue. Filling it is not itself a gap:
+    // nothing has been skipped at that instant, the buffer simply stopped
+    // accepting. Stop buffering and let the bus report the loss, with the
+    // count it actually measures, when delivery reaches it.
     const MAX_PENDING: usize = 8_192;
     loop {
         if pending.len() >= MAX_PENDING {
-            *lagged = Some(pending.len() as u64);
             return;
         }
         match receiver.try_recv() {

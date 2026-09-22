@@ -575,16 +575,25 @@ impl EventJournal {
     /// Restore a dumped tape, so the advertised replay window survives a
     /// restart and a consumer's cursor stays meaningful.
     ///
-    /// Adopts the snapshot's epoch: the offsets continue the same lifetime, so
-    /// cursors held across the restart remain valid. A snapshot without an
-    /// epoch predates cursor epochs and is discarded — adopting it under a
-    /// fresh epoch would be indistinguishable from a cold start anyway, and
-    /// adopting its offsets under this tape's epoch would validate cursors
-    /// that should fail.
+    /// `exact` says whether the snapshot's offsets are exactly what was
+    /// published — true only for a snapshot taken at shutdown, under the
+    /// consistency cut with nothing in flight. A periodic snapshot can be up
+    /// to its write interval behind, so restoring one rewinds `next_offset`
+    /// below offsets that have already been on the wire. Keeping the epoch
+    /// there would re-issue those offsets for different records under a
+    /// cursor that still validates: refused at first because the window has
+    /// not caught up, then silently served once it has. A fresh epoch makes
+    /// those cursors fail closed instead, which is the honest answer — after
+    /// a rewind they genuinely cannot be honoured.
+    ///
+    /// A snapshot without an epoch predates cursor epochs and is discarded —
+    /// adopting it under a fresh epoch would be indistinguishable from a cold
+    /// start anyway, and adopting its offsets under this tape's epoch would
+    /// validate cursors that should fail.
     ///
     /// Retention is re-applied on load: a snapshot restored after a long
     /// outage must not advertise records the age bound has already retired.
-    pub async fn hydrate(&self, snapshot: JournalSnapshot) {
+    pub async fn hydrate(&self, snapshot: JournalSnapshot, exact: bool) {
         if !self.config.enabled {
             return;
         }
@@ -592,7 +601,9 @@ impl EventJournal {
             return;
         };
         let now = unix_now();
-        *self.epoch.write().await = epoch;
+        if exact {
+            *self.epoch.write().await = epoch;
+        }
         let mut views = self.views.write().await;
         for (view_id, persisted) in snapshot.views {
             let records: VecDeque<JournalRecord> = persisted
@@ -764,7 +775,7 @@ mod tests {
         let dumped = first.dump().await;
 
         let restored = EventJournal::new(config(100, 600));
-        restored.hydrate(dumped).await;
+        restored.hydrate(dumped, true).await;
 
         assert_eq!(restored.epoch().await, held.epoch);
         let replayed = restored
@@ -788,7 +799,7 @@ mod tests {
                 },
             )]),
         };
-        journal.hydrate(legacy).await;
+        journal.hydrate(legacy, true).await;
         assert!(journal.window("Trade/append").await.is_empty());
         assert_eq!(journal.window("Trade/append").await.next, 0);
     }

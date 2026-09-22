@@ -9,7 +9,7 @@
 
 use arete_interpreter::vm::VmContext;
 use arete_interpreter::Mutation;
-use arete_server::journal::{Cursor, EventJournal, JournalConfig};
+use arete_server::journal::{Cursor, EventJournal, JournalConfig, ReplayError};
 use arete_server::materialized_view::{SortConfig, SortOrder, ViewPipeline};
 use arete_server::snapshot::{self, SnapshotConfig, SnapshotService, SnapshotTrigger};
 use arete_server::{
@@ -1125,6 +1125,137 @@ async fn restore_preserves_the_advertised_replay_window() {
         .await
         .unwrap();
     assert_eq!(next, 600);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A periodic snapshot is written while the stream keeps running, so it is
+/// behind what was published. Restoring one rewinds `next_offset` below
+/// offsets that already went out; keeping the epoch would re-issue them for
+/// different records under a cursor that still validates — refused while the
+/// window is short, then silently served once it catches up.
+#[tokio::test]
+async fn an_unclean_restart_retires_cursors_it_cannot_honour() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("journal-rewind");
+    let config = config_for(&dir);
+    let spec = make_spec("Token");
+
+    let view_index = make_append_view_index();
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let journal = enabled_journal();
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache.clone(),
+        &view_index,
+        journal.clone(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(
+        projector
+            .with_snapshot_runtime(service.runtime())
+            .with_journal(journal.clone())
+            .run(),
+    );
+
+    let vm = Arc::new(StdMutex::new(VmContext::new()));
+    let slot_tracker = SlotTracker::new();
+    slot_tracker.record(120);
+    service.runtime().register_runtime(vm, slot_tracker);
+
+    for index in 0..100u64 {
+        tx.send(token_batch(
+            &format!("mint{}", index % 5),
+            index,
+            100 + index,
+        ))
+        .await
+        .unwrap();
+    }
+    flush_projector(&tx).await;
+
+    // The last thing written before the process dies is a periodic snapshot.
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Periodic)
+        .await
+        .unwrap());
+
+    // Publishing continues; these offsets reach live subscribers and are
+    // checkpointed, but never reach a snapshot.
+    for index in 100..150u64 {
+        tx.send(token_batch(
+            &format!("mint{}", index % 5),
+            index,
+            100 + index,
+        ))
+        .await
+        .unwrap();
+    }
+    flush_projector(&tx).await;
+    let held = Cursor {
+        epoch: journal.epoch().await,
+        offset: 149,
+    };
+    assert_eq!(journal.window("Token/append").await.next, 150);
+
+    // --- SIGKILL: no shutdown snapshot, restart from the periodic one ---
+    let view_index2 = make_append_view_index();
+    let entity_cache2 = EntityCache::new();
+    let (tx2, _projector2) = make_projector(&view_index2, &entity_cache2);
+    let journal2 = enabled_journal();
+    let _service2 = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache2.clone(),
+        &view_index2,
+        journal2.clone(),
+        tx2,
+    )
+    .await
+    .unwrap();
+
+    let window = journal2.window("Token/append").await;
+    assert_eq!(
+        window.next, 100,
+        "the restored tape is behind what was published"
+    );
+    assert_ne!(
+        journal2.epoch().await,
+        held.epoch,
+        "a rewound tape cannot keep the lifetime whose offsets it is about to \
+         re-issue"
+    );
+
+    let error = journal2
+        .replay_after("Token/append", Some(&held))
+        .await
+        .expect_err("a cursor past the rewind cannot be honoured");
+    assert!(matches!(error, ReplayError::EpochMismatch(_)));
+
+    // The failure has to hold once the tape grows back past the held offset,
+    // which is where an unchanged epoch would start serving it silently.
+    for index in 0..100u64 {
+        journal2
+            .append_with("Token/append", "mint0", |_offset| {
+                Ok::<_, std::convert::Infallible>(Arc::new(bytes::Bytes::from_static(b"{}")))
+            })
+            .await
+            .unwrap();
+        let _ = index;
+    }
+    assert!(journal2.window("Token/append").await.next > held.offset);
+    assert!(matches!(
+        journal2
+            .replay_after("Token/append", Some(&held))
+            .await
+            .expect_err("still refused after the window catches up"),
+        ReplayError::EpochMismatch(_)
+    ));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
