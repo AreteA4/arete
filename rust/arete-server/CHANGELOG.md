@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.22.0](https://github.com/AreteA4/arete/compare/arete-server-v0.21.0...arete-server-v0.22.0) (2026-09-22)
+
+
+### Features
+
+* **sdk:** expose replay cursors and fail closed on data gaps ([#243](https://github.com/AreteA4/arete/issues/243)) ([129919d](https://github.com/AreteA4/arete/commit/129919d28dbf7f87781fcc398e36059c0963c2fd))
+* **server:** replay append subscriptions from a retained event journal ([#239](https://github.com/AreteA4/arete/issues/239)) ([5641d6b](https://github.com/AreteA4/arete/commit/5641d6b57ea228f50ed7d9378f5674478000da37))
+
+
+### Bug Fixes
+
+* Slot time ([f9983d7](https://github.com/AreteA4/arete/commit/f9983d7d05f95746fb51ef89d3cd8e0cc8e2e3c3))
+* **snapshot:** account for watermark lag when resuming ([5416515](https://github.com/AreteA4/arete/commit/5416515b50a2d7c0fefe8b25c54645ee2811d0b1))
+* **snapshot:** account for watermark lag when resuming ([e9afcaa](https://github.com/AreteA4/arete/commit/e9afcaa731d8b26ed6f49b31bb7478469a138d9e))
+* **ws:** deliver real deltas on list subscriptions ([d4c0650](https://github.com/AreteA4/arete/commit/d4c06503c58083b0f07bf99b7177ed59d583fae0))
+* **ws:** deliver real deltas on list subscriptions ([fa4742f](https://github.com/AreteA4/arete/commit/fa4742f6af4eb975f072f8202ddd6a4a418823bd))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.21.0 to 0.22.0
+
 ## [0.21.0](https://github.com/AreteA4/arete/compare/arete-server-v0.20.4...arete-server-v0.21.0) (2026-09-21)
 
 

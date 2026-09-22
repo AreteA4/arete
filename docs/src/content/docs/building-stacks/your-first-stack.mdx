@@ -213,9 +213,9 @@ package or Rust crate is a separate operator action.
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 
 <Tabs>
-<TabItem label="React">
+<TabItem label="Connect with React">
 
-### React: Set up your React app
+### Scaffold a React Vite app for the stack
 
 ```bash
 npm create vite@latest my-ore-app -- --template react-ts
@@ -231,7 +231,7 @@ Copy the generated SDK into your React app:
 cp -r ../ore-stack/sdk ./src/ore-sdk
 ```
 
-### React: Configure authentication and the Provider
+### Configure the React AreteProvider
 
 Hosted browser clients require a publishable key even for read-only viewing. A wallet is not required. Create `.env.local`:
 
@@ -314,7 +314,7 @@ export default function App() {
 </TabItem>
 <TabItem label="TypeScript (Non-React)">
 
-### TypeScript: Set up your project
+### Scaffold a TypeScript Node project for the stack
 
 ```bash
 mkdir my-ore-app && cd my-ore-app
@@ -328,7 +328,7 @@ Copy the generated SDK:
 cp -r ../ore-stack/sdk ./src/ore-sdk
 ```
 
-### TypeScript: Connect and stream data
+### Stream ORE rounds from TypeScript
 
 ```typescript
 // src/index.ts

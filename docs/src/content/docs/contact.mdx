@@ -1,0 +1,38 @@
+---
+title: Contact Arete
+description: "Contact paths for Arete developer support: GitHub issues, API keys, documentation MCP, and this docs site."
+sidebar:
+  hidden: true
+---
+
+Use these paths when you need help with Arete, this documentation site, or
+hosted access. There is no telephone support number published for the
+documentation origin.
+
+## Developer support
+
+- **Bugs and docs corrections:** open an issue on
+  [AreteA4/arete](https://github.com/AreteA4/arete/issues). Documentation
+  files live under `docs/src/content/docs/`; each page has an edit link in
+  the footer.
+- **Hosted API keys:** issue or rotate keys at
+  [https://arete.run/keys](https://arete.run/keys), then `a4 auth login --key`.
+- **Agent questions about the product:** point the agent at
+  [agent.md](/agent.md), [llms.txt](/llms.txt), or the documentation MCP at
+  `https://docs.arete.run/mcp`.
+
+## Documentation MCP
+
+Agents should not scrape HTML when they can call:
+
+- `search_docs` — ranked snippets from this site
+- `fetch_page` — raw markdown for one slug
+
+The OpenAPI description is at [openapi.json](/openapi.json). JSON errors from
+the HTTP API include `error.code`, `error.message`, and `error.hint`.
+
+## What this page is not
+
+This is not a billing inbox and not a legal service-of-process address. For
+how analytics on this docs site works, see [Privacy](/privacy/). For what
+Arete is, see [About](/about/).

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.21.0...arete-macros-v0.22.0) (2026-09-22)
+
+
+### Features
+
+* **sdk:** expose replay cursors and fail closed on data gaps ([#243](https://github.com/AreteA4/arete/issues/243)) ([129919d](https://github.com/AreteA4/arete/commit/129919d28dbf7f87781fcc398e36059c0963c2fd))
+
 ## [0.21.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.20.4...arete-macros-v0.21.0) (2026-09-21)
 
 

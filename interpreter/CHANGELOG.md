@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.22.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.21.0...arete-interpreter-v0.22.0) (2026-09-22)
+
+
+### Bug Fixes
+
+* **interpreter:** warn on a null key even when no field moved ([76fab8c](https://github.com/AreteA4/arete/commit/76fab8c8c5b2cbc02066e8762f258d35959c979e))
+* **ws:** deliver real deltas on list subscriptions ([d4c0650](https://github.com/AreteA4/arete/commit/d4c06503c58083b0f07bf99b7177ed59d583fae0))
+* **ws:** deliver real deltas on list subscriptions ([fa4742f](https://github.com/AreteA4/arete/commit/fa4742f6af4eb975f072f8202ddd6a4a418823bd))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.21.0 to 0.22.0
+
 ## [0.21.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.20.4...arete-interpreter-v0.21.0) (2026-09-21)
 
 
