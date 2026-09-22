@@ -223,11 +223,19 @@ impl Append {
 /// needs to know which records belong to the resumed slot — an account record
 /// between two instruction events must not be read as the end of it.
 ///
-/// Not every source has a reproducible identity. Resolver-derived mutations
-/// are built outside `process_event`, so they carry no occurrence, and on the
-/// scheduler path their index comes from a process-local counter rather than
-/// the stream. Neither half survives a restart, so those events can still be
-/// retained twice across a resume.
+/// Not every source has a reproducible identity.
+///
+/// Account-driven mutations have no decode site. A re-delivered account write
+/// is normally suppressed upstream by version dominance, before it ever
+/// reaches the tape — but that gate only covers the `ReadOrInitState` path and
+/// only while the entry survives a capacity-bounded tracker, so it is narrower
+/// than "account writes cannot duplicate".
+///
+/// Resolver-derived mutations are worse: they are built outside
+/// `process_event`, so they carry no occurrence, and on the scheduler path
+/// their index comes from a process-local counter rather than the stream.
+/// Neither half survives a restart, so those events can still be retained
+/// twice across a resume.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventOrigin {
     pub slot: u64,

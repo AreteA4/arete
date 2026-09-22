@@ -1746,9 +1746,7 @@ fn build_instruction_hooks_ast(
 
         for derive_attr in derive_attrs {
             let source = if derive_attr.field.ident.to_string().starts_with("__") {
-                match crate::ast::writer::context_field_name(
-                    &derive_attr.field.ident.to_string(),
-                ) {
+                match crate::ast::writer::context_field_name(&derive_attr.field.ident.to_string()) {
                     Some(field) => MappingSource::FromContext {
                         field: field.to_string(),
                     },
@@ -1990,7 +1988,10 @@ mod entity_ownership_tests {
     fn a_program_qualified_event_key_resolves_to_its_program() {
         let pump = idl("pump", "PumpAddr");
         let entropy = idl("entropy", "EntropyAddr");
-        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+        let idls = [
+            ("pump_sdk".to_string(), &pump),
+            ("entropy_sdk".to_string(), &entropy),
+        ];
 
         // The sdk-prefixed spelling the macro uses for map sources.
         assert_eq!(
@@ -1999,7 +2000,10 @@ mod entity_ownership_tests {
         );
         // The program-qualified spelling the macro uses for event keys, which
         // an sdk-prefix match alone can never resolve.
-        assert_eq!(source_program_name("entropy::Reveal", &idls), Some("entropy"));
+        assert_eq!(
+            source_program_name("entropy::Reveal", &idls),
+            Some("entropy")
+        );
         assert_eq!(source_program_name("token::Transfer", &idls), None);
     }
 
@@ -2007,7 +2011,10 @@ mod entity_ownership_tests {
     fn lookup_based_events_decide_ownership_when_they_outnumber_map_sources() {
         let pump = idl("pump", "PumpAddr");
         let entropy = idl("entropy", "EntropyAddr");
-        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+        let idls = [
+            ("pump_sdk".to_string(), &pump),
+            ("entropy_sdk".to_string(), &entropy),
+        ];
 
         let mut sources = BTreeMap::new();
         sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
@@ -2046,7 +2053,10 @@ mod entity_ownership_tests {
     fn legacy_string_events_still_vote_for_their_program() {
         let pump = idl("pump", "PumpAddr");
         let entropy = idl("entropy", "EntropyAddr");
-        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+        let idls = [
+            ("pump_sdk".to_string(), &pump),
+            ("entropy_sdk".to_string(), &entropy),
+        ];
 
         let mut sources = BTreeMap::new();
         sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
@@ -2072,16 +2082,16 @@ mod entity_ownership_tests {
     fn an_event_already_merged_into_its_source_type_votes_once() {
         let pump = idl("pump", "PumpAddr");
         let entropy = idl("entropy", "EntropyAddr");
-        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+        let idls = [
+            ("pump_sdk".to_string(), &pump),
+            ("entropy_sdk".to_string(), &entropy),
+        ];
 
         let mut sources = BTreeMap::new();
         sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
         sources.insert("pump_sdk::accounts::Global".to_string(), Vec::new());
         // A non-`lookup_by` event is merged under its instruction path.
-        sources.insert(
-            "entropy_sdk::instructions::Reveal".to_string(),
-            Vec::new(),
-        );
+        sources.insert("entropy_sdk::instructions::Reveal".to_string(), Vec::new());
 
         // Counting the same source again, once per capturing field, would let
         // entropy outweigh pump's two distinct sources.
@@ -2113,7 +2123,10 @@ mod entity_ownership_tests {
     fn several_fields_capturing_one_instruction_are_one_source() {
         let pump = idl("pump", "PumpAddr");
         let entropy = idl("entropy", "EntropyAddr");
-        let idls = [("pump_sdk".to_string(), &pump), ("entropy_sdk".to_string(), &entropy)];
+        let idls = [
+            ("pump_sdk".to_string(), &pump),
+            ("entropy_sdk".to_string(), &entropy),
+        ];
 
         let mut sources = BTreeMap::new();
         sources.insert("pump_sdk::accounts::BondingCurve".to_string(), Vec::new());
@@ -2126,9 +2139,21 @@ mod entity_ownership_tests {
         events.insert(
             "entropy::Reveal".to_string(),
             vec![
-                event_mapping("entropy::Reveal", Some("entropy_sdk::instructions::Reveal"), true),
-                event_mapping("entropy::Reveal", Some("entropy_sdk::instructions::Reveal"), true),
-                event_mapping("entropy::Reveal", Some("entropy_sdk::instructions::Reveal"), true),
+                event_mapping(
+                    "entropy::Reveal",
+                    Some("entropy_sdk::instructions::Reveal"),
+                    true,
+                ),
+                event_mapping(
+                    "entropy::Reveal",
+                    Some("entropy_sdk::instructions::Reveal"),
+                    true,
+                ),
+                event_mapping(
+                    "entropy::Reveal",
+                    Some("entropy_sdk::instructions::Reveal"),
+                    true,
+                ),
             ],
         );
 

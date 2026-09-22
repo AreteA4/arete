@@ -3312,7 +3312,10 @@ pub fn generate_runtime(
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_instruction_handler_impl, generate_spec_function, RuntimeGenConfig};
+    use super::{
+        generate_instruction_handler_impl, generate_reconnect_position, generate_spec_function,
+        RuntimeGenConfig,
+    };
 
     #[test]
     fn snapshot_reconnect_uses_parser_progress_without_consuming_restore_cut() {
@@ -3333,6 +3336,31 @@ mod tests {
         assert!(compact.contains("letsnapshot_barrier="));
         assert!(compact.contains("barrier.enter_processing().await"));
         assert!(compact.contains("batch.with_snapshot_guard(snapshot_guard)"));
+
+        // A reconnect resumes at the processed checkpoint and the provider
+        // re-delivers that slot whole, so the tape has to be told before the
+        // re-delivered events reach it. Restore arms the same window from the
+        // other side; without this the reconnect path retains them twice.
+        assert!(compact.contains("journal::expect_resume_overlap(slot)"));
+    }
+
+    /// A reconnect resumes at the processed checkpoint and the provider
+    /// re-delivers that slot whole, so the tape has to be told before the
+    /// re-delivered events reach it — restore arms the same window from the
+    /// other side. Asserted on the shared fragment, which is what both
+    /// generators interpolate, so neither can resume without arming.
+    #[test]
+    fn a_generated_reconnect_arms_the_resume_overlap() {
+        let compact: String = generate_reconnect_position()
+            .to_string()
+            .split_whitespace()
+            .collect();
+
+        assert!(compact.contains("ReconnectPosition::Slot(slot)"));
+        assert!(
+            compact.contains("journal::expect_resume_overlap(slot)"),
+            "resuming at a slot must arm the overlap for it"
+        );
     }
 
     #[test]

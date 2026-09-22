@@ -258,11 +258,14 @@ carry a wall-clock timestamp. Events from that slot which had *not* been
 retained when the stream stopped are new and do land, so the overlap is
 deduplicated rather than skipped.
 
-One source is exempt. Events derived from a resolver result are built outside
-the decode path and carry no decode site, and on the scheduler path their
-position comes from a process-local counter rather than from the stream.
-Neither half of that identity reproduces, so those events can still be
-retained twice across a resume.
+Two sources are exempt. Events derived from a resolver result are built
+outside the decode path and carry no decode site, and on the scheduler path
+their position comes from a process-local counter rather than from the
+stream — neither half of that identity reproduces, so those events can still
+be retained twice across a resume. Account-driven events have no decode site
+either; a re-delivered account write is normally dropped before it reaches
+the tape, by a version check that is itself bounded in capacity, so it is not
+an absolute guarantee.
 
 ## Live Frames
 
