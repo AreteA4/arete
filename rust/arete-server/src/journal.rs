@@ -394,9 +394,11 @@ struct ViewJournal {
     gap_after: Option<u64>,
     /// How many re-deliveries of each identity the current resume window has
     /// already matched, so the Nth re-delivery matches the Nth retained
-    /// record rather than all of them matching the first. Cleared when the
-    /// window disarms.
+    /// record rather than all of them matching the first.
     resume_matched: HashMap<(u64, String, String), usize>,
+    /// The window `resume_matched` was counted in. A new window — including a
+    /// second reconnect to the same slot — starts from zero.
+    resume_generation: u64,
 }
 
 impl ViewJournal {
@@ -409,11 +411,20 @@ impl ViewJournal {
     fn duplicates_resume_overlap(
         &mut self,
         overlap_slot: Option<u64>,
+        generation: u64,
         key: &str,
         origin: &EventOrigin,
     ) -> bool {
         if overlap_slot != Some(origin.slot) {
             return false;
+        }
+        if self.resume_generation != generation {
+            // Counts from an earlier window describe re-deliveries this one
+            // has not seen. A reconnect that drops before the stream leaves
+            // the slot re-arms the same slot, and inheriting its counts would
+            // treat every re-delivery as surplus and retain it again.
+            self.resume_matched.clear();
+            self.resume_generation = generation;
         }
         // An occurrence names a decode site within one transaction, so it
         // repeats across the transactions of a slot. Without the transaction
@@ -460,10 +471,6 @@ impl ViewJournal {
             return true;
         }
         false
-    }
-
-    fn forget_resume_matches(&mut self) {
-        self.resume_matched.clear();
     }
 
     fn window(&self, epoch: &JournalEpoch) -> ReplayWindow {
@@ -533,6 +540,9 @@ pub struct EventJournal {
     /// arrive a second time; see [`arm_resume_overlap`](EventJournal::arm_resume_overlap).
     /// `u64::MAX` means no resume is in progress.
     resume_overlap: std::sync::atomic::AtomicU64,
+    /// Bumped every time a window is armed, so per-view match counts from a
+    /// previous window are recognised as stale even when the slot repeats.
+    resume_generation: std::sync::atomic::AtomicU64,
     /// A gap was recorded while some views had no tape entry yet.
     ///
     /// `mark_gap` can only mark views it can see, and a view that has never
@@ -549,6 +559,7 @@ impl EventJournal {
             views: RwLock::new(HashMap::new()),
             sealed: std::sync::atomic::AtomicBool::new(false),
             resume_overlap: std::sync::atomic::AtomicU64::new(u64::MAX),
+            resume_generation: std::sync::atomic::AtomicU64::new(0),
             pending_gap: std::sync::atomic::AtomicBool::new(false),
             config,
         }
@@ -623,9 +634,16 @@ impl EventJournal {
                     // repeat until the next resume arms a new window.
                     self.resume_overlap
                         .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
-                    journal.forget_resume_matches();
                 }
-                Some(overlap) if journal.duplicates_resume_overlap(Some(overlap), key, origin) => {
+                Some(overlap)
+                    if journal.duplicates_resume_overlap(
+                        Some(overlap),
+                        self.resume_generation
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                        key,
+                        origin,
+                    ) =>
+                {
                     return Ok(Append::Duplicate);
                 }
                 _ => {}
@@ -674,14 +692,20 @@ impl EventJournal {
     /// The window disarms itself once a later slot appends, which is the
     /// point the re-delivery is demonstrably behind us.
     pub fn arm_resume_overlap(&self, slot: u64) {
+        // Generation first: an append that sees the new slot must also see
+        // that its counts are from a previous window.
+        self.resume_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Release pairs with the acquire in `resume_overlap_slot`, so a reader
+        // that sees this slot also sees the generation bump above.
         self.resume_overlap
-            .store(slot, std::sync::atomic::Ordering::Relaxed);
+            .store(slot, std::sync::atomic::Ordering::Release);
     }
 
     fn resume_overlap_slot(&self) -> Option<u64> {
         match self
             .resume_overlap
-            .load(std::sync::atomic::Ordering::Relaxed)
+            .load(std::sync::atomic::Ordering::Acquire)
         {
             u64::MAX => None,
             slot => Some(slot),
@@ -890,6 +914,7 @@ impl EventJournal {
                 retained_bytes,
                 gap_after: persisted.gap_after,
                 resume_matched: HashMap::new(),
+                resume_generation: 0,
             };
             journal.prune(&self.config, now);
             views.insert(view_id, journal);
@@ -1554,6 +1579,48 @@ mod tests {
         assert!(
             matches!(append(site(8)).await, Append::Duplicate),
             "the new window starts its counting from zero"
+        );
+    }
+
+    /// A reconnect can drop after replaying slot N but before anything from
+    /// N+1 arrives, and the next one resumes at N again. That is a new window:
+    /// inheriting the first one's counts would treat every re-delivery as
+    /// surplus and retain it a second time.
+    #[tokio::test]
+    async fn a_second_reconnect_to_the_same_slot_counts_afresh() {
+        let journal = EventJournal::new(config(100, 3_600));
+        let origin = EventOrigin {
+            slot: 7,
+            index: 0,
+            occurrence: Some("ix:0".to_string()),
+        };
+        let append = |origin: EventOrigin| {
+            let journal = &journal;
+            async move {
+                journal
+                    .append_with("Trade/append", "pool1", Some(origin), |_offset| {
+                        Ok::<_, std::convert::Infallible>(frame("body"))
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        append(origin.clone()).await;
+
+        journal.arm_resume_overlap(7);
+        assert!(matches!(append(origin.clone()).await, Append::Duplicate));
+
+        // Dropped before slot 8; the next reconnect resumes at 7 again.
+        journal.arm_resume_overlap(7);
+        assert!(
+            matches!(append(origin).await, Append::Duplicate),
+            "the same re-delivery in a new window is still a duplicate"
+        );
+        assert_eq!(
+            journal.window("Trade/append").await.next,
+            1,
+            "and the tape did not grow"
         );
     }
 
