@@ -672,6 +672,65 @@ async fn stale_snapshot_hydrates_but_starts_live() {
 }
 
 #[tokio::test]
+async fn freshly_written_snapshot_with_a_stale_watermark_starts_live() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("fresh-stale-watermark");
+    let mut config = config_for(&dir);
+    config.max_resume_age_slots = 50;
+
+    let view_index = make_view_index();
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let spec = make_spec("Token");
+    let service =
+        SnapshotService::initialize(config.clone(), &spec, entity_cache, &view_index, tx.clone())
+            .await
+            .unwrap();
+    tokio::spawn(projector.with_snapshot_runtime(service.runtime()).run());
+
+    let vm = Arc::new(StdMutex::new(VmContext::new()));
+    vm.lock()
+        .unwrap()
+        .get_state_table_mut(0)
+        .unwrap()
+        .insert_with_eviction(json!("mint1"), json!({"id": "mint1"}));
+    let tip = SlotTracker::new();
+    tip.record(1_000);
+    service.runtime().register_runtime(vm, tip);
+    tx.send(token_batch("mint1", 10, 100)).await.unwrap();
+    flush_projector(&tx).await;
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Shutdown)
+        .await
+        .unwrap());
+
+    // Restore immediately: the file itself is fresh, but its watermark was
+    // already 900 slots behind the observed tip when it was written.
+    let restored_view = make_view_index();
+    let restored_cache = EntityCache::new();
+    let (restored_tx, _) = make_projector(&restored_view, &restored_cache);
+    let restored_service = SnapshotService::initialize(
+        config,
+        &spec,
+        restored_cache.clone(),
+        &restored_view,
+        restored_tx,
+    )
+    .await
+    .unwrap();
+    let restored = restored_service
+        .runtime()
+        .take_restored()
+        .expect("state still hydrates");
+    assert_eq!(restored.resume_watermark, None);
+    assert_eq!(restored_cache.get_all("Token/list").await.len(), 1);
+    assert!(restored_service.runtime().resume_gate_ready());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn generated_snapshot_hooks_are_isolated_per_runtime() {
     let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
