@@ -178,6 +178,48 @@ pub struct JournalRecord {
     pub payload: Arc<Bytes>,
     /// Unix seconds, for the age bound.
     pub appended_at: i64,
+    /// Where this event came from in the stream, for recognising it again if
+    /// a resume re-delivers the slot it was decoded from. `None` for records
+    /// with no decode site, which a resume cannot duplicate.
+    pub origin: Option<EventOrigin>,
+}
+
+/// What the tape did with an event.
+#[derive(Clone, Debug)]
+pub enum Append {
+    /// Retained; the frame carries this offset.
+    Retained { offset: u64, payload: Arc<Bytes> },
+    /// Not retained, but still this event's first delivery: publish it
+    /// without a position. The tape has been sealed for a final snapshot.
+    Untracked,
+    /// Already retained before a resume re-delivered it. Publishing it again
+    /// would hand a live subscriber the same event twice.
+    Duplicate,
+}
+
+impl Append {
+    /// The offset and frame of a retained append.
+    pub fn retained(self) -> Option<(u64, Arc<Bytes>)> {
+        match self {
+            Self::Retained { offset, payload } => Some((offset, payload)),
+            Self::Untracked | Self::Duplicate => None,
+        }
+    }
+
+    pub fn is_duplicate(&self) -> bool {
+        matches!(self, Self::Duplicate)
+    }
+}
+
+/// The decode site a retained event came from.
+///
+/// A replay of the same slot produces the same `(slot, key, occurrence)` for
+/// the same event, which is the only identity that survives: the payload
+/// carries a wall-clock timestamp, so re-decoded bytes never match.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventOrigin {
+    pub slot: u64,
+    pub occurrence: String,
 }
 
 impl JournalRecord {
@@ -262,6 +304,10 @@ pub struct PersistedRecord {
     #[serde(with = "frame_text")]
     pub payload: Arc<Bytes>,
     pub appended_at: i64,
+    /// Absent in snapshots written before resume deduplication, whose records
+    /// simply cannot participate in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<EventOrigin>,
 }
 
 /// Serialize retained frames as JSON text, straight out of the shared buffer.
@@ -327,6 +373,36 @@ struct ViewJournal {
 }
 
 impl ViewJournal {
+    /// Whether this exact event is already retained from before a resume.
+    ///
+    /// Only the resumed slot can repeat, and its records sit at the tail in
+    /// arrival order, so the scan walks back until it leaves that slot. A
+    /// record from an earlier slot means the overlap is behind us and nothing
+    /// before it can be re-delivered.
+    fn duplicates_resume_overlap(
+        &self,
+        overlap_slot: Option<u64>,
+        key: &str,
+        origin: &EventOrigin,
+    ) -> bool {
+        if overlap_slot != Some(origin.slot) {
+            return false;
+        }
+        for record in self.records.iter().rev() {
+            match record.origin.as_ref() {
+                Some(retained) if retained.slot == origin.slot => {
+                    if retained.occurrence == origin.occurrence && record.key == key {
+                        return true;
+                    }
+                }
+                // A record from another slot, or one with no decode site at
+                // all, ends the overlap.
+                _ => return false,
+            }
+        }
+        false
+    }
+
     fn window(&self, epoch: &JournalEpoch) -> ReplayWindow {
         ReplayWindow {
             epoch: epoch.clone(),
@@ -390,6 +466,10 @@ pub struct EventJournal {
     /// Set once the tape has been captured for the last time, after which it
     /// stops issuing offsets; see [`seal`](EventJournal::seal).
     sealed: std::sync::atomic::AtomicBool,
+    /// The slot a restore resumed the stream from, while its events can still
+    /// arrive a second time; see [`arm_resume_overlap`](EventJournal::arm_resume_overlap).
+    /// `u64::MAX` means no resume is in progress.
+    resume_overlap: std::sync::atomic::AtomicU64,
     /// A gap was recorded while some views had no tape entry yet.
     ///
     /// `mark_gap` can only mark views it can see, and a view that has never
@@ -405,6 +485,7 @@ impl EventJournal {
             epoch: RwLock::new(JournalEpoch::new()),
             views: RwLock::new(HashMap::new()),
             sealed: std::sync::atomic::AtomicBool::new(false),
+            resume_overlap: std::sync::atomic::AtomicU64::new(u64::MAX),
             pending_gap: std::sync::atomic::AtomicBool::new(false),
             config,
         }
@@ -433,9 +514,10 @@ impl EventJournal {
         &self,
         view_id: &str,
         key: &str,
+        origin: Option<EventOrigin>,
         build_frame: impl FnOnce(u64) -> Result<Arc<Bytes>, E>,
-    ) -> Result<Option<(u64, Arc<Bytes>)>, E> {
-        self.append_with_at(view_id, key, unix_now(), build_frame)
+    ) -> Result<Append, E> {
+        self.append_with_at(view_id, key, origin, unix_now(), build_frame)
             .await
     }
 
@@ -443,14 +525,15 @@ impl EventJournal {
         &self,
         view_id: &str,
         key: &str,
+        origin: Option<EventOrigin>,
         now: i64,
         build_frame: impl FnOnce(u64) -> Result<Arc<Bytes>, E>,
-    ) -> Result<Option<(u64, Arc<Bytes>)>, E> {
+    ) -> Result<Append, E> {
         let mut views = self.views.write().await;
         // Checked under the same lock the append takes, so a record either
         // gets an offset the final snapshot knows about or gets none at all.
         if self.sealed.load(std::sync::atomic::Ordering::Relaxed) {
-            return Ok(None);
+            return Ok(Append::Untracked);
         }
         let fresh = !views.contains_key(view_id);
         let journal = views.entry(view_id.to_string()).or_default();
@@ -465,6 +548,17 @@ impl EventJournal {
             journal.next_offset = 1;
             journal.gap_after = Some(0);
         }
+        // A resume re-delivers the slot the snapshot stopped at, so the events
+        // this tape already holds for that slot arrive a second time. They are
+        // the same events, not new ones: retaining them again would hand a
+        // consumer the same occurrence twice under two offsets, with no way to
+        // tell them apart.
+        if let Some(origin) = origin.as_ref() {
+            if journal.duplicates_resume_overlap(self.resume_overlap_slot(), key, origin) {
+                return Ok(Append::Duplicate);
+            }
+        }
+
         let offset = journal.next_offset;
         let payload = build_frame(offset)?;
 
@@ -474,13 +568,14 @@ impl EventJournal {
             key: key.to_string(),
             payload: payload.clone(),
             appended_at: now,
+            origin,
         };
         journal.retained_bytes = journal
             .retained_bytes
             .saturating_add(record.charged_bytes());
         journal.records.push_back(record);
         journal.prune(&self.config, now);
-        Ok(Some((offset, payload)))
+        Ok(Append::Retained { offset, payload })
     }
 
     /// Record that events were lost before the tape resumed.
@@ -490,6 +585,31 @@ impl EventJournal {
     /// on its checkpoint. The retained records stay valid, but everything
     /// between them and the first live append is missing, and dense offsets
     /// would otherwise present that hole as continuous.
+    /// Expect the events of `slot` to arrive again.
+    ///
+    /// A restore resumes the stream from the highest slot the projector had
+    /// applied, and that slot is re-delivered in full — so every event this
+    /// tape already holds for it is decoded a second time. Retaining those
+    /// again would give a consumer the same occurrence at two offsets, which
+    /// the tape's own ordering says are two events.
+    ///
+    /// Only that one slot can overlap: an append always precedes the watermark
+    /// advance that recorded its slot, so nothing retained sits above it.
+    pub fn arm_resume_overlap(&self, slot: u64) {
+        self.resume_overlap
+            .store(slot, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn resume_overlap_slot(&self) -> Option<u64> {
+        match self
+            .resume_overlap
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            u64::MAX => None,
+            slot => Some(slot),
+        }
+    }
+
     /// Stop issuing offsets, permanently.
     ///
     /// The final snapshot is taken while the parser is still running — it has
@@ -625,6 +745,7 @@ impl EventJournal {
                                     key: record.key.clone(),
                                     payload: record.payload.clone(),
                                     appended_at: record.appended_at,
+                                    origin: record.origin.clone(),
                                 })
                                 .collect(),
                         },
@@ -676,6 +797,7 @@ impl EventJournal {
                     key: record.key,
                     payload: record.payload,
                     appended_at: record.appended_at,
+                    origin: record.origin,
                 })
                 .collect();
             let retained_bytes = records.iter().map(JournalRecord::charged_bytes).sum();
@@ -766,11 +888,12 @@ mod tests {
 
     async fn append(journal: &EventJournal, view: &str, key: &str, body: &str) -> u64 {
         journal
-            .append_with(view, key, |_offset| {
+            .append_with(view, key, None, |_offset| {
                 Ok::<_, std::convert::Infallible>(frame(body))
             })
             .await
             .unwrap()
+            .retained()
             .expect("an open tape issues an offset")
             .0
     }
@@ -818,13 +941,14 @@ mod tests {
         // it, so the two can never disagree.
         for expected in 0..3u64 {
             let (offset, payload) = journal
-                .append_with("Trade/append", "pool", |offset| {
+                .append_with("Trade/append", "pool", None, |offset| {
                     Ok::<_, std::convert::Infallible>(Arc::new(Bytes::from(format!(
                         r#"{{"offset":{offset}}}"#
                     ))))
                 })
                 .await
                 .unwrap()
+                .retained()
                 .expect("an open tape issues an offset");
             assert_eq!(offset, expected);
             assert_eq!(
@@ -982,13 +1106,13 @@ mod tests {
         let now = unix_now();
 
         journal
-            .append_with_at("Trade/append", "old", now - 600, |_| {
+            .append_with_at("Trade/append", "old", None, now - 600, |_| {
                 Ok::<_, std::convert::Infallible>(frame("x"))
             })
             .await
             .unwrap();
         journal
-            .append_with_at("Trade/append", "fresh", now, |_| {
+            .append_with_at("Trade/append", "fresh", None, now, |_| {
                 Ok::<_, std::convert::Infallible>(frame("x"))
             })
             .await
@@ -1034,6 +1158,7 @@ mod tests {
             key: "pool".to_string(),
             payload: Arc::new(Bytes::from_static(br#"{"data":{"amount":5}}"#)),
             appended_at: 100,
+            origin: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         assert!(
@@ -1145,13 +1270,13 @@ mod tests {
         journal.seal();
 
         let after = journal
-            .append_with("Trade/append", "pool1", |_offset| {
+            .append_with("Trade/append", "pool1", None, |_offset| {
                 Ok::<_, std::convert::Infallible>(frame("after"))
             })
             .await
             .unwrap();
         assert!(
-            after.is_none(),
+            !matches!(after, Append::Retained { .. }),
             "a sealed tape must not hand out a position the snapshot cannot know"
         );
         assert_eq!(

@@ -54,6 +54,7 @@ fn token_batch(id: &str, price: u64, slot: u64) -> MutationBatch {
         key: json!(id),
         patch: json!({"id": id, "price": price}),
         append: vec![],
+        occurrence: None,
     };
     MutationBatch::with_slot_context(
         vec![mutation].into_iter().collect(),

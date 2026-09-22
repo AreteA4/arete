@@ -716,6 +716,13 @@ impl SnapshotService {
             self.journal.mark_gap().await;
         }
 
+        if let Some(watermark) = resume_watermark {
+            // The stream resumes at the highest slot the projector had applied,
+            // and that slot is re-delivered whole — including the events this
+            // tape already holds for it.
+            self.journal.arm_resume_overlap(watermark);
+        }
+
         if resume_watermark.is_some() {
             *self.runtime.state.resume_gate.lock().unwrap() = Some(ResumeGate {
                 started: Instant::now(),

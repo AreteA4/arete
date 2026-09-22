@@ -103,8 +103,7 @@ Receiver registration happens before snapshot capture for state, list, append, a
 When the server runs with an event journal (`ARETE_JOURNAL_ENABLED=true`), an
 append view is delivered as an event tape rather than a membership
 projection. Every retained event is replayed in order, exactly once per
-replay request, instead of one row per surviving entity. See the retention
-notes below for the one case a restart can still duplicate.
+replay request, instead of one row per surviving entity.
 
 Each live frame on such a view carries an `offset`: a dense, monotonic,
 per-view cursor assigned when the event is retained.
@@ -250,11 +249,13 @@ already went out. Those offsets get re-issued for different records, so the
 restore mints a new epoch and every cursor from before it is refused with
 `cursor-epoch-changed` rather than silently served at the wrong place.
 
-One duplication case remains. A restart that resumes the stream from the
-snapshot's watermark re-decodes the transactions in the overlap, and those
-events are appended to the tape a second time under fresh offsets. A
-consumer reading across such a restart sees them twice, and cannot tell
-them apart. Delivery is exactly once within one server lifetime.
+A restart that resumes the stream re-decodes the slot the snapshot stopped
+inside, so the events the tape already holds for it arrive again. They are
+recognised and not retained a second time: an event's decode site is a pure
+function of the transaction, so it reproduces exactly, while the payload
+cannot be compared because events carry a wall-clock timestamp. Events from
+that slot which had *not* been retained when the snapshot was taken are new
+and do land, so the overlap is deduplicated rather than skipped.
 
 ## Live Frames
 

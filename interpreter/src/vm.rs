@@ -1878,6 +1878,7 @@ impl VmContext {
                 key: target.primary_key.clone(),
                 patch,
                 append: vec![],
+                occurrence: None,
             });
         }
 
@@ -2656,6 +2657,19 @@ impl VmContext {
             }
         }
 
+        // One `process_event` call is one decode site, so every mutation it
+        // produced shares the site's identity. Stamped here rather than at
+        // each construction so a new emit path cannot forget it.
+        if let Some(occurrence) = self
+            .current_context
+            .as_ref()
+            .and_then(UpdateContext::occurrence)
+        {
+            for mutation in &mut all_mutations {
+                mutation.occurrence = Some(occurrence.clone());
+            }
+        }
+
         Ok(all_mutations)
     }
 
@@ -3335,6 +3349,8 @@ impl VmContext {
                             key: primary_key,
                             patch,
                             append,
+                            // Stamped on the way out of `process_event`.
+                            occurrence: None,
                         };
                         self.emit_debug(|| VmDebugEvent::EmitMutation {
                             entity_name: entity_name.clone(),
@@ -4866,6 +4882,7 @@ impl VmContext {
             key: op.primary_key.clone(),
             patch,
             append: vec![],
+            occurrence: None,
         }])
     }
 
