@@ -249,13 +249,20 @@ already went out. Those offsets get re-issued for different records, so the
 restore mints a new epoch and every cursor from before it is refused with
 `cursor-epoch-changed` rather than silently served at the wrong place.
 
-A restart that resumes the stream re-decodes the slot the snapshot stopped
-inside, so the events the tape already holds for it arrive again. They are
-recognised and not retained a second time: an event's decode site is a pure
-function of the transaction, so it reproduces exactly, while the payload
-cannot be compared because events carry a wall-clock timestamp. Events from
-that slot which had *not* been retained when the snapshot was taken are new
-and do land, so the overlap is deduplicated rather than skipped.
+A stream that resumes — after a restart, or after a reconnect inside one
+process — re-decodes the slot it restarted at, so the events the tape already
+holds for that slot arrive again. They are recognised and not retained a
+second time: an event's decode site is a pure function of the transaction, so
+it reproduces exactly, while the payload cannot be compared because events
+carry a wall-clock timestamp. Events from that slot which had *not* been
+retained when the stream stopped are new and do land, so the overlap is
+deduplicated rather than skipped.
+
+One source is exempt. Events derived from a resolver result are built outside
+the decode path and carry no decode site, and on the scheduler path their
+position comes from a process-local counter rather than from the stream.
+Neither half of that identity reproduces, so those events can still be
+retained twice across a resume.
 
 ## Live Frames
 

@@ -58,6 +58,9 @@ fn generate_reconnect_position() -> TokenStream {
         let from_slot = match position {
             arete::runtime::arete_server::snapshot::ReconnectPosition::Slot(slot) => {
                 arete::runtime::tracing::info!("Resuming from slot {}", slot);
+                // That slot is re-delivered whole, including the events it
+                // already contributed to the tape.
+                arete::runtime::arete_server::journal::expect_resume_overlap(slot);
                 Some(slot)
             }
             arete::runtime::arete_server::snapshot::ReconnectPosition::Live => None,

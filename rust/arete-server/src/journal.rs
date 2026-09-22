@@ -39,9 +39,10 @@ const DEFAULT_MAX_BYTES_PER_VIEW: u64 = 32 * 1024 * 1024;
 const DEFAULT_MAX_AGE: Duration = Duration::from_secs(15 * 60);
 
 /// Per-record bookkeeping charged against the byte bound alongside the frame:
-/// the key `String`, the `Arc` control block, `Bytes` header and `VecDeque`
-/// slot. Approximate by design — the bound exists to be budgetable, not exact.
-const RECORD_OVERHEAD_BYTES: u64 = 120;
+/// the key `String`, the `Arc` control block, `Bytes` header, `VecDeque` slot,
+/// and the record's `EventOrigin` including a short occurrence string.
+/// Approximate by design — the bound exists to be budgetable, not exact.
+const RECORD_OVERHEAD_BYTES: u64 = 176;
 
 /// Retention bounds for the event journal. Whichever bound bites first wins.
 #[derive(Clone, Debug)]
@@ -205,10 +206,6 @@ impl Append {
             Self::Untracked | Self::Duplicate => None,
         }
     }
-
-    pub fn is_duplicate(&self) -> bool {
-        matches!(self, Self::Duplicate)
-    }
 }
 
 /// Where a retained event sat in the stream.
@@ -225,6 +222,12 @@ impl Append {
 /// The position is recorded even without an occurrence, because the dedup scan
 /// needs to know which records belong to the resumed slot — an account record
 /// between two instruction events must not be read as the end of it.
+///
+/// Not every source has a reproducible identity. Resolver-derived mutations
+/// are built outside `process_event`, so they carry no occurrence, and on the
+/// scheduler path their index comes from a process-local counter rather than
+/// the stream. Neither half survives a restart, so those events can still be
+/// retained twice across a resume.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventOrigin {
     pub slot: u64,
@@ -492,7 +495,7 @@ pub struct EventJournal {
     /// Set once the tape has been captured for the last time, after which it
     /// stops issuing offsets; see [`seal`](EventJournal::seal).
     sealed: std::sync::atomic::AtomicBool,
-    /// The slot a restore resumed the stream from, while its events can still
+    /// The slot the stream was resumed from, while its events can still
     /// arrive a second time; see [`arm_resume_overlap`](EventJournal::arm_resume_overlap).
     /// `u64::MAX` means no resume is in progress.
     resume_overlap: std::sync::atomic::AtomicU64,
@@ -574,14 +577,23 @@ impl EventJournal {
             journal.next_offset = 1;
             journal.gap_after = Some(0);
         }
-        // A resume re-delivers the slot the snapshot stopped at, so the events
-        // this tape already holds for that slot arrive a second time. They are
-        // the same events, not new ones: retaining them again would hand a
-        // consumer the same occurrence twice under two offsets, with no way to
-        // tell them apart.
+        // A resume re-delivers the slot it restarted at, so the events this
+        // tape already holds for that slot arrive a second time. They are the
+        // same events, not new ones: retaining them again would hand a
+        // consumer the same event twice under two offsets, with no way to tell
+        // them apart.
         if let Some(origin) = origin.as_ref() {
-            if journal.duplicates_resume_overlap(self.resume_overlap_slot(), key, origin) {
-                return Ok(Append::Duplicate);
+            match self.resume_overlap_slot() {
+                Some(overlap) if origin.slot > overlap => {
+                    // Past the re-delivered slot, so nothing further can
+                    // repeat until the next resume arms a new window.
+                    self.resume_overlap
+                        .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+                }
+                Some(overlap) if journal.duplicates_resume_overlap(Some(overlap), key, origin) => {
+                    return Ok(Append::Duplicate);
+                }
+                _ => {}
             }
         }
 
@@ -613,14 +625,19 @@ impl EventJournal {
     /// would otherwise present that hole as continuous.
     /// Expect the events of `slot` to arrive again.
     ///
-    /// A restore resumes the stream from the highest slot the projector had
-    /// applied, and that slot is re-delivered in full — so every event this
-    /// tape already holds for it is decoded a second time. Retaining those
-    /// again would give a consumer the same occurrence at two offsets, which
-    /// the tape's own ordering says are two events.
+    /// A resumed stream restarts at the highest slot already applied, and that
+    /// slot is re-delivered in full — so every event this tape already holds
+    /// for it is decoded a second time. Retaining those again would give a
+    /// consumer the same event at two offsets, which the tape's own ordering
+    /// says are two events.
     ///
-    /// Only that one slot can overlap: an append always precedes the watermark
-    /// advance that recorded its slot, so nothing retained sits above it.
+    /// Both paths that resume arm this: a snapshot restore, and a reconnect
+    /// within one process. Only the one slot can overlap, because an append
+    /// always precedes the watermark advance that recorded its slot, so
+    /// nothing retained sits above it.
+    ///
+    /// The window disarms itself once a later slot appends, which is the
+    /// point the re-delivery is demonstrably behind us.
     pub fn arm_resume_overlap(&self, slot: u64) {
         self.resume_overlap
             .store(slot, std::sync::atomic::Ordering::Relaxed);
@@ -649,6 +666,13 @@ impl EventJournal {
     /// rather than assumed. Events after it still publish and still reach
     /// subscribers; they simply carry no cursor, so a consumer's last position
     /// stays at the cut and the resume after restart replays them.
+    ///
+    /// One narrow consequence: the seal is observed per append, so it can land
+    /// between two events of the same batch, retaining one and leaving the
+    /// other untracked. Resume deduplication matches identity rather than
+    /// multiplicity, so both re-deliveries then match the single retained
+    /// record and the untracked event is dropped. It needs a seal to land
+    /// inside one batch, on two events sharing a key and a decode site.
     pub fn seal(&self) {
         self.sealed
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -886,6 +910,19 @@ pub async fn mark_stream_gap() {
         Err(_) => return,
     };
     journal.mark_gap().await;
+}
+
+/// Called by the generated runtime when it resumes the stream at `slot`, so
+/// the events that slot already contributed to the tape are recognised when
+/// the provider re-delivers them.
+///
+/// A restore arms this through `SnapshotService`; this is the other path, a
+/// reconnect inside one process, which resumes at the processed checkpoint and
+/// re-delivers that slot just the same.
+pub fn expect_resume_overlap(slot: u64) {
+    if let Ok(journal) = ACTIVE_JOURNAL.try_with(Arc::clone) {
+        journal.arm_resume_overlap(slot);
+    }
 }
 
 pub(crate) fn unix_now() -> i64 {
@@ -1336,6 +1373,65 @@ mod tests {
             "a delivered record must land after the hole, not inside it: \
              offset {offset}, gap_after {:?}",
             window.gap_after
+        );
+    }
+
+    /// A reconnect resumes at the processed checkpoint and re-delivers that
+    /// slot, exactly as a restore does, so the generated runtime arms the same
+    /// window through the tape in its scope.
+    #[tokio::test]
+    async fn a_reconnect_arms_the_overlap_through_the_scope() {
+        let journal = Arc::new(EventJournal::new(config(100, 3_600)));
+        let origin = EventOrigin {
+            slot: 7,
+            index: 0,
+            occurrence: Some("ix:0".to_string()),
+        };
+        journal
+            .append_with("Trade/append", "pool1", Some(origin.clone()), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("first"))
+            })
+            .await
+            .unwrap();
+
+        journal.scope(async { expect_resume_overlap(7) }).await;
+
+        let again = journal
+            .append_with("Trade/append", "pool1", Some(origin), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("first"))
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(again, Append::Duplicate),
+            "the re-delivered event must not be retained again"
+        );
+    }
+
+    /// The window is a claim about one slot, so it has to stop applying once
+    /// the stream is past it — otherwise the contract and the code disagree
+    /// for whoever reads it next.
+    #[tokio::test]
+    async fn the_overlap_window_disarms_once_the_stream_moves_on() {
+        let journal = EventJournal::new(config(100, 3_600));
+        journal.arm_resume_overlap(7);
+
+        let later = EventOrigin {
+            slot: 8,
+            index: 0,
+            occurrence: Some("ix:0".to_string()),
+        };
+        journal
+            .append_with("Trade/append", "pool1", Some(later), |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("later"))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            journal.resume_overlap_slot(),
+            None,
+            "a record from a later slot ends the window"
         );
     }
 
