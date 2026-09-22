@@ -1977,22 +1977,22 @@ fn emit_collection_delta(
         )?;
     }
 
-    for (position, (key, data)) in next.iter().enumerate() {
-        let previous_position = current_keys.iter().position(|candidate| *candidate == key);
-        let changed_position = previous_position != Some(position);
-        if previous_position.is_none() || changed_position || key == &envelope.key {
-            let can_forward_patch = !view_spec.is_derived()
-                && previous_position == Some(position)
-                && key == &envelope.key
-                && metadata.op != "delete";
-            if can_forward_patch {
-                send_scoped_source_payload(
-                    context,
-                    subscription_id,
-                    &view_spec.id,
-                    envelope.payload.clone(),
-                )?;
-            } else {
+    for (key, data) in next.iter() {
+        let was_member = current_keys.iter().any(|candidate| *candidate == key);
+        match member_action(
+            was_member,
+            key == &envelope.key,
+            view_spec.is_derived(),
+            &metadata.op,
+        ) {
+            MemberAction::Skip => {}
+            MemberAction::ForwardPatch => send_scoped_source_payload(
+                context,
+                subscription_id,
+                &view_spec.id,
+                envelope.payload.clone(),
+            )?,
+            MemberAction::Upsert => {
                 let seq = metadata
                     .seq
                     .clone()
@@ -2010,6 +2010,56 @@ fn emit_collection_delta(
         }
     }
     Ok(())
+}
+
+/// What one in-window key owes a subscriber after a source mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemberAction {
+    /// Send nothing: the subscriber already holds this entity and its data did
+    /// not change.
+    Skip,
+    /// Forward the source patch verbatim.
+    ForwardPatch,
+    /// Send the whole entity.
+    Upsert,
+}
+
+/// Decide what to send for one key in the query window.
+///
+/// Only the mutated key's data changed, so a key that was already a member has
+/// at most moved index — and index is not the server's to communicate.
+/// `subscribed` announces the window's sort (see [`extract_sort_config`], which
+/// is `_seq` descending for a plain list) and every SDK re-sorts locally from
+/// it, so resending an unchanged entity to convey its new position is pure
+/// waste. This matters because on a `_seq`-ordered list the mutated entity
+/// jumps to the front on *every* mutation: keying the decision on position
+/// change meant rebroadcasting the whole window each time, and the mutated
+/// entity itself never kept its position long enough to have its patch
+/// forwarded.
+fn member_action(
+    was_member: bool,
+    is_mutated_key: bool,
+    is_derived: bool,
+    op: &str,
+) -> MemberAction {
+    if !is_mutated_key {
+        // A key entering the window has no local state to merge into, so it
+        // needs the whole entity; one already held is unchanged.
+        return if was_member {
+            MemberAction::Skip
+        } else {
+            MemberAction::Upsert
+        };
+    }
+    // The mutated entity rides its own patch through untouched, but only when
+    // the subscriber already holds a copy. Derived views still send whole
+    // entities: the patch on the bus is scoped to the source view, not this
+    // one (see A4-150).
+    if was_member && !is_derived && op != "delete" {
+        MemberAction::ForwardPatch
+    } else {
+        MemberAction::Upsert
+    }
 }
 
 fn to_wire_snapshot_entities(
@@ -2136,6 +2186,104 @@ mod tests {
             pipeline: None,
             source_view: None,
         }
+    }
+
+    /// Plan the whole window the way `emit_collection_delta` does, so a test
+    /// can assert on what a subscriber is actually sent.
+    fn plan_window(
+        current_keys: &[&str],
+        next_keys: &[&str],
+        envelope_key: &str,
+        is_derived: bool,
+        op: &str,
+    ) -> Vec<(String, MemberAction)> {
+        next_keys
+            .iter()
+            .map(|key| {
+                let was_member = current_keys.contains(key);
+                (
+                    (*key).to_string(),
+                    member_action(was_member, *key == envelope_key, is_derived, op),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reordered_window_sends_only_the_mutated_entity() {
+        // A `_seq`-descending list: mutating "1" moves it to the front and
+        // shifts every other key down one. Only "1" changed, so only "1" is
+        // sent — and it rides its own patch, not a full entity.
+        let current = ["4", "3", "2", "1"];
+        let next = ["1", "4", "3", "2"];
+        let plan = plan_window(&current, &next, "1", false, "patch");
+
+        assert_eq!(
+            plan,
+            vec![
+                ("1".to_string(), MemberAction::ForwardPatch),
+                ("4".to_string(), MemberAction::Skip),
+                ("3".to_string(), MemberAction::Skip),
+                ("2".to_string(), MemberAction::Skip),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_key_entering_the_window_gets_the_whole_entity() {
+        // "5" has no local state for the subscriber to merge a patch into.
+        let plan = plan_window(&["4", "3"], &["5", "4", "3"], "5", false, "patch");
+        assert_eq!(
+            plan,
+            vec![
+                ("5".to_string(), MemberAction::Upsert),
+                ("4".to_string(), MemberAction::Skip),
+                ("3".to_string(), MemberAction::Skip),
+            ]
+        );
+    }
+
+    #[test]
+    fn derived_views_still_send_whole_entities() {
+        // The patch on the bus is scoped to the source view, so a derived
+        // subscription cannot forward it verbatim (A4-150).
+        let plan = plan_window(&["1", "2"], &["1", "2"], "1", true, "patch");
+        assert_eq!(
+            plan,
+            vec![
+                ("1".to_string(), MemberAction::Upsert),
+                ("2".to_string(), MemberAction::Skip),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_delete_envelope_never_forwards_a_patch() {
+        // A surviving key on a delete envelope carries no mergeable patch.
+        let plan = plan_window(&["1", "2"], &["1", "2"], "1", false, "delete");
+        assert_eq!(
+            plan,
+            vec![
+                ("1".to_string(), MemberAction::Upsert),
+                ("2".to_string(), MemberAction::Skip),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unchanged_window_sends_one_frame_not_a_broadcast() {
+        // The regression this guards: 500 members used to mean 500 full
+        // entities on the wire for a single mutation.
+        let keys: Vec<String> = (0..500).map(|index| index.to_string()).collect();
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let plan = plan_window(&refs, &refs, "250", false, "patch");
+
+        let sent = plan
+            .iter()
+            .filter(|(_, action)| *action != MemberAction::Skip)
+            .count();
+        assert_eq!(sent, 1);
+        assert_eq!(plan[250].1, MemberAction::ForwardPatch);
     }
 
     #[test]
