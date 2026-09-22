@@ -53,6 +53,15 @@ pub struct SocketIssueMessage {
     pub suggested_action: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docs_url: Option<String>,
+    /// Present on `cursor-expired` and `invalid-cursor`: the offsets the view
+    /// can still serve.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_window: Option<crate::journal::ReplayWindow>,
+    /// Present on `replay-lagged`: the cursor for the last record delivered
+    /// *before* the gap. Resubscribing with `after` set to this replays the
+    /// skipped records, provided they are still retained.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recover_from: Option<String>,
     pub fatal: bool,
 }
 
@@ -70,6 +79,8 @@ impl SocketIssueMessage {
             retry_after: response.retry_after,
             suggested_action: response.suggested_action,
             docs_url: response.docs_url,
+            replay_window: None,
+            recover_from: None,
             fatal,
         }
     }
@@ -91,8 +102,90 @@ impl SocketIssueMessage {
             retry_after: None,
             suggested_action: None,
             docs_url: None,
+            replay_window: None,
+            recover_from: None,
             fatal: false,
         }
+    }
+
+    /// Delivery fell behind the server's fan-out buffer and records were
+    /// skipped.
+    ///
+    /// `recover_from` is the cursor for the last record delivered *before*
+    /// the gap, not the latest offset seen: resubscribing after the newest
+    /// frame would step over the skipped records permanently. Delivery on
+    /// this subscription stops here, so nothing arrives that could advance
+    /// the consumer's checkpoint past the gap.
+    pub fn replay_lagged(
+        subscription_id: Option<String>,
+        skipped: u64,
+        recover_from: Option<crate::journal::Cursor>,
+    ) -> Self {
+        let mut issue = Self::protocol(
+            subscription_id,
+            "replay-lagged",
+            format!("delivery fell behind by {skipped} records and this subscription has stopped"),
+        );
+        issue.suggested_action = Some(match &recover_from {
+            Some(cursor) => format!(
+                "unsubscribe, then resubscribe with after set to {cursor} to replay the skipped records"
+            ),
+            None => "unsubscribe, then resubscribe without `after` to replay the retained window"
+                .to_string(),
+        });
+        issue.recover_from = recover_from.map(|cursor| cursor.to_string());
+        issue
+    }
+
+    /// A replay the journal refused, rendered for the client.
+    ///
+    /// Each reason gets its own code: they have different remediations, and
+    /// an epoch mismatch in particular means the consumer's whole notion of
+    /// the stream is stale rather than merely out of date.
+    pub fn replay_refused(
+        subscription_id: Option<String>,
+        error: &crate::journal::ReplayError,
+    ) -> Self {
+        use crate::journal::ReplayError;
+
+        let window = error.window().clone();
+        let (code, message, action) = match error {
+            ReplayError::EpochMismatch(_) => (
+                "cursor-epoch-changed",
+                "cursor was issued by a previous journal lifetime and its offsets do not apply here"
+                    .to_string(),
+                "discard the cursor and resubscribe without `after`",
+            ),
+            ReplayError::CursorExpired(window) => (
+                "cursor-expired",
+                format!(
+                    "cursor is older than the retained replay window; the oldest retained record is at offset {}",
+                    window.earliest
+                ),
+                "resubscribe without `after` to replay the whole retained window",
+            ),
+            ReplayError::CursorBeyondWindow(window) => (
+                "cursor-unknown",
+                format!(
+                    "cursor is beyond this view's latest offset; the next record will be at offset {}",
+                    window.next
+                ),
+                "resubscribe without `after`, or with a cursor this view has issued",
+            ),
+            ReplayError::GapCrossed(window) => (
+                "replay-gap",
+                format!(
+                    "records after offset {} were lost when the stream restarted live; replaying across the hole would present it as continuous",
+                    window.gap_after.unwrap_or(window.earliest)
+                ),
+                "resubscribe without `after`, accepting the gap, or from a cursor after it",
+            ),
+        };
+
+        let mut issue = Self::protocol(subscription_id, code, message);
+        issue.suggested_action = Some(action.to_string());
+        issue.replay_window = Some(window);
+        issue
     }
 }
 

@@ -68,6 +68,8 @@ class TestConformanceFixtures:
             "incremental-snapshot.json",
             "reconnect-replacement.json",
             "errors.json",
+            "replay-cursors.json",
+            "replay-gaps.json",
         ]
 
     def test_keyed_state_snapshot_and_patch_apply_to_their_query(self):

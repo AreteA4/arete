@@ -158,11 +158,34 @@ class SortConfig:
 
 
 @dataclass(frozen=True)
+class ReplayWindow:
+    """Retained offset window of a replayable append view.
+
+    ``epoch`` identifies one tape lifetime: offsets restart at zero whenever a
+    tape is built without restoring one, so an offset only means something
+    inside its epoch. ``earliest`` is the oldest retained offset, ``next`` the
+    offset the next event will take (a consumer holding ``next - 1`` is caught
+    up), and ``gap_after`` the last offset before a known discontinuity.
+    """
+
+    epoch: str
+    earliest: int
+    next: int
+    gap_after: Optional[int] = None
+
+
+def format_cursor(epoch: str, offset: int) -> str:
+    """The resumable cursor a consumer stores and passes back as ``after``."""
+    return f"{epoch}:{offset}"
+
+
+@dataclass(frozen=True)
 class SubscribedFrame:
     subscription_id: str
     query: Mapping[str, Any]  # effective query, wire (camelCase) field names
     mode: str  # 'state' | 'append' | 'list'
     sort: Optional[SortConfig] = None
+    replay_window: Optional[ReplayWindow] = None  # replayable append views only
 
 
 @dataclass(frozen=True)
@@ -198,6 +221,10 @@ class EntityFrame:
     data: Any
     append: Tuple[str, ...] = ()
     seq: Optional[str] = None
+    #: Dense per-view tape position; absent on state/list views, which have no
+    #: per-event identity. ``seq`` is not a substitute: every event decoded
+    #: from one transaction shares a ``seq``.
+    offset: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +240,12 @@ class ErrorFrame:
     retry_after: Optional[float] = None
     suggested_action: Optional[str] = None
     docs_url: Optional[str] = None
+    #: Carried by 'cursor-expired' / 'cursor-epoch-changed' / 'cursor-unknown'
+    #: / 'replay-gap': what the view can still serve.
+    replay_window: Optional[ReplayWindow] = None
+    #: Carried by 'replay-lagged': cursor of the last record delivered before
+    #: the skip. Absent means nothing had been delivered yet.
+    recover_from: Optional[str] = None
 
 
 Frame = Union[SubscribedFrame, UnsubscribedFrame, SnapshotFrame, EntityFrame, ErrorFrame]
@@ -234,6 +267,10 @@ class Update:
     op: str
     key: str
     data: Any = None
+    #: ``{epoch}:{offset}`` of the tape event this update came from; ``None``
+    #: on views that carry no per-event offset. Store it with the data and
+    #: pass it back as ``after`` to resume exactly where you stopped.
+    cursor: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -252,6 +289,8 @@ class RichUpdate:
     after: Any = None
     patch: Any = None
     last_known: Any = None
+    #: See :attr:`Update.cursor`.
+    cursor: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +337,27 @@ def _is_non_negative_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _is_replay_window(value: Any) -> bool:
+    return (
+        _is_record(value)
+        and isinstance(value.get("epoch"), str)
+        and _is_non_negative_int(value.get("earliest"))
+        and _is_non_negative_int(value.get("next"))
+        and ("gapAfter" not in value or _is_non_negative_int(value["gapAfter"]))
+    )
+
+
+def _replay_window_from_dict(value: Any) -> Optional[ReplayWindow]:
+    if value is None:
+        return None
+    return ReplayWindow(
+        epoch=value["epoch"],
+        earliest=value["earliest"],
+        next=value["next"],
+        gap_after=value.get("gapAfter"),
+    )
+
+
 def is_valid_query(value: Any) -> bool:
     if not _is_record(value):
         return False
@@ -336,6 +396,8 @@ def is_valid_frame(frame: Any) -> bool:
             and ("message" not in frame or isinstance(frame["message"], str))
             and ("error" not in frame or isinstance(frame["error"], str))
             and ("retryable" not in frame or isinstance(frame["retryable"], bool))
+            and ("recoverFrom" not in frame or isinstance(frame["recoverFrom"], str))
+            and ("replayWindow" not in frame or _is_replay_window(frame["replayWindow"]))
         )
 
     if not is_valid_subscription_id(frame.get("subscriptionId")):
@@ -350,6 +412,7 @@ def is_valid_frame(frame: Any) -> bool:
             is_valid_query(frame.get("query"))
             and _is_mode(frame.get("mode"))
             and ("sort" not in frame or _is_sort(frame["sort"]))
+            and ("replayWindow" not in frame or _is_replay_window(frame["replayWindow"]))
         )
     if not _is_mode(frame.get("mode")) or not isinstance(frame.get("entity"), str):
         return False
@@ -373,6 +436,7 @@ def is_valid_frame(frame: Any) -> bool:
         and isinstance(frame.get("key"), str)
         and "data" in frame
         and ("seq" not in frame or isinstance(frame["seq"], str))
+        and ("offset" not in frame or _is_non_negative_int(frame["offset"]))
         and (
             "append" not in frame
             or (
@@ -395,6 +459,8 @@ def _frame_from_dict(frame: Mapping[str, Any]) -> Frame:
             retry_after=frame.get("retry_after"),
             suggested_action=frame.get("suggested_action"),
             docs_url=frame.get("docs_url"),
+            replay_window=_replay_window_from_dict(frame.get("replayWindow")),
+            recover_from=frame.get("recoverFrom"),
         )
     op = frame["op"]
     subscription_id = frame["subscriptionId"]
@@ -407,6 +473,7 @@ def _frame_from_dict(frame: Mapping[str, Any]) -> Frame:
             query=frame["query"],
             mode=frame["mode"],
             sort=SortConfig(field=tuple(sort["field"]), order=sort["order"]) if sort else None,
+            replay_window=_replay_window_from_dict(frame.get("replayWindow")),
         )
     if op == "snapshot":
         return SnapshotFrame(
@@ -430,6 +497,7 @@ def _frame_from_dict(frame: Mapping[str, Any]) -> Frame:
         data=frame.get("data"),
         append=tuple(frame.get("append") or ()),
         seq=frame.get("seq"),
+        offset=frame.get("offset"),
     )
 
 

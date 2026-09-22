@@ -10,6 +10,8 @@
     "delete.json",
     "incremental-snapshot.json",
     "reconnect-replacement.json",
-    "errors.json"
+    "errors.json",
+    "replay-cursors.json",
+    "replay-gaps.json"
   ]
 }

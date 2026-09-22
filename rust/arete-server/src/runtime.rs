@@ -238,6 +238,31 @@ impl Runtime {
             let entity_cache = EntityCache::new();
             entity_cache_handle = Some(entity_cache.clone());
 
+            // Retained event tape for replayable append subscriptions. The
+            // builder wins over the process env so one host can enable replay
+            // for a single deployment and size it independently. A bad
+            // configuration disables replay rather than failing startup, the
+            // same posture snapshots take below.
+            let journal_config = match self.config.journal.clone() {
+                Some(config) => config,
+                None => match crate::journal::JournalConfig::from_env() {
+                    Ok(config) => config,
+                    Err(e) => {
+                        error!("Invalid journal configuration; event replay disabled: {e:#}");
+                        crate::journal::JournalConfig::default()
+                    }
+                },
+            };
+            let journal = Arc::new(crate::journal::EventJournal::new(journal_config));
+            if journal.is_enabled() {
+                info!(
+                    max_bytes_per_view = journal.config().max_bytes_per_view,
+                    max_records_per_view = journal.config().max_records_per_view,
+                    max_age_secs = journal.config().max_age.as_secs(),
+                    "Event replay enabled for append views"
+                );
+            }
+
             // Restore state from the latest snapshot (when enabled) before the
             // WebSocket server spawns, so the first client's snapshot-on-subscribe
             // is already warm. The VM portion is stashed for the generated
@@ -259,6 +284,7 @@ impl Runtime {
                         spec,
                         entity_cache.clone(),
                         &self.view_index,
+                        journal.clone(),
                         mutations_tx.clone(),
                     )
                     .await
@@ -294,13 +320,16 @@ impl Runtime {
                 Some(runtime) => projector.with_snapshot_runtime(runtime),
                 None => projector,
             };
+            let projector = projector.with_journal(journal.clone());
 
-            projector_handle = Some(tokio::spawn(
-                async move {
-                    projector.run().await;
-                }
-                .instrument(info_span!("projector")),
-            ));
+            // The projector runs for the lifetime of the server. Giving the
+            // task a span would make that span the parent of every batch
+            // whose producer does not carry an explicit context, creating an
+            // unbounded trace. `Projector::run` instead enters the bounded
+            // batch span before it processes and logs each batch.
+            projector_handle = Some(tokio::spawn(async move {
+                projector.run().await;
+            }));
 
             // The connection-serving half of the WebSocket server exists
             // whenever there is a live runtime, so a caller that owns its own
@@ -328,6 +357,7 @@ impl Runtime {
                 self.view_index.clone(),
             );
 
+            ws_server = ws_server.with_journal(journal.clone());
             if let Some(max_clients) = self.websocket_max_clients {
                 ws_server = ws_server.with_max_clients(max_clients);
             }
@@ -375,15 +405,22 @@ impl Runtime {
                     let health = health_monitor.clone();
                     let reconnection_config = self.config.reconnection.clone().unwrap_or_default();
                     let parser_snapshot_runtime = snapshot_runtime.clone();
+                    let parser_journal = journal.clone();
                     parser_handle = Some(tokio::spawn(
                         async move {
                             let parser = async move {
                                 parser_setup(mutations_tx, health, reconnection_config).await
                             };
-                            let result = match parser_snapshot_runtime {
-                                Some(runtime) => runtime.scope(parser).await,
-                                None => parser.await,
+                            let scoped = async move {
+                                match parser_snapshot_runtime {
+                                    Some(runtime) => runtime.scope(parser).await,
+                                    None => parser.await,
+                                }
                             };
+                            // The tape is in scope even with snapshots off, so
+                            // a runtime that abandons its checkpoint can still
+                            // mark the hole it just created.
+                            let result = parser_journal.scope(scoped).await;
                             if let Err(e) = result {
                                 error!("Vixen parser runtime error: {}", e);
                             }

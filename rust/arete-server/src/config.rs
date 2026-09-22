@@ -228,6 +228,13 @@ pub struct ReconnectionConfig {
     pub backoff_multiplier: f64,
     /// HTTP/2 keep-alive interval to prevent silent disconnects
     pub http2_keep_alive_interval: Option<Duration>,
+    /// Consecutive short-lived connections before a runtime with no snapshot
+    /// to replay gives up on its checkpoint and subscribes live.
+    ///
+    /// The fallback trades data for availability: every slot between the
+    /// checkpoint and the live tip is lost. `None` refuses that trade and
+    /// keeps retrying from the checkpoint, which is what a recorder wants.
+    pub live_fallback_attempts: Option<u32>,
 }
 
 impl Default for ReconnectionConfig {
@@ -238,6 +245,7 @@ impl Default for ReconnectionConfig {
             max_attempts: None, // Infinite retries by default
             backoff_multiplier: 2.0,
             http2_keep_alive_interval: Some(Duration::from_secs(30)),
+            live_fallback_attempts: Some(3),
         }
     }
 }
@@ -269,6 +277,13 @@ impl ReconnectionConfig {
 
     pub fn with_http2_keep_alive_interval(mut self, interval: Duration) -> Self {
         self.http2_keep_alive_interval = Some(interval);
+        self
+    }
+
+    /// Never abandon the resume checkpoint, even if the provider keeps
+    /// refusing it. Ingestion stalls rather than silently skipping slots.
+    pub fn fail_closed(mut self) -> Self {
+        self.live_fallback_attempts = None;
         self
     }
 
@@ -340,6 +355,12 @@ pub struct ServerConfig {
     pub program_read_binding_target_id: Option<String>,
     /// State snapshot settings. `None` falls back to `SnapshotConfig::from_env()`.
     pub snapshots: Option<crate::snapshot::SnapshotConfig>,
+    /// Event journal settings. `None` falls back to `JournalConfig::from_env()`.
+    ///
+    /// Set this per runtime when several deployments share one process: the
+    /// env vars are process-wide, so they cannot enable replay for one stack
+    /// or size a busy stack differently from a quiet one.
+    pub journal: Option<crate::journal::JournalConfig>,
 }
 
 impl ServerConfig {

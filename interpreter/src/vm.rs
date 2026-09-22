@@ -1958,8 +1958,10 @@ impl VmContext {
                 value
             };
 
+            let changed =
+                Self::get_value_at_path(state, &extract.target_path).as_ref() != Some(&value);
             Self::set_nested_field_value(state, &extract.target_path, value)?;
-            if should_emit(&extract.target_path) {
+            if changed && should_emit(&extract.target_path) {
                 dirty_tracker.mark_replaced(&extract.target_path);
             }
         }
@@ -2947,8 +2949,8 @@ impl VmContext {
                         .is_debug_enabled()
                         .then(|| Self::get_value_at_path(&self.registers[*object], path))
                         .flatten();
-                    self.set_field_auto_vivify(*object, path, *value)?;
-                    if should_emit(path) {
+                    let changed = self.set_field_auto_vivify(*object, path, *value)?;
+                    if changed && should_emit(path) {
                         dirty_tracker.mark_replaced(path);
                     }
                     if self.is_debug_enabled() {
@@ -2971,8 +2973,8 @@ impl VmContext {
                             .is_debug_enabled()
                             .then(|| Self::get_value_at_path(&self.registers[*object], path))
                             .flatten();
-                        self.set_field_auto_vivify(*object, path, *value_reg)?;
-                        if should_emit(path) {
+                        let changed = self.set_field_auto_vivify(*object, path, *value_reg)?;
+                        if changed && should_emit(path) {
                             dirty_tracker.mark_replaced(path);
                         }
                         if self.is_debug_enabled() {
@@ -3293,11 +3295,12 @@ impl VmContext {
                     let dirty_fields: Vec<String> =
                         dirty_tracker.dirty_paths().into_iter().collect();
 
-                    if primary_key.is_null() || dirty_tracker.is_empty() {
-                        let reason = if dirty_tracker.is_empty() {
-                            "no_fields_modified"
-                        } else {
+                    let null_key = primary_key.is_null();
+                    if null_key || dirty_tracker.is_empty() {
+                        let reason = if null_key {
                             "null_primary_key"
+                        } else {
+                            "no_fields_modified"
                         };
                         self.emit_debug(|| VmDebugEvent::EmitMutation {
                             entity_name: entity_name.clone(),
@@ -3308,12 +3311,20 @@ impl VmContext {
                             patch: None,
                             dirty_fields,
                         });
-                        self.add_warning(format!(
-                            "Skipping mutation for entity '{}': {} (dirty_fields={})",
-                            entity_name,
-                            reason,
-                            dirty_tracker.len()
-                        ));
+                        // A null key is a real fault worth surfacing. An event
+                        // that moved nothing is not: accounts are rewritten for
+                        // reasons an entity does not map, and every write is now
+                        // compared before it counts as dirty. Warning here would
+                        // raise the canonical log line to WARN for the common
+                        // case, and WARN is never sampled.
+                        if null_key {
+                            self.add_warning(format!(
+                                "Skipping mutation for entity '{}': {} (dirty_fields={})",
+                                entity_name,
+                                reason,
+                                dirty_tracker.len()
+                            ));
+                        }
                     } else {
                         let patch =
                             self.extract_partial_state_with_tracker(*state, &dirty_tracker)?;
@@ -3710,8 +3721,8 @@ impl VmContext {
                         self.evaluate_comparison(&field_value, condition_op, condition_value)?;
 
                     if condition_met {
-                        self.set_field_auto_vivify(*object, path, *value)?;
-                        if should_emit(path) {
+                        let changed = self.set_field_auto_vivify(*object, path, *value)?;
+                        if changed && should_emit(path) {
                             dirty_tracker.mark_replaced(path);
                         }
                     }
@@ -3768,8 +3779,8 @@ impl VmContext {
                     };
 
                     if instruction_seen {
-                        self.set_field_auto_vivify(*object, path, *value)?;
-                        if emit {
+                        let changed = self.set_field_auto_vivify(*object, path, *value)?;
+                        if changed && emit {
                             dirty_tracker.mark_replaced(path);
                         }
                     } else if !signature.is_empty() {
@@ -3842,8 +3853,8 @@ impl VmContext {
                         continue;
                     }
 
-                    self.set_field_auto_vivify(*object, path, *value)?;
-                    if should_emit(path) {
+                    let changed = self.set_field_auto_vivify(*object, path, *value)?;
+                    if changed && should_emit(path) {
                         dirty_tracker.mark_replaced(path);
                     }
                     if self.is_debug_enabled() {
@@ -4189,12 +4200,19 @@ impl VmContext {
         Some(current.clone())
     }
 
+    /// Write `value_reg` into `object_reg` at `path`, creating intermediate
+    /// objects as needed.
+    ///
+    /// Returns whether the write actually changed the stored value. Handlers
+    /// re-run every mapping on every event of a source, so an account update
+    /// rewrites all of its mapped fields whether or not they moved; callers
+    /// use this to keep unchanged fields out of the emitted patch.
     fn set_field_auto_vivify(
         &mut self,
         object_reg: Register,
         path: &str,
         value_reg: Register,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let compiled = self.get_compiled_path(path);
         let segments = compiled.segments();
         let value = self.registers[value_reg].clone();
@@ -4210,8 +4228,9 @@ impl VmContext {
         let mut current = obj;
         for (i, segment) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
+                let changed = current.get(segment) != Some(&value);
                 current.insert(segment.to_string(), value);
-                return Ok(());
+                return Ok(changed);
             } else {
                 current
                     .entry(segment.to_string())
@@ -4223,7 +4242,7 @@ impl VmContext {
             }
         }
 
-        Ok(())
+        Ok(false)
     }
 
     fn set_field_if_null(
@@ -6485,6 +6504,163 @@ mod tests {
     use crate::ast::{
         BinaryOp, ComputedExpr, ComputedFieldSpec, HttpMethod, UrlResolverConfig, UrlSource,
     };
+
+    /// A handler re-runs every mapping on every event of its source, so one
+    /// account update rewrites all of that account's mapped fields whether or
+    /// not they moved. Marking each write dirty made the patch a full copy of
+    /// the account; most of a DLMM pair's mapped fields (mints, bin step, pair
+    /// type) never change after creation.
+    #[test]
+    fn rewriting_a_field_with_its_current_value_keeps_it_out_of_the_patch() {
+        const STATE: Register = 1;
+        const VALUE: Register = 2;
+        let mut vm = VmContext::new();
+        vm.registers[STATE] = json!({});
+
+        // First sight of the account: every mapped field is new.
+        vm.registers[VALUE] = json!("So11111111111111111111111111111111111111112");
+        assert!(vm
+            .set_field_auto_vivify(STATE, "token_x_mint", VALUE)
+            .unwrap());
+        vm.registers[VALUE] = json!(-775);
+        assert!(vm.set_field_auto_vivify(STATE, "active_id", VALUE).unwrap());
+
+        // The next account update rewrites both, but only the price moved.
+        vm.registers[VALUE] = json!("So11111111111111111111111111111111111111112");
+        assert!(!vm
+            .set_field_auto_vivify(STATE, "token_x_mint", VALUE)
+            .unwrap());
+        vm.registers[VALUE] = json!(-780);
+        assert!(vm.set_field_auto_vivify(STATE, "active_id", VALUE).unwrap());
+
+        // So the emitted patch carries the price alone.
+        let mut tracker = DirtyTracker::new();
+        tracker.mark_replaced("active_id");
+        let patch = vm
+            .extract_partial_state_with_tracker(STATE, &tracker)
+            .unwrap();
+        assert_eq!(patch, json!({"active_id": -780}));
+    }
+
+    /// A null primary key is a configuration or extraction fault, and it can
+    /// arise on an event that moved no mapped field — key resolution does not
+    /// depend on whether values changed. Selecting the skip reason from the
+    /// dirty tracker first hid exactly that case behind `no_fields_modified`.
+    #[test]
+    fn a_null_key_warns_even_when_no_field_moved() {
+        const KEY: Register = 1;
+        const STATE: Register = 2;
+        let mut vm = VmContext::new();
+
+        // Registers reset to null, so KEY is a null key and nothing is dirty.
+        let handler = vec![OpCode::EmitMutation {
+            entity_name: "pool".to_string(),
+            key: KEY,
+            state: STATE,
+        }];
+        let mutations = vm
+            .execute_handler_segment(
+                &handler,
+                &json!({}),
+                "account_update",
+                0,
+                "pool",
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(mutations.is_empty(), "a null key must not emit a mutation");
+        let warnings = vm.take_warnings();
+        assert_eq!(warnings.len(), 1, "expected one warning, got {warnings:?}");
+        assert!(
+            warnings[0].contains("null_primary_key"),
+            "warning should name the null key, got {:?}",
+            warnings[0]
+        );
+    }
+
+    /// The quiet case stays quiet: accounts are rewritten for reasons an entity
+    /// does not map, so an event that moved nothing is routine. Warning here
+    /// would raise the canonical log line to WARN for the common case.
+    #[test]
+    fn an_event_that_moved_nothing_skips_without_warning() {
+        const KEY: Register = 1;
+        const STATE: Register = 2;
+        let mut vm = VmContext::new();
+
+        let handler = vec![
+            OpCode::LoadConstant {
+                value: json!("8sLbNZoA1cfnvMJLPfp98ZLAnFSYCFApfJKMbiXNLwxj"),
+                dest: KEY,
+            },
+            OpCode::EmitMutation {
+                entity_name: "pool".to_string(),
+                key: KEY,
+                state: STATE,
+            },
+        ];
+        let mutations = vm
+            .execute_handler_segment(
+                &handler,
+                &json!({}),
+                "account_update",
+                0,
+                "pool",
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(mutations.is_empty(), "an empty patch must not emit");
+        assert!(
+            !vm.has_warnings(),
+            "a no-op event must not warn: {:?}",
+            vm.take_warnings()
+        );
+    }
+
+    /// Nested targets resolve through auto-vivified parents, and a re-write of
+    /// an existing leaf must still read as unchanged.
+    #[test]
+    fn change_detection_reaches_through_nested_paths() {
+        const STATE: Register = 1;
+        const VALUE: Register = 2;
+        let mut vm = VmContext::new();
+        vm.registers[STATE] = json!({});
+
+        vm.registers[VALUE] = json!(42);
+        assert!(vm
+            .set_field_auto_vivify(STATE, "swaps.swap_count", VALUE)
+            .unwrap());
+        assert!(!vm
+            .set_field_auto_vivify(STATE, "swaps.swap_count", VALUE)
+            .unwrap());
+
+        vm.registers[VALUE] = json!(43);
+        assert!(vm
+            .set_field_auto_vivify(STATE, "swaps.swap_count", VALUE)
+            .unwrap());
+        assert_eq!(vm.registers[STATE], json!({"swaps": {"swap_count": 43}}));
+    }
+
+    /// Change detection compares stored values, so materialising a field as
+    /// `null` counts once and never again. Absent and `null` stay distinct —
+    /// plain `set` has always written nulls through (only `set_once` skips
+    /// them, see [`Self::set_field_if_null`]), and collapsing them here would
+    /// change what an entity reports, not just how often it reports it.
+    #[test]
+    fn a_null_write_registers_once_then_stops() {
+        const STATE: Register = 1;
+        const VALUE: Register = 2;
+        let mut vm = VmContext::new();
+        vm.registers[STATE] = json!({"present": 1});
+
+        vm.registers[VALUE] = Value::Null;
+        assert!(vm.set_field_auto_vivify(STATE, "absent", VALUE).unwrap());
+        assert!(!vm.set_field_auto_vivify(STATE, "absent", VALUE).unwrap());
+        assert_eq!(vm.registers[STATE], json!({"present": 1, "absent": null}));
+    }
 
     /// `#[map(...::__event_index)]` compiles to a read of
     /// `__update_context.event_index`, which is this envelope. If the field is

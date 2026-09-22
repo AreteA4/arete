@@ -426,26 +426,59 @@ pub fn take_restored() -> Option<RestoredState> {
         .flatten()
 }
 
+/// Where the generated Yellowstone runtime should resume its stream.
+///
+/// `Option<u64>` cannot express this: "no checkpoint to resume from" and
+/// "gave up on the checkpoint" are both `None`, and only the second one
+/// loses data. Naming them apart is what lets the caller mark the hole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconnectPosition {
+    /// Resume from this slot; nothing is lost.
+    Slot(u64),
+    /// Start live because nothing has been processed yet.
+    Live,
+    /// Start live after abandoning a checkpoint the provider would not serve.
+    /// Every slot between `abandoned` and the live tip is lost.
+    LiveAfterGap { abandoned: u64 },
+}
+
+impl ReconnectPosition {
+    /// The `from_slot` to put on the subscription request.
+    pub fn from_slot(self) -> Option<u64> {
+        match self {
+            Self::Slot(slot) => Some(slot),
+            Self::Live | Self::LiveAfterGap { .. } => None,
+        }
+    }
+}
+
 /// Select a reconnect checkpoint for the generated Yellowstone runtime.
 ///
 /// A restored replay never falls back to live: retries advance only to slots
 /// the main parser stream has finished processing. Without a restored replay,
-/// the existing live fallback remains available after repeated short-lived
-/// connections.
+/// repeated short-lived connections eventually give up on the checkpoint —
+/// unless `live_fallback_attempts` is `None`, which refuses to trade data for
+/// availability.
 #[doc(hidden)]
 pub fn select_reconnect_from_slot(
     restored_watermark: Option<u64>,
     processed_watermark: u64,
     attempt: u32,
-    live_fallback_attempts: u32,
-) -> Option<u64> {
+    live_fallback_attempts: Option<u32>,
+) -> ReconnectPosition {
     if let Some(restored_watermark) = restored_watermark {
-        return Some(restored_watermark.max(processed_watermark));
+        return ReconnectPosition::Slot(restored_watermark.max(processed_watermark));
     }
-    if attempt >= live_fallback_attempts {
-        return None;
+    if processed_watermark == 0 {
+        // Nothing has been processed, so starting live loses nothing.
+        return ReconnectPosition::Live;
     }
-    (processed_watermark > 0).then_some(processed_watermark)
+    match live_fallback_attempts {
+        Some(limit) if attempt >= limit => ReconnectPosition::LiveAfterGap {
+            abandoned: processed_watermark,
+        },
+        _ => ReconnectPosition::Slot(processed_watermark),
+    }
 }
 
 fn now_epoch_ms() -> u64 {
@@ -456,7 +489,8 @@ fn now_epoch_ms() -> u64 {
 }
 
 /// What kicked off a snapshot cycle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SnapshotTrigger {
     Periodic,
     Shutdown,
@@ -474,6 +508,7 @@ pub struct SnapshotService {
     state_ids: HashMap<String, u32>,
     program_ids: Vec<String>,
     entity_cache: EntityCache,
+    journal: Arc<crate::journal::EventJournal>,
     batches_at_last_snapshot: AtomicU64,
     warned_missing_vm: AtomicBool,
 }
@@ -486,6 +521,7 @@ impl SnapshotService {
         spec: &crate::Spec,
         entity_cache: EntityCache,
         view_index: &ViewIndex,
+        journal: Arc<crate::journal::EventJournal>,
         _mutations_tx: mpsc::Sender<MutationBatch>,
     ) -> Result<Arc<Self>> {
         let url = config
@@ -507,6 +543,7 @@ impl SnapshotService {
             state_ids: state_ids_by_entity(spec),
             program_ids,
             entity_cache,
+            journal,
             batches_at_last_snapshot: AtomicU64::new(0),
             warned_missing_vm: AtomicBool::new(false),
         });
@@ -600,6 +637,10 @@ impl SnapshotService {
             // still match the current projections. Preserve only durable VM
             // state and let live input rebuild every projection cache.
             payload.entity_cache.clear();
+            // Retained frames are published view output, shaped by the same
+            // projections, so the same doubt applies — and replaying stale
+            // frames is worse than a stale cache, because consumers keep them.
+            payload.journal = Default::default();
         }
 
         let cached_views = payload.entity_cache.len();
@@ -608,7 +649,16 @@ impl SnapshotService {
             .iter()
             .map(|(_, entries)| entries.len())
             .sum();
+        let retained_events: usize = payload
+            .journal
+            .views
+            .values()
+            .map(|view| view.records.len())
+            .sum();
         self.entity_cache.hydrate(payload.entity_cache).await;
+        // Only a shutdown snapshot is exact; see `EventJournal::hydrate`.
+        let exact_offsets = header.trigger == Some(SnapshotTrigger::Shutdown);
+        self.journal.hydrate(payload.journal, exact_offsets).await;
         rebuild_sorted_caches(view_index, &self.entity_cache).await;
 
         // Even when the stream starts live, the watermark seeds the applied
@@ -658,6 +708,14 @@ impl SnapshotService {
             None
         };
 
+        if resume_watermark.is_none() {
+            // The stream starts live, so events between the retained tape and
+            // the first live append are lost. Offsets stay dense across that
+            // hole, which would present it to a consumer as an unbroken
+            // continuation — mark it so a replay across it is refused instead.
+            self.journal.mark_gap().await;
+        }
+
         if resume_watermark.is_some() {
             *self.runtime.state.resume_gate.lock().unwrap() = Some(ResumeGate {
                 started: Instant::now(),
@@ -671,6 +729,7 @@ impl SnapshotService {
             vm_entities = payload.vm.total_entries(),
             cached_views,
             cached_entities,
+            retained_events,
             resume_watermark = header.resume_watermark,
             resuming = resume_watermark.is_some(),
             age_secs = age_ms / 1_000,
@@ -757,6 +816,16 @@ impl SnapshotService {
         let vm_lock_held = dump_started.elapsed();
         let observed_slot = registration.slot_tracker.get();
         let entity_cache_dump = self.entity_cache.dump().await;
+        // Dumped inside the same consistency guard as the cache, so a restore
+        // can never leave the cache ahead of the tape.
+        let journal_dump = self.journal.dump().await;
+        if trigger == SnapshotTrigger::Shutdown {
+            // Publishing continues after the guard releases — the parser is
+            // aborted only once this snapshot is encoded and stored — so
+            // without this the file would not hold every offset that reached a
+            // subscriber, and the restore below would adopt its epoch anyway.
+            self.journal.seal();
+        }
         let applied_batches = self.runtime.state.applied_batches.load(Ordering::Relaxed);
         drop(consistency_guard);
 
@@ -770,11 +839,25 @@ impl SnapshotService {
             resume_watermark,
             observed_slot,
             created_at_epoch_ms,
-            entry_counts: vm_snapshot.entry_counts().into_iter().collect(),
+            trigger: Some(trigger),
+            entry_counts: vm_snapshot
+                .entry_counts()
+                .into_iter()
+                .chain(
+                    // Retained record counts are otherwise invisible after the
+                    // restore log line.
+                    // Derived from the dump rather than a second trip
+                    // through the journal's lock inside the cut.
+                    journal_dump.views.iter().map(|(view_id, view)| {
+                        (format!("journal:{view_id}"), view.records.len() as u64)
+                    }),
+                )
+                .collect(),
         };
         let payload = SnapshotPayload {
             vm: vm_snapshot,
             entity_cache: entity_cache_dump,
+            journal: journal_dump,
         };
         let bytes = tokio::task::spawn_blocking(move || envelope::encode(&header, &payload))
             .await

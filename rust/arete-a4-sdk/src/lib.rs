@@ -79,11 +79,11 @@ pub use collation::{collation_key, locale_compare, CollationKey};
 pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
 pub use entity::Stack;
-pub use error::{AreteError, AuthErrorCode, SocketIssue};
+pub use error::{AreteError, AuthErrorCode, GapCode, SocketIssue, StreamGap};
 pub use frame::{
     parse_frame, parse_server_message, parse_snapshot_entities, try_parse_subscribed_frame, Frame,
-    Mode, Operation, ProtocolErrorFrame, ServerFrame, ServerMessage, SnapshotEntity, SortConfig,
-    SortOrder,
+    Mode, Operation, ProtocolErrorFrame, ReplayWindow, ServerFrame, ServerMessage, SnapshotEntity,
+    SortConfig, SortOrder,
 };
 pub use gateway::{
     create_hosted_solana_gateway_transports, validate_gateway_binding, HostedSolanaGatewayBindings,
@@ -124,7 +124,7 @@ pub use read::{
 };
 pub use rpc::RpcTransactionTransport;
 pub use session::{Session, SessionBuilder, SessionMemberOptions};
-pub use store::{deep_merge_with_append, SharedStore, StoreConfig, StoreUpdate};
+pub use store::{deep_merge_with_append, SharedStore, StoreConfig, StoreEvent, StoreUpdate};
 pub use stream::{
     EntityStream, FilterMapStream, FilteredStream, KeyFilter, MapStream, RichEntityStream,
     RichUpdate, Update, UseStream,

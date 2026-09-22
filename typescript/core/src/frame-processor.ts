@@ -1,5 +1,6 @@
 import type { Frame, SnapshotFrame, EntityFrame, SubscribedFrame } from './frame';
 import {
+  CursorTracker,
   isEntityFrame,
   isErrorFrame,
   isSnapshotFrame,
@@ -172,6 +173,18 @@ export class FrameProcessor {
   private isProcessing = false;
   private latestProcessedSlot: bigint | null = null;
   private processedSlotWaiters = new Set<ProcessedSlotWaiter>();
+  private cursors = new CursorTracker();
+
+  /**
+   * Observe the connection's cursor tracker instead of a private one.
+   *
+   * The connection prunes on unsubscribe; this processor never sees an
+   * `unsubscribed` frame, so its own tracker would grow for the life of the
+   * page as a React app mounts and unmounts components with different queries.
+   */
+  useCursorTracker(cursors: CursorTracker): void {
+    this.cursors = cursors;
+  }
 
   constructor(storage: StorageAdapter, config: FrameProcessorConfig = {}) {
     this.storage = storage;
@@ -566,6 +579,7 @@ export class FrameProcessor {
   }
 
   private handleSubscribedFrame(frame: SubscribedFrame): void {
+    this.cursors.observe(frame);
     const viewPath = frame.query.view;
     if (this.storage.setViewConfig && frame.sort) {
       this.storage.setViewConfig(viewPath, {
@@ -624,7 +638,11 @@ export class FrameProcessor {
     const viewPath = frame.entity;
     const previousValue = this.storage.get<T>(viewPath, frame.key);
     const previousSequence = this.getInternalSeq(previousValue);
-    const duplicateOrStaleSequence = frame.seq !== undefined
+    const cursor = this.cursors.observe(frame);
+    // On a tape the offset is the identity: two events decoded from one
+    // transaction share a seq, so the seq guard would discard the second.
+    const duplicateOrStaleSequence = frame.offset === undefined
+      && frame.seq !== undefined
       && previousSequence !== undefined
       && this.compareSeq(frame.seq, previousSequence) <= 0;
 
@@ -671,12 +689,15 @@ export class FrameProcessor {
             type: 'upsert',
             key: frame.key,
             data: nextValue,
+            cursor,
           };
           this.storage.notifyUpdate(viewPath, frame.key, update);
           const richUpdate = this.createRichUpdate(
             frame.key,
             previousValue,
-            nextValue
+            nextValue,
+            undefined,
+            cursor
           );
           this.storage.notifyRichUpdate(viewPath, frame.key, richUpdate);
           this.queryStore?.applyLive(
@@ -730,13 +751,15 @@ export class FrameProcessor {
           type: 'patch',
           key: frame.key,
           data: normalizedPatch,
+          cursor,
         };
         this.storage.notifyUpdate(viewPath, frame.key, update);
         const richUpdate = this.createRichUpdate(
           frame.key,
           previousValue,
           nextValue,
-          normalizedPatch
+          normalizedPatch,
+          cursor
         );
         this.storage.notifyRichUpdate(viewPath, frame.key, richUpdate);
         this.queryStore?.applyLive(
@@ -753,7 +776,7 @@ export class FrameProcessor {
         this.queryStore?.applyLive(
           frame.subscriptionId,
           frame.key,
-          { type: 'remove', key: frame.key }
+          { type: 'remove', key: frame.key, cursor }
         );
         break;
 
@@ -762,12 +785,24 @@ export class FrameProcessor {
         this.storage.notifyUpdate(viewPath, frame.key, {
           type: 'delete',
           key: frame.key,
+          cursor,
         });
         if (previousValue !== null) {
-          const richUpdate: RichUpdate<T> = { type: 'deleted', key: frame.key, lastKnown: previousValue };
+          const richUpdate: RichUpdate<T> = {
+            type: 'deleted',
+            key: frame.key,
+            lastKnown: previousValue,
+            cursor,
+          };
           this.storage.notifyRichUpdate(viewPath, frame.key, richUpdate);
         }
-        this.queryStore?.deleteGlobal(viewPath, frame.key, previousValue ?? undefined);
+        this.queryStore?.deleteGlobal(
+          viewPath,
+          frame.key,
+          previousValue ?? undefined,
+          frame.subscriptionId,
+          cursor
+        );
         break;
     }
   }
@@ -791,11 +826,12 @@ export class FrameProcessor {
     key: string,
     before: T | null,
     after: T,
-    patch?: unknown
+    patch?: unknown,
+    cursor?: string
   ): RichUpdate<T> {
     return before === null
-      ? { type: 'created', key, data: after }
-      : { type: 'updated', key, before, after, patch };
+      ? { type: 'created', key, data: after, cursor }
+      : { type: 'updated', key, before, after, patch, cursor };
   }
 
   private enforceMaxEntries(viewPath: string): void {

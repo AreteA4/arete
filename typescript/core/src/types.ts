@@ -5,17 +5,23 @@ export type ConnectionState =
   | 'reconnecting'
   | 'error';
 
+/**
+ * `cursor` is the `{epoch}:{offset}` position of the event that produced the
+ * update on a replayable append view. Store it alongside the data and pass it
+ * back as `after` to resume exactly where you stopped. Absent on state and
+ * list views, which project membership rather than a tape.
+ */
 export type Update<T> =
-  | { type: 'upsert'; key: string; data: T }
-  | { type: 'patch'; key: string; data: Partial<T> }
-  | { type: 'remove'; key: string }
-  | { type: 'delete'; key: string };
+  | { type: 'upsert'; key: string; data: T; cursor?: string }
+  | { type: 'patch'; key: string; data: Partial<T>; cursor?: string }
+  | { type: 'remove'; key: string; cursor?: string }
+  | { type: 'delete'; key: string; cursor?: string };
 
 export type RichUpdate<T> =
-  | { type: 'created'; key: string; data: T }
-  | { type: 'updated'; key: string; before: T; after: T; patch?: unknown }
-  | { type: 'removed'; key: string; lastKnown?: T }
-  | { type: 'deleted'; key: string; lastKnown?: T };
+  | { type: 'created'; key: string; data: T; cursor?: string }
+  | { type: 'updated'; key: string; before: T; after: T; patch?: unknown; cursor?: string }
+  | { type: 'removed'; key: string; lastKnown?: T; cursor?: string }
+  | { type: 'deleted'; key: string; lastKnown?: T; cursor?: string };
 
 export type ViewKeyValue = string | number | bigint;
 
@@ -252,6 +258,8 @@ export interface QuerySnapshot<T = unknown> {
   readonly data: readonly T[];
   readonly isLoading: boolean;
   readonly isRefreshing: boolean;
+  /** Cursor of the last event delivered on this query; absent until one is. */
+  readonly cursor?: string;
   readonly error?: AreteError;
 }
 
@@ -262,6 +270,8 @@ export interface QueryLease {
   onChange(callback: () => void): UnsubscribeFn;
   onUpdate<T = unknown>(callback: (update: Update<T>) => void): UnsubscribeFn;
   onRichUpdate<T = unknown>(callback: (update: RichUpdate<T>) => void): UnsubscribeFn;
+  /** Current failure, if any, without materializing a snapshot. */
+  getError(): AreteError | undefined;
   refresh(): Promise<void>;
   release(): void;
 }
@@ -282,7 +292,10 @@ export interface WatchOptions<TSchema = unknown> {
   schema?: Schema<TSchema>;
   /** Whether to include initial snapshot (defaults to true) */
   withSnapshot?: boolean;
-  /** Cursor for resuming from a specific point (_seq value) */
+  /**
+   * Resume after this `{epoch}:{offset}` cursor, exclusive. Use a `cursor`
+   * taken from an update, never a `_seq` value.
+   */
   after?: string;
   /** Maximum number of entities to include in snapshot */
   snapshotLimit?: number;
@@ -437,9 +450,40 @@ export type AuthErrorCode =
   | 'INTERNAL_ERROR';
 
 /**
+ * Refusals of a replay cursor. Each has a distinct recovery, so they reach the
+ * consumer as the wire code rather than being folded into a generic failure.
+ */
+export type ReplayErrorCode =
+  /** Older than the retained window; resubscribe with no `after`. */
+  | 'cursor-expired'
+  /** The tape was rebuilt; discard the stored cursor. */
+  | 'cursor-epoch-changed'
+  /** An offset this view never issued. */
+  | 'cursor-unknown'
+  /** Not an `{epoch}:{offset}` string. */
+  | 'invalid-cursor'
+  /** Replay would cross a known discontinuity; see `replayWindow.gapAfter`. */
+  | 'replay-gap'
+  /** Records were skipped in flight and delivery stopped; see `recoverFrom`. */
+  | 'replay-lagged';
+
+const REPLAY_ERROR_CODES: Record<string, true> = {
+  'cursor-expired': true,
+  'cursor-epoch-changed': true,
+  'cursor-unknown': true,
+  'invalid-cursor': true,
+  'replay-gap': true,
+  'replay-lagged': true,
+};
+
+export function isReplayErrorCode(code: string): code is ReplayErrorCode {
+  return REPLAY_ERROR_CODES[code] === true;
+}
+
+/**
  * Determines if the error indicates the client should retry the same request
  */
-export function shouldRetryError(code: AuthErrorCode): boolean {
+export function shouldRetryError(code: string): boolean {
   return code === 'RATE_LIMIT_EXCEEDED'
     || code === 'WEBSOCKET_SESSION_RATE_LIMIT_EXCEEDED'
     || code === 'INTERNAL_ERROR';
@@ -448,7 +492,7 @@ export function shouldRetryError(code: AuthErrorCode): boolean {
 /**
  * Determines if the error indicates the client should fetch a new token
  */
-export function shouldRefreshToken(code: AuthErrorCode): boolean {
+export function shouldRefreshToken(code: string): boolean {
   return [
     'TOKEN_EXPIRED',
     'TOKEN_INVALID_SIGNATURE',
@@ -507,9 +551,11 @@ export type ConnectionStateCallback = (state: ConnectionState, error?: string) =
 export type SocketIssueCallback = (issue: SocketIssue) => void;
 
 /**
- * Parse a kebab-case error code string (from X-Error-Code header) to AuthErrorCode
+ * Parse a kebab-case error code string (from X-Error-Code header) to AuthErrorCode.
+ * Replay refusals keep their wire code: each needs a different recovery, so
+ * collapsing them into a generic failure would destroy the only distinction.
  */
-export function parseErrorCode(errorCode: string): AuthErrorCode {
+export function parseErrorCode(errorCode: string): AuthErrorCode | ReplayErrorCode {
   const codeMap: Record<string, AuthErrorCode> = {
     'token-missing': 'TOKEN_MISSING',
     'token-expired': 'TOKEN_EXPIRED',
@@ -541,7 +587,9 @@ export function parseErrorCode(errorCode: string): AuthErrorCode {
     'quota-exceeded': 'QUOTA_EXCEEDED',
   };
 
-  return codeMap[errorCode.toLowerCase()] || 'INTERNAL_ERROR';
+  const normalized = errorCode.toLowerCase();
+  if (isReplayErrorCode(normalized)) return normalized;
+  return codeMap[normalized] || 'INTERNAL_ERROR';
 }
 
 /**

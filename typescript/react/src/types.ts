@@ -5,6 +5,7 @@ import type {
   Schema,
   StackDefinition,
   WalletAdapter,
+  AreteError,
 } from '@usearete/sdk';
 
 export type {
@@ -217,6 +218,12 @@ interface ViewHookResultBase<T> {
   data: T | undefined;
   isRefreshing: boolean;
   refresh: () => Promise<void>;
+  /**
+   * `{epoch}:{offset}` of the last event delivered on a replayable append
+   * view. Store it with the data and pass it back as `after` to resume.
+   * Absent on state and list views.
+   */
+  cursor?: string;
 }
 
 type EmptyViewData<T> = T extends readonly unknown[] ? T : undefined;
@@ -244,7 +251,8 @@ export type ViewHookResult<T> =
       isReady: false;
       isEmpty: false;
       isLoading: false;
-      error: Error;
+      /** `error.code` is the wire code, e.g. a replay refusal such as `cursor-expired`. */
+      error: AreteError;
     })
   | (Omit<ViewHookResultBase<T>, 'data'> & {
       data: T;
@@ -276,7 +284,7 @@ export interface ListParamsBase<TSchema = unknown> {
   onSchemaValidationError?: ViewSchemaValidationErrorCallback;
   /** Whether to include initial snapshot (defaults to true) */
   withSnapshot?: boolean;
-  /** Cursor for resuming from a specific point (_seq value) */
+  /** Resume after this `{epoch}:{offset}` cursor, exclusive. Never a `_seq` value. */
   after?: string;
   /** Maximum number of entities to include in snapshot */
   snapshotLimit?: number;

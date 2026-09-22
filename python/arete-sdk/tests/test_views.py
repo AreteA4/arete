@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -16,12 +17,19 @@ from arete.views import (
     InitialDataTimeoutError,
     ListViewHandle,
     StateViewHandle,
+    StreamGapError,
     ViewDef,
     ViewGroupHandle,
     ViewsNamespace,
     create_view_handle,
 )
+from arete.views import _MAX_QUEUE_SIZE
 from arete.wire import parse_frame
+
+FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "websocket-v2"
+REPLAY_CURSORS = json.loads((FIXTURES / "replay-cursors.json").read_text())
+REPLAY_GAPS = json.loads((FIXTURES / "replay-gaps.json").read_text())
+EPOCH = REPLAY_CURSORS["server"][0]["replayWindow"]["epoch"]
 
 TIMEOUT = 3.0
 
@@ -85,6 +93,13 @@ def live(sid, op, key, data=None, *, entity, mode="list", seq=None, append=None)
         frame["seq"] = seq
     if append is not None:
         frame["append"] = append
+    return frame
+
+
+def tape(sid, offset, *, entity="Trade/append", key="pool"):
+    """One replayable append event at ``offset``."""
+    frame = live(sid, "patch", key, {"amount": offset}, entity=entity, mode="append")
+    frame["offset"] = offset
     return frame
 
 
@@ -544,3 +559,204 @@ class TestNamespace:
         _connection, _store, registry = make_env()
         with pytest.raises(TypeError, match="Unknown view mode"):
             create_view_handle(ViewDef("append", "V"), registry)
+
+
+class TestReplayCursors:
+    """Shared fixtures: tests/fixtures/websocket-v2/replay-cursors.json + -gaps."""
+
+    async def start(self, registry, connection, verb="watch"):
+        """Subscribe the append view; returns the collecting task and its id."""
+        handle = ListViewHandle("Trade/append", registry)
+        stream = getattr(handle, verb)()
+        task = asyncio.create_task(collect(stream, len(REPLAY_CURSORS["expected"]["cursors"])))
+        await asyncio.sleep(0)  # let the stream subscribe
+        return task, connection.subscribed[0].subscription_id
+
+    @pytest.mark.asyncio
+    async def test_every_append_update_carries_its_fixture_cursor(self):
+        connection, store, registry = make_env()
+        task, sid = await self.start(registry, connection)
+
+        for frame in REPLAY_CURSORS["server"]:
+            feed(store, {**frame, "subscriptionId": sid})
+
+        updates = await asyncio.wait_for(task, TIMEOUT)
+        # The first two frames share one seq; only the offset separates them.
+        assert len({frame.get("seq") for frame in REPLAY_CURSORS["server"][1:]}) == 2
+        assert [update.cursor for update in updates] == REPLAY_CURSORS["expected"]["cursors"]
+        assert updates[-1].cursor == REPLAY_CURSORS["expected"]["resumeCursor"]
+
+    @pytest.mark.asyncio
+    async def test_a_frame_without_an_offset_carries_no_cursor(self):
+        """Even on a view whose epoch is known: no offset, no tape position."""
+        connection, store, registry = make_env()
+        handle = ListViewHandle("Trade/append", registry)
+        task = asyncio.create_task(collect(handle.watch(), 1))
+        await asyncio.sleep(0)
+        sid = connection.subscribed[0].subscription_id
+        feed(store, {**REPLAY_CURSORS["server"][0], "subscriptionId": sid})
+        feed(store, live(sid, "upsert", "pool1", {"amount": 1},
+                         entity="Trade/append", mode="append"))
+        assert (await asyncio.wait_for(task, TIMEOUT))[0].cursor is None
+
+    @pytest.mark.asyncio
+    async def test_a_delete_cursor_reaches_only_the_subscription_that_read_it(self):
+        """A delete fans out to every subscription on the view.
+
+        Only the one the frame named was read at that offset; handing the
+        position to a sibling would let a consumer that never received the
+        event checkpoint past it.
+        """
+        connection, store, registry = make_env()
+        first = ListViewHandle("Trade/append", registry)
+        second = ListViewHandle("Trade/append", registry)
+        reader = asyncio.create_task(collect(first.watch(), 2))
+        await asyncio.sleep(0)
+        bystander = asyncio.create_task(collect(second.watch(partition="other"), 2))
+        await asyncio.sleep(0)
+        reader_sid = connection.subscribed[0].subscription_id
+        bystander_sid = connection.subscribed[1].subscription_id
+        assert reader_sid != bystander_sid
+
+        for sid in (reader_sid, bystander_sid):
+            feed(store, {**REPLAY_CURSORS["server"][0], "subscriptionId": sid})
+            feed(store, {**REPLAY_CURSORS["server"][1], "subscriptionId": sid})
+
+        # A delete is global: it reaches both, but carries one subscription's
+        # read position.
+        feed(
+            store,
+            {
+                "protocolVersion": 2,
+                "subscriptionId": reader_sid,
+                "mode": "append",
+                "entity": "Trade/append",
+                "op": "delete",
+                "key": "pool1",
+                "data": None,
+                "offset": 4210,
+            },
+        )
+
+        read = await asyncio.wait_for(reader, TIMEOUT)
+        watched = await asyncio.wait_for(bystander, TIMEOUT)
+        epoch = REPLAY_CURSORS["server"][0]["replayWindow"]["epoch"]
+        assert read[-1].cursor == f"{epoch}:4210"
+        assert watched[-1].cursor is None, (
+            "a subscription that did not read the event must not be handed its "
+            "position"
+        )
+
+    @pytest.mark.parametrize(
+        "case", REPLAY_GAPS["cases"], ids=lambda case: case["response"]["code"]
+    )
+    @pytest.mark.asyncio
+    async def test_a_replay_refusal_raises_its_wire_code_instead_of_hanging(self, case):
+        connection, store, registry = make_env()
+        task, sid = await self.start(registry, connection)
+
+        feed(store, {**case["response"], "subscriptionId": sid})
+
+        with pytest.raises(SubscriptionError) as raised:
+            await asyncio.wait_for(task, TIMEOUT)
+        assert raised.value.code == case["response"]["code"]
+        frame = raised.value.details
+        window = case["response"].get("replayWindow")
+        if window is None:
+            assert frame.replay_window is None
+        else:
+            assert frame.replay_window.epoch == window["epoch"]
+            assert frame.replay_window.earliest == window["earliest"]
+            assert frame.replay_window.gap_after == window.get("gapAfter")
+        assert frame.recover_from == case["response"].get("recoverFrom")
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_delivers_what_arrived_before_it(self):
+        """`replay-lagged` reports records skipped *after* everything sent.
+
+        Whatever is queued arrived before the gap and is contiguous with it.
+        Dropping it would lose records the consumer was never told about and
+        leave ``recoverFrom`` pointing past them.
+        """
+        connection, store, registry = make_env()
+        handle = ListViewHandle("Trade/append", registry)
+        stream = handle.watch()
+        delivered = []
+
+        async def drain():
+            try:
+                async for update in stream:
+                    delivered.append(update.cursor)
+            finally:
+                await stream.aclose()
+
+        task = asyncio.create_task(drain())
+        await asyncio.sleep(0)
+        sid = connection.subscribed[0].subscription_id
+
+        # Queued while the consumer is not reading.
+        for frame in REPLAY_CURSORS["server"]:
+            feed(store, {**frame, "subscriptionId": sid})
+        lagged = next(
+            case for case in REPLAY_GAPS["cases"]
+            if case["response"]["code"] == "replay-lagged"
+        )
+        feed(store, {**lagged["response"], "subscriptionId": sid})
+
+        with pytest.raises(SubscriptionError) as raised:
+            await asyncio.wait_for(task, TIMEOUT)
+        assert raised.value.code == "replay-lagged"
+        assert delivered == REPLAY_CURSORS["expected"]["cursors"]
+
+    @pytest.mark.asyncio
+    async def test_overflowing_a_cursor_stream_fails_with_the_last_delivered_cursor(self):
+        connection, store, registry = make_env()
+        delivered = []
+        handle = ListViewHandle("Trade/append", registry)
+        stream = handle.watch()
+
+        async def consume():
+            async for update in stream:
+                delivered.append(update)
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0)
+        sid = connection.subscribed[0].subscription_id
+        feed(store, {**REPLAY_CURSORS["server"][0], "subscriptionId": sid})
+
+        feed(store, tape(sid, 0))
+        while not delivered:  # the consumer takes offset 0, then waits again
+            await asyncio.sleep(0)
+
+        # Never yielding to the loop keeps the consumer parked: the queue fills
+        # and the eviction that follows loses a cursor-bearing update.
+        for offset in range(1, _MAX_QUEUE_SIZE + 2):
+            feed(store, tape(sid, offset))
+
+        with pytest.raises(StreamGapError) as raised:
+            await asyncio.wait_for(task, TIMEOUT)
+        assert raised.value.recover_from == f"{EPOCH}:0"
+        assert [update.cursor for update in delivered] == [f"{EPOCH}:0"]
+
+    @pytest.mark.asyncio
+    async def test_overflowing_a_cursorless_stream_keeps_dropping_silently(self):
+        connection, store, registry = make_env()
+        delivered = []
+        handle = ListViewHandle("Round/list", registry)
+        stream = handle.watch()
+
+        async def consume():
+            async for update in stream:
+                delivered.append(update)
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0)
+        sid = connection.subscribed[0].subscription_id
+        for index in range(_MAX_QUEUE_SIZE + 2):
+            feed(store, live(sid, "upsert", "10", {"id": index}, entity="Round/list"))
+
+        await asyncio.sleep(0)  # the parked consumer drains whatever survived
+        task.cancel()
+        # Oldest dropped, newest still delivered: a projection, not a tape.
+        assert len(delivered) == _MAX_QUEUE_SIZE
+        assert delivered[-1].data == {"id": _MAX_QUEUE_SIZE + 1}

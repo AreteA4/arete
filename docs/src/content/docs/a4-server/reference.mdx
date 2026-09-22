@@ -80,16 +80,19 @@ services, then supply independent chain and transaction transports.
 
 These environment variables are read by the generated runtime and server code:
 
-| Variable                     | Required               | Default | Description                                              |
-| ---------------------------- | ---------------------- | ------- | -------------------------------------------------------- |
-| `YELLOWSTONE_ENDPOINT`       | For live runtime       | —       | Yellowstone gRPC endpoint URL                            |
-| `YELLOWSTONE_X_TOKEN`        | Provider-specific      | —       | Authentication token for the endpoint                    |
-| `ARETE_READ_RPC_URL`         | For RPC-backed reads   | —       | Upstream used by Program Read and chain-read routes      |
-| `ARETE_TRANSACTION_RPC_URL`  | For transaction routes | —       | Independent transaction inspect/send upstream            |
-| `ARETE_TRANSACTIONS_ENABLED` | No                     | `false` | Explicitly enables fixed transaction routes              |
-| `ARETE_SNAPSHOT_ENABLED`     | No                     | `false` | Enables state snapshots for restart recovery             |
-| `ARETE_SNAPSHOT_URL`         | For snapshots          | —       | Snapshot store location (`file://...` or local path)     |
-| `RUST_LOG`                   | No                     | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`) |
+| Variable                     | Required               | Default | Description                                               |
+| ---------------------------- | ---------------------- | ------- | --------------------------------------------------------- |
+| `YELLOWSTONE_ENDPOINT`       | For live runtime       | —       | Yellowstone gRPC endpoint URL                             |
+| `YELLOWSTONE_X_TOKEN`        | Provider-specific      | —       | Authentication token for the endpoint                     |
+| `ARETE_READ_RPC_URL`         | For RPC-backed reads   | —       | Upstream used by Program Read and chain-read routes       |
+| `ARETE_TRANSACTION_RPC_URL`  | For transaction routes | —       | Independent transaction inspect/send upstream             |
+| `ARETE_TRANSACTIONS_ENABLED` | No                     | `false` | Explicitly enables fixed transaction routes               |
+| `ARETE_SNAPSHOT_ENABLED`     | No                     | `false` | Enables state snapshots for restart recovery              |
+| `ARETE_SNAPSHOT_URL`         | For snapshots          | —       | Snapshot store location (`file://...` or local path)      |
+| `ARETE_JOURNAL_ENABLED`      | No                     | `false` | Retains published events so append views replay by cursor |
+| `ARETE_JOURNAL_MAX_RECORDS`  | No                     | `10000` | Retained events per view                                  |
+| `ARETE_JOURNAL_MAX_AGE_SECS` | No                     | `900`   | Age bound on retained events                              |
+| `RUST_LOG`                   | No                     | `info`  | Log level filter (e.g., `debug`, `info,a4_server=debug`)  |
 
 The full set of `ARETE_SNAPSHOT_*` variables is documented in
 [State Snapshots & Restore](/a4-server/state-snapshots/).
@@ -322,24 +325,51 @@ Server::builder()
     .await?;
 ```
 
-| Field                       | Type               | Default           | Description                                               |
-| --------------------------- | ------------------ | ----------------- | --------------------------------------------------------- |
-| `initial_delay`             | `Duration`         | 100ms             | Delay before first reconnection attempt                   |
-| `max_delay`                 | `Duration`         | 60s               | Maximum delay between attempts (caps exponential backoff) |
-| `max_attempts`              | `Option<u32>`      | `None` (infinite) | Maximum reconnection attempts before giving up            |
-| `backoff_multiplier`        | `f64`              | 2.0               | Multiplier for exponential backoff                        |
-| `http2_keep_alive_interval` | `Option<Duration>` | 30s               | HTTP/2 keep-alive to prevent silent disconnects           |
+| Field                       | Type               | Default           | Description                                                                               |
+| --------------------------- | ------------------ | ----------------- | ----------------------------------------------------------------------------------------- |
+| `initial_delay`             | `Duration`         | 100ms             | Delay before first reconnection attempt                                                   |
+| `max_delay`                 | `Duration`         | 60s               | Maximum delay between attempts (caps exponential backoff)                                 |
+| `max_attempts`              | `Option<u32>`      | `None` (infinite) | Maximum reconnection attempts before giving up                                            |
+| `backoff_multiplier`        | `f64`              | 2.0               | Multiplier for exponential backoff                                                        |
+| `http2_keep_alive_interval` | `Option<Duration>` | 30s               | HTTP/2 keep-alive to prevent silent disconnects                                           |
+| `live_fallback_attempts`    | `Option<u32>`      | `Some(3)`         | Short-lived connections before abandoning the resume checkpoint; `None` never abandons it |
 
 ### Builder Methods
 
-| Method                                      | Description                        |
-| ------------------------------------------- | ---------------------------------- |
-| `ReconnectionConfig::new()`                 | Create with defaults               |
-| `.with_initial_delay(duration)`             | Set initial reconnection delay     |
-| `.with_max_delay(duration)`                 | Set maximum backoff delay          |
-| `.with_max_attempts(n)`                     | Limit reconnection attempts        |
-| `.with_backoff_multiplier(m)`               | Set exponential backoff multiplier |
-| `.with_http2_keep_alive_interval(duration)` | Set HTTP/2 keep-alive interval     |
+| Method                                      | Description                         |
+| ------------------------------------------- | ----------------------------------- |
+| `ReconnectionConfig::new()`                 | Create with defaults                |
+| `.with_initial_delay(duration)`             | Set initial reconnection delay      |
+| `.with_max_delay(duration)`                 | Set maximum backoff delay           |
+| `.with_max_attempts(n)`                     | Limit reconnection attempts         |
+| `.with_backoff_multiplier(m)`               | Set exponential backoff multiplier  |
+| `.with_http2_keep_alive_interval(duration)` | Set HTTP/2 keep-alive interval      |
+| `.fail_closed()`                            | Never abandon the resume checkpoint |
+
+### Losing the resume checkpoint
+
+A runtime with no snapshot to replay resumes from the last slot it finished
+processing. When the provider keeps dropping the connection shortly after
+accepting it — usually because that slot has fallen outside its replay window
+— the runtime gives up after `live_fallback_attempts` and subscribes live.
+
+That trades data for availability: every slot between the checkpoint and the
+live tip is lost. The loss is reported rather than silent — the event journal
+records the discontinuity, so a consumer replaying across it is refused with
+`replay-gap` instead of being served a hole as an unbroken stream.
+
+A recorder should refuse the trade outright:
+
+```rust
+Server::builder()
+    .reconnection_config(ReconnectionConfig::new().fail_closed())
+    .start()
+    .await?;
+```
+
+Ingestion then stalls on the checkpoint until the provider serves it, rather
+than skipping ahead. Snapshot-restored replays never take the fallback in
+either mode.
 
 ## Feature Flags
 

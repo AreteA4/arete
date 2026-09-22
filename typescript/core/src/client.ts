@@ -597,6 +597,7 @@ export class Arete<TStack extends StackDefinition> {
       auth: options.auth,
       fetch: this.fetchImpl,
     });
+    this.processor.useCursorTracker(this.connection.cursors);
     this.subscriptionRegistry = new SubscriptionRegistry(this.connection, this.queryStore);
 
     this.connection.onFrame((frame: Frame) => {

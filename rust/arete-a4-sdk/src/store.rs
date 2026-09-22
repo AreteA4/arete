@@ -1,14 +1,15 @@
 use crate::collation::{collation_key, locale_compare, CollationKey};
-use crate::error::AreteError;
+use crate::error::{AreteError, GapCode, StreamGap};
 use crate::frame::{
-    compare_seq, Mode, Operation, ServerFrame, SnapshotEntity, SortConfig, SortOrder,
+    compare_seq, Mode, Operation, ProtocolErrorFrame, ReplayWindow, ServerFrame, SnapshotEntity,
+    SortConfig, SortOrder,
 };
 use crate::subscription::{canonical_subscription_identity, SnapshotOptions, SubscriptionQuery};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{broadcast, watch, RwLock};
 
 pub const DEFAULT_MAX_ENTRIES_PER_VIEW: usize = 10_000;
@@ -99,6 +100,13 @@ struct QueryData {
     membership: Vec<String>,
     mode: Option<Mode>,
     sort: Option<SortConfig>,
+    /// Epoch of the replayable tape this subscription is reading, taken from
+    /// the `subscribed` acknowledgement. `None` on views that issue no
+    /// offsets.
+    epoch: Option<String>,
+    /// Last cursor this store published for the subscription. Read on
+    /// reconnect to resume where delivery stopped.
+    last_cursor: Option<String>,
 }
 
 #[derive(Debug)]
@@ -178,14 +186,56 @@ pub struct StoreUpdate {
     pub data: Option<Value>,
     pub previous: Option<Value>,
     pub patch: Option<Value>,
+    /// `{epoch}:{offset}` for a frame from a replayable append view; `None`
+    /// for state/list views, which have no per-event identity.
+    pub cursor: Option<String>,
+}
+
+/// What the store fans out to subscribers: an applied frame, or the end of
+/// delivery for one subscription.
+#[derive(Debug, Clone)]
+pub enum StoreEvent {
+    Update(StoreUpdate),
+    Gap {
+        subscription_id: String,
+        view: String,
+        gap: StreamGap,
+    },
+}
+
+impl StoreEvent {
+    pub fn subscription_id(&self) -> &str {
+        match self {
+            Self::Update(update) => &update.subscription_id,
+            Self::Gap {
+                subscription_id, ..
+            } => subscription_id,
+        }
+    }
+
+    pub fn view(&self) -> &str {
+        match self {
+            Self::Update(update) => &update.view,
+            Self::Gap { view, .. } => view,
+        }
+    }
 }
 
 pub struct SharedStore {
     state: Arc<RwLock<StoreState>>,
-    updates_tx: broadcast::Sender<StoreUpdate>,
+    updates_tx: broadcast::Sender<StoreEvent>,
     ready_tx: watch::Sender<HashSet<String>>,
     ready_rx: watch::Receiver<HashSet<String>>,
     config: StoreConfig,
+    /// Views the server acknowledged with a replay window, readable without
+    /// awaiting the state lock.
+    ///
+    /// A local overflow is observed inside `poll_next`, where there is no
+    /// cursor to consult if the overflow happened before the first record was
+    /// delivered — and treating that as a projection is exactly how the head
+    /// of a tape goes missing silently. Keyed by view because replayability is
+    /// a property of the view, not of one subscription to it.
+    replayable: Arc<StdRwLock<HashSet<String>>>,
 }
 
 impl SharedStore {
@@ -202,6 +252,7 @@ impl SharedStore {
             ready_tx,
             ready_rx,
             config,
+            replayable: Arc::new(StdRwLock::new(HashSet::new())),
         }
     }
 
@@ -240,6 +291,8 @@ impl SharedStore {
                 membership: Vec::new(),
                 mode: None,
                 sort: None,
+                epoch: None,
+                last_cursor: None,
             },
         );
         Ok(())
@@ -260,6 +313,25 @@ impl SharedStore {
         }
     }
 
+    fn set_replayable(&self, view: &str, replayable: bool) {
+        let mut views = self.replayable.write().unwrap_or_else(|e| e.into_inner());
+        if replayable {
+            views.insert(view.to_string());
+        } else {
+            views.remove(view);
+        }
+    }
+
+    /// Whether the server acknowledged this view with a replay window, i.e.
+    /// whether losing an update on it loses an event rather than a superseded
+    /// projection row.
+    pub fn is_replayable(&self, view: &str) -> bool {
+        self.replayable
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(view)
+    }
+
     pub async fn apply_frame(&self, frame: ServerFrame) -> Result<(), AreteError> {
         match frame {
             ServerFrame::Subscribed {
@@ -267,9 +339,10 @@ impl SharedStore {
                 query,
                 mode,
                 sort,
+                replay_window,
                 ..
             } => {
-                self.apply_subscribed(subscription_id, query, mode, sort)
+                self.apply_subscribed(subscription_id, query, mode, sort, replay_window)
                     .await
             }
             ServerFrame::Unsubscribed {
@@ -307,6 +380,7 @@ impl SharedStore {
                 key,
                 data,
                 seq,
+                offset,
                 ..
             } => {
                 self.apply_live(
@@ -317,6 +391,7 @@ impl SharedStore {
                     data,
                     vec![],
                     seq,
+                    offset,
                 )
                 .await
             }
@@ -327,6 +402,7 @@ impl SharedStore {
                 data,
                 append,
                 seq,
+                offset,
                 ..
             } => {
                 self.apply_live(
@@ -337,6 +413,7 @@ impl SharedStore {
                     data,
                     append,
                     seq,
+                    offset,
                 )
                 .await
             }
@@ -348,6 +425,7 @@ impl SharedStore {
                 entity,
                 key,
                 data,
+                offset,
                 ..
             } => {
                 self.apply_live(
@@ -358,6 +436,7 @@ impl SharedStore {
                     data,
                     vec![],
                     None,
+                    offset,
                 )
                 .await
             }
@@ -366,6 +445,7 @@ impl SharedStore {
                 entity,
                 key,
                 data,
+                offset,
                 ..
             } => {
                 self.apply_live(
@@ -376,6 +456,7 @@ impl SharedStore {
                     data,
                     vec![],
                     None,
+                    offset,
                 )
                 .await
             }
@@ -388,6 +469,7 @@ impl SharedStore {
         query: SubscriptionQuery,
         mode: Mode,
         sort: Option<SortConfig>,
+        replay_window: Option<ReplayWindow>,
     ) -> Result<(), AreteError> {
         let mark_ready = {
             let mut state = self.state.write().await;
@@ -406,6 +488,18 @@ impl SharedStore {
             active.effective_query = query;
             active.mode = Some(mode);
             active.sort = sort;
+            let epoch = replay_window.map(|window| window.epoch);
+            if active.epoch != epoch {
+                // Offsets restart whenever a tape is built without restoring
+                // one, so a cursor from the previous epoch names nothing.
+                active.last_cursor = None;
+            }
+            // A replayable view is one the server acknowledged with a window.
+            // Recorded here because an overflow before the first record is
+            // delivered has no cursor to infer it from, and guessing
+            // "projection" there drops the head of the tape in silence.
+            self.set_replayable(&active.effective_query.view, epoch.is_some());
+            active.epoch = epoch;
             !active.snapshot_enabled
         };
         if mark_ready {
@@ -525,6 +619,7 @@ impl SharedStore {
                     data: Some(row.data),
                     previous,
                     patch: None,
+                    cursor: None,
                 });
             }
 
@@ -560,6 +655,7 @@ impl SharedStore {
                             .get(&stage.entity)
                             .and_then(|view| view.entities.get(key).cloned()),
                         patch: None,
+                        cursor: None,
                     });
                 }
                 prune_unreferenced(&mut state, &stage.entity, &removed);
@@ -568,7 +664,7 @@ impl SharedStore {
         }
 
         for update in updates {
-            let _ = self.updates_tx.send(update);
+            let _ = self.updates_tx.send(StoreEvent::Update(update));
         }
         self.mark_subscription_ready(subscription_id).await;
         Ok(())
@@ -584,6 +680,7 @@ impl SharedStore {
         data: Value,
         append: Vec<String>,
         seq: Option<String>,
+        offset: Option<u64>,
     ) -> Result<(), AreteError> {
         let mut updates = Vec::new();
         {
@@ -600,19 +697,33 @@ impl SharedStore {
                     "live frame entity does not match the acknowledged query.view",
                 ));
             }
+            // The cursor a consumer stores and replays from. Needs both halves:
+            // an offset without an acknowledged epoch names nothing.
+            let cursor = offset.and_then(|offset| {
+                query
+                    .epoch
+                    .as_ref()
+                    .map(|epoch| format!("{epoch}:{offset}"))
+            });
 
             // `handleEntityFrameWithoutEnforce` (`frame-processor.ts:627`):
-            //   frame.seq !== undefined && previousSequence !== undefined
+            //   frame.offset === undefined && frame.seq !== undefined
+            //     && previousSequence !== undefined
             //     && compareSeq(frame.seq, previousSequence) <= 0
             // A frame at or behind the sequence already stored must not overwrite
             // the newer cached entity. `<= 0` makes an exact replay a duplicate,
             // and a frame with no `seq` is never stale.
+            //
+            // On a tape the offset is the identity: two events decoded from one
+            // transaction share a seq, so the guard would discard the second and
+            // re-emit the first under the second's cursor — a payload the server
+            // never sent, checkpointed as though it had.
             let previous_seq = state
                 .views
                 .get(&entity)
                 .and_then(|view| view.seqs.get(&key).cloned());
             let duplicate_or_stale_sequence = match (seq.as_deref(), previous_seq.as_deref()) {
-                (Some(incoming), Some(previous)) => {
+                (Some(incoming), Some(previous)) if offset.is_none() => {
                     compare_seq(incoming, previous) != Ordering::Greater
                 }
                 _ => false,
@@ -642,6 +753,7 @@ impl SharedStore {
                             data: Some(cached),
                             previous: None,
                             patch: None,
+                            cursor: None,
                         }
                     } else {
                         // `frame.seq ?? extractSeq(frame.data)` (`frame-processor.ts:662`).
@@ -655,6 +767,7 @@ impl SharedStore {
                             data: Some(data),
                             previous,
                             patch: None,
+                            cursor: None,
                         }
                     };
                     let query = state
@@ -688,6 +801,7 @@ impl SharedStore {
                             data: Some(existing.clone()),
                             previous: Some(existing),
                             patch: Some(data),
+                            cursor: None,
                         }
                     } else {
                         let entry = view
@@ -714,6 +828,7 @@ impl SharedStore {
                             data: Some(merged),
                             previous,
                             patch: Some(data),
+                            cursor: None,
                         }
                     };
                     let query = state
@@ -742,6 +857,7 @@ impl SharedStore {
                             .get(&entity)
                             .and_then(|view| view.entities.get(&key).cloned()),
                         patch: None,
+                        cursor: None,
                     });
                 }
                 Operation::Delete => {
@@ -768,8 +884,21 @@ impl SharedStore {
                             data: None,
                             previous: previous.clone(),
                             patch: None,
+                            cursor: None,
                         });
                     }
+                }
+            }
+            if let Some(cursor) = cursor {
+                // A `delete` fans out to every subscription holding the key;
+                // only the one the frame arrived on owns the offset.
+                for update in &mut updates {
+                    if update.subscription_id == subscription_id {
+                        update.cursor = Some(cursor.clone());
+                    }
+                }
+                if let Some(query) = state.queries.get_mut(&subscription_id) {
+                    query.last_cursor = Some(cursor);
                 }
             }
             state.ready.insert(subscription_id.clone());
@@ -777,7 +906,7 @@ impl SharedStore {
             let _ = self.ready_tx.send(state.ready.clone());
         }
         for update in updates {
-            let _ = self.updates_tx.send(update);
+            let _ = self.updates_tx.send(StoreEvent::Update(update));
         }
         Ok(())
     }
@@ -934,8 +1063,55 @@ impl SharedStore {
             .unwrap_or_default()
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<StoreUpdate> {
+    pub fn subscribe(&self) -> broadcast::Receiver<StoreEvent> {
         self.updates_tx.subscribe()
+    }
+
+    /// Route a protocol error frame that refuses or interrupts a replay to the
+    /// subscription that owns it, ending its delivery.
+    ///
+    /// Errors with any other code are not delivery boundaries and are left to
+    /// the connection-wide socket-issue channel.
+    ///
+    /// `replay-lagged` is the only refusal that names a position to resume
+    /// from, so it becomes the resume point. Every other refusal rejects the
+    /// cursor we were holding, which must not come back on the next reconnect.
+    pub async fn apply_error_frame(&self, error: &ProtocolErrorFrame) {
+        let (Some(code), Some(subscription_id)) = (
+            GapCode::from_wire(&error.code),
+            error.subscription_id.as_deref(),
+        ) else {
+            return;
+        };
+        let view = {
+            let mut state = self.state.write().await;
+            let Some(query) = state.queries.get_mut(subscription_id) else {
+                return;
+            };
+            query.last_cursor = error.recover_from.clone();
+            query.effective_query.view.clone()
+        };
+        let _ = self.updates_tx.send(StoreEvent::Gap {
+            subscription_id: subscription_id.to_string(),
+            view,
+            gap: StreamGap {
+                code,
+                recover_from: error.recover_from.clone(),
+                replay_window: error.replay_window.clone(),
+            },
+        });
+    }
+
+    /// The cursor to resume `subscription_id` from after a reconnect, or
+    /// `None` when the view has delivered no cursor.
+    pub async fn resume_cursor(&self, subscription_id: &str) -> Option<String> {
+        self.state
+            .read()
+            .await
+            .queries
+            .get(subscription_id)?
+            .last_cursor
+            .clone()
     }
 }
 
@@ -1064,6 +1240,7 @@ impl Clone for SharedStore {
             ready_tx: self.ready_tx.clone(),
             ready_rx: self.ready_rx.clone(),
             config: self.config.clone(),
+            replayable: self.replayable.clone(),
         }
     }
 }
@@ -1092,6 +1269,7 @@ mod tests {
                 query: SubscriptionQuery::new("Account/list"),
                 mode: Mode::List,
                 sort: Some(sort),
+                replay_window: None,
             })
             .await
             .unwrap();
@@ -1202,6 +1380,7 @@ mod tests {
                 data,
                 append,
                 seq,
+                offset: None,
             },
             Operation::Patch => ServerFrame::Patch {
                 protocol_version: PROTOCOL_VERSION,
@@ -1212,6 +1391,7 @@ mod tests {
                 data,
                 append,
                 seq,
+                offset: None,
             },
             other => panic!("unsupported live frame operation {other:?}"),
         }
@@ -1334,7 +1514,9 @@ mod tests {
 
         assert_eq!(store.keys_for_subscription("second").await, ["k"]);
         assert_eq!(entity(&store, "k").await, Some(json!({"v": "new"})));
-        let update = updates.try_recv().unwrap();
+        let StoreEvent::Update(update) = updates.try_recv().unwrap() else {
+            panic!("expected an update")
+        };
         assert_eq!(update.subscription_id, "second");
         assert_eq!(update.data, Some(json!({"v": "new"})));
         // `createRichUpdate(key, null, previousValue)` — a `created` update.

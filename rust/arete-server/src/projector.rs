@@ -20,6 +20,7 @@ pub struct Projector {
     entity_cache: EntityCache,
     mutations_rx: mpsc::Receiver<MutationBatch>,
     snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
+    journal: Option<Arc<crate::journal::EventJournal>>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -39,6 +40,7 @@ impl Projector {
             entity_cache,
             mutations_rx,
             snapshot_runtime: None,
+            journal: None,
             metrics,
         }
     }
@@ -56,6 +58,7 @@ impl Projector {
             entity_cache,
             mutations_rx,
             snapshot_runtime: None,
+            journal: None,
         }
     }
 
@@ -65,6 +68,12 @@ impl Projector {
         snapshot_runtime: crate::snapshot::SnapshotRuntime,
     ) -> Self {
         self.snapshot_runtime = Some(snapshot_runtime);
+        self
+    }
+
+    /// Retain published events for replayable append subscriptions.
+    pub fn with_journal(mut self, journal: Arc<crate::journal::EventJournal>) -> Self {
+        self.journal = Some(journal);
         self
     }
 
@@ -211,7 +220,16 @@ impl Projector {
             // Extract _seq from the patch data to include in the frame
             let seq = slot_context.map(|ctx| ctx.to_seq_string());
 
-            let frame = SourceFrame {
+            // Replayable append views carry the offset the record is about to
+            // take, so a live subscriber can checkpoint the same cursor a
+            // replay would hand it. The frame is built inside the journal's
+            // lock so the published offset is always the one the record gets.
+            let journal = self
+                .journal
+                .as_ref()
+                .filter(|journal| journal.is_enabled() && spec.mode == Mode::Append);
+
+            let mut frame = SourceFrame {
                 mode: spec.mode,
                 export: spec.id.clone(),
                 op: "patch",
@@ -219,11 +237,33 @@ impl Projector {
                 data: wire_data,
                 append: append.clone(),
                 seq,
+                offset: None,
             };
 
-            json_buffer.clear();
-            serde_json::to_writer(&mut *json_buffer, &frame)?;
-            let payload = Arc::new(Bytes::copy_from_slice(json_buffer));
+            let retained = match journal {
+                Some(journal) => {
+                    journal
+                        .append_with(&spec.id, &key, |offset| {
+                            frame.offset = Some(offset);
+                            json_buffer.clear();
+                            serde_json::to_writer(&mut *json_buffer, &frame)?;
+                            Ok::<_, anyhow::Error>(Arc::new(Bytes::copy_from_slice(json_buffer)))
+                        })
+                        .await?
+                }
+                None => None,
+            };
+            let payload = match retained {
+                Some((_offset, payload)) => payload,
+                // No tape, or a sealed one: the event still publishes, it just
+                // carries no position to resume from.
+                None => {
+                    frame.offset = None;
+                    json_buffer.clear();
+                    serde_json::to_writer(&mut *json_buffer, &frame)?;
+                    Arc::new(Bytes::copy_from_slice(json_buffer))
+                }
+            };
 
             self.entity_cache
                 .upsert_with_append(&spec.id, &key, projected, &frame.append)
