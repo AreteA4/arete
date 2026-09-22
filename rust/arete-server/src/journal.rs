@@ -211,15 +211,26 @@ impl Append {
     }
 }
 
-/// The decode site a retained event came from.
+/// Where a retained event sat in the stream.
 ///
-/// A replay of the same slot produces the same `(slot, key, occurrence)` for
-/// the same event, which is the only identity that survives: the payload
-/// carries a wall-clock timestamp, so re-decoded bytes never match.
+/// `slot` and `index` are its position — `index` being the transaction within
+/// the slot, or the write version for an account update. `occurrence` is the
+/// decode site within that transaction, absent for account-driven records,
+/// which have none.
+///
+/// A replay of the same slot reproduces all three for the same event, which is
+/// the only identity that survives: the payload carries a wall-clock
+/// timestamp, so re-decoded bytes never match.
+///
+/// The position is recorded even without an occurrence, because the dedup scan
+/// needs to know which records belong to the resumed slot — an account record
+/// between two instruction events must not be read as the end of it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventOrigin {
     pub slot: u64,
-    pub occurrence: String,
+    pub index: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<String>,
 }
 
 impl JournalRecord {
@@ -388,16 +399,31 @@ impl ViewJournal {
         if overlap_slot != Some(origin.slot) {
             return false;
         }
+        // An occurrence names a decode site within one transaction, so it
+        // repeats across the transactions of a slot. Without the transaction
+        // index, a later transaction touching the same key from the same
+        // decode path would be mistaken for the earlier one and dropped.
+        let Some(occurrence) = origin.occurrence.as_deref() else {
+            return false;
+        };
         for record in self.records.iter().rev() {
-            match record.origin.as_ref() {
-                Some(retained) if retained.slot == origin.slot => {
-                    if retained.occurrence == origin.occurrence && record.key == key {
-                        return true;
-                    }
-                }
-                // A record from another slot, or one with no decode site at
-                // all, ends the overlap.
-                _ => return false,
+            let Some(retained) = record.origin.as_ref() else {
+                // No position at all: nothing to compare and nothing to say
+                // about where the overlap ends.
+                return false;
+            };
+            if retained.slot != origin.slot {
+                // Left the resumed slot; nothing before it can repeat.
+                return false;
+            }
+            // Account-driven records have no decode site. They are suppressed
+            // upstream by version dominance, and they sit between instruction
+            // events, so the scan passes over them rather than stopping.
+            if retained.index == origin.index
+                && retained.occurrence.as_deref() == Some(occurrence)
+                && record.key == key
+            {
+                return true;
             }
         }
         false

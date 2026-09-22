@@ -192,13 +192,11 @@ impl Projector {
         // What lets a resume recognise an event it already retained. Needs the
         // slot as well as the decode site: an occurrence is only unique within
         // the transaction it came from.
-        let origin = match (slot_context, occurrence) {
-            (Some(ctx), Some(occurrence)) => Some(crate::journal::EventOrigin {
-                slot: ctx.slot,
-                occurrence,
-            }),
-            _ => None,
-        };
+        let origin = slot_context.map(|ctx| crate::journal::EventOrigin {
+            slot: ctx.slot,
+            index: ctx.slot_index,
+            occurrence,
+        });
 
         // Inject _seq for recency sorting if slot context is available
         if let Some(ctx) = slot_context {

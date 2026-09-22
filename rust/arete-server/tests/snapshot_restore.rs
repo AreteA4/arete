@@ -145,6 +145,23 @@ fn make_projector(
     (tx, projector)
 }
 
+/// A batch with a stream position but no decode site, as an account update
+/// has. These sit between instruction events on the tape.
+fn token_account_write(slot: u64, write_version: u64, id: &str, price: u64) -> MutationBatch {
+    MutationBatch::with_slot_context(
+        vec![Mutation {
+            export: "Token".to_string(),
+            key: json!(id),
+            patch: json!({"id": id, "price": price}),
+            append: vec![],
+            occurrence: None,
+        }]
+        .into_iter()
+        .collect(),
+        SlotContext::new(slot, write_version),
+    )
+}
+
 /// A batch whose events carry a decode site, as an instruction-sourced one
 /// does. `txn` distinguishes transactions within the slot.
 fn token_events(slot: u64, txn: u64, events: &[(&str, u64, &str)]) -> MutationBatch {
@@ -1412,14 +1429,22 @@ async fn a_resume_does_not_retain_the_overlap_twice() {
     flush_projector(&tx2).await;
 
     let after = journal2.replay_after("Token/append", None).await.unwrap();
-    let identities: Vec<(u64, String, String)> = after
+    let identities: Vec<(u64, u64, String, String)> = after
         .iter()
         .map(|record| {
             let origin = record
                 .origin
                 .as_ref()
                 .expect("a decoded event has an origin");
-            (origin.slot, origin.occurrence.clone(), record.key.clone())
+            (
+                origin.slot,
+                origin.index,
+                origin
+                    .occurrence
+                    .clone()
+                    .expect("a decoded event has a decode site"),
+                record.key.clone(),
+            )
         })
         .collect();
 
@@ -1432,13 +1457,196 @@ async fn a_resume_does_not_retain_the_overlap_twice() {
         "every event appears once: {identities:?}"
     );
     assert!(
-        identities.contains(&(101, "ix:0".to_string(), "mint3".to_string())),
+        identities.contains(&(101, 1, "ix:0".to_string(), "mint3".to_string())),
         "an event from the resumed slot that was not yet retained must land: \
          {identities:?}"
     );
     assert!(
-        identities.contains(&(102, "ix:0".to_string(), "mint1".to_string())),
+        identities.contains(&(102, 0, "ix:0".to_string(), "mint1".to_string())),
         "and the stream continues past the overlap: {identities:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A decode site names a path within one transaction, so it repeats across the
+/// transactions of a slot. Two of them touching the same key from the same
+/// path are different events, and mistaking the second for the first drops
+/// genuinely new work.
+#[tokio::test]
+async fn two_transactions_sharing_a_decode_site_are_not_one_event() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("journal-resume-txn");
+    let config = config_for(&dir);
+    let spec = make_spec("Token");
+    let view_index = make_append_view_index();
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let journal = enabled_journal();
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache.clone(),
+        &view_index,
+        journal.clone(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(
+        projector
+            .with_snapshot_runtime(service.runtime())
+            .with_journal(journal.clone())
+            .run(),
+    );
+    let vm = Arc::new(StdMutex::new(VmContext::new()));
+    let slot_tracker = SlotTracker::new();
+    slot_tracker.record(120);
+    service.runtime().register_runtime(vm, slot_tracker);
+
+    // Transaction 0 of slot 101 is retained before the cut.
+    tx.send(token_events(101, 0, &[("mint1", 11, "ix:0")]))
+        .await
+        .unwrap();
+    flush_projector(&tx).await;
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Shutdown)
+        .await
+        .unwrap());
+
+    let view_index2 = make_append_view_index();
+    let entity_cache2 = EntityCache::new();
+    let (tx2, projector2) = make_projector(&view_index2, &entity_cache2);
+    let journal2 = enabled_journal();
+    let service2 = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache2.clone(),
+        &view_index2,
+        journal2.clone(),
+        tx2.clone(),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(
+        projector2
+            .with_snapshot_runtime(service2.runtime())
+            .with_journal(journal2.clone())
+            .run(),
+    );
+    service2.runtime().take_restored();
+
+    // The resume re-delivers transaction 0 — a duplicate — and then
+    // transaction 4, which touches the same key from the same decode path and
+    // is a different event entirely.
+    tx2.send(token_events(101, 0, &[("mint1", 11, "ix:0")]))
+        .await
+        .unwrap();
+    tx2.send(token_events(101, 4, &[("mint1", 99, "ix:0")]))
+        .await
+        .unwrap();
+    flush_projector(&tx2).await;
+
+    let indexes: Vec<u64> = journal2
+        .replay_after("Token/append", None)
+        .await
+        .unwrap()
+        .iter()
+        .map(|record| record.origin.as_ref().unwrap().index)
+        .collect();
+    assert_eq!(
+        indexes,
+        vec![0, 4],
+        "the re-delivered transaction is dropped and the new one is kept"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Account-driven records have a stream position but no decode site, and they
+/// sit between instruction events. Reading one as the end of the resumed slot
+/// stops the scan before it reaches the record it was looking for.
+#[tokio::test]
+async fn an_account_record_does_not_end_the_overlap_scan() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("journal-resume-account");
+    let config = config_for(&dir);
+    let spec = make_spec("Token");
+    let view_index = make_append_view_index();
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let journal = enabled_journal();
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache.clone(),
+        &view_index,
+        journal.clone(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(
+        projector
+            .with_snapshot_runtime(service.runtime())
+            .with_journal(journal.clone())
+            .run(),
+    );
+    let vm = Arc::new(StdMutex::new(VmContext::new()));
+    let slot_tracker = SlotTracker::new();
+    slot_tracker.record(120);
+    service.runtime().register_runtime(vm, slot_tracker);
+
+    tx.send(token_events(101, 0, &[("mint1", 11, "ix:0")]))
+        .await
+        .unwrap();
+    // An account write lands after it, in the same slot.
+    tx.send(token_account_write(101, 7, "mint9", 5))
+        .await
+        .unwrap();
+    flush_projector(&tx).await;
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Shutdown)
+        .await
+        .unwrap());
+
+    let view_index2 = make_append_view_index();
+    let entity_cache2 = EntityCache::new();
+    let (tx2, projector2) = make_projector(&view_index2, &entity_cache2);
+    let journal2 = enabled_journal();
+    let service2 = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache2.clone(),
+        &view_index2,
+        journal2.clone(),
+        tx2.clone(),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(
+        projector2
+            .with_snapshot_runtime(service2.runtime())
+            .with_journal(journal2.clone())
+            .run(),
+    );
+    service2.runtime().take_restored();
+
+    tx2.send(token_events(101, 0, &[("mint1", 11, "ix:0")]))
+        .await
+        .unwrap();
+    flush_projector(&tx2).await;
+
+    assert_eq!(
+        journal2
+            .replay_after("Token/append", None)
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "the account record must not hide the retained instruction event"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
