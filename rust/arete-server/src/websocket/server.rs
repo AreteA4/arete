@@ -20,7 +20,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -225,6 +225,19 @@ async fn send_protocol_issue(
     }
 }
 
+/// Send an already-built issue, for refusals that carry structured detail.
+async fn send_prepared_issue(
+    client_id: Uuid,
+    client_manager: &ClientManager,
+    metrics: &WsMetrics,
+    issue: SocketIssueMessage,
+) {
+    metrics.protocol_error(&issue.code);
+    if let Ok(json) = serde_json::to_string(&issue) {
+        let _ = client_manager.send_text_to_client(client_id, json).await;
+    }
+}
+
 fn key_class_label(key_class: arete_auth::KeyClass) -> &'static str {
     match key_class {
         arete_auth::KeyClass::Secret => "secret",
@@ -293,6 +306,7 @@ struct SubscriptionContext {
     entity_cache: EntityCache,
     view_index: Arc<ViewIndex>,
     usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    journal: Option<Arc<crate::journal::EventJournal>>,
     metrics: WsMetrics,
     /// Cancelled when the server stops; every session ends through its normal
     /// cleanup path rather than being dropped mid-flight.
@@ -309,6 +323,7 @@ pub struct WebSocketServer {
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
     rate_limit_config: Option<RateLimitConfig>,
+    journal: Option<Arc<crate::journal::EventJournal>>,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -332,6 +347,7 @@ impl WebSocketServer {
             auth_plugin: Arc::new(crate::websocket::auth::AllowAllAuthPlugin),
             usage_emitter: None,
             rate_limit_config: None,
+            journal: None,
             metrics,
         }
     }
@@ -353,6 +369,7 @@ impl WebSocketServer {
             auth_plugin: Arc::new(crate::websocket::auth::AllowAllAuthPlugin),
             usage_emitter: None,
             rate_limit_config: None,
+            journal: None,
         }
     }
 
@@ -368,6 +385,12 @@ impl WebSocketServer {
 
     pub fn with_usage_emitter(mut self, usage_emitter: Arc<dyn WebSocketUsageEmitter>) -> Self {
         self.usage_emitter = Some(usage_emitter);
+        self
+    }
+
+    /// Serve replayable append subscriptions from the retained event journal.
+    pub fn with_journal(mut self, journal: Arc<crate::journal::EventJournal>) -> Self {
+        self.journal = Some(journal);
         self
     }
 
@@ -414,6 +437,7 @@ impl WebSocketServer {
             max_clients: self.max_clients,
             auth_plugin: self.auth_plugin,
             usage_emitter: self.usage_emitter,
+            journal: self.journal,
             metrics,
             shutdown: CancellationToken::new(),
             sessions: TaskTracker::new(),
@@ -438,6 +462,7 @@ pub(crate) struct ConnectionAcceptor {
     max_clients: usize,
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     usage_emitter: Option<Arc<dyn WebSocketUsageEmitter>>,
+    journal: Option<Arc<crate::journal::EventJournal>>,
     metrics: WsMetrics,
     shutdown: CancellationToken,
     /// Sessions spawned by [`serve_listener`](Self::serve_listener), so a
@@ -489,6 +514,7 @@ impl ConnectionAcceptor {
             entity_cache: self.entity_cache.clone(),
             view_index: self.view_index.clone(),
             usage_emitter: self.usage_emitter.clone(),
+            journal: self.journal.clone(),
             metrics: self.metrics.clone(),
             shutdown: self.shutdown.clone(),
         };
@@ -776,15 +802,31 @@ async fn handle_connection(
                         .client_manager
                         .remove_client_subscription(client_id, &subscription_id)
                         .await;
-                    send_protocol_issue(
-                        client_id,
-                        &context.client_manager,
-                        &context.metrics,
-                        Some(subscription_id),
-                        "subscription-rejected",
-                        error.to_string(),
-                    )
-                    .await;
+                    // A refusal that already knows what to tell the client
+                    // (an expired cursor, a changed epoch) keeps its own
+                    // frame; anything else is a generic rejection.
+                    match error.downcast::<RejectedSubscription>() {
+                        Ok(rejected) => {
+                            send_prepared_issue(
+                                client_id,
+                                &context.client_manager,
+                                &context.metrics,
+                                rejected.0,
+                            )
+                            .await;
+                        }
+                        Err(error) => {
+                            send_protocol_issue(
+                                client_id,
+                                &context.client_manager,
+                                &context.metrics,
+                                Some(subscription_id),
+                                "subscription-rejected",
+                                error.to_string(),
+                            )
+                            .await;
+                        }
+                    }
                     continue;
                 }
 
@@ -1155,6 +1197,24 @@ async fn attach_client_to_bus(
             .and_then(|pipeline| pipeline.limit);
     }
 
+    // A retained tape takes precedence for append views: it is the only
+    // delivery that can honour a cursor. Without one, fall through to the
+    // previous latest-state behaviour.
+    let journal = context
+        .journal
+        .clone()
+        .filter(|journal| journal.is_enabled() && view_spec.mode == Mode::Append);
+    if let Some(journal) = journal {
+        return attach_journal_subscription(
+            context,
+            subscription,
+            view_spec,
+            journal,
+            cancel_token,
+        )
+        .await;
+    }
+
     if view_spec.mode == Mode::State && !view_spec.is_derived() {
         attach_state_subscription(context, subscription, view_spec, cancel_token).await
     } else {
@@ -1392,10 +1452,412 @@ async fn attach_collection_subscription(
     Ok(())
 }
 
+/// A subscription refused for a reason the client needs spelled out.
+///
+/// Attach paths that return this get the registration released by the
+/// connection loop, the same as any other failure, while the client still
+/// receives the specific error rather than a generic `subscription-rejected`.
+/// Sending the frame and returning `Ok` instead would leave a registered
+/// subscription with nothing attached: it would hold a slot against the
+/// client's limit and make the advertised "resubscribe" remediation fail with
+/// `duplicate-subscription-id`.
+#[derive(Debug)]
+pub(crate) struct RejectedSubscription(pub SocketIssueMessage);
+
+impl RejectedSubscription {
+    fn into_error(issue: SocketIssueMessage) -> anyhow::Error {
+        anyhow::Error::new(Self(issue))
+    }
+}
+
+impl std::fmt::Display for RejectedSubscription {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0.message)
+    }
+}
+
+impl std::error::Error for RejectedSubscription {}
+
+/// Deliver an append view as an event tape: replay the retained records after
+/// the cursor, then forward live frames.
+///
+/// This deliberately does not recompute membership from the entity cache the
+/// way [`attach_collection_subscription`] does. The cache folds each patch
+/// into the resident entity, so a membership diff cannot express "these three
+/// events happened"; the retained records can.
+async fn attach_journal_subscription(
+    context: &SubscriptionContext,
+    subscription: Subscription,
+    view_spec: ViewSpec,
+    journal: Arc<crate::journal::EventJournal>,
+    cancel_token: CancellationToken,
+) -> Result<()> {
+    let view_id = view_spec.id.clone();
+    let subscription_id = subscription.subscription_id.clone();
+
+    // A tape has no membership window, so `take`/`skip` cannot mean what they
+    // mean on a list view. Refuse them rather than accept and ignore them.
+    if subscription.query.take.is_some()
+        || subscription.query.skip.is_some()
+        || subscription.query.snapshot_limit.is_some()
+    {
+        return Err(RejectedSubscription::into_error(SocketIssueMessage::protocol(
+            Some(subscription_id),
+            "invalid-subscription",
+            format!(
+                "take, skip and snapshotLimit are window options and do not apply to the replayable view {view_id}"
+            ),
+        )));
+    }
+
+    // Reject a malformed cursor rather than silently replaying from the start,
+    // which would look like success and duplicate everything.
+    let cursor = match subscription.query.after.as_deref() {
+        Some(raw) => match crate::journal::Cursor::parse(raw) {
+            Some(cursor) => Some(cursor),
+            None => {
+                return Err(RejectedSubscription::into_error(
+                    SocketIssueMessage::protocol(
+                        Some(subscription_id),
+                        "invalid-cursor",
+                        format!(
+                            "`after` must be an {{epoch}}:{{offset}} replay cursor for view {view_id}, got {raw:?}"
+                        ),
+                    ),
+                ));
+            }
+        },
+        None => None,
+    };
+
+    // Subscribe before reading the journal so anything published during the
+    // replay is still delivered; the offset filter below drops the overlap.
+    let mut receiver = context.bus_manager.get_or_create_list_bus(&view_id).await;
+
+    let replayed = match journal.replay_after(&view_id, cursor.as_ref()).await {
+        Ok(records) => records,
+        Err(error) => {
+            return Err(RejectedSubscription::into_error(
+                SocketIssueMessage::replay_refused(Some(subscription_id), &error),
+            ));
+        }
+    };
+
+    let frame = SubscribedFrame::new(
+        subscription.subscription_id.clone(),
+        subscription.query.clone(),
+        view_spec.mode,
+        extract_sort_config(&view_spec),
+    )
+    .with_replay_window(journal.window(&view_id).await);
+    send_control_frame(context, &frame, &view_id)?;
+
+    // Everything past the acknowledgement runs on its own task. The replay can
+    // be long and applies real backpressure, and `attach_client_to_bus` is
+    // awaited directly on the connection's inbound loop — doing it there would
+    // block unsubscribe, auth refresh and pong for the whole replay.
+    let task_context = context.clone();
+    let task_subscription_id = subscription.subscription_id.clone();
+    let task_query = subscription.query.clone();
+    let task_epoch = journal.epoch().await;
+    let span_view = view_id.clone();
+    tokio::spawn(
+        async move {
+            let mut last_sent = cursor.map(|cursor| cursor.offset);
+            // Frames that published while the replay was still running. The
+            // bus is a bounded broadcast, so it has to be drained as we go or
+            // a busy view laps us before the replay finishes.
+            let mut pending: VecDeque<Arc<BusMessage>> = VecDeque::new();
+            let mut lagged: Option<u64> = None;
+
+            for record in replayed {
+                if cancel_token.is_cancelled() {
+                    return;
+                }
+                drain_available(&mut receiver, &mut pending, &mut lagged);
+                if journal_record_matches(&task_query, &record)
+                    && send_scoped_source_payload_async(
+                        &task_context,
+                        &task_subscription_id,
+                        &span_view,
+                        record.payload,
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                // Advance past filtered records too: they were considered.
+                last_sent = Some(record.offset);
+            }
+
+            // Flush what arrived during the replay before going live, so the
+            // handover keeps offset order.
+            while let Some(envelope) = pending.pop_front() {
+                if !forward_live_frame(
+                    &task_context,
+                    &task_subscription_id,
+                    &span_view,
+                    &task_query,
+                    &envelope,
+                    &mut last_sent,
+                )
+                .await
+                {
+                    return;
+                }
+            }
+
+            if let Some(skipped) = lagged {
+                report_replay_gap(
+                    &task_context,
+                    &task_subscription_id,
+                    &span_view,
+                    &task_epoch,
+                    skipped,
+                    last_sent,
+                );
+                return;
+            }
+
+            loop {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => break,
+                    received = receiver.recv() => {
+                        let envelope = match received {
+                            Ok(envelope) => envelope,
+                            // A lagged tape is a gap. Report it with the last
+                            // offset delivered *before* the gap and stop
+                            // delivering on this subscription.
+                            //
+                            // Continuing would hand the consumer frames from
+                            // after the gap, advancing its checkpoint past
+                            // the skipped records so they could never be
+                            // replayed. Stopping is not a silent stall: the
+                            // consumer has an explicit error and a cursor
+                            // that recovers exactly what it missed.
+                            //
+                            // The registration is deliberately left alone.
+                            // Its lifecycle belongs to the connection loop,
+                            // which holds the only handle to
+                            // `active_subscriptions`; releasing half of it
+                            // here would desynchronise unsubscribe, the
+                            // duplicate-ID gate and close-time usage.
+                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                report_replay_gap(
+                                    &task_context,
+                                    &task_subscription_id,
+                                    &span_view,
+                                    &task_epoch,
+                                    skipped,
+                                    last_sent,
+                                );
+                                break;
+                            }
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        };
+
+                        if !forward_live_frame(
+                            &task_context,
+                            &task_subscription_id,
+                            &span_view,
+                            &task_query,
+                            &envelope,
+                            &mut last_sent,
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        .instrument(info_span!(
+            "ws.subscribe.replay",
+            client_id = %context.client_id,
+            view = %view_id
+        )),
+    );
+    Ok(())
+}
+
+/// Take whatever the bus already has without waiting, so a long replay cannot
+/// be lapped by a busy view.
+fn drain_available(
+    receiver: &mut broadcast::Receiver<Arc<BusMessage>>,
+    pending: &mut VecDeque<Arc<BusMessage>>,
+    lagged: &mut Option<u64>,
+) {
+    // Once a gap is known, everything still on the bus is on the far side of
+    // it. Buffering it would put post-gap frames in front of the lag report,
+    // advancing `last_sent` past the hole and making `recoverFrom` point
+    // after the very records it is supposed to recover.
+    if lagged.is_some() {
+        return;
+    }
+    // Bounded so a view publishing faster than the client drains cannot turn
+    // the buffer into an unbounded queue. Filling it is not itself a gap:
+    // nothing has been skipped at that instant, the buffer simply stopped
+    // accepting. Stop buffering and let the bus report the loss, with the
+    // count it actually measures, when delivery reaches it.
+    const MAX_PENDING: usize = 8_192;
+    loop {
+        if pending.len() >= MAX_PENDING {
+            return;
+        }
+        match receiver.try_recv() {
+            Ok(envelope) => pending.push_back(envelope),
+            Err(broadcast::error::TryRecvError::Empty)
+            | Err(broadcast::error::TryRecvError::Closed) => return,
+            Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                *lagged = Some(skipped);
+                return;
+            }
+        }
+    }
+}
+
+/// Whether a live frame was already delivered by the replay that preceded it.
+///
+/// The bus is subscribed before the tape is read, so a record published in
+/// between appears on both paths; without this the consumer sees it twice.
+/// Advances the high-water mark as a side effect.
+fn already_delivered(offset: Option<u64>, last_sent: &mut Option<u64>) -> bool {
+    let Some(offset) = offset else {
+        // A frame with no offset predates the tape, so it cannot have been
+        // replayed and must not move the mark.
+        return false;
+    };
+    if last_sent.is_some_and(|last| offset <= last) {
+        return true;
+    }
+    *last_sent = Some(offset);
+    false
+}
+
+/// Deliver one live frame, skipping anything the replay already sent.
+///
+/// Returns false when the subscription should end.
+async fn forward_live_frame(
+    context: &SubscriptionContext,
+    subscription_id: &str,
+    view_id: &str,
+    query: &SubscriptionQuery,
+    envelope: &Arc<BusMessage>,
+    last_sent: &mut Option<u64>,
+) -> bool {
+    let metadata = source_frame_metadata(&envelope.payload);
+    if already_delivered(metadata.offset, last_sent) {
+        return true;
+    }
+    if !live_frame_matches(query, &envelope.key, &envelope.payload) {
+        return true;
+    }
+    send_scoped_source_payload(context, subscription_id, view_id, envelope.payload.clone()).is_ok()
+}
+
+fn report_replay_gap(
+    context: &SubscriptionContext,
+    subscription_id: &str,
+    view_id: &str,
+    epoch: &crate::journal::JournalEpoch,
+    skipped: u64,
+    last_sent: Option<u64>,
+) {
+    warn!(
+        "Replay subscription {} lagged past {} records; stopping with a recovery cursor",
+        subscription_id, skipped
+    );
+    let recover_from = last_sent.map(|offset| crate::journal::Cursor {
+        epoch: epoch.clone(),
+        offset,
+    });
+    let _ = send_control_frame(
+        context,
+        &SocketIssueMessage::replay_lagged(
+            Some(subscription_id.to_string()),
+            skipped,
+            recover_from,
+        ),
+        view_id,
+    );
+}
+
+/// Apply the subscription's `key`, `partition` and `filters` to a retained
+/// record. A replay must honour the same predicates a live subscription does.
+fn journal_record_matches(
+    query: &SubscriptionQuery,
+    record: &crate::journal::JournalRecord,
+) -> bool {
+    live_frame_matches(query, &record.key, &record.payload)
+}
+
+fn live_frame_matches(query: &SubscriptionQuery, key: &str, payload: &[u8]) -> bool {
+    if !query.matches_key(key) {
+        return false;
+    }
+    if query.partition.is_none() && query.filters.is_empty() {
+        return true;
+    }
+    let Ok(frame) = serde_json::from_slice::<Value>(payload) else {
+        return false;
+    };
+    let Some(data) = frame.get("data") else {
+        return false;
+    };
+    if let Some(partition) = &query.partition {
+        if value_at_dot_path(data, "_partition") != Some(&Value::String(partition.clone())) {
+            return false;
+        }
+    }
+    query
+        .filters
+        .iter()
+        .all(|(path, expected)| value_at_dot_path(data, path) == Some(expected))
+}
+
+/// Awaiting variant of [`send_scoped_source_payload`], for replays that can
+/// exceed the client's send queue.
+async fn send_scoped_source_payload_async(
+    context: &SubscriptionContext,
+    subscription_id: &str,
+    view_id: &str,
+    payload: Arc<Bytes>,
+) -> Result<()> {
+    let mut value: Value = serde_json::from_slice(&payload)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("source frame is not an object"))?;
+    object.insert("protocolVersion".to_string(), Value::from(PROTOCOL_VERSION));
+    object.insert(
+        "subscriptionId".to_string(),
+        Value::String(subscription_id.to_string()),
+    );
+    let json = serde_json::to_vec(&value)?;
+    let compressed = maybe_compress(&json);
+    let bytes = compressed.as_bytes().len();
+    context
+        .client_manager
+        .send_compressed_async(context.client_id, compressed)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to send replayed frame: {error}"))?;
+    context.metrics.message_sent();
+    emit_update_sent_for_client(
+        &context.usage_emitter,
+        &context.client_manager,
+        context.client_id,
+        view_id,
+        bytes,
+    );
+    Ok(())
+}
+
 #[derive(Default)]
 struct SourceFrameMetadata {
     op: String,
     seq: Option<String>,
+    offset: Option<u64>,
 }
 
 fn source_frame_metadata(payload: &[u8]) -> SourceFrameMetadata {
@@ -1408,6 +1870,7 @@ fn source_frame_metadata(payload: &[u8]) -> SourceFrameMetadata {
                 .unwrap_or_default()
                 .to_string(),
             seq: value.get("seq").and_then(Value::as_str).map(str::to_string),
+            offset: value.get("offset").and_then(Value::as_u64),
         })
         .unwrap_or_default()
 }
@@ -2070,6 +2533,511 @@ mod tests {
         ] {
             let fixture: Value = serde_json::from_str(document).unwrap();
             assert!(fixture["name"].is_string());
+        }
+    }
+
+    fn append_frame(key: &str, data: Value) -> Arc<Bytes> {
+        let frame = json!({
+            "entity": "Trade/append",
+            "op": "patch",
+            "key": key,
+            "offset": 7,
+            "data": data,
+        });
+        Arc::new(Bytes::from(serde_json::to_vec(&frame).unwrap()))
+    }
+
+    /// A replayable subscription must honour the same predicates a live
+    /// collection subscription does; otherwise a filtered consumer receives
+    /// events outside the query it asked for.
+    #[test]
+    fn replay_delivery_applies_key_partition_and_filters() {
+        let matching = append_frame("pool1", json!({"_partition": "us", "side": "buy"}));
+        let other_partition = append_frame("pool1", json!({"_partition": "eu", "side": "buy"}));
+        let other_side = append_frame("pool1", json!({"_partition": "us", "side": "sell"}));
+
+        let unfiltered = SubscriptionQuery {
+            view: "Trade/append".to_string(),
+            ..Default::default()
+        };
+        assert!(live_frame_matches(&unfiltered, "pool1", &matching));
+        assert!(live_frame_matches(&unfiltered, "pool9", &matching));
+
+        let keyed = SubscriptionQuery {
+            view: "Trade/append".to_string(),
+            key: Some("pool1".to_string()),
+            ..Default::default()
+        };
+        assert!(live_frame_matches(&keyed, "pool1", &matching));
+        assert!(!live_frame_matches(&keyed, "pool2", &matching));
+
+        let partitioned = SubscriptionQuery {
+            view: "Trade/append".to_string(),
+            partition: Some("us".to_string()),
+            ..Default::default()
+        };
+        assert!(live_frame_matches(&partitioned, "pool1", &matching));
+        assert!(!live_frame_matches(&partitioned, "pool1", &other_partition));
+
+        let filtered = SubscriptionQuery {
+            view: "Trade/append".to_string(),
+            filters: [("side".to_string(), json!("buy"))].into_iter().collect(),
+            ..Default::default()
+        };
+        assert!(live_frame_matches(&filtered, "pool1", &matching));
+        assert!(!live_frame_matches(&filtered, "pool1", &other_side));
+    }
+
+    #[test]
+    fn a_frame_without_decodable_data_does_not_satisfy_a_filter() {
+        let filtered = SubscriptionQuery {
+            view: "Trade/append".to_string(),
+            filters: [("side".to_string(), json!("buy"))].into_iter().collect(),
+            ..Default::default()
+        };
+        let garbage = Arc::new(Bytes::from_static(b"not json"));
+        assert!(!live_frame_matches(&filtered, "pool1", &garbage));
+    }
+
+    /// The recovery cursor must be the last offset delivered *before* the
+    /// gap. Reporting the newest offset seen would step the consumer over
+    /// the skipped records permanently.
+    #[test]
+    fn replay_lagged_recovers_from_before_the_gap() {
+        let epoch = crate::journal::JournalEpoch::new();
+        let issue = SocketIssueMessage::replay_lagged(
+            Some("trades".to_string()),
+            37,
+            Some(crate::journal::Cursor {
+                epoch: epoch.clone(),
+                offset: 4180,
+            }),
+        );
+        assert_eq!(issue.code, "replay-lagged");
+        assert_eq!(issue.recover_from, Some(format!("{epoch}:4180")));
+        assert!(
+            issue.suggested_action.unwrap().contains("4180"),
+            "the consumer is told exactly which cursor recovers the gap"
+        );
+
+        // Nothing delivered yet: there is no pre-gap offset, so the whole
+        // retained window is the recovery.
+        let from_scratch = SocketIssueMessage::replay_lagged(Some("trades".to_string()), 9, None);
+        assert_eq!(from_scratch.recover_from, None);
+        assert!(from_scratch
+            .suggested_action
+            .unwrap()
+            .contains("without `after`"));
+    }
+
+    fn bus_message(key: &str) -> Arc<BusMessage> {
+        Arc::new(BusMessage {
+            key: key.to_string(),
+            entity: "Trade/append".to_string(),
+            payload: Arc::new(Bytes::from_static(b"{}")),
+        })
+    }
+
+    /// A long replay must keep the bus drained. The broadcast buffer is
+    /// bounded, so a busy view would otherwise lap the replay and the first
+    /// live `recv` would return `Lagged` — telling the client to resubscribe,
+    /// starting another long replay, which laps again.
+    #[tokio::test]
+    async fn draining_during_a_replay_keeps_a_busy_view_from_lapping_it() {
+        let (sender, mut receiver) = broadcast::channel::<Arc<BusMessage>>(16);
+        let mut pending = VecDeque::new();
+        let mut lagged = None;
+
+        // Publish more than the channel holds, draining as a replay would
+        // between sends.
+        for index in 0..48 {
+            sender.send(bus_message(&format!("k{index}"))).unwrap();
+            drain_available(&mut receiver, &mut pending, &mut lagged);
+        }
+
+        assert_eq!(lagged, None, "draining as we go means nothing is dropped");
+        assert_eq!(pending.len(), 48, "every published frame is buffered");
+    }
+
+    #[tokio::test]
+    async fn a_replay_that_never_drains_is_reported_as_a_gap() {
+        let (sender, mut receiver) = broadcast::channel::<Arc<BusMessage>>(8);
+        for index in 0..32 {
+            sender.send(bus_message(&format!("k{index}"))).unwrap();
+        }
+
+        let mut pending = VecDeque::new();
+        let mut lagged = None;
+        drain_available(&mut receiver, &mut pending, &mut lagged);
+
+        assert!(
+            lagged.is_some(),
+            "overflowing the bus is a gap, not silent truncation"
+        );
+    }
+
+    /// Everything still on the bus after a gap is on the far side of it.
+    /// Buffering it would put those frames in front of the lag report and
+    /// advance the recovery cursor past the records it is meant to recover.
+    #[tokio::test]
+    async fn nothing_after_a_gap_is_buffered_ahead_of_the_report() {
+        let (sender, mut receiver) = broadcast::channel::<Arc<BusMessage>>(8);
+        let mut pending = VecDeque::new();
+        let mut lagged = None;
+
+        // Delivered and buffered normally.
+        sender.send(bus_message("before")).unwrap();
+        drain_available(&mut receiver, &mut pending, &mut lagged);
+        assert_eq!(pending.len(), 1);
+
+        // Overflow the bus: everything published from here is past the gap.
+        for index in 0..32 {
+            sender.send(bus_message(&format!("lost{index}"))).unwrap();
+        }
+        drain_available(&mut receiver, &mut pending, &mut lagged);
+        assert!(lagged.is_some());
+
+        // The bus still holds what survived the overflow, all of it past the
+        // gap. A later iteration of the replay loop drains again.
+        let buffered_at_gap = pending.len();
+        drain_available(&mut receiver, &mut pending, &mut lagged);
+        assert_eq!(
+            pending.len(),
+            buffered_at_gap,
+            "post-gap frames must not join the pre-gap flush"
+        );
+        assert_eq!(pending.front().unwrap().key, "before");
+    }
+    /// The bus is subscribed before the tape is read, so a record published
+    /// in that window arrives on both paths.
+    #[test]
+    fn the_seam_between_replay_and_live_neither_repeats_nor_skips() {
+        let mut last_sent = Some(4211);
+
+        assert!(
+            already_delivered(Some(4211), &mut last_sent),
+            "the record the replay ended on must not be sent twice"
+        );
+        assert!(already_delivered(Some(4100), &mut last_sent));
+        assert_eq!(last_sent, Some(4211), "a duplicate never moves the mark");
+
+        assert!(
+            !already_delivered(Some(4212), &mut last_sent),
+            "the next record is new"
+        );
+        assert_eq!(last_sent, Some(4212));
+
+        // A frame with no offset comes from a view with no tape; it cannot
+        // have been replayed, and must not disturb the mark.
+        assert!(!already_delivered(None, &mut last_sent));
+        assert_eq!(last_sent, Some(4212));
+    }
+
+    /// A subscription with no cursor has delivered nothing, so the first live
+    /// frame is not a duplicate.
+    #[test]
+    fn a_fresh_subscription_delivers_its_first_live_frame() {
+        let mut last_sent = None;
+        assert!(!already_delivered(Some(0), &mut last_sent));
+        assert_eq!(last_sent, Some(0));
+    }
+
+    /// End-to-end over a real socket: the pieces above are unit-tested
+    /// individually, but the thing a consumer actually does — reconnect with
+    /// a stored cursor and keep reading — only exists once a subscription is
+    /// attached to a connection.
+    mod over_a_socket {
+        use super::*;
+        use crate::journal::{EventJournal, JournalConfig};
+        use crate::projector::Projector;
+        use crate::{MutationBatch, SlotContext};
+        use arete_interpreter::Mutation;
+        use futures_util::{SinkExt, StreamExt};
+        use std::time::Duration;
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio::sync::mpsc;
+        use tokio_tungstenite::tungstenite::Message;
+        use tokio_tungstenite::{client_async, WebSocketStream};
+
+        const RETAINED: u64 = 600;
+
+        fn append_index() -> ViewIndex {
+            let mut index = ViewIndex::new();
+            index.add_spec(ViewSpec {
+                id: "Trade/append".to_string(),
+                export: "Trade".to_string(),
+                mode: Mode::Append,
+                wire_format: Default::default(),
+                projection: Projection::all(),
+                filters: Filters::all(),
+                delivery: Delivery::default(),
+                pipeline: None,
+                source_view: None,
+            });
+            index
+        }
+
+        fn trade(index: u64) -> MutationBatch {
+            MutationBatch::with_slot_context(
+                vec![Mutation {
+                    export: "Trade".to_string(),
+                    key: json!(format!("pool{}", index % 4)),
+                    patch: json!({"trade": index}),
+                    append: vec![],
+                }]
+                .into_iter()
+                .collect(),
+                SlotContext::new(100 + index / 3, index % 3),
+            )
+        }
+
+        struct Harness {
+            addr: SocketAddr,
+            journal: Arc<EventJournal>,
+            tx: mpsc::Sender<MutationBatch>,
+        }
+
+        impl Harness {
+            async fn start() -> Self {
+                let view_index = Arc::new(append_index());
+                let entity_cache = EntityCache::new();
+                let bus_manager = BusManager::new();
+                let journal = Arc::new(EventJournal::new(JournalConfig {
+                    enabled: true,
+                    max_bytes_per_view: u64::MAX,
+                    max_records_per_view: 10_000,
+                    max_age: Duration::from_secs(3_600),
+                }));
+
+                let (tx, rx) = mpsc::channel::<MutationBatch>(256);
+                tokio::spawn(
+                    Projector::new(
+                        view_index.clone(),
+                        bus_manager.clone(),
+                        entity_cache.clone(),
+                        rx,
+                        #[cfg(feature = "otel")]
+                        None,
+                    )
+                    .with_journal(journal.clone())
+                    .run(),
+                );
+
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = WebSocketServer::new(
+                    addr,
+                    bus_manager,
+                    entity_cache,
+                    view_index,
+                    #[cfg(feature = "otel")]
+                    None,
+                )
+                .with_journal(journal.clone());
+                let (acceptor, _cleanup) = server.into_acceptor();
+                tokio::spawn(async move { acceptor.serve_listener(listener).await });
+
+                Self { addr, journal, tx }
+            }
+
+            async fn publish(&self, range: std::ops::Range<u64>) {
+                for index in range {
+                    self.tx.send(trade(index)).await.unwrap();
+                }
+                let (ack, wait) = oneshot::channel();
+                self.tx
+                    .send(MutationBatch::flush_marker(ack))
+                    .await
+                    .unwrap();
+                wait.await.unwrap();
+            }
+
+            async fn connect(&self) -> WebSocketStream<TcpStream> {
+                let stream = TcpStream::connect(self.addr).await.unwrap();
+                client_async(format!("ws://{}/", self.addr), stream)
+                    .await
+                    .unwrap()
+                    .0
+            }
+        }
+
+        async fn next_frame(socket: &mut WebSocketStream<TcpStream>) -> Value {
+            loop {
+                let message = tokio::time::timeout(Duration::from_secs(10), socket.next())
+                    .await
+                    .expect("the server answers within the timeout")
+                    .expect("the stream stays open")
+                    .expect("a readable frame");
+                // Control and data frames arrive as binary; issue frames as
+                // text. Both are JSON.
+                let bytes = match &message {
+                    Message::Text(text) => text.as_bytes(),
+                    Message::Binary(bytes) => bytes.as_ref(),
+                    _ => continue,
+                };
+                return serde_json::from_slice(bytes).expect("frames are JSON");
+            }
+        }
+
+        /// Collect `count` event frames, ignoring anything else on the wire.
+        async fn collect_trades(socket: &mut WebSocketStream<TcpStream>, count: usize) -> Vec<u64> {
+            let mut offsets = Vec::with_capacity(count);
+            while offsets.len() < count {
+                let frame = next_frame(socket).await;
+                assert_ne!(
+                    frame["type"], "error",
+                    "no error frame should interrupt delivery: {frame}"
+                );
+                if let Some(offset) = frame["offset"].as_u64() {
+                    offsets.push(offset);
+                }
+            }
+            offsets
+        }
+
+        /// The headline claim: reconnecting with a stored cursor delivers every
+        /// event published since it, in order, and then continues live without
+        /// a duplicate or a hole at the seam.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn a_reconnect_replays_from_a_cursor_and_continues_live() {
+            let harness = Harness::start().await;
+            harness.publish(0..RETAINED).await;
+
+            let cursor = harness.journal.window("Trade/append").await;
+            let stored = format!("{}:{}", cursor.epoch, 99);
+
+            let mut socket = harness.connect().await;
+            socket
+                .send(Message::Text(
+                    json!({
+                        "type": "subscribe",
+                        "protocolVersion": 2,
+                        "subscriptionId": "trades",
+                        "query": {"view": "Trade/append", "after": stored},
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+
+            let ack = next_frame(&mut socket).await;
+            assert_eq!(ack["op"], "subscribed", "unexpected ack: {ack}");
+            assert_eq!(ack["replayWindow"]["next"], json!(RETAINED));
+
+            // Well over the 500 a single read or buffer would cover.
+            let replayed = collect_trades(&mut socket, (RETAINED - 100) as usize).await;
+            assert_eq!(
+                replayed,
+                (100..RETAINED).collect::<Vec<_>>(),
+                "every event after the cursor, in order, exactly once"
+            );
+
+            // Published only now, so these can only arrive over the live path.
+            harness.publish(RETAINED..RETAINED + 40).await;
+            let live = collect_trades(&mut socket, 40).await;
+            assert_eq!(
+                live,
+                (RETAINED..RETAINED + 40).collect::<Vec<_>>(),
+                "the live stream resumes exactly where the replay stopped"
+            );
+
+            socket.close(None).await.ok();
+        }
+
+        /// Events published *during* the replay must still arrive. The replay
+        /// and the live subscription are separate reads of the same tape, and
+        /// the seam between them is where a naive implementation drops or
+        /// repeats.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn events_published_during_a_replay_are_not_lost() {
+            let harness = Harness::start().await;
+            harness.publish(0..RETAINED).await;
+
+            let epoch = harness.journal.window("Trade/append").await.epoch;
+            let mut socket = harness.connect().await;
+            socket
+                .send(Message::Text(
+                    json!({
+                        "type": "subscribe",
+                        "protocolVersion": 2,
+                        "subscriptionId": "trades",
+                        "query": {"view": "Trade/append", "after": format!("{epoch}:0")},
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let ack = next_frame(&mut socket).await;
+            assert_eq!(ack["op"], "subscribed", "unexpected ack: {ack}");
+
+            // Keep publishing while the replay is still draining.
+            harness.publish(RETAINED..RETAINED + 200).await;
+
+            let total = (RETAINED + 200 - 1) as usize;
+            let delivered = collect_trades(&mut socket, total).await;
+            assert_eq!(
+                delivered,
+                (1..RETAINED + 200).collect::<Vec<_>>(),
+                "replay and live output join without a gap or a repeat"
+            );
+
+            socket.close(None).await.ok();
+        }
+
+        /// A cursor from another tape lifetime is refused rather than served
+        /// as a continuation, and the refusal releases the subscription id.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_stale_epoch_is_refused_and_frees_the_subscription_id() {
+            let harness = Harness::start().await;
+            harness.publish(0..50).await;
+
+            let mut socket = harness.connect().await;
+            socket
+                .send(Message::Text(
+                    json!({
+                        "type": "subscribe",
+                        "protocolVersion": 2,
+                        "subscriptionId": "trades",
+                        "query": {
+                            "view": "Trade/append",
+                            "after": format!("{}:10", crate::journal::JournalEpoch::new()),
+                        },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+
+            let error = next_frame(&mut socket).await;
+            assert_eq!(error["type"], "error", "unexpected frame: {error}");
+            assert_eq!(error["code"], "cursor-epoch-changed");
+
+            // The documented recovery is to resubscribe without a cursor. That
+            // only works if the refused attempt released the id.
+            socket
+                .send(Message::Text(
+                    json!({
+                        "type": "subscribe",
+                        "protocolVersion": 2,
+                        "subscriptionId": "trades",
+                        "query": {"view": "Trade/append"},
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let ack = next_frame(&mut socket).await;
+            assert_eq!(
+                ack["op"], "subscribed",
+                "the refused id must be reusable: {ack}"
+            );
+
+            assert_eq!(collect_trades(&mut socket, 50).await.len(), 50);
+            socket.close(None).await.ok();
         }
     }
 }

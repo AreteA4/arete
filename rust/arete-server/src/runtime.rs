@@ -238,6 +238,31 @@ impl Runtime {
             let entity_cache = EntityCache::new();
             entity_cache_handle = Some(entity_cache.clone());
 
+            // Retained event tape for replayable append subscriptions. The
+            // builder wins over the process env so one host can enable replay
+            // for a single deployment and size it independently. A bad
+            // configuration disables replay rather than failing startup, the
+            // same posture snapshots take below.
+            let journal_config = match self.config.journal.clone() {
+                Some(config) => config,
+                None => match crate::journal::JournalConfig::from_env() {
+                    Ok(config) => config,
+                    Err(e) => {
+                        error!("Invalid journal configuration; event replay disabled: {e:#}");
+                        crate::journal::JournalConfig::default()
+                    }
+                },
+            };
+            let journal = Arc::new(crate::journal::EventJournal::new(journal_config));
+            if journal.is_enabled() {
+                info!(
+                    max_bytes_per_view = journal.config().max_bytes_per_view,
+                    max_records_per_view = journal.config().max_records_per_view,
+                    max_age_secs = journal.config().max_age.as_secs(),
+                    "Event replay enabled for append views"
+                );
+            }
+
             // Restore state from the latest snapshot (when enabled) before the
             // WebSocket server spawns, so the first client's snapshot-on-subscribe
             // is already warm. The VM portion is stashed for the generated
@@ -259,6 +284,7 @@ impl Runtime {
                         spec,
                         entity_cache.clone(),
                         &self.view_index,
+                        journal.clone(),
                         mutations_tx.clone(),
                     )
                     .await
@@ -294,6 +320,7 @@ impl Runtime {
                 Some(runtime) => projector.with_snapshot_runtime(runtime),
                 None => projector,
             };
+            let projector = projector.with_journal(journal.clone());
 
             // The projector runs for the lifetime of the server. Giving the
             // task a span would make that span the parent of every batch
@@ -330,6 +357,7 @@ impl Runtime {
                 self.view_index.clone(),
             );
 
+            ws_server = ws_server.with_journal(journal.clone());
             if let Some(max_clients) = self.websocket_max_clients {
                 ws_server = ws_server.with_max_clients(max_clients);
             }

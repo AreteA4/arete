@@ -39,6 +39,7 @@ pub mod health;
 mod http;
 pub mod http_health;
 pub mod http_server;
+pub mod journal;
 pub mod materialized_view;
 #[cfg(feature = "otel")]
 pub mod metrics;
@@ -66,6 +67,7 @@ pub use config::{
 pub use health::{HealthMonitor, SlotTracker, StreamStatus};
 pub use http_health::HttpHealthServer;
 pub use http_server::HttpServer;
+pub use journal::{EventJournal, JournalConfig, ReplayWindow};
 pub use materialized_view::{MaterializedView, MaterializedViewRegistry, ViewEffect};
 #[cfg(feature = "otel")]
 pub use metrics::Metrics;
@@ -388,6 +390,13 @@ impl ServerBuilder {
     /// server falls back to `SnapshotConfig::from_env()` (`ARETE_SNAPSHOT_*`).
     pub fn snapshots(mut self, config: crate::snapshot::SnapshotConfig) -> Self {
         self.config.snapshots = Some(config);
+        self
+    }
+
+    /// Retain published events for replayable append subscriptions on this
+    /// runtime, overriding `ARETE_JOURNAL_*` for this instance only.
+    pub fn journal(mut self, config: crate::journal::JournalConfig) -> Self {
+        self.config.journal = Some(config);
         self
     }
 

@@ -38,6 +38,10 @@ pub struct SubscribedFrame {
     pub mode: Mode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort: Option<SortConfig>,
+    /// Offsets this view can replay, for append views backed by the event
+    /// journal. Absent when the view has no retained tape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_window: Option<crate::journal::ReplayWindow>,
 }
 
 impl SubscribedFrame {
@@ -54,7 +58,14 @@ impl SubscribedFrame {
             query,
             mode,
             sort,
+            replay_window: None,
         }
+    }
+
+    /// Advertise the offsets a resuming consumer can still ask for.
+    pub fn with_replay_window(mut self, window: crate::journal::ReplayWindow) -> Self {
+        self.replay_window = Some(window);
+        self
     }
 }
 
@@ -138,6 +149,10 @@ pub(crate) struct SourceFrame {
     pub append: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seq: Option<String>,
+    /// Journal offset for replayable append views. Absent for latest-state
+    /// modes, which have no per-event identity to resume from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
