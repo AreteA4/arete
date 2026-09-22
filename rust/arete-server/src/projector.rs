@@ -240,19 +240,25 @@ impl Projector {
                 offset: None,
             };
 
-            let payload = match journal {
+            let retained = match journal {
                 Some(journal) => {
-                    let (_offset, payload) = journal
+                    journal
                         .append_with(&spec.id, &key, |offset| {
                             frame.offset = Some(offset);
                             json_buffer.clear();
                             serde_json::to_writer(&mut *json_buffer, &frame)?;
                             Ok::<_, anyhow::Error>(Arc::new(Bytes::copy_from_slice(json_buffer)))
                         })
-                        .await?;
-                    payload
+                        .await?
                 }
+                None => None,
+            };
+            let payload = match retained {
+                Some((_offset, payload)) => payload,
+                // No tape, or a sealed one: the event still publishes, it just
+                // carries no position to resume from.
                 None => {
+                    frame.offset = None;
                     json_buffer.clear();
                     serde_json::to_writer(&mut *json_buffer, &frame)?;
                     Arc::new(Bytes::copy_from_slice(json_buffer))

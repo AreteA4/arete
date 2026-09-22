@@ -307,6 +307,7 @@ export class SubscriptionRegistry {
         this.queryStore.onUpdate(subscriptionId, callback),
       onRichUpdate: <T>(callback: (update: RichUpdate<T>) => void): UnsubscribeFn =>
         this.queryStore.onRichUpdate(subscriptionId, callback),
+      getError: () => this.queryStore.getError(subscriptionId),
       refresh: () => this.refreshTracker(tracker),
       release: () => {
         if (released) return;

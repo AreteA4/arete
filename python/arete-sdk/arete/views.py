@@ -83,6 +83,25 @@ class InitialDataTimeoutError(AreteError):
         self.timeout = timeout
 
 
+class StreamGapError(AreteError):
+    """Raised when a stream's bounded queue dropped a replayable update.
+
+    The consumer fell behind far enough that an update carrying a replay
+    cursor was evicted, so continuing would present the loss as a continuous
+    tape. ``recover_from`` is the last cursor actually delivered before the
+    gap (``None`` when nothing had been delivered yet): resubscribe with
+    ``after=recover_from`` to pick the tape back up without a hole.
+    """
+
+    def __init__(self, recover_from: Optional[str]) -> None:
+        super().__init__(
+            "Stream fell behind and skipped replayable updates"
+            + (f"; recover from cursor {recover_from}" if recover_from else ""),
+            "STREAM_GAP",
+        )
+        self.recover_from = recover_from
+
+
 @dataclass(frozen=True)
 class ViewDef:
     """Binding of one server view used to build a handle.
@@ -99,28 +118,67 @@ class ViewDef:
 
 
 class _StreamQueue:
-    """Bounded push queue for async iteration (drops oldest beyond the cap)."""
+    """Bounded push queue for async iteration.
+
+    Latest-state updates beyond the cap are dropped (a projection has no
+    per-event identity to lose), but dropping an update that carried a replay
+    cursor is data loss on a tape: the queue fails closed with
+    :class:`StreamGapError` instead of silently continuing.
+    """
 
     def __init__(self, maxsize: int = _MAX_QUEUE_SIZE) -> None:
-        self._items: "deque[Any]" = deque()
+        self._items: "deque[Tuple[Any, Optional[str]]]" = deque()
         self._maxsize = maxsize
         self._waiter: Optional["asyncio.Future[None]"] = None
+        self._error: Optional[BaseException] = None
+        self._delivered_cursor: Optional[str] = None
 
-    def push(self, item: Any) -> None:
+    def push(self, item: Any, cursor: Optional[str] = None) -> None:
+        if self._error is not None:
+            return
         if len(self._items) >= self._maxsize:
-            self._items.popleft()
-        self._items.append(item)
-        if self._waiter is not None and not self._waiter.done():
-            self._waiter.set_result(None)
+            _dropped, dropped_cursor = self._items.popleft()
+            if dropped_cursor is not None:
+                self.fail(StreamGapError(self._delivered_cursor), discard_queued=True)
+                return
+        self._items.append((item, cursor))
+        self._wake()
+
+    def fail(self, error: BaseException, discard_queued: bool = False) -> None:
+        """End the stream at ``error``, after whatever is already queued.
+
+        ``discard_queued`` is for a local overflow only: there the hole is at
+        the front of the queue, so everything behind it is no longer contiguous
+        with what the consumer has read. A server refusal is the opposite — it
+        reports records skipped *after* everything already sent, so the queue
+        holds real data that arrived before the gap. Dropping it would lose
+        records the consumer was never told about and leave ``recover_from``
+        pointing past them.
+        """
+        if self._error is not None:
+            return
+        self._error = error
+        if discard_queued:
+            self._items.clear()
+        self._wake()
 
     async def get(self) -> Any:
         while not self._items:
+            if self._error is not None:
+                raise self._error
             self._waiter = asyncio.get_running_loop().create_future()
             try:
                 await self._waiter
             finally:
                 self._waiter = None
-        return self._items.popleft()
+        item, cursor = self._items.popleft()
+        if cursor is not None:
+            self._delivered_cursor = cursor
+        return item
+
+    def _wake(self) -> None:
+        if self._waiter is not None and not self._waiter.done():
+            self._waiter.set_result(None)
 
 
 def _split_options(
@@ -222,6 +280,24 @@ async def _wait_resolved(
         unsubscribe()
 
 
+def _fail_stream_on_query_error(lease: QueryLease, queue: _StreamQueue) -> Callable[[], None]:
+    """Terminate ``queue`` whenever the lease's query fails.
+
+    A server refusal (a replay cursor the view cannot serve, a lagged
+    subscription whose delivery has stopped) must reach the consumer as a
+    raised :class:`~arete.errors.SubscriptionError` carrying the wire code,
+    not leave it awaiting an update that will never come.
+    """
+
+    def check() -> None:
+        error = lease.get_result().error
+        if error is not None:
+            queue.fail(error)
+
+    check()
+    return lease.on_change(check)
+
+
 async def _entity_stream(
     registry: SubscriptionRegistry,
     query: Mapping[str, Any],
@@ -236,11 +312,12 @@ async def _entity_stream(
         if key_filter is not None and update.key != key_filter:
             return
         if update.type == "created":
-            queue.push(update.data)
+            queue.push(update.data, update.cursor)
         elif update.type == "updated":
-            queue.push(update.after)
+            queue.push(update.after, update.cursor)
 
     unsubscribe = lease.on_rich_update(on_rich)
+    stop_failing = _fail_stream_on_query_error(lease, queue)
     try:
         result = lease.get_result()
         for key, entity in zip(result.keys, result.data):
@@ -250,6 +327,7 @@ async def _entity_stream(
             value = await queue.get()
             yield parser(value) if parser else value
     finally:
+        stop_failing()
         unsubscribe()
         lease.release()
 
@@ -265,13 +343,15 @@ async def _update_stream(
 
     def on_update(update: Update) -> None:
         if key_filter is None or update.key == key_filter:
-            queue.push(update)
+            queue.push(update, update.cursor)
 
     unsubscribe = lease.on_update(on_update)
+    stop_failing = _fail_stream_on_query_error(lease, queue)
     try:
         while True:
             yield await queue.get()
     finally:
+        stop_failing()
         unsubscribe()
         lease.release()
 
@@ -287,13 +367,15 @@ async def _rich_update_stream(
 
     def on_rich(update: RichUpdate) -> None:
         if key_filter is None or update.key == key_filter:
-            queue.push(update)
+            queue.push(update, update.cursor)
 
     unsubscribe = lease.on_rich_update(on_rich)
+    stop_failing = _fail_stream_on_query_error(lease, queue)
     try:
         while True:
             yield await queue.get()
     finally:
+        stop_failing()
         unsubscribe()
         lease.release()
 

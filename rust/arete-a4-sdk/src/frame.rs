@@ -28,7 +28,6 @@ pub enum SortOrder {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SortConfig {
     pub field: Vec<String>,
     pub order: SortOrder,
@@ -43,6 +42,32 @@ pub enum Operation {
     Delete,
 }
 
+/// The span of a replayable append view's event tape that the server can still
+/// serve, as carried by the `subscribed` acknowledgement and by the replay
+/// refusal error frames.
+///
+/// `epoch` identifies one tape lifetime: offsets restart at zero whenever a
+/// tape is built without restoring one, so an offset only means something
+/// inside its epoch. `earliest` is the oldest retained offset and `next` the
+/// offset the next event will take, so a consumer holding `next - 1` is caught
+/// up. `gap_after` marks the last offset before a known discontinuity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayWindow {
+    pub epoch: String,
+    pub earliest: u64,
+    pub next: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_after: Option<u64>,
+}
+
+impl ReplayWindow {
+    /// The resumable cursor a consumer stores for `offset` in this epoch.
+    pub fn cursor(&self, offset: u64) -> String {
+        format!("{}:{offset}", self.epoch)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SnapshotEntity {
     pub key: String,
@@ -50,12 +75,18 @@ pub struct SnapshotEntity {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(
-    tag = "op",
-    rename_all = "lowercase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
+/// Unknown fields are ignored rather than rejected.
+///
+/// The server is deployed on its own schedule; a pinned SDK is upgraded on the
+/// consumer's. Rejecting an added field means the next optional one the server
+/// ships breaks every deployed client at once — which is exactly how `offset`,
+/// `replayWindow` and `recoverFrom` made journal-backed views unreadable from
+/// this SDK. The other two SDKs validate positively and were unaffected.
+///
+/// Strictness stays where both halves ship together: the client-to-server
+/// subscribe envelope, where a typo in a query field must not be silently
+/// ignored.
+#[serde(tag = "op", rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum ServerFrame {
     Subscribed {
         protocol_version: u8,
@@ -64,6 +95,10 @@ pub enum ServerFrame {
         mode: Mode,
         #[serde(skip_serializing_if = "Option::is_none")]
         sort: Option<SortConfig>,
+        /// Present on replayable append views; absent on state/list views,
+        /// which have no per-event identity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replay_window: Option<ReplayWindow>,
     },
     Unsubscribed {
         protocol_version: u8,
@@ -92,6 +127,10 @@ pub enum ServerFrame {
         append: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         seq: Option<String>,
+        /// Dense, monotonic per-view event offset. Present only on replayable
+        /// append views.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
     },
     Patch {
         protocol_version: u8,
@@ -104,6 +143,8 @@ pub enum ServerFrame {
         append: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         seq: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
     },
     Remove {
         protocol_version: u8,
@@ -114,6 +155,8 @@ pub enum ServerFrame {
         data: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         seq: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
     },
     Delete {
         protocol_version: u8,
@@ -124,6 +167,8 @@ pub enum ServerFrame {
         data: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         seq: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
     },
 }
 
@@ -230,8 +275,9 @@ pub(crate) fn compare_seq(left: &str, right: &str) -> Ordering {
     left_index.cmp(right_index)
 }
 
+/// Unknown fields are ignored; see [`ServerFrame`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ProtocolErrorFrame {
     #[serde(rename = "type")]
     pub kind: String,
@@ -252,6 +298,14 @@ pub struct ProtocolErrorFrame {
     pub docs_url: Option<String>,
     #[serde(default)]
     pub fatal: bool,
+    /// Carried by `cursor-expired`, `cursor-epoch-changed`, `cursor-unknown`
+    /// and `replay-gap`: what the view can still serve.
+    #[serde(default)]
+    pub replay_window: Option<ReplayWindow>,
+    /// Carried by `replay-lagged`: the cursor of the last record delivered
+    /// before the gap. Absent means nothing had been delivered yet.
+    #[serde(default)]
+    pub recover_from: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -454,11 +508,16 @@ mod tests {
             .to_string()
             .contains("migrate this client/server pair"));
 
-        let unknown_field = FRAME.replace(
+        // A field this SDK has never heard of is ignored, not rejected: the
+        // server ships on its own schedule and a pinned client is upgraded on
+        // the consumer's, so rejecting one breaks every deployed client at
+        // once. The op allow-list above is what keeps a genuinely unreadable
+        // frame out.
+        let added_field = FRAME.replace(
             r#""data":{"id":1}"#,
-            r#""data":{"id":1},"legacyView":"Thing/list""#,
+            r#""data":{"id":1},"occurrence":"ix:3:1""#,
         );
-        let error = parse_frame(unknown_field.as_bytes()).unwrap_err();
-        assert!(error.to_string().contains("unknown field"));
+        let frame = parse_frame(added_field.as_bytes()).expect("an added field is not a break");
+        assert_eq!(frame.subscription_id(), "things");
     }
 }

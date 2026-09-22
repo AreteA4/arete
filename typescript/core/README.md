@@ -432,19 +432,42 @@ It returns `{ success: true, data } | { success: false, error }` and never throw
 
 ```ts
 type Update<T> =
-  | { type: 'upsert'; key: string; data: T }
-  | { type: 'patch'; key: string; data: Partial<T> }
-  | { type: 'remove'; key: string }
-  | { type: 'delete'; key: string };
+  | { type: 'upsert'; key: string; data: T; cursor?: string }
+  | { type: 'patch'; key: string; data: Partial<T>; cursor?: string }
+  | { type: 'remove'; key: string; cursor?: string }
+  | { type: 'delete'; key: string; cursor?: string };
 
 type RichUpdate<T> =
-  | { type: 'created'; key: string; data: T }
-  | { type: 'updated'; key: string; before: T; after: T; patch?: unknown }
-  | { type: 'removed'; key: string; lastKnown?: T }
-  | { type: 'deleted'; key: string; lastKnown?: T };
+  | { type: 'created'; key: string; data: T; cursor?: string }
+  | { type: 'updated'; key: string; before: T; after: T; patch?: unknown; cursor?: string }
+  | { type: 'removed'; key: string; lastKnown?: T; cursor?: string }
+  | { type: 'deleted'; key: string; lastKnown?: T; cursor?: string };
 ```
 
 `remove` means an entity left only this query's filter or window. `delete` means the source entity was deleted and is removed from every query for that view.
+
+## Replay cursors
+
+Updates from an append view backed by the server's journal carry `cursor`, the
+`{epoch}:{offset}` position of the event. Store it with the data you derive
+from that update and pass it back as `after` to resume exactly where you
+stopped — `after` is exclusive, and it is never a `_seq` value. State and list
+views project membership rather than a tape, so their updates have no cursor.
+
+```ts
+for await (const update of session.stacks.myStack.views.Trade.list.watch()) {
+  await db.apply(update, update.cursor); // one transaction: data + position
+}
+```
+
+Reconnects resume from the last cursor delivered on each subscription. If a
+record is lost locally the stream ends with a `StreamGapError` carrying the
+last cursor delivered before the loss, rather than skipping records silently.
+Server-side refusals (`cursor-expired`, `cursor-epoch-changed`,
+`cursor-unknown`, `invalid-cursor`, `replay-gap`, `replay-lagged`) end the
+stream with their wire code; `isReplayErrorCode` identifies them, and the
+failing frame — including `replayWindow` and `recoverFrom` — is on the error's
+`details`.
 
 ## License
 

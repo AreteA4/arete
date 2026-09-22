@@ -209,8 +209,9 @@ async fn run() {
         None,
         processed.get(),
         0,
-        FROM_SLOT_LIVE_FALLBACK_ATTEMPTS,
-    );
+        Some(3),
+    )
+    .from_slot();
     assert_eq!(resume, Some(100));
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let (status_tx, status_rx) = tokio::sync::oneshot::channel();

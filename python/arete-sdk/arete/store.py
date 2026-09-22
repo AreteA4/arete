@@ -22,7 +22,7 @@ Semantics:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cmp_to_key
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -39,6 +39,7 @@ from arete.wire import (
     UnsubscribedFrame,
     Update,
     compare_seq,
+    format_cursor,
 )
 
 _MISSING = object()
@@ -76,6 +77,9 @@ class _Record:
     error: Optional[AreteError] = None
     mode: Optional[str] = None
     sort: Optional[SortConfig] = None
+    #: Tape lifetime the view's offsets belong to, from the ack's replay
+    #: window. Without it an offset cannot be turned into a cursor.
+    epoch: Optional[str] = None
     staged: Optional[_StagedSnapshot] = None
     refresh_future: Optional["asyncio.Future[None]"] = None
     change_listeners: Set[Callable[[], None]] = field(default_factory=set)
@@ -263,6 +267,8 @@ class Store:
             return
         record.mode = frame.mode
         record.sort = frame.sort
+        if frame.replay_window is not None:
+            record.epoch = frame.replay_window.epoch
         record.error = None
         if not record.subscription.snapshot_enabled:
             record.is_loading = False
@@ -355,13 +361,15 @@ class Store:
             if stale and previous is not _MISSING:
                 update = Update(op="upsert", key=frame.key, data=previous_value)
                 rich = RichUpdate(type="created", key=frame.key, data=previous_value)
-                self._apply_live(frame.subscription_id, frame.key, update, rich, frame.seq)
+                self._apply_live(
+                    frame.subscription_id, frame.key, update, rich, frame.seq, frame.offset
+                )
                 return
             seq = frame.seq or _extract_seq(frame.data)
             self._set_entity(view, frame.key, frame.data, seq)
             update = Update(op="upsert", key=frame.key, data=frame.data)
             rich = self._make_rich(frame.key, previous, frame.data)
-            self._apply_live(frame.subscription_id, frame.key, update, rich, seq)
+            self._apply_live(frame.subscription_id, frame.key, update, rich, seq, frame.offset)
             return
 
         if frame.op == "patch":
@@ -373,7 +381,9 @@ class Store:
                     type="updated", key=frame.key,
                     before=previous_value, after=previous_value, patch=frame.data,
                 )
-                self._apply_live(frame.subscription_id, frame.key, update, rich, frame.seq)
+                self._apply_live(
+                    frame.subscription_id, frame.key, update, rich, frame.seq, frame.offset
+                )
                 return
             merged = (
                 deep_merge_with_append(previous_value, frame.data, list(frame.append))
@@ -386,20 +396,27 @@ class Store:
             rich = self._make_rich(frame.key, previous, merged, patch=frame.data)
             self._apply_live(
                 frame.subscription_id, frame.key, update, rich,
-                frame.seq or _extract_seq(frame.data),
+                frame.seq or _extract_seq(frame.data), frame.offset,
             )
             return
 
         if frame.op == "remove":
             self._apply_live(
-                frame.subscription_id, frame.key, Update(op="remove", key=frame.key)
+                frame.subscription_id, frame.key, Update(op="remove", key=frame.key),
+                offset=frame.offset,
             )
             return
 
         if frame.op == "delete":
             self._entities.get(view, {}).pop(frame.key, None)
             self._seqs.get(view, {}).pop(frame.key, None)
-            self._delete_global(view, frame.key, previous_value)
+            self._delete_global(
+                view,
+                frame.key,
+                previous_value,
+                frame.subscription_id,
+                frame.offset,
+            )
 
     # -- live application --------------------------------------------------
 
@@ -410,11 +427,17 @@ class Store:
         update: Update,
         rich: Optional[RichUpdate] = None,
         seq: Optional[str] = None,
+        offset: Optional[int] = None,
     ) -> None:
         record = self._records.get(subscription_id)
         if record is None:
             return
         view = record.subscription.query.get("view")
+        cursor = self._cursor(record, offset)
+        if cursor is not None:
+            update = replace(update, cursor=cursor)
+            if rich is not None:
+                rich = replace(rich, cursor=cursor)
 
         if update.op == "remove":
             last_known = self._entities.get(view, {}).get(key)
@@ -423,7 +446,8 @@ class Store:
             self._touch(record)
             self._emit_update(record, update)
             self._emit_rich_update(
-                record, RichUpdate(type="removed", key=key, last_known=last_known)
+                record,
+                RichUpdate(type="removed", key=key, last_known=last_known, cursor=cursor),
             )
             return
 
@@ -443,17 +467,38 @@ class Store:
         if rich is not None:
             self._emit_rich_update(record, rich)
 
-    def _delete_global(self, view: str, key: str, last_known: Any) -> None:
+    def _delete_global(
+        self,
+        view: str,
+        key: str,
+        last_known: Any,
+        subscription_id: Optional[str] = None,
+        offset: Optional[int] = None,
+    ) -> None:
         for record in list(self._records.values()):
             if record.subscription.query.get("view") != view or key not in record.keys:
                 continue
+            # A delete fans out to every subscription on the view, but only the
+            # one the frame named was read at this offset. Handing the position
+            # to the others would let a consumer that is still replaying
+            # checkpoint past events it has not been given.
+            owns_offset = record.subscription.subscription_id == subscription_id
+            cursor = self._cursor(record, offset) if owns_offset else None
             record.keys = [entry for entry in record.keys if entry != key]
             record.sequences.pop(key, None)
             self._touch(record)
-            self._emit_update(record, Update(op="delete", key=key))
+            self._emit_update(record, Update(op="delete", key=key, cursor=cursor))
             self._emit_rich_update(
-                record, RichUpdate(type="deleted", key=key, last_known=last_known)
+                record,
+                RichUpdate(type="deleted", key=key, last_known=last_known, cursor=cursor),
             )
+
+    @staticmethod
+    def _cursor(record: _Record, offset: Optional[int]) -> Optional[str]:
+        """``{epoch}:{offset}`` for a tape event; None off a replayable view."""
+        if offset is None or record.epoch is None:
+            return None
+        return format_cursor(record.epoch, offset)
 
     def _sort_keys(self, record: _Record) -> None:
         if len(record.keys) < 2:

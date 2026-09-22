@@ -26,6 +26,7 @@
 //! Offsets are per view and are not comparable across views.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -367,9 +368,13 @@ impl ViewJournal {
             self.pop_oldest();
         }
         // A hole that has fallen out of the window no longer constrains
-        // anything that can still be replayed.
+        // anything that can still be replayed — but the record immediately
+        // after it is still in the window, and a cursor at the hole itself
+        // reads as "caught up to just before the window", the one position
+        // that is served rather than refused. The marker has to outlive the
+        // hole by one record.
         if let (Some(gap), Some(oldest)) = (self.gap_after, self.records.front()) {
-            if oldest.offset > gap {
+            if oldest.offset > gap.saturating_add(1) {
                 self.gap_after = None;
             }
         }
@@ -382,6 +387,16 @@ pub struct EventJournal {
     epoch: RwLock<JournalEpoch>,
     views: RwLock<HashMap<String, ViewJournal>>,
     config: JournalConfig,
+    /// Set once the tape has been captured for the last time, after which it
+    /// stops issuing offsets; see [`seal`](EventJournal::seal).
+    sealed: std::sync::atomic::AtomicBool,
+    /// A gap was recorded while some views had no tape entry yet.
+    ///
+    /// `mark_gap` can only mark views it can see, and a view that has never
+    /// appended is not in the map — which is the low-traffic view whose first
+    /// records matter most and whose hole is least visible. The flag carries
+    /// the discontinuity forward to whichever view appends next.
+    pending_gap: std::sync::atomic::AtomicBool,
 }
 
 impl EventJournal {
@@ -389,6 +404,8 @@ impl EventJournal {
         Self {
             epoch: RwLock::new(JournalEpoch::new()),
             views: RwLock::new(HashMap::new()),
+            sealed: std::sync::atomic::AtomicBool::new(false),
+            pending_gap: std::sync::atomic::AtomicBool::new(false),
             config,
         }
     }
@@ -417,7 +434,7 @@ impl EventJournal {
         view_id: &str,
         key: &str,
         build_frame: impl FnOnce(u64) -> Result<Arc<Bytes>, E>,
-    ) -> Result<(u64, Arc<Bytes>), E> {
+    ) -> Result<Option<(u64, Arc<Bytes>)>, E> {
         self.append_with_at(view_id, key, unix_now(), build_frame)
             .await
     }
@@ -428,9 +445,26 @@ impl EventJournal {
         key: &str,
         now: i64,
         build_frame: impl FnOnce(u64) -> Result<Arc<Bytes>, E>,
-    ) -> Result<(u64, Arc<Bytes>), E> {
+    ) -> Result<Option<(u64, Arc<Bytes>)>, E> {
         let mut views = self.views.write().await;
+        // Checked under the same lock the append takes, so a record either
+        // gets an offset the final snapshot knows about or gets none at all.
+        if self.sealed.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let fresh = !views.contains_key(view_id);
         let journal = views.entry(view_id.to_string()).or_default();
+        if fresh && self.pending_gap.load(std::sync::atomic::Ordering::Relaxed) {
+            // This view's first record arrives after a hole, so its tape does
+            // not start where the view's history does. `gap_after` names the
+            // last offset before a hole, and there is no earlier record to
+            // name — so offset 0 is reserved as that marker and never issued.
+            // The window then opens at 1, which is the visible signal that the
+            // tape is not complete from the view's beginning, and a cursor at
+            // 0 is refused rather than served as a continuation.
+            journal.next_offset = 1;
+            journal.gap_after = Some(0);
+        }
         let offset = journal.next_offset;
         let payload = build_frame(offset)?;
 
@@ -446,17 +480,45 @@ impl EventJournal {
             .saturating_add(record.charged_bytes());
         journal.records.push_back(record);
         journal.prune(&self.config, now);
-        Ok((offset, payload))
+        Ok(Some((offset, payload)))
     }
 
     /// Record that events were lost before the tape resumed.
     ///
-    /// Called when a restore hydrates state but starts the stream live: the
-    /// retained records stay valid, but everything between them and the first
-    /// live append is missing, and dense offsets would otherwise present that
-    /// hole as continuous.
+    /// Called when the stream starts live over a hole: a restore that
+    /// hydrates state without resuming, or an ingestion runtime that gave up
+    /// on its checkpoint. The retained records stay valid, but everything
+    /// between them and the first live append is missing, and dense offsets
+    /// would otherwise present that hole as continuous.
+    /// Stop issuing offsets, permanently.
+    ///
+    /// The final snapshot is taken while the parser is still running — it has
+    /// to be, or an update can be cut between its VM write and its batch — so
+    /// publishing continues after the consistency cut releases, for as long as
+    /// encoding and storing the snapshot takes. Offsets issued in that window
+    /// are not in the file, and a restore that adopted the epoch would re-issue
+    /// them for different records under cursors that still validate.
+    ///
+    /// Sealing at the cut makes "a shutdown snapshot is offset-exact" true
+    /// rather than assumed. Events after it still publish and still reach
+    /// subscribers; they simply carry no cursor, so a consumer's last position
+    /// stays at the cut and the resume after restart replays them.
+    pub fn seal(&self) {
+        self.sealed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub async fn mark_gap(&self) {
+        // Both the flag and the per-view markers are set under the views lock,
+        // which is also what an append holds. Setting the flag first would let
+        // a concurrent first append see it, take offset 1, and then be marked
+        // as inside the gap by the loop below — refusing a cursor for a record
+        // that was delivered after the hole, not before it.
         let mut views = self.views.write().await;
+        // Views that have never appended are not in the map; the flag carries
+        // the gap to them when they do.
+        self.pending_gap
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         for journal in views.values_mut() {
             if journal.next_offset > 0 {
                 journal.gap_after = Some(journal.next_offset - 1);
@@ -647,6 +709,37 @@ impl EventJournal {
     }
 }
 
+tokio::task_local! {
+    static ACTIVE_JOURNAL: Arc<EventJournal>;
+}
+
+impl EventJournal {
+    /// Run the generated ingestion runtime with this server's tape in scope,
+    /// so it can report a stream discontinuity without being handed a
+    /// journal it has no other use for.
+    ///
+    /// Separate from the snapshot scope: the tape can be enabled with
+    /// snapshots off, and that combination is exactly the one where a lost
+    /// checkpoint has no other way to become visible.
+    pub async fn scope<F>(self: &Arc<Self>, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        ACTIVE_JOURNAL.scope(self.clone(), future).await
+    }
+}
+
+/// Called by the generated runtime when it starts the stream live over a
+/// hole, so a replay across that hole is refused instead of served as an
+/// unbroken continuation.
+pub async fn mark_stream_gap() {
+    let journal = match ACTIVE_JOURNAL.try_with(Arc::clone) {
+        Ok(journal) => journal,
+        Err(_) => return,
+    };
+    journal.mark_gap().await;
+}
+
 pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -678,6 +771,7 @@ mod tests {
             })
             .await
             .unwrap()
+            .expect("an open tape issues an offset")
             .0
     }
 
@@ -730,7 +824,8 @@ mod tests {
                     ))))
                 })
                 .await
-                .unwrap();
+                .unwrap()
+                .expect("an open tape issues an offset");
             assert_eq!(offset, expected);
             assert_eq!(
                 String::from_utf8(payload.to_vec()).unwrap(),
@@ -948,5 +1043,156 @@ mod tests {
 
         let restored: PersistedRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.payload, record.payload);
+    }
+
+    /// The ingestion runtime reports its own discontinuity through the same
+    /// marker a restore uses, so the two cannot diverge.
+    #[tokio::test]
+    async fn an_ingestion_gap_is_marked_on_the_tape_in_scope() {
+        let journal = Arc::new(EventJournal::new(config(100, 3_600)));
+        for index in 0..3 {
+            append(&journal, "Trade/append", "pool1", &index.to_string()).await;
+        }
+        assert_eq!(journal.window("Trade/append").await.gap_after, None);
+
+        journal.scope(mark_stream_gap()).await;
+
+        assert_eq!(
+            journal.window("Trade/append").await.gap_after,
+            Some(2),
+            "a replay across the abandoned checkpoint must be refused"
+        );
+    }
+
+    /// A runtime outside any journal scope — snapshots and the tape both off
+    /// — must not panic when it reports a gap.
+    #[tokio::test]
+    async fn marking_a_gap_without_a_tape_in_scope_is_a_no_op() {
+        mark_stream_gap().await;
+    }
+
+    /// `mark_gap` can only mark views it can see. A view that has not appended
+    /// yet is the one whose first records matter most and whose hole is least
+    /// visible: without this it would open at offset 0 with no discontinuity,
+    /// reading as a complete tape from the beginning of the view's life.
+    #[tokio::test]
+    async fn a_view_that_first_appends_after_a_gap_does_not_look_complete() {
+        let journal = EventJournal::new(config(100, 3_600));
+
+        journal.mark_gap().await;
+        let offset = append(&journal, "Quiet/append", "pool1", "first").await;
+
+        let window = journal.window("Quiet/append").await;
+        assert_eq!(offset, 1, "offset 0 is the reserved gap marker");
+        assert_eq!(window.earliest, 1);
+        assert_eq!(
+            window.gap_after,
+            Some(0),
+            "the tape has to say it does not start where the view does"
+        );
+
+        // Offset 0 is never issued, so no consumer holds it — but it is also
+        // the position that reads as "caught up to just before the window",
+        // so it has to be refused rather than served as the start of a
+        // complete tape.
+        let before = cursor_at(&journal, 0).await;
+        assert!(matches!(
+            journal
+                .replay_after("Quiet/append", Some(&before))
+                .await
+                .expect_err("a position before the hole cannot be served"),
+            ReplayError::GapCrossed(_)
+        ));
+    }
+
+    /// The record immediately after a hole can still be in the window once
+    /// the records before it have aged out. A cursor at the hole then reads as
+    /// "caught up to just before the window" — the one position that is served
+    /// rather than refused — so the marker has to outlive the hole by one.
+    #[tokio::test]
+    async fn a_gap_still_refuses_once_only_the_record_after_it_remains() {
+        let journal = EventJournal::new(config(1, 3_600));
+        append(&journal, "Trade/append", "pool1", "before").await;
+        journal.mark_gap().await;
+        append(&journal, "Trade/append", "pool1", "after").await;
+
+        let window = journal.window("Trade/append").await;
+        assert_eq!(
+            (window.earliest, window.gap_after),
+            (1, Some(0)),
+            "retention dropped the record before the hole, not the hole"
+        );
+
+        let across = cursor_at(&journal, 0).await;
+        assert!(matches!(
+            journal
+                .replay_after("Trade/append", Some(&across))
+                .await
+                .expect_err("the hole is still between this cursor and the window"),
+            ReplayError::GapCrossed(_)
+        ));
+    }
+
+    /// The final snapshot is taken while publishing continues, so a record
+    /// issued after the cut would carry an offset the file does not hold — and
+    /// the restore adopts that file's epoch. Sealing is what makes the
+    /// "shutdown snapshots are offset-exact" assumption true.
+    #[tokio::test]
+    async fn a_sealed_tape_stops_issuing_positions_but_not_events() {
+        let journal = EventJournal::new(config(100, 3_600));
+        append(&journal, "Trade/append", "pool1", "before").await;
+
+        journal.seal();
+
+        let after = journal
+            .append_with("Trade/append", "pool1", |_offset| {
+                Ok::<_, std::convert::Infallible>(frame("after"))
+            })
+            .await
+            .unwrap();
+        assert!(
+            after.is_none(),
+            "a sealed tape must not hand out a position the snapshot cannot know"
+        );
+        assert_eq!(
+            journal.window("Trade/append").await.next,
+            1,
+            "and must not advance past what was captured"
+        );
+    }
+
+    /// Both the flag and the per-view markers have to move under the views
+    /// lock. Setting the flag first lets a concurrent first append take the
+    /// post-gap offset and then be marked as inside the gap.
+    #[tokio::test]
+    async fn a_gap_and_a_first_append_cannot_interleave() {
+        let journal = Arc::new(EventJournal::new(config(100, 3_600)));
+
+        let marker = {
+            let journal = journal.clone();
+            tokio::spawn(async move { journal.mark_gap().await })
+        };
+        let appender = {
+            let journal = journal.clone();
+            tokio::spawn(async move { append(&journal, "Trade/append", "pool1", "first").await })
+        };
+        let offset = appender.await.unwrap();
+        marker.await.unwrap();
+
+        let window = journal.window("Trade/append").await;
+        assert!(
+            window.gap_after.is_none_or(|gap| gap < offset),
+            "a delivered record must land after the hole, not inside it: \
+             offset {offset}, gap_after {:?}",
+            window.gap_after
+        );
+    }
+
+    /// Without a gap pending, a view still starts where it always did.
+    #[tokio::test]
+    async fn a_first_append_with_no_gap_pending_starts_at_zero() {
+        let journal = EventJournal::new(config(100, 3_600));
+        assert_eq!(append(&journal, "Quiet/append", "pool1", "first").await, 0);
+        assert_eq!(journal.window("Quiet/append").await.earliest, 0);
     }
 }

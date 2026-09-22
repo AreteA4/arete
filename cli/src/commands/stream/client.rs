@@ -743,6 +743,7 @@ mod tests {
                 key: "1".to_string(),
                 data: serde_json::Value::Null,
                 seq: Some("2:1".to_string()),
+                offset: None,
             },
             "Thing/list",
             &mut state,

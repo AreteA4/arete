@@ -32,7 +32,10 @@ from arete.errors import (
 )
 from arete.subscription import Subscription
 from arete.wire import (
+    EntityFrame,
     Frame,
+    SubscribedFrame,
+    format_cursor,
     frame_slot,
     parse_frame,
     ping_envelope,
@@ -153,6 +156,11 @@ class ConnectionManager:
 
         self._active: Dict[str, Subscription] = {}
         self._queued: Dict[str, Subscription] = {}
+        # Last replay cursor seen per subscription, so a reconnect resumes the
+        # tape where it stopped instead of replaying the original `after`
+        # (duplicates) or picking up at the live tail (silent gap).
+        self._epochs: Dict[str, str] = {}
+        self._cursors: Dict[str, str] = {}
 
         self._frame_handlers: Set[Callable[[Frame], None]] = set()
         self._state_handlers: Set[Callable[[str, Optional[str]], None]] = set()
@@ -248,6 +256,8 @@ class ConnectionManager:
 
     def unsubscribe(self, subscription_id: str) -> None:
         self._queued.pop(subscription_id, None)
+        self._epochs.pop(subscription_id, None)
+        self._cursors.pop(subscription_id, None)
         if subscription_id in self._active:
             del self._active[subscription_id]
             if self.is_connected():
@@ -463,8 +473,14 @@ class ConnectionManager:
             self._outbound.put_nowait(json.dumps(payload, separators=(",", ":")))
 
     def _resubscribe_active(self) -> None:
-        for subscription in self._active.values():
-            self._send_json(subscription.to_wire())
+        for subscription_id, subscription in self._active.items():
+            envelope = subscription.to_wire()
+            cursor = self._cursors.get(subscription_id)
+            if cursor is not None:
+                # Resume the tape; the subscription's identity keeps its
+                # original `after` so lease dedup and refresh stay stable.
+                envelope["query"] = {**envelope["query"], "after": cursor}
+            self._send_json(envelope)
 
     def _flush_subscription_queue(self) -> None:
         queued = list(self._queued.values())
@@ -592,8 +608,19 @@ class ConnectionManager:
         slot = frame_slot(frame)
         if slot is not None:
             self._note_processed_slot(slot)
+        self._note_cursor(frame)
         for handler in list(self._frame_handlers):
             handler(frame)
+
+    def _note_cursor(self, frame: Frame) -> None:
+        """Remember where a replayable append view got to, for reconnects."""
+        if isinstance(frame, SubscribedFrame):
+            if frame.replay_window is not None:
+                self._epochs[frame.subscription_id] = frame.replay_window.epoch
+        elif isinstance(frame, EntityFrame) and frame.offset is not None:
+            epoch = self._epochs.get(frame.subscription_id)
+            if epoch is not None:
+                self._cursors[frame.subscription_id] = format_cursor(epoch, frame.offset)
 
     def _note_processed_slot(self, slot: int) -> None:
         if self._processed_slot is not None and slot <= self._processed_slot:

@@ -612,4 +612,41 @@ describe('protocol v2 view hooks', () => {
     await expect(stateHook.refresh()).resolves.toBeUndefined();
     await expect(listHook.refresh()).resolves.toBeUndefined();
   });
+
+  it('exposes the cursor of the last append event so a consumer can store it', () => {
+    const epoch = '0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b';
+    const { active, client, process } = createClient();
+    let trades: ViewHookResult<Array<{ id: string }>> | undefined;
+    let renderer: ReactTestRenderer | undefined;
+    function Harness() {
+      trades = useListView({ mode: 'list', view: 'Trade/append' }, client as never);
+      return null;
+    }
+    act(() => { renderer = create(React.createElement(Harness)); });
+    const subscription = active((value) => value.query.view === 'Trade/append');
+
+    act(() => {
+      process({
+        protocolVersion: 2,
+        subscriptionId: subscription.subscriptionId,
+        op: 'subscribed',
+        mode: 'append',
+        query: { view: 'Trade/append' },
+        replayWindow: { epoch, earliest: 4209, next: 4212 },
+      });
+      process({
+        protocolVersion: 2,
+        subscriptionId: subscription.subscriptionId,
+        mode: 'append',
+        entity: 'Trade/append',
+        op: 'upsert',
+        key: 'pool1',
+        data: { id: 'pool1' },
+        offset: 4211,
+      });
+    });
+
+    expect(trades?.cursor).toBe(`${epoch}:4211`);
+    act(() => renderer?.unmount());
+  });
 });

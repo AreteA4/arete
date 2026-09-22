@@ -1,0 +1,145 @@
+{
+  "name": "replay cursor refusals and gaps",
+  "meaning": "Every way a cursor can fail is a distinct code, because the recoveries differ: an expired cursor replays what is still retained, a changed epoch means the stored cursor belongs to a tape that no longer exists, and a lag means records were skipped in flight and are recoverable from the last cursor delivered before the gap. None of them may be treated as 'caught up'.",
+  "cases": [
+    {
+      "meaning": "The cursor is older than the retained window. The window says what is still recoverable.",
+      "request": {
+        "type": "subscribe",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "query": {
+          "view": "Trade/append",
+          "after": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:10"
+        }
+      },
+      "response": {
+        "type": "error",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "code": "cursor-expired",
+        "retryable": false,
+        "fatal": false,
+        "replayWindow": {
+          "epoch": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b",
+          "earliest": 4209,
+          "next": 4212
+        }
+      },
+      "recovery": "resubscribe without `after`; it replays the whole retained window. `after: earliest` would skip the oldest record, because `after` is exclusive."
+    },
+    {
+      "meaning": "The tape was rebuilt without restoring one, so offsets restarted. The stored cursor's offset may land inside the new window and is not the same position.",
+      "request": {
+        "type": "subscribe",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "query": {
+          "view": "Trade/append",
+          "after": "11111111-2222-3333-4444-555555555555:4209"
+        }
+      },
+      "response": {
+        "type": "error",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "code": "cursor-epoch-changed",
+        "retryable": false,
+        "fatal": false,
+        "replayWindow": {
+          "epoch": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b",
+          "earliest": 4209,
+          "next": 4212
+        }
+      },
+      "recovery": "discard the cursor and resubscribe without `after`."
+    },
+    {
+      "meaning": "An offset this view has never issued. Treating it as caught up would suppress delivery until the view's offsets reached it.",
+      "request": {
+        "type": "subscribe",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "query": {
+          "view": "Trade/append",
+          "after": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:999999"
+        }
+      },
+      "response": {
+        "type": "error",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "code": "cursor-unknown",
+        "retryable": false,
+        "fatal": false,
+        "replayWindow": {
+          "epoch": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b",
+          "earliest": 4209,
+          "next": 4212
+        }
+      },
+      "recovery": "resubscribe without `after`."
+    },
+    {
+      "meaning": "Not a cursor at all. A legacy `seq` value is the likely mistake, and replaying from the start instead would look like success and duplicate everything.",
+      "request": {
+        "type": "subscribe",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "query": {
+          "view": "Trade/append",
+          "after": "381471241:000000000007"
+        }
+      },
+      "response": {
+        "type": "error",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "code": "invalid-cursor",
+        "retryable": false,
+        "fatal": false
+      },
+      "recovery": "resubscribe without `after`."
+    },
+    {
+      "meaning": "A restore hydrated state but started the stream live. Offsets stay dense across the hole, so replaying across it would present the loss as continuous.",
+      "request": {
+        "type": "subscribe",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "query": {
+          "view": "Trade/append",
+          "after": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:4100"
+        }
+      },
+      "response": {
+        "type": "error",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "code": "replay-gap",
+        "retryable": false,
+        "fatal": false,
+        "replayWindow": {
+          "epoch": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b",
+          "earliest": 4000,
+          "next": 4212,
+          "gapAfter": 4208
+        }
+      },
+      "recovery": "resubscribe without `after` to accept the gap, or from a cursor after it."
+    },
+    {
+      "meaning": "Delivery fell behind the server's fan-out buffer. Records were skipped in flight; delivery on this subscription stops rather than continuing past them.",
+      "response": {
+        "type": "error",
+        "protocolVersion": 2,
+        "subscriptionId": "trades",
+        "code": "replay-lagged",
+        "retryable": false,
+        "fatal": false,
+        "recoverFrom": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:4180"
+      },
+      "recovery": "unsubscribe, then resubscribe with `after` set to `recoverFrom`. Absent `recoverFrom` means nothing had been delivered yet: resubscribe without `after`."
+    }
+  ]
+}

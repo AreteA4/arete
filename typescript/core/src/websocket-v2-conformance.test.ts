@@ -11,12 +11,14 @@ import deleteFixture from '../../../tests/fixtures/websocket-v2/delete.json';
 import incremental from '../../../tests/fixtures/websocket-v2/incremental-snapshot.json';
 import reconnect from '../../../tests/fixtures/websocket-v2/reconnect-replacement.json';
 import errors from '../../../tests/fixtures/websocket-v2/errors.json';
+import replayCursors from '../../../tests/fixtures/websocket-v2/replay-cursors.json';
+import replayGaps from '../../../tests/fixtures/websocket-v2/replay-gaps.json';
 import { parseFrame } from './frame';
 import { FrameProcessor } from './frame-processor';
 import { QueryStore } from './query-store';
 import { canonicalQueryKey } from './subscription';
 import { MemoryAdapter } from './storage/memory-adapter';
-import type { Subscription, SubscriptionQuery } from './types';
+import { parseErrorCode, type Subscription, type SubscriptionQuery, type Update } from './types';
 
 function subscription(subscriptionId: string, query: SubscriptionQuery): Subscription {
   return {
@@ -55,6 +57,8 @@ describe('shared WebSocket protocol v2 fixtures', () => {
       'incremental-snapshot.json',
       'reconnect-replacement.json',
       'errors.json',
+      'replay-cursors.json',
+      'replay-gaps.json',
     ]);
     expect(parseFrame(JSON.stringify({
       protocolVersion: 2,
@@ -253,5 +257,80 @@ describe('shared WebSocket protocol v2 fixtures', () => {
         expect(parseFrame(JSON.stringify(response)).subscriptionId).toBe(response.subscriptionId);
       }
     }
+  });
+
+  it('delivers one cursor per append event, including events sharing a seq', () => {
+    const { storage, queries, register, process } = harness();
+    const ack = replayCursors.server[0]!;
+    register(ack.subscriptionId, ack.query);
+    const delivered: Update<unknown>[] = [];
+    queries.onUpdate(ack.subscriptionId, (update) => delivered.push(update));
+    replayCursors.server.forEach(process);
+
+    expect(delivered.map((update) => update.cursor)).toEqual(replayCursors.expected.cursors);
+    expect(queries.getSnapshot(ack.subscriptionId)?.cursor).toBe(
+      replayCursors.expected.resumeCursor
+    );
+    // The second frame shares the first frame's seq; only the offset separates
+    // them, so it must land rather than be discarded as a duplicate.
+    expect(storage.get('Trade/append', 'pool1')).toMatchObject({ amount: 125 });
+  });
+
+  it('delivers a delete cursor only to the subscription that read it', () => {
+    const { queries, register, process } = harness();
+    const ack = replayCursors.server[0]!;
+    register(ack.subscriptionId, ack.query);
+    register('bystander', { view: 'Trade/append', partition: 'other' });
+    process(ack);
+    process({ ...ack, subscriptionId: 'bystander' });
+    process(replayCursors.server[1]!);
+    process({ ...replayCursors.server[1]!, subscriptionId: 'bystander' });
+
+    const read: Update<unknown>[] = [];
+    const watched: Update<unknown>[] = [];
+    queries.onUpdate(ack.subscriptionId, (update) => read.push(update));
+    queries.onUpdate('bystander', (update) => watched.push(update));
+
+    // A delete is global: it reaches every subscription on the view, but it
+    // carries one subscription's read position.
+    process({
+      protocolVersion: 2,
+      subscriptionId: ack.subscriptionId,
+      mode: 'append',
+      entity: 'Trade/append',
+      op: 'delete',
+      key: 'pool1',
+      data: null,
+      offset: 4210,
+    });
+
+    const epoch = ack.replayWindow!.epoch;
+    expect(read.at(-1)).toMatchObject({ type: 'delete', cursor: `${epoch}:4210` });
+    expect(watched.at(-1)?.cursor).toBeUndefined();
+  });
+
+  it('keeps every replay refusal distinguishable by its wire code', () => {
+    const { queries, register, process } = harness();
+    const seen: string[] = [];
+    for (const fixture of replayGaps.cases) {
+      const response = fixture.response;
+      register(response.subscriptionId, { view: 'Trade/append' });
+      process(response);
+      const error = queries.getSnapshot(response.subscriptionId)?.error;
+      expect(error?.code).toBe(response.code);
+      expect(parseErrorCode(response.code)).toBe(response.code);
+      seen.push(String(error?.code));
+    }
+
+    expect(new Set(seen).size).toBe(replayGaps.cases.length);
+    const lagged = replayGaps.cases.find((entry) => entry.response.code === 'replay-lagged')!;
+    expect(parseFrame(JSON.stringify(lagged.response))).toMatchObject({
+      code: 'replay-lagged',
+      recoverFrom: lagged.response.recoverFrom,
+    });
+    const gap = replayGaps.cases.find((entry) => entry.response.code === 'replay-gap')!;
+    expect(parseFrame(JSON.stringify(gap.response))).toMatchObject({
+      replayWindow: { gapAfter: gap.response.replayWindow!.gapAfter },
+    });
   });
 });

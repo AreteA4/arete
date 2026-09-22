@@ -1,9 +1,13 @@
 use arete_a4_sdk::{
-    parse_server_message, ClientMessage, ServerMessage, SharedStore, SnapshotOptions, Subscription,
-    SubscriptionQuery,
+    parse_server_message, ClientMessage, EntityStream, GapCode, ServerMessage, SharedStore,
+    SnapshotOptions, Subscription, SubscriptionQuery, Update,
 };
+use futures_util::StreamExt;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
+use tokio::time::timeout;
 
 fn fixture(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -300,5 +304,381 @@ fn snapshot_options_are_not_part_of_query_identity() {
     assert_eq!(
         first.query.canonical_identity().unwrap(),
         second.query.canonical_identity().unwrap()
+    );
+}
+
+const APPEND_VIEW: &str = "Trade/append";
+
+/// A consumer of the append view, plus the store the fixture frames feed.
+async fn append_consumer() -> (SharedStore, impl futures_util::Stream<Item = Update<Value>>) {
+    let store = SharedStore::new();
+    store
+        .register_subscription("trades", SubscriptionQuery::new(APPEND_VIEW), true)
+        .await
+        .expect("subscription should register");
+    let stream = Box::pin(EntityStream::<Value>::new(&store, APPEND_VIEW.to_string()));
+    (store, stream)
+}
+
+async fn next_update(
+    stream: &mut (impl futures_util::Stream<Item = Update<Value>> + Unpin),
+) -> Option<Update<Value>> {
+    timeout(Duration::from_secs(3), stream.next())
+        .await
+        .expect("the stream should not hang")
+}
+
+#[tokio::test]
+async fn append_frames_deliver_one_cursor_each_even_when_they_share_a_seq() {
+    let fixture = fixture("replay-cursors.json");
+    let (store, mut stream) = append_consumer().await;
+    for frame in fixture["server"].as_array().unwrap() {
+        apply(&store, frame).await;
+    }
+
+    let expected: Vec<&str> = fixture["expected"]["cursors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cursor| cursor.as_str().unwrap())
+        .collect();
+    let mut delivered = Vec::new();
+    let mut payloads = Vec::new();
+    for _ in 0..expected.len() {
+        let update = next_update(&mut stream)
+            .await
+            .expect("every append frame should reach the consumer");
+        delivered.push(
+            update
+                .cursor()
+                .expect("an append update carries a cursor")
+                .to_string(),
+        );
+        payloads.push(
+            update
+                .data()
+                .cloned()
+                .expect("an append update carries data"),
+        );
+    }
+    assert_eq!(delivered, expected);
+
+    // Each cursor must carry the event the server sent at that offset. The
+    // stale-seq guard would re-emit the previous value here, checkpointing a
+    // payload that was never published under a position that was.
+    let server = fixture["server"].as_array().unwrap();
+    let sent: Vec<&Value> = server[1..].iter().map(|frame| &frame["data"]).collect();
+    assert_eq!(payloads.iter().collect::<Vec<_>>(), sent);
+
+    // The first two frames share one `seq` — its second component is the
+    // transaction index — so only the offset tells them apart.
+    let server = fixture["server"].as_array().unwrap();
+    assert_eq!(server[1]["seq"], server[2]["seq"]);
+    assert_ne!(delivered[0], delivered[1]);
+
+    assert_eq!(
+        store.resume_cursor("trades").await.as_deref(),
+        fixture["expected"]["resumeCursor"].as_str()
+    );
+}
+
+#[tokio::test]
+async fn every_replay_refusal_reaches_the_consumer_with_its_own_code() {
+    let fixture = fixture("replay-gaps.json");
+    let delivered = self::fixture("replay-cursors.json");
+    let mut codes = HashSet::new();
+    for case in fixture["cases"].as_array().unwrap() {
+        let response = &case["response"];
+        let (store, mut stream) = append_consumer().await;
+        // Put a real cursor in flight first: a refusal has to displace the
+        // position the subscription was holding, not just arrive.
+        for frame in &delivered["server"].as_array().unwrap()[..2] {
+            apply(&store, frame).await;
+        }
+        next_update(&mut stream).await.expect("first record");
+
+        let message = parse_server_message(&serde_json::to_vec(response).unwrap())
+            .expect("a replay refusal should parse");
+        let ServerMessage::Error(error) = message else {
+            panic!("expected an error envelope")
+        };
+        store.apply_error_frame(&error).await;
+
+        let update = next_update(&mut stream)
+            .await
+            .expect("a refusal must reach the consumer, not leave the stream empty");
+        let gap = update.gap().expect("a refusal arrives as a gap");
+        assert_eq!(gap.code.as_wire(), response["code"].as_str().unwrap());
+        assert_eq!(
+            gap.recover_from.as_deref(),
+            response["recoverFrom"].as_str(),
+            "{} must carry the server's recovery cursor verbatim",
+            response["code"]
+        );
+        assert_eq!(
+            gap.replay_window
+                .as_ref()
+                .and_then(|window| window.gap_after),
+            response["replayWindow"]["gapAfter"].as_u64()
+        );
+        // A reconnect must never re-send a cursor the server just rejected;
+        // `replay-lagged` is the one refusal that names where to pick up.
+        assert_eq!(
+            store.resume_cursor("trades").await.as_deref(),
+            response["recoverFrom"].as_str()
+        );
+        assert!(
+            next_update(&mut stream).await.is_none(),
+            "delivery stops at the refusal"
+        );
+        codes.insert(gap.code.clone());
+    }
+    assert_eq!(codes.len(), fixture["cases"].as_array().unwrap().len());
+}
+
+#[tokio::test]
+async fn a_local_overflow_ends_a_cursor_bearing_stream_at_its_resume_point() {
+    let fixture = fixture("replay-cursors.json");
+    let server = fixture["server"].as_array().unwrap();
+    let (store, mut stream) = append_consumer().await;
+    apply(&store, &server[0]).await;
+    apply(&store, &server[1]).await;
+
+    let first = next_update(&mut stream).await.expect("first record");
+    let resume = first.cursor().expect("append cursor").to_string();
+
+    // Overflow this consumer's queue while it is not polling. The broadcast
+    // channel holds 1000 updates and evicts the oldest beyond that.
+    let mut frame = server[1].clone();
+    for offset in 4210..5400 {
+        frame["offset"] = json!(offset);
+        frame["seq"] = json!(format!("381471241:{offset:012}"));
+        apply(&store, &frame).await;
+    }
+
+    let update = next_update(&mut stream)
+        .await
+        .expect("an overflow must be reported, not swallowed");
+    let gap = update.gap().expect("an overflow arrives as a gap");
+    assert!(
+        matches!(gap.code, GapCode::LocalLag { skipped } if skipped > 0),
+        "expected a local lag, got {:?}",
+        gap.code
+    );
+    assert_eq!(gap.recover_from.as_deref(), Some(resume.as_str()));
+    assert!(
+        next_update(&mut stream).await.is_none(),
+        "delivery stops at the gap rather than continuing past lost records"
+    );
+}
+
+/// The overflow can arrive before the consumer has been handed anything, and
+/// then there is no cursor to infer the view's nature from. Reading that
+/// absence as "a projection, carry on" drops the head of the tape in silence,
+/// which is the exact failure this whole path exists to prevent.
+#[tokio::test]
+async fn an_overflow_before_the_first_record_is_still_a_gap() {
+    let fixture = fixture("replay-cursors.json");
+    let server = fixture["server"].as_array().unwrap();
+    let (store, mut stream) = append_consumer().await;
+    // Only the acknowledgement: the consumer has received no record yet.
+    apply(&store, &server[0]).await;
+
+    let mut frame = server[1].clone();
+    for offset in 4209..5400 {
+        frame["offset"] = json!(offset);
+        frame["seq"] = json!(format!("381471241:{offset:012}"));
+        apply(&store, &frame).await;
+    }
+
+    let update = next_update(&mut stream)
+        .await
+        .expect("losing the head of a tape must be reported");
+    let gap = update.gap().expect("an overflow arrives as a gap");
+    assert!(
+        matches!(gap.code, GapCode::LocalLag { skipped } if skipped > 0),
+        "expected a local lag, got {:?}",
+        gap.code
+    );
+    assert_eq!(
+        gap.recover_from, None,
+        "nothing was delivered, so there is no position to resume from — the \
+         recovery is to resubscribe with no `after` and take the whole window"
+    );
+    assert!(
+        next_update(&mut stream).await.is_none(),
+        "delivery stops rather than continuing from the middle of the tape"
+    );
+}
+
+/// A projection has no per-event identity, so a dropped row is superseded by
+/// the next write rather than lost. Those streams must keep running.
+#[tokio::test]
+async fn an_overflow_on_a_projection_keeps_delivering() {
+    let store = SharedStore::new();
+    store
+        .register_subscription("things", SubscriptionQuery::new("Thing/list"), true)
+        .await
+        .expect("subscription should register");
+    let mut stream = Box::pin(EntityStream::<Value>::new(&store, "Thing/list".to_string()));
+
+    apply(
+        &store,
+        &json!({
+            "protocolVersion": 2,
+            "subscriptionId": "things",
+            "op": "subscribed",
+            "mode": "list",
+            "query": {"view": "Thing/list"},
+        }),
+    )
+    .await;
+
+    for index in 0..1_200 {
+        apply(
+            &store,
+            &json!({
+                "protocolVersion": 2,
+                "subscriptionId": "things",
+                "mode": "list",
+                "entity": "Thing/list",
+                "op": "upsert",
+                "key": format!("thing{index}"),
+                "data": {"n": index},
+            }),
+        )
+        .await;
+    }
+
+    let update = next_update(&mut stream)
+        .await
+        .expect("a projection stream survives its own backlog");
+    assert!(
+        update.gap().is_none(),
+        "a dropped projection row is not a gap: {:?}",
+        update.gap()
+    );
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Trade {
+    #[allow(dead_code)]
+    amount: u64,
+}
+
+async fn typed_consumer() -> (SharedStore, impl futures_util::Stream<Item = Update<Trade>>) {
+    let store = SharedStore::new();
+    store
+        .register_subscription("trades", SubscriptionQuery::new(APPEND_VIEW), true)
+        .await
+        .expect("subscription should register");
+    let stream = Box::pin(EntityStream::<Trade>::new(&store, APPEND_VIEW.to_string()));
+    (store, stream)
+}
+
+async fn next_trade(
+    stream: &mut (impl futures_util::Stream<Item = Update<Trade>> + Unpin),
+) -> Option<Update<Trade>> {
+    timeout(Duration::from_secs(3), stream.next())
+        .await
+        .expect("the stream should not hang")
+}
+
+/// A record the consumer's type cannot read is still retained on the server,
+/// so the recovery has to replay it. `after` is exclusive, so naming the
+/// failed record would skip the very thing a consumer came back for after
+/// fixing its type.
+#[tokio::test]
+async fn an_undecodable_record_recovers_from_the_position_in_front_of_it() {
+    let fixture = fixture("replay-cursors.json");
+    let server = fixture["server"].as_array().unwrap();
+    let (store, mut stream) = typed_consumer().await;
+    apply(&store, &server[0]).await;
+    apply(&store, &server[1]).await;
+
+    let first = next_trade(&mut stream).await.expect("first record");
+    let delivered = first.cursor().expect("append cursor").to_string();
+
+    let mut broken = server[2].clone();
+    broken["data"] = json!({"amount": "not a number"});
+    apply(&store, &broken).await;
+
+    let update = next_trade(&mut stream)
+        .await
+        .expect("an unreadable record must not be skipped in silence");
+    let gap = update
+        .gap()
+        .expect("an undecodable record arrives as a gap");
+    assert!(matches!(gap.code, GapCode::Undecodable));
+    assert_eq!(
+        gap.recover_from.as_deref(),
+        Some(delivered.as_str()),
+        "recovery must replay the record that failed, not start after it"
+    );
+    assert!(
+        next_trade(&mut stream).await.is_none(),
+        "delivery stops at the gap"
+    );
+}
+
+/// Nothing was delivered before it, so there is no position in front of it.
+#[tokio::test]
+async fn an_undecodable_first_record_offers_no_resume_position() {
+    let fixture = fixture("replay-cursors.json");
+    let server = fixture["server"].as_array().unwrap();
+    let (store, mut stream) = typed_consumer().await;
+    apply(&store, &server[0]).await;
+
+    let mut broken = server[1].clone();
+    broken["data"] = json!({"amount": "not a number"});
+    apply(&store, &broken).await;
+
+    let update = next_trade(&mut stream).await.expect("a gap, not silence");
+    let gap = update
+        .gap()
+        .expect("an undecodable record arrives as a gap");
+    assert_eq!(
+        gap.recover_from, None,
+        "resubscribing with no `after` is the only recovery that replays it"
+    );
+}
+
+/// The failure that opened this PR was a class, not three fields: the server
+/// deploys on its own schedule while a pinned SDK upgrades on the consumer's,
+/// so rejecting an added field breaks every deployed client at once. A4-278's
+/// occurrence provenance is the next such field.
+#[tokio::test]
+async fn a_field_this_sdk_has_never_heard_of_is_not_a_protocol_error() {
+    let fixture = fixture("replay-cursors.json");
+    let server = fixture["server"].as_array().unwrap();
+
+    let mut ack = server[0].clone();
+    ack["replayWindow"]["retentionSeconds"] = json!(3_600);
+    ack["somethingLater"] = json!("ignored");
+    let mut record = server[1].clone();
+    record["occurrence"] = json!("ix:3:1");
+    let error = json!({
+        "protocolVersion": 2,
+        "type": "error",
+        "subscriptionId": "trades",
+        "code": "replay-lagged",
+        "fatal": false,
+        "recoverFrom": "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:4180",
+        "diagnosticsUrl": "https://example.invalid/why",
+    });
+
+    for frame in [&ack, &record, &error] {
+        parse_server_message(frame.to_string().as_bytes())
+            .unwrap_or_else(|e| panic!("an added field must not break the client: {e}"));
+    }
+
+    // Still delivered, not merely parsed.
+    let (store, mut stream) = append_consumer().await;
+    apply(&store, &ack).await;
+    apply(&store, &record).await;
+    let update = next_update(&mut stream).await.expect("the record arrives");
+    assert_eq!(
+        update.cursor(),
+        Some("0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b:4209")
     );
 }

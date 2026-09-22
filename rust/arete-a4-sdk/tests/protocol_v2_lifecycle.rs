@@ -238,3 +238,104 @@ async fn reconnect_resubscribes_with_the_same_opaque_id() {
     client.disconnect().await;
     server.await.unwrap();
 }
+
+const EPOCH: &str = "0f8c2b31-6a4e-4f0b-9a77-1d2c3e4f5a6b";
+
+/// Acknowledge a replayable append view and deliver one record from its tape.
+async fn send_append_record(
+    socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    subscribe: &Value,
+    offset: u64,
+) {
+    let subscription_id = subscribe["subscriptionId"].as_str().unwrap();
+    socket
+        .send(Message::Text(
+            json!({
+                "protocolVersion": 2,
+                "subscriptionId": subscription_id,
+                "op": "subscribed",
+                "query": subscribe["query"],
+                "mode": "append",
+                "replayWindow": {
+                    "epoch": EPOCH,
+                    "earliest": offset,
+                    "next": offset + 1
+                }
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    socket
+        .send(Message::Text(
+            json!({
+                "protocolVersion": 2,
+                "subscriptionId": subscription_id,
+                "mode": "append",
+                "entity": "Thing/list",
+                "op": "patch",
+                "key": "pool1",
+                "data": {"amount": offset},
+                "seq": format!("381471241:{offset:012}"),
+                "offset": offset
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn reconnect_resubscribes_from_the_last_delivered_cursor() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let (message_tx, mut message_rx) = mpsc::channel(4);
+    let server = tokio::spawn(async move {
+        for connection in 0..2 {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let subscribe = next_json(&mut socket).await;
+            message_tx.send(subscribe.clone()).await.unwrap();
+            send_append_record(&mut socket, &subscribe, 4209).await;
+            if connection == 0 {
+                socket.close(None).await.unwrap();
+            } else {
+                let _ = timeout(Duration::from_secs(3), socket.next()).await;
+            }
+        }
+    });
+
+    let client = Arete::<TestStack>::builder()
+        .url(&url)
+        .reconnect_intervals(vec![Duration::from_millis(10)])
+        .max_reconnect_attempts(3)
+        .connect()
+        .await
+        .unwrap();
+    let mut stream = Box::pin(client.views.things.watch().after("legacy-start"));
+    let update = timeout(Duration::from_secs(3), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(update.cursor(), Some(format!("{EPOCH}:4209").as_str()));
+
+    let first = timeout(Duration::from_secs(3), message_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = timeout(Duration::from_secs(3), message_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first["query"]["after"], "legacy-start");
+    assert_eq!(
+        second["query"]["after"], format!("{EPOCH}:4209"),
+        "a reconnect must resume after the last delivered record, not replay from the original cursor"
+    );
+    // The subscription keeps its identity: only the wire frame moves.
+    assert_eq!(first["subscriptionId"], second["subscriptionId"]);
+
+    drop(stream);
+    client.disconnect().await;
+    server.await.unwrap();
+}

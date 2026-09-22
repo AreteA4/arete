@@ -28,6 +28,8 @@ This document has three jobs:
 | **Program SDK** | Generated client for a Solana program bundled with the stack: raw instruction builders, PDA factories, account readers, and semantic operations. |
 | **Update taxonomy** | `upsert` (full entity entered/changed in window), `patch` (partial merge), `remove` (left *this query's* window), `delete` (deleted from the source view globally). |
 | **Subscription identity** | The canonical JSON of `{query, snapshot}`. Equivalent queries share one wire subscription; leases are reference-counted. |
+| **Replay cursor** | `"{epoch}:{offset}"`, carried on every update from a journal-backed `append` view and sent back as `query.after`. `epoch` identifies one tape lifetime (it comes from the ack's `replayWindow`), `offset` the position within it. `seq` is **not** a cursor: its second component is the transaction index, so events decoded from one transaction share it. Absent on `state`/`list` views, which project membership and have no per-event identity. |
+| **Gap** | Any point where a consumer's sequence of cursors would be discontinuous: a refused cursor (`cursor-expired`, `cursor-epoch-changed`, `cursor-unknown`, `invalid-cursor`), a server-side discontinuity (`replay-gap`), server fan-out lag (`replay-lagged`), or the SDK's own bounded queue evicting a cursor-bearing update. Every SDK ends the stream at the last delivered cursor rather than continuing past it; a dropped update on a cursorless view is not a gap. |
 
 ---
 
@@ -45,7 +47,7 @@ Client → server:
 {"type":"subscribe","protocolVersion":2,"subscriptionId":"<opaque ≤128B>",
  "query":{"view":"Order/list","key":"…","partition":"…",
           "filters":{"state.status":"open"},"take":10,"skip":0,
-          "after":"1234:000000000010","snapshotLimit":100},
+          "after":"0f8c2b31-…-1d2c3e4f5a6b:4211","snapshotLimit":100},
  "snapshot":{"enabled":true}}
 {"type":"unsubscribe","protocolVersion":2,"subscriptionId":"…"}
 {"type":"ping"}
