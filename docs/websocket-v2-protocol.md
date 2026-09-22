@@ -103,7 +103,8 @@ Receiver registration happens before snapshot capture for state, list, append, a
 When the server runs with an event journal (`ARETE_JOURNAL_ENABLED=true`), an
 append view is delivered as an event tape rather than a membership
 projection. Every retained event is replayed in order, exactly once per
-replay request, instead of one row per surviving entity.
+replay request, instead of one row per surviving entity. See the retention
+notes below for the one case a restart can still duplicate.
 
 Each live frame on such a view carries an `offset`: a dense, monotonic,
 per-view cursor assigned when the event is retained.
@@ -228,6 +229,12 @@ The byte bound is the one to budget against: frame size is stack-dependent,
 so a record count cannot be reasoned about against a memory limit. The
 retained tape is captured in the state snapshot, so the advertised window
 survives a normal restart.
+
+One duplication case remains. A restart that resumes the stream from the
+snapshot's watermark re-decodes the transactions in the overlap, and those
+events are appended to the tape a second time under fresh offsets. A
+consumer reading across such a restart sees them twice, and cannot tell
+them apart. Delivery is exactly once within one server lifetime.
 
 ## Live Frames
 
